@@ -101,9 +101,14 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
     setIsLoading(true);
     setHasError(false);
     try {
+      // The row shows its own "Failed to load"; the chat page owns the one toast.
       const [detail, conv] = await Promise.all([
-        ProjectApi.get(projectId),
-        ProjectApi.listConversations(projectId, { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE }),
+        ProjectApi.get(projectId, { suppressErrorToast: true }),
+        ProjectApi.listConversations(
+          projectId,
+          { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE },
+          { suppressErrorToast: true },
+        ),
       ]);
       setProject(detail);
       setConversations(conv.conversations);

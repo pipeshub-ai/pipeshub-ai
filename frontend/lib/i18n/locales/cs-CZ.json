@@ -148,7 +148,11 @@
     "tabArchived": "Archivované",
     "archivedEmptyState": "Žádné archivované projekty",
     "archivedEmptyStateHint": "Projekty, které archivujete, se zobrazí zde.",
-    "actionsLabel": "Akce projektu"
+    "actionsLabel": "Akce projektu",
+    "noSearchResults": "Hledání „{{query}}“ neodpovídá žádný projekt",
+    "noSearchResultsHint": "Zkuste jiný název nebo vymažte hledání.",
+    "clearSearch": "Vymazat hledání",
+    "cardActionsLabel": "Akce pro {{name}}"
   },
   "timeGroup": {
     "today": "Dnes",
@@ -1371,7 +1375,6 @@
         "connectorsStatusCount_few": "{{count}} připojené",
         "connectorsStatusCount_many": "{{count}} připojeného",
         "connectorsStatusCount_other": "{{count}} připojených",
-        "toolsStatusDefault": "Výchozí",
         "toolsStatusCount_one": "{{count}} povolený",
         "toolsStatusCount_few": "{{count}} povolené",
         "toolsStatusCount_many": "{{count}} povoleného",
@@ -1381,7 +1384,20 @@
         "suggestPlanWork": "Naplánovat část práce",
         "suggestWriteInstructions": "Napsat pokyny projektu",
         "suggestSummariseDocumentPrompt": "Shrň nejdůležitější dokument ze souborů tohoto projektu.",
-        "suggestPlanWorkPrompt": "Pomoz mi naplánovat část práce pro tento projekt. Rozděl ji na konkrétní další kroky."
+        "suggestPlanWorkPrompt": "Pomoz mi naplánovat část práce pro tento projekt. Rozděl ji na konkrétní další kroky.",
+        "visibilityShared": "Sdíleno s: {{members}}",
+        "visibilityPrivateOwner": "Soukromý, pouze pro vlastníka",
+        "toolsStatusNone": "Žádné povolené",
+        "toolsSubtitle": "Chaty v tomto projektu mohou používat jen nástroje, které zde zaškrtnete.",
+        "toolKind": {
+          "read": "Čte data",
+          "write": "Provádí změny",
+          "destructive": "Maže nebo nelze vrátit",
+          "unknown": "Ostatní"
+        },
+        "toolNeedsApproval": "Vyžaduje schválení",
+        "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
+        "indexingStatusLabel": "Indexování: {{status}}"
       },
       "moveDialog": {
         "title": "Přesunout do projektu",
@@ -1392,16 +1408,71 @@
       },
       "deleteDialog": {
         "title": "Smazat tento projekt?",
-        "description": "Tím se projekt odstraní a jeho chaty se od něj odpojí. Samotné chaty se nesmažou.",
+        "description": "Smazání projektu nelze vrátit zpět:",
         "confirm": "Smazat projekt",
         "deleting": "Mazání…",
-        "failed": "Nepodařilo se smazat projekt"
+        "failed": "Nepodařilo se smazat projekt",
+        "filesDeleted": "Soubory nahrané do projektu se trvale smažou.",
+        "membersLoseAccess": "Všichni, se kterými je sdílen, ztratí přístup.",
+        "chatsKept": "Chaty zůstanou, ale už nebudou součástí projektu."
       },
       "roles": {
         "owner": "Vlastník",
         "editor": "Editor",
         "viewer": "Čtenář"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Vlastník",
+          "description": "Vytvořil(a) projekt a spravuje, kdo jej může používat"
+        },
+        "editor": {
+          "label": "Může upravovat",
+          "description": "Měnit název, pokyny, soubory, konektory a nástroje a chatovat v projektu"
+        },
+        "viewer": {
+          "label": "Může zobrazit",
+          "description": "Otevřít projekt a chatovat s jeho soubory a nástroji"
+        }
+      },
+      "unknownMember": "Neznámý člen",
+      "unknownTeam": "Neznámý tým",
+      "allMembersTeam": "Všichni ve vaší organizaci",
+      "ownerCannotChange": "Přístup vlastníka projektu zde nelze změnit.",
+      "sharingSettings": {
+        "saved": "Nastavení sdílení uloženo",
+        "saveFailed": "Nastavení sdílení se nepodařilo uložit",
+        "visibilityLabel": "Kdo může tento projekt najít",
+        "visibilityPrivate": "Pouze lidé, se kterými je sdílen",
+        "visibilityOrg": "Všichni ve vaší organizaci",
+        "visibilityPrivateHint": "Otevřít jej můžete jen vy a lidé nebo týmy níže.",
+        "visibilityOrgHint": "Kdokoli ve vaší organizaci jej může najít a otevřít.",
+        "chatSharingLabel": "Nové chaty v tomto projektu",
+        "chatSharingPrivate": "Soukromé pro toho, kdo je zahájí",
+        "chatSharingMembers": "Sdílené se členy projektu",
+        "chatSharingPrivateHint": "Každý chat zůstane soukromý, dokud jej autor nesdílí.",
+        "chatSharingMembersHint": "Členové vidí nové chaty; autor může chat stále nastavit jako soukromý."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Upravit podrobnosti projektu",
+        "saved": "Podrobnosti projektu uloženy",
+        "saveFailed": "Podrobnosti projektu se nepodařilo uložit"
+      },
+      "editDetails": "Upravit název a popis",
+      "leaveProject": "Opustit projekt",
+      "leaveDialog": {
+        "title": "Opustit {{name}}?",
+        "description": "Ztratíte přístup k tomuto projektu a jeho souborům. Vaše chaty vám zůstanou. Vlastník vás může přidat zpět.",
+        "leaving": "Opouštění…",
+        "left": "Opustili jste projekt",
+        "failed": "Projekt se nepodařilo opustit",
+        "inherited": "Tento projekt nemůžete opustit: přístup máte přes svou organizaci nebo tým. Požádejte vlastníka, aby změnil, s kým je sdílený."
+      },
+      "archiveSuccess": "Projekt archivován",
+      "archivedNoNewChats": "Tento projekt je archivovaný, nelze v něm zahájit nové chaty.",
+      "archivedBanner": "Tento projekt je archivovaný. Chcete-li zahájit nové chaty, zrušte archivaci.",
+      "archivedBannerMember": "Tento projekt je archivovaný, nelze zahájit nové chaty. Požádejte vlastníka o zrušení archivace."
     },
     "scrollAttachmentsLeft": "Posunout přílohy doleva",
     "scrollAttachmentsRight": "Posunout přílohy doprava",
@@ -1548,7 +1619,8 @@
       "downloading": "Stahování artefaktu"
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
-    "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky"
+    "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
+    "removeSelectedSource": "Odebrat {{name}}"
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -5626,7 +5698,13 @@
     },
     "team": "Tým",
     "teamsNoRoles": "Týmy nemají role",
-    "invite": "Pozvat do Pipeshub"
+    "invite": "Pozvat do Pipeshub",
+    "searchPlaceholderTeams": "E-maily, týmy nebo jména (oddělené čárkami)",
+    "searchPlaceholderUsers": "E-maily nebo jména (oddělené čárkami)",
+    "alreadyRemoved": "Už odebráno",
+    "alreadyRemovedDescription": "{{name}} už přístup neměl(a)",
+    "removeConfirmTitle": "Odebrat přístup?",
+    "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet."
   },
   "demoData": {
     "badge": {

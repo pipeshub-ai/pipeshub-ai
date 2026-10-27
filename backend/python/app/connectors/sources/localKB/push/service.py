@@ -43,7 +43,12 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.models.entities import FileRecord, RecordType
 from app.models.source_dates import upload_origin
-from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
+)
 from app.services.storage_documents import StorageDocuments, StorageUploadError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -134,7 +139,7 @@ class KbPushService:
     async def authorize(self, kb_id: str, user_id: str, roles: list[str] | None = WRITE_ROLES) -> str:
         """The caller's graph key, or a refusal: no role is a 404, a lower role a 403."""
         user_key, _role, error = await self.kb_service._resolve_user_and_kb_access(
-            kb_id, user_id, required_roles=roles,
+            kb_id, user_id, required_roles=roles, for_write=roles is not None,
         )
         if error:
             code = error.get("code")
@@ -142,6 +147,8 @@ class KbPushService:
                 raise _refuse(403, "KB_ROLE_INSUFFICIENT", "You do not have permission to write to this knowledge base.")
             if code == 404:
                 raise _refuse(404, "KB_NOT_FOUND", "Knowledge base not found.")
+            if code == 409:
+                raise _refuse(409, "KB_BEING_DELETED", "This knowledge base is being deleted.")
             raise _refuse(500, "INTERNAL_ERROR", "The push could not be started.")
         return user_key
 
@@ -250,6 +257,8 @@ class KbPushService:
                 # Only a create or a content change names the new document; after a lost attempt the
                 # decision may have become a metadata change, which keeps the stored one.
                 new_doc_is_ours = new_doc_is_ours and action not in ("create", "content")
+                if action == "create":
+                    await self._undo_create_in_deleted_kb(key, kb_id, org_id, new_doc)
                 if action == "content" and existing.get("externalRecordId"):
                     await self._cleanup(org_id, kb_id, [existing["externalRecordId"]])
                 status = "created" if action == "create" else "updated"
@@ -269,6 +278,28 @@ class KbPushService:
             if new_doc_is_ours and new_doc:
                 with contextlib.suppress(Exception):
                     await self._cleanup_unless_referenced(key, org_id, kb_id, new_doc)
+
+    async def _undo_create_in_deleted_kb(self, key: str, kb_id: str, org_id: str, document_id: str | None) -> None:
+        """A create that committed after the pre-commit check but before the cascade collected: if the
+        KB is now gone or being deleted, the cascade may have missed this record, so remove it.
+
+        Creates only. An update's record existed before the marker, so the cascade (which collects after
+        the marker) already has it, and compensating there would delete a record the owner meant to keep
+        when a delete failed and the status was put back.
+        """
+        kb = await self.graph.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb is not None and kb.get("status") != KB_DELETING_STATUS:
+            return
+        try:
+            await self.graph.delete_nodes_and_edges([key], CollectionNames.RECORDS.value)
+        except Exception:
+            logger.exception("push of %s: could not remove the record it created in a KB being deleted", key)
+            raise
+        if document_id:
+            await self._cleanup(org_id, kb_id, [document_id])
+        if kb is None:
+            raise _refuse(404, "KB_NOT_FOUND", "Knowledge base not found.")
+        raise _refuse(409, "KB_BEING_DELETED", "This knowledge base is being deleted.")
 
     async def _cleanup_unless_referenced(self, key: str, org_id: str, kb_id: str, document_id: str) -> None:
         """Remove a document this push made and the graph did not take, unless the record names it.

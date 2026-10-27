@@ -101,12 +101,18 @@ class FakeConfig:
     async def get_config(self, key, default=None, use_cache=True, raise_on_error=False) -> object:
         return self.data.get(key, default)
 
-    async def create_config_if_absent(self, key, value) -> bool:
+    async def create_config_if_absent(self, key, value, **_ttl) -> bool:
         return self.data.setdefault(key, value) is value
 
-    async def set_config(self, key, value) -> bool:
+    async def set_config(self, key, value, **_ttl) -> bool:
         self.data[key] = value
         return True
+
+    async def delete_config(self, key) -> bool:
+        return self.data.pop(key, None) is not None
+
+    async def list_keys_in_directory(self, directory) -> list[str]:
+        return [k for k in self.data if k.startswith(directory)]
 
 
 @dataclass

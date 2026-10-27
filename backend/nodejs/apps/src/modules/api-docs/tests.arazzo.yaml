@@ -965,7 +965,12 @@ workflows:
 
   # Connector names are unique in an org, so each suite names its connector with
   # PIPESHUB_SDK_TEST_NAME, which run_sdk_tests.sh sets per suite.
+  # Team connectors and OAuth configurations are admin-only. The OAuth app's tokens act as a
+  # service account, which is never an admin, so these two workflows use the admin's session.
   - workflowId: connectorInstanceLifecycle
+    x-speakeasy-test-security:
+      value:
+        bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
     steps:
       - stepId: getRegistry
         operationId: getConnectorRegistry
@@ -1154,6 +1159,9 @@ workflows:
 
   # OAuth app names are unique per connector type in an org; see connectorInstanceLifecycle.
   - workflowId: oauthConfigLifecycle
+    x-speakeasy-test-security:
+      value:
+        bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
     steps:
       - stepId: getRegistry
         operationId: getOAuthRegistry

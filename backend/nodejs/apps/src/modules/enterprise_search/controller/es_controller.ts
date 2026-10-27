@@ -142,7 +142,10 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
   applyProjectScope,
   loadProjectForSession,
+  accessibleProjectIdsFor,
+  projectCallerFromRequest,
   resolveProjectLink,
+  ResolvedProjectLink,
 } from '../utils/project-context';
 import {
   buildAiRequestLogMetadata,
@@ -161,6 +164,8 @@ import {
 } from '../utils/fork-conversation';
 import { ArtifactCopier, ArtifactCopyOutcome } from '../utils/fork-artifacts';
 import { executeConnectorCommand } from '../../tokens_manager/utils/connector.utils';
+import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
+import { ProjectsFeature } from '../../projects/utils/projects-feature';
 import { ProjectService } from '../../projects/services/project.service';
 import {
   assignAgentCapabilitiesToPayload,
@@ -631,7 +636,11 @@ export const uploadChatAttachmentsInternal =
 
 export const streamChat =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next?: NextFunction,
+  ): Promise<void> => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const timer = new StageTimer();
@@ -652,6 +661,22 @@ export const streamChat =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink;
+    try {
+      // Before the stream opens, so a project the caller cannot use is refused
+      // with its own status rather than a 200 stream that ends in RUN_ERROR.
+      projectLink = await resolveProjectLink(
+        String(orgId),
+        String(userId),
+        req.body as Record<string, unknown>,
+        projectCallerFromRequest(req, appConfig),
+      );
+    } catch (error) {
+      if (!next) throw error;
+      next(error);
+      return;
+    }
+
     try {
       // Set SSE headers
       res.writeHead(200, {
@@ -669,12 +694,6 @@ export const streamChat =
         req.body.appliedFilters,
         req.body.chatMode,
         req.body.attachments,
-      );
-
-      const projectLink = await resolveProjectLink(
-        orgId,
-        userId,
-        req.body as Record<string, unknown>,
       );
 
       const userConversationData: NewSession = {
@@ -1359,6 +1378,34 @@ const refuseBeforeStream = (
   next(error);
 };
 
+/**
+ * Whether the caller owns the conversation they are posting to, checked
+ * before the stream opens: a project member posting into someone else's
+ * project-shared chat used to get a `connected` event carrying that chat's
+ * id, then a RUN_ERROR. A refusal or a failed lookup goes to `next` (or is
+ * thrown, for the internal wrappers that pass none) and this returns false.
+ */
+const ownsConversationBeforeStream = async (
+  scope: SessionScope,
+  conversationId: string,
+  actor: SessionActor,
+  next: NextFunction | undefined,
+): Promise<boolean> => {
+  let error: unknown;
+  try {
+    const found = isValidId(conversationId)
+      ? await convRepo().findForTurn(scope, conversationId, actor)
+      : null;
+    if (found !== null) return true;
+    error = new NotFoundError('Conversation not found');
+  } catch (lookupError) {
+    error = lookupError;
+  }
+  if (!next) throw error;
+  next(error);
+  return false;
+};
+
 export const addMessageStream =
   (appConfig: AppConfig) =>
   async (
@@ -1385,6 +1432,16 @@ export const addMessageStream =
 
     if (!req.body.query) {
       refuseBeforeStream(next, 'Query is required');
+      return;
+    }
+    if (
+      !(await ownsConversationBeforeStream(
+        CHAT_SCOPE,
+        conversationId as string,
+        actorOf(orgId, userId),
+        next,
+      ))
+    ) {
       return;
     }
 
@@ -1502,6 +1559,10 @@ export const addMessageStream =
         confirmedConversation.orgId,
         confirmedConversation.userId,
         confirmedConversation.projectId,
+        {
+          caller: projectCallerFromRequest(req, appConfig),
+          conversationId: confirmedConversation._id,
+        },
       );
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId,
@@ -2102,6 +2163,8 @@ export const getAllConversations = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
+  // Passed by the router so project-shared chats reach team members; absent in direct calls.
+  appConfig?: AppConfig,
 ) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
@@ -2141,7 +2204,11 @@ export const getAllConversations = async (
       );
     }
     const accessibleProjectIds = !isOwned
-      ? await ProjectService.getAccessibleProjectIds(orgId, userId)
+      ? await accessibleProjectIdsFor(
+          String(orgId),
+          String(userId),
+          appConfig ? projectCallerFromRequest(req, appConfig) : undefined,
+        )
       : undefined;
     const query = buildSessionQuery(req, {
       orgId: String(orgId),
@@ -2354,9 +2421,10 @@ export const getConversationById =
           escapedSearch,
         );
       }
-      const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-        orgId,
-        userId,
+      const accessibleProjectIds = await accessibleProjectIdsFor(
+        String(orgId),
+        String(userId),
+        projectCallerFromRequest(req, appConfig),
       );
       const sessionQuery = buildSessionQuery(req, {
         orgId: String(orgId),
@@ -3005,6 +3073,8 @@ export const setConversationProject = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
+  // Passed by the router so a team member can move a chat into the project.
+  appConfig?: AppConfig,
 ) => {
   const requestId = req.context?.requestId;
   try {
@@ -3029,12 +3099,15 @@ export const setConversationProject = async (
       projectVisibility: 'private' | 'project';
     } | null = null;
     if (projectId !== null) {
+      await ProjectsFeature.assertEnabled();
       const { project } = await ProjectService.assertAccess(
         orgId,
         userId,
         projectId,
         'viewer',
+        appConfig ? await resolveCallerTeamIds(req, appConfig) : [],
       );
+      ProjectService.assertNotArchived(project);
       const projectVisibility =
         conversation.projectVisibility === 'project'
           ? 'project'
@@ -3708,6 +3781,10 @@ async function regenerateAnswersInternal(
       existingConversation.orgId,
       existingConversation.userId,
       existingConversation.projectId,
+      {
+        caller: projectCallerFromRequest(req, appConfig),
+        conversationId: existingConversation._id,
+      },
     );
     applyProjectScope(aiPayload, regenProject);
     if (existingConversation.projectId) {
@@ -6284,7 +6361,8 @@ export const streamAgentConversation =
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
-  ) => {
+    next?: NextFunction,
+  ): Promise<void> => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: string | undefined;
@@ -6321,6 +6399,21 @@ export const streamAgentConversation =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink;
+    try {
+      // Before the stream opens; see streamChat.
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+        projectCallerFromRequest(req, appConfig),
+      );
+    } catch (error) {
+      if (!next) throw error;
+      next(error);
+      return;
+    }
+
     try {
       // Set SSE headers
       res.writeHead(200, {
@@ -6338,12 +6431,6 @@ export const streamAgentConversation =
         req.body.appliedFilters,
         req.body.chatMode,
         req.body.attachments,
-      );
-
-      const projectLink = await resolveProjectLink(
-        orgId,
-        userId,
-        req.body as Record<string, unknown>,
       );
 
       const userConversationData: NewSession = {
@@ -7062,6 +7149,16 @@ export const addMessageStreamToAgentConversation =
       refuseBeforeStream(next, 'Query is required');
       return;
     }
+    if (
+      !(await ownsConversationBeforeStream(
+        agentScope(agentKey),
+        conversationId as string,
+        actorOf(orgId, userId),
+        next,
+      ))
+    ) {
+      return;
+    }
 
     // Helper function that contains the common conversation operations
     async function performAddMessageStream(tx?: Tx): Promise<void> {
@@ -7179,6 +7276,10 @@ export const addMessageStreamToAgentConversation =
         confirmedConversation.orgId,
         confirmedConversation.userId,
         confirmedConversation.projectId,
+        {
+          caller: projectCallerFromRequest(req, appConfig),
+          conversationId: confirmedConversation._id,
+        },
       );
       const aiRequest = buildAiChatRequest(
         { kind: 'agent', agentKey: agentKey as string },
@@ -7859,6 +7960,8 @@ export const getAllAgentConversations = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
+  // Passed by the router so project-shared chats reach team members; absent in direct calls.
+  appConfig?: AppConfig,
 ) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
@@ -7889,9 +7992,10 @@ export const getAllAgentConversations = async (
         escapedSearch,
       );
     }
-    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-      orgId,
-      userId,
+    const accessibleProjectIds = await accessibleProjectIdsFor(
+      String(orgId),
+      String(userId),
+      appConfig ? projectCallerFromRequest(req, appConfig) : undefined,
     );
     const sortOptions = buildSortOptions(req);
     const query = buildSessionQuery(
@@ -8022,9 +8126,10 @@ export const getAgentConversationById =
           escapedSearch,
         );
       }
-      const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-        orgId,
-        userId,
+      const accessibleProjectIds = await accessibleProjectIdsFor(
+        String(orgId),
+        String(userId),
+        projectCallerFromRequest(req, appConfig),
       );
       const sessionQuery = buildSessionQuery(
         req,

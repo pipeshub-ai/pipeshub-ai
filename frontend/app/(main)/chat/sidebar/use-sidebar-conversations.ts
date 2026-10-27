@@ -4,6 +4,7 @@ import { useCallback, useEffect } from 'react';
 import { ChatApi } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from '../constants';
 
 /** Loads Recents for whatever page is showing ChatSidebar (chat, artifacts, …). */
@@ -15,6 +16,8 @@ export function useSidebarConversations() {
   const setPagination = useChatStore((s) => s.setPagination);
   const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const conversationsVersion = useChatStore((s) => s.conversationsVersion);
+  // With Projects off a project chat has nowhere else to show, so list it here.
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   const loadConversations = useCallback(async () => {
     setIsConversationsLoading(true);
@@ -24,6 +27,7 @@ export function useSidebarConversations() {
       const [owned, shared] = await Promise.all([
         ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, {
           source: 'owned',
+          excludeProjectChats: projectsEnabled,
         }),
         ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, {
           source: 'shared',
@@ -44,6 +48,7 @@ export function useSidebarConversations() {
       setIsConversationsLoading(false);
     }
   }, [
+    projectsEnabled,
     setConversations,
     setSharedConversations,
     setIsConversationsLoading,

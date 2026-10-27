@@ -359,12 +359,36 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const gone = await open(org, user, { projectId: p1 });
       await repo.softDelete(gone._id, actor(org, user));
       await open(org, user, { projectId: p2 });
-      const counts = await repo.countByProject([p1, p2]);
+      const counts = await repo.countByProject(org, user, [p1, p2]);
       expect(counts.get(p1)).to.equal(2);
       expect(counts.get(p2)).to.equal(1);
       await repo.unlinkProject(p1);
-      expect((await repo.countByProject([p1])).get(p1)).to.equal(undefined);
+      expect((await repo.countByProject(org, user, [p1])).get(p1)).to.equal(undefined);
       expect((await repo.listByProject({ orgId: org, projectId: p2, userId: user, skip: 0, limit: 10 })).total).to.equal(1);
+    });
+
+    it('countByProject counts the chats the person can open: their own and the ones shared to the project', async () => {
+      const org = fx.newId(), owner = fx.newId(), other = fx.newId(), project = fx.newId();
+      await open(org, owner, { projectId: project, projectVisibility: 'private' });
+      await open(org, other, { projectId: project, projectVisibility: 'private' });
+      await open(org, other, { projectId: project, projectVisibility: 'project' });
+      expect((await repo.countByProject(org, owner, [project])).get(project)).to.equal(2);
+      expect((await repo.countByProject(org, other, [project])).get(project)).to.equal(2);
+      expect((await repo.countByProject(org, fx.newId(), [project])).get(project)).to.equal(1);
+      expect((await repo.countByProject(fx.newId(), owner, [project])).get(project)).to.equal(undefined);
+    });
+
+    it('unlinkFromProject clears the link only while the chat still points at that project', async () => {
+      const org = fx.newId(), user = fx.newId(), project = fx.newId(), elsewhere = fx.newId();
+      const s = await open(org, user, { projectId: project, projectVisibility: 'project' });
+      await repo.unlinkFromProject(org, s._id, elsewhere);
+      expect(await repo.findById(s._id)).to.include({ projectId: project });
+      await repo.unlinkFromProject(fx.newId(), s._id, project);
+      expect(await repo.findById(s._id)).to.include({ projectId: project });
+      await repo.unlinkFromProject(org, s._id, project);
+      const after = await repo.findById(s._id);
+      expect(after).to.not.have.property('projectId');
+      expect(after).to.not.have.property('projectVisibility');
     });
   });
 

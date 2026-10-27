@@ -39,6 +39,14 @@ def pipeshub() -> Iterator[Pipeshub]:
 
 
 @pytest.fixture
+def admin() -> Iterator[Pipeshub]:
+    """Team connectors and OAuth configurations are admin-only, and the OAuth app's tokens act
+    as a service account, which is never an admin."""
+    with bearer_client(os.environ["PIPESHUB_SESSION_TOKEN"]) as client:
+        yield client
+
+
+@pytest.fixture
 def session() -> Iterator[Pipeshub]:
     """The OAuth app and personal access token routes accept only an interactive session."""
     with bearer_client(os.environ["PIPESHUB_SESSION_TOKEN"]) as client:

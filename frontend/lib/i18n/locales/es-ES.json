@@ -41,7 +41,11 @@
     "archivedEmptyState": "No hay proyectos archivados",
     "archivedEmptyStateHint": "Los proyectos que archives aparecerán aquí.",
     "chatCount_many": "{{count}} de chats",
-    "actionsLabel": "Acciones del proyecto"
+    "actionsLabel": "Acciones del proyecto",
+    "noSearchResults": "Ningún proyecto coincide con «{{query}}»",
+    "noSearchResultsHint": "Prueba con otro nombre o borra la búsqueda.",
+    "clearSearch": "Borrar búsqueda",
+    "cardActionsLabel": "Acciones para {{name}}"
   },
   "timeGroup": {
     "today": "Hoy",
@@ -1202,7 +1206,6 @@
         "connectorsStatusNone": "Ninguno",
         "connectorsStatusCount_one": "{{count}} conectado",
         "connectorsStatusCount_other": "{{count}} conectados",
-        "toolsStatusDefault": "Predeterminado",
         "toolsStatusCount_one": "{{count}} activada",
         "toolsStatusCount_other": "{{count}} activadas",
         "membersStatusOnlyYou": "Solo tú",
@@ -1216,7 +1219,20 @@
         "filesStatusCount_many": "{{count}} de archivos",
         "filesStatusCountWithSize_many": "{{count}} de archivos · {{size}}",
         "connectorsStatusCount_many": "{{count}} de conectados",
-        "toolsStatusCount_many": "{{count}} de activados"
+        "toolsStatusCount_many": "{{count}} de activados",
+        "visibilityShared": "Compartido con {{members}}",
+        "visibilityPrivateOwner": "Privado para el propietario",
+        "toolsStatusNone": "Ninguna activada",
+        "toolsSubtitle": "Los chats de este proyecto solo pueden usar las herramientas que marques aquí.",
+        "toolKind": {
+          "read": "Lee datos",
+          "write": "Hace cambios",
+          "destructive": "Elimina o no se puede deshacer",
+          "unknown": "Otros"
+        },
+        "toolNeedsApproval": "Requiere aprobación",
+        "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
+        "indexingStatusLabel": "Indexación: {{status}}"
       },
       "moveDialog": {
         "title": "Mover a proyecto",
@@ -1227,16 +1243,71 @@
       },
       "deleteDialog": {
         "title": "¿Eliminar este proyecto?",
-        "description": "Se eliminará el proyecto y se desvincularán sus chats. Los chats en sí no se eliminan.",
+        "description": "Eliminar un proyecto no se puede deshacer:",
         "confirm": "Eliminar proyecto",
         "deleting": "Eliminando…",
-        "failed": "No se pudo eliminar el proyecto"
+        "failed": "No se pudo eliminar el proyecto",
+        "filesDeleted": "Los archivos subidos al proyecto se eliminan de forma permanente.",
+        "membersLoseAccess": "Todas las personas con las que se comparte pierden el acceso.",
+        "chatsKept": "Los chats se conservan, pero ya no forman parte de un proyecto."
       },
       "roles": {
         "owner": "Propietario",
         "editor": "Editor",
         "viewer": "Lector"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Propietario",
+          "description": "Creó el proyecto y gestiona quién puede usarlo"
+        },
+        "editor": {
+          "label": "Puede editar",
+          "description": "Cambiar el nombre, las instrucciones, los archivos, los conectores y las herramientas, y chatear en el proyecto"
+        },
+        "viewer": {
+          "label": "Puede ver",
+          "description": "Abrir el proyecto y chatear con sus archivos y herramientas"
+        }
+      },
+      "unknownMember": "Miembro desconocido",
+      "unknownTeam": "Equipo desconocido",
+      "allMembersTeam": "Todos en tu organización",
+      "ownerCannotChange": "El acceso del propietario del proyecto no se puede cambiar aquí.",
+      "sharingSettings": {
+        "saved": "Configuración de uso compartido guardada",
+        "saveFailed": "No se pudo guardar la configuración de uso compartido",
+        "visibilityLabel": "Quién puede encontrar este proyecto",
+        "visibilityPrivate": "Solo las personas con las que se comparte",
+        "visibilityOrg": "Todos en tu organización",
+        "visibilityPrivateHint": "Solo tú y las personas o equipos de abajo pueden abrirlo.",
+        "visibilityOrgHint": "Cualquier persona de tu organización puede encontrarlo y abrirlo.",
+        "chatSharingLabel": "Chats nuevos en este proyecto",
+        "chatSharingPrivate": "Privados para quien los inicia",
+        "chatSharingMembers": "Compartidos con los miembros del proyecto",
+        "chatSharingPrivateHint": "Cada chat sigue siendo privado a menos que su autor lo comparta.",
+        "chatSharingMembersHint": "Los miembros pueden ver los chats nuevos; un autor aún puede hacer uno privado."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Editar detalles del proyecto",
+        "saved": "Detalles del proyecto guardados",
+        "saveFailed": "No se pudieron guardar los detalles del proyecto"
+      },
+      "editDetails": "Editar nombre y descripción",
+      "leaveProject": "Salir del proyecto",
+      "leaveDialog": {
+        "title": "¿Salir de {{name}}?",
+        "description": "Perderás el acceso a este proyecto y sus archivos. Tus chats siguen siendo tuyos. El propietario puede volver a añadirte.",
+        "leaving": "Saliendo…",
+        "left": "Saliste del proyecto",
+        "failed": "No se pudo salir del proyecto",
+        "inherited": "No puedes salir de este proyecto: tu acceso procede de tu organización o de un equipo. Pide al propietario que cambie con quién lo comparte."
+      },
+      "archiveSuccess": "Proyecto archivado",
+      "archivedNoNewChats": "Este proyecto está archivado, así que no se pueden iniciar chats nuevos en él.",
+      "archivedBanner": "Este proyecto está archivado. Desarchívalo para iniciar chats nuevos.",
+      "archivedBannerMember": "Este proyecto está archivado, así que no se pueden iniciar chats nuevos. Pide a su propietario que lo desarchive."
     },
     "demoHide": "Ocultar los datos de demostración",
     "scrollAttachmentsLeft": "Desplazar los adjuntos hacia la izquierda",
@@ -1415,7 +1486,8 @@
       "downloading": "Descargando artefacto"
     },
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
-    "noResultsFor": "No se encontraron resultados para «{{query}}»"
+    "noResultsFor": "No se encontraron resultados para «{{query}}»",
+    "removeSelectedSource": "Quitar {{name}}"
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -5559,7 +5631,13 @@
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",
     "invite": "Invitar a Pipeshub",
-    "memberCount_many": "{{count}} de miembros"
+    "memberCount_many": "{{count}} de miembros",
+    "searchPlaceholderTeams": "Correos, equipos o nombres (separados por comas)",
+    "searchPlaceholderUsers": "Correos o nombres (separados por comas)",
+    "alreadyRemoved": "Ya se había quitado",
+    "alreadyRemovedDescription": "{{name}} ya no tenía acceso",
+    "removeConfirmTitle": "¿Quitar el acceso?",
+    "removeConfirmDescription": "{{name}} perderá el acceso de inmediato. Puedes volver a compartir más tarde."
   },
   "demoData": {
     "badge": {

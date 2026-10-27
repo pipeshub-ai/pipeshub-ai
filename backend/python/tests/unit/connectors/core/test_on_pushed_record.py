@@ -41,6 +41,7 @@ def _processor(store: AsyncMock) -> DataSourceEntitiesProcessor:
 
     provider = MagicMock()
     provider.transaction = transaction
+    provider.graph_provider.get_document = AsyncMock(return_value={"id": "kb-1", "status": None})  # a live KB
     proc = DataSourceEntitiesProcessor(MagicMock(), provider, AsyncMock())
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()

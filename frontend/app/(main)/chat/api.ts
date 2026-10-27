@@ -2,6 +2,7 @@ import { apiClient, streamSSERequest } from '@/lib/api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
   Conversation,
   ConversationMessage,
@@ -128,6 +129,10 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
+    // Dropping these made every row look project-less: Move to project
+    // pre-selected "No project" and "Remove from project" never showed.
+    ...(conv.projectId ? { projectId: conv.projectId } : {}),
+    ...(conv.projectVisibility ? { projectVisibility: conv.projectVisibility } : {}),
     sharedBy: conv.sharedBy,
     agentKey: conv.agentKey,
   };
@@ -140,6 +145,8 @@ export interface FetchConversationsOptions {
   source: ConversationSource;
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
+  /** Leave out chats that belong to a project; they are listed under their project instead. */
+  excludeProjectChats?: boolean;
   signal?: AbortSignal;
 }
 
@@ -238,6 +245,9 @@ export const ChatApi = {
     };
     if (search) {
       params.search = search;
+    }
+    if (options.excludeProjectChats) {
+      params.projectId = PROJECT_ID_UNASSIGNED;
     }
 
     const { data } = await apiClient.get<ConversationsListResponse>(

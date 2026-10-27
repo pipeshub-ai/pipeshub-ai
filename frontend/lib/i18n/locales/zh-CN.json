@@ -124,7 +124,11 @@
     "tabArchived": "已归档",
     "archivedEmptyState": "暂无归档项目",
     "archivedEmptyStateHint": "您归档的项目会显示在这里。",
-    "actionsLabel": "项目操作"
+    "actionsLabel": "项目操作",
+    "noSearchResults": "没有与“{{query}}”匹配的项目",
+    "noSearchResultsHint": "请尝试其他名称，或清除搜索。",
+    "clearSearch": "清除搜索",
+    "cardActionsLabel": "{{name}} 的操作"
   },
   "timeGroup": {
     "today": "今天",
@@ -1278,7 +1282,6 @@
         "connectorsStatusNone": "无",
         "connectorsStatusCount_one": "已连接 {{count}} 个",
         "connectorsStatusCount_other": "已连接 {{count}} 个",
-        "toolsStatusDefault": "默认",
         "toolsStatusCount_one": "已启用 {{count}} 个",
         "toolsStatusCount_other": "已启用 {{count}} 个",
         "membersStatusOnlyYou": "仅您自己",
@@ -1286,7 +1289,20 @@
         "suggestPlanWork": "规划一项工作",
         "suggestWriteInstructions": "编写项目指令",
         "suggestSummariseDocumentPrompt": "请总结此项目文件中最重要的文档。",
-        "suggestPlanWorkPrompt": "请帮我为此项目规划一项工作，并将其拆分为具体的后续步骤。"
+        "suggestPlanWorkPrompt": "请帮我为此项目规划一项工作，并将其拆分为具体的后续步骤。",
+        "visibilityShared": "已与 {{members}} 共享",
+        "visibilityPrivateOwner": "仅所有者可见",
+        "toolsStatusNone": "未启用",
+        "toolsSubtitle": "此项目中的对话只能使用您在此勾选的工具。",
+        "toolKind": {
+          "read": "读取数据",
+          "write": "进行更改",
+          "destructive": "删除或无法撤销",
+          "unknown": "其他"
+        },
+        "toolNeedsApproval": "需要批准",
+        "toolNeedsApprovalHint": "此工具可能会删除数据。在项目对话中，它只有在获得批准后才会运行。",
+        "indexingStatusLabel": "索引：{{status}}"
       },
       "moveDialog": {
         "title": "移至项目",
@@ -1297,16 +1313,71 @@
       },
       "deleteDialog": {
         "title": "删除此项目？",
-        "description": "这将删除项目并取消与对话的关联。对话本身不会被删除。",
+        "description": "删除项目后无法撤销：",
         "confirm": "删除项目",
         "deleting": "删除中…",
-        "failed": "删除项目失败"
+        "failed": "删除项目失败",
+        "filesDeleted": "上传到项目的文件将被永久删除。",
+        "membersLoseAccess": "所有共享对象都将失去访问权限。",
+        "chatsKept": "对话会保留，但不再属于任何项目。"
       },
       "roles": {
         "owner": "拥有者",
         "editor": "编辑者",
         "viewer": "查看者"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "所有者",
+          "description": "创建了项目并管理谁可以使用它"
+        },
+        "editor": {
+          "label": "可编辑",
+          "description": "更改名称、说明、文件、连接器和工具，并在项目中聊天"
+        },
+        "viewer": {
+          "label": "可查看",
+          "description": "打开项目并使用其文件和工具聊天"
+        }
+      },
+      "unknownMember": "未知成员",
+      "unknownTeam": "未知团队",
+      "allMembersTeam": "您组织中的所有人",
+      "ownerCannotChange": "无法在此更改项目所有者的访问权限。",
+      "sharingSettings": {
+        "saved": "共享设置已保存",
+        "saveFailed": "无法保存共享设置",
+        "visibilityLabel": "谁可以找到此项目",
+        "visibilityPrivate": "仅限共享对象",
+        "visibilityOrg": "您组织中的所有人",
+        "visibilityPrivateHint": "只有您和下方的人员或团队可以打开它。",
+        "visibilityOrgHint": "您组织中的任何人都可以找到并打开它。",
+        "chatSharingLabel": "此项目中的新对话",
+        "chatSharingPrivate": "仅发起者可见",
+        "chatSharingMembers": "与项目成员共享",
+        "chatSharingPrivateHint": "每个对话保持私密，除非其作者共享。",
+        "chatSharingMembersHint": "成员可以看到新对话；作者仍可将其设为私密。"
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "编辑项目详情",
+        "saved": "项目详情已保存",
+        "saveFailed": "无法保存项目详情"
+      },
+      "editDetails": "编辑名称和描述",
+      "leaveProject": "退出项目",
+      "leaveDialog": {
+        "title": "退出 {{name}}？",
+        "description": "您将失去对此项目及其文件的访问权限。您的对话仍归您所有。所有者可以重新添加您。",
+        "leaving": "正在退出…",
+        "left": "您已退出项目",
+        "failed": "无法退出项目",
+        "inherited": "您无法退出此项目：您的访问权限来自您的组织或某个团队。请让所有者更改共享对象。"
+      },
+      "archiveSuccess": "项目已归档",
+      "archivedNoNewChats": "此项目已归档，无法在其中开始新对话。",
+      "archivedBanner": "此项目已归档。取消归档后即可开始新对话。",
+      "archivedBannerMember": "此项目已归档，无法开始新对话。请让所有者取消归档。"
     },
     "demoHide": "隐藏演示数据",
     "scrollAttachmentsLeft": "向左滚动附件",
@@ -1478,7 +1549,8 @@
       "downloading": "正在下载产物"
     },
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
-    "noResultsFor": "未找到“{{query}}”的结果"
+    "noResultsFor": "未找到“{{query}}”的结果",
+    "removeSelectedSource": "移除 {{name}}"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -5464,7 +5536,13 @@
     },
     "team": "团队",
     "teamsNoRoles": "团队没有角色",
-    "invite": "邀请加入 Pipeshub"
+    "invite": "邀请加入 Pipeshub",
+    "searchPlaceholderTeams": "邮箱、团队或姓名（用逗号分隔）",
+    "searchPlaceholderUsers": "邮箱或姓名（用逗号分隔）",
+    "alreadyRemoved": "已移除",
+    "alreadyRemovedDescription": "{{name}} 此前已失去访问权限",
+    "removeConfirmTitle": "移除访问权限？",
+    "removeConfirmDescription": "{{name}} 将立即失去访问权限。您之后可以再次共享。"
   },
   "demoData": {
     "badge": {

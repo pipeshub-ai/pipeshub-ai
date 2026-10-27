@@ -83,6 +83,17 @@ _PROMOTED_EXTRA_SECTIONS = ("preloaded_skills", "preloaded_tools")
 _CURRENT_REQUEST_ANCHOR_CHARS = 2_000
 
 
+# An agent's persona sits above these; without saying how the two combine, a
+# persona rule (a reply language, a fixed format) silently won over the
+# project's and the person's question.
+_PROJECT_INSTRUCTIONS_PREAMBLE = (
+    "This chat belongs to a project, and its author set the instructions below for every chat "
+    "in it. Follow them together with any persona and agent instructions above; where the two "
+    "conflict, these take precedence for this chat. Neither replaces the person's current "
+    "request: always answer it."
+)
+
+
 def _quote(tag: str, text: str) -> str:
     """`text` between `<tag>` lines, so a heading or rule inside the person's words can't pass as
     part of this prompt; a literal closing tag in the text is escaped so it can't end the quote."""
@@ -852,7 +863,8 @@ class PipesHubPromptBuilder:
         # its conversation is linked to a project. See `AgentContext.
         # project_instructions`.
         tpl.set("project_instructions", (
-            f"## Project Instructions\n{self._context.project_instructions.strip()}"
+            f"## Project Instructions\n{_PROJECT_INSTRUCTIONS_PREAMBLE}\n\n"
+            f"{self._context.project_instructions.strip()}"
             if self._context.project_instructions and self._context.project_instructions.strip()
             else None
         ))
