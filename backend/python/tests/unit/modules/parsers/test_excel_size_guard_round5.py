@@ -141,3 +141,13 @@ def test_an_entry_the_guard_cannot_read_does_not_end_the_count(variant: str) -> 
     # Full size: 8 M cells behind such an entry, default limits: ADMITTED in 0.0 s.
     with pytest.raises(ParseError):
         module.check_workbook_size(_with_unreadable_first_entry(variant, 3_000))
+
+
+def test_calc_chain_does_not_double_the_weight_of_formula_cells() -> None:
+    # False refusal. calcChain.xml is never loaded by openpyxl, yet each of its entries costs a
+    # cell. Measured at full size: 2 M formula cells (+ calcChain) = 4.5 M units, REFUSED, while
+    # the load takes 732 MB above the import floor (1 M formula cells: admitted, 368 MB).
+    n = 600
+    cells = "".join(f'<row r="{i}"><c r="A{i}"><f>B{i}*2</f><v>1</v></c></row>' for i in range(1, n + 1))
+    chain = f'<?xml version="1.0"?><calcChain {_NS}>' + "".join(f'<c r="A{i}" i="1"/>' for i in range(1, n + 1)) + "</calcChain>"
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(f"<sheetData>{cells}</sheetData>"), "xl/calcChain.xml": chain}))
