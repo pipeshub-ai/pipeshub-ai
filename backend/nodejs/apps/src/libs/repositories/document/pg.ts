@@ -63,6 +63,7 @@ interface Row {
   upload_lease_expires_at: Date | null;
   awaiting_direct_upload: boolean | null;
   artifact_set: unknown;
+  retired_at: string | null;
   version: number;
   created_at: Date;
   updated_at: Date;
@@ -71,7 +72,7 @@ interface Row {
 const COLS = `id, org_id, document_name, alternate_document_name, document_path, is_versioned_file, mutation_count, permissions,
   initiator_user_id, initiator_unset, size_in_bytes, mime_type, extension, version_history, custom_metadata, current_version, tags, deleted_by_user_id,
   is_deleted, s3, azure_blob, local, storage_vendor, idempotency_key, idempotency_fingerprint, upload_lease_token,
-  upload_lease_expires_at, awaiting_direct_upload, artifact_set, version, created_at, updated_at`;
+  upload_lease_expires_at, awaiting_direct_upload, artifact_set, retired_at, version, created_at, updated_at`;
 const TREE_COLS =
   'id, document_path, document_name, extension, is_versioned_file, version_history';
 const NO_INITIATOR = '000000000000000000000000';
@@ -130,6 +131,7 @@ function docOf(r: Row): DocumentRow {
     ['uploadLeaseExpiresAt', ms(r.upload_lease_expires_at) ?? null],
     ['awaitingDirectUpload', r.awaiting_direct_upload],
     ['artifactSet', r.artifact_set],
+    ['retiredAt', r.retired_at === null ? null : Number(r.retired_at)],
   ];
   for (const [key, v] of optional)
     if (v !== undefined && (v !== null || key === 'initiatorUserId'))
@@ -336,6 +338,7 @@ async function insert(
       'artifact_set',
       json(storageInfo(i.artifactSet, ['virtualRecordId', 'rev', 'root'])),
     ],
+    ['retired_at', i.retiredAt ?? null],
     ['created_at', created],
     ['updated_at', new Date(i.updatedAt ?? created.getTime())],
   ];
@@ -632,27 +635,76 @@ export class PgDocumentRepository implements DocumentRepository {
   async listEnvelopes(
     orgId: string,
     virtualRecordId: string,
+    opts?: { olderThanSeconds?: number },
   ): Promise<
     {
       _id: string;
       documentName?: string;
       documentPath?: string;
       createdAt?: number;
+      retiredAt?: number | null;
     }[]
   > {
+    const olderThanSeconds = opts?.olderThanSeconds;
+    const aged =
+      olderThanSeconds !== undefined &&
+      Number.isFinite(olderThanSeconds) &&
+      olderThanSeconds >= 0;
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
+      const p = new Params();
+      const org = p.add(k.orgId);
+      const names = p.add(
+        ENVELOPE_PREFIXES.map((x) => `${x}${virtualRecordId}`),
+      );
+      // The database's own clock, as the MongoDB implementation uses.
+      const age = aged
+        ? ` AND created_at < now() - make_interval(secs => ${p.add(olderThanSeconds)}::double precision)`
+        : '';
       const { rows } = await k.query<Row>(
-        `/* pipeshub:content.document_envelopes */ SELECT id, document_name, document_path, created_at FROM content.documents
-          WHERE org_id = $1 AND document_name = ANY($2::text[]) AND NOT is_deleted ORDER BY created_at DESC, id DESC`,
-        [k.orgId, ENVELOPE_PREFIXES.map((x) => `${x}${virtualRecordId}`)],
+        fill(
+          `/* pipeshub:content.document_envelopes */ SELECT id, document_name, document_path, created_at, retired_at FROM content.documents
+          WHERE org_id = @{A} AND document_name = ANY(@{B}::text[]) AND NOT is_deleted@{C} ORDER BY created_at DESC, id DESC`,
+          { A: org, B: names, C: age },
+        ),
+        p.values,
       );
       return rows.map((r) => ({
         _id: r.id,
         documentName: r.document_name,
         ...(r.document_path === null ? {} : { documentPath: r.document_path }),
         createdAt: r.created_at.getTime(),
+        retiredAt: r.retired_at === null ? null : Number(r.retired_at),
       }));
+    });
+  }
+
+  async retire(
+    orgId: string,
+    id: string,
+    now: number,
+  ): Promise<{ retiredAt: number | null } | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // The first mark's time is kept; updated_at is left alone, as the retire is not an edit.
+      const marked = await k.query<Pick<Row, 'retired_at'>>(
+        `/* pipeshub:content.document_retire */ UPDATE content.documents SET retired_at = $3
+          WHERE org_id = $1 AND id = $2 AND NOT is_deleted AND retired_at IS NULL RETURNING retired_at`,
+        [k.orgId, oid, now],
+      );
+      const row =
+        marked.rows[0] ??
+        (
+          await k.query<Pick<Row, 'retired_at'>>(
+            '/* pipeshub:content.document_retired_at */ SELECT retired_at FROM content.documents WHERE org_id = $1 AND id = $2 AND NOT is_deleted',
+            [k.orgId, oid],
+          )
+        ).rows[0];
+      return row
+        ? { retiredAt: row.retired_at === null ? null : Number(row.retired_at) }
+        : null;
     });
   }
 
