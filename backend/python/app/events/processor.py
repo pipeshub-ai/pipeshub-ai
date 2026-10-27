@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     IndexingError,
     RecordStatusUpdateError,
@@ -429,11 +430,22 @@ class Processor:
 
         try:
             self.logger.debug("📄 Processing PDF binary content")
-            # Get OCR configurations
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            ocr_configs = ai_models["ocr"]
+            # Get OCR configurations. A store that does not answer is an outage,
+            # retried: AISettingsUnavailableError is an IndexingError, which the
+            # handler below re-raises as it is. Settings never saved read as none.
+            try:
+                ai_models = await self.config_service.get_config(
+                    config_node_constants.AI_MODELS.value, raise_on_error=True
+                )
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    record_id=recordId,
+                    details={"error": str(e)},
+                ) from e
+            if not isinstance(ai_models, dict):
+                ai_models = {}
+            ocr_configs = ai_models.get("ocr") or []
 
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
