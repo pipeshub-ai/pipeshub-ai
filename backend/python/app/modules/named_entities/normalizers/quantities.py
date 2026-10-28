@@ -53,8 +53,10 @@ _PERCENT = re.compile(rf"^(?P<n>{_N})\s*(?P<u>%|bps|percent|per\s?cent|pct)$", r
 
 def normalize_quantity(surface: str) -> QuantityValue | None:
     text = (surface or "").strip().replace("°", "")
-    negative = text[:1] in _MINUS
-    text = text.lstrip(_MINUS).lstrip()
+    # One sign written against the number; "- 25 °C" or "--25 °C" is not a reading.
+    negative = text[:1] in _MINUS and text[1:2].isdigit()
+    if negative:
+        text = text[1:]
     tokens = _TOKENS.match(text)
     if tokens and not negative:
         count = Decimal(tokens.group("n").replace(",", "")) * _TOKEN_SCALE[tokens.group("scale").casefold()]

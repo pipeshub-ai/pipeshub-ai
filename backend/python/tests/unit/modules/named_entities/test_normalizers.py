@@ -422,7 +422,12 @@ def test_an_out_of_range_date_does_not_fail_the_other_spans() -> None:
     ("text", "surface", "value"),
     [
         ("Sales tax (8.25%): $1,234.00", "8.25%", 0.0825),
+        ("Sales tax (CA) (8.25%)", "8.25%", 0.0825),
+        ("taxes, (8.25%)", "8.25%", 0.0825),
         ("| Q3 margin | (3.2%) |", "(3.2%)", -0.032),
+        ("Margin\n(3.2%)", "(3.2%)", -0.032),
+        ("Growth\t(4%)", "(4%)", -0.04),
+        ("Change (-5%) on last year", "-5%", -0.05),
         ("Churn fell -1.5% this quarter.", "-1.5%", -0.015),
     ],
 )
@@ -445,12 +450,23 @@ def test_accounting_parentheses_still_make_money_negative() -> None:
         ("Rated for -25 °C cold starts.", "-25 °C", 248.15),
         ("Operating range 10-40 °C.", "40 °C", 313.15),
         ("Down to −40 °F at the pole.", "−40 °F", 233.15),
+        ("Cold soak at −25°C overnight.", "−25°C", 248.15),
+        ("Range -10–-40 °C.", "-40 °C", 233.15),
     ],
 )
 def test_a_temperature_keeps_its_minus_sign_but_a_range_dash_is_not_one(text, surface, kelvin) -> None:
     (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", text)])
     assert mention.surface == surface
     assert normalize_quantity(mention.surface).si_value == pytest.approx(kelvin)
+
+
+def test_a_dash_joining_a_quarter_to_money_is_not_a_sign() -> None:
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize([TextUnit(0, "b", "Q3-$500 bonus")])
+    assert mention.surface == "$500"
+
+
+def test_a_spaced_or_doubled_minus_is_not_a_temperature_sign() -> None:
+    assert normalize_quantity("- 25 °C") is None and normalize_quantity("--25 °C") is None
 
 
 def test_a_dash_before_a_non_temperature_is_not_a_sign() -> None:

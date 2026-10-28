@@ -128,18 +128,24 @@ _TEMPERATURE = re.compile(r"°[CF]|celsius|fahrenheit", re.IGNORECASE)
 def _with_sign(text: str, start: int, end: int, kind: EntityKind) -> tuple[int, int]:
     """Take in a minus sign or accounting parentheses: a refund of "-$500" or a
     "($1,200)" loss is not the same amount as a $500 fee. A percentage in
-    parentheses after a word is an aside ("Sales tax (8.25%)" is 8.25%); only one
-    standing alone, as in a table cell, is negative. A temperature takes a minus
+    parentheses is negative only standing alone on its line or in a table cell
+    ("(3.2%)"); after text it is an aside ("Sales tax (CA) (8.25%)" is 8.25%). A temperature takes a minus
     sign only."""
     if (
         kind is not EntityKind.DIMENSION
         and start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")"
-        and (kind is not EntityKind.PERCENTAGE or not text[:start - 1].rstrip()[-1:].isalnum())
+        and (kind is not EntityKind.PERCENTAGE or _stands_alone(text, start - 1))
     ):
         return start - 1, end + 1
     if start > 0 and text[start - 1] in "-−\u2012\u2013" and (start == 1 or not text[start - 2].isalnum()):
         return start - 1, end
     return start, end
+
+
+def _stands_alone(text: str, at: int) -> bool:
+    """Whether nothing but a table separator precedes ``at`` on its line."""
+    before = text[:at].rpartition("\n")[2].rstrip(" ")
+    return before in ("", "|") or before.endswith(("|", "\t"))
 
 
 def _date_kind(surface: str) -> EntityKind:
