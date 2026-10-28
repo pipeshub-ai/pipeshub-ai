@@ -39,15 +39,15 @@ def test_prompts_carry_a_bounded_slice_of_a_huge_cell(monkeypatch) -> None:
     _quiet(parser)
     seen: list[int] = []
 
-    async def structured(_llm, messages, _schema, *a, **k):
+    async def structured(_llm: object, messages: list, _schema: object, *a: object, **k: object) -> SimpleNamespace:
         seen.append(sum(len(str(m.content)) for m in messages))
         return SimpleNamespace(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
 
-    async def call_llm(messages, *a, **k):
+    async def call_llm(messages: list, *a: object, **k: object) -> SimpleNamespace:
         seen.append(sum(len(str(m.content)) for m in messages))
         return SimpleNamespace(content="summary")
 
-    async def rows(_llm, messages, **k):
+    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
         seen.append(sum(len(str(m.content)) for m in messages))
         return SimpleNamespace(descriptions=["d"] * k["expected_count"])
 
@@ -65,7 +65,7 @@ def test_the_fallback_row_text_keeps_the_whole_cell(monkeypatch) -> None:
     _quiet(parser)
     parser.llm = MagicMock()
 
-    async def none(*a, **k):
+    async def none(*a: object, **k: object) -> None:
         return None
 
     monkeypatch.setattr(module, "invoke_with_row_descriptions_and_reflection", none)
@@ -89,13 +89,13 @@ def test_llm_row_texts_are_charged_as_each_batch_arrives(monkeypatch) -> None:
     _quiet(parser)
     returned = [0]
 
-    async def detect(_rows, _llm):
+    async def detect(_rows: object, _llm: object) -> SimpleNamespace:
         return SimpleNamespace(has_headers=True, num_header_rows=1, confidence="high")
 
-    async def summary(_table):
+    async def summary(_table: object) -> str:
         return "s"
 
-    async def get_rows_text(batch, _summary):
+    async def get_rows_text(batch: list, _summary: str) -> list[str]:
         await asyncio.sleep(0)
         returned[0] += 1
         return ["z" * 100_000] * len(batch)
@@ -123,16 +123,16 @@ def test_a_stray_far_cell_does_not_probe_the_bounding_box(monkeypatch) -> None:
     probes = [0]
     real = workbook_model.SheetModel.raw_value
 
-    def counting(self, row, col):
+    def counting(self: object, row: int, col: int) -> object:
         probes[0] += 1
         return real(self, row, col)
 
     monkeypatch.setattr(workbook_model.SheetModel, "raw_value", counting)
 
-    async def detect(_rows, _llm):
+    async def detect(_rows: object, _llm: object) -> SimpleNamespace:
         return SimpleNamespace(has_headers=True, num_header_rows=1, confidence="high")
 
-    async def summary(_table):
+    async def summary(_table: object) -> str:
         return "s"
 
     parser.detect_excel_headers_with_llm = detect

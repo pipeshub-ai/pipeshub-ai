@@ -122,7 +122,7 @@ _PROMPT_SAMPLE_CHARS = 2000
 _PROMPT_ROW_VALUE_CHARS = 20000
 
 
-def _cut_for_prompt(value: Any, limit: int) -> Any:
+def _cut_for_prompt(value: object, limit: int) -> object:
     """``value`` with a string cut to ``limit`` characters (a slice copies only the kept part)."""
     if isinstance(value, str) and len(value) > limit:
         return value[:limit] + "...[cut]"
