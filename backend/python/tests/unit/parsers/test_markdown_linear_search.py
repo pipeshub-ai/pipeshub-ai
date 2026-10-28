@@ -109,6 +109,8 @@ def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) ->
     # Four times the input: linear is 4x and quadratic 16x. A 2x step left too
     # little room between them on a busy two-core runner (2.6x measured once).
     assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 8, (name, unit, t_small, t_large)
+    # The ratio alone can miss a pattern that is already slow at the small size.
+    assert t_large < 1.5, (name, unit, t_small, t_large)
 
 
 class _SlowMarkdownParser:

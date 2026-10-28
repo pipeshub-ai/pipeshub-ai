@@ -31,6 +31,8 @@ def test_segment_splitting_is_linear_in_the_input(unit: str) -> None:
     t_large = min(_cpu(large) for _ in range(3))
     # Four times the input: linear is 4x, quadratic 16x (a 2x step measured 2.65x in CI).
     assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 8, (unit, t_small, t_large)
+    # The ratio alone can miss a pattern that is already slow at the small size.
+    assert t_large < 1.5, (unit, t_small, t_large)
 
 
 @pytest.mark.parametrize("path", ["events/processor.py", "modules/parsers/blocks/blocks_parser.py"])
