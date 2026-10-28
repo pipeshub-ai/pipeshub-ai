@@ -31,8 +31,11 @@ _CONTAINMENT_RELATIONS = frozenset({
 
 # All cross-reference relation types (everything else)
 _CROSS_REF_RELATIONS = [
-    r.value for r in RecordRelations if r.value not in _CONTAINMENT_RELATIONS
+    r.value for r in RecordRelations
+    if r.value not in _CONTAINMENT_RELATIONS and r is not RecordRelations.CHILD_OF
 ]
+# An epic can have dozens of stories; they get their own list, not the related cap.
+_MAX_LINKED_CHILDREN = 50
 
 _MAX_RELATED = 10
 _MIN_LIMIT = 50
@@ -98,6 +101,12 @@ def _node_item_to_row(item: Any) -> NodeRow:
     )
 
 
+def _link_label(d: dict[str, Any]) -> str | None:
+    if d.get("relationshipType") == RecordRelations.CHILD_OF.value:
+        return "parent" if d.get("outgoing") else "child"
+    return d.get("relationshipType")
+
+
 def _linked_dict_to_row(d: dict[str, Any]) -> NodeRow:
     """Convert a get_linked_records dict to a NodeRow."""
     return NodeRow(
@@ -107,7 +116,7 @@ def _linked_dict_to_row(d: dict[str, Any]) -> NodeRow:
         sub_type=d.get("recordType"),
         is_record=True,
         has_children=d.get("hasChildren", False),
-        detail=d.get("relationshipType"),
+        detail=_link_label(d),
         web_url=d.get("webUrl"),
         indexing_status=d.get("indexingStatus"),
     )
@@ -260,6 +269,8 @@ class GraphNavigator:
         indexing_status: str | None = None
         connector: str | None = None
         related: list[NodeRow] = []
+        linked_children: list[NodeRow] = []
+        more_linked_children = False
         context_block: str | None = None
 
         # ── Resolve the node being opened ──────────────────────────────
@@ -388,7 +399,18 @@ class GraphNavigator:
                     relation_types=_CROSS_REF_RELATIONS,
                     limit=_MAX_RELATED,
                 )
-                related = [_linked_dict_to_row(d) for d in linked if d.get("id")]
+                under = await self._graph.get_linked_records(
+                    record_id=node_id,
+                    org_id=self._org_id,
+                    user_key=self._user_key,
+                    relation_types=[RecordRelations.CHILD_OF.value],
+                    limit=_MAX_LINKED_CHILDREN + 2,
+                )
+                parents = [d for d in under if d.get("id") and d.get("outgoing")]
+                children = [d for d in under if d.get("id") and not d.get("outgoing")]
+                related = [_linked_dict_to_row(d) for d in [*parents, *linked] if d.get("id")]
+                linked_children = [_linked_dict_to_row(d) for d in children[:_MAX_LINKED_CHILDREN]]
+                more_linked_children = len(children) > _MAX_LINKED_CHILDREN
             except PermissionVerificationUnavailableError:
                 # Fail closed like the listing itself: an unanswerable access
                 # check must not look like "no linked records".
@@ -401,6 +423,8 @@ class GraphNavigator:
             breadcrumbs=breadcrumbs,
             rows=rows,
             related=related,
+            linked_children=linked_children,
+            more_linked_children=more_linked_children,
             pagination=pagination,
             web_url=web_url,
             indexing_status=indexing_status,

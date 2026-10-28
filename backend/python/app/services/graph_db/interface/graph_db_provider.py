@@ -6440,7 +6440,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List of dicts with id, name, recordType, connectorName, webUrl,
-            relationshipType, hasChildren.
+            relationshipType, outgoing (the edge starts at ``record_id``),
+            hasChildren.
         """
         pass
 

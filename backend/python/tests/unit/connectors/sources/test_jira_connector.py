@@ -2312,3 +2312,51 @@ class TestGetFreshDatasourceOAuth:
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
         assert exc_info.value.status_code == 409
+
+
+class TestEpicLink:
+    """A story is filed under its project (an epic's audience does not reach it),
+    and linked to its epic with CHILD_OF, which grants nothing."""
+
+    @staticmethod
+    def _fields(parent: str | None, *, subtask: bool = False, level: int = 0) -> dict:
+        return {
+            "issuetype": {"name": "Story", "subtask": subtask, "hierarchyLevel": level},
+            **({"parent": {"id": parent, "key": "PROJ-1"}} if parent else {}),
+        }
+
+    def test_a_story_under_an_epic_links_to_it(self) -> None:
+        connector = _make_connector()
+        connector._synced_project_keys = None
+        (link,) = connector._epic_link(self._fields("10001"))
+        assert (link.external_record_id, link.relation_type) == ("10001", RecordRelations.CHILD_OF)
+
+    def test_a_subtask_is_filed_under_its_parent_instead(self) -> None:
+        connector = _make_connector()
+        connector._synced_project_keys = None
+        assert connector._epic_link(self._fields("10001", subtask=True)) == []
+        assert connector._epic_link(self._fields("10001", level=-1)) == []
+
+    def test_no_parent_or_a_parent_outside_the_synced_projects_is_not_linked(self) -> None:
+        connector = _make_connector()
+        connector._synced_project_keys = {"PROJ"}
+        assert connector._epic_link(self._fields(None)) == []
+        fields = {**self._fields("10001"), "parent": {"id": "10001", "key": "OTHER-1"}}
+        assert connector._epic_link(fields) == []
+
+    def test_related_records_carry_issue_links_and_the_epic_link(self) -> None:
+        connector = _make_connector()
+        connector._synced_project_keys = None
+        issue = {"fields": {
+            **self._fields("10001"),
+            "issuelinks": [{"type": {"outward": "blocks"}, "outwardIssue": {"id": "99"}}],
+        }}
+        assert {r.external_record_id for r in connector._related_records(issue)} >= {"99", "10001"}
+
+
+def test_child_of_links_are_cleaned_up_like_other_links() -> None:
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+
+    assert RecordRelations.CHILD_OF.value in DataSourceEntitiesProcessor.LINK_RELATION_TYPES

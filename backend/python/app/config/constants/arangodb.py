@@ -726,6 +726,10 @@ class RecordRelations(Enum):
     # source that names the cause on the effect (Zendesk's problem_id) needs this.
     CAUSED_BY = "CAUSED_BY"
     RELATED = "RELATED"
+    # A work item under a parent whose access does not flow down to it (a Jira
+    # story under its epic, an epic under an initiative). A link, never
+    # containment: the child keeps its own audience, and the edge grants nothing.
+    CHILD_OF = "CHILD_OF"
     FOREIGN_KEY = "FOREIGN_KEY"
     # An output artifact (chart, PDF, spreadsheet, ...) was produced by
     # running a specific version of a CODE artifact. Auto-captured by the

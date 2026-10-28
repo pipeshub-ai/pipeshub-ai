@@ -316,6 +316,7 @@ class DataSourceEntitiesProcessor:
         RecordRelations.CAUSED_BY.value,
         RecordRelations.RELATED.value,
         RecordRelations.LINKED_TO.value,
+        RecordRelations.CHILD_OF.value,
         RecordRelations.FOREIGN_KEY.value,
     ]
 

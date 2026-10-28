@@ -420,7 +420,9 @@ class TestNavigateStaysInsideTheLimit:
     async def _open(self, filters, node_id, items, crumbs, linked=None) -> tuple:
         state = self._state(filters)
         if linked is not None:
-            state["graph_provider"].get_linked_records = AsyncMock(return_value=linked)
+            state["graph_provider"].get_linked_records = AsyncMock(
+                side_effect=lambda *, relation_types, **_: [r for r in linked if r["relationshipType"] in relation_types],
+            )
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
             new=AsyncMock(return_value=self._response(items, crumbs)),
@@ -474,6 +476,18 @@ class TestNavigateStaysInsideTheLimit:
         assert self.NAMES[self.TICKET] in text
         assert self.NAMES[self.WIKI] not in text
         assert self.NAMES[self.SECRET] not in text
+
+    @pytest.mark.asyncio
+    async def test_inside_a_limit_an_item_linked_under_it_outside_the_limit_is_not_listed(self) -> None:
+        filters = {"apps": [], "kb": [], "recordGroups": [self.SELECTED], "records": [], "recordsExact": []}
+        success, text = await self._open(
+            filters, self.ANDROID, [], [self.APP, self.PARENT, self.SELECTED, self.ANDROID],
+            linked=[
+                {"id": self.TICKET, "name": self.NAMES[self.TICKET], "recordType": "TICKET", "relationshipType": "CHILD_OF", "outgoing": False},
+                {"id": self.WIKI, "name": self.NAMES[self.WIKI], "recordType": "TICKET", "relationshipType": "CHILD_OF", "outgoing": False},
+            ],
+        )
+        assert success and self.NAMES[self.TICKET] in text and self.NAMES[self.WIKI] not in text
 
     @pytest.mark.asyncio
     async def test_without_a_limit_an_unreadable_child_is_omitted_and_the_path_stays(self) -> None:
@@ -1766,3 +1780,65 @@ class TestNavigateTimestampRendering:
             success, text = await tool.navigate()
         assert success
         assert "created:" not in text
+
+
+class TestEpicChildrenByLink:
+    """An epic contains nothing (its stories keep their own audience), so its
+    stories come from CHILD_OF links, listed apart from other links."""
+
+    @staticmethod
+    def _state_for(node: dict, child_links: list[dict], other_links: list[dict]) -> dict:
+        state = _make_state(has_knowledge=True, available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}])
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=node)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+
+        async def linked(*, relation_types: list[str], limit: int, **_: object) -> list[dict]:
+            return (child_links if relation_types == ["CHILD_OF"] else other_links)[:limit]
+
+        gp.get_linked_records = AsyncMock(side_effect=linked)
+        return state
+
+    @staticmethod
+    def _link(record_id: str, name: str, *, outgoing: bool, kind: str = "CHILD_OF") -> dict:
+        return {"id": record_id, "name": name, "recordType": "TICKET", "relationshipType": kind, "outgoing": outgoing}
+
+    async def _navigate(self, state: dict, node_id: str) -> str:
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        mock_resp.breadcrumbs = []
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.selection_browse_refusal",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            ok, text = await KnowledgeGraph(state=state).navigate(node_id=node_id)
+        assert ok
+        return text
+
+    @pytest.mark.asyncio
+    async def test_an_epic_lists_the_items_linked_under_it_instead_of_no_children(self) -> None:
+        epic = {"id": "epic-1", "name": "[PA-2328] KG Tools", "nodeType": "record", "subType": "TICKET", "connector": "JIRA"}
+        stories = [self._link(f"s{i}", f"[PA-{i}] Story {i}", outgoing=False) for i in range(3)]
+        text = await self._navigate(self._state_for(epic, stories, [self._link("b1", "Blocker", outgoing=True, kind="BLOCKS")]), "epic-1")
+        assert "Linked under it (3 shown):" in text and "[PA-0] Story 0" in text
+        assert "(no children)" not in text and "Blocker" in text
+
+    @pytest.mark.asyncio
+    async def test_more_linked_items_than_listed_says_so(self) -> None:
+        from app.agents.actions.knowledge_graph import navigator
+
+        epic = {"id": "epic-1", "name": "Epic", "nodeType": "record", "subType": "TICKET", "connector": "JIRA"}
+        stories = [self._link(f"s{i}", f"Story {i}", outgoing=False) for i in range(navigator._MAX_LINKED_CHILDREN + 1)]
+        text = await self._navigate(self._state_for(epic, stories, []), "epic-1")
+        assert f"Linked under it ({navigator._MAX_LINKED_CHILDREN} shown; more exist" in text
+
+    @pytest.mark.asyncio
+    async def test_a_story_shows_its_epic_as_parent(self) -> None:
+        story = {"id": "s1", "name": "Story", "nodeType": "record", "subType": "TICKET", "connector": "JIRA"}
+        text = await self._navigate(self._state_for(story, [self._link("epic-1", "KG Tools", outgoing=True)], []), "s1")
+        assert "KG Tools" in text and "parent" in text and "Linked under it" not in text
+
+

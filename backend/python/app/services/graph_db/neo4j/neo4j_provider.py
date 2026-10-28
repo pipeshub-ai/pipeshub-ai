@@ -23092,6 +23092,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 connectorName: v.connectorName,
                 webUrl: v.webUrl,
                 relationshipType: e.relationshipType,
+                outgoing: startNode(e) = source,
                 hasChildren: hasChildren,
                 indexingStatus: v.indexingStatus,
                 userRole: null

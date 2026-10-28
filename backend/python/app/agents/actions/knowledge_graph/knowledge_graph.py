@@ -179,7 +179,7 @@ def _record_ids_in_view(view: NavigationView) -> list[str]:
     descendant a depth>=2 call surfaced (flat, not nested), so no separate
     recursion is needed here.
     """
-    ids = _flatten_row_ids((*view.rows, *view.related))
+    ids = _flatten_row_ids((*view.rows, *view.related, *view.linked_children))
     if view.current and view.current.is_record and view.current.id:
         ids.append(view.current.id)
     return ids
@@ -550,19 +550,21 @@ class KnowledgeGraph:
                 state, graph_provider, user_key, org_id,
                 ancestor_ids=[crumb.id for crumb in view.breadcrumbs],
                 row_ids=[row.id for row in view.rows],
-                related_ids=[row.id for row in view.related],
+                related_ids=[row.id for row in (*view.related, *view.linked_children)],
             )
             if ancestors is not None:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            view.linked_children = [row for row in view.linked_children if row.id in related]
             limit_sources = connection_sources_of(state.get("filters"))
             await keep_context_blocks_inside_connection(
                 [(view.current.id if view.current else None, view)], graph_provider,
                 state.get("user_id", ""), org_id, limit_sources,
             )
             await keep_row_summaries_inside_connection(
-                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+                [*view.rows, *view.related, *view.linked_children], graph_provider, state.get("user_id", ""), org_id,
+                limit_sources,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
@@ -573,7 +575,9 @@ class KnowledgeGraph:
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
-            names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
+            names={n.id: n.name for n in (
+                *view.rows, *view.related, *view.linked_children, *([view.current] if view.current else []),
+            )},
         )
 
         # Sparse-result retry nudge: only fires when time filters were

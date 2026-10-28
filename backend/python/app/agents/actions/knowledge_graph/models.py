@@ -64,6 +64,10 @@ class NavigationView(BaseModel):
     breadcrumbs: list[NodeRef]      # root → parent (not including current)
     rows: list[NodeRow]             # children / items to display
     related: list[NodeRow]          # cross-reference edges (non-containment)
+    # Items linked under this one (CHILD_OF: a Jira epic's stories), which are not
+    # contained by it, so the tree has no children for them.
+    linked_children: list[NodeRow] = []
+    more_linked_children: bool = False
     pagination: PaginationInfo | None
     web_url: str | None
     indexing_status: str | None

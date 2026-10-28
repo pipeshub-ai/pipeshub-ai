@@ -254,9 +254,10 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 # Unchanged issues read again are skipped without a write.
 INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # Stored in a project's checkpoint once its issues are filed the way _extract_issue_data
-# files them. A project without it was synced with stories under their epics, and has
-# every stored issue re-read once so they move.
-ISSUE_PLACEMENT: str = "subtasks-under-parent"
+# files them and linked to their epics. A project with an older value has every stored
+# issue re-read once, which moves stories off their epics (before "subtasks-under-parent")
+# and links them back with CHILD_OF (before "+epic-links"). Nothing is re-indexed.
+ISSUE_PLACEMENT: str = "subtasks-under-parent+epic-links"
 # Parents named in one ``parent in (...)`` clause when their sub-tasks are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # When the account's timezone is unknown, a JQL date written in UTC is read by Jira in that
@@ -4218,7 +4219,7 @@ class JiraConnector(BaseConnector):
             if not is_new_project and reread != "project":
                 self.logger.info(
                     f"Re-reading every stored issue of {project_key} once, to file stories "
-                    "under the project rather than under their epic"
+                    "under the project and link them to their epic"
                 )
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
                 placement_reread = True
@@ -4652,7 +4653,25 @@ class JiraConnector(BaseConnector):
         """Issue links, then the addresses and issue keys in the summary and
         description, which join the issue to those records in any connector."""
         fields = (issue or {}).get("fields") or {}
-        return self._parse_issue_links(issue) + mentions_in(fields.get("summary"), fields.get("description"))
+        return [
+            *self._parse_issue_links(issue),
+            *self._epic_link(fields),
+            *mentions_in(fields.get("summary"), fields.get("description")),
+        ]
+
+    def _epic_link(self, fields: dict[str, Any]) -> list[RelatedExternalRecord]:
+        """A CHILD_OF link to the parent that _extract_issue_data does not file the
+        issue under (an epic, an initiative): the issue stays under its project with
+        its own audience, and the link grants nothing. A sub-task is filed under its
+        parent instead, and a parent outside the synced projects is never linked."""
+        parent_id = (fields.get("parent") or {}).get("id")
+        issue_type = fields.get("issuetype") or {}
+        is_subtask = bool(issue_type.get("subtask")) or issue_type.get("hierarchyLevel") == -1
+        if not parent_id or is_subtask or self._parent_outside_synced_projects(fields):
+            return []
+        return [RelatedExternalRecord(
+            external_record_id=str(parent_id), record_type=RecordType.TICKET, relation_type=RecordRelations.CHILD_OF,
+        )]
 
     def _parse_issue_links(self, issue: dict[str, Any]) -> list[RelatedExternalRecord]:
         """

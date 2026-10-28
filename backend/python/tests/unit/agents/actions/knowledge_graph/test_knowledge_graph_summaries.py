@@ -311,17 +311,18 @@ class TestRecordIdsInView:
         view = SimpleNamespace(
             rows=[SimpleNamespace(id="r1", is_record=True)],
             related=[SimpleNamespace(id="r2", is_record=True)],
+            linked_children=[SimpleNamespace(id="r3", is_record=True)],
             current=None,
         )
         result = _record_ids_in_view(view)
-        assert "r1" in result
-        assert "r2" in result
+        assert {"r1", "r2", "r3"} <= set(result)
 
     def test_includes_current_record(self) -> None:
         from app.agents.actions.knowledge_graph.knowledge_graph import _record_ids_in_view
         view = SimpleNamespace(
             rows=[],
             related=[],
+            linked_children=[],
             current=SimpleNamespace(id="cur-1", is_record=True),
         )
         result = _record_ids_in_view(view)
@@ -332,6 +333,7 @@ class TestRecordIdsInView:
         view = SimpleNamespace(
             rows=[],
             related=[],
+            linked_children=[],
             current=SimpleNamespace(id="app-1", is_record=False),
         )
         result = _record_ids_in_view(view)

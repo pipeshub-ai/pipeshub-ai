@@ -238,10 +238,17 @@ def render_navigation_view_with_ids(
         for row in view.rows:
             owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener))
-    elif view.current:
+    elif view.current and not view.linked_children:
         lines.append("\n(no children)")
     else:
         lines.append("\n(no items at root — no connected apps or no access)")
+
+    if page == 1 and view.linked_children:
+        more = "; more exist, open it in its source app for the rest" if view.more_linked_children else ""
+        lines.append(f"\nLinked under it ({len(view.linked_children)} shown{more}):")
+        for row in view.linked_children:
+            owners.append((len(lines), row.id))
+            lines.append(_row_line(row, shortener))
 
     # Related (page 1 only)
     if page == 1 and view.related:

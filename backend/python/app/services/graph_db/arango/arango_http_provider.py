@@ -22244,6 +22244,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     connectorName: v.connectorName,
                     webUrl: v.webUrl,
                     relationshipType: e.relationshipType,
+                    outgoing: e._from == source._id,
                     hasChildren: has_children,
                     indexingStatus: v.indexingStatus,
                     userRole: null
