@@ -87,7 +87,6 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'getServiceAccount',
   'hasRemovedAccount',
   'isAllowed',
-  'isConnected',
   'list',
   'listAccessibleIds',
   'listAdminIds',
@@ -310,31 +309,37 @@ export function shadowWrap<T extends object>(
         return v as never;
       if (!isReadMethod(prop))
         return (v as (...a: unknown[]) => unknown).bind(target) as never;
-      return (async (...args: unknown[]) => {
-        const out = await (v as (...a: unknown[]) => Promise<unknown>).apply(
-          target,
-          args,
-        );
-        const cfg = shadowConfig();
-        const open = args.some(
-          (a) => isTx(a) && a.session?.inTransaction?.() === true,
-        );
-        if (!open && inFlight < cfg.maxInFlight && Math.random() < cfg.sample) {
-          inFlight += 1;
-          void shadowRead(
-            repo,
-            prop,
-            args,
-            out,
-            target as never,
-            lazy as never,
-            runPg,
-            cfg,
-          ).finally(() => {
-            inFlight -= 1;
-          });
-        }
-        return out;
+      return ((...args: unknown[]) => {
+        const result = (v as (...a: unknown[]) => unknown).apply(target, args);
+        // A synchronous method keeps its synchronous answer: only a promise enters the shadow read.
+        if (typeof (result as { then?: unknown } | null)?.then !== 'function')
+          return result;
+        return (result as Promise<unknown>).then((out) => {
+          const cfg = shadowConfig();
+          const open = args.some(
+            (a) => isTx(a) && a.session?.inTransaction?.() === true,
+          );
+          if (
+            !open &&
+            inFlight < cfg.maxInFlight &&
+            Math.random() < cfg.sample
+          ) {
+            inFlight += 1;
+            void shadowRead(
+              repo,
+              prop,
+              args,
+              out,
+              target as never,
+              lazy as never,
+              runPg,
+              cfg,
+            ).finally(() => {
+              inFlight -= 1;
+            });
+          }
+          return out;
+        });
       }) as never;
     },
   });

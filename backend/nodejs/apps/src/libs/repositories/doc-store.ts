@@ -148,6 +148,8 @@ export async function initDocStore(
       })
     : undefined;
   const unfenced = new PgRuntime({ pool, defaultService: 'node' });
+  // Wait for the migrations first: the epoch function does not exist before them, and reading it is not retried.
+  await waitForSchema(unfenced, schemaRequirements());
   const epoch = await readStoreEpoch(unfenced);
   const rt = new PgRuntime({
     pool,
@@ -157,7 +159,6 @@ export async function initDocStore(
       (process.env.PG_POOLER as 'pgbouncer_txn' | undefined) ?? 'pgbouncer_txn',
     fence: { fn: 'kernel.assert_store_epoch', epoch },
   });
-  await waitForSchema(rt, schemaRequirements());
   configurePg(rt);
   Logger.getInstance({ service: 'DocStore' }).info('document store: postgres', {
     epoch,

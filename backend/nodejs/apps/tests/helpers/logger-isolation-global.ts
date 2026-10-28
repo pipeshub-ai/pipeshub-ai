@@ -4,11 +4,12 @@
  * `Logger.getInstance()` is one object per process, and modules keep the instance they were given at load. A test that
  * assigns `instance.warn = ...` (rather than stubbing `Logger.prototype`) leaves an own property that shadows the class
  * method for every later file in the same mocha worker, so a later `sinon.stub(Logger.prototype, 'warn')` never sees a
- * call. Such a test fails here, naming itself, and the shared logger is put back so that the files after it are spared.
+ * call. Such a test is named, the shared logger is put back so that the tests after it are spared, and the run fails once, when the tests are done.
  */
 import path from 'node:path';
 
 const LEVELS = ['error', 'warn', 'info', 'debug'];
+const offenders: string[] = [];
 const loggerModule = (): { Logger?: { instance?: object } } | undefined => {
   const key = Object.keys(require.cache).find((k) =>
     k.endsWith(path.join('libs', 'services', 'logger.service.ts')),
@@ -28,9 +29,14 @@ export const mochaHooks = {
     );
     if (replaced.length === 0) return;
     for (const level of replaced) delete (instance as Record<string, unknown>)[level];
-    throw new Error(
+    // Not thrown here: a failing afterEach hook makes mocha skip the rest of the suite. It is reported once, below.
+    offenders.push(
       `"${this.currentTest?.fullTitle()}" left ${replaced.join(', ')} replaced on the shared logger instance; ` +
         "stub Logger.prototype (sinon restores it) instead of assigning to the instance",
     );
+  },
+  afterAll(): void {
+    if (offenders.length === 0) return;
+    throw new Error(offenders.splice(0).join('\n'));
   },
 };
