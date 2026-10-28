@@ -25,6 +25,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -361,7 +362,37 @@ def _close_every_renderer() -> None:
         pool.close_all()
 
 
+# Threads that wait on renderers for async callers. One per renderer, so a
+# waiter never holds a thread of the loop's default executor (which every
+# asyncio.to_thread shares) while all renderers are busy.
+class _WaiterThreads:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pool: concurrent.futures.ThreadPoolExecutor | None = None
+
+    def get(self) -> concurrent.futures.ThreadPoolExecutor:
+        with self._lock:
+            if self._pool is None:
+                self._pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_MAX_RENDERERS, thread_name_prefix="svg-render"
+                )
+            return self._pool
+
+    def forget(self) -> None:
+        # After fork: the parent's threads do not exist here, and its lock may be held.
+        self._lock = threading.Lock()
+        self._pool = None
+
+
+_waiters = _WaiterThreads()
+
+
+def _waiter_threads() -> concurrent.futures.ThreadPoolExecutor:
+    return _waiters.get()
+
+
 def _after_fork_in_child() -> None:
+    _waiters.forget()
     _spawner.reset()
     for pool in list(_pools):
         pool.after_fork_in_child()
@@ -378,6 +409,7 @@ def run_bounded(
     scale: float = 1.0,
     background: str | None = None,
     timeout: float = SVG_DEADLINE_SECONDS,
+    deadline: float | None = None,
 ) -> str:
     """Rasterise in a renderer process within ``timeout`` seconds in all.
 
@@ -385,8 +417,15 @@ def run_bounded(
     starting, and the render. A renderer that overruns is killed and a new one
     is started at once for the next SVG. Worst-case memory is
     ``_MAX_RENDERERS`` times ``SVG_EXTRA_MEMORY_BYTES`` plus their baselines.
+
+    ``deadline`` (monotonic), when given, replaces ``timeout``: a caller that
+    queued the call first passes the deadline it set before queueing.
     """
-    deadline = time.monotonic() + timeout
+    if deadline is None:
+        deadline = time.monotonic() + timeout
+    timeout = deadline - time.monotonic()
+    if timeout <= 0:
+        raise DocumentProcessingError("SVG rasterising timed out before it started")
     pool = _renderers
     renderer = pool.acquire(deadline)
     healthy = False
@@ -405,9 +444,11 @@ def run_bounded(
 
 async def render_async(svg: str) -> str:
     """Rasterise for async callers; see the module docstring."""
-    # run_bounded's one deadline covers waiting for a renderer, its start-up and
-    # the render; the thread only waits on it.
-    return await asyncio.to_thread(run_bounded, svg)
+    # The deadline starts now, so time queued for a waiter thread counts too.
+    deadline = time.monotonic() + SVG_DEADLINE_SECONDS
+    return await asyncio.get_running_loop().run_in_executor(
+        _waiter_threads(), functools.partial(run_bounded, svg, deadline=deadline)
+    )
 
 
 def _die_with_parent(parent_pid: int) -> None:

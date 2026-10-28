@@ -252,3 +252,57 @@ async def test_the_async_path_never_queues_an_svg_on_the_parse_pool(monkeypatch:
     assert (await ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))).startswith("iVBOR")
     with pytest.raises(DocumentProcessingError):
         await ImageParser.svg_base64_to_png_base64_async(_b64("<svg><g></svg>"))
+
+
+@pytest.mark.asyncio
+async def test_svg_waits_never_take_a_thread_of_the_default_executor() -> None:
+    """Every asyncio.to_thread in the service shares the default executor; SVGs
+    waiting for a renderer must not hold its threads."""
+    import asyncio
+    import concurrent.futures
+
+    used: list[object] = []
+
+    class Spy(concurrent.futures.ThreadPoolExecutor):
+        def submit(self, fn, /, *args, **kwargs) -> concurrent.futures.Future:  # type: ignore[no-untyped-def,override]
+            used.append(fn)
+            return super().submit(fn, *args, **kwargs)
+
+    loop = asyncio.get_running_loop()
+    spy = Spy(max_workers=2)
+    loop.set_default_executor(spy)
+    try:
+        results = await asyncio.gather(
+            *(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)) for _ in range(12))
+        )
+    finally:
+        spy.shutdown(wait=False)
+    assert all(r.startswith("iVBOR") for r in results)
+    assert used == []
+
+
+@pytest.mark.asyncio
+async def test_time_queued_for_a_waiter_thread_counts_against_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 0.3)
+    gate = threading.Event()
+    busy = [svg_worker._waiter_threads().submit(gate.wait, 5) for _ in range(svg_worker._MAX_RENDERERS)]
+    try:
+        job = asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)))
+        await asyncio.sleep(0.6)
+    finally:
+        gate.set()
+    for f in busy:
+        f.result(timeout=5)
+    # A valid SVG, refused only because it started after its deadline.
+    with pytest.raises(DocumentProcessingError, match="timed out before it started"):
+        await asyncio.wait_for(job, 5)
+
+
+def test_a_deadline_already_passed_is_refused_without_taking_a_renderer() -> None:
+    with pytest.raises(DocumentProcessingError, match="timed out before it started"):
+        svg_worker.run_bounded(_b64(GOOD), deadline=time.monotonic() - 1)
