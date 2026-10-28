@@ -16,7 +16,7 @@ const scope = vi.hoisted(() => (name: string, category: string) => ({
   requiresUserConsent: false,
 }));
 
-// agent:execute is left out, as on an instance whose MCP_SCOPES omits it.
+// agent:execute is left out to stand in for a default the API does not list for this user.
 vi.mock('../../api', () => ({
   Oauth2Api: {
     getScopes: vi.fn().mockResolvedValue({
