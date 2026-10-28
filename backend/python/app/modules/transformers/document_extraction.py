@@ -595,7 +595,7 @@ class DocumentExtraction(Transformer):
         paraphrased first pick never pushes out a valid one. Cut, not rejected:
         a third pick failing validation would cost the whole classification."""
         if departments is not None:
-            canonical = {name.casefold(): name for name in departments}
+            canonical = {name.strip().casefold(): name for name in departments}
             listed = (canonical.get(pick.casefold()) for pick in classification.departments)
             kept = list(dict.fromkeys(name for name in listed if name))[:MAX_DEPARTMENTS]
             classification = classification.model_copy(update={"departments": kept})

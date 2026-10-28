@@ -51,3 +51,9 @@ def test_the_prompt_asks_for_at_most_two_departments_and_two_to_five_reusable_to
     assert "**2 to 5** topics" in prompt_for_document_extraction
     assert "Never" in prompt_for_document_extraction and "reusable subject" in prompt_for_document_extraction
     assert "1 to 3 departments" not in prompt_for_document_extraction
+
+
+
+def test_a_listed_name_with_surrounding_spaces_still_matches() -> None:
+    metadata = DocumentExtraction.to_semantic_metadata(_classification(["Finance"]), [" Finance "])
+    assert metadata.departments == [" Finance "]
