@@ -909,8 +909,6 @@ class TestDriveWorkspaceEntitySync:
             old_parent_id=seed_id,
         )
 
-        await sync_and_wait(pipeshub_client, graph_provider, connector_id)
-
         async def _belongs_to_shared() -> bool:
             rec = await graph_provider.get_record_by_external_id(
                 connector_id, move_file_id
@@ -920,11 +918,11 @@ class TestDriveWorkspaceEntitySync:
                 and str(rec.external_record_group_id) == str(shared_drive_id)
             )
 
-        await wait_until_graph_condition(
+        await sync_until(
+            pipeshub_client,
+            graph_provider,
             connector_id,
-            check=_belongs_to_shared,
-            timeout=_SYNC_TIMEOUT_SEC,
-            poll_interval=10,
+            _belongs_to_shared,
             description=(
                 f"{move_name} external_record_group_id → Shared Drive {shared_drive_id}"
             ),

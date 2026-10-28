@@ -859,7 +859,7 @@ async def phase_b1(ctx: Ctx) -> dict[str, Any]:
         state["group_reply_post_id"] = reply_post
         return True
 
-    await wait_until_outlook_condition(_source_settled, description="B1 source changes visible", timeout=300)
+    await wait_until_outlook_condition(_source_settled, description="B1 source changes visible", timeout=600)
     # The reply-all also leaves ordinary mail in P's mailbox (Sent Items, and Inbox as a group member).
     for folder in ("sentitems", "inbox"):
         for msg in await h.find_messages_by_subject(p, f"RE: {w.subjects['group']}", folder):
