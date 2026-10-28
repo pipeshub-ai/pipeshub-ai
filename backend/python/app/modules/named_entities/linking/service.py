@@ -120,18 +120,18 @@ class EntityLinker:
             if shared:
                 namesakes[len(results)] = shared
             pool = [c for c in entry.candidates if c not in shared]
+            # The same name under a related kind (a product filed as its company) is
+            # taken too: the extractor files one thing under either, so it is not a look-alike.
             exact = [
                 c for c in pool
-                if c.source is CandidateSource.EXACT and mention.settles(c.kind)
+                if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
             ]
             if exact:
                 # A first name stored on its own ("Sam") must not hide the full
-                # names it starts ("Sam Lee"), nor the asked kind hide the same name
-                # filed under a related one (a product's company): those go to the check.
+                # names it starts ("Sam Lee"): those go to the check.
                 longer = [
                     c for c in pool
-                    if c.source in (CandidateSource.PREFIX, CandidateSource.EXACT)
-                    and mention.hinted(c.kind) and c not in exact
+                    if c.source is CandidateSource.PREFIX and mention.hinted(c.kind) and c not in exact
                 ]
                 offered = [c for c in longer if offerable(mention.name, names.get(c.entity_id, c.name))]
                 if offered:

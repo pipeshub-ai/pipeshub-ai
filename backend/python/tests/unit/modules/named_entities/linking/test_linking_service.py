@@ -161,11 +161,11 @@ async def test_an_exact_match_beside_too_many_longer_names_says_so() -> None:
 @pytest.mark.asyncio
 async def test_an_exact_match_of_another_kind_goes_to_the_check() -> None:
     verifier = _Verifier({0: []})
-    product = _c("e1", "Atlas", "product", CandidateSource.EXACT)
+    place = _c("e1", "Atlas", "location", CandidateSource.EXACT)
     mentions = _mentions({"name": "Atlas", "kind": "organization"})
-    linking = await _link([([product], False)], verifier, mentions=mentions)
+    linking = await _link([([place], False)], verifier, mentions=mentions)
     assert linking.results[0].status is LinkStatus.NOT_FOUND
-    assert linking.results[0].rejected == [product]
+    assert linking.results[0].rejected == [place]
     assert len(verifier.calls) == 1
 
 
@@ -273,34 +273,29 @@ async def test_an_equally_frequent_spelling_goes_to_the_fuller_name() -> None:
     assert names == {"e1": "Miguel Gallagher"}
 
 
-async def test_an_exact_node_of_a_related_kind_is_checked_not_taken() -> None:
-    product = _c("e1", "Halcyon Ledger", "organization", CandidateSource.EXACT)
-    verifier = _Verifier({0: [0]})
-    linking = await _link([([product], False)], verifier, mentions=_mentions({"name": "Halcyon Ledger", "kind": "product"}))
+async def test_an_exact_node_of_a_related_kind_is_taken_without_a_check() -> None:
+    company = _c("e1", "Halcyon Ledger", "organization", CandidateSource.EXACT)
+    verifier = _Verifier({0: []})
+    linking = await _link([([company], False)], verifier, mentions=_mentions({"name": "Halcyon Ledger", "kind": "product"}))
     (result,) = linking.results
-    assert result.status is LinkStatus.CHECKED and result.accepted == [product]
-    ((_, items),) = verifier.calls
-    assert [(c.name, c.kind) for c in items[0].candidates] == [("Halcyon Ledger", "organization")]
+    assert result.status is LinkStatus.MATCHED and result.accepted == [company]
+    assert verifier.calls == []
 
 
 @pytest.mark.asyncio
-async def test_beside_an_exact_product_the_same_name_as_an_organization_goes_to_the_check() -> None:
+async def test_the_same_name_as_a_product_and_as_an_organization_is_one_answer() -> None:
     product = _c("e1", "Mosaic", "product", CandidateSource.EXACT)
     company = _c("e2", "Mosaic", "organization", CandidateSource.EXACT)
     verifier = _Verifier({0: []})
-    linking = await _link([([product, company], False)], verifier, mentions=_mentions({"name": "Mosaic Co", "kind": "product"}))
+    linking = await _link([([product, company], False)], verifier, mentions=_mentions({"name": "Mosaic", "kind": "product"}))
     (result,) = linking.results
-    assert result.status is LinkStatus.MATCHED and result.accepted == [product]
-    ((_, items),) = verifier.calls
-    assert [c.kind for c in items[0].candidates] == ["organization"]
+    assert result.status is LinkStatus.MATCHED and result.accepted == [product, company]
+    assert verifier.calls == []
 
 
 
 @pytest.mark.asyncio
-async def test_an_organization_hint_checks_an_exact_product_of_the_same_name() -> None:
+async def test_an_organization_hint_takes_an_exact_product_of_the_same_name() -> None:
     product = _c("e1", "Figma", "product", CandidateSource.EXACT)
-    verifier = _Verifier({0: []})
-    linking = await _link([([product], False)], verifier, mentions=_mentions({"name": "Figma", "kind": "organization"}))
-    (result,) = linking.results
-    assert result.status is LinkStatus.NOT_FOUND and result.rejected == [product]
-    assert len(verifier.calls) == 1
+    linking = await _link([([product], False)], _Verifier({}), mentions=_mentions({"name": "Figma", "kind": "organization"}))
+    assert linking.results[0].accepted == [product]
