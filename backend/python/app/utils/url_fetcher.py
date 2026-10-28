@@ -314,12 +314,14 @@ class HostCheckError(ValueError):
 def public_address_refusal(host: str) -> str:
     """What a user is told when a personal connector's host is not a public address.
 
-    One text for every way a host can fail (private, loopback, link-local, metadata or an
-    unknown name), so it says nothing about the network behind the name.
+    One text for every way a host can fail (private, loopback, link-local, metadata, an
+    unknown name or a lookup that timed out), so it says nothing about the network behind
+    the name.
     """
     return (
         f'"{host}" is not a public server address. Personal connectors can only connect to '
-        "servers on public addresses."
+        "servers on public addresses. Ask an administrator to set up a team connector for "
+        "servers on your network."
     )
 
 
@@ -345,7 +347,7 @@ async def vetted_addresses(
     try:
         return await _vetted_addresses(host, lookup_timeout_s, public_only=public_only)
     except HostCheckError as e:
-        if public_only and not isinstance(e.__cause__, TimeoutError):
+        if public_only:
             raise HostCheckError(public_address_refusal(host)) from e
         raise
 

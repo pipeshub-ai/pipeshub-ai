@@ -13,10 +13,14 @@ import logging
 import socket
 import threading
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
+
+if TYPE_CHECKING:
+    from app.connectors.sources.cifs.connector import CifsConnector
 
 import app.sources.client.postgres.postgres as pg_client
 from app.connectors.core.address_policy import public_only_for_scope
@@ -45,9 +49,9 @@ _INWARD_HOSTS = [
     ("127.0.0.1", None),
     ("169.254.169.254", None),
     ("localhost", None),
-    ("db.attacker.example", "10.0.0.7"),
-    ("db.attacker.example", "169.254.169.254"),
-    ("db.attacker.example", "127.0.0.1"),
+    ("db.internal.example", "10.0.0.7"),
+    ("db.internal.example", "169.254.169.254"),
+    ("db.internal.example", "127.0.0.1"),
 ]
 
 
@@ -153,6 +157,37 @@ class TestVettedAddresses:
     async def test_the_default_still_never_reaches_metadata(self) -> None:
         with pytest.raises(HostCheckError, match="cloud metadata"):
             await vetted_addresses("169.254.169.254")
+
+
+class TestLookupTimeout:
+    @staticmethod
+    def _slow_lookup(monkeypatch) -> threading.Event:
+        release = threading.Event()
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: release.wait(3) and [])
+        return release
+
+    async def test_a_personal_refusal_reads_the_same_when_the_lookup_times_out(self, monkeypatch) -> None:
+        release = self._slow_lookup(monkeypatch)
+        with pytest.raises(HostCheckError) as refused:
+            await vetted_addresses("slow.example.com", lookup_timeout_s=0.05, public_only=True)
+        release.set()
+        assert str(refused.value) == public_address_refusal("slow.example.com")
+
+    async def test_a_team_lookup_timeout_keeps_its_message(self, monkeypatch) -> None:
+        release = self._slow_lookup(monkeypatch)
+        with pytest.raises(HostCheckError, match="timed out"):
+            await vetted_addresses("slow.example.com", lookup_timeout_s=0.05)
+        release.set()
+
+    async def test_the_postgres_check_gives_the_same_text(self, monkeypatch, driver_connect) -> None:
+        release = self._slow_lookup(monkeypatch)
+        monkeypatch.setattr("app.connectors.sources.postgres.connector.CONNECTION_CHECK_TIMEOUT_S", 1)
+        member = await PostgreSQLConnector.check_connection({**_PG}, _LOGGER, public_only=True)
+        admin = await PostgreSQLConnector.check_connection({**_PG}, _LOGGER, public_only=False)
+        release.set()
+        assert member.message == public_address_refusal("db.example.com")
+        assert "timed out" in admin.message
+        driver_connect.assert_not_called()
 
 
 class TestPostgresCheck:
@@ -265,9 +300,9 @@ class TestPostgresClient:
         assert builder.get_client().public_only is True
 
     async def test_a_public_only_dial_never_reaches_the_driver(self, monkeypatch, driver_connect) -> None:
-        _resolve(monkeypatch, {"db.attacker.example": "10.0.0.7"})
+        _resolve(monkeypatch, {"db.internal.example": "10.0.0.7"})
         with pytest.raises(HostCheckError):
-            await pg_client.connect_to_checked_address(host="db.attacker.example", port=5432, public_only=True)
+            await pg_client.connect_to_checked_address(host="db.internal.example", port=5432, public_only=True)
         driver_connect.assert_not_called()
 
 
@@ -377,23 +412,35 @@ class TestSmb:
             pool.register_session("dfs-target.example", username="u")
         original.assert_called_once_with("10.0.0.7", username="u")
 
-    def test_the_rule_does_not_leak_to_other_threads_or_past_the_lock(self, monkeypatch) -> None:
+    def test_a_referral_with_no_client_holding_its_lock_gets_the_strict_rule(self, monkeypatch) -> None:
         original = MagicMock()
         pool = SimpleNamespace(register_session=original)
         _vet_every_session(pool)
         _resolve(monkeypatch, {"dfs-target.example": "10.0.0.7"})
-        personal = SmbClient(server="files.example", username="u", password="p", public_only=True)
+        team = SmbClient(server="files.example", username="u", password="p")
 
-        with personal._io_lock:
-            other: list[object] = []
-            thread = threading.Thread(
-                target=lambda: other.append(pool.register_session("dfs-target.example", username="u"))
-            )
+        with pytest.raises(NetworkShareAuthError, match="public"):
+            pool.register_session("dfs-target.example", username="u")
+
+        # The lock of a team client held on another thread does not carry over to this one.
+        with team._io_lock:
+            errors: list[BaseException] = []
+
+            def other_thread() -> None:
+                try:
+                    pool.register_session("dfs-target.example", username="u")
+                except NetworkShareAuthError as e:
+                    errors.append(e)
+
+            thread = threading.Thread(target=other_thread)
             thread.start()
             thread.join()
-        assert original.call_count == 1  # the other thread holds no client's lock
-        pool.register_session("dfs-target.example", username="u")
-        assert original.call_count == 2
+        assert len(errors) == 1
+        original.assert_not_called()
+
+        with team._io_lock:
+            pool.register_session("dfs-target.example", username="u")
+        original.assert_called_once_with("10.0.0.7", username="u")
 
 
 class TestCifs:
@@ -419,6 +466,56 @@ class TestCifs:
         _resolve(monkeypatch, {"files.example": "10.0.0.7"})
         client, conn = self._client(public_only=False)
         client.connect()
+        conn.connect.assert_called_once_with("10.0.0.7", 445)
+
+
+class TestCifsConnectorInit:
+    @staticmethod
+    def _connector(scope: str) -> "CifsConnector":
+        from app.connectors.sources.cifs.connector import CifsConnector
+
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "files.example", "username": "u", "password": "p", "share": "s"}}
+        )
+        connector = CifsConnector(
+            logger=_LOGGER,
+            data_entities_processor=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=config_service,
+            connector_id="cifs-1",
+            scope=scope,
+            created_by="user-1",
+        )
+        connector._auth_error = AsyncMock()
+        connector._load_creator_email = AsyncMock()
+        return connector
+
+    @staticmethod
+    def _connection() -> MagicMock:
+        conn = MagicMock()
+        conn.connect.return_value = True
+        conn.isUsingSMB2 = False
+        return conn
+
+    async def test_a_personal_connector_to_a_private_host_is_refused_before_dialling(self, monkeypatch) -> None:
+        _resolve(monkeypatch, {"files.example": "10.0.0.7"})
+        conn = self._connection()
+        connector = self._connector("personal")
+        with patch("app.sources.client.cifs.cifs.SMBConnection", return_value=conn):
+            assert await connector.init() is False
+        conn.connect.assert_not_called()
+        assert connector._auth_error.await_args.args[1] == public_address_refusal("files.example")
+
+    async def test_a_team_connector_to_a_private_host_proceeds(self, monkeypatch) -> None:
+        _resolve(monkeypatch, {"files.example": "10.0.0.7"})
+        conn = self._connection()
+        connector = self._connector("team")
+        with (
+            patch("app.sources.client.cifs.cifs.SMBConnection", return_value=conn),
+            patch("app.connectors.sources.cifs.connector.load_connector_filters", AsyncMock(return_value=(None, None))),
+        ):
+            assert await connector.init() is True
         conn.connect.assert_called_once_with("10.0.0.7", 445)
 
 

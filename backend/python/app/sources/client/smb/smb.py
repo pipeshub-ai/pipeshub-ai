@@ -122,7 +122,7 @@ def dial_address(server: str, *, public_only: bool = False) -> str:
             else _lookups.submit(resolved_addresses, server).result(timeout=LOOKUP_TIMEOUT_SECONDS)
         )
     except TimeoutError as exc:
-        raise NetworkShareAuthError(f'Looking up "{server}" timed out. Check the server name.') from exc
+        raise NetworkShareAuthError(refusal or f'Looking up "{server}" timed out. Check the server name.') from exc
     if not addresses:
         raise NetworkShareAuthError(refusal or f'Could not find a server named "{server}". Check the server name.')
     plain = [
@@ -153,7 +153,8 @@ def _vet_every_session(pool: ModuleType) -> None:
         return
 
     def register_session(server: str, *args: object, **kwargs: object) -> object:
-        public_only = bool(_active.public_only and _active.public_only[-1])
+        # No client holding its lock on this thread: the strict rule, not the deployment default.
+        public_only = _active.public_only[-1] if _active.public_only else True
         return original(dial_address(server, public_only=public_only), *args, **kwargs)
 
     register_session.vetted = True  # type: ignore[attr-defined]
