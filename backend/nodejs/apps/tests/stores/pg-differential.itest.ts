@@ -117,8 +117,8 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
 
   // ---- the run lease and the session record
   const lease = await step('reserveRun', conv.reserveRun(CHAT, s1._id, actor(ALICE)));
-  await step('reserveRun busy', conv.reserveRun(CHAT, s1._id, actor(BOB), 10).catch((e: Error) => `error: ${e.message}`));
-  await step('reserveRun stranger', conv.reserveRun(CHAT, s1._id, actor(DAVE), 10));
+  await step('reserveRun busy', conv.reserveRun(CHAT, s1._id, actor(BOB), 0).catch((e: Error) => `error: ${e.message}`));
+  await step('reserveRun stranger', conv.reserveRun(CHAT, s1._id, actor(DAVE), 0));
   await step('touchRun', conv.touchRun(s1._id, lease!.runId));
   await step('releaseRun', conv.releaseRun(lease!));
   await step('after release', conv.findById(s1._id));
