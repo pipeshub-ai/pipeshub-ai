@@ -72,3 +72,31 @@ class TestNoOpHooks:
         assert await getattr(proc, hook)(*args) is None
         proc.messaging_producer.send_event.assert_not_awaited()
         proc.on_records_deleted_cascade.assert_not_awaited()
+
+
+class TestGraphReadsForSqlConnectors:
+    async def test_typed_records_come_from_the_graph(self) -> None:
+        proc = _processor()
+        graph = proc.data_store_provider.graph_provider
+        graph.get_typed_records_batch = AsyncMock(return_value={"c1": "column"})
+
+        assert await proc.get_typed_records_by_ids(["c1"]) == {"c1": "column"}
+        graph.get_typed_records_batch.assert_awaited_once_with(["c1"])
+
+    async def test_no_ids_reads_nothing(self) -> None:
+        proc = _processor()
+        proc.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock()
+
+        assert await proc.get_typed_records_by_ids([]) == {}
+        proc.data_store_provider.graph_provider.get_typed_records_batch.assert_not_awaited()
+
+    async def test_incoming_links_move_to_the_new_record(self) -> None:
+        proc = _processor()
+        graph = proc.data_store_provider.graph_provider
+        graph.get_edges_to_node = AsyncMock(return_value=[
+            {"_from": "records/src", "_to": "records/stand-in", "relationshipType": "FOREIGN_KEY"},
+        ])
+        graph.batch_upsert_node_relations = AsyncMock()
+
+        assert await proc.move_incoming_relations("stand-in", "clients") == 1
+        graph.batch_upsert_node_relations.assert_awaited_once()

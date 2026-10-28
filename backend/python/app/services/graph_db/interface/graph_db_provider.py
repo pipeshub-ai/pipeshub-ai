@@ -1993,11 +1993,14 @@ class IGraphDBProvider(ABC):
                 answer None as if no record existed
 
         Returns:
-            Optional['Record']: Record data if found, None otherwise. None means
-                there is no such record - never that the lookup failed.
+            Optional['Record']: Record data if found, None otherwise. With
+                ``raise_on_error=True``, None means there is no such record -
+                never that the lookup failed; without it, a failed lookup is
+                also None.
 
         Raises:
-            GraphQueryError: The lookup could not be read. Callers act on None
+            GraphQueryError: With ``raise_on_error=True``, when the lookup
+                could not be read. Callers act on None
                 by creating the record or concluding it was deleted, so a
                 failure reported as None becomes a duplicate record or a
                 deletion that never happened.

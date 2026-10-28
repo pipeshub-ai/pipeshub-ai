@@ -38,6 +38,7 @@ from app.connectors.core.sync.full_sync_coverage import (
     FullSyncSeen,
 )
 from app.connectors.core.sync.run_context import get_run_sync_id
+from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -4319,6 +4320,20 @@ class DataSourceEntitiesProcessor:
     async def on_sql_record_groups_deleted(self, record_group_ids: list[str], connector_id: str) -> None:
         """Record groups (schemas) a sync deleted with ``on_record_group_deleted``.
         Nothing else to clean up by default."""
+
+    async def get_typed_records_by_ids(self, record_ids: list[str]) -> dict[str, Record]:
+        """Records by id as their subclasses (SQLColumnRecord, ...), which carry the
+        fields plain records lack. An id that cannot be read is left out."""
+        if not record_ids:
+            return {}
+        return await self.data_store_provider.graph_provider.get_typed_records_batch(record_ids) or {}
+
+    async def move_incoming_relations(self, from_record_id: str, to_record_id: str) -> int:
+        """Move every link into a stand-in record onto the record that replaces it;
+        returns how many moved."""
+        return await move_incoming_relations(
+            self.data_store_provider.graph_provider, from_record_id=from_record_id, to_record_id=to_record_id,
+        )
 
     @retry_on_deadlock()
     async def on_records_soft_deleted(

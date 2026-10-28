@@ -347,7 +347,9 @@ _TABLE_KEYS_QUERY = """
     index_only_keys AS (
         SELECT
             'unique' AS key_type,
-            cardinality(i.indkey) AS key_width,
+            -- indkey lists the INCLUDE columns after the key ones; only the
+            -- first indnkeyatts are the key (PostgreSQL 11, as conparentid).
+            i.indnkeyatts AS key_width,
             array_agg(a.attname ORDER BY ord.k) AS column_names
         FROM pg_index i
         JOIN target t ON i.indrelid = t.oid
@@ -357,6 +359,7 @@ _TABLE_KEYS_QUERY = """
          AND a.attnum = ord.attnum
          AND NOT a.attisdropped
         WHERE i.indisunique
+          AND ord.k <= i.indnkeyatts
           AND pg_get_expr(i.indpred, i.indrelid) IS NULL
           AND NOT EXISTS (
               SELECT 1
@@ -364,7 +367,7 @@ _TABLE_KEYS_QUERY = """
               WHERE con.conindid = i.indexrelid
                 AND con.contype IN ('p', 'u')
           )
-        GROUP BY i.indexrelid
+        GROUP BY i.indexrelid, i.indnkeyatts
     )
     SELECT key_type, key_width, column_names FROM constraint_keys
     UNION ALL

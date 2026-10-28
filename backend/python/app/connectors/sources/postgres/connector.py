@@ -74,7 +74,6 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.sources.postgres.apps import PostgreSQLApp
 from app.connectors.sources.postgres.catalog_diff import (
     PostgresTableState,
@@ -108,6 +107,7 @@ from app.sources.external.postgres.postgres_ import (
     TableListEntry,
     TableStats,
     countable_column_names,
+    looks_personal,
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1383,9 +1383,9 @@ class PostgreSQLConnector(BaseConnector):
     async def _with_profiles(self, stored: dict[str, Record]) -> dict[str, Record]:
         """Saved column records as ``SQLColumnRecord``s, which carry the stats and
         profile the plain records lack; one that cannot be read so stays as is."""
-        typed = await self.data_store_provider.graph_provider.get_typed_records_batch(
+        typed = await self.data_entities_processor.get_typed_records_by_ids(
             [record.id for record in stored.values() if record.id]
-        ) or {}
+        )
         return {fqn: typed.get(record.id, record) for fqn, record in stored.items()}
 
     async def _remove_records(self, record_ids: list[str], *, table_record_id: str | None = None) -> None:
@@ -1546,10 +1546,7 @@ class PostgreSQLConnector(BaseConnector):
             occupant = await tx_store.get_record_by_external_id(self.connector_id, fqn, raise_on_error=True)
         if occupant is None or occupant.id == table.id:
             return
-        await move_incoming_relations(
-            self.data_store_provider.graph_provider,
-            from_record_id=occupant.id, to_record_id=table.id,
-        )
+        await self.data_entities_processor.move_incoming_relations(occupant.id, table.id)
         await self._remove_records([occupant.id])
 
     async def _on_table_renamed(self, table_record_id: str) -> None:
@@ -1839,13 +1836,20 @@ class PostgreSQLConnector(BaseConnector):
             record, fqn=getattr(record, "table_fqn", None) or record.parent_external_record_id,
         )
         column = record.record_name
-        try:
-            value_counts = await self.data_source.fetch_column_value_counts(
-                schema, table, column, limit=MAX_COLUMN_VALUES_STREAMED,
-            )
-        except Exception as e:
-            self.logger.error(f"❌ Failed to read values of {schema}.{table}.{column}: {e}")
-            raise to_sql_stream_error(e, connector=self.display_name) from e
+        # The counts group the whole table, past the rows a table stream is
+        # capped to, so a column that looks personal gets none, as it gets no
+        # top values in its profile.
+        withheld = looks_personal(column)
+        value_counts: list[dict[str, Any]] = []
+        if not withheld:
+            try:
+                # One past the limit, to tell a cut-off list from one that fits exactly.
+                value_counts = await self.data_source.fetch_column_value_counts(
+                    schema, table, column, limit=MAX_COLUMN_VALUES_STREAMED + 1,
+                )
+            except Exception as e:
+                self.logger.error(f"❌ Failed to read values of {schema}.{table}.{column}: {e}")
+                raise to_sql_stream_error(e, connector=self.display_name) from e
 
         top_values = getattr(record, "top_values", None) or []
         frequencies = getattr(record, "top_value_frequencies", None) or []
@@ -1874,9 +1878,11 @@ class PostgreSQLConnector(BaseConnector):
                 ],
             },
             "value_counts": [
-                {"value": row["value"], "count": row["count"]} for row in value_counts
+                {"value": row["value"], "count": row["count"]}
+                for row in value_counts[:MAX_COLUMN_VALUES_STREAMED]
             ],
-            "value_counts_truncated": len(value_counts) >= MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_truncated": len(value_counts) > MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_withheld": withheld,
             "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
         }
         json_bytes = json.dumps(data, default=_json_default).encode("utf-8")

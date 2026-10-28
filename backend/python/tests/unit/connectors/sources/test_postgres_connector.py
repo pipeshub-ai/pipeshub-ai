@@ -69,6 +69,8 @@ def _make_mock_deps() -> tuple:
     dep.on_sql_records_renamed = AsyncMock()
     dep.on_sql_table_renamed = AsyncMock()
     dep.sql_tables_to_relate_again = AsyncMock(return_value=set())
+    dep.get_typed_records_by_ids = AsyncMock(return_value={})
+    dep.move_incoming_relations = AsyncMock(return_value=0)
     dep.on_record_content_update = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
@@ -4161,17 +4163,13 @@ class TestRenameTables:
 
         store.batch_update_nodes = batch_update_nodes
 
-        with patch(
-            "app.connectors.sources.postgres.connector.move_incoming_relations",
-            new_callable=AsyncMock,
+        move = connector.data_entities_processor.move_incoming_relations = AsyncMock(
             side_effect=lambda *args, **kwargs: steps.append("move") or 1,
-        ) as move:
-            await connector._rename_tables({"public.orders": "public.purchases"})
+        )
+        await connector._rename_tables({"public.orders": "public.purchases"})
 
         # The tables that reference it keep their foreign keys.
-        move.assert_awaited_once_with(
-            connector.data_store_provider.graph_provider, from_record_id="stand-in", to_record_id="tbl-1",
-        )
+        move.assert_awaited_once_with("stand-in", "tbl-1")
         connector.data_entities_processor.on_sql_records_deleted.assert_awaited_once_with(
             ["stand-in"], "conn-pg-1", table_record_id=None,
         )
@@ -4498,7 +4496,7 @@ class TestStreamColumn:
         data = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
 
         connector.data_source.fetch_column_value_counts.assert_awaited_once_with(
-            "public", "orders", "status", limit=MAX_COLUMN_VALUES_STREAMED,
+            "public", "orders", "status", limit=MAX_COLUMN_VALUES_STREAMED + 1,
         )
         assert response.media_type == MimeTypes.SQL_COLUMN.value
         assert (data["schema_name"], data["table_name"], data["column_name"]) == ("public", "orders", "status")
@@ -4508,6 +4506,46 @@ class TestStreamColumn:
         ]
         assert data["value_counts"] == [{"value": "A", "count": 3}, {"value": None, "count": 1}]
         assert data["value_counts_truncated"] is False
+        assert data["value_counts_withheld"] is False
+
+    @staticmethod
+    async def _stream(connector, record) -> dict:
+        response = await connector.stream_record(record)
+        return json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("rows", "truncated"), [
+        (MAX_COLUMN_VALUES_STREAMED, False),
+        (MAX_COLUMN_VALUES_STREAMED + 1, True),
+    ])
+    async def test_truncated_only_when_a_value_was_cut_off(self, rows: int, truncated: bool) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.connector_name = Connectors.POSTGRESQL
+        connector.data_source.fetch_column_value_counts = AsyncMock(
+            return_value=[{"value": str(i), "count": 1} for i in range(rows)],
+        )
+
+        data = await self._stream(connector, self._column_record())
+
+        assert len(data["value_counts"]) == MAX_COLUMN_VALUES_STREAMED
+        assert data["value_counts_truncated"] is truncated
+
+    @pytest.mark.asyncio
+    async def test_a_personal_column_streams_no_value_counts(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.connector_name = Connectors.POSTGRESQL
+        connector.data_source.fetch_column_value_counts = AsyncMock()
+        record = self._column_record()
+        record.record_name = "email"
+
+        data = await self._stream(connector, record)
+
+        connector.data_source.fetch_column_value_counts.assert_not_awaited()
+        assert data["value_counts"] == []
+        assert data["value_counts_withheld"] is True
+        assert data["profile"]["distinct_count"] == 2
 
     @pytest.mark.asyncio
     async def test_value_read_failure_is_an_error_not_an_empty_column(self) -> None:
@@ -4805,7 +4843,7 @@ class TestFailedProfilingKeepsStoredValues:
         table = await failing._load_table("public", "account", PostgresTableState(n_live_tup=2))
         # The parent lookup reads the records collection: plain records, without the column's fields.
         _record_store(failing, _stored(stored.id, stored.external_record_id, "public.account"))
-        failing.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock(
+        failing.data_entities_processor.get_typed_records_by_ids = AsyncMock(
             return_value={stored.id: stored},
         )
         return stored, failing, table
@@ -4816,7 +4854,7 @@ class TestFailedProfilingKeepsStoredValues:
 
         await failing._sync_table_columns(_table_record(), table)
 
-        failing.data_store_provider.graph_provider.get_typed_records_batch.assert_awaited_once_with([stored.id])
+        failing.data_entities_processor.get_typed_records_by_ids.assert_awaited_once_with([stored.id])
         [(record, _)] = failing.data_entities_processor.on_new_records.await_args.args[0]
         assert record.top_values == ["A", "B"]
         assert record.distinct_count == 2
@@ -4840,7 +4878,7 @@ class TestFailedProfilingKeepsStoredValues:
 
         await failing._sync_table_columns(_table_record(), table)
 
-        failing.data_store_provider.graph_provider.get_typed_records_batch.assert_not_awaited()
+        failing.data_entities_processor.get_typed_records_by_ids.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dropped_table_takes_its_column_records(self) -> None:
