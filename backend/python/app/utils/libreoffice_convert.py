@@ -36,9 +36,10 @@ if TYPE_CHECKING:
 LIBREOFFICE_CONVERT_TIMEOUT_SECONDS = 60
 _STOP_GRACE_SECONDS = 5.0
 # Each LibreOffice process takes a few hundred MB; callers without their own
-# gate (agent file tools) would otherwise start one per concurrent request.
-# Shared by every event loop in the process.
-_conversion_slots = CrossLoopSemaphore(
+# gate (agent file tools, Gmail and Drive PDF previews) would otherwise start
+# one per concurrent request. Shared by every event loop and by both
+# conversion paths (here and pdf_stream_conversion) in the process.
+conversion_slots = CrossLoopSemaphore(
     max(1, env_int("LIBREOFFICE_MAX_CONCURRENT_CONVERSIONS", max(1, (os.cpu_count() or 2) // 2)))
 )
 # Printed by LibreOffice (desktop/source/app/dispatchwatcher.cxx) when loading
@@ -180,7 +181,7 @@ async def _run_libreoffice(binary: bytes, input_ext: str, output_ext: str, stem:
         # A private profile per conversion: runs that share the default profile
         # lock each other out, and the loser fails or exits having written nothing.
         profile_url = Path(temp_dir, "lo-profile").as_uri()
-        async with _conversion_slots.slot():
+        async with conversion_slots.slot():
             convert_proc = await asyncio.create_subprocess_exec(
                 "libreoffice",
                 f"-env:UserInstallation={profile_url}",

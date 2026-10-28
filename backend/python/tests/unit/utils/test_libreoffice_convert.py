@@ -24,6 +24,7 @@ from app.utils.libreoffice_convert import (
     convert_with_libreoffice,
     unreadable_file_as_parse_error,
 )
+from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 
 
 def _fake_proc(returncode: int = 0, stderr: bytes = b"") -> MagicMock:
@@ -223,21 +224,24 @@ async def test_an_unreadable_file_converted_in_process_is_terminal(convert) -> N
 
 
 @pytest.mark.asyncio
-async def test_concurrent_conversions_never_exceed_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(libreoffice_convert, "_conversion_slots", CrossLoopSemaphore(2))
+async def test_concurrent_conversions_of_both_kinds_share_one_bound(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Office -> docx (indexing, agents) and -> PDF (Gmail, Drive previews) take slots from one cap.
+    monkeypatch.setattr(libreoffice_convert, "conversion_slots", CrossLoopSemaphore(2))
     running = 0
     peak = 0
 
     class _Process:
         returncode = 0
 
-        def __init__(self, outdir: str) -> None:
-            self._outdir = outdir
+        def __init__(self, output: Path) -> None:
+            self._output = output
 
         async def communicate(self) -> tuple[bytes, bytes]:
             nonlocal running
             await asyncio.sleep(0.01)
-            (Path(self._outdir) / "input.docx").write_bytes(b"docx")
+            self._output.write_bytes(self._output.suffix.encode())
             running -= 1
             return b"", b""
 
@@ -247,11 +251,21 @@ async def test_concurrent_conversions_never_exceed_the_bound(monkeypatch: pytest
             return _fake_proc(returncode=0)
         running += 1
         peak = max(peak, running)
-        return _Process(args[args.index("--outdir") + 1])
+        outdir, target = Path(args[args.index("--outdir") + 1]), args[args.index("--convert-to") + 1]
+        return _Process(outdir / f"{Path(args[-1]).stem}.{target}")
 
     monkeypatch.setattr(libreoffice_convert.asyncio, "create_subprocess_exec", fake_exec)
 
-    results = await asyncio.gather(*(convert_with_libreoffice(b"doc", "doc", "docx") for _ in range(6)))
+    async def to_pdf(n: int) -> str:
+        temp_dir = tmp_path / str(n)
+        temp_dir.mkdir()
+        return await libreoffice_to_pdf(str(temp_dir / "attachment.docx"), str(temp_dir))
 
-    assert results == [b"docx"] * 6
+    results = await asyncio.gather(
+        *(convert_with_libreoffice(b"doc", "doc", "docx") for _ in range(3)),
+        *(to_pdf(n) for n in range(3)),
+    )
+
+    assert results[:3] == [b".docx"] * 3
+    assert [Path(pdf).name for pdf in results[3:]] == ["attachment.pdf"] * 3
     assert peak == 2

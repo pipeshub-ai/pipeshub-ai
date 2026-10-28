@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.utils.libreoffice_convert import stop_process
+from app.utils import libreoffice_convert
 
 PDF_CONVERT_CHUNK_BYTES = 1024 * 1024
 DEFAULT_PDF_TIMEOUT_SECONDS = 60.0
@@ -69,26 +69,27 @@ async def libreoffice_to_pdf(
     ]
 
     try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            _stdout, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+        async with libreoffice_convert.conversion_slots.slot():
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        except asyncio.TimeoutError as error:
-            await stop_process(process)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion timed out",
-            ) from error
-        except asyncio.CancelledError:
-            # The caller removes temp_dir next; soffice must not outlive it.
-            await stop_process(process)
-            raise
+            try:
+                _stdout, conversion_error = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError as error:
+                await libreoffice_convert.stop_process(process)
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="PDF conversion timed out",
+                ) from error
+            except asyncio.CancelledError:
+                # The caller removes temp_dir next; soffice must not outlive it.
+                await libreoffice_convert.stop_process(process)
+                raise
 
         if process.returncode != 0:
             logger.error(
