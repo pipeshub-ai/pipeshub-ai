@@ -666,6 +666,7 @@ class TestVLMOCRStrategy:
             strategy.logger = _mock_logger()
             strategy.config = _mock_config()
             strategy.doc = None
+            strategy._page_images = {}
             strategy.llm = None
             strategy.llm_config = None
             strategy.document_analysis_result = None

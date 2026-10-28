@@ -1162,6 +1162,80 @@ class KnowledgeGraph:
             percent_max=percent_max,
         )
 
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_person",
+        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        description=(
+            "List the records the connectors link to a person by role (assignee, reporter, "
+            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
+            "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
+            "the links the connectors write (mentioned/involved come from indexing): for any "
+            "other record whose text mentions a name, search instead.\n\n"
+            "Pass a full name or an email; several people with that name are listed for you to "
+            "pick by email. Pages with cursor, the next call printed in the output; \"That is "
+            "all N\" means the list is complete."
+        ),
+        parameters=[
+            ToolParameter(
+                name="person",
+                type=ParameterType.STRING,
+                description="The person's full name or email, or \"me\" for the user asking.",
+                required=True,
+            ),
+            ToolParameter(
+                name="roles",
+                type=ParameterType.ARRAY,
+                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                required=False,
+                items={
+                    "type": "string",
+                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                },
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'TICKET', 'PROJECT').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records linked to {args.get("person", "")}' if args.get("person") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records linked to a person",
+    )
+    async def find_records_by_person(
+        self,
+        person: str | None = None,
+        roles: list[str] | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.people import execute_find_records_by_person
+        return await execute_find_records_by_person(
+            self.state, person=person, roles=roles, record_types=record_types, limit=limit, cursor=cursor,
+        )
+
     # -----------------------------------------------------------------------
     # search_by_entities — offered only where the deployment turns it on
     # -----------------------------------------------------------------------
@@ -1187,7 +1261,8 @@ class KnowledgeGraph:
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
             "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
+            "surname alone is not looked up. For what a person is assigned, reported, created or "
+            "leads, use knowledgegraph__find_records_by_person. Only records indexed while named-entity extraction was on "
             "are linked to names, so confirm a name that is not found with search before saying it "
             "is absent."
         ),

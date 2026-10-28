@@ -312,6 +312,8 @@ class Processor:
 
             self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
+        except RecordDeletedError:
+            raise  # an expected outcome, logged once by the record handler
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise

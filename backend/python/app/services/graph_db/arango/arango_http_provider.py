@@ -193,6 +193,7 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
+    PERSON_ENTITY_TYPE,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
@@ -206,6 +207,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    person_query_ref,
     record_status_field,
     restore_items,
     select_canonical_chain_names,
@@ -21050,24 +21052,44 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ``@scan_cap`` candidate record documents of ``ref``. ``filter_within``
         narrows by ``@within`` before the cap."""
         records = CollectionNames.RECORDS.value
-        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
-        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
         record_type_filter = (
             "FILTER rec.recordType IN @record_types" if filter_record_types else ""
         )
         within_filter = f"FILTER {self._entity_within_aql('rec')}" if filter_within else ""
-        scan_subquery = f"""(
-                    FOR edge IN {edge_collection}
-                        FILTER edge._to IN targets
-                        FILTER STARTS_WITH(edge._from, "{records}/")
-                        LET rec = DOCUMENT(edge._from)
-                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+        record_filter = f"""FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
                         FILTER {aql_searchable_record("rec", "completed")}
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         {within_filter}
                         LIMIT @scan_cap
-                        RETURN rec
+                        RETURN rec"""
+        if entity_type == PERSON_ENTITY_TYPE:
+            # Both directions, the person always at the users end: a record
+            # group is also MENTIONED_IN a record. Distinct ids first, so a
+            # record linked twice (reporter and creator) is one candidate.
+            relations = CollectionNames.ENTITY_RELATIONS.value
+            scope = f'LET people = (FOR uid IN ref.userIds RETURN CONCAT("{CollectionNames.USERS.value}/", uid))'
+            return scope, f"""(
+                    FOR rec_id IN UNION_DISTINCT(
+                        (FOR edge IN {relations}
+                            FILTER edge._to IN people AND edge.edgeType IN ref.outTypes
+                                AND STARTS_WITH(edge._from, "{records}/")
+                            RETURN edge._from),
+                        (FOR edge IN {relations}
+                            FILTER edge._from IN people AND edge.edgeType IN ref.inTypes
+                                AND STARTS_WITH(edge._to, "{records}/")
+                            RETURN edge._to))
+                        LET rec = DOCUMENT(rec_id)
+                        {record_filter}
+                )"""
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
+        scan_subquery = f"""(
+                    FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)
+                        {record_filter}
                 )"""
         scope = f"LET targets = [{targets}]"
         if entity_type == EntityType.RECORD_GROUP.value:
@@ -21206,14 +21228,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         limit = max(1, limit_per_entity)
         results: dict[tuple[str, str], PermittedEntityRows] = {}
-        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
-            for ref_id in connectors_by_id:
+        for ref_type, refs_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in refs_by_id:
                 results.setdefault((ref_type, ref_id), PermittedEntityRows())
-            query_refs = [
-                {"id": ref_id, "connectorIds": connector_ids}
-                for ref_id, connector_ids in connectors_by_id.items()
-                if connector_ids
-            ]
+            query_refs = [ref for ref in refs_by_id.values() if ref["connectorIds"]]
             if not query_refs:
                 continue
             bind_vars: dict[str, Any] = {
@@ -21317,24 +21335,82 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for ref_id, ref_hits in hits.items()
         }
 
-    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
-        """``{type: {id: connector_ids}}`` for supported refs, first occurrence
+    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+        """``{type: {id: query_ref}}`` for supported refs, first occurrence
         of each kept (a union would widen a ref's scope)."""
-        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        refs_by_type: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for ref in refs:
             ref_id = str(ref.get("id") or "")
             ref_type = ref.get("type")
             if not ref_id or not (
-                ref_type == EntityType.RECORD.value
+                ref_type in (EntityType.RECORD.value, PERSON_ENTITY_TYPE)
                 or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
             ):
                 continue
-            if ref_id in connectors_by_type[ref_type]:
+            if ref_id in refs_by_type[ref_type]:
                 continue
-            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
-                str(c) for c in ref.get("connectorIds") or [] if c
-            ))
-        return connectors_by_type
+            refs_by_type[ref_type][ref_id] = {
+                "id": ref_id,
+                "connectorIds": list(dict.fromkeys(str(c) for c in ref.get("connectorIds") or [] if c)),
+                **(person_query_ref(ref) if ref_type == PERSON_ENTITY_TYPE else {}),
+            }
+        return refs_by_type
+
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_users`."""
+        # lower(), not casefold(): the stored side is LOWER(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        users = CollectionNames.USERS.value
+        if "@" in wanted:
+            # An email names one person: all their nodes, no name normalising.
+            rows = await self.execute_query(
+                f"""
+                FOR u IN {users}
+                    FILTER u.orgId == @org_id AND LOWER(u.email) == @q
+                    SORT u._key
+                    RETURN {{id: u._key, fullName: u.fullName, email: u.email}}
+                """,
+                bind_vars={"org_id": org_id, "q": wanted},
+            )
+            return [dict(row) for row in rows or [] if row and row.get("id")]
+        words = 'CONCAT_SEPARATOR(" ", SPLIT(LOWER({}), " ")[* FILTER CURRENT != ""])'
+        name = words.format('NOT_NULL(u.fullName, "")')
+        parts = words.format('CONCAT(NOT_NULL(u.firstName, ""), " ", NOT_NULL(u.lastName, ""))')
+        query_aql = f"""
+            LET hits = (
+                FOR u IN {users}
+                    FILTER u.orgId == @org_id
+                    LET email = LOWER(NOT_NULL(u.email, ""))
+                    LET name = {name}
+                    LET exact = email == @q OR name == @q OR {parts} == @q
+                    FILTER exact OR (LENGTH(@q) >= 3 AND (STARTS_WITH(name, @q)
+                        OR LENGTH(SPLIT(name, " ")[* FILTER STARTS_WITH(CURRENT, @q)]) > 0
+                        OR STARTS_WITH(SPLIT(email, "@")[0], @q)))
+                    SORT name, u._key
+                    RETURN {{person: email != "" ? email : CONCAT("id:", u._key), exact: exact}}
+            )
+            LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
+            LET cands = hits[* FILTER CURRENT.exact OR NOT has_exact]
+            // The limit counts people (an email, else a node), first match first.
+            LET people = (
+                FOR i IN 0..LENGTH(cands) - 1
+                    FILTER i >= 0 AND i < LENGTH(cands)
+                    COLLECT person = cands[i].person AGGREGATE rank = MIN(i)
+                    SORT rank LIMIT @limit
+                    RETURN person
+            )
+            FOR o IN {users}
+                FILTER o.orgId == @org_id
+                    AND (LOWER(o.email) IN people OR CONCAT("id:", o._key) IN people)
+                SORT LOWER(NOT_NULL(o.fullName, o.email, "")), o._key
+                RETURN {{id: o._key, fullName: o.fullName, email: o.email}}
+        """
+        rows = await self.execute_query(
+            query_aql, bind_vars={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row and row.get("id")]
 
     async def get_entity_candidate_records(
         self,
@@ -21351,15 +21427,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
 
         results: dict[tuple[str, str], EntityCandidateRows] = {}
-        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
-            for ref_id in connectors_by_id:
+        for ref_type, refs_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in refs_by_id:
                 results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
-            query_refs = [
-                {"id": ref_id, "connectorIds": connector_ids}
-                for ref_id, connector_ids in connectors_by_id.items()
-                if connector_ids
-            ]
+            query_refs = [ref for ref in refs_by_id.values() if ref["connectorIds"]]
             if not query_refs:
                 continue
 

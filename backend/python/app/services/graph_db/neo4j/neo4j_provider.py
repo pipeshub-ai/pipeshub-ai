@@ -150,6 +150,7 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     PATH_MAX_CANDIDATES,
+    PERSON_ENTITY_TYPE,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
@@ -161,6 +162,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    person_query_ref,
     record_taxonomy_refs,
     restore_items,
     select_canonical_chain_names,
@@ -22027,6 +22029,30 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             newest = f"CASE WHEN rec.{SOURCE_TIMESTAMP_ORIGIN_FIELD} = 'upload' THEN 0 ELSE {newest} END"
         return f"{newest} DESC, rec.id ASC"
 
+    def _entity_candidate_match(self, entity_type: str) -> str:
+        """Clauses binding ``rec`` to each record linked to ``ref``, ready for
+        a ``WHERE`` on ``rec``. A person's relations run both ways, and only
+        their User end is the person (a RecordGroup is also MENTIONED_IN)."""
+        if entity_type == PERSON_ENTITY_TYPE:
+            relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+            return f"""CALL {{
+                WITH ref
+                MATCH (rec:Record)-[r:{relation}]->(p:User)
+                WHERE p.id IN ref.userIds AND r.edgeType IN ref.outTypes
+                RETURN rec
+                UNION
+                WITH ref
+                MATCH (p:User)-[r:{relation}]->(rec:Record)
+                WHERE p.id IN ref.userIds AND r.edgeType IN ref.inTypes
+                RETURN rec
+              }}
+              WITH *"""
+        relationship, entity_match = self._entity_node_match(entity_type)
+        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+            entity_match += "\n              WHERE e.orgId = $org_id"
+        return f"""{entity_match}
+              MATCH (rec:Record)-[:{relationship}]->(e)"""
+
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
         if entity_type == KnowledgeGraphEntityType.RECORD.value:
@@ -22038,17 +22064,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
             """
 
-        relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
-            entity_match += "\n              WHERE e.orgId = $org_id"
-
         # The aggregating CALL yields one row per ref even when nothing matches.
         return f"""
             UNWIND $refs AS ref
             CALL {{
               WITH ref
-              {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              {self._entity_candidate_match(entity_type)}
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
               WITH DISTINCT rec
               LIMIT $scan_cap
@@ -22113,9 +22134,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN ref.id AS id, hits, window_size, capped
             """
 
-        relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
-            entity_match += "\n              WHERE e.orgId = $org_id"
         # Sorting the capped scan is cheap; the permission walk is the cost,
         # and it stops at $limit permitted rows or the end of the window.
         return f"""
@@ -22123,8 +22141,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND $refs AS ref
             CALL {{
               WITH ref, u
-              {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              {self._entity_candidate_match(entity_type)}
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
                 AND {self._ENTITY_WITHIN_FILTER}
               WITH DISTINCT rec, u
@@ -22152,7 +22169,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ref_id = ref.get("id")
             ref_type = ref.get("type")
             if not ref_id or (
-                ref_type != KnowledgeGraphEntityType.RECORD.value
+                ref_type not in (KnowledgeGraphEntityType.RECORD.value, PERSON_ENTITY_TYPE)
                 and ref_type not in self._ENTITY_CANDIDATE_TARGETS
             ):
                 continue
@@ -22160,9 +22177,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if (ref_type, str(ref_id)) in seen:
                 continue
             seen.add((ref_type, str(ref_id)))
-            refs_by_type.setdefault(ref_type, []).append(
-                {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
-            )
+            refs_by_type.setdefault(ref_type, []).append({
+                "id": str(ref_id),
+                "connectorIds": list(ref.get("connectorIds") or []),
+                **(person_query_ref(ref) if ref_type == PERSON_ENTITY_TYPE else {}),
+            })
         return refs_by_type
 
     async def get_permitted_entity_records(
@@ -22216,6 +22235,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         capped=bool(row.get("capped")),
                     )
         return results
+
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_users`."""
+        # lower(), not casefold(): the stored side is toLower(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        if "@" in wanted:
+            # An email names one person: all their nodes, no name normalising.
+            rows = await self.client.execute_query(
+                """
+                MATCH (u:User) WHERE u.orgId = $org_id AND toLower(u.email) = $q
+                RETURN u.id AS id, u.fullName AS fullName, u.email AS email
+                ORDER BY u.id
+                """,
+                parameters={"org_id": org_id, "q": wanted},
+            )
+            return [dict(row) for row in rows or [] if row.get("id")]
+        words = "[w IN split(toLower({}), ' ') WHERE w <> '']"
+        joined = "reduce(s = '', w IN {} | s + CASE WHEN s = '' THEN '' ELSE ' ' END + w)"
+        name = joined.format(words.format("coalesce(u.fullName, '')"))
+        parts = joined.format(words.format("coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')"))
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (u:User) WHERE u.orgId = $org_id
+            WITH u, toLower(coalesce(u.email, '')) AS email, {name} AS name, {parts} AS parts
+            WITH u, email, name, email = $q OR name = $q OR parts = $q AS exact,
+                 size($q) >= 3 AND (name STARTS WITH $q
+                     OR any(w IN split(name, ' ') WHERE w STARTS WITH $q)
+                     OR split(email, '@')[0] STARTS WITH $q) AS prefix
+            WHERE exact OR prefix
+            WITH exact, CASE WHEN email <> '' THEN email ELSE 'id:' + u.id END AS person
+            ORDER BY name, u.id
+            WITH collect({{person: person, exact: exact}}) AS hits
+            WITH hits, any(h IN hits WHERE h.exact) AS has_exact
+            // The limit counts people (an email, else a node), first match first.
+            WITH reduce(seen = [], h IN hits |
+                CASE WHEN (h.exact OR NOT has_exact) AND NOT h.person IN seen
+                THEN seen + h.person ELSE seen END)[0..$limit] AS people
+            MATCH (o:User) WHERE o.orgId = $org_id
+                AND (toLower(o.email) IN people OR 'id:' + o.id IN people)
+            RETURN o.id AS id, o.fullName AS fullName, o.email AS email
+            ORDER BY toLower(coalesce(o.fullName, o.email, '')), o.id
+            """,
+            parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row.get("id")]
 
     async def get_entity_candidate_records(
         self,

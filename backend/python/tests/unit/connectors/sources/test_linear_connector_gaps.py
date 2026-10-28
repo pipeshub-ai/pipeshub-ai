@@ -287,7 +287,7 @@ class TestFilterOptionsAndUsers:
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_teams_resp([
+        mock_ds.execute_operation = AsyncMock(return_value=_teams_resp([
             {"id": "t1", "name": "Eng", "key": "ENG"},
         ]))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):

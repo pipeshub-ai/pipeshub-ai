@@ -1971,6 +1971,19 @@ class TestOnEventEarlyReturns:
         ]
 
     @pytest.mark.asyncio
+    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+        """Draining a deleted record must not reach error-level alerting; WARNING,
+        as the record handler's own read, since None cannot rule out an id that
+        never existed."""
+        ep, logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        logger.error.assert_not_called()
+        logger.warning.assert_called_once_with("Record %s not found; dropping its event", "rec-1")
+
+    @pytest.mark.asyncio
     async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
         """The graph being unreachable must not read as "this record is gone".
 

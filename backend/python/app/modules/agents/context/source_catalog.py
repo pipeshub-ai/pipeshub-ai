@@ -288,10 +288,12 @@ class SourceCatalog:
         fetch = granted("knowledgegraph.fetch_record", _tool_names)
         # Only an agent actually granted search_entities gets the Entities
         # paragraph — the exploration child renders this catalog without tool
-        # names and has no entity tools. find_records_by_entity is named
+        # names; its only entity tool, find_records_by_person, routes by its own
+        # description. find_records_by_entity is named
         # literally: it unlocks mid-run, and the prompt text must not change.
         search_entities = granted("knowledgegraph.search_entities", _tool_names)
         search_by_entities = granted("knowledgegraph.search_by_entities", _tool_names)
+        find_by_person = granted("knowledgegraph.find_records_by_person", _tool_names)
         content_search = (
             granted("knowledgegraph.search", _tool_names)
             or granted("retrieval.search_internal_knowledge", _tool_names)
@@ -354,6 +356,12 @@ class SourceCatalog:
                     ]
                     if search_by_entities else []
                 ),
+                "",
+            ])
+        if find_by_person:
+            lines.extend([
+                "For what a person is assigned, reported, created or leads (\"my tickets\"), call "
+                f"`{find_by_person}(person=...)`, not a text search.",
                 "",
             ])
         # ID-specific header — only when connector IDs are actionable (agent route).

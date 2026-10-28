@@ -27138,7 +27138,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          description: Rate limit exceeded — per-IP sign-in start limiter (6 × MAX_AUTH_REQUESTS_PER_MINUTE)
           content:
             application/json:
               schema:
@@ -27246,7 +27246,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          description: Rate limit exceeded — auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per account per IP, 6× that per IP)
           content:
             application/json:
               schema:
@@ -27328,7 +27328,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          description: Rate limit exceeded — auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per account per IP, 6× that per IP)
           content:
             application/json:
               schema:
@@ -27391,7 +27391,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          description: Rate limit exceeded — auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per account per IP, 6× that per IP)
           content:
             application/json:
               schema:
@@ -27873,7 +27873,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          description: Rate limit exceeded — auth limiter (MAX_AUTH_REQUESTS_PER_MINUTE per signed-in user)
           content:
             application/json:
               schema:
