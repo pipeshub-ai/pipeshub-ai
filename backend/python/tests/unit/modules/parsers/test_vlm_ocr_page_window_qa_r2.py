@@ -235,3 +235,45 @@ class TestCancellation:
         assert rig.strategy._page_images == {}
         gc.collect()
         assert len(rig.live) == 0
+
+
+class TestLatePoolThread:
+    """A pool thread keeps its job until it next runs; on a slow runner that is after
+    the job has ended. Nothing it keeps may hold a page image."""
+
+    @pytest.fixture(autouse=True)
+    def _late_pool_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import concurrent.futures.thread as pool_thread
+
+        run = pool_thread._WorkItem.run
+
+        def run_then_linger(item: object) -> None:
+            run(item)
+            time.sleep(0.05)
+
+        monkeypatch.setattr(pool_thread._WorkItem, "run", run_then_linger)
+
+    @pytest.mark.parametrize("outcome", ["ok", "some_fail", "render_fails", "cancelled"])
+    async def test_no_image_outlives_the_job(self, outcome: str) -> None:
+        rig = _Rig(pages=10, window=2, concurrency=5)
+        if outcome == "render_fails":
+            rig.fail_render_at = 5
+
+        async def call_llm(image_base64: str, page_number: int) -> str:
+            await asyncio.sleep(0.01)
+            if outcome == "some_fail" and page_number % 3 == 0:
+                raise ValueError(f"bad{page_number}")
+            return "x"
+
+        rig.strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
+        job = asyncio.ensure_future(rig.strategy._preprocess_document())
+        if outcome == "cancelled":
+            await asyncio.sleep(0.03)
+            job.cancel()
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+            await asyncio.wait_for(job, 10)
+        del job
+        await asyncio.sleep(0)
+        assert rig.strategy._page_images == {}
+        gc.collect()
+        assert len(rig.live) == 0

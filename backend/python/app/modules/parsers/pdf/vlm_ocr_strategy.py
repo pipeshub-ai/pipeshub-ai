@@ -46,7 +46,7 @@ def vlm_ocr_max_pages() -> int:
 
 
 
-def _without_frames(error: Exception) -> Exception:
+def _without_frames(error: BaseException) -> BaseException:
     """Drop the tracebacks of *error* and of every exception chained to it.
 
     A traceback keeps the frames of the failed call alive, and those frames hold
@@ -507,7 +507,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 page_number, attempt + 1, last_error,
                             )
                             unreadable_count += 1
-                            last_unreadable = _without_frames(e)
+                            _without_frames(e)
+                            last_unreadable = e
                             return {
                                 "page_number": page_number,
                                 "markdown": "",
@@ -560,7 +561,11 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Each stopped worker keeps its error, and that error's frames hold the
+            # image of the page it was reading.
+            for outcome in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(outcome, BaseException):
+                    _without_frames(outcome)
             raise
         finally:
             del tasks
