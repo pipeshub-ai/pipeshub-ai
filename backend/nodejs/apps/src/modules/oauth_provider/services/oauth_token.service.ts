@@ -444,18 +444,6 @@ export class OAuthTokenService {
       throw new InvalidTokenError('Refresh token not found');
     }
 
-    if (this.isRotatedRefreshReplay(storedToken)) {
-      await this.rejectRefreshReplay(
-        app.clientId,
-        storedToken.userId,
-        storedToken._id,
-      );
-    }
-
-    if (storedToken.isRevoked) {
-      throw new InvalidTokenError('Refresh token has been revoked');
-    }
-
     if (storedToken.clientId !== app.clientId) {
       this.logger.warn('Refresh token presented by a different client', {
         issuedTo: storedToken.clientId,
@@ -465,6 +453,18 @@ export class OAuthTokenService {
       throw new InvalidGrantError(
         'Refresh token was not issued to this client',
       );
+    }
+
+    if (this.isRotatedRefreshReplay(storedToken)) {
+      await this.rejectRefreshReplay(
+        storedToken.clientId,
+        storedToken.userId,
+        storedToken._id,
+      );
+    }
+
+    if (storedToken.isRevoked) {
+      throw new InvalidTokenError('Refresh token has been revoked');
     }
 
     // Determine scopes - can only be reduced, not expanded
@@ -489,7 +489,7 @@ export class OAuthTokenService {
     const repo = getOAuthTokenRepository();
     if (!(await repo.rotateRefresh(storedToken._id))) {
       await this.rejectRefreshReplay(
-        app.clientId,
+        storedToken.clientId,
         storedToken.userId,
         storedToken._id,
       );

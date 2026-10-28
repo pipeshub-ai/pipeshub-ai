@@ -1516,6 +1516,28 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(refreshFamily.calledOnce).to.be.true
       })
 
+      it('does not family-revoke when a different client presents a rotated token', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('not issued to this client')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
       it('does not family-revoke when the refresh token was revoked by the user', async () => {
         const stored = {
           ...storedRefreshToken('client-a'),
