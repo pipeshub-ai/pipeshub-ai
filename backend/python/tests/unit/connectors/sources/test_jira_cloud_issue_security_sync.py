@@ -740,6 +740,15 @@ class TestIssuePlacementPass:
         assert result["leveled_reread"] is True
 
     @pytest.mark.asyncio
+    async def test_a_project_marked_before_epic_links_is_reread_once_to_link_them(self) -> None:
+        c, _, calls, result = await self._sync(
+            stored_levels=_present().level_fingerprints(), placement="subtasks-under-parent",
+        )
+        assert calls[1:] == [
+            {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": False, "stored_only": True}]
+        assert c.issues_sync_point.update_sync_point.await_args.args[1]["issue_placement"] == ISSUE_PLACEMENT
+
+    @pytest.mark.asyncio
     async def test_a_project_with_the_marker_is_not_reread(self) -> None:
         _, _, calls, result = await self._sync(stored_levels=_present().level_fingerprints())
         assert len(calls) == 1

@@ -172,7 +172,8 @@ async def test_linked_records_are_read_from_the_link_edges_and_checked(access_gr
     """The navigator's related records: links on RECORD_LINK, and only those the
     user may access."""
     linked = await provider.get_linked_records("v3-open-r1", ORG, USER_U, ["BLOCKS", "LINKED_TO"])
-    assert {r["id"]: r["relationshipType"] for r in linked} == {"v3-dec-r1": "BLOCKS"}
+    # The link runs from the opened record, so the navigator can tell a parent from a child.
+    assert {r["id"]: (r["relationshipType"], r["outgoing"]) for r in linked} == {"v3-dec-r1": ("BLOCKS", True)}
 
 
 async def test_another_orgs_node_is_denied(access_graph, provider) -> None:

@@ -23083,7 +23083,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND (v.orgId = $org_id)
               AND (v.isDeleted IS NULL OR v.isDeleted = false)
 
-            WITH v, e, EXISTS { (v)-[:NODE_RELATION]->(:Record) } AS hasChildren
+            WITH source, v, e, EXISTS { (v)-[:NODE_RELATION]->(:Record) } AS hasChildren
 
             RETURN {
                 id: v.id,
