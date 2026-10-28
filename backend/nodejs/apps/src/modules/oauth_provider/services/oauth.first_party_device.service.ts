@@ -1,4 +1,4 @@
-import { inInstallOrg } from '../../../libs/repositories/identity/install-org'
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
 import { Logger } from '../../../libs/services/logger.service'

@@ -1,4 +1,4 @@
-import { forOrg } from '../../../libs/context/orgContext'
+import { forOrg } from '../../../libs/context/orgContext';
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors'
