@@ -400,7 +400,7 @@ async def test_a_deleted_files_names_are_kept_and_served_once(repo: _Repo) -> No
         )
         assert result.files_reresolved >= 1, "the file that called into it"
 
-        await deleted_files.forget(repo.graph, pending.keys)
+        await deleted_files.forget(repo.graph, pending.keys, logging.getLogger("it"))
         assert not await deleted_files.was_remembered(repo.graph, repo.org_id, rid)
     finally:
         for key in (await deleted_files.pending(repo.graph, repo.org_id, repo.group_id)).keys:
