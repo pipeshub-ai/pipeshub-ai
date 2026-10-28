@@ -5988,7 +5988,8 @@ class DropboxDataSource:
 
     async def sharing_list_file_members_continue(
         self,
-        cursor: str
+        cursor: str,
+        team_member_id: Optional[str] = None,
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from :meth:`sharing_list_file_members`
 
@@ -6016,7 +6017,7 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListFileMembersContinueError`
         """
-        client = await self._get_user_client()
+        client = await self._get_user_client(team_member_id)
         try:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_file_members_continue(cursor))
@@ -6337,7 +6338,9 @@ class DropboxDataSource:
         self,
         path: Optional[str] = None,
         cursor: Optional[str] = None,
-        direct_only: Optional[str] = None
+        direct_only: Optional[str] = None,
+        team_member_id: Optional[str] = None,
+        team_folder_id: Optional[str] = None,
     ) -> DropboxResponse:
         """List shared links of this user. If no path is given, returns a list of
 
@@ -6376,8 +6379,10 @@ class DropboxDataSource:
             If this raises, ApiError will contain:
             :class:`dropbox.sharing.ListSharedLinksError`
         """
-        client = await self._get_user_client()
         try:
+            client = await self._get_user_client(team_member_id)
+            if team_folder_id:
+                client = client.with_path_root(dropbox.common.PathRoot.namespace_id(team_folder_id))
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: client.sharing_list_shared_links(path=path, cursor=cursor, direct_only=direct_only))
             return DropboxResponse(success=True, data=response)

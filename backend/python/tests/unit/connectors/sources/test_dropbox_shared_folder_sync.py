@@ -44,6 +44,9 @@ def connector() -> DropboxConnector:
     processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
     processor.get_app_user_by_email = AsyncMock(return_value=None)
     processor.get_groups_with_access_to_record = AsyncMock(return_value=[])
+    processor.get_records_in_record_group = AsyncMock(return_value=[MagicMock()])
+    processor.get_records_by_file_path = AsyncMock(return_value=[])
+    processor.get_file_record_by_id = AsyncMock(return_value=None)
     return conn
 
 
@@ -111,9 +114,33 @@ class TestSharedFolderGroups:
         assert (written[1].parent_external_group_id, written[1].inherit_permissions) == ("top", True)
 
     @pytest.mark.asyncio
-    async def test_team_folders_are_left_to_the_team_folder_sync(self, connector) -> None:
+    async def test_a_team_folder_is_a_group_granted_to_its_members(self, connector) -> None:
+        """Team folders come from the same member list: team/team_folder/list needs a scope the connector lacks."""
+        connector._shared_folder_members = AsyncMock(return_value=[GRANT])
+
         await connector._sync_shared_folder_groups({"t": _folder("t", "Team", team=True)})
-        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+        (group, grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert (group.external_group_id, group.description, grants) == ("t", "Team Folder", [GRANT])
+
+    @pytest.mark.asyncio
+    async def test_unreadable_members_keep_the_stored_grants_and_fail_the_run(self, connector) -> None:
+        connector._shared_folder_members = AsyncMock(return_value=None)
+
+        await connector._sync_shared_folder_groups({"sf-1": _folder()})
+
+        (_, grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert grants is None
+        assert not connector._health.complete
+
+    @pytest.mark.asyncio
+    async def test_a_folder_with_no_stored_record_is_listed_from_the_start(self, connector) -> None:
+        connector._shared_folder_members = AsyncMock(return_value=[GRANT])
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+        await connector._sync_shared_folder_groups({"sf-1": _folder()})
+
+        assert "sf-1" in connector._fresh_folders
 
     @pytest.mark.asyncio
     async def test_a_sharing_event_rereads_the_folder_and_its_members(self, connector) -> None:
@@ -310,19 +337,29 @@ class TestFileGrants:
         connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
 
         update = await connector._process_dropbox_entry(self._file(), "dbmid:a", "a@x.com", "sf-1", False)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        await connector._write_updates([update], "test")
 
-        assert update.is_updated is False
         assert update.record.external_record_group_id == "sf-1"
         assert update.record.rewrite_permissions is True
+        (record, _), = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert record.external_record_group_id == "sf-1"
 
     @pytest.mark.asyncio
-    async def test_a_record_already_in_its_group_takes_the_update_path(self, connector) -> None:
+    async def test_a_record_whose_members_were_not_read_keeps_its_grants(self, connector) -> None:
+        """Written as a metadata update, which leaves the stored grants alone (on_new_records would replace them)."""
         self._stub_source(connector, stored_group="sf-1")
-        connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+        connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=None)
 
         update = await connector._process_dropbox_entry(self._file(), "dbmid:a", "a@x.com", "sf-1", False)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        connector.data_entities_processor.on_record_metadata_update = AsyncMock()
+        connector.data_entities_processor.on_record_content_update = AsyncMock()
+        await connector._write_updates([update], "test")
 
-        assert update.is_updated is True
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        assert (connector.data_entities_processor.on_record_metadata_update.await_count
+                + connector.data_entities_processor.on_record_content_update.await_count) == 1
 
 
 def test_the_team_connector_is_registered_as_a_connector() -> None:
