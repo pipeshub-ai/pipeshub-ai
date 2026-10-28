@@ -990,10 +990,20 @@ class TestInterruptedMoves:
         off = FilterCollection(filters=[Filter(key="index_stage_tables", value=False, type="boolean", operator="is")])
         world.catalog.rename(("other", "renamed"))
         world.store.fail_moves = True  # the move fails after the checkpoint is saved
-        world.connector._save_state = AsyncMock(side_effect=[True, Crash()])
+        save, checkpoints = world.connector._save_state, []
+
+        async def save_checkpoints_only(states, *, checkpoint=False) -> bool:
+            if not checkpoint:
+                raise Crash()
+            checkpoints.append(states)
+            return await save(states, checkpoint=True)
+
+        world.connector._save_state = save_checkpoints_only
         with pytest.raises(Crash):
             await world.sync(indexing=off)
         del world.connector._save_state
+        assert checkpoints and world.point.data[SYNC_STATE_KEY]["table_states"] == json.dumps(
+            {fqn: state.model_dump() for fqn, state in checkpoints[-1].items()})
         world.store.fail_moves = False
         assert world.point.data[SYNC_STATE_KEY]["values_allowed"] is True
         await world.sync(indexing=off)
