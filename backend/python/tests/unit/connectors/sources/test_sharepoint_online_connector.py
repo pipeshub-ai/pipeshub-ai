@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from azure.core.exceptions import ClientAuthenticationError, ServiceRequestError
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from azure.identity import CredentialUnavailableError
 from fastapi import HTTPException
 
@@ -3767,8 +3771,11 @@ class TestInitSetupErrors:
     @pytest.mark.parametrize(("cause", "title"), [
         (CredentialUnavailableError(message="no credential"), "SharePoint authentication failed"),
         (ClientAuthenticationError(message=_WRONG_SECRET), "SharePoint authentication configuration error"),
-        (ServiceRequestError("Cannot connect to host contoso.sharepoint.com:443"), "SharePoint authentication Failed"),
-    ], ids=["credential unavailable", "sign-in rejected", "other failure"])
+        (ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"),
+         "SharePoint could not reach Microsoft"),
+        (ServiceResponseError("Connection reset by peer"), "SharePoint could not reach Microsoft"),
+        (RuntimeError("unexpected"), "SharePoint authentication Failed"),
+    ], ids=["credential unavailable", "sign-in rejected", "no connection", "connection dropped", "other failure"])
     async def test_a_sharepoint_token_failure_at_init_notifies_the_creator_and_still_raises(
         self, cause: Exception, title: str,
     ) -> None:
@@ -3780,6 +3787,40 @@ class TestInitSetupErrors:
         notify.assert_awaited_once()
         assert notify.await_args.kwargs["title"] == title
         assert notify.await_args.kwargs["recipient_user_ids"] == ["test-user-id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("cause", "raised", "title", "says"), [
+        (CredentialUnavailableError(message="no credential"), ValueError,
+         "SharePoint authentication failed", "verify the connector authentication credentials"),
+        (ClientAuthenticationError(message=_WRONG_SECRET), ConnectorInitError,
+         "SharePoint authentication failed", "client secret is wrong"),
+        (ClientAuthenticationError(message="AADSTS500011: The resource principal named https://graph.microsoft.com "
+                                           "was not found."), ConnectorInitError,
+         "SharePoint authentication failed", "grant admin consent"),
+        (ClientAuthenticationError(message="AADSTS90033: A transient error has occurred."), ValueError,
+         "SharePoint authentication failed", "AADSTS90033"),
+        (ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"), ValueError,
+         "SharePoint could not reach Microsoft", "temporary network problem"),
+        (ServiceResponseError("Connection reset by peer"), ValueError,
+         "SharePoint could not reach Microsoft", "temporary network problem"),
+        (RuntimeError("unexpected"), ValueError,
+         "SharePoint authentication failed", "Microsoft Graph access token"),
+    ], ids=["credential unavailable", "known sign-in code", "unknown resource", "unrecognised sign-in code",
+            "no connection", "connection dropped", "other failure"])
+    async def test_a_graph_token_failure_at_init_notifies_the_creator_once_and_still_raises(
+        self, cause: Exception, raised: type, title: str, says: str,
+    ) -> None:
+        notify = AsyncMock()
+        with patch.object(SharePointConnector, "notify", notify):
+            error, _ = await self._init_with(_SECRET_AUTH, cause)
+
+        assert type(error) is raised
+        notify.assert_awaited_once()
+        notice = notify.await_args.kwargs
+        assert notice["title"] == title
+        assert says in notice["message"]
+        assert "host URL" not in notice["message"]
+        assert notice["recipient_user_ids"] == ["test-user-id"]
 
     @pytest.mark.asyncio
     async def test_an_unknown_graph_resource_does_not_blame_the_sharepoint_domain(self) -> None:
