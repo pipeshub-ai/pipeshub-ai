@@ -415,6 +415,8 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
 # Backstops against a server that keeps pointing to more pages.
 _MAX_SEARCH_PAGES = 50
 _MAX_CREATE_FIELD_PAGES = 100
+# Options listed per field in get_create_issue_fields; the rest are counted, not shown.
+_MAX_LISTED_ALLOWED_VALUES = 20
 
 
 def _next_page_token(page: dict) -> str | None:
@@ -945,7 +947,7 @@ class Jira:
     def _parse_allowed_values(self, raw: list[Any]) -> list[dict[str, Any]]:
         """Normalise the allowedValues list from a createmeta field response."""
         result: list[dict[str, Any]] = []
-        for av in raw[:20]:
+        for av in raw:
             if not isinstance(av, dict):
                 continue
             entry: dict[str, Any] = {}
@@ -1083,12 +1085,14 @@ class Jira:
                 if not field_id:
                     continue
                 meta_schema = f.get("schema") or {}
+                values = self._parse_allowed_values(f.get("allowedValues") or [])
                 fields_by_id[field_id] = {
                     "field_id": field_id,
                     "name": f.get("name", field_id),
                     "required": bool(f.get("required", False)),
                     "schema_type": meta_schema.get("type", "string"),
-                    "allowed_values": self._parse_allowed_values(f.get("allowedValues") or []),
+                    "allowed_values": values[:_MAX_LISTED_ALLOWED_VALUES],
+                    "allowed_values_omitted": max(0, len(values) - _MAX_LISTED_ALLOWED_VALUES),
                     "has_default_value": bool(f.get("hasDefaultValue", False)),
                     "operations": f.get("operations") or [],
                 }
@@ -1736,6 +1740,13 @@ class Jira:
                 avs = f.get("allowed_values") or []
                 if avs:
                     out["allowed_values"] = avs
+                omitted = f.get("allowed_values_omitted")
+                if omitted:
+                    out["more_values"] = (
+                        f"{omitted} more options are not listed. To use one, pass its label: "
+                        "{'value': '<label>'} for option fields, or {'name': '<label>'} "
+                        "for priority, component and version fields."
+                    )
                 if f.get("has_default_value"):
                     out["has_default_value"] = True
                     out["note"] = "Jira will auto-fill this field if not provided"
