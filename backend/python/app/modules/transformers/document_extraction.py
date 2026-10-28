@@ -262,8 +262,8 @@ class SubCategories(BaseModel):
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
         description=(
-            "The department whose work this document mainly is, first; a second only when the "
-            "document is equally another department's own work. At most 2."
+            "The department that owns the document (wrote it, maintains it or runs its work) first; "
+            "a second when it is also directly another department's work. At most 2."
         )
     )
     category: str = Field(description="Main category this document belongs to")
@@ -275,7 +275,7 @@ class DocumentClassification(BaseModel):
     )
     topics: list[str] = Field(
         description=(
-            "2 to 5 reusable subjects a reader would look for across documents, lowercase except "
+            "2 to 5 (usually 2 or 3) reusable subjects a reader would look for across documents, lowercase except "
             "acronyms; never a person, company, document title, date, amount or id"
         )
     )
