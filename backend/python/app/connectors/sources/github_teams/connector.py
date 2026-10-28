@@ -79,7 +79,7 @@ from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
 from .comments import CommentsHelper
-from .constants import HTTP_UNAUTHORIZED
+from .constants import HTTP_TOO_MANY_REQUESTS, HTTP_UNAUTHORIZED
 from .filters import FiltersHelper
 from .issue_reconciler import IssueReconciler
 from .issues import IssuesSync
@@ -338,6 +338,17 @@ class GitHubTeamsConnector(BaseConnector):
                 raise ConnectorInitError(
                     f"GitHub rejected the credentials ({response.api_message or 'Bad credentials'}). "
                     "Reconnect this connector with a valid token."
+                )
+            if response.status_code == HTTP_TOO_MANY_REQUESTS:
+                # The token is fine: GitHub's hourly limit is spent, or PipesHub is holding back
+                # the reserve it leaves for the account's other tools. "Verify your credentials"
+                # sent admins to rotate a working token.
+                wait = response.retry_after_seconds
+                when = f"in about {max(1, round(wait / 60))} min" if wait else "after GitHub's hourly reset"
+                raise ConnectorInitError(
+                    "GitHub's API rate limit for this token is used up for now "
+                    f"({response.api_message or response.error}). The credentials are fine; "
+                    f"try again {when}."
                 )
             return False
         except ConnectorInitError:

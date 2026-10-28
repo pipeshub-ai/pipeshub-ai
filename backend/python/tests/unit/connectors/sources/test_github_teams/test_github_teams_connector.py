@@ -193,6 +193,33 @@ class TestConnectionAndAccess:
         with pytest.raises(ConnectorInitError, match="rejected the credentials"):
             await GitHubTeamsConnector.test_connection_and_access(c)
 
+    async def test_a_spent_rate_limit_says_so_rather_than_blaming_the_credentials(self) -> None:
+        c = make_mock_connector()
+        res = failed_response(
+            "HTTP 429: PipesHub paused GitHub core requests with 458 of 5000 left until the limit resets in 215s",
+            status_code=429,
+        )
+        res.api_message = "GitHub core rate limit reserve reached"
+        res.retry_after_seconds = 215
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError) as err:
+            await GitHubTeamsConnector.test_connection_and_access(c)
+        message = str(err.value)
+        assert "rate limit" in message
+        assert "reserve reached" in message
+        assert "credentials are fine" in message
+        assert "in about 4 min" in message
+
+    async def test_a_spent_rate_limit_without_a_wait_names_the_hourly_reset(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("HTTP 429: rate limited", status_code=429)
+        res.api_message = None
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="after GitHub's hourly reset"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
     async def test_exception_returns_false(self) -> None:
         c = make_mock_connector()
         c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("network"))
