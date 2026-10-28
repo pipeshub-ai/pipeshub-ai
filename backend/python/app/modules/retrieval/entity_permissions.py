@@ -677,8 +677,10 @@ async def readable_spellings(
     graph_provider: "IGraphDBProvider", org_id: str, entity_ids: list[str], record_ids: list[str],
 ) -> dict[str, str]:
     """Each named entity's most frequent spelling on its mention edges in
-    ``record_ids`` (records the caller can read), ties alphabetical. An entity
-    none of them spells is left out, never given its stored name."""
+    ``record_ids`` (records the caller can read); a tie goes to the fuller one
+    ("Miguel Gallagher" over "Miguel", written on the same edge), then
+    alphabetically. An entity none of them spells is left out, never given its
+    stored name."""
     if not entity_ids or not record_ids:
         return {}
     rows = await graph_provider.get_named_entity_mentions_in_records(org_id, entity_ids, record_ids)
@@ -689,7 +691,7 @@ async def readable_spellings(
                 per_entity = counts.setdefault(str(row.get("entityId")), {})
                 per_entity[spelling.strip()] = per_entity.get(spelling.strip(), 0) + 1
     return {
-        entity_id: min(spellings.items(), key=lambda item: (-item[1], item[0]))[0]
+        entity_id: min(spellings.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))[0]
         for entity_id, spellings in counts.items()
     }
 

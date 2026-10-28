@@ -1097,11 +1097,12 @@ class TestNamedEntityNamesComeFromReadableRecords:
         ])
 
     @pytest.mark.asyncio
-    async def test_the_most_frequent_readable_spelling_is_shown_and_ties_are_alphabetical(self) -> None:
+    async def test_the_most_frequent_readable_spelling_is_shown_and_a_tie_goes_to_the_fuller_one(self) -> None:
         graph = self._graph([
             {"recordId": "r-open", "entityId": "e1", "extractedNames": ["Halcyon Ledger", "Halcyon"]},
             {"recordId": "r-open-2", "entityId": "e1", "extractedNames": ["Halcyon Ledger"]},
             {"recordId": "r-open", "entityId": "e2", "extractedNames": ["Quillfeather plc", "Quillfeather Holdings"]},
+            {"recordId": "r-open-2", "entityId": "e2", "extractedNames": ["Quillfeather"]},
         ])
 
         hits = await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
