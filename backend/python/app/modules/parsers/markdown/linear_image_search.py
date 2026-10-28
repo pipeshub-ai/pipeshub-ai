@@ -174,25 +174,13 @@ class LinearImageSearch:
         self._pattern = pattern
         self._opener = opener
         self._accept = accept
-        # The last search, so a loop that calls ``search(text, pos)`` with a
-        # growing ``pos`` does not repeat a scan that already found nothing.
-        self._last: tuple[str, int, re.Match[str] | None] | None = None
 
     @property
     def pattern(self) -> str:
         return self._pattern.pattern
 
     def search(self, text: str, pos: int = 0) -> re.Match[str] | None:
-        last = self._last
-        if last is not None and last[0] is text and pos >= last[1]:
-            found = last[2]
-            if found is None:
-                return None
-            if found.start() >= pos:
-                return found
-        found = self._search(text, pos)
-        self._last = (text, pos, found)
-        return found
+        return self._search(text, pos)
 
     def _search(self, text: str, pos: int) -> re.Match[str] | None:
         scan = _Scan(text)
@@ -231,10 +219,17 @@ class LinearImageSearch:
 _BANG_BRACKET: Final = re.compile(r"!\[")
 
 # Converter patterns: link text may hold one level of ``[...]``.
+# The quantifiers in the destination are possessive so that no two of them can
+# split the same characters between them: with plain ``\s+`` inside ``(...)*``
+# a run of k spaces had 2**k splits and ``![a](data:`` + 30 spaces + ``"t" )``
+# ran for minutes. A possessive run gives the same matches: where the old
+# pattern backtracked into a run, the first split that could succeed was "all
+# but the last space" (the last one is left for the title), which the second
+# alternative reproduces, so even the captured destination is unchanged.
 MD_IMAGE_NESTED: Final = LinearImageSearch(
     re.compile(
         r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
-        r'(data:(?:[^"\s)]|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
+        r'(data:(?:[^"\s)]|(?:\s++(?!"[^"]*"\s*\))|(?:\s(?=\s))++)|"[^")]*+)*|[^\s)]++)'
         r'(?:\s+"[^"]*")?\)'
     ),
     _BANG_BRACKET,

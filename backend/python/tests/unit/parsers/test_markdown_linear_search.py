@@ -87,7 +87,7 @@ def test_parity_on_realistic_images() -> None:
 # Each family is a repeated opener that used to cost O(n^2) in the regex.
 FAMILIES = [
     "<![CDATA[", "![", "![a", "![a[", "![x[y]", "![a](", "![a](x", "![a](x ", "![a](data:x ",
-    '![a](x "', "![a][", "[a\n", "<img ", '<img alt="', '<img alt="x" ',
+    '![a](x "', '![a](data:x   "t" ) ', '![a](data: "t" ) ', '![a](x    "t" ) ', '![a](data:"q   "t" ) ', "![a][", "[a\n", "<img ", '<img alt="', '<img alt="x" ',
 ]
 
 
@@ -188,3 +188,39 @@ async def test_large_html_image_extraction_does_not_block_the_event_loop() -> No
 
     worst = await _worst_loop_gap(run)
     assert worst < 0.2, worst
+
+
+WS_PIECES = [
+    "![a](data:", "![a](", " ", " ", "\t", "\n", '"t"', '"', "x", ")", "(", "]", "[", "![", "data:",
+    '"t" )', "a)", ' "t"',
+]
+
+
+@pytest.mark.parametrize("name", ["MD_IMAGE_NESTED"])
+def test_parity_with_whitespace_runs_before_titles_and_inside_data_uris(name: str) -> None:
+    rng = random.Random(77)
+    # Runs stay short: the plain regex is exponential in the run length.
+    for _ in range(20000):
+        text = "".join(rng.choice(WS_PIECES) for _ in range(rng.randint(1, 14)))
+        if len(re.findall(r"\s", text)) > 16:
+            continue
+        _same(name, text)
+
+
+@pytest.mark.parametrize("spaces", [22, 24, 26, 1000, 100_000])
+@pytest.mark.parametrize(
+    "template",
+    [
+        '![a](data:{ws}"t" )',
+        '![a](data:x{ws}"t" )',
+        '![a](data:"q{ws}"t" ) ',
+        '![a](data:{ws}"t")',
+        '![a](data:{ws}x)',
+        '![a](x{ws}"t" )',
+    ],
+)
+def test_whitespace_run_in_a_destination_is_not_exponential(template: str, spaces: int) -> None:
+    text = template.format(ws=" " * spaces)
+    for fn in (lis.MD_IMAGE_NESTED.search, lambda t: list(lis.MD_IMAGE_NESTED.finditer(t))):
+        elapsed = min(_cpu(fn, text) for _ in range(3))
+        assert elapsed < 0.05, (template, spaces, elapsed)

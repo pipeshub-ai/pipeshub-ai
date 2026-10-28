@@ -28,6 +28,7 @@ from app.modules.parsers.link_text import link_destination_end
 from app.modules.parsers.markdown.linear_image_search import (
     HTML_IMG_ALT,
     MD_IMAGE_NESTED,
+    LinearImageSearch,
 )
 from app.modules.parsers.text_splitting import split_long_text
 from app.modules.transformers.block_container_validator import strip_base64_images
@@ -65,9 +66,29 @@ class _TableCell:
     images: list[Token] = field(default_factory=list)
 
 
-def _next_image_match(text: str, start: int) -> re.Match[str] | None:
-    md_match = _MD_IMAGE_RE.search(text, start)
-    html_match = _HTML_IMG_ALT_RE.search(text, start)
+_NOT_SEARCHED = object()
+
+
+def _next_image_match(
+    text: str, start: int, cache: dict[str, object] | None = None
+) -> re.Match[str] | None:
+    """Earliest image match at or after *start*.
+
+    *cache* holds each pattern's last result for one text, so a loop with a
+    growing *start* does not search again for a match it already found (or
+    proved absent).
+    """
+    cache = {} if cache is None else cache
+
+    def find(key: str, pattern: LinearImageSearch) -> re.Match[str] | None:
+        found = cache.get(key, _NOT_SEARCHED)
+        if found is _NOT_SEARCHED or (found is not None and found.start() < start):  # type: ignore[union-attr]
+            found = pattern.search(text, start)
+            cache[key] = found
+        return found  # type: ignore[return-value]
+
+    md_match = find("md", _MD_IMAGE_RE)
+    html_match = find("html", _HTML_IMG_ALT_RE)
     if md_match is None:
         return html_match
     if html_match is None:
@@ -86,8 +107,9 @@ def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
 
     segments: list[_Segment] = []
     pos = 0
+    cache: dict[str, object] = {}
     while pos < len(raw):
-        match = _next_image_match(raw, pos)
+        match = _next_image_match(raw, pos, cache)
         if match is None:
             tail = raw[pos:]
             if tail.strip():
