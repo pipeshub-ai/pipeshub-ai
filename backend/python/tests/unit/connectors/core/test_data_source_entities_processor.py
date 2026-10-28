@@ -308,6 +308,40 @@ class TestAccessRuleFollowsTheSource:
         tx_store.batch_update_nodes.assert_not_called()
 
 
+class TestAPlaceholderWritesNoContentEdges:
+    """A stub names no one and links nothing. Connectors save stubs through the
+    same record save (ancestor backfills), and a real sync of the same record
+    can land first; the stub's empty lists must not replace the real record's
+    links, people or mentions."""
+
+    @staticmethod
+    def _stub(record_class, record_type, **fields):
+        return record_class(
+            id="rec-1", org_id="org-1", external_record_id="ext-1", record_name="r",
+            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1", version=1, source_created_at=1000, source_updated_at=2000,
+            record_type=record_type, is_placeholder=True, **fields,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make", [
+        lambda c: c._stub(TicketRecord, RecordType.TICKET, assignee_email="a@x.com", related_external_records=[]),
+        lambda c: c._stub(_MessageRecord, RecordType.MESSAGE, related_external_records=[]),
+    ])
+    async def test_a_stub_saved_over_the_real_record_leaves_its_edges(self, make) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        existing = TestAccessRuleFollowsTheSource._existing("OPEN")
+        tx_store.get_record_by_external_id.return_value = existing
+        tx_store.batch_update_nodes = AsyncMock()
+
+        await proc._process_record(make(self), [], tx_store)
+
+        tx_store.delete_edges_by_relationship_types.assert_not_awaited()
+        tx_store.delete_edges_from.assert_not_awaited()
+        tx_store.delete_edges_to.assert_not_awaited()
+        tx_store.get_user_by_email.assert_not_awaited()
+
+
 class TestCreatePlaceholderPullRequest:
     def test_pull_request_type(self):
         """Creates PullRequestRecord placeholder for PULL_REQUEST type."""

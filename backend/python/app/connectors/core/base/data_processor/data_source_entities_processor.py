@@ -2370,6 +2370,39 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
+    async def _write_content_edges(self, record: Record, tx_store: TransactionStore) -> None:
+        """The edges a record's own content implies: links, people, mentions."""
+        # Handle related external records (issue links, project links, FK relations, etc.)
+        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
+        # to clean up stale link edges even when related_external_records is empty (handles removed links)
+        # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
+        # are the addresses and issue keys in its text (see record_links). An
+        # edit can remove one, so they are always cleaned up as well.
+        # None, unlike [], means the connector did not read the record's links on
+        # this save (a Slack reindex): its link edges are kept as they are.
+        if (
+            isinstance(
+                record,
+                (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
+            )
+            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+        ):
+            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+
+        # Records that pasted this record's address before it was indexed. On
+        # every save: on Neo4j's default auto-commit sessions the record row is
+        # already stored when this read runs, so skipping a same-address re-save
+        # would leave a failed read unrepaired for good.
+        await self._join_records_linking_here(record, tx_store)
+
+        # Edges to the members a ticket, project, mail, comment, pull request
+        # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
+        await self._handle_record_people(record, tx_store)
+
+        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
+        if isinstance(record, MessageRecord):
+            await self._handle_message_entity_edges(record, tx_store)
+
     async def _process_record(
         self,
         record: Record,
@@ -2713,36 +2746,12 @@ class DataSourceEntitiesProcessor:
         if existing_record is not None:
             pending_moves = await self._handle_updated_record(record, existing_record, tx_store, old_path)
 
-        # Handle related external records (issue links, project links, FK relations, etc.)
-        # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
-        # to clean up stale link edges even when related_external_records is empty (handles removed links)
-        # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
-        # are the addresses and issue keys in its text (see record_links). An
-        # edit can remove one, so they are always cleaned up as well.
-        # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
-        if (
-            isinstance(
-                record,
-                (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
-            )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
-        ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
-
-        # Records that pasted this record's address before it was indexed. On
-        # every save: on Neo4j's default auto-commit sessions the record row is
-        # already stored when this read runs, so skipping a same-address re-save
-        # would leave a failed read unrepaired for good.
-        await self._join_records_linking_here(record, tx_store)
-
-        # Edges to the members a ticket, project, mail, comment, pull request
-        # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
-        await self._handle_record_people(record, tx_store)
-
-        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
-        if isinstance(record, MessageRecord):
-            await self._handle_message_entity_edges(record, tx_store)
+        # The edges below come from what the record says: its links, the people
+        # it names, who it mentions. A placeholder says none of that, and one
+        # saved over the real record (an ancestor backfill racing the record's
+        # own sync) would replace the real record's edges with nothing.
+        if not record.is_placeholder:
+            await self._write_content_edges(record, tx_store)
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         # A full sync no longer deletes permission edges before it starts, so the
