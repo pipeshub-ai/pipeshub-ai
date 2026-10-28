@@ -192,6 +192,19 @@ export function CreateOAuthApplicationPanel({
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(
     () => new Set()
   );
+  // Once per opening: the list reloads when `t` changes (a language switch),
+  // and that must not undo the user's edits.
+  const defaultsAppliedRef = useRef(false);
+
+  const applyLoadedScopes = useCallback(
+    (scopes: Record<string, OAuthScopeItem[]>) => {
+      setScopesByCategory(scopes);
+      if (defaultsAppliedRef.current) return;
+      defaultsAppliedRef.current = true;
+      setSelectedScopes(defaultScopeSelection(scopes));
+    },
+    []
+  );
 
   const [isCreating, setIsCreating] = useState(false);
 
@@ -245,6 +258,7 @@ export function CreateOAuthApplicationPanel({
       setScopesByCategory(null);
       setScopesError(null);
       setSelectedScopes(new Set());
+      defaultsAppliedRef.current = false;
       setIsCreating(false);
       setCreatedCredentials(null);
       setShowClientSecret(false);
@@ -260,10 +274,7 @@ export function CreateOAuthApplicationPanel({
     const loadScopes = async () => {
       try {
         const data = await Oauth2Api.getScopes();
-        if (cancelled) return;
-        const scopes = data.scopes ?? {};
-        setScopesByCategory(scopes);
-        setSelectedScopes(defaultScopeSelection(scopes));
+        if (!cancelled) applyLoadedScopes(data.scopes ?? {});
       } catch {
         if (!cancelled) {
           setScopesError(t('workspace.oauth2.create.scopesLoadError'));
@@ -278,7 +289,7 @@ export function CreateOAuthApplicationPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, t]);
+  }, [open, t, applyLoadedScopes]);
 
   useEffect(() => {
     if (usesAuthorizationCode) return;
@@ -1170,11 +1181,7 @@ export function CreateOAuthApplicationPanel({
                       setScopesError(null);
                       setScopesLoading(true);
                       void Oauth2Api.getScopes()
-                        .then((data) => {
-                          const scopes = data.scopes ?? {};
-                          setScopesByCategory(scopes);
-                          setSelectedScopes(defaultScopeSelection(scopes));
-                        })
+                        .then((data) => applyLoadedScopes(data.scopes ?? {}))
                         .catch(() =>
                           setScopesError(t('workspace.oauth2.create.scopesLoadError'))
                         )

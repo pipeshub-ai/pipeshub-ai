@@ -1,6 +1,8 @@
 import React from 'react';
+import { Theme } from '@radix-ui/themes';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { getI18n } from 'react-i18next';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 
@@ -35,9 +37,33 @@ vi.mock('../../../../service-accounts/api', () => ({
   ServiceAccountsApi: { list: vi.fn().mockResolvedValue({ serviceAccounts: [] }) },
 }));
 
+import { Oauth2Api } from '../../api';
 import { CreateOAuthApplicationPanel } from '../create-oauth-application-panel';
 
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  await getI18n().changeLanguage('en-US');
+});
+
+async function renderOnScopesTab() {
+  installBrowserShims();
+  renderInTheme(<CreateOAuthApplicationPanel open onOpenChange={() => {}} />);
+  await screen.findAllByRole('tab');
+  const scopesTab = document.querySelector('[role="tab"][id$="-trigger-scopes"]') as HTMLElement;
+  fireEvent.mouseDown(scopesTab);
+  fireEvent.click(scopesTab);
+}
+
+async function openScopesTab() {
+  await renderOnScopesTab();
+  await screen.findByText('kb:read');
+  await waitFor(() => expect(scopeChecked('kb:read')).toBe('checked'));
+}
+
+function toggle(name: string) {
+  const row = screen.getByText(name).closest('div')?.parentElement;
+  fireEvent.click(row?.querySelector('[role="checkbox"]') as HTMLElement);
+}
 
 function scopeChecked(name: string): string | null {
   const row = screen.getByText(name).closest('div')?.parentElement;
@@ -46,16 +72,7 @@ function scopeChecked(name: string): string | null {
 
 describe('CreateOAuthApplicationPanel default scopes', () => {
   it('ticks the scopes MCP chat needs, and only the ones offered', async () => {
-    installBrowserShims();
-    renderInTheme(<CreateOAuthApplicationPanel open onOpenChange={() => {}} />);
-
-    await screen.findAllByRole('tab');
-    const scopesTab = document.querySelector('[role="tab"][id$="-trigger-scopes"]') as HTMLElement;
-    fireEvent.mouseDown(scopesTab);
-    fireEvent.click(scopesTab);
-    await screen.findByText('kb:read');
-
-    await waitFor(() => expect(scopeChecked('kb:read')).toBe('checked'));
+    await openScopesTab();
     for (const name of [
       'offline_access',
       'connector:read',
@@ -69,5 +86,60 @@ describe('CreateOAuthApplicationPanel default scopes', () => {
       expect(scopeChecked(name), name).toBe('unchecked');
     }
     expect(screen.queryByText('agent:execute')).toBeNull();
+  });
+
+  it('keeps the user\'s edits when the scope list reloads', async () => {
+    await openScopesTab();
+    toggle('kb:read');
+    toggle('kb:write');
+    expect(scopeChecked('kb:read')).toBe('unchecked');
+    expect(scopeChecked('kb:write')).toBe('checked');
+
+    // A language change gives useTranslation a new `t`, which reloads the scopes.
+    const loads = vi.mocked(Oauth2Api.getScopes).mock.calls.length;
+    await act(async () => {
+      await getI18n().changeLanguage('de-DE');
+    });
+    await waitFor(() => expect(vi.mocked(Oauth2Api.getScopes).mock.calls.length).toBeGreaterThan(loads));
+    await screen.findByText('kb:read');
+
+    expect(scopeChecked('kb:read')).toBe('unchecked');
+    expect(scopeChecked('kb:write')).toBe('checked');
+  });
+
+  it('ticks the defaults when the list loads on Retry', async () => {
+    vi.mocked(Oauth2Api.getScopes).mockRejectedValueOnce(new Error('offline'));
+    await renderOnScopesTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    await screen.findByText('kb:read');
+    await waitFor(() => expect(scopeChecked('kb:read')).toBe('checked'));
+    expect(scopeChecked('conversation:chat')).toBe('checked');
+    expect(scopeChecked('kb:write')).toBe('unchecked');
+  });
+
+  it('ticks the defaults again when the form is closed and reopened', async () => {
+    installBrowserShims();
+    const panel = (open: boolean) => (
+      <Theme>
+        <CreateOAuthApplicationPanel open={open} onOpenChange={() => {}} />
+      </Theme>
+    );
+    const { rerender } = render(panel(true));
+    await screen.findAllByRole('tab');
+    let scopesTab = document.querySelector('[role="tab"][id$="-trigger-scopes"]') as HTMLElement;
+    fireEvent.mouseDown(scopesTab);
+    fireEvent.click(scopesTab);
+    await waitFor(() => expect(scopeChecked('kb:read')).toBe('checked'));
+    toggle('kb:read');
+    expect(scopeChecked('kb:read')).toBe('unchecked');
+
+    rerender(panel(false));
+    rerender(panel(true));
+    await screen.findAllByRole('tab');
+    scopesTab = document.querySelector('[role="tab"][id$="-trigger-scopes"]') as HTMLElement;
+    fireEvent.mouseDown(scopesTab);
+    fireEvent.click(scopesTab);
+    await waitFor(() => expect(scopeChecked('kb:read')).toBe('checked'));
   });
 });
