@@ -7473,11 +7473,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Get user by email.
         """
-        bind_vars = {"email": email}
-        org_filter = ""
-        if org_id is not None:
-            org_filter = "FILTER user.orgId == @org_id"
-            bind_vars["org_id"] = org_id
+        scoped = org_id is not None
+        org_filter = "FILTER user.orgId == @org_id" if scoped else ""
+        bind_vars = {"email": email, **({"org_id": org_id} if scoped else {})}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             FILTER LOWER(user.email) == LOWER(@email)

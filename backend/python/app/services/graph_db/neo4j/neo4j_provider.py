@@ -5750,11 +5750,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> User | None:
         """Get user by email"""
         try:
-            parameters = {"email": email}
-            org_filter = ""
-            if org_id is not None:
-                org_filter = "AND u.orgId = $org_id"
-                parameters["org_id"] = org_id
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
             query = f"""
             MATCH (u:User)
             WHERE toLower(u.email) = toLower($email) {org_filter}
