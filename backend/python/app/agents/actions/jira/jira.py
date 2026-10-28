@@ -419,6 +419,17 @@ _MAX_CREATE_FIELD_PAGES = 100
 _MAX_LISTED_ALLOWED_VALUES = 20
 
 
+def _unlisted_option_hint(field: dict[str, Any], pass_via: str) -> str:
+    """How to pass an option get_create_issue_fields left out, in the shape the field takes."""
+    if pass_via == "named_parameter":
+        return "To use one, pass its name to the named parameter as Jira shows it."
+    is_list = field.get("schema_type") == "array"
+    kind = field.get("schema_items") if is_list else field.get("schema_type")
+    key = "name" if kind in ("version", "priority", "component") else "value"
+    shape = "{'" + key + "': '<label>'}"
+    return f"To use one, pass its label in custom_fields as {f'[{shape}]' if is_list else shape}."
+
+
 def _next_page_token(page: dict) -> str | None:
     """Jira's token for the next page of an enhanced search, or None on the last page."""
     token = page.get("nextPageToken")
@@ -1091,6 +1102,7 @@ class Jira:
                     "name": f.get("name", field_id),
                     "required": bool(f.get("required", False)),
                     "schema_type": meta_schema.get("type", "string"),
+                    "schema_items": meta_schema.get("items"),
                     "allowed_values": values[:_MAX_LISTED_ALLOWED_VALUES],
                     "allowed_values_omitted": max(0, len(values) - _MAX_LISTED_ALLOWED_VALUES),
                     "has_default_value": bool(f.get("hasDefaultValue", False)),
@@ -1743,9 +1755,7 @@ class Jira:
                 omitted = f.get("allowed_values_omitted")
                 if omitted:
                     out["more_values"] = (
-                        f"{omitted} more options are not listed. To use one, pass its label: "
-                        "{'value': '<label>'} for option fields, or {'name': '<label>'} "
-                        "for priority, component and version fields."
+                        f"{omitted} more options are not listed. {_unlisted_option_hint(f, out['pass_via'])}"
                     )
                 if f.get("has_default_value"):
                     out["has_default_value"] = True

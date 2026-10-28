@@ -927,7 +927,7 @@ class TestFetchCreateFields:
         jira.client.get_create_meta_field_options_v2 = AsyncMock(
             return_value=_mock_response(200, {
                 "values": [{"fieldId": "customfield_100", "name": "Team", "required": True,
-                            "schema": {"type": "option"}, "allowedValues": options}],
+                            "schema": {"type": "array", "items": "option"}, "allowedValues": options}],
                 "total": 1,
             }),
         )
@@ -935,6 +935,7 @@ class TestFetchCreateFields:
         assert err is None
         assert len(fields[0]["allowed_values"]) == 20
         assert fields[0]["allowed_values_omitted"] == 5
+        assert fields[0]["schema_items"] == "option"
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_api(self):
@@ -1211,6 +1212,26 @@ class TestGetCreateIssueFields:
         ], None))
         _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
         assert "more_values" not in json.loads(payload)["required_fields"][0]
+
+    @pytest.mark.parametrize(
+        ("field", "shape"),
+        [
+            ({"field_id": "customfield_1", "schema_type": "option"}, "as {'value': '<label>'}"),
+            ({"field_id": "customfield_2", "schema_type": "array", "schema_items": "option"}, "as [{'value': '<label>'}]"),
+            ({"field_id": "customfield_3", "schema_type": "array", "schema_items": "version"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "priority", "schema_type": "priority"}, "pass its name to the named parameter"),
+            ({"field_id": "components", "schema_type": "array", "schema_items": "component"}, "pass its name to the named parameter"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unlisted_option_hint_matches_the_field_shape(self, field: dict, shape: str) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {**field, "name": "F", "required": True, "allowed_values": [{"id": "1", "name": "A"}],
+             "allowed_values_omitted": 3, "has_default_value": False},
+        ], None))
+        _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        assert shape in json.loads(payload)["required_fields"][0]["more_values"]
 
 
 # ===========================================================================
