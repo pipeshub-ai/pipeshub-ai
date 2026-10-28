@@ -19,10 +19,8 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-import yaml
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -48,6 +46,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.sources.demo.fixture_loader import FIXTURE_PATH, load_fixture
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -65,7 +64,6 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 DEMO_CONNECTOR_NAME = "Demo"
 DEMO_ICON_PATH = "/icons/connectors/default.svg"
-FIXTURE_PATH = Path(__file__).parent / "fixture" / "acme-corp.yaml"
 
 _SYSTEM_TO_CONNECTOR = {
     "GITHUB": Connectors.GITHUB,
@@ -244,8 +242,7 @@ class DemoConnector(BaseConnector):
 
     def _load_fixture(self) -> dict[str, Any]:
         if self._fixture is None:
-            with FIXTURE_PATH.open(encoding="utf-8") as fh:
-                self._fixture = yaml.safe_load(fh)
+            self._fixture = load_fixture()
             self._bodies = self._render_bodies(self._fixture)
         return self._fixture
 
