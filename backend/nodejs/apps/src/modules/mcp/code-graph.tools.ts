@@ -73,45 +73,62 @@ const repo = z
   .min(1)
   .optional()
   .describe(
-    'Repository as `owner/name` (or just `name` when unique), from pipeshub_code_repos. ' +
-      'Optional when `record_id` is given.',
+    'Repo `owner/name` from pipeshub_code_repos; optional with `record_id`.',
   );
-const includeTests = z
-  .boolean()
-  .default(false)
-  .describe('Include test files and test symbols. False by default.');
+const includeTests = z.boolean().default(false).describe('Include test files.');
 const filePath = z
   .string()
   .min(1)
   .optional()
-  .describe('Repo-relative file path, copied from an earlier result.');
+  .describe('Repo-relative path from an earlier result.');
 const recordId = z
   .string()
   .min(1)
   .optional()
   .describe(
-    "A code file's `recordId` from a pipeshub_search hit; use it instead of `file_path`.",
+    "A code file's `recordId` from pipeshub_search, instead of `file_path`.",
   );
 const qualifiedName = z
   .string()
   .min(1)
   .optional()
   .describe(
-    'Symbol name exactly as results show it, e.g. `function:parse_config` or ' +
-      '`method:Client.fetch`. Copy it; the `function:`/`method:` prefix is not guessable.',
+    'Name exactly as a result gave it, e.g. `method:Client.fetch`; the prefix is not guessable.',
   );
 const edgeTypes = z
   .array(z.string())
   .optional()
-  .describe(
-    'Relations to follow (CALLS, IMPORTS, INHERITS, CONTAINS). Omit for all.',
-  );
+  .describe('CALLS, IMPORTS, INHERITS, CONTAINS; omit for all.');
+
+const repoRequired = repo
+  .unwrap()
+  .describe('Repo `owner/name` from pipeshub_code_repos.');
+
+// "40-80", and the "[40, 80]" models often send instead: a turn lost to a
+// validation error costs more than accepting it.
+const LINE_RANGE = /^\[?\s*\d+\s*[-,]\s*\d+\s*\]?$/;
 
 const COVERAGE =
-  'Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, ' +
-  'TypeScript and Java; other languages get calls matched by name. ' +
-  'A `coverage` field says when an answer may be incomplete, so confirm with ' +
-  'pipeshub_code_search (`mode: "text"`) before relying on an empty result.';
+  'The graph can miss calls made through callbacks or dynamic dispatch, and a ' +
+  '`coverage` field says when an answer may be incomplete: confirm an empty result ' +
+  'with pipeshub_code_search (`mode: "text"`) before relying on it.';
+
+// The query service writes its guidance with the in-product agent's tool
+// names; over MCP those tools have other names, which an agent cannot call.
+// Only guidance is rewritten: returned source can hold the same words.
+const GUIDANCE_FIELDS = ['note', 'hint', 'error', 'next'] as const;
+const MCP_TOOL_NAMES: Record<string, string> = {
+  get_neighbour: 'pipeshub_code_neighbours',
+  read_code: 'pipeshub_code_read',
+  search_code: 'pipeshub_code_search',
+  find_symbol_path: 'pipeshub_code_path',
+  query_code_graph: 'pipeshub_code_symbols',
+  search_semantic: 'pipeshub_code_semantic_search',
+};
+const INTERNAL_TOOL_NAMES = new RegExp(
+  `\\b(${Object.keys(MCP_TOOL_NAMES).join('|')})\\b`,
+  'g',
+);
 
 async function call(
   deps: CodeGraphToolDeps,
@@ -134,6 +151,15 @@ async function call(
       maxAttempts: 1,
     }).execute();
     const data: Record<string, unknown> = response.data ?? {};
+    for (const key of GUIDANCE_FIELDS) {
+      const value = data[key];
+      if (typeof value === 'string') {
+        data[key] = value.replace(
+          INTERNAL_TOOL_NAMES,
+          (name) => MCP_TOOL_NAMES[name] ?? name,
+        );
+      }
+    }
     const failed = response.statusCode >= 400 || 'error' in data;
     return {
       content: [{ type: 'text', text: JSON.stringify(data) }],
@@ -261,9 +287,7 @@ export function registerCodeGraphToolDefinitions(
         '(lists its children), a file (the symbols it defines, with line ranges) ' +
         'or a glob (`src/**`). Results are ranked by how connected each symbol is.',
       inputSchema: {
-        repo: repo
-          .unwrap()
-          .describe('Repository as `owner/name`, from pipeshub_code_repos.'),
+        repo: repoRequired,
         select: z
           .string()
           .min(1)
@@ -276,13 +300,7 @@ export function registerCodeGraphToolDefinitions(
           .describe(
             'Keep only these kinds, e.g. ["class","function","method"].',
           ),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(500)
-          .optional()
-          .describe('Maximum rows.'),
+        limit: z.number().int().min(1).max(500).optional(),
         include_tests: includeTests,
       },
       annotations: READ_ONLY,
@@ -341,15 +359,21 @@ export function registerCodeGraphToolDefinitions(
         qualified_name: qualifiedName,
         lines: z
           .string()
-          .regex(/^\d+-\d+$/)
+          .regex(LINE_RANGE)
           .optional()
-          .describe('A line range such as `40-80`.'),
+          .describe('A string such as "40-80", not an array.'),
         max_lines: z.number().int().min(1).max(2000).optional(),
         include_tests: includeTests,
       },
       annotations: READ_ONLY,
     },
-    async (args) => call(deps, HttpMethod.POST, '/read', args),
+    async (args) =>
+      call(deps, HttpMethod.POST, '/read', {
+        ...args,
+        ...(typeof args.lines === 'string'
+          ? { lines: args.lines.match(/\d+/g)?.join('-') }
+          : {}),
+      }),
   );
 
   server.registerTool(
@@ -360,9 +384,7 @@ export function registerCodeGraphToolDefinitions(
         'per hop. If only B reaches A, that path comes back with `reversed: true`. ' +
         `Edges across languages or over HTTP are not in the graph. ${COVERAGE}`,
       inputSchema: {
-        repo: repo
-          .unwrap()
-          .describe('Repository as `owner/name`, from pipeshub_code_repos.'),
+        repo: repoRequired,
         file_path_a: z.string().min(1),
         qualified_name_a: z.string().min(1),
         file_path_b: z.string().min(1),
@@ -386,10 +408,6 @@ export function registerCodeGraphToolDefinitions(
     async (args) => call(deps, HttpMethod.POST, '/path', args),
   );
 
-  const repoRequired = repo
-    .unwrap()
-    .describe('Repository as `owner/name`, from pipeshub_code_repos.');
-
   server.registerTool(
     'pipeshub_code_search',
     {
@@ -412,13 +430,7 @@ export function registerCodeGraphToolDefinitions(
           .describe(
             'Directory, file or glob to search. Required for text and regex.',
           ),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .optional()
-          .describe('Maximum matches.'),
+        limit: z.number().int().min(1).max(200).optional(),
         include_tests: includeTests,
       },
       annotations: READ_ONLY,
@@ -506,13 +518,7 @@ export function registerCodeGraphToolDefinitions(
         `hooks), conventional names and files first. ${COVERAGE}`,
       inputSchema: {
         repo: repoRequired,
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .optional()
-          .describe('Maximum entry points.'),
+        limit: z.number().int().min(1).max(200).optional(),
         include_tests: includeTests,
       },
       annotations: READ_ONLY,

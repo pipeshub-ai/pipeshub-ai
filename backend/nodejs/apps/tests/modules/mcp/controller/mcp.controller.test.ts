@@ -286,11 +286,12 @@ describe('MCP Controller — handleMCPRequest', () => {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     // A distinct user per test: the repo check is cached per caller.
-    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}) => {
+    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}, query: Record<string, string> = {}) => {
       const req = createMockRequest({
         headers: { authorization: 'Bearer t' },
         user: { userId, orgId: 'org-1', ...user },
         body,
+        query,
       })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
     }
@@ -333,6 +334,23 @@ describe('MCP Controller — handleMCPRequest', () => {
       fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
       await serve('cg-init', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
       expect(sdkServer._instructions).to.equal('Documents.' + CODE_GRAPH_INSTRUCTIONS)
+    })
+
+    it('sends only the code tools and their instructions for ?tools=code', async () => {
+      const docTool = { remove: sinon.stub() }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: { pipeshub_search: docTool },
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-code-only', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, {}, { tools: 'code' })
+      expect(docTool.remove.calledOnce).to.equal(true)
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+      expect(sdkServer._instructions).to.equal(CODE_GRAPH_INSTRUCTIONS.trimStart())
     })
 
     it('leaves the instructions alone when the caller can read no repo', async () => {

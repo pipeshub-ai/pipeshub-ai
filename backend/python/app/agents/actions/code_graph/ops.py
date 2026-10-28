@@ -237,14 +237,24 @@ async def _records_for_path(
     on ``codeFiles`` (keyed by record id) rather than on every block. Normally one
     id; more than one means two connectors indexed the same path, and the caller
     narrows by connector.
+
+    A path copied from the caller's checkout can carry a prefix the index does
+    not -- an absolute path, or a repo indexed from a subdirectory -- so on a
+    miss the longest indexed suffix of at least two parts answers instead.
     """
-    rows = await graph_provider.get_nodes_by_filters(
-        collection=_CODE_FILES,
-        filters={"orgId": org_id, "filePath": file_path},
-        return_fields=["_key"],
-        raise_on_error=True,
-    )
-    return [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
+    parts = [p for p in file_path.split("/") if p and p != "."]
+    candidates = [file_path] + ["/".join(parts[i:]) for i in range(len(parts) - 1)]
+    for candidate in dict.fromkeys(candidates):
+        rows = await graph_provider.get_nodes_by_filters(
+            collection=_CODE_FILES,
+            filters={"orgId": org_id, "filePath": candidate},
+            return_fields=["_key"],
+            raise_on_error=True,
+        )
+        keys = [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
+        if keys:
+            return keys
+    return []
 
 
 async def _choose_records(

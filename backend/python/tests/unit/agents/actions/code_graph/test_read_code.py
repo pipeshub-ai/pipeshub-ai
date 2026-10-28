@@ -86,3 +86,13 @@ class TestSymbolRead:
             assert "error" not in result, name
             assert result["code"] == TARGET_SRC
             assert result["qualified_name"] == "function:target"
+
+
+class TestCheckoutPaths:
+    async def test_a_path_with_a_prefix_the_index_lacks_still_reads(self) -> None:
+        for path in ("/home/me/repo/src/b.py", "repo/src/b.py", "./src/b.py"):
+            out = await _read(FakeGraphProvider(), file_path=path, qualified_name="function:target")
+            assert out.get("code") == TARGET_SRC, path
+
+    async def test_a_bare_file_name_is_not_guessed(self) -> None:
+        assert "error" in await _read(FakeGraphProvider(), file_path="b.py", qualified_name="function:target")

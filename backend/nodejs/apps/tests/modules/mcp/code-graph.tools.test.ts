@@ -114,6 +114,28 @@ describe('MCP code-graph tools', () => {
     expect(read.safeParse({ record_id: 'r1', lines: 'abc' }).success).to.equal(false)
   })
 
+  it('takes a line range written as a list and sends it as "a-b"', async () => {
+    const read = register().get('pipeshub_code_read')!
+    const schema = z.object(read.config.inputSchema)
+    for (const lines of ['40-80', '[40, 80]', '40,80']) {
+      expect(schema.safeParse({ record_id: 'r1', lines }).success, lines).to.equal(true)
+    }
+    fetchStub.resolves(jsonResponse(200, {}))
+    await read.handler({ repo: 'x/y', file_path: 'a.py', lines: '[40, 80]' })
+    expect(JSON.parse(fetchStub.firstCall.args[1].body).lines).to.equal('40-80')
+  })
+
+  it('names the MCP tools in guidance, never in returned code', async () => {
+    fetchStub.resolves(jsonResponse(200, {
+      note: 'Call get_neighbour on each `chain` entry next before read_code.',
+      code: 'def read_code(): pass',
+    }))
+    const result = await register().get('pipeshub_code_neighbours')!.handler({ repo: 'x/y', file_path: 'a.py' })
+    const out = JSON.parse(result.content[0].text)
+    expect(out.note).to.equal('Call pipeshub_code_neighbours on each `chain` entry next before pipeshub_code_read.')
+    expect(out.code).to.equal('def read_code(): pass')
+  })
+
   it('forwards each new tool to its own route', async () => {
     const tools = register()
     const routes: Record<string, string> = {

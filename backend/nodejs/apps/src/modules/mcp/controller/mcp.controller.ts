@@ -216,13 +216,26 @@ export const handleMCPRequest =
           `${req.user?.orgId}:${req.user?.userId}`,
         ))
       ) {
+        // A client asking for code only (`/mcp?tools=code`) is not sent the
+        // document tools or their instructions, which it would re-read every turn.
+        const codeOnly = req.query?.tools === 'code';
+        if (codeOnly) {
+          const tools = (
+            mcpServer as unknown as {
+              _registeredTools?: Record<string, { remove(): void }>;
+            }
+          )._registeredTools;
+          Object.values(tools ?? {}).forEach((tool) => tool.remove());
+        }
         // The package's McpServer is typed against its own zod 4; comparing that
         // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
         registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
         // shortcut: the SDK has no setter for instructions and @pipeshub-ai/mcp
         // builds them; move this there once it takes extra sections.
         const server = mcpServer.server as unknown as { _instructions?: string };
-        server._instructions = (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
+        server._instructions = codeOnly
+          ? CODE_GRAPH_INSTRUCTIONS.trimStart()
+          : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 
       await mcpServer.connect(transport);
