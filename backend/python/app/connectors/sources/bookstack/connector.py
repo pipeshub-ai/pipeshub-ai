@@ -1100,10 +1100,9 @@ class BookStackConnector(BaseConnector):
             if not raw.isdigit() or external_id in listed or (kind not in _GROUP_TYPES and kind != _SHELF):
                 continue
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
-            try:
-                await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id)
-            except Exception as e:
-                self.logger.warning(f"Could not remove {external_id}: {e}")
+            # The processor reports a failed removal as False, not as an exception.
+            if not await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id):
+                self.logger.warning(f"Could not remove {external_id}; it is tried again next sync")
                 done = False
         return done
 
@@ -1126,33 +1125,49 @@ class BookStackConnector(BaseConnector):
 
     #---------------------------Pages-----------------------------------#
     async def _sync_records_full(self) -> None:
-        """Every page within the filters, then the removal of the records of pages no longer listed."""
+        """Every page within the filters, then the removal of the records of pages no longer listed.
+
+        Each listing page is written before the next is read, so memory holds one listing page, one batch and
+        the listed ids. Only a listing read to the end removes anything.
+        """
         book_ids, book_ids_operator = self._get_book_id_filter()
         date_filters = self._get_date_filters()
         api_filters = self._build_date_filter_params(*date_filters)
-        listing = await self._list_all_pages(api_filters)
+        listed: set[str] = set()
+        batch: list[tuple[FileRecord, list[Permission]]] = []
+        offset = 0
+        while True:
+            listing = self._page_listing(await self.data_source.list_pages(
+                count=_LISTING_PAGE_SIZE, offset=offset, filter=api_filters))
+            if listing is None:
+                break
+            for page in listing["data"]:
+                if not page.get("id") or page.get("draft"):
+                    continue
+                if not self._page_passes_filters(page, book_ids, book_ids_operator, date_filters):
+                    continue
+                listed.add(f"page/{page['id']}")
+                prepared = await self._page_record(page)
+                if prepared is None:
+                    self._kept_unnoted_access = True
+                    continue
+                batch.append(prepared)
+                if len(batch) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch)
+                    batch = []
+            offset += len(listing["data"])
+            if offset >= listing["total"]:
+                break
+            if not listing["data"]:
+                # An empty page short of the total is a cut-off listing, not the end.
+                listing = None
+                break
+        if batch:
+            await self.data_entities_processor.on_new_records(batch)
         if listing is None:
             self._health.fail("the page listing")
             self._kept_unnoted_access = True
             return
-        listed: set[str] = set()
-        batch: List[Tuple[FileRecord, List[Permission]]] = []
-        for page in listing:
-            if not page.get("id") or page.get("draft"):
-                continue
-            if not self._page_passes_filters(page, book_ids, book_ids_operator, date_filters):
-                continue
-            listed.add(f"page/{page['id']}")
-            prepared = await self._page_record(page)
-            if prepared is None:
-                self._kept_unnoted_access = True
-                continue
-            batch.append(prepared)
-            if len(batch) >= self.batch_size:
-                await self.data_entities_processor.on_new_records(batch)
-                batch = []
-        if batch:
-            await self.data_entities_processor.on_new_records(batch)
         if not await self._remove_pages_not_listed(listed, book_ids, book_ids_operator, date_filters):
             self._health.fail("removing pages BookStack no longer has")
 
