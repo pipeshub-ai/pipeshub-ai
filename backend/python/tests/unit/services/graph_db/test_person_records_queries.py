@@ -176,6 +176,23 @@ class TestFindUsers:
         query = call.await_args.args[0]
         assert "[0..$limit]" in query or "SLICE(" in query
 
+    async def test_matches_are_ordered_before_the_cut_and_people_are_never_cut(self, provider) -> None:
+        p, call = provider
+        await p.find_users("org1", "ann", limit=3)
+        query = call.await_args.args[0]
+        cut = query.index("[0..$limit]") if "[0..$limit]" in query else query.index("SLICE(")
+        order = query.index("ORDER BY name, u.id") if "ORDER BY name" in query else query.index("SORT name, u._key")
+        assert order < cut
+        # Only the name matches are bounded; the same-email expansion is not.
+        assert query.count("$limit") + query.count("@limit") == 1
+
+    async def test_an_email_returns_all_of_its_nodes(self, provider) -> None:
+        p, call = provider
+        await p.find_users("org1", "ann@x.io", limit=1)
+        query = call.await_args.args[0]
+        binds = call.await_args.kwargs.get("parameters") or call.await_args.kwargs["bind_vars"]
+        assert "limit" not in query.lower() and "limit" not in binds
+
     async def test_blank_query_makes_no_call(self, provider) -> None:
         p, call = provider
         assert await p.find_users("org1", "   ") == []

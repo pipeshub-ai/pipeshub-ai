@@ -22244,16 +22244,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        params = {"org_id": org_id, "q": wanted, "limit": max(1, limit)}
         if "@" in wanted:
-            # An email names one person: skip the per-user name normalising.
+            # An email names one person: all their nodes, no name normalising.
             rows = await self.client.execute_query(
                 """
                 MATCH (u:User) WHERE u.orgId = $org_id AND toLower(u.email) = $q
                 RETURN u.id AS id, u.fullName AS fullName, u.email AS email
-                ORDER BY u.id LIMIT $limit
+                ORDER BY u.id
                 """,
-                parameters=params,
+                parameters={"org_id": org_id, "q": wanted},
             )
             return [dict(row) for row in rows or [] if row.get("id")]
         words = "[w IN split(toLower({}), ' ') WHERE w <> '']"
@@ -22264,11 +22263,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             f"""
             MATCH (u:User) WHERE u.orgId = $org_id
             WITH u, toLower(coalesce(u.email, '')) AS email, {name} AS name, {parts} AS parts
-            WITH u, email, email = $q OR name = $q OR parts = $q AS exact,
+            WITH u, email, name, email = $q OR name = $q OR parts = $q AS exact,
                  size($q) >= 3 AND (name STARTS WITH $q
                      OR any(w IN split(name, ' ') WHERE w STARTS WITH $q)
                      OR split(email, '@')[0] STARTS WITH $q) AS prefix
             WHERE exact OR prefix
+            WITH u, email, exact ORDER BY name, u.id
             WITH collect({{u: u, email: email, exact: exact}}) AS hits
             WITH hits, any(h IN hits WHERE h.exact) AS has_exact
             WITH [h IN hits WHERE h.exact OR NOT has_exact][0..$limit] AS kept
@@ -22276,9 +22276,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (o:User) WHERE o.orgId = $org_id AND (o IN matched OR toLower(o.email) IN emails)
             RETURN o.id AS id, o.fullName AS fullName, o.email AS email
             ORDER BY toLower(coalesce(o.fullName, o.email, '')), o.id
-            LIMIT $limit
             """,
-            parameters=params,
+            parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
         )
         return [dict(row) for row in rows or [] if row.get("id")]
 

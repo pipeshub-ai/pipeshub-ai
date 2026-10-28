@@ -21363,17 +21363,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not org_id or not wanted:
             return []
         users = CollectionNames.USERS.value
-        bind_vars = {"org_id": org_id, "q": wanted, "limit": max(1, limit)}
         if "@" in wanted:
-            # An email names one person: skip the per-user name normalising.
+            # An email names one person: all their nodes, no name normalising.
             rows = await self.execute_query(
                 f"""
                 FOR u IN {users}
                     FILTER u.orgId == @org_id AND LOWER(u.email) == @q
-                    SORT u._key LIMIT @limit
+                    SORT u._key
                     RETURN {{id: u._key, fullName: u.fullName, email: u.email}}
                 """,
-                bind_vars=bind_vars,
+                bind_vars={"org_id": org_id, "q": wanted},
             )
             return [dict(row) for row in rows or [] if row and row.get("id")]
         words = 'CONCAT_SEPARATOR(" ", SPLIT(LOWER({}), " ")[* FILTER CURRENT != ""])'
@@ -21389,6 +21388,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER exact OR (LENGTH(@q) >= 3 AND (STARTS_WITH(name, @q)
                         OR LENGTH(SPLIT(name, " ")[* FILTER STARTS_WITH(CURRENT, @q)]) > 0
                         OR STARTS_WITH(SPLIT(email, "@")[0], @q)))
+                    SORT name, u._key
                     RETURN {{key: u._key, email: email, exact: exact}}
             )
             LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
@@ -21397,11 +21397,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR o IN {users}
                 FILTER o.orgId == @org_id AND (o._key IN kept[*].key OR LOWER(o.email) IN emails)
                 SORT LOWER(NOT_NULL(o.fullName, o.email, "")), o._key
-                LIMIT @limit
                 RETURN {{id: o._key, fullName: o.fullName, email: o.email}}
         """
         rows = await self.execute_query(
-            query_aql, bind_vars=bind_vars,
+            query_aql, bind_vars={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
         )
         return [dict(row) for row in rows or [] if row and row.get("id")]
 
