@@ -5,6 +5,7 @@ entities the vector search returns; every access decision comes from graph
 calls, and any failure raises ``EntityAccessError`` instead of looking like
 "no access".
 """
+import asyncio
 import base64
 import json
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from app.modules.retrieval import entity_permissions as ep
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
+    EntitySearchTimedOut,
     get_entity_access_context,
     list_accessible_entity_records,
     search_entities_for_user,
@@ -1126,13 +1128,36 @@ class TestNamedEntityNamesComeFromReadableRecords:
             await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
 
     @pytest.mark.asyncio
-    async def test_only_each_entitys_newest_readable_records_are_read(self, monkeypatch) -> None:
-        monkeypatch.setattr(ep, "_NAMED_SPELLING_RECORDS", 1)
-        graph = self._graph([{"recordId": "r-open", "entityId": "e1", "extractedNames": ["Halcyon Ledger"]}])
+    async def test_a_stalled_spelling_lookup_is_a_timeout_when_nothing_is_kept(self, monkeypatch) -> None:
+        monkeypatch.setattr(ep, "NAME_LOOKUP_MIN_SECONDS", 0.01)
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.01)
+        graph = self._graph([])
 
-        await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+        async def _stall(*_: object) -> list[dict]:
+            await asyncio.sleep(5)
+            return []
 
-        assert graph.get_named_entity_mentions_in_records.await_args.args[2] == ["r-open"]
+        graph.get_named_entity_mentions_in_records = AsyncMock(side_effect=_stall)
+
+        with pytest.raises(EntitySearchTimedOut):
+            await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_an_unspelled_named_hit_is_an_empty_result_not_a_timeout(self, monkeypatch) -> None:
+        """The named lookup finished and found no spelling; a slow taxonomy walk
+        elsewhere does not turn that into a timeout."""
+        monkeypatch.setattr(ep, "NAME_LOOKUP_MIN_SECONDS", 0.05)
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.05)
+        graph = self._graph([])
+        store = _store([_hit("e1", "named_entity", 0.9, name="Halcyon Ledger Ltd (HR)"), _hit("t1", "topic", 0.5)])
+
+        async def _slow_links(*_: object, **__: object) -> list[dict]:
+            await asyncio.sleep(5)
+            return []
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_slow_links)
+
+        assert await search_entities_for_user(store, graph, _context(), "halcyon", top_k=5) == []
 
 
 class TestNamesWalkPastRecordsWithoutASpelling:

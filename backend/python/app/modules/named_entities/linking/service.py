@@ -72,8 +72,11 @@ class Linking:
 
 async def readable_names(graph: IGraphDBProvider, org_id: str, candidates: list[Candidate]) -> dict[str, str]:
     """Each candidate's most frequent spelling on the mention edges of readable
-    records it was found through. Every mention edge records its spelling, so
-    the stored-name fallback is reached only by a candidate with no record."""
+    records it was found through, else its stored name.
+
+    shortcut: the stored-name fallback is reached only when none of those edges
+    records a spelling (every writer sets one), so ``search_by_entities`` keeps it
+    rather than dropping the candidate; drop it if such edges ever appear."""
     names = {candidate.entity_id: candidate.name for candidate in candidates}
     record_ids = sorted({str(row["_key"]) for c in candidates for row in c.records if row.get("_key")})
     names.update(await readable_spellings(graph, org_id, sorted(names), record_ids))

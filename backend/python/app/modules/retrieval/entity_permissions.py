@@ -74,8 +74,6 @@ PROBE_MIN_SECONDS = 1.5
 # are still looked up, as one keyed query.
 NAME_LOOKUP_MIN_SECONDS = 1.0
 NAMED_ENTITY_TYPE = "named_entity"
-# Readable records per named entity whose mention edges are read to spell it.
-_NAMED_SPELLING_RECORDS = 50
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -466,6 +464,17 @@ async def _run_probes(
     return rounds, timed_out
 
 
+async def _all_or_none(*awaitables: Awaitable[object]) -> None:
+    """Await them together; when one fails, the others are cancelled, not left running."""
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
+
+
 async def _within(deadline: float, awaitable: Awaitable[_T]) -> _T:
     """Await ``awaitable``, giving up (TimeoutError) when ``deadline`` passes."""
     return await asyncio.wait_for(awaitable, timeout=max(0.0, deadline - time.monotonic()))
@@ -712,8 +721,8 @@ async def _names_from_permitted_records(
     out, or the search deadline passes. A node no readable record spells is
     left out, and so is one the deadline stopped; the latter is logged.
     Named entities are spelled from the records their probe already found
-    (their newest ``_NAMED_SPELLING_RECORDS``), with no further walk: every
-    mention edge records its spelling. Other entity types keep their name.
+    (its newest few), with no further walk: every mention edge records its
+    spelling. Other entity types keep their name.
     """
     shown = {
         (p.entity_type, p.entity_id): _stored_name(p)
@@ -747,9 +756,7 @@ async def _names_from_permitted_records(
         ]
 
     async def _spell_named() -> None:
-        record_ids = sorted({
-            r["_key"] for p in named for r in p.permitted[:_NAMED_SPELLING_RECORDS] if r.get("_key")
-        })
+        record_ids = sorted({r["_key"] for p in named for r in p.permitted if r.get("_key")})
         try:
             named_spellings.update(await readable_spellings(
                 graph_provider, context.org_id, [p.entity_id for p in named], record_ids,
@@ -757,14 +764,14 @@ async def _names_from_permitted_records(
         except Exception as exc:
             raise EntityAccessError("Entity name lookup failed") from exc
 
-    timed_out = False
+    timed_out = named_timed_out = False
     try:
         await _within(
             max(deadline, time.monotonic() + NAME_LOOKUP_MIN_SECONDS),
-            asyncio.gather(_look_up(r for p in extracted for r in p.permitted), _spell_named()),
+            _all_or_none(_look_up(r for p in extracted for r in p.permitted), _spell_named()),
         )
     except TimeoutError:
-        timed_out = True
+        timed_out = named_timed_out = True
     round_index = 0
     while not timed_out:
         pending = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
@@ -805,8 +812,10 @@ async def _names_from_permitted_records(
             break
 
     unnamed = [
-        *(p for p in extracted if not _own(p)), *(p for p in named if p.entity_id not in named_spellings),
-    ] if timed_out else []
+        *(p for p in extracted if not _own(p) and timed_out),
+        # Only a stopped lookup leaves a named entity unnamed; one that ran and found no spelling is just left out.
+        *(p for p in named if p.entity_id not in named_spellings and named_timed_out),
+    ]
     if unnamed:
         logger.info(
             "entity search org=%s left %d entities unnamed at the deadline after %d naming rounds",
