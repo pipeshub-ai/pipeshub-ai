@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,21 +54,6 @@ async def test_raises_on_nonzero_exit() -> None:
     ):
         with pytest.raises(DocumentProcessingError, match=r"failed \(exit code 1\)"):
             await convert_with_libreoffice(b"doc data", "doc", "docx")
-
-
-@pytest.mark.asyncio
-async def test_raises_on_timeout() -> None:
-    which_proc = _fake_proc(returncode=0)
-    convert_proc = _fake_proc(returncode=0)
-
-    with patch(
-        "asyncio.create_subprocess_exec",
-        AsyncMock(side_effect=[which_proc, convert_proc]),
-    ), patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.TimeoutError())):
-        with pytest.raises(DocumentProcessingError, match="timed out"):
-            await convert_with_libreoffice(b"doc data", "doc", "docx")
-
-    convert_proc.kill.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -170,6 +156,24 @@ async def test_a_timed_out_conversion_that_ignores_terminate_is_killed(monkeypat
     assert started[0].returncode is not None
     # The indexer runs this conversion in-process: a timeout must not be retried forever.
     assert MessageErrorClassifier.classify_by_exception(caught.value) == MessageErrorType.TERMINAL
+
+
+@pytest.mark.asyncio
+async def test_stop_process_kills_a_child_that_outlives_its_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Like oosplash -> soffice.bin: the launcher dies on TERM, its child ignores TERM.
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 0.5)
+    launcher = await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "sh -c \"trap '' TERM; echo ready; exec sleep 60\" & wait",
+        stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert await asyncio.wait_for(launcher.stdout.readline(), timeout=5) == b"ready\n"
+
+    await libreoffice_convert.stop_process(launcher)
+
+    assert launcher.returncode == -signal.SIGTERM
+    # The child holds the launcher's stdout, so EOF means it is dead too.
+    assert await asyncio.wait_for(launcher.stdout.read(), timeout=5) == b""
 
 
 @pytest.mark.asyncio

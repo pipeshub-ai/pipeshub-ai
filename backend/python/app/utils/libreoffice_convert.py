@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 import tempfile
 import time
 from contextlib import contextmanager
@@ -112,17 +113,23 @@ def unreadable_file_as_parse_error(input_ext: str) -> Iterator[None]:
         ) from exc
 
 
+def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, sig)
+
+
 async def stop_process(process: asyncio.subprocess.Process) -> None:
-    """Terminate, then kill, then reap ``process``, never waiting without a bound."""
-    with contextlib.suppress(ProcessLookupError):
-        process.terminate()
-    try:
+    """Terminate, then kill, the process group of ``process`` (spawned with
+    ``start_new_session=True``), never waiting without a bound.
+
+    The launcher (oosplash) is not the converter: killing it alone leaves
+    soffice.bin running, so the whole group is killed even when the launcher
+    has already exited.
+    """
+    _signal_group(process, signal.SIGTERM)
+    with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
-        return
-    except asyncio.TimeoutError:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
+    _signal_group(process, signal.SIGKILL)
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
 
@@ -167,6 +174,7 @@ async def _run_libreoffice(binary: bytes, input_ext: str, output_ext: str, stem:
                 input_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(

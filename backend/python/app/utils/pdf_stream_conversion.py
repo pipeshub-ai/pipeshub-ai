@@ -73,6 +73,7 @@ async def libreoffice_to_pdf(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         try:
             _stdout, conversion_error = await asyncio.wait_for(
