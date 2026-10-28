@@ -2905,12 +2905,15 @@ class GoogleGmailTeamConnector(BaseConnector):
             if hasattr(self, 'admin_data_source') and self.admin_data_source:
                 self.admin_data_source = None
 
-            # Clear client references
-            if hasattr(self, 'gmail_client') and self.gmail_client:
-                self.gmail_client = None
-
-            if hasattr(self, 'admin_client') and self.admin_client:
-                self.admin_client = None
+            # Close each client's HTTP connections (httplib2 leaves sockets open), then drop it.
+            for name in ("gmail_client", "admin_client"):
+                client = getattr(self, name, None)
+                if client:
+                    try:
+                        client.get_client().close()
+                    except Exception as e:
+                        self.logger.warning(f"Could not close the Google {name}: {e}")
+                setattr(self, name, None)
 
             # Clear config
             self.config = None

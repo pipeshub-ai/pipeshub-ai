@@ -2570,33 +2570,30 @@ class SharePointConnector(BaseConnector):
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
-        if raise_errors:
-            return (await self.credential.get_token(f"{resource}/.default")).token
         try:
-            token = await self.credential.get_token(f"{resource}/.default")
-            return token.token
-        except CredentialUnavailableError as credential_error:
-            self.logger.error(
-                f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
-            )
-            await self._notify_token_failure(
+            return (await self.credential.get_token(f"{resource}/.default")).token
+        except Exception as error:
+            self.logger.error(f"❌ Failed to get a SharePoint token for {resource}: {sanitize_azure_error(error)}")
+            await self._notify_token_failure(*self._token_failure_notice(error))
+            if raise_errors:
+                raise
+            return None
+
+    @staticmethod
+    def _token_failure_notice(error: Exception) -> tuple[str, str]:
+        """The title and message of the notice telling the connector's creator a SharePoint token failed."""
+        if isinstance(error, CredentialUnavailableError):
+            return (
                 "SharePoint authentication failed",
                 "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
-            return None
-        except ClientAuthenticationError as auth_error:
-            title, message = get_sharepoint_auth_notification(auth_error)
-            self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self._notify_token_failure(title, message)
-            return None
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self._notify_token_failure(
-                "SharePoint authentication Failed",
-                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                "and connector authentication credentials.",
-            )
-            return None
+        if isinstance(error, ClientAuthenticationError):
+            return get_sharepoint_auth_notification(error)
+        return (
+            "SharePoint authentication Failed",
+            "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+            "and connector authentication credentials.",
+        )
 
     async def _notify_token_failure(self, title: str, message: str) -> None:
         if self._token_failure_notified:

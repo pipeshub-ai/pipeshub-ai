@@ -483,6 +483,28 @@ class TestCleanup:
         assert connector.config is None
 
     @pytest.mark.asyncio
+    async def test_cleanup_closes_both_google_clients(self, connector) -> None:
+        gmail_client, admin_client = MagicMock(), MagicMock()
+        connector.gmail_client, connector.admin_client = gmail_client, admin_client
+
+        await connector.cleanup()
+
+        gmail_client.get_client.return_value.close.assert_called_once_with()
+        admin_client.get_client.return_value.close.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_the_other_client_when_one_close_fails(self, connector) -> None:
+        gmail_client, admin_client = MagicMock(), MagicMock()
+        gmail_client.get_client.return_value.close.side_effect = OSError("socket already gone")
+        connector.gmail_client, connector.admin_client = gmail_client, admin_client
+
+        await connector.cleanup()
+
+        admin_client.get_client.return_value.close.assert_called_once_with()
+        assert connector.gmail_client is None
+        assert connector.admin_client is None
+
+    @pytest.mark.asyncio
     async def test_cleanup_handles_exception(self, connector):
         """Verify cleanup() catches internal exceptions gracefully."""
         connector.logger = MagicMock()
