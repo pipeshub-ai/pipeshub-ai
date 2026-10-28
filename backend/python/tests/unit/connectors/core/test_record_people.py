@@ -175,7 +175,7 @@ class TestWriteBehaviour:
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
         assert written == 0
-        store.delete_edges_from.assert_not_awaited()
+        store.delete_edges_between_collections.assert_not_awaited()
         store.batch_create_entity_relations.assert_not_awaited()
         assert "bob" not in caplog.text
 
@@ -196,7 +196,7 @@ class TestWriteBehaviour:
     async def test_a_genuinely_missing_user_still_lets_the_edges_be_replaced(self) -> None:
         store = _store()
         await link_record_people(_mail(from_email="stranger@else.com"), store, logging.getLogger("t"))
-        store.delete_edges_from.assert_awaited_once()
+        store.delete_edges_between_collections.assert_awaited_once()
 
     async def test_the_number_of_edges_per_record_is_capped(self, monkeypatch) -> None:
         monkeypatch.setattr(record_people, "MAX_LINKED_PEOPLE", 2)
@@ -276,7 +276,7 @@ class TestFailuresTheCallerMustSee:
         import pytest
 
         store = _store()
-        store.delete_edges_from = AsyncMock(side_effect=RuntimeError("deadlock"))
+        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("deadlock"))
         with pytest.raises(RuntimeError, match="deadlock"):
             await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
         store.batch_create_entity_relations.assert_not_awaited()
@@ -301,11 +301,11 @@ class TestFailuresTheCallerMustSee:
 
     async def test_other_failures_still_do_not_fail_the_record(self) -> None:
         store = _store()
-        store.delete_edges_from = AsyncMock(side_effect=RuntimeError("boom"))
+        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("boom"))
         store.get_user_by_email = AsyncMock(side_effect=RuntimeError("boom"))
         written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
         assert written == 0
-        store.delete_edges_from.assert_not_awaited()
+        store.delete_edges_between_collections.assert_not_awaited()
 
 
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:

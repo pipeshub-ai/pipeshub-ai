@@ -1,10 +1,10 @@
 """Operator command: link existing records to the members they name and the
-CRM accounts they belong to (KG-13).
+CRM accounts they belong to.
 
 New and updated records are linked as they sync (``record_people``,
 ``record_organizations``). This backfills the records synced before that,
 from what their type documents and record groups already hold, with no
-connector re-sync. With ``--apply`` it first stamps the tenant on CRM
+connector re-sync. With ``--apply`` it first stamps the org on CRM
 accounts written before accounts recorded one. A dry run unless
 ``--apply``; re-running is safe, since each record's edges are replaced.
 
