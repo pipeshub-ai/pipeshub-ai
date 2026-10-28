@@ -10586,7 +10586,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
+            # get_all_orgs returns internal orgs only (is_external defaults to False), so
+            # the CRM accounts stored as external orgs never land here; a deployment
+            # has one internal org, which owns every app user.
             orgs = await self.get_all_orgs()
             if not orgs:
                 raise Exception("No organizations found in the database")
