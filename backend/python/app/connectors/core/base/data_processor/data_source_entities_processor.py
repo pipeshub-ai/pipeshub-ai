@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -66,7 +67,6 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
-from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
@@ -1764,7 +1764,9 @@ class DataSourceEntitiesProcessor:
     async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
         """Link the record to the members it names (assignee, sender,
         reviewer...); see ``record_people``."""
-        await link_record_people(record, tx_store, self.logger)
+        await link_record_people(
+            record, tx_store, self.logger, lambda error: self._must_propagate(error, tx_store),
+        )
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
         """

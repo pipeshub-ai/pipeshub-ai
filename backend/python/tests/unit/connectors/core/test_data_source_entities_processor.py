@@ -8869,9 +8869,9 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
         ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", **record_fields)
         handlers = {
             "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
-            "delete_edges_from": lambda: proc._handle_project_lead_edge(record, tx_store),
+            "delete_edges_from": lambda: proc._handle_record_people(project, tx_store),
             "delete_edges_to": lambda: proc._handle_message_entity_edges(record, tx_store),
-            "get_user_by_email": lambda: proc._handle_ticket_user_edges(record, tx_store),
+            "get_user_by_email": lambda: proc._handle_record_people(ticket, tx_store),
         }
 
         with pytest.raises(TransientError):
