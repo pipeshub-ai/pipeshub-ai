@@ -8087,8 +8087,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``
-            matches by name, then every node sharing a kept match's email, so a
-            person is never cut in half. An email query returns all its nodes.
+            matching people by name (a person is an email, or a node without
+            one), each with all their nodes. An email query returns all its nodes.
 
         Raises:
             Exception: on any query failure.

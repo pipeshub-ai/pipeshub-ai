@@ -21389,13 +21389,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         OR LENGTH(SPLIT(name, " ")[* FILTER STARTS_WITH(CURRENT, @q)]) > 0
                         OR STARTS_WITH(SPLIT(email, "@")[0], @q)))
                     SORT name, u._key
-                    RETURN {{key: u._key, email: email, exact: exact}}
+                    RETURN {{person: email != "" ? email : CONCAT("id:", u._key), exact: exact}}
             )
             LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
-            LET kept = SLICE(hits[* FILTER CURRENT.exact OR NOT has_exact], 0, @limit)
-            LET emails = kept[* FILTER CURRENT.email != ""].email
+            LET cands = hits[* FILTER CURRENT.exact OR NOT has_exact]
+            // The limit counts people (an email, else a node), first match first.
+            LET people = (
+                FOR i IN 0..LENGTH(cands) - 1
+                    FILTER i >= 0 AND i < LENGTH(cands)
+                    COLLECT person = cands[i].person AGGREGATE rank = MIN(i)
+                    SORT rank LIMIT @limit
+                    RETURN person
+            )
             FOR o IN {users}
-                FILTER o.orgId == @org_id AND (o._key IN kept[*].key OR LOWER(o.email) IN emails)
+                FILTER o.orgId == @org_id
+                    AND (LOWER(o.email) IN people OR CONCAT("id:", o._key) IN people)
                 SORT LOWER(NOT_NULL(o.fullName, o.email, "")), o._key
                 RETURN {{id: o._key, fullName: o.fullName, email: o.email}}
         """

@@ -22268,12 +22268,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                      OR any(w IN split(name, ' ') WHERE w STARTS WITH $q)
                      OR split(email, '@')[0] STARTS WITH $q) AS prefix
             WHERE exact OR prefix
-            WITH u, email, exact ORDER BY name, u.id
-            WITH collect({{u: u, email: email, exact: exact}}) AS hits
+            WITH exact, CASE WHEN email <> '' THEN email ELSE 'id:' + u.id END AS person
+            ORDER BY name, u.id
+            WITH collect({{person: person, exact: exact}}) AS hits
             WITH hits, any(h IN hits WHERE h.exact) AS has_exact
-            WITH [h IN hits WHERE h.exact OR NOT has_exact][0..$limit] AS kept
-            WITH [h IN kept | h.u] AS matched, [h IN kept WHERE h.email <> '' | h.email] AS emails
-            MATCH (o:User) WHERE o.orgId = $org_id AND (o IN matched OR toLower(o.email) IN emails)
+            // The limit counts people (an email, else a node), first match first.
+            WITH reduce(seen = [], h IN hits |
+                CASE WHEN (h.exact OR NOT has_exact) AND NOT h.person IN seen
+                THEN seen + h.person ELSE seen END)[0..$limit] AS people
+            MATCH (o:User) WHERE o.orgId = $org_id
+                AND (toLower(o.email) IN people OR 'id:' + o.id IN people)
             RETURN o.id AS id, o.fullName AS fullName, o.email AS email
             ORDER BY toLower(coalesce(o.fullName, o.email, '')), o.id
             """,

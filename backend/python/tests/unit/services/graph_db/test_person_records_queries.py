@@ -152,7 +152,7 @@ class TestFindUsers:
         query = call.await_args.args[0]
         assert "isActive" not in query
         assert query.count("orgId") >= 2
-        assert "emails" in query
+        assert "people" in query
         assert ">= 3" in query
 
     async def test_an_email_is_matched_exactly_without_the_name_scan(self, provider) -> None:
@@ -174,13 +174,13 @@ class TestFindUsers:
         p, call = provider
         await p.find_users("org1", "ann")
         query = call.await_args.args[0]
-        assert "[0..$limit]" in query or "SLICE(" in query
+        assert "[0..$limit] AS people" in query or "LIMIT @limit" in query
 
     async def test_matches_are_ordered_before_the_cut_and_people_are_never_cut(self, provider) -> None:
         p, call = provider
         await p.find_users("org1", "ann", limit=3)
         query = call.await_args.args[0]
-        cut = query.index("[0..$limit]") if "[0..$limit]" in query else query.index("SLICE(")
+        cut = query.index("[0..$limit]") if "[0..$limit]" in query else query.index("LIMIT @limit")
         order = query.index("ORDER BY name, u.id") if "ORDER BY name" in query else query.index("SORT name, u._key")
         assert order < cut
         # Only the name matches are bounded; the same-email expansion is not.
