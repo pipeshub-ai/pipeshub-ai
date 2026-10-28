@@ -111,6 +111,7 @@ def test_a_product_hint_also_looks_the_name_up_as_an_organization_but_settles_on
     assert city.settles("city")
 
 
-def test_one_name_asked_as_a_product_and_as_an_organization_is_one_mention() -> None:
+def test_one_name_asked_as_a_product_and_as_an_organization_keeps_both_hints() -> None:
     parsed = parse_mentions([{"name": "Mosaic", "kind": "product"}, {"name": "Mosaic", "kind": "organization"}])
-    assert len(parsed.mentions) == 1
+    assert [m.kind_hint for m in parsed.mentions] == [EntityKind.PRODUCT, EntityKind.ORGANIZATION]
+    assert len(parse_mentions([{"name": "Mosaic", "kind": "product"}] * 2).mentions) == 1

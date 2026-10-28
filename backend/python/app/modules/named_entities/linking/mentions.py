@@ -77,7 +77,7 @@ def parse_mentions(raw: Any) -> ParsedMentions:  # noqa: ANN401 - tool arguments
     items = raw if isinstance(raw, list) else ([raw] if raw else [])
     notes: list[str] = []
     mentions: list[Mention] = []
-    seen: set[frozenset[tuple[EntityKind, str]]] = set()
+    seen: set[tuple[frozenset[tuple[EntityKind, str]], EntityKind | None]] = set()
     for item in items:
         name, kind_text = _fields(item)
         if not name:
@@ -101,7 +101,8 @@ def parse_mentions(raw: Any) -> ParsedMentions:  # noqa: ANN401 - tool arguments
         if not keys:
             notes.append(f"'{name}' is not a name that can be looked up.")
             continue
-        dedupe = frozenset(keys)
+        # The hint stays part of it: related kinds share keys but not what settles a match.
+        dedupe = (frozenset(keys), hint)
         if dedupe in seen:
             continue
         seen.add(dedupe)
