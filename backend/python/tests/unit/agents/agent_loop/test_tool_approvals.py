@@ -221,6 +221,9 @@ class TestSqlStatements:
         "SELECT * FROM customers FOR UPDATE",
         "WITH x AS (UPDATE customers SET email = NULL RETURNING *) SELECT * FROM x",
         "EXPLAIN ANALYZE DELETE FROM customers",
+        "EXPLAIN ANALYSE SELECT 1",
+        "EXPLAIN (ANALYSE) SELECT 1",
+        "EXPLAIN (FORMAT JSON, ANALYSE) SELECT 1",
         # Names split from their "(" by a comment, escaped identifiers, functions that run a string.
         "SELECT pg_terminate_backend--x\n(1)",
         "SELECT SLEEP#x\n(1)",
@@ -1089,3 +1092,13 @@ class TestWhatCountsAsAnAnswer:
 
         assert mcp.calls == []
         assert not [k for k in store.values if "/claims/" in k]
+
+
+@pytest.mark.parametrize("tool_path", ["/tools/mariadb/execute_query", "/tools/redshift/execute_query"])
+@pytest.mark.parametrize("sql", [
+    "EXPLAIN ANALYSE SELECT 1", "EXPLAIN (ANALYSE) SELECT 1", "EXPLAIN ANALYZE SELECT 1",
+])
+def test_call_kind_explain_with_execution_needs_approval(tool_path: str, sql: str) -> None:
+    target = SimpleNamespace(kind="write")
+    assert approvals.call_kind(target, tool_path, {"query": sql}) == "destructive"
+    assert approvals.call_kind(target, tool_path, {"query": "EXPLAIN SELECT 1"}) == "write"

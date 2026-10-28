@@ -223,8 +223,8 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'CLONE', 'SWAP', 'UNDROP',
         # BigQuery specific
         'EXPORT DATA',
-        # Administrative commands
-        'VACUUM', 'ANALYZE', 'REINDEX', 'CLUSTER',
+        # Administrative commands. ANALYZE/ANALYSE (also as an EXPLAIN option) runs the statement.
+        'VACUUM', 'ANALYZE', 'ANALYSE', 'REINDEX', 'CLUSTER',
         # Security bypass attempts
         'PRAGMA', 'SET SQL_LOG_BIN', 'SET GLOBAL',
     ]

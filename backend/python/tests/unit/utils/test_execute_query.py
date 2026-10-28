@@ -143,6 +143,21 @@ class TestIsQuerySafe:
         ok, _ = _is_query_safe("EXPLAIN SELECT * FROM users")
         assert ok is True
 
+    @pytest.mark.parametrize("sql", [
+        "EXPLAIN ANALYZE SELECT 1",
+        "EXPLAIN ANALYSE SELECT 1",
+        "explain   analyse select 1",
+        "EXPLAIN (ANALYSE) SELECT 1",
+        "EXPLAIN (ANALYZE true) SELECT 1",
+        "EXPLAIN (BUFFERS, ANALYSE) SELECT 1",
+        "EXPLAIN (FORMAT JSON, ANALYSE) SELECT 1",
+        "ANALYSE t",
+    ])
+    def test_explain_that_executes_is_blocked(self, sql: str) -> None:
+        ok, reason = _is_query_safe(sql)
+        assert ok is False
+        assert "ANALY" in reason
+
     def test_with_cte(self):
         ok, _ = _is_query_safe("WITH cte AS (SELECT 1) SELECT * FROM cte")
         assert ok is True
