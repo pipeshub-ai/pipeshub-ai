@@ -686,13 +686,16 @@ async def _sweep_all(world: World, sweep: Any) -> Any:  # noqa: ANN401
     from app.modules.artifacts.stored_retention import StoredRetentionReport
 
     total = StoredRetentionReport()
-    key = None
-    for _ in range(200):
-        key, report = await sweep.run_page(key)
-        total.add(report)
-        if key is None:
-            return total
-    raise AssertionError("the sweep never reached the end")
+    for run in (sweep.run_page, sweep.run_strays):
+        key = None
+        for _ in range(200):
+            key, report = await run(key)
+            total.add(report)
+            if key is None:
+                break
+        else:
+            raise AssertionError(f"{run.__name__} never reached the end")
+    return total
 
 
 @pytest.mark.asyncio
