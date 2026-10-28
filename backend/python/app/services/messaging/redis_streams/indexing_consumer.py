@@ -413,12 +413,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         known = set(self.config.topics)
+        # A replica reading a lane subset leaves the configured lanes it was
+        # not given to the replicas that were; only lanes left over from a
+        # larger lane count are everyone's to drain.
+        subset = messaging_env.indexing_consume_lanes is not None
+        lane_count = messaging_env.fair_scheduling_lane_count
         discovered: list[str] = []
         try:
             for base in bases:
                 async for key in self.redis.scan_iter(match=f"{base}.*"):
                     name = key.decode() if isinstance(key, bytes) else str(key)
-                    if name in known or not _LANE_SUFFIX.search(name):
+                    suffix = _LANE_SUFFIX.search(name)
+                    if name in known or not suffix:
+                        continue
+                    if subset and int(suffix.group()[1:]) < lane_count:
                         continue
                     if await self.redis.type(name) != _STREAM_TYPE:  # type: ignore
                         continue

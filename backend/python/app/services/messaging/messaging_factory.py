@@ -28,7 +28,7 @@ from app.services.messaging.lanes.assignment import (
     AssignedRedisLaneRouter,
     shared_lane_assignments,
 )
-from app.services.messaging.lanes.hash_router import build_lane_router
+from app.services.messaging.lanes.hash_router import RedisLaneRouter, build_lane_router
 from app.services.messaging.lanes.interface import LaneAssignmentMode, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.postgres.admin import PgMessageAdmin
@@ -125,19 +125,38 @@ def _build_producer_lane_router(
     return AssignedRedisLaneRouter(assignments, logger)
 
 
-def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) -> list[str]:
-    """Every topic a consumer must subscribe to to receive all of ``topic``.
+def lane_topics_for(
+    topic: str,
+    broker_type: MessageBrokerType | None = None,
+    only_lanes: frozenset[int] | None = None,
+) -> list[str]:
+    """Every topic a consumer must subscribe to to receive all of ``topic``,
+    or with ``only_lanes``, the base stream and those lanes (Redis Streams).
 
     With laning off this is just ``[topic]``, so callers can use it
     unconditionally.
     """
     lane_config = lane_config_from_env()
     if not lane_config.enabled or topic not in lane_config.laned_topics:
+        if only_lanes is not None:
+            raise ValueError(f"{topic} is not laned, so a lane subset cannot be read")
         return [topic]
     if broker_type is None:
         broker_type = get_message_broker_type()
-    router = build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
-    return router.lane_topics(topic)
+    if only_lanes is None:
+        router = build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
+        return router.lane_topics(topic)
+    if broker_type != MessageBrokerType.REDIS:
+        raise ValueError("A lane subset can only be read on Redis Streams")
+    outside = sorted(lane for lane in only_lanes if lane >= lane_config.lane_count)
+    if outside:
+        raise ValueError(
+            f"Lanes {outside} are outside the {lane_config.lane_count} configured lanes"
+        )
+    router = RedisLaneRouter(lane_config.lane_count)
+    # The base stream only holds what was written before laning; every
+    # replica keeps draining it.
+    return [topic] + [router.lane_name(topic, lane) for lane in sorted(only_lanes)]
 
 
 def _reject_namespaced_redis_streams() -> None:

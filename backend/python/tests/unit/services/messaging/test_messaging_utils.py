@@ -453,6 +453,7 @@ class TestConvenienceConsumerConfigs:
     async def test_record_consumer_config_redis(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
         mock_env.redis_streams_retention_mode = "after_ack"
+        mock_env.indexing_consume_lanes = None
         container = _make_app_container()
         config = await MessagingUtils.create_record_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)

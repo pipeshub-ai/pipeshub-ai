@@ -15,9 +15,15 @@ replace through ``app.edition_services``:
   administrator may move a connector to another lane. Never, here: the open
   source edition moves a connector only during the one-time upgrade fix-up and
   when the lane count is lowered.
+- ``lane_pool_for_org(redis, org_id)`` names the pool of lanes an org's
+  connectors belong in, read once per placement and passed to the rule as
+  ``LaneRequest.pool``. ``None`` here: every connector is in one pool. Paired
+  with ``INDEXING_CONSUME_LANES``, which makes an indexing replica read only
+  some lanes, an edition can give a group of orgs lanes and replicas of their own.
 
-An edition can pin a connector to a lane of its own, weight lanes, or allow
-admin-triggered moves by replacing these two functions; ``LaneSnapshot.fields``
+An edition can pin a connector to a lane of its own, weight lanes, keep a
+group of orgs on lanes of their own, or allow admin-triggered moves by
+replacing these functions; ``LaneSnapshot.fields``
 carries the whole meta hash, so per-lane fields an edition keeps there reach
 its rule without any change here.
 """
@@ -29,6 +35,8 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from app.services.redis.connection_provider import RedisClient
 
 __all__ = [
     "BUSY_READING_MAX_AGE_MS",
@@ -43,6 +51,7 @@ __all__ = [
     "admin_lane_move_allowed",
     "choose_connector_lane",
     "is_large_class",
+    "lane_pool_for_org",
 ]
 
 # A busy reading older than this is ignored, so a stopped indexer does not
@@ -115,6 +124,8 @@ class LaneRequest:
     # Its lane now, when it has one inside the current lane count. The
     # snapshot's counts already leave the connector itself out.
     current_lane: int | None = None
+    # From ``lane_pool_for_org``; None means the one shared pool.
+    pool: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,3 +187,12 @@ def choose_connector_lane(request: LaneRequest, snapshot: LaneSnapshot) -> LaneC
 def admin_lane_move_allowed(org_id: str | None, connector_id: str) -> bool:
     """Whether an administrator may move this connector. Never, in this edition."""
     return False
+
+
+async def lane_pool_for_org(redis: RedisClient, org_id: str | None) -> str | None:
+    """The pool of lanes this org's connectors are placed in. One pool, here.
+
+    ``redis`` is the lane map's client, for an edition that keeps the answer
+    there. Called while placing, so it should be one round trip at most.
+    """
+    return None

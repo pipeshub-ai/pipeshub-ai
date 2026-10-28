@@ -305,7 +305,11 @@ class MessagingUtils:
             app_container,
             "records_consumer_client",
             "records_consumer_group",
-            lane_topics_for(Topic.RECORD_EVENTS.value, broker_type),
+            lane_topics_for(
+                Topic.RECORD_EVENTS.value,
+                broker_type,
+                messaging_env.indexing_consume_lanes,
+            ),
             is_indexing=True,  # Use indexing batch size
         )
 
