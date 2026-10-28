@@ -72,6 +72,24 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
+            # What sort of principal this is. Absent on nodes written before
+            # this field existed and on anything an older producer sends, so
+            # readers treat absence as "human" rather than as unknown.
+            #
+            # Always carried on the event, never worked out here. The user
+            # management service decides what is a service account, and a
+            # second rule in this process — reading the address, say — would
+            # be a copy of that one, free to drift. Nodes that predate the
+            # field are stamped by ServiceAccountKindMigrationService from a
+            # list that service stages, which writes this field and nothing
+            # else; replaying the creation event for them would do far more.
+            "kind": {"type": "string", "enum": ["human", "service"]},
+            # Whether an administrator has switched this service account off.
+            # Separate from `isActive`, which soft-delete owns and which a
+            # rename sets back to true — a disable stored there would not
+            # survive one. Absent means not disabled, so a node that predates
+            # this field, or a person, reads as usable.
+            "isDisabled": {"type": "boolean"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -181,6 +199,8 @@ app_schema = {
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
+            # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
+            "actionItems": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
@@ -294,6 +314,13 @@ record_schema = {
             "lastSyncTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Knowledge-base uploads: what set the two above (SourceTimestampOrigin).
+            # A pattern, so a new origin needs no schema release first.
+            "sourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
+            # What the upload had set, kept while dates the content states replace it.
+            "uploadSourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "uploadSourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
@@ -819,6 +846,8 @@ sql_table_record_schema = {
             "schemaName": {"type": ["string", "null"]},
             "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
             "rowCount": {"type": ["number", "null"]},
+            "dbRowCount": {"type": ["number", "null"]},
+            "indexedRowCount": {"type": ["number", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "columnCount": {"type": ["number", "null"]},
             "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
@@ -839,6 +868,46 @@ sql_table_record_schema = {
     "message": "Document does not match the SQL table record schema.",
 }
 
+sql_column_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "fqn": {"type": "string", "minLength": 1},
+            "tableFqn": {"type": "string", "minLength": 1},
+            "dataType": {"type": ["string", "null"]},
+            "nullable": {"type": "boolean", "default": False},
+            "isPrimaryKey": {"type": "boolean", "default": False},
+            "isUnique": {"type": "boolean", "default": False},
+            "isPartOfCompositePrimaryKey": {"type": "boolean", "default": False},
+            "isPartOfCompositeUnique": {"type": "boolean", "default": False},
+            "default": {"type": ["string", "null"]},
+            "ordinalPosition": {"type": ["number", "null"]},
+            "distinctCount": {"type": ["number", "null"]},
+            "nullCount": {"type": ["number", "null"]},
+            "cardinalityRatio": {"type": ["number", "null"]},
+            "confidenceScore": {"type": ["string", "null"]},
+            "topValues": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "topValueFrequencies": {
+                "type": ["array", "null"],
+                "items": {"type": "number"},
+            },
+            "minValue": {"type": ["string", "null"]},
+            "maxValue": {"type": ["string", "null"]},
+            "numericText": {"type": ["boolean", "null"]},
+            "profiledAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "fqn", "tableFqn"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL column record schema.",
+}
+
 sql_view_record_schema = {
     "rule": {
         "type": "object",
@@ -855,6 +924,7 @@ sql_view_record_schema = {
             },
             "isSecure": {"type": "boolean", "default": False},
             "comment": {"type": ["string", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE VIEW statement, or synthetic column-based DDL
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -1200,6 +1270,11 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            # The service account this agent searches knowledge as, by user
+            # node key. Absent on agents made before binding existed, and on
+            # any agent that is not a service agent; those still search as
+            # their creator. See _enrich_user_info_for_service_account_agent_chat.
+            "serviceAccountUserId": {"type": ["string", "null"]},
             "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},

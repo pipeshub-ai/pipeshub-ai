@@ -189,6 +189,26 @@ def test_the_reader_finds_admin_checks_in_a_spread_list(tmp_path: Path) -> None:
     assert routes[("POST", "/api/v1/spread/checked/:id")].after_admin == ("ValidationMiddleware.validate",)
 
 
+@pytest.mark.parametrize("guard", [
+    "router.use(authMiddleware.authenticate, ValidationMiddleware.validate(schema), userAdminCheck);",
+    "const adminGuard = [authMiddleware.authenticate, ValidationMiddleware.validate(schema), userAdminCheck];\n"
+    "          router.use(...adminGuard);",
+], ids=["inline", "spread"])
+def test_middleware_ahead_of_a_router_wide_admin_check_runs_before_it(tmp_path: Path, guard: str) -> None:
+    source = _write(tmp_path, "use.routes.ts", f"""
+        export function createUseRouter(container: Container) {{
+          const router = Router();
+          {guard}
+          router.get('/after', handler);
+          return router;
+        }}
+    """)
+    routes = admin_routes_in_file(source, "/api/v1/use")
+    assert [(r.method, r.path, r.before_admin) for r in routes] == [
+        ("GET", "/api/v1/use/after", ("authMiddleware.authenticate", "ValidationMiddleware.validate")),
+    ]
+
+
 def test_a_router_mounted_outside_app_ts_is_found(tmp_path: Path) -> None:
     _write(tmp_path, "app.ts", """
         // Routers come from `./modules/*` through the barrel.

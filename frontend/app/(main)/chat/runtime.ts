@@ -2,17 +2,17 @@
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
- * 1. `buildExternalStoreConfig(activeSlotId)` â€” returns the config object
+ * 1. `buildExternalStoreConfig(activeSlotId)` — returns the config object
  *    consumed by `useExternalStoreRuntime`. Reads `messages` and `isRunning`
  *    from the active slot; wires `onNew` and `onCancel` to streaming.ts.
  *
- * 2. `loadHistoricalMessages()` â€” transforms backend ConversationMessage[]
+ * 2. `loadHistoricalMessages()` — transforms backend ConversationMessage[]
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort, projectAgentCapabilities } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
 import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
@@ -30,7 +30,6 @@ import {
   type ChatSettings,
   type ChatSlot,
   type ConversationMessage,
-  type RequestAccessInfo,
   type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
@@ -63,15 +62,6 @@ export const EMPTY_ANSWER_FALLBACK =
 export function isUsableFollowUpText(text: string | undefined): boolean {
   const t = (text ?? '').trim();
   return t.length > 0 && t !== EMPTY_ANSWER_FALLBACK;
-}
-
-/** Attachments the viewer can open; a redacted one has no name or type to show. */
-function readableAttachments(msg: ConversationMessage): AttachmentRef[] {
-  return (msg.attachments ?? []).filter((a): a is AttachmentRef => !('redacted' in a));
-}
-
-function redactedAttachmentSources(msg: ConversationMessage): RequestAccessInfo[] {
-  return (msg.attachments ?? []).flatMap((a) => ('redacted' in a ? [a.requestAccess] : []));
 }
 
 function extractFinalAnswer(
@@ -172,7 +162,7 @@ function resolveAssistantFiltersFromSlot(
 }
 
 /**
- * Resolve KB/app filters for a chat POST â€” either from the outgoing composer message
+ * Resolve KB/app filters for a chat POST — either from the outgoing composer message
  * (normal send) or from the latest prior user turn that carried attachments (questionnaire submit).
  */
 export function resolveAssistantFiltersForChatSubmit(
@@ -245,6 +235,9 @@ export function buildStreamChatRequestForSlot(
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
+  const projectIdForCaps = effectiveAgentId
+    ? null
+    : currentSlot.projectId ?? projectScope?.projectId ?? null;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
@@ -388,7 +381,9 @@ export function buildStreamChatRequestForSlot(
       : isUniversalAgentMode
         ? {
             ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
-            agentCapabilities: currentState.settings.agentCapabilities,
+            agentCapabilities: projectIdForCaps
+              ? projectAgentCapabilities(currentState.scopedAgentCapabilities, projectIdForCaps)
+              : currentState.settings.agentCapabilities,
           }
         : {}),
     ...(toolApproval ? { toolApproval } : {}),
@@ -711,7 +706,9 @@ export function loadHistoricalMessages(
         lastUnansweredAnswers = {};
       }
 
-      const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
+      // Each rating is appended to `feedback`, so the last entry is the one the user chose.
+      const feedbackHistory = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined) ?? [];
+      const feedbackEntry = feedbackHistory[feedbackHistory.length - 1];
       const feedbackInfo = feedbackEntry?.isHelpful === true
         ? { value: 'like' as const }
         : feedbackEntry?.isHelpful === false
@@ -757,8 +754,7 @@ export function loadHistoricalMessages(
               custom: {
                 ...prevCustomRest,
                 messageId: msg._id,
-                ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
-                citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
+                citationMaps: buildCitationMapsFromApi(msg.citations || []),
                 confidence: msg.confidence,
                 modelInfo: msg.modelInfo,
                 ...(feedbackInfo ? { feedbackInfo } : {}),
@@ -778,8 +774,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             messageId: msg._id,
-            ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
-            citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
+            citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
@@ -903,10 +898,8 @@ export function loadHistoricalMessages(
       metadata: {
         custom: {
           createdAt: msg.createdAt,
-          ...(msg.askedBy ? { askedBy: msg.askedBy } : {}),
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
-          ...(readableAttachments(msg).length ? { attachments: readableAttachments(msg) } : {}),
-          ...(redactedAttachmentSources(msg).length ? { redactedAttachments: redactedAttachmentSources(msg) } : {}),
+          ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
         },
       },
     });
@@ -1020,7 +1013,7 @@ export function reconcilePendingAfterPrepend(
  * It reads the active slot's messages + streaming state and provides
  * `onNew` / `onCancel` callbacks routed to slot-scoped streaming.
  *
- * @param activeSlotId â€” current active slot key (or null for new chat screen)
+ * @param activeSlotId — current active slot key (or null for new chat screen)
  */
 export function buildExternalStoreConfig(
   activeSlotId: string | null
@@ -1032,11 +1025,11 @@ export function buildExternalStoreConfig(
     messages: slot?.messages ?? [],
     isRunning: slot?.isStreaming ?? false,
 
-    // Required when T = ThreadMessageLike (identity â€” our messages are already ThreadMessageLike)
+    // Required when T = ThreadMessageLike (identity — our messages are already ThreadMessageLike)
     convertMessage: (msg: ThreadMessageLike) => msg,
 
     onNew: async (message) => {
-      // Read activeSlotId from store at invocation time â€” NOT from the
+      // Read activeSlotId from store at invocation time — NOT from the
       // closure. ChatInputWrapper.handleSend creates a slot and sets
       // activeSlotId synchronously in Zustand before calling
       // threadRuntime.append(), but React hasn't re-rendered yet, so
@@ -1084,7 +1077,7 @@ export function buildExternalStoreConfig(
         request.attachments = msgAttachments;
       }
 
-      // Fire-and-forget â€” streaming.ts handles all state updates.
+      // Fire-and-forget — streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
       streamMessageForSlot(targetSlotId, displayQuery, request);
     },

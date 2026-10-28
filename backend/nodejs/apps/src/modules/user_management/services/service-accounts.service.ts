@@ -1,16 +1,17 @@
 import { injectable, inject } from 'inversify';
-import mongoose from 'mongoose';
 import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
-import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
+import { getUserRepository } from '../../../libs/repositories/user';
+import type { UserDto } from '../../../libs/repositories/user';
+import { getGroupRepository } from '../../../libs/repositories/group';
+import { UniqueConstraintError } from '../../../libs/repositories/errors';
+import { isValidId } from '../../../libs/repositories/ids';
 import {
   BadRequestError,
   ConflictError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
-import { Users, User } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
 import {
   EntitiesEventProducer,
   Event,
@@ -75,19 +76,9 @@ export interface UpdateServiceAccountInput {
   isDisabled?: boolean;
 }
 
-/**
- * Mongoose types `_id` loosely enough that stringifying it directly trips the
- * lint rule guarding against `[object Object]` creeping into output. Going
- * through ObjectId keeps that guarantee visible in one place.
- */
-function idOf(doc: { _id?: unknown }): string {
-  return (doc._id as mongoose.Types.ObjectId).toString();
-}
+const idOf = (doc: { _id: string }): string => doc._id;
 
-function toView(
-  user: User & { createdAt?: Date; updatedAt?: Date },
-  orgId: string,
-): ServiceAccountView {
+function toView(user: UserDto, orgId: string): ServiceAccountView {
   return {
     id: idOf(user),
     slug: serviceAccountSlugFromEmail(user.email, orgId),
@@ -147,7 +138,7 @@ export class ServiceAccountsService {
     // collection, so a lookup that skipped deleted rows would report the name
     // as free and then fail on the index — a 500 for what is really "this
     // name is in use" or "this name is being reused".
-    const existing = await Users.findOne({ email }).exec();
+    const existing = await getUserRepository().getByEmail(email);
 
     if (existing) {
       // Only this organisation's own deleted service account may be brought
@@ -160,7 +151,7 @@ export class ServiceAccountsService {
       const isOurDeletedServiceAccount =
         existing.isDeleted === true &&
         existing.kind === 'service' &&
-        existing.orgId.toString() === orgId;
+        existing.orgId === orgId;
 
       if (!isOurDeletedServiceAccount) {
         throw new ConflictError(
@@ -170,28 +161,26 @@ export class ServiceAccountsService {
       return await this.restore(existing, orgId, slug, input);
     }
 
-    const serviceAccount = new Users({
-      orgId: new mongoose.Types.ObjectId(orgId),
-      email,
-      fullName: input.fullName.trim(),
-      description: input.description?.trim(),
-      kind: 'service',
-      // Never an admin, whoever creates it. A service account that could hold
-      // admin rights would be a way to obtain them without a person attached.
-      role: SERVICE_ACCOUNT_ROLE,
-      isDisabled: false,
-    });
-
     // Saved before the event goes out: the consumer builds a permission-graph
     // node from it, and a node for a record that failed to save would be a
     // principal with access and no way to administer it.
+    let serviceAccount: UserDto;
     try {
-      await serviceAccount.save();
+      serviceAccount = await getUserRepository().create(orgId, {
+        email,
+        fullName: input.fullName.trim(),
+        description: input.description?.trim(),
+        kind: 'service',
+        // Never an admin, whoever creates it. A service account that could hold
+        // admin rights would be a way to obtain them without a person attached.
+        role: SERVICE_ACCOUNT_ROLE,
+        isDisabled: false,
+      });
     } catch (error) {
       // Two administrators creating the same name at once both pass the check
       // above; the unique index fails the loser. That is a conflict, not a
       // server error.
-      if (isDuplicateKeyError(error)) {
+      if (error instanceof UniqueConstraintError) {
         throw new ConflictError(
           `A service account named "${slug}" already exists`,
         );
@@ -199,10 +188,7 @@ export class ServiceAccountsService {
       throw error;
     }
 
-    await UserGroups.updateOne(
-      { orgId: serviceAccount.orgId, type: 'everyone' },
-      { $addToSet: { users: serviceAccount._id } },
-    );
+    await getGroupRepository().addToEveryone(orgId, idOf(serviceAccount));
 
     const addedPayload: UserAddedEvent = {
       orgId,
@@ -210,6 +196,11 @@ export class ServiceAccountsService {
       fullName: serviceAccount.fullName,
       email: serviceAccount.email,
       syncAction: SyncAction.Immediate,
+      // Told to the graph rather than inferred there. A consumer that had to
+      // work this out from the address would be guessing at a rule this
+      // service owns.
+      kind: 'service',
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -239,7 +230,7 @@ export class ServiceAccountsService {
    * survives except its identity. It comes back enabled and not deleted.
    */
   private async restore(
-    existing: User,
+    existing: UserDto,
     orgId: string,
     slug: string,
     input: CreateServiceAccountInput,
@@ -265,47 +256,24 @@ export class ServiceAccountsService {
     // overwrite the earlier one's details. Making `isDeleted: true` part of
     // the query means the transition happens once: the first request restores
     // the record, and the second matches nothing.
-    const restored = await Users.findOneAndUpdate(
-      // Narrowed the same way the check above is, so the update cannot land
-      // on another tenant's row even if the record changed underneath us.
+    // One conditional update rather than read-then-save, because two
+    // administrators can reach here with the same deleted document in hand.
+    // Making `isDeleted: true` part of the query means the transition happens
+    // once: the first request restores the record, and the second matches
+    // nothing. Restored disabled, and enabled only once the old tokens are
+    // gone: clearing isDeleted is what makes this account's tokens acceptable
+    // again, so doing that before revoking would let a pre-deletion credential
+    // authorise a request.
+    const restored = await getUserRepository().restoreServiceAccount(
+      orgId,
+      existing._id,
       {
-        _id: existing._id,
-        orgId,
-        kind: 'service',
-        isDeleted: true,
+        fullName: input.fullName.trim(),
+        description: input.description?.trim(),
+        restoreOpId,
+        role: SERVICE_ACCOUNT_ROLE,
       },
-      {
-        $set: {
-          fullName: input.fullName.trim(),
-          kind: 'service',
-          role: SERVICE_ACCOUNT_ROLE,
-          // Restored disabled, and enabled only once the old tokens are gone.
-          // Clearing isDeleted is what makes this account's tokens acceptable
-          // again, so doing that before revoking would let a credential from
-          // before the deletion authorise a request — and no amount of
-          // undoing afterwards un-authorises one that already succeeded.
-          // Disabled is refused by both authentication paths, so the account
-          // exists, holds its place, and can do nothing.
-          isDisabled: true,
-          isDeleted: false,
-          restoreOpId,
-          // A description the caller did give.
-          ...(input.description === undefined
-            ? {}
-            : { description: input.description.trim() }),
-        },
-        $unset: {
-          deletedBy: '',
-          // One they did not. Setting a field to undefined is a no-op in
-          // Mongoose, so writing `description: undefined` would quietly leave
-          // the deleted account's old text in place — which contradicts what
-          // this method promises, that nothing of the old account survives
-          // but its identity.
-          ...(input.description === undefined ? { description: '' } : {}),
-        },
-      },
-      { new: true },
-    ).exec();
+    );
 
     if (!restored) {
       throw new ConflictError(
@@ -324,10 +292,10 @@ export class ServiceAccountsService {
       // Matching on the marker as well as the id means a restore that failed
       // slowly cannot delete an account that has since been deleted,
       // recreated and restored by somebody else.
-      await Users.updateOne(
-        { _id: restored._id, restoreOpId },
-        { $set: { isDeleted: true }, $unset: { restoreOpId: '' } },
-      ).exec();
+      await getUserRepository().abortServiceAccountRestore(
+        restored._id,
+        restoreOpId,
+      );
       throw error;
     }
 
@@ -338,11 +306,10 @@ export class ServiceAccountsService {
     // and this update would otherwise still match — re-enabling a deleted
     // account, adding it back to every group, announcing it to the permission
     // graph and returning 201 for a row that no longer exists.
-    const finished = await Users.findOneAndUpdate(
-      { _id: restored._id, restoreOpId, isDeleted: false },
-      { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
-      { new: true },
-    ).exec();
+    const finished = await getUserRepository().finishServiceAccountRestore(
+      restored._id,
+      restoreOpId,
+    );
 
     // Nothing matched, so something else has moved this account on while the
     // restore was in flight. Carrying on with the document read earlier would
@@ -354,10 +321,7 @@ export class ServiceAccountsService {
       );
     }
 
-    await UserGroups.updateOne(
-      { orgId: finished.orgId, type: 'everyone' },
-      { $addToSet: { users: finished._id } },
-    );
+    await getGroupRepository().addToEveryone(orgId, finished._id);
 
     const addedPayload: UserAddedEvent = {
       orgId,
@@ -365,6 +329,11 @@ export class ServiceAccountsService {
       fullName: finished.fullName,
       email: finished.email,
       syncAction: SyncAction.Immediate,
+      kind: 'service',
+      // Mongo was switched back on a few lines above. Saying so explicitly is
+      // what stops a disable, delete and restore coming back enabled here and
+      // still switched off on the graph.
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -382,13 +351,7 @@ export class ServiceAccountsService {
   }
 
   async list(orgId: string): Promise<ServiceAccountView[]> {
-    const accounts = await Users.find({
-      orgId,
-      kind: 'service',
-      isDeleted: false,
-    })
-      .sort({ createdAt: -1 })
-      .exec();
+    const accounts = await getUserRepository().listServiceAccounts(orgId);
     return accounts.map((account) => toView(account, orgId));
   }
 
@@ -402,6 +365,10 @@ export class ServiceAccountsService {
     input: UpdateServiceAccountInput,
   ): Promise<ServiceAccountView> {
     const account = await this.findOrThrow(orgId, id);
+    // Read before anything below mutates it, so the graph is told only when
+    // the answer actually moved. Enabling and disabling are written on
+    // different paths, and neither alone says whether anything changed.
+    const wasDisabled = account.isDisabled === true;
 
     // Enabling is a conditional write, not an assignment to the document read
     // a moment ago. While a restore is in flight the account is deliberately
@@ -413,17 +380,10 @@ export class ServiceAccountsService {
     // and the version key does not guard a scalar, so a save would simply
     // overwrite the guard.
     if (input.isDisabled === false) {
-      const enabled = await Users.findOneAndUpdate(
-        {
-          _id: account._id,
-          orgId,
-          kind: 'service',
-          isDeleted: false,
-          restoreOpId: { $exists: false },
-        },
-        { $set: { isDisabled: false } },
-        { new: true },
-      ).exec();
+      const enabled = await getUserRepository().enableServiceAccount(
+        orgId,
+        account._id,
+      );
 
       if (!enabled) {
         throw new ConflictError(
@@ -450,10 +410,21 @@ export class ServiceAccountsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      await Users.updateOne(
-        { _id: account._id, orgId, kind: 'service', isDeleted: false },
-        { $set: changes },
-      ).exec();
+      const written = await getUserRepository().updateServiceAccount(
+        orgId,
+        account._id,
+        changes,
+      );
+
+      // Nothing matched means the account stopped being one between the read
+      // at the top of this method and this write — deleted, in practice.
+      // Nothing was stored, so there is nothing to tell the graph, and saying
+      // it anyway would leave the graph holding a state no database agrees
+      // with. On a deleted account that state is what a bound agent is
+      // checked against, so it would put a removed identity back in use.
+      if (!written) {
+        throw new NotFoundError('Service account not found');
+      }
     }
 
     // Disabling has to reach the tokens this account obtained to act as other
@@ -471,14 +442,41 @@ export class ServiceAccountsService {
       );
     }
 
-    // The graph keeps its own copy of the display name, so a rename has to
-    // reach it too or search results will go on showing the old one.
-    if (input.fullName !== undefined) {
+    // Two reasons the graph has to hear about this.
+    //
+    // It keeps its own copy of the display name, so a rename has to reach it
+    // or search results will go on showing the old one.
+    //
+    // And it has no other way to learn that an account was switched off. The
+    // token paths all re-read this collection, but an agent bound to a service
+    // account searches as that identity on the graph alone — so without this
+    // it would go on reading with the reach of an account an administrator has
+    // just switched off. Published on enabling too: a flag written only on the
+    // way down would stay set after the account came back.
+    //
+    // Published whenever the request named `isDisabled`, not only when the
+    // stored value moved. If an earlier attempt wrote Mongo and then failed
+    // before publishing — token revocation throws, or the broker is down —
+    // the account is already disabled by the time the retry arrives, so
+    // nothing changed and a check on change alone would publish nothing. The
+    // graph would keep an account that is switched off in Mongo, and a bound
+    // agent would go on searching with it. The event carries the state rather
+    // than a transition, so publishing it twice says the same thing twice.
+    const isDisabledNow = account.isDisabled === true;
+    const disabledChanged = isDisabledNow !== wasDisabled;
+    if (
+      input.fullName !== undefined ||
+      input.isDisabled !== undefined ||
+      disabledChanged
+    ) {
       const updatedPayload: UserUpdatedEvent = {
         orgId,
         userId: idOf(account),
         fullName: account.fullName,
         email: account.email,
+        // Always sent on this event, so a rename cannot leave the graph
+        // holding a stale answer it was never told to update.
+        isDisabled: isDisabledNow,
       };
       await this.publish({
         eventType: EventType.UpdateUserEvent,
@@ -499,15 +497,13 @@ export class ServiceAccountsService {
   async remove(orgId: string, id: string): Promise<void> {
     const account = await this.findOrThrow(orgId, id);
 
-    account.isDeleted = true;
-    await account.save();
+    await getUserRepository().markDeleted(orgId, account._id);
 
     await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(account));
 
-    await UserGroups.updateMany(
-      { orgId: account.orgId },
-      { $pull: { users: account._id } },
-    );
+    await getGroupRepository().removeFromAll(orgId, account._id, {
+      everyGroup: true,
+    });
 
     const deletedPayload: UserDeletedEvent = {
       orgId,
@@ -533,16 +529,11 @@ export class ServiceAccountsService {
    * afterwards, so this can never be used to reach a human user's record by
    * passing their id to a service-account route.
    */
-  private async findOrThrow(orgId: string, id: string): Promise<User> {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+  private async findOrThrow(orgId: string, id: string): Promise<UserDto> {
+    if (!isValidId(id)) {
       throw new NotFoundError('Service account not found');
     }
-    const account = await Users.findOne({
-      _id: id,
-      orgId,
-      kind: 'service',
-      isDeleted: false,
-    }).exec();
+    const account = await getUserRepository().getServiceAccount(orgId, id);
     if (!account) {
       throw new NotFoundError('Service account not found');
     }

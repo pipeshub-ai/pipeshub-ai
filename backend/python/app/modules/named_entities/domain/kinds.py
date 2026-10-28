@@ -143,6 +143,37 @@ VECTOR_KINDS: frozenset[EntityKind] = frozenset(
 )
 
 
+# What each semantic kind means, for the extractor. Proper-name kinds take one
+# specific named thing; a generic noun, a role, a team or a document type is not
+# one, which is most of what over-extraction produced.
+KIND_GUIDE: dict[EntityKind, str] = {
+    EntityKind.PERSON: "a named individual (\"Priya Shah\"). Not a role or a team.",
+    EntityKind.PERSON_TYPE: "a role or job title (\"account lead\", \"CFO\"). Not a named person, team or department.",
+    EntityKind.ORGANIZATION: (
+        "a named company, institution or agency (\"Acme Corp\", \"WHO\"). "
+        "Not \"the company\", a team, a department or a channel."
+    ),
+    EntityKind.PRODUCT: (
+        "a named product, service, model or software (\"Edge Pro 2\", \"Kubernetes\"). "
+        "Not a generic thing (\"invoice\", \"dashboard\", \"sandbox\") or a document type."
+    ),
+    EntityKind.EVENT: (
+        "a named occurrence (\"Lumora Summit 2025\", \"Q3 board meeting\"). "
+        "Not a generic activity (\"renewal\", \"site review\", \"incident report\")."
+    ),
+    EntityKind.SKILL: "a named competency or technology a person has (\"Python\", \"contract negotiation\").",
+    EntityKind.LOCATION: "a named place that is not a city, state, country or address (\"Lake Tahoe\"). Not a room or \"the site\".",
+    EntityKind.CITY: "a city or town (\"Portland\").",
+    EntityKind.STATE: "a state, province or region inside a country (\"Oregon\").",
+    EntityKind.COUNTRY_REGION: "a country or multi-country region (\"Japan\", \"EMEA\").",
+    EntityKind.ADDRESS: "a postal or street address.",
+}
+# Never a name of any semantic kind; the extraction guard rejects these too.
+KIND_GUIDE_EXCLUDES = (
+    "identifiers (ticket keys, PO or contract numbers, UUIDs), file paths, URLs and email addresses"
+)
+
+
 def spec_for(kind: EntityKind | str) -> EntityTypeSpec | None:
     try:
         parsed = kind if isinstance(kind, EntityKind) else EntityKind(str(kind).casefold())

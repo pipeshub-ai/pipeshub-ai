@@ -1,7 +1,6 @@
-import mongoose, { ClientSession } from 'mongoose';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../libs/errors/backend-error';
+import { unansweredCallError } from '../../../libs/errors/backend-error';
 import {
   HttpError,
   InternalServerError,
@@ -9,18 +8,22 @@ import {
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
-import { ChatSession } from '../schema/chat.session.schema';
+import {
+  getConversationRepository,
+  type ChatSessionDto,
+  type NewMessage,
+  type NewSession,
+  type SessionScope,
+} from '../../../libs/repositories/conversation';
+import { createUnitOfWork } from '../../../libs/repositories/doc-store';
+import type { Tx } from '../../../libs/repositories/uow';
 import {
   AIServiceResponse,
   IAIModel,
   IAIResponse,
-  IChatSession,
-  IChatSessionDocument,
   IMessage,
 } from '../types/conversation.interfaces';
-import type { AppConfig } from '../../tokens_manager/config/config';
 import { AiChatRequest, ChatTarget } from './ai-chat-payload';
-import { redactConversationFor, redactMessagesFor } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingAIResponseError,
@@ -55,107 +58,69 @@ export const CONVERSATION_ID_HEADER = 'X-Conversation-Id';
 const isReplicaSet = (): boolean =>
   process.env.REPLICA_SET_AVAILABLE === 'true';
 
-const inShortTransaction = async <T>(
-  work: (session: ClientSession | null) => Promise<T>,
-): Promise<T> => {
-  if (!isReplicaSet()) return work(null);
-  const session = await mongoose.startSession();
-  try {
-    let result: T | undefined;
-    await session.withTransaction(async () => {
-      result = await work(session);
-    });
-    return result as T;
-  } finally {
-    await session.endSession();
-  }
-};
-
-const withSession = (
-  session: ClientSession | null,
-): { session: ClientSession } | undefined =>
-  session ? { session } : undefined;
+const inShortTransaction = <T>(work: (tx: Tx) => Promise<T>): Promise<T> =>
+  createUnitOfWork(isReplicaSet()).run(work);
 
 export const openConversation = (
-  fields: Partial<IChatSession>,
-  userMessage: IMessage,
-): Promise<IChatSessionDocument> =>
-  inShortTransaction(async (session) => {
-    const conversation = (await new ChatSession(fields).save(
-      withSession(session),
-    )) as IChatSessionDocument;
-    await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [userMessage],
-      session,
-    );
-    return conversation;
-  });
+  fields: NewSession,
+  userMessage: NewMessage,
+): Promise<ChatSessionDto> =>
+  inShortTransaction((tx) =>
+    getConversationRepository().openSession(fields, userMessage, tx),
+  );
 
 export interface ContinuedConversation {
-  conversation: IChatSessionDocument;
+  conversation: ChatSessionDto;
   /** History before this turn, in the shape the AI backend expects. */
   previousConversations: ReturnType<typeof formatPreviousConversations>;
 }
 
-/** Who is asking, so what they read and write is theirs: history redacted, turns stamped. */
+/** Who is asking. */
 export interface TurnViewer {
-  appConfig: AppConfig;
   userId: string;
   orgId: string;
 }
 
 export const continueConversation = async (
-  filter: Record<string, unknown>,
-  userMessage: IMessage,
+  scope: SessionScope,
+  conversationId: string,
+  userMessage: NewMessage,
   viewer: TurnViewer,
 ): Promise<ContinuedConversation> => {
-  const { conversation, rows } = await inShortTransaction(async (session) => {
-    const conversation = await ChatSession.findOne(
-      filter,
-      null,
-      withSession(session),
+  const { conversation, rows } = await inShortTransaction(async (tx) => {
+    const repo = getConversationRepository();
+    const found = await repo.findForTurn(
+      scope,
+      conversationId,
+      { orgId: viewer.orgId, userId: viewer.userId },
+      tx,
     );
-    if (!conversation) {
+    if (!found) {
       throw new NotFoundError('Conversation not found');
     }
     // Read before the new question is appended, so the history is this turn's.
     const rows = (await getMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      {
-        orgId: conversation.orgId,
-        populateCitations: !!conversation.isShared,
-      },
-      session,
+      found._id,
+      { orgId: found.orgId },
+      tx,
     )) as Array<Record<string, unknown>>;
-    await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [userMessage],
-      session,
-      viewer.userId,
+    await appendMessages(found._id, found.orgId, [userMessage], tx);
+    const saved = await repo.recordRunState(
+      found._id,
+      {
+        status: CONVERSATION_STATUS.INPROGRESS,
+        failReason: null,
+        lastActivityAt: Date.now(),
+      },
+      tx,
     );
-    conversation.status = CONVERSATION_STATUS.INPROGRESS;
-    conversation.failReason = undefined;
-    conversation.lastActivityAt = Date.now();
-    await conversation.save(withSession(session));
-    return { conversation, rows };
+    return { conversation: saved ?? found, rows };
   });
-  // Other users' turns reach the model only as this requester may read them. The
-  // access check is a network call, so it runs after the commit: inside, it would
-  // hold the transaction open and be repeated by every retry.
-  const initiator = conversation.initiator as
-    mongoose.Types.ObjectId | undefined;
-  const history = await redactMessagesFor(
-    viewer.appConfig,
-    rows,
-    initiator?.toString(),
-    { userId: viewer.userId, orgId: viewer.orgId },
-  );
   return {
     conversation,
-    previousConversations: formatPreviousConversations(history as IMessage[]),
+    previousConversations: formatPreviousConversations(
+      rows as unknown as IMessage[],
+    ),
   };
 };
 
@@ -181,16 +146,15 @@ const rejectionFor = (statusCode: number, failReason: string): HttpError =>
       )
     : new InternalServerError(failReason);
 
-const causeCode = (error: unknown): unknown =>
-  (error as { cause?: { code?: unknown } } | null)?.cause?.code;
-
 /**
  * The error a thrown AI call sends back. A deliberate 4xx keeps its own
- * status and message; anything else carries only the user-facing reason.
+ * status and message; an AI service that never answered is the shared 503
+ * (504 on a timeout); anything else carries only the user-facing reason.
  */
 const clientErrorFor = (error: unknown, failReason: string): HttpError => {
-  if (causeCode(error) === 'ECONNREFUSED') {
-    return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+  const unanswered = unansweredCallError(error, 'chat');
+  if (unanswered) {
+    return unanswered;
   }
   if (error instanceof HttpError && error.statusCode < 500) {
     return error;
@@ -213,13 +177,12 @@ const hasAnswer = (data: IAIResponse | undefined): data is IAIResponse =>
 
 export interface CompleteTurnOptions {
   target: ChatTarget;
-  conversation: IChatSessionDocument;
+  conversation: ChatSessionDto;
   aiBackend: string;
   request: AiChatRequest;
   headers: Record<string, string>;
   modelInfo: IAIModel;
   requestId?: string;
-  viewer: TurnViewer;
 }
 
 export interface CompletedTurn {
@@ -247,7 +210,7 @@ export const completeTurn = async (
     } catch (markError: unknown) {
       logger.error('Failed to record a failed non-streaming turn', {
         requestId,
-        conversationId: String(conversation._id),
+        conversationId: conversation._id,
         error:
           markError instanceof Error ? markError.message : String(markError),
       });
@@ -269,7 +232,7 @@ export const completeTurn = async (
   } catch (error: unknown) {
     logger.error('AI backend call failed', {
       requestId,
-      conversationId: String(conversation._id),
+      conversationId: conversation._id,
       error: error instanceof Error ? error.message : String(error),
     });
     const failReason = userFacingChatError(error);
@@ -301,17 +264,12 @@ export const completeTurn = async (
     const saved = (await saveCompleteConversation(
       conversation,
       response.data,
-      String(conversation.orgId),
+      conversation.orgId,
       null,
       options.modelInfo,
-      options.viewer.userId,
     )) as Record<string, unknown>;
     return {
-      conversation: await redactConversationFor(
-        options.viewer.appConfig,
-        saved,
-        { userId: options.viewer.userId, orgId: options.viewer.orgId },
-      ),
+      conversation: saved,
       // Python omits `citations` on some agent answers despite the type.
       recordsUsed: Array.isArray(response.data.citations)
         ? response.data.citations.length

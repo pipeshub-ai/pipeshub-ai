@@ -120,6 +120,17 @@ from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
     SyncHealth,
 )
+from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
+    GUID_PATTERN,
+    SHAREPOINT_ITEMS_PAGE_SIZE,
+    SHAREPOINT_REST_HEADERS,
+    SHAREPOINT_REST_MAX_ATTEMPTS,
+    SHAREPOINT_REST_MAX_RETRY_AFTER_S,
+    SHAREPOINT_REST_RETRY_STATUSES,
+    ListPermissionScope,
+    drive_item_unique_id,
+)
+from app.connectors.sources.microsoft.common.sign_in_errors import known_sign_in_problem
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
     get_sharepoint_auth_notification,
@@ -241,29 +252,6 @@ class SiteMetadata:
     updated_at: Optional[datetime] = None
 
 
-@dataclass
-class ListPermissionScope:
-    """Which parts of a SharePoint list carry their own permissions.
-
-    Graph marks no driveItem permission as inherited, so only SharePoint
-    REST can tell a uniquely permissioned item from one that inherits.
-    """
-    web_url: str
-    list_url: str
-    has_unique_role_assignments: bool
-    # Lower-cased list item UniqueId -> list item Id, for items with unique role assignments.
-    unique_items: dict[str, int]
-
-
-SHAREPOINT_REST_HEADERS = {
-    'Accept': 'application/json;odata=verbose',
-    'Content-Type': 'application/json;odata=verbose',
-}
-SHAREPOINT_REST_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE)
-SHAREPOINT_REST_MAX_ATTEMPTS = 3
-SHAREPOINT_REST_MAX_RETRY_AFTER_S = 30
-SHAREPOINT_ITEMS_PAGE_SIZE = 5000
-
 # Stored records written before version 2 carry a copy of every inherited grant. Their next
 # run reads every item again so those copies are replaced (see run_sync).
 PERMISSION_MODEL_VERSION = 2
@@ -292,7 +280,6 @@ SP_PRINCIPAL_SHAREPOINT_GROUP = 8
 SP_LIMITED_ACCESS_ROLE_KIND = 1
 SP_LIMITED_ACCESS_ROLE_NAMES = frozenset({"Limited Access", "Web-Only Limited Access"})
 
-GUID_PATTERN = re.compile(r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
 TENANT_CLAIM_PATTERN = re.compile(r'\|tenant\|([0-9a-fA-F-]{36})')
 DIRECTORY_ROLE_ODATA_TYPE = "#microsoft.graph.directoryRole"
 M365_OWNERS_DISPLAY_SUFFIX = " Owners"
@@ -344,22 +331,6 @@ def merge_permission(permissions: dict[tuple[str, str], Permission], permission:
     if current is None or _PERMISSION_RANK[permission.type] > _PERMISSION_RANK[current.type]:
         permissions[key] = permission
 
-
-def drive_item_unique_id(item: DriveItem) -> str | None:
-    """The SharePoint list item UniqueId of a drive item, lower-cased.
-
-    A drive item's eTag is ``"{GUID},n"`` and that GUID is the list item's UniqueId.
-    """
-    sharepoint_ids = getattr(item, 'sharepoint_ids', None)
-    unique_id = getattr(sharepoint_ids, 'list_item_unique_id', None) if sharepoint_ids else None
-    if isinstance(unique_id, str) and unique_id:
-        return unique_id.lower()
-    e_tag = getattr(item, 'e_tag', None)
-    if isinstance(e_tag, str):
-        match = GUID_PATTERN.search(e_tag)
-        if match:
-            return match.group(1).lower()
-    return None
 
 
 class MicrosoftRegion(str, Enum):
@@ -748,17 +719,30 @@ class SharePointConnector(BaseConnector):
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
 
+    @staticmethod
+    def _build_credential(credential_cls: type, **kwargs: str) -> object:
+        try:
+            return credential_cls(**kwargs)
+        except ValueError as error:
+            # azure-identity checks the tenant ID's format here, before any request; other ValueErrors
+            # (such as a certificate it cannot parse) are not about the tenant.
+            if "tenant" not in str(error).lower():
+                raise
+            raise ConnectorInitError(
+                "The Directory (Tenant) ID is not valid. Check it in the app registration."
+            ) from error
+
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         credentials_config = config.get("auth", {})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
@@ -798,7 +782,7 @@ class SharePointConnector(BaseConnector):
         # Validation
         if not all((tenant_id, client_id, sharepoint_domain)):
             self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
-            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+            raise ConnectorInitError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
 
         # Check for one valid authentication method
         has_certificate = certificate_data and private_key_data
@@ -806,7 +790,7 @@ class SharePointConnector(BaseConnector):
 
         if not (has_certificate or has_client_secret):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
-            raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
+            raise ConnectorInitError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -869,7 +853,8 @@ class SharePointConnector(BaseConnector):
                 self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
 
                 # Create credential with the combined certificate file
-                self.credential = CertificateCredential(
+                self.credential = self._build_credential(
+                    CertificateCredential,
                     tenant_id=credentials.tenant_id,
                     client_id=credentials.client_id,
                     certificate_path=self.temp_cert_file.name,
@@ -889,10 +874,16 @@ class SharePointConnector(BaseConnector):
                         os.unlink(self.temp_cert_file.name)
                     except OSError:  # <--- The fix
                         pass
-                raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
+                if isinstance(cert_error, ConnectorInitError):
+                    raise
+                raise ConnectorInitError(
+                    "The certificate or private key in the connector's settings could not be read. Paste the "
+                    "certificate and its private key in PEM format, then try again."
+                ) from cert_error
 
         elif has_client_secret:
-            self.credential = ClientSecretCredential(
+            self.credential = self._build_credential(
+                ClientSecretCredential,
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -918,17 +909,25 @@ class SharePointConnector(BaseConnector):
                     os.unlink(self.temp_cert_file.name)
                 except OSError:
                     pass
+            # An AADSTS code not in the table may be transient (e.g. AADSTS90033), so it stays a 5xx.
+            problem = known_sign_in_problem(token_error)
+            if problem:
+                raise ConnectorInitError(problem) from token_error
             raise ValueError(
                 f"Failed to initialize SharePoint credential: {sanitized_error}"
             )
         
-        sharepoint_token = await self._get_sharepoint_access_token()
-        if not sharepoint_token:
-            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
-            raise ValueError(
-                "Unable to acquire a SharePoint access token. Please verify "
-                "SharePoint host URL and authentication settings."
-            )
+        try:
+            await self._get_sharepoint_access_token(raise_errors=True)
+        except Exception as token_error:
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
+            problem = known_sign_in_problem(token_error, resource_setting="SharePoint domain")
+            if problem:
+                raise ConnectorInitError(
+                    f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
+                ) from token_error
+            raise ValueError(f"Unable to acquire a SharePoint access token: {sanitized_error}") from token_error
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -2559,15 +2558,20 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
+    async def _get_sharepoint_access_token(
+        self, resource_host: str = None, *, raise_errors: bool = False
+    ) -> Optional[str]:
         """An app-only token for SharePoint REST on a host (default: the tenant's SharePoint domain).
 
         The connector's credential keeps its tokens until they are close to expiring, so this asks the
-        token endpoint once per host per hour instead of once per SharePoint call.
+        token endpoint once per host per hour instead of once per SharePoint call. A failure returns None,
+        or with ``raise_errors`` is raised as it came, so the caller can tell its cause.
         """
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
+        if raise_errors:
+            return (await self.credential.get_token(f"{resource}/.default")).token
         try:
             token = await self.credential.get_token(f"{resource}/.default")
             return token.token

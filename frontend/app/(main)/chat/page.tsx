@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
@@ -100,6 +100,7 @@ function ChatFooterLinks() {
         href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -140,6 +141,7 @@ function ChatFooterLinks() {
         href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -191,7 +193,7 @@ function ChatContent() {
   const rawProjectParam = searchParams.get('projectId');
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -237,9 +239,6 @@ function ChatContent() {
   );
   const activeSlotIsOwner = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
-  );
-  const activeSlotCanWrite = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.canWrite ?? null : null
   );
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
@@ -700,7 +699,6 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
-        const canWrite = isOwner || detail.conversation.access?.accessLevel === 'write';
         const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -730,7 +728,6 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
-          canWrite,
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -833,7 +830,7 @@ function ChatContent() {
       }
     }
 
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: suggestion.text }],
       startRun: true,
@@ -856,14 +853,22 @@ function ChatContent() {
   useEffect(() => {
     if (!projectId) { setProjectDetail(null); return; }
     let cancelled = false;
-    ProjectApi.get(projectId).then((p) => {
+    // The page shows the one error; the client's own toast made it two.
+    ProjectApi.get(projectId, { suppressErrorToast: true }).then((p) => {
       if (!cancelled) setProjectDetail(p);
-    }).catch(() => {
-      if (!cancelled) setProjectDetail(null);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setProjectDetail(null);
       toast.error(t('chat.projects.workspace.failedToLoad'));
+      // A project the user can't open left them a working composer inside a
+      // nameless project. Fall back to a plain chat (keeping an open thread).
+      const status = isProcessedError(error) ? error.statusCode : undefined;
+      if (status === 403 || status === 404) {
+        router.replace(buildChatHref({ conversationId }));
+      }
     });
     return () => { cancelled = true; };
-  }, [projectId, projectsVersion, t]);
+  }, [projectId, projectsVersion, t, router, conversationId]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;
@@ -941,7 +946,7 @@ function ChatContent() {
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
     // main composer.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
@@ -955,7 +960,7 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
+  }, [conversationId, aui, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
   const isBelowDesktop = useIsBelowDesktop();
@@ -1097,20 +1102,20 @@ function ChatContent() {
   const showInitialLoading =
     conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
 
-  // Hide chat input when viewing a shared conversation the user does not own or may not write to.
+  // Hide chat input when viewing a shared conversation the user does not own.
   // `null` means "not yet known": an existing chat that is still loading must not show the
   // composer, or a recipient sees it until the chat arrives. Otherwise (a new chat, or a chat
   // whose ownership could not be read) it stays visible.
-  // A user the chat is shared with for writing gets it too (`canWrite`), a read-only recipient does not.
   const showChatInput =
-    (activeSlotIsOwner !== false || activeSlotCanWrite === true) &&
+    activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
-  // Search mode: show results view when in search mode with results/in-progress search
+  // Search mode: show the results view once a query is submitted, so empty and failed
+  // searches show their state instead of falling back to the welcome screen.
   const mode = useChatStore((s) => s.settings.mode);
-  const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
+  const hasSearchQuery = useChatStore((s) => s.searchQuery !== '');
   const isSearching = useChatStore((s) => s.isSearching);
-  const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
+  const showSearchView = mode === 'search' && (hasSearchQuery || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
   // Desktop only: on phones and tablets the two columns leave the document too narrow.

@@ -174,7 +174,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
-  sandbox.stub(esRoutes, 'createAccessRequestRouter').returns(dummyRouter);
+  sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
@@ -669,6 +669,45 @@ describe('Application', () => {
       }
     });
 
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
       const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
       sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
@@ -938,6 +977,44 @@ describe('Application', () => {
         (l: any) => l.route && l.route.path === '*',
       );
       expect(lastRouteLayers.length).to.be.greaterThan(0);
+    });
+
+    describe('SPA fallback for unknown URLs', () => {
+      const callFallback = (reqPath: string) => {
+        const stack = (expressApp as any)._router?.stack || [];
+        const layer = stack.filter((l: any) => l.route && l.route.path === '*').pop();
+        const res: any = {
+          statusCode: 200,
+          status: sinon.stub().callsFake((code: number) => {
+            res.statusCode = code;
+            return res;
+          }),
+          sendFile: sinon.stub(),
+          setHeader: sinon.stub(),
+          type: sinon.stub().returnsThis(),
+          send: sinon.stub(),
+        };
+        layer.route.stack[0].handle({ path: reqPath }, res, () => {});
+        return res;
+      };
+
+      for (const reqPath of [
+        '/workspace/does-not-exist',
+        '/workspace/does-not-exist/',
+        '/workspace/developer-settings/does-not-exist',
+      ]) {
+        it(`serves the not-found page with 404 for ${reqPath}`, () => {
+          const res = callFallback(reqPath);
+          expect(res.statusCode).to.equal(404);
+          expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]404\.html$/);
+        });
+      }
+
+      it('still serves the root shell for other unknown URLs', () => {
+        const res = callFallback('/sign-in');
+        expect(res.statusCode).to.equal(200);
+        expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]index\.html$/);
+      });
     });
   });
 

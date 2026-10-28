@@ -28,7 +28,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
+from app.models.entities import Record, RecordGroupType, RecordType, Status, TicketRecord, ItemType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
     BlockGroup,
@@ -48,6 +48,8 @@ from .models import GitlabLiterals, RecordUpdate
 # Guests, so they cannot share a record group with the ordinary ones.
 _WORK_ITEMS_SUFFIX = "-work-items"
 _CONFIDENTIAL_SUFFIX = "-confidential-work-items"
+# GitLab's issue.state words. Any other state is kept as GitLab spells it.
+_ISSUE_STATUS = {"opened": Status.OPEN, "closed": Status.CLOSED}
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -239,7 +241,7 @@ class IssuesSync:
                 record_group_type=RecordGroupType.PROJECT.value,
                 mime_type=MimeTypes.BLOCKS.value,
                 weburl=issue.web_url,
-                status=issue.state,
+                status=_ISSUE_STATUS.get(issue.state, issue.state),
                 external_revision_id=str(parse_timestamp(issue.updated_at)),
                 preview_renderable=False,
                 type=issue_type,

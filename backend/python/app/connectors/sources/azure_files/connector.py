@@ -25,6 +25,7 @@ from logging import Logger
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from azure.storage.fileshare import ShareServiceClient  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -102,6 +103,7 @@ from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
+from app.sources.client.azure.connection_string import account_key_problem
 from app.sources.external.azure.azure_files import (
     CREDENTIALS_REJECTED,
     AzureFilesDataSource,
@@ -161,8 +163,9 @@ SETUP_INFO = (
     "resource types). An account key connection string gives full read, write and delete "
     "access to everything in the storage account. Share-level permissions and NTFS folder "
     "permissions are not applied: every synced file is visible to everyone with access to "
-    "this connector, so for a team connector pick only shares the whole organisation may read "
-    "(a team connector syncs nothing until File Share Names names at least one share)."
+    "this connector, and a team connector shares them with the whole organisation. With no "
+    "shares picked under File Share Names, it syncs every share the credentials can list, so "
+    "for a team connector pick only shares the whole organisation may read."
 )
 
 
@@ -397,7 +400,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             display_name="File Share Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select the Azure File Shares to sync. Required for a team connector: everything synced is visible to the whole organisation.",
+            description="File shares to sync; leave empty to sync every share the credentials can list. Everything a team connector syncs is visible to the whole organisation.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_value=[],
             default_operator=MultiselectOperator.IN.value
@@ -516,6 +519,12 @@ class AzureFilesConnector(BaseConnector):
             )
             return False
 
+        problems = self.auth_config_problems(auth_config)
+        if problems:
+            self.logger.error(f"Azure Files credentials refused: {problems[0]}")
+            await self._notify_problem(NotificationType.CONNECTOR_AUTH_ERROR, "Credentials refused", problems[0])
+            raise ConnectorInitError(f"{self.display_name}: {problems[0]}")
+
         # Load creator email if needed (for personal scope permission creation)
         await self._load_creator_email()
 
@@ -632,18 +641,6 @@ class AzureFilesConnector(BaseConnector):
             )
 
             selected_shares = included_names(sync_filters, "shares")
-            if self.scope == ConnectorScope.TEAM.value and not selected_shares:
-                # Every synced file is readable by the whole organisation, so a team
-                # connector must not pick up every share the credential can list, nor
-                # every share but a few (Not in), which takes in shares created later.
-                message = (
-                    "A team connector syncs only the shares named in File Share Names (operator In), "
-                    "since everything it syncs is visible to the whole organisation. Select the "
-                    "shares to sync in the connector's filters."
-                )
-                await self._notify_problem(NotificationType.CONNECTOR_SYNC_ERROR, "No file shares selected", message)
-                raise ValueError(message)
-
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(
                     self.connector_id
@@ -1732,6 +1729,13 @@ class AzureFilesConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing Azure Files item: {e}", exc_info=True)
             return None, []
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        if auth_config.get("authType") == AuthType.ENTRA_ID:
+            return []
+        problem = account_key_problem(auth_config.get("connectionString") or "", ShareServiceClient)
+        return [problem] if problem else []
 
     async def _create_azure_files_permissions(
         self, share_name: str, item_path: str

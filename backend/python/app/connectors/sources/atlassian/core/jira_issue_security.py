@@ -1,8 +1,11 @@
 """Jira issue security levels for the team connectors.
 
 Issue security is not the project permission scheme. A project browse grant
-does not show an issue that has a security level. Sub-tasks inherit their
-parent issue's level. A story under an epic inherits the epic and also has its own level.
+does not show an issue that has a security level. Jira judges every issue by its
+own level: it copies a parent's level onto its sub-tasks, so a sub-task's own
+``security`` field carries it, but an epic's level does not reach the epic's
+children, which keep their own. So a sub-task inherits its parent issue and any
+other issue inherits its project (the connector files only sub-tasks under a parent).
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -83,6 +86,11 @@ class IssueSecurityContext:
     # Set only for a transient scheme read (429, 5xx, network). A 403 or a
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
+    # The HTTP status of the scheme or members read that failed, so the warning can tell
+    # a token without the scope (401) from an account without the permission (403).
+    read_status: int | None = None
+    # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
+    scope_refused: bool = False
 
     def level_fingerprints(
         self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
@@ -192,6 +200,59 @@ async def collect_paged_values(
             return status, None
         if start > 100_000:
             return status, None
+
+
+def refuses_a_scope(body: object) -> bool:
+    """Whether a Jira 401 body says the token lacks a scope ("Unauthorized; scope does not match")."""
+    return isinstance(body, dict) and "scope does not match" in str(body.get("message") or "").lower()
+
+
+def scheme_has_no_levels(body: object) -> bool:
+    """A scheme body that lists no level. No issue can carry one, so its members need not
+    be read. The "Simplified" schemes of team-managed projects are like this."""
+    return isinstance(body, dict) and isinstance(body.get("levels"), list) and not body["levels"]
+
+
+UNREADABLE_SCOPE = "scope"
+UNREADABLE_AUTH = "auth"
+UNREADABLE_PERMISSION = "permission"
+UNREADABLE_ROLES = "roles"
+UNREADABLE_TRANSIENT = "transient"
+UNREADABLE_OTHER = "other"
+
+UNREADABLE_REASONS = {
+    UNREADABLE_SCOPE: (
+        "Jira refused the connector's authorisation (HTTP 401). Add read:issue-security-level:jira "
+        "and read:issue-security-scheme:jira to the Atlassian app, then reconnect the connector"
+    ),
+    UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
+    UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
+    UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_OTHER: "the read failed",
+}
+
+# Reasons after which issues keep the grants they were stored with, until a sync reads the
+# levels; after any other reason an issue that carries a level is closed to everyone.
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
+
+
+def unreadable_reason(context: IssueSecurityContext) -> str | None:
+    """Why a project's issue security levels cannot be applied, or None when they can (or
+    the project has no scheme). One of the ``UNREADABLE_*`` keys."""
+    if context.knowledge == SchemeKnowledge.NONE:
+        return None
+    if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
+        return None
+    if context.read_status == 401:
+        return UNREADABLE_SCOPE if context.scope_refused else UNREADABLE_AUTH
+    if context.read_status == 403 or context.scheme_forbidden:
+        return UNREADABLE_PERMISSION
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
+        return UNREADABLE_ROLES
+    if context.defer_checkpoint:
+        return UNREADABLE_TRANSIENT
+    return UNREADABLE_OTHER
 
 
 def classify_scheme_response(
@@ -523,12 +584,10 @@ def apply_issue_access_settled(
     absence) was read in full; a closed issue whose level could not be read is not,
     though both write no grants.
 
-    A child issue (a sub-task, or a story under an epic) in the same project
-    inherits its hierarchy parent. It is visible to a user who can open both the
-    parent and the child, so a story under a leveled epic needs the epic's level
-    too (an accepted under-share, never an over-share). A parent in another
-    project is handled by the processor, which keeps the child on its own
-    project. Attachments are handled separately and stay empty.
+    A sub-task inherits its parent issue, whose level Jira copies onto it; any other
+    issue inherits its project (the connector does not file a story under its epic).
+    A parent in another project is handled by the processor, which keeps the child on
+    its own project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its

@@ -22,9 +22,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
-import pypdfium2 as pdfium
 from PIL import Image
 
+from app.services.resource_governor.probe import effective_cpu_count
+from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
@@ -56,18 +57,24 @@ def _get_pdf_raster_worker_count() -> int:
         except ValueError:
             pass
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(cpu_count, 2))
+    return max(1, min(effective_cpu_count(), 2))
 
 
 PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
 
+def pdf_raster_pool_size() -> int:
+    """Processes the rasterizer pool uses in this service process (for /health)."""
+    return scaled(PDF_RASTER_WORKERS)
+
+
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=scaled(PDF_RASTER_WORKERS),
+        max_workers=pdf_raster_pool_size(),
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=start_housekeeping,
+        initargs=(os.getpid(),),
     )
 
 
@@ -211,26 +218,9 @@ def _worker_render_page_from_bytes(
         return _page_to_rgb_array(pdf.pages[page_number - 1], resolution)
 
 
-def _worker_count_chars_from_bytes(pdf_bytes: bytes) -> list[int]:
-    pdf = pdfium.PdfDocument(pdf_bytes)
-    try:
-        counts: list[int] = []
-        for index in range(len(pdf)):
-            page = pdf[index]
-            textpage = page.get_textpage()
-            try:
-                counts.append(textpage.count_chars())
-            finally:
-                textpage.close()
-                page.close()
-        return counts
-    finally:
-        pdf.close()
-
-
 def _run_in_pool(fn, *args):
     try:
-        return _get_pdf_raster_pool().submit(fn, *args).result()
+        return _get_pdf_raster_pool().submit(run_and_release, fn, *args).result()
     except BrokenProcessPool:
         _logger.warning(
             "PDF rasterization process pool broke (worker likely OOM-killed); "
@@ -311,22 +301,18 @@ def render_batch_from_bytes_sync(
     )
 
 
-def count_chars_per_page_from_bytes_sync(pdf_bytes: bytes) -> list[int]:
-    """Characters in each page's text layer, read by pdfium in the raster pool.
+def render_all_pages_as_png(pdf_bytes: bytes, resolution: float = 72) -> list[bytes]:
+    """Every page as PNG, rendered in this process rather than the raster pool.
 
-    pdfplumber extracts text with pure-Python pdfminer, which can take minutes
-    on a page whose glyphs are drawn as vector paths; pdfium answers in
-    milliseconds, and it runs here because it is not thread-safe.
+    For a parse worker: it runs one job at a time, so pdfium is never shared,
+    and it does not pay the raster pool's start, which re-imports the service.
     """
-    return _run_in_pool(_worker_count_chars_from_bytes, pdf_bytes)
-
-
-def render_all_pages_as_pil_from_bytes_sync(
-    pdf_bytes: bytes,
-    resolution: float = 72,
-) -> List[Image.Image]:
-    pages = render_all_pages_from_bytes_sync(pdf_bytes, resolution)
-    return [Image.fromarray(pages[i][0]) for i in sorted(pages)]
+    pngs: list[bytes] = []
+    for _, (pixels, _scale) in sorted(_render_all_pages_impl(pdf_bytes, None, resolution).items()):
+        buf = BytesIO()
+        Image.fromarray(pixels).save(buf, format="PNG")
+        pngs.append(buf.getvalue())
+    return pngs
 
 
 async def render_all_pages_from_bytes(
@@ -336,6 +322,7 @@ async def render_all_pages_from_bytes(
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         _get_pdf_raster_pool(),
+        run_and_release,
         _worker_render_all_from_bytes,
         pdf_bytes,
         resolution,

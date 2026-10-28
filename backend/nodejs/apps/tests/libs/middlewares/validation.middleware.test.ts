@@ -73,9 +73,9 @@ describe('ValidationMiddleware', () => {
           name: z.string(),
           age: z.number(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -95,13 +95,13 @@ describe('ValidationMiddleware', () => {
 
     it('should call next() when query params match schema', async () => {
       const schema = z.object({
-        body: z.object({}).passthrough(),
+        body: z.object({}).loose(),
         query: z.object({
           page: z.string(),
           limit: z.string(),
         }),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -119,12 +119,12 @@ describe('ValidationMiddleware', () => {
 
     it('should call next() when params match schema', async () => {
       const schema = z.object({
-        body: z.object({}).passthrough(),
-        query: z.object({}).passthrough(),
+        body: z.object({}).loose(),
+        query: z.object({}).loose(),
         params: z.object({
           id: z.string().uuid(),
         }),
-        headers: z.object({}).passthrough(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -151,9 +151,9 @@ describe('ValidationMiddleware', () => {
           name: z.string(),
           email: z.string().email(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -178,9 +178,9 @@ describe('ValidationMiddleware', () => {
         body: z.object({
           count: z.number(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -202,9 +202,9 @@ describe('ValidationMiddleware', () => {
         body: z.object({
           email: z.string().email(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -223,12 +223,12 @@ describe('ValidationMiddleware', () => {
 
     it('should call next with ValidationError when params are invalid', async () => {
       const schema = z.object({
-        body: z.object({}).passthrough(),
-        query: z.object({}).passthrough(),
+        body: z.object({}).loose(),
+        query: z.object({}).loose(),
         params: z.object({
           id: z.string().uuid(),
         }),
-        headers: z.object({}).passthrough(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -255,9 +255,9 @@ describe('ValidationMiddleware', () => {
         body: z.object({
           name: z.string(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema, { stripUnknown: true })
@@ -279,10 +279,10 @@ describe('ValidationMiddleware', () => {
       const schema = z.object({
         body: z.object({
           name: z.string(),
-        }).passthrough(),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        }).loose(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -305,18 +305,15 @@ describe('ValidationMiddleware', () => {
   // -----------------------------------------------------------------------
   describe('validate - non-Zod errors', () => {
     it('should forward non-Zod errors via next()', async () => {
-      // Create a schema that deliberately throws a non-Zod error
+      // A transform that throws a plain Error is not a validation failure
       const schema = z.object({
-        body: z.any(),
+        body: z.any().transform(() => {
+          throw new Error('Unexpected error')
+        }),
         query: z.any(),
         params: z.any(),
         headers: z.any(),
       })
-
-      // Override parseAsync to throw a generic error
-      sinon.stub(schema, 'passthrough').returns({
-        parseAsync: sinon.stub().rejects(new Error('Unexpected error')),
-      } as any)
 
       const middleware = ValidationMiddleware.validate(schema)
       const req = createMockRequest()
@@ -348,7 +345,7 @@ describe('ValidationMiddleware', () => {
         params: z.object({
           id: z.string(),
         }),
-        headers: z.object({}).passthrough(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)
@@ -380,9 +377,9 @@ describe('ValidationMiddleware', () => {
           age: z.number(),
           email: z.string().email(),
         }),
-        query: z.object({}).passthrough(),
-        params: z.object({}).passthrough(),
-        headers: z.object({}).passthrough(),
+        query: z.object({}).loose(),
+        params: z.object({}).loose(),
+        headers: z.object({}).loose(),
       })
 
       const middleware = ValidationMiddleware.validate(schema)

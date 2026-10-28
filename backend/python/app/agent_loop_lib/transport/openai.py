@@ -59,10 +59,16 @@ from app.agent_loop_lib.transport.openai_responses import (
     responses_usage_fields,
     stop_reason_from_responses,
 )
+from app.agent_loop_lib.transport.prompt_cache import (
+    OPENAI_BREAKPOINT,
+    OPENAI_BREAKPOINT_PARAM,
+    OpenAICachePlan,
+    split_system_prompt,
+)
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
-    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
+    refused_cache_params,
 )
 from app.agent_loop_lib.transport.tool_images import relocated_tool_images
 from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
@@ -85,6 +91,38 @@ _FINISH_REASON_MAP: dict[str | None, StopReason] = {
     "tool_calls": StopReason.TOOL_USE,
     "length": StopReason.MAX_TOKENS,
 }
+
+
+def _marked(block: dict[str, Any]) -> dict[str, Any]:
+    return {**block, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)}
+
+
+def _system_parts(
+    system: str | None, system_blocks: list[str] | None, *, mark_stable: bool,
+) -> list[tuple[str, bool]]:
+    """The system prompt as one system message per part, each with whether
+    it ends in a cache breakpoint. With one, the stable block is a message
+    of its own: on Chat Completions a change later in the same message
+    misses the cache even past an explicit breakpoint."""
+    stable, volatile = split_system_prompt(system, system_blocks)
+    if mark_stable and stable:
+        return [(stable, True), *([(volatile, False)] if volatile else [])]
+    text = system or "\n\n".join(block for block in system_blocks or [] if block)
+    return [(text, False)] if text else []
+
+
+def _mark_last(item: dict[str, Any], text_type: str) -> None:
+    """A breakpoint on the last block of a user or tool item (a chat message,
+    or a Responses message or function output); string content becomes the
+    one text block it stands for. An assistant item is left alone."""
+    if item.get("role") == "assistant" or item.get("type") == "function_call":
+        return
+    field_name = "output" if item.get("type") == "function_call_output" else "content"
+    content = item.get(field_name)
+    if isinstance(content, str):
+        item[field_name] = [_marked({"type": text_type, "text": content})] if content else content
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        item[field_name] = [*content[:-1], _marked(content[-1])]
 
 
 @dataclass
@@ -189,8 +227,8 @@ class OpenAITransport(LLMTransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None,
-        on_cache_rejected: Callable[[], None] | None = None,
+        cache_plan: OpenAICachePlan | None = None,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> None:
         super().__init__()
@@ -219,7 +257,7 @@ class OpenAITransport(LLMTransport):
         if http_client is not None:
             client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
-        self._init_prompt_cache(cache_kwargs, on_cache_rejected)
+        self._init_prompt_cache(cache_plan, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -232,7 +270,8 @@ class OpenAITransport(LLMTransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        cache_plan: OpenAICachePlan | None = None,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
@@ -281,29 +320,38 @@ class OpenAITransport(LLMTransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
-            cache_kwargs=cache_kwargs,
+            cache_plan=cache_plan,
             on_cache_rejected=on_cache_rejected,
             http_client=http_client,
         )
 
     def _init_prompt_cache(
-        self, cache_kwargs: dict[str, str] | None, on_cache_rejected: Callable[[], None] | None,
+        self, cache_plan: OpenAICachePlan | None, on_cache_rejected: Callable[[frozenset[str]], None] | None,
     ) -> None:
-        # prompt_cache_key / prompt_cache_retention, decided by the caller from
-        # the shared policy (`transport/prompt_cache.py`); dropped for good if
-        # the endpoint rejects them.
-        self._cache_kwargs: dict[str, str] = dict(cache_kwargs or {})
+        # What to ask the endpoint to cache, decided by the caller from the
+        # shared policy (`transport/prompt_cache.py`); each part is dropped for
+        # good once the endpoint rejects it.
+        self._cache_plan = cache_plan or OpenAICachePlan()
         self._on_cache_rejected = on_cache_rejected
+
+    @property
+    def _cache_kwargs(self) -> dict[str, str]:
+        return self._cache_plan.kwargs
 
     def _drop_cache_params(self, exc: Exception) -> bool:
         """Whether `exc` is the endpoint refusing a cache parameter this
-        transport sends; if so, later requests (the retry included) go without."""
-        if not is_prompt_cache_param_conflict(exc, self._cache_kwargs):
+        transport sends; if so, later requests (the retry included) go without
+        the ones it named."""
+        refused = refused_cache_params(exc, self._cache_plan.sent_params)
+        if not refused:
             return False
-        logger.warning("%s: prompt-cache parameters rejected; resending without them: %s", type(self).__name__, exc)
-        self._cache_kwargs = {}
+        logger.warning(
+            "%s: prompt-cache parameters %s rejected; resending without them: %s",
+            type(self).__name__, sorted(refused), exc,
+        )
+        self._cache_plan = self._cache_plan.without(refused)
         if self._on_cache_rejected is not None:
-            self._on_cache_rejected()
+            self._on_cache_rejected(refused)
         return True
 
     @property
@@ -405,16 +453,23 @@ class OpenAITransport(LLMTransport):
                 blocks.append({"type": "text", "text": text})
         return blocks
 
-    def _format_messages(self, messages: list[Message], system: str | None) -> list[dict[str, Any]]:
-        formatted: list[dict[str, Any]] = []
-        if system:
-            formatted.append({"role": "system", "content": system})
+    def _format_messages(
+        self, messages: list[Message], system: str | None, system_blocks: list[str] | None = None,
+        *, cache_markers: bool = True,
+    ) -> list[dict[str, Any]]:
+        plan = self._cache_plan if cache_markers else OpenAICachePlan()
+        formatted = [
+            {"role": "system", "content": [_marked({"type": "text", "text": text})] if marked else text}
+            for text, marked in _system_parts(system, system_blocks, mark_stable=plan.breakpoint)
+        ]
         formatted.extend(self._format_message(m) for m in messages)
         # The images `_format_message` left out of tool results, sent the way
         # the LangChain arm sends them, so this transport loses none.
         relocated = relocated_tool_images(messages)
         if relocated is not None:
             formatted.append(self._format_message(relocated))
+        if plan.last_message and messages:
+            _mark_last(formatted[-1], "text")
         return formatted
 
     # ------------------------------------------------------------------
@@ -451,11 +506,17 @@ class OpenAITransport(LLMTransport):
         stream: bool,
         tool_choice: ToolChoice | None = None,
     ) -> dict[str, Any]:
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
+        system_items = [
+            {"type": "message", "role": "system",
+             "content": [_marked({"type": "input_text", "text": text})] if marked else text}
+            for text, marked in _system_parts(system, system_blocks, mark_stable=self._cache_plan.breakpoint)
+        ]
+        items = format_responses_input(messages, None)
+        if self._cache_plan.last_message and items:
+            _mark_last(items[-1], "input_text")
         kwargs: dict[str, Any] = {
             "model": self._responses_model_id(),
-            "input": format_responses_input(messages, system),
+            "input": [*system_items, *items],
             **self._default_request_kwargs(),
             **self._cache_kwargs,
         }
@@ -799,14 +860,10 @@ class OpenAITransport(LLMTransport):
             return await self._complete_responses(
                 messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             )
-        # OpenAI automatic prefix caching benefits from stable-first ordering
-        # alone; join blocks when the caller omitted the already-joined string.
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": self._format_messages(messages, system, system_blocks),
             **self._default_request_kwargs(),
             **self._cache_kwargs,
         }
@@ -859,7 +916,9 @@ class OpenAITransport(LLMTransport):
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            # Unmarked, as on the LangChain arm: this call sends no cache kwargs
+            # and has no refusal retry, so a refused breakpoint would fail it.
+            "messages": self._format_messages(messages, system, cache_markers=False),
             "tools": [tool_def],
             "tool_choice": {"type": "function", "function": {"name": "structured_output"}},
             **self._default_request_kwargs(),
@@ -900,12 +959,10 @@ class OpenAITransport(LLMTransport):
             ):
                 yield event
             return
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": self._format_messages(messages, system, system_blocks),
             "stream": True,
             "stream_options": {"include_usage": True},
             **self._default_request_kwargs(),
@@ -1090,22 +1147,26 @@ class OpenAITransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        try:
-            return await self._complete_once(
-                messages=messages, tools=tools, system=system, model=model,
-                thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks, tool_choice=tool_choice,
-            )
-        except Exception as exc:
-            dropped = self._drop_cache_params(exc)
-            mode = None if dropped else self._shape_fallback(exc)
-            if not dropped and mode is None:
-                raise
-        result = await self._complete_once(
-            messages=messages, tools=tools, system=system, model=model,
-            thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks, tool_choice=tool_choice,
-        )
+        """Resent without each cache parameter the endpoint refuses (each
+        refusal shrinks the plan, so this ends), and once on a request-shape
+        conflict."""
+        mode: str | None = None
+        while True:
+            try:
+                result = await self._complete_once(
+                    messages=messages, tools=tools, system=system, model=model,
+                    thinking_budget=thinking_budget, effort=effort,
+                    system_blocks=system_blocks, tool_choice=tool_choice,
+                )
+                break
+            except Exception as exc:
+                if self._drop_cache_params(exc):
+                    continue
+                if mode is not None:
+                    raise
+                mode = self._shape_fallback(exc)
+                if mode is None:
+                    raise
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
         if mode is not None:
@@ -1124,36 +1185,35 @@ class OpenAITransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream, retrying once on a request-shape conflict.
+        """Stream, resending without each refused cache parameter, and once on
+        a request-shape conflict.
 
-        The retry only happens if it fires before anything was yielded --
+        A retry only happens if it fires before anything was yielded --
         re-opening a stream that already emitted deltas would replay them to the
         client.
         """
-        emitted = False
-        try:
-            async for event in self._stream_once(
-                messages=messages, tools=tools, system=system, model=model,
-                thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks, tool_choice=tool_choice,
-            ):
-                emitted = True
-                yield event
-            return
-        except Exception as exc:
-            # Retrying after deltas reached the client would replay them.
-            if emitted:
-                raise
-            dropped = self._drop_cache_params(exc)
-            mode = None if dropped else self._shape_fallback(exc)
-            if not dropped and mode is None:
-                raise
-
-        async for event in self._stream_once(
-            messages=messages, tools=tools, system=system, model=model,
-            thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks, tool_choice=tool_choice,
-        ):
-            yield event
+        mode: str | None = None
+        while True:
+            emitted = False
+            try:
+                async for event in self._stream_once(
+                    messages=messages, tools=tools, system=system, model=model,
+                    thinking_budget=thinking_budget, effort=effort,
+                    system_blocks=system_blocks, tool_choice=tool_choice,
+                ):
+                    emitted = True
+                    yield event
+                break
+            except Exception as exc:
+                # Retrying after deltas reached the client would replay them.
+                if emitted:
+                    raise
+                if self._drop_cache_params(exc):
+                    continue
+                if mode is not None:
+                    raise
+                mode = self._shape_fallback(exc)
+                if mode is None:
+                    raise
         if mode is not None:
             await self._record_api_mode(mode)

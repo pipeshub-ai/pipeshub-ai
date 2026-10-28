@@ -27,6 +27,7 @@ import { ServiceAccountConfirmDialog } from './components/service-account-confir
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
+import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 import { normalizeDisplayName } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
@@ -62,6 +63,7 @@ type CleanSnapshot = {
   edgesJson: string;
   agentName: string;
   shareWithOrg: boolean;
+  serviceAccountUserId: string | null;
 };
 
 function serializeNodes(nodes: Node[]): string {
@@ -132,6 +134,37 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   } = useAgentBuilderState(loadedAgent?.name || '', !isMobile);
 
   const [shareWithOrg, setShareWithOrg] = useState(false);
+
+  /**
+
+   * The service account this agent searches knowledge as, by `userId`;
+
+   * null means it searches as its creator, which is the older behaviour
+
+   * and still the default.
+
+   */
+
+  const [serviceAccountUserId, setServiceAccountUserId] = useState<string | null>(null);
+  /**
+   * What to send for the binding: the new value when it moved, and nothing at
+   * all when it did not.
+   *
+   * Re-sending an unchanged id is not harmless. The server re-resolves any id
+   * it is given and refuses an account that has been switched off or removed,
+   * so a rename of an agent bound to a disabled account would be rejected —
+   * and told it could not find the account, which is not what the edit was
+   * about. Saying nothing leaves the binding in place to resume if the
+   * account comes back, while chat still refuses it meanwhile.
+   */
+  const bindingToSend = useCallback(
+    (current: AgentDetail | null | undefined): string | null | undefined => {
+      const stored = current?.serviceAccountUserId ?? null;
+      if (serviceAccountUserId === stored) return undefined;
+      return serviceAccountUserId;
+    },
+    [serviceAccountUserId],
+  );
   const [banner, setBanner] = useState<string | null>(null);
   const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
 
@@ -285,6 +318,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   useEffect(() => {
     if (loadedAgent) {
       setShareWithOrg(isServiceAccount ? true : Boolean(loadedAgent.shareWithOrg));
+      setServiceAccountUserId(loadedAgent.serviceAccountUserId ?? null);
     }
   }, [loadedAgent, isServiceAccount]);
 
@@ -321,6 +355,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [editingKey, loading, setNodes, setEdges]);
 
   const initOnce = useRef(false);
+  // Declared before first use (the reset effect below) so the ref is never read ahead of its declaration.
+  const historyGuardActive = useRef(false);
   useEffect(() => {
     initOnce.current = false;
     historyGuardActive.current = false;
@@ -351,6 +387,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         edgesJson: serializeEdges(e),
         agentName: agentSrc.name || '',
         shareWithOrg: Boolean(agentSrc.shareWithOrg),
+        serviceAccountUserId: agentSrc.serviceAccountUserId ?? null,
       });
       initOnce.current = true;
       return;
@@ -508,7 +545,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     const q = new URLSearchParams(window.location.search);
     if (q.get('sa') !== '1') return;
     saWelcomeShownRef.current = true;
-    setSuccess(t('agentBuilder.serviceAccountCreated'));
+    setSuccess(t('agentBuilder.serviceAgentCreated'));
     q.delete('sa');
     const path = window.location.pathname;
     const rest = q.toString();
@@ -524,9 +561,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       serializeNodes(nodes) !== cleanSnapshot.nodesJson ||
       serializeEdges(edges) !== cleanSnapshot.edgesJson ||
       agentName.trim() !== cleanSnapshot.agentName ||
-      shareWithOrg !== cleanSnapshot.shareWithOrg
+      shareWithOrg !== cleanSnapshot.shareWithOrg ||
+      serviceAccountUserId !== cleanSnapshot.serviceAccountUserId
     );
-  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot]);
+  }, [nodes, edges, agentName, shareWithOrg, serviceAccountUserId, cleanSnapshot]);
 
   // beforeunload guard: browser tab close / refresh / address-bar navigation.
   useEffect(() => {
@@ -541,7 +579,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   // popstate guard: browser back/forward button.
   // When dirty, push a guard entry so the first back press hits it (same URL)
   // and fires popstate without actually leaving the page.
-  const historyGuardActive = useRef(false);
   useEffect(() => {
     if (!isDirty) return;
 
@@ -667,7 +704,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           loadedAgent,
           shareWithOrg,
-          isServiceAccount
+          isServiceAccount,
+          bindingToSend(loadedAgent)
         ),
       };
 
@@ -682,6 +720,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setShowPostUpdateDialog(true);
       } else {
@@ -692,6 +731,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
@@ -704,7 +744,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
   }, [
     agentName,
+    bindingToSend,
     edges,
+    serviceAccountUserId,
     canPersist,
     agentLoadFailed,
     saveBlockedByDeprecatedTools,
@@ -750,7 +792,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           currentAgent ?? null,
           true,
-          true
+          true,
+          bindingToSend(currentAgent)
         ),
       };
 
@@ -764,8 +807,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
-        setSuccess(t('agentBuilder.serviceAccountConverted'));
+        setSuccess(t('agentBuilder.serviceAgentConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
         invalidateModelsForContext(created._key);
@@ -775,6 +819,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
@@ -785,8 +830,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
   }, [
     agentName,
+    bindingToSend,
     canPersist,
     edges,
+    serviceAccountUserId,
     hasToolsets,
     loadedAgent,
     nodes,
@@ -885,7 +932,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           ? undefined
           : (ts) => {
               if (!effectiveAgentKey) {
-                setBanner(t('agentBuilder.saveAsServiceAccountFirst'));
+                setBanner(t('agentBuilder.saveAsServiceAgentFirst'));
                 return;
               }
               if (!ts.instanceId) return;
@@ -937,6 +984,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           saveBlockedByDeprecatedTools={saveBlockedByDeprecatedTools}
           saveBlockedReason={saveBlockedByEmptyMcpServers ? t('agentBuilder.mcpServerNeedsToolsTooltip') : undefined}
           isServiceAccount={isServiceAccount}
+          serviceAccountUserId={serviceAccountUserId}
+          onServiceAccountUserIdChange={canPersist ? setServiceAccountUserId : undefined}
           editing={Boolean(loadedAgent || editingKey)}
           loading={agentLoading || agentLoadFailed}
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}

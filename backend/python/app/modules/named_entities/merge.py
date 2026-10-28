@@ -5,6 +5,7 @@ from __future__ import annotations
 from bisect import bisect_left, insort
 from typing import TYPE_CHECKING, NamedTuple
 
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import Mention, NamedEntity
 from app.modules.named_entities.domain.values import ContactValue, TypedValue
@@ -72,7 +73,7 @@ def entity_identity(kind: EntityKind, surface: str, ctx: NormalizationContext) -
         # A date or amount whose text states none is not stored under a name key,
         # and a link that cannot be made canonical is never stored as its raw text.
         return None
-    display = canonical_name(surface, organization=kind is EntityKind.ORGANIZATION)
+    display = canonical_name(surface, kind)
     if kind is EntityKind.URL and isinstance(value, ContactValue):
         # The graph shows the canonical link, never the credentials a raw one can carry.
         display = value.canonical
@@ -112,4 +113,4 @@ def mentions_to_entities(
             )
         else:
             entity.mentions.append(mention)
-    return list(grouped.values())
+    return link_short_forms(list(grouped.values()))

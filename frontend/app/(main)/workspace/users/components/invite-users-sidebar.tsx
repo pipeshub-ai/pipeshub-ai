@@ -20,6 +20,13 @@ import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../
 import { GroupType, type Group } from '../../groups/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { isProcessedError } from '@/lib/api';
+import {
+  validateEmail,
+  isSupportedInviteImportFile,
+  collectImportCandidates,
+  inviteOutcome,
+  InviteImportError,
+} from '../invite-email';
 
 // ========================================
 // Constants
@@ -43,18 +50,6 @@ const SAMPLE_CELL_STYLE: React.CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-
-// ========================================
-// Helpers
-// ========================================
-
-function validateEmail(value: string): string | null {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(value)) {
-    return 'Invalid email address';
-  }
-  return null;
-}
 
 // ========================================
 // Component
@@ -157,9 +152,14 @@ export function InviteUsersSidebar({
   // ^ Only re-run when groups load or edit mode changes. Do NOT add inviteGroupIds
   //   to deps or this will undo manual edits the user makes after opening.
 
-  // Form validation
+  // Form validation. Invalid tags block sending rather than being dropped
+  // silently, so what is sent is exactly what the list shows.
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
-  const isFormValid = hasValidEmails && Boolean(inviteRole);
+  const invalidEmailCount = inviteEmails.filter(
+    (tag) => tag.isValid === false
+  ).length;
+  const isFormValid =
+    hasValidEmails && invalidEmailCount === 0 && Boolean(inviteRole);
 
   // Edit mode only updates role/groups for an existing pending user — it never
   // sends a new invite email, so it doesn't depend on SMTP being configured.
@@ -241,37 +241,60 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        const { queued } = await UsersApi.inviteUsers(
+        const result = await UsersApi.inviteUsers(
           validEmails,
           inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
           isAdmin ? inviteRole || USER_ROLES.MEMBER : USER_ROLES.MEMBER,
         );
-
-        const emailDisplay =
-          validEmails.length === 1
-            ? validEmails[0]
-            : `${validEmails.length} users`;
-        addToast(
-          queued
-            ? {
-                variant: 'success',
-                title: t('workspace.users.invite.queuedTitle', 'Invites queued'),
-                description: t('workspace.users.invite.queuedDescription', {
-                  email: emailDisplay,
-                  defaultValue: `Emails to ${emailDisplay} are being sent in the background. You'll get a notification if any can't be delivered.`,
-                }),
-                duration: 5000,
-              }
-            : {
-                variant: 'success',
-                title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-                description: t('workspace.users.invite.successDescription', {
-                  email: emailDisplay,
-                  defaultValue: `${emailDisplay} has been invited`,
-                }),
-                duration: 3000,
-              },
+        const { sent, alreadyMembers } = inviteOutcome(
+          validEmails.length,
+          result,
         );
+
+        const singleEmail =
+          sent === 1 && validEmails.length === 1 ? validEmails[0] : null;
+        const emailDisplay =
+          singleEmail ??
+          t('workspace.users.invite.userCount', {
+            count: sent,
+            defaultValue_one: '{{count}} user',
+            defaultValue_other: '{{count}} users',
+          });
+        const sentDescription = result.queued
+          ? t('workspace.users.invite.queuedDescription', {
+              email: emailDisplay,
+              defaultValue: `Emails to ${emailDisplay} are being sent in the background. You'll get a notification if any can't be delivered.`,
+            })
+          : singleEmail
+            ? t('workspace.users.invite.successDescription', {
+                email: singleEmail,
+                defaultValue: `${singleEmail} has been invited`,
+              })
+            : t('workspace.users.invite.successDescriptionCount', {
+                count: sent,
+                defaultValue_one: '{{count}} user has been invited',
+                defaultValue_other: '{{count}} users have been invited',
+              });
+        const skippedDescription =
+          alreadyMembers > 0
+            ? t('workspace.users.invite.alreadyMembersSkipped', {
+                count: alreadyMembers,
+                defaultValue_one:
+                  '{{count}} address already belongs to a member, so no invite was sent to it.',
+                defaultValue_other:
+                  '{{count}} addresses already belong to members, so no invites were sent to them.',
+              })
+            : null;
+        addToast({
+          variant: alreadyMembers > 0 ? 'info' : 'success',
+          title: result.queued
+            ? t('workspace.users.invite.queuedTitle', 'Invites queued')
+            : t('workspace.users.invite.successTitle', 'Invite sent!'),
+          description: skippedDescription
+            ? `${sentDescription} ${skippedDescription}`
+            : sentDescription,
+          duration: skippedDescription ? 7000 : result.queued ? 5000 : 3000,
+        });
       }
 
       // Close panel and refresh parent list
@@ -279,7 +302,24 @@ export function InviteUsersSidebar({
       onInviteSuccess?.();
     } catch (err: unknown) {
       const apiMessage = isProcessedError(err) ? err.message : undefined;
-      if (isMaxOrgAdminsErrorMessage(apiMessage)) {
+      // 409: every address already belongs to an active member, so nothing
+      // was sent. Keep the panel open so the list can be changed.
+      if (!isEditMode && isProcessedError(err) && err.statusCode === 409) {
+        addToast({
+          variant: 'info',
+          title: t(
+            'workspace.users.invite.alreadyMembersTitle',
+            'Already members — no invites sent'
+          ),
+          description: t('workspace.users.invite.alreadyMembersDescription', {
+            count: validEmails.length,
+            defaultValue_one: 'This address already belongs to an active member.',
+            defaultValue_other:
+              'Every address already belongs to an active member.',
+          }),
+          duration: 5000,
+        });
+      } else if (isMaxOrgAdminsErrorMessage(apiMessage)) {
         addToast({
           variant: 'error',
           title: t(
@@ -330,6 +370,21 @@ export function InviteUsersSidebar({
       e.target.value = '';
       if (!file) return;
 
+      // The picker's `accept` is only a hint: "All files" still lets anything through.
+      if (!isSupportedInviteImportFile(file.name)) {
+        addToast({
+          variant: 'error',
+          title: t('workspace.users.invite.importFailed', 'Import failed'),
+          description: t(
+            'workspace.users.invite.importUnsupportedType',
+            'Only .csv, .xlsx and .xls files can be imported.'
+          ),
+          duration: 5000,
+          placement: 'top',
+        });
+        return;
+      }
+
       setIsImporting(true);
       try {
         // Loaded on demand so the parser stays out of the page bundle.
@@ -340,32 +395,24 @@ export function InviteUsersSidebar({
           sheetRows: MAX_IMPORT_EMAILS + 5,
         });
 
-        const found: string[] = [];
+        const rows: unknown[][] = [];
         workbook.SheetNames.forEach((sheetName) => {
           const sheet = workbook.Sheets[sheetName];
           if (!sheet) return;
-          const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-            header: 1,
-            blankrows: false,
-          });
-          rows.forEach((row) => {
-            row.forEach((cell) => {
-              if (cell == null) return;
-              const value = String(cell).trim();
-              // 254 = max email length per RFC 5321.
-              if (
-                found.length <= MAX_IMPORT_EMAILS &&
-                value.length <= 254 &&
-                value.includes('@')
-              ) {
-                found.push(value);
-              }
-            });
-          });
+          rows.push(
+            ...XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+              header: 1,
+              blankrows: false,
+            })
+          );
         });
+        const { found, tooLong } = collectImportCandidates(
+          rows,
+          MAX_IMPORT_EMAILS
+        );
 
         if (found.length === 0) {
-          throw new Error(
+          throw new InviteImportError(
             t(
               'workspace.users.invite.importNoEmails',
               'No email addresses found in the file'
@@ -373,7 +420,7 @@ export function InviteUsersSidebar({
           );
         }
         if (found.length > MAX_IMPORT_EMAILS) {
-          throw new Error(
+          throw new InviteImportError(
             t('workspace.users.invite.importTooMany', {
               defaultValue: 'File exceeds the {{max}}-user limit',
               max: MAX_IMPORT_EMAILS,
@@ -401,7 +448,7 @@ export function InviteUsersSidebar({
         });
 
         if (added.length === 0) {
-          throw new Error(
+          throw new InviteImportError(
             t(
               'workspace.users.invite.importAllDuplicates',
               'Every address in the file is already listed'
@@ -410,7 +457,7 @@ export function InviteUsersSidebar({
         }
 
         if (current.length + added.length > MAX_IMPORT_EMAILS) {
-          throw new Error(
+          throw new InviteImportError(
             t('workspace.users.invite.importTooMany', {
               defaultValue: 'File exceeds the {{max}}-user limit',
               max: MAX_IMPORT_EMAILS,
@@ -420,8 +467,11 @@ export function InviteUsersSidebar({
 
         setInviteEmails([...current, ...added]);
 
-        const invalidCount = added.filter((tag) => !tag.isValid).length;
+        const invalidTagCount = added.filter((tag) => !tag.isValid).length;
+        const invalidCount = invalidTagCount + tooLong;
         const duplicateCount = found.length - added.length;
+        // Import toasts go to the top so they don't sit over the panel's
+        // Cancel / Send Invite footer while the list is being reviewed.
         addToast({
           variant: 'success',
           title: t('workspace.users.invite.importLoaded', {
@@ -433,8 +483,23 @@ export function InviteUsersSidebar({
             'Review the list, then press Send Invite.'
           ),
           duration: 4000,
+          placement: 'top',
         });
         if (invalidCount > 0 || duplicateCount > 0) {
+          const markedDescription = t(
+            'workspace.users.invite.importSkippedDescription',
+            'Invalid entries are marked in the list — remove them before sending.'
+          );
+          const tooLongDescription = t(
+            'workspace.users.invite.importTooLongSkipped',
+            {
+              count: tooLong,
+              defaultValue_one:
+                '{{count}} entry longer than 254 characters was left out.',
+              defaultValue_other:
+                '{{count}} entries longer than 254 characters were left out.',
+            }
+          );
           addToast({
             variant: 'warning',
             title: t('workspace.users.invite.importSkipped', {
@@ -443,24 +508,32 @@ export function InviteUsersSidebar({
               invalid: invalidCount,
               duplicate: duplicateCount,
             }),
-            description: t(
-              'workspace.users.invite.importSkippedDescription',
-              'Invalid entries are marked in the list — remove them before sending.'
-            ),
+            description:
+              invalidTagCount > 0 && tooLong > 0
+                ? `${markedDescription} ${tooLongDescription}`
+                : tooLong > 0
+                  ? tooLongDescription
+                  : markedDescription,
             duration: 6000,
+            placement: 'top',
           });
         }
       } catch (err) {
+        // Only our own messages are shown as-is; a parser failure (e.g. a
+        // corrupt .xlsx reporting "Unsupported ZIP encryption") means nothing
+        // to the person importing.
         addToast({
           variant: 'error',
           title: t('workspace.users.invite.importFailed', 'Import failed'),
           description:
-            (err as { message?: string })?.message ||
-            t(
-              'workspace.users.invite.importFailedDescription',
-              'Could not read the file. Upload a valid CSV or Excel file.'
-            ),
+            err instanceof InviteImportError
+              ? err.message
+              : t(
+                  'workspace.users.invite.importFailedDescription',
+                  'Could not read the file. Upload a valid CSV or Excel file.'
+                ),
           duration: 5000,
+          placement: 'top',
         });
       } finally {
         setIsImporting(false);
@@ -478,12 +551,23 @@ export function InviteUsersSidebar({
     ? t('workspace.users.invite.update', 'Update Invite')
     : t('workspace.users.invite.send', 'Send Invite');
 
+  const invalidEmailsHint =
+    invalidEmailCount > 0
+      ? t('workspace.users.invite.invalidBlocksSend', {
+          count: invalidEmailCount,
+          defaultValue_one:
+            '{{count}} invalid address is marked in red. Fix or remove it to send invites.',
+          defaultValue_other:
+            '{{count}} invalid addresses are marked in red. Fix or remove them to send invites.',
+        })
+      : undefined;
+
   const primaryTooltip = smtpBlocksSend
     ? t(
         'workspace.users.invite.smtpNotConfiguredTooltip',
         'SMTP is not configured. Set up email settings before sending invites.'
       )
-    : undefined;
+    : invalidEmailsHint;
 
   return (
     <WorkspaceRightPanel
@@ -615,6 +699,7 @@ export function InviteUsersSidebar({
             }
             validate={validateEmail}
             disabled={isEditMode}
+            error={isEditMode ? undefined : invalidEmailsHint}
           />
         </FormField>
 

@@ -180,7 +180,23 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_ARTIFACT_WRITE',
     label: 'Store Content Revisions as Files',
     description:
-      "While indexing, also store each new version of a record's processed content as a set of files (blocks, text, images, metadata) beside the stored record. Nothing reads these files yet, so search and chat are unchanged; it uses extra storage. Disable to stop writing them; files already written are kept until the record is deleted.",
+      "While indexing, also store each new version of a record's processed content as a set of files (blocks, text, images, metadata) beside the stored record. Search and chat read them only when Read Content Revisions from Files is on; it uses extra storage. Disable to stop writing them; files already written are kept until the record is deleted.",
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ_SHADOW',
+    label: 'Compare Content Revision Files on Read',
+    description:
+      'When chat, agents and the code graph read a record, also read its content revision files and compare them with the stored record. Answers still come from the stored record; differences are counted in metrics and logged without content. Adds storage reads. Needs Store Content Revisions as Files. Ignored while Read Content Revisions from Files is on.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ',
+    label: 'Read Content Revisions from Files',
+    description:
+      'When chat, agents and the code graph read a record, read its content revision files instead of the stored record. A record without files, or whose files cannot be read or fail their checks, is read from the stored record as before. Needs Store Content Revisions as Files. Disable to read only the stored record.',
     defaultEnabled: false,
     advanced: true,
   },

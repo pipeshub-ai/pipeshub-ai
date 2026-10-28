@@ -6,6 +6,7 @@ session and request building it uses against S3, Azure or local storage.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
@@ -28,16 +29,35 @@ class StoredPut:
 
 @dataclass
 class FakeStorage:
-    """``vendor``: which signed headers presign hands out (azure, s3 or local)."""
+    """``vendor``: which signed headers presign hands out (azure, s3 or local).
+    ``missing_status``: the answer to a GET of a missing file (S3 may say 403).
+    ``refused_paths``: paths presign does not take, refusing the whole call as
+    the storage service's validation does (an older one, without a newer file).
+    ``refuse_other_with_properties``: a 400 with this message for any set that names
+    properties.json, whatever the cause, and accepted without it."""
 
     vendor: str = "azure"
+    missing_status: int = 404
     put_status: int = 201
     presign_status: int = 200
     fail_paths: set[str] = field(default_factory=set)
+    refused_paths: set[str] = field(default_factory=set)
+    refuse_other_with_properties: str = ""
     presign_calls: list[dict[str, Any]] = field(default_factory=list)
     puts: dict[str, StoredPut] = field(default_factory=dict)
     put_order: list[str] = field(default_factory=list)
     roots: dict[str, str] = field(default_factory=dict)
+    # Write stamps (updatedAt) by document id; a delete with an older
+    # ifUnchangedSince is refused as storage refuses it.
+    stamps: dict[str, int] = field(default_factory=dict)
+    delete_queries: list[dict[str, str]] = field(default_factory=list)
+    delete_conflict_body: dict[str, Any] | None = None
+    delete_delay: float = 0.0
+    delete_calls: int = 0
+    # The listing waits this long first, or answers this status instead.
+    list_delay: float = 0.0
+    list_status: int = 200
+    list_calls: int = 0
     base: str = ""
     _runner: web.AppRunner | None = None
 
@@ -96,6 +116,12 @@ class FakeStorage:
             return web.json_response({"error": {"message": "no"}}, status=self.presign_status)
         files = body["files"]
         paths = [f["path"] for f in files]
+        if self.refuse_other_with_properties and "properties.json" in paths:
+            return web.json_response({"error": {"message": self.refuse_other_with_properties}}, status=400)
+        if refused := self.refused_paths.intersection(paths):
+            # One line per path, as the storage service's validation reports them.
+            message = "\n".join(["Not a file an artifact set can hold"] * len(refused))
+            return web.json_response({"error": {"code": "VALIDATION_ERROR", "message": message}}, status=400)
         if not 1 <= len(files) <= 1000 or len(set(paths)) != len(paths):
             return web.json_response({"error": {"message": "bad files"}}, status=400)
         vrid, rev = body["virtualRecordId"], body["rev"]
@@ -122,14 +148,29 @@ class FakeStorage:
         })
 
     async def _list(self, request: web.Request) -> web.Response:
+        self.list_calls += 1
+        if self.list_delay:
+            await asyncio.sleep(self.list_delay)
+        if self.list_status != 200:
+            return web.json_response({"error": "unavailable"}, status=self.list_status)
         vrid = request.query["virtualRecordId"]
         revs = sorted({k.split("/")[4] for k in self.puts if k.split("/")[3] == vrid})
         return web.json_response({"revisions": [
-            {"documentId": self.document_id(vrid, r), "virtualRecordId": vrid, "rev": r} for r in revs
+            {"documentId": self.document_id(vrid, r), "virtualRecordId": vrid, "rev": r, "deleteFence": True}
+            for r in revs
         ]})
 
     async def _delete(self, request: web.Request) -> web.Response:
         doc = request.match_info["doc"]
+        self.delete_calls += 1
+        self.delete_queries.append(dict(request.query))
+        if self.delete_delay:
+            await asyncio.sleep(self.delete_delay)
+        since = request.query.get("ifUnchangedSince")
+        if since is not None and self.delete_conflict_body is not None:
+            return web.json_response(self.delete_conflict_body, status=409)
+        if since is not None and self.stamps.get(doc, 0) > int(since):
+            return web.json_response({"purged": 0, "reason": "changed"}, status=409)
         gone = [k for k in self.puts if self.document_id(*k.split("/")[3:5]) == doc]
         for key in gone:
             del self.puts[key]
@@ -150,7 +191,7 @@ class FakeStorage:
     async def _get(self, request: web.Request) -> web.Response:
         stored = self.puts.get(request.match_info["tail"])
         if stored is None:
-            return web.Response(status=404)
+            return web.Response(status=self.missing_status)
         range_header = request.headers.get("Range")
         if range_header:
             start, end = (int(x) for x in range_header.removeprefix("bytes=").split("-"))

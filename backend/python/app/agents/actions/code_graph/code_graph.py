@@ -38,6 +38,8 @@ from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCat
 from .neighbours import (
     DEFAULT_IMPACT_DEPTH,
     DEFAULT_NEIGHBOR_LIMIT,
+    IMPACT_RELATIONS,
+    MAX_IMPACT_DEPTH,
     MAX_NEIGHBOUR_DEPTH,
     get_neighbour_impl,
     impact_impl,
@@ -884,8 +886,10 @@ class CodeGraph:
             "The blast radius of changing a symbol: everything that calls it, imports "
             "it, or builds on it (inherits, implements, overrides), followed backwards "
             f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
-            "the nearest hop. Test files it reaches are listed apart in `impacted_tests` "
-            "(the tests to run). Only edges the parser could prove; `coverage` says when a "
+            "the nearest hop. Symbols that build on it rather than call it are also named "
+            "in each file's `built_on`; `edge_types=['CALLS']` follows calls only (callers, "
+            "their callers, ...). Test code it reaches is affected too and is listed apart "
+            "in `impacted_tests`. Only edges the parser could prove; `coverage` says when a "
             "language has none."
         ),
         parameters=[
@@ -901,11 +905,17 @@ class CodeGraph:
                           description=f"The symbol, e.g. `function:parse_config`. {_ADDRESS_RULE}"),
             ToolParameter(name="depth", type=ParameterType.INTEGER, required=False,
                           default=DEFAULT_IMPACT_DEPTH,
-                          description=f"Hops to follow backwards, up to {MAX_NEIGHBOUR_DEPTH}."),
+                          description=f"Hops to follow backwards, up to {MAX_IMPACT_DEPTH}."),
             ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
                           default=False, description=_INCLUDE_TESTS_DESC),
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
+            ToolParameter(
+                name="edge_types", type=ParameterType.ARRAY, required=False, default=None,
+                description=("Relationships to follow backwards; omit for all of them "
+                             f"({', '.join(IMPACT_RELATIONS)}). ['CALLS'] for callers only."),
+                items={"type": "string"},
+            ),
         ],
         tags=_IMPACT_TAGS,
     )
@@ -919,6 +929,7 @@ class CodeGraph:
         *,
         include_tests: bool = False,
         repo: str | None = None,
+        edge_types: list[str] | None = None,
     ) -> tuple[bool, str]:
         path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
         if error is not None:
@@ -930,7 +941,7 @@ class CodeGraph:
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id, file_path=path,
                 qualified_name=qualified_name, depth=depth,
-                include_tests=include_tests, repo=repo,
+                include_tests=include_tests, repo=repo, edge_types=edge_types,
             ),
             "Failed to compute the impact",
         )

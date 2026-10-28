@@ -102,6 +102,9 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
       documents.set(String(doc._id), doc)
       return doc
     }) as unknown as typeof DocumentModel.create)
+    // The repository reloads the row it updates.
+    sinon.stub(DocumentModel, 'findOne').callsFake(((filter: { _id: unknown }) =>
+      Promise.resolve(documents.get(String(filter._id)) ?? null)) as unknown as typeof DocumentModel.findOne)
     sinon.stub(DocumentModel, 'deleteOne').callsFake(((filter: { _id: unknown }) => {
       documents.delete(String(filter._id))
       return Promise.resolve({ acknowledged: true, deletedCount: 1 })

@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
+
 _OAUTH_REGISTRY_PATCH = (
     "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry"
 )
@@ -1255,6 +1257,69 @@ class TestToggleConnectorInstanceDeep:
             )
 
         assert result["success"] is True
+
+    @staticmethod
+    def _sync_toggle(*, is_active: bool) -> tuple:
+        req = _make_request(is_admin=True, body={"type": "sync"})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "free"}
+        )
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=_make_instance(
+                scope="team", created_by="u1", auth_type="API_TOKEN",
+                is_active=is_active, is_configured=True,
+            )
+        )
+        req.app.state.connector_registry.update_connector_instance = AsyncMock(
+            return_value=True
+        )
+        connector = AsyncMock()
+        req.app.container.connectors_map = {"c1": connector}
+        return req, graph_provider, connector
+
+    async def test_sync_disable_mid_sync_drops_the_connector_but_closes_it_after_the_run(self) -> None:
+        """Closing the client under the running sync crashed its tasks."""
+        from app.connectors.api.router import toggle_connector_instance
+
+        req, graph_provider, connector = self._sync_toggle(is_active=True)
+        req.app.container.messaging_producer.send_message = AsyncMock()
+
+        with local_run() as run, \
+             patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch(_TIMESTAMP_PATCH, return_value=1000):
+            result = await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+
+            assert result["success"] is True
+            assert "c1" not in req.app.container.connectors_map
+            connector.cleanup.assert_not_awaited()
+            await end_local_run(run)
+
+        connector.cleanup.assert_awaited_once()
+
+    async def test_reverted_enable_drops_the_connector_but_closes_it_after_the_run(self) -> None:
+        from app.connectors.api.router import toggle_connector_instance
+
+        req, graph_provider, connector = self._sync_toggle(is_active=False)
+        req.app.container.messaging_producer.send_message = AsyncMock(
+            side_effect=RuntimeError("broker down")
+        )
+
+        with local_run() as run, \
+             patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch(_TIMESTAMP_PATCH, return_value=1000), \
+             patch("app.connectors.api.router._ensure_connector_initialized",
+                   new_callable=AsyncMock, return_value=connector), \
+             patch("app.connectors.api.router._revert_toggle",
+                   new_callable=AsyncMock, return_value=True):
+            with pytest.raises(HTTPException):
+                await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+
+            assert "c1" not in req.app.container.connectors_map
+            connector.cleanup.assert_not_awaited()
+            await end_local_run(run)
+
+        connector.cleanup.assert_awaited_once()
 
     async def test_a_failed_org_read_is_503(self):
         from app.connectors.api.router import toggle_connector_instance

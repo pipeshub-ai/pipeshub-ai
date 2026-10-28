@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import values
+from app.agents.actions.knowledge_graph.ops.entity_filters import LIMITED_SCOPE_NOTE
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
@@ -18,6 +19,8 @@ from app.modules.retrieval.retrieval_service import (
     ENTITY_FILTER_UNAVAILABLE_MESSAGE,
     RetrievalService,
 )
+from app.modules.retrieval.selection_scope import SelectionScope
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _service() -> RetrievalService:
@@ -354,3 +357,89 @@ async def test_a_range_with_one_zero_end_is_still_a_range(tool_env):
     await values.execute_find_records_by_value(_state(graph), amount_min=0, amount_max=100, currency="USD")
     query = graph.get_records_for_named_entities.await_args.args[2]
     assert (query.amount_min, query.amount_max) == (0, 100)
+
+
+def _limited_context(*app_ids: str) -> EntityAccessContext:
+    return EntityAccessContext(
+        org_id="org", user_key="uk", app_level_app_ids=frozenset(app_ids),
+        record_level_app_ids=frozenset(), record_group_ids=frozenset(), app_names={},
+        row_scopes=(SelectionScope(groups={"proj-a": "app-in-scope"}),),
+    )
+
+
+def _limited_graph(in_scope: set[str]) -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_knowledge_hub_access_v3 = AsyncMock(return_value={})
+    graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, *, node_ids, **_: AccessCheck(
+        node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids) & in_scope,
+    ))
+    return graph
+
+
+async def test_inside_a_selection_a_readable_value_hit_outside_it_is_dropped(tool_env: AsyncMock) -> None:
+    tool_env.return_value = _limited_context("app-in-scope")
+    graph = _limited_graph(in_scope={"r-in"})
+    graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
+        ("r-in", "v1", "app-in-scope"), ("r-out", "v2", "app-in-scope"),
+    ))
+    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-in", "r-out"})
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
+
+    assert ok and json.loads(body)["records"] == [{"virtualRecordId": "v1", "recordId": "r-in"}]
+    assert graph.check_access.await_args.kwargs["scopes"] == tool_env.return_value.row_scopes
+
+
+async def test_inside_a_selection_placeholders_stay_excluded(tool_env: AsyncMock) -> None:
+    """The selection gate admits a placeholder asked by id; the readable-record
+    filter does not, and both must pass."""
+    tool_env.return_value = _limited_context("app-in-scope")
+    graph = _limited_graph(in_scope={"r-in", "r-stub"})
+    graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
+        ("r-in", "v1", "app-in-scope"), ("r-stub", "v2", "app-in-scope"),
+    ))
+    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-in"})
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
+
+    assert ok and json.loads(body)["records"] == [{"virtualRecordId": "v1", "recordId": "r-in"}]
+
+
+async def test_inside_a_selection_too_broad_is_counted_over_the_touched_apps_only(tool_env: AsyncMock) -> None:
+    """The readable-record count has no selection filter, so it stays on the
+    apps the turn touches (never the user's whole org); rows are still gated."""
+    tool_env.return_value = _limited_context("app-in-scope")
+    graph = _limited_graph(in_scope={"r1"})
+    graph.get_records_for_named_entities = AsyncMock(side_effect=[
+        _hits(truncated=True), _hits(truncated=True), _hits(("r1", "v1", "app-in-scope"), ("r2", "v2", "app-in-scope")),
+    ])
+    graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1", "v2": "r2"})
+    graph.filter_accessible_record_ids = AsyncMock(return_value={"r1", "r2"})
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
+
+    assert ok and json.loads(body)["records"] == [{"virtualRecordId": "v1", "recordId": "r1"}]
+    assert graph.get_accessible_virtual_record_ids.await_args.args[2] == {"apps": ["app-in-scope"]}
+
+
+async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(tool_env: AsyncMock) -> None:
+    tool_env.return_value = _limited_context("app-in-scope")
+    graph = _limited_graph(in_scope=set())
+    graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r-out", "v2", "app-in-scope")))
+    graph.filter_accessible_record_ids = AsyncMock(return_value={"r-out"})
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
+
+    payload = json.loads(body)
+    assert ok and payload["records"] == []
+    assert payload["scopeNote"] == LIMITED_SCOPE_NOTE
+
+
+async def test_nothing_found_without_a_selection_has_no_scope_note(tool_env: AsyncMock) -> None:
+    graph = AsyncMock()
+    graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r1", "v1", "app-in-scope")))
+    graph.filter_accessible_record_ids = AsyncMock(return_value=set())
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["currency"], amount_min=10)
+
+    assert ok and "scopeNote" not in json.loads(body)

@@ -1,5 +1,9 @@
 import { NextFunction, Response } from 'express';
-import mongoose, { Types } from 'mongoose';
+import type {
+  ChatSessionDto,
+  NewSession,
+  SessionScope,
+} from '../../../libs/repositories/conversation';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import {
@@ -7,22 +11,15 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
+import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
 import { ProjectService } from '../../projects/services/project.service';
-import { IProjectDocument } from '../../projects/types/project.interfaces';
+import { ProjectDto } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  CONVERSATION_STATUS,
-  EXCLUDE_AGENT,
-  ONLY_AGENT,
-} from '../constants/constants';
-import {
-  IChatSession,
-  IChatSessionDocument,
-} from '../types/conversation.interfaces';
+import { CONVERSATION_STATUS } from '../constants/constants';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import {
   completeTurn,
@@ -32,14 +29,10 @@ import {
 } from '../utils/non-streaming-chat';
 import {
   loadProjectForSession,
+  projectCallerFromRequest,
   resolveProjectLink,
 } from '../utils/project-context';
-import {
-  assertNotReadOnlyViewer,
-  buildUserQueryMessage,
-  extractModelInfo,
-  ownerOrWriterFilter,
-} from '../utils/utils';
+import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
@@ -60,9 +53,9 @@ const targetOf = (req: ChatRequest): ChatTarget =>
 const sessionFields = (
   target: ChatTarget,
   body: Record<string, unknown>,
-  userId: Types.ObjectId,
-  orgId: Types.ObjectId,
-): Partial<IChatSession> => ({
+  userId: string,
+  orgId: string,
+): NewSession => ({
   orgId,
   userId,
   initiator: userId,
@@ -107,8 +100,8 @@ const nonStreamingTurn =
 
       await hydrateScopedRequestAsUser(req, appConfig);
       const { userId, orgId } = (req as AuthenticatedUserRequest).user as {
-        userId: Types.ObjectId;
-        orgId: Types.ObjectId;
+        userId: string;
+        orgId: string;
       };
 
       const target = targetOf(req);
@@ -119,21 +112,22 @@ const nonStreamingTurn =
         body.attachments as never,
       );
 
-      let conversation: IChatSessionDocument;
+      let conversation: ChatSessionDto;
       let previousConversations: unknown[];
-      let project: IProjectDocument | undefined;
+      let project: ProjectDto | undefined;
       if (mode === 'create') {
         const link = await resolveProjectLink(
-          String(orgId),
-          String(userId),
+          orgId,
+          userId,
           body,
+          projectCallerFromRequest(req, appConfig),
         );
         conversation = await openConversation(
           {
             ...sessionFields(target, body, userId, orgId),
             ...(link.projectId
               ? {
-                  projectId: new mongoose.Types.ObjectId(link.projectId),
+                  projectId: link.projectId,
                   projectVisibility: link.projectVisibility,
                 }
               : {}),
@@ -146,42 +140,33 @@ const nonStreamingTurn =
       } else {
         // Project context always comes from the session row, never the
         // request body — a follow-up turn cannot move itself into a project.
-        const scope = {
-          _id: req.params.conversationId,
-          orgId,
-          isDeleted: false,
-          ...(target.kind === 'agent'
-            ? { agentKey: target.agentKey, ...ONLY_AGENT }
-            : EXCLUDE_AGENT),
-        };
-        // An agent conversation is shared read-only: only its owner adds messages,
-        // and anyone else gets the 404 of a conversation they cannot see.
-        if (target.kind !== 'agent')
-          await assertNotReadOnlyViewer(scope, userId);
+        const scope: SessionScope =
+          target.kind === 'agent'
+            ? { kind: 'agent', agentKey: target.agentKey }
+            : { kind: 'chat' };
         const continued = await continueConversation(
-          {
-            ...scope,
-            ...(target.kind === 'agent'
-              ? { userId }
-              : ownerOrWriterFilter(userId)),
-          },
+          scope,
+          req.params.conversationId as string,
           userMessage,
-          { appConfig, userId: String(userId), orgId: String(orgId) },
+          { userId, orgId },
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;
-        // The requester's project access, not the owner's.
         project = await loadProjectForSession(
-          String(conversation.orgId),
-          String(userId),
+          conversation.orgId,
+          conversation.userId,
           conversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: conversation._id,
+          },
         );
       }
 
-      const conversationId = String(conversation._id);
+      const conversationId = conversation._id;
       res.setHeader(CONVERSATION_ID_HEADER, conversationId);
-      if (conversation.projectId) {
-        void ProjectService.touchActivity(conversation.projectId.toString());
+      if (project) {
+        void ProjectService.touchActivity(project._id);
       }
 
       const turn = await completeTurn({
@@ -197,7 +182,6 @@ const nonStreamingTurn =
         headers: req.headers as Record<string, string>,
         modelInfo: extractModelInfo(body),
         requestId,
-        viewer: { appConfig, userId: String(userId), orgId: String(orgId) },
       });
 
       const meta = {
@@ -217,7 +201,7 @@ const nonStreamingTurn =
         });
       }
     } catch (error: unknown) {
-      logger.error('Non-streaming chat turn failed', {
+      logger[logLevelFor(error)]('Non-streaming chat turn failed', {
         requestId,
         mode,
         conversationId: req.params.conversationId,

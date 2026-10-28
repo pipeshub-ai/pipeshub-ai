@@ -7,7 +7,8 @@ One job: after a run, decide whether anyone should be told anything, and say it 
   notice every run, so the platform's notification backoff keeps it to one, then one a day or so later.
 - A run that could not read part of Drive for a passing reason (rate limits, outages) is not reported: the
   next run retries it. Only when that has happened `PERSISTENT_RUNS` runs in a row is one warning sent.
-- Selected folders nobody can open are reported once as a warning: someone has to share or unselect them.
+- Selected folders nobody it syncs can find or open (a wrong ID, a deleted folder, one not shared with anyone
+  synced) are reported as a warning: someone has to fix the ID, share the folder, or unselect it.
 
 Notices never carry error text, ids of requests, or anything else from inside the connector.
 """
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING
 from app.connectors.sources.google.common.access_problems import (
     AccessProblem,
     classify_access_problem,
+    setup_problem_message,
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
 
@@ -53,6 +55,15 @@ def message_for_connection_failure(error: BaseException, *, personal: bool, admi
     return None if notice is None else notice.message
 
 
+_SETUP_EVENTS = {
+    AccessProblem.DELEGATION: "domain-wide delegation is not set up",
+    AccessProblem.SERVICE_ACCOUNT_KEY: "the service account key is not accepted",
+    AccessProblem.UNREADABLE_KEY: "the service account key is not valid",
+    AccessProblem.ADMIN_ACCOUNT: "the admin account cannot read the directory",
+    AccessProblem.API_DISABLED: "a Google API is turned off",
+}
+
+
 def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | None = None,
                client_id: str | None = None) -> DriveNotice | None:
     """The notice for a setup problem, or None for one nobody needs to act on."""
@@ -66,34 +77,13 @@ def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | Non
         return DriveNotice(auth, error, "Google Drive access was not granted",
                            "The Google sign-in for this connector does not allow reading Google Drive files. Open "
                            "the connector, sign in again, and allow access to your Drive files.")
-    if problem is AccessProblem.DELEGATION:
-        client = f" ({client_id})" if client_id else ""
-        return DriveNotice(auth, error, "domain-wide delegation is not set up",
-                           "Google Workspace refused access for this connector's service account. In the Google "
-                           f"Admin console, open Security > API controls > Domain-wide delegation, and authorize the "
-                           f"service account's client ID{client} with the scopes listed in the PipesHub setup guide. "
-                           "Syncing resumes on the next run.")
-    if problem is AccessProblem.SERVICE_ACCOUNT_KEY:
-        return DriveNotice(auth, error, "the service account key is not accepted",
-                           "Google rejected this connector's service account key. It may have been deleted or "
-                           "disabled in Google Cloud. Create a new key for the service account and upload it in the "
-                           "connector's settings.")
-    if problem is AccessProblem.UNREADABLE_KEY:
-        return DriveNotice(auth, error, "the service account key is not valid",
-                           "The service account key in this connector's settings is not a valid JSON key file. In "
-                           "Google Cloud Console, open IAM & Admin > Service accounts, create a JSON key for the "
-                           "service account, and upload that file in the connector's settings.")
-    if problem is AccessProblem.ADMIN_ACCOUNT:
-        who = f" ({admin_email})" if admin_email else ""
-        return DriveNotice(auth, error, "the admin account cannot read the directory",
-                           f"The admin email in this connector's settings{who} must be an active Google Workspace "
-                           "administrator who can read users and groups. Update it in the connector's settings.")
-    if problem is AccessProblem.API_DISABLED:
-        apis = "Google Drive API" if personal else "Google Drive API and the Admin SDK API"
-        return DriveNotice(auth, error, "a Google API is turned off",
-                           f"The {apis} must be turned on for this connector's Google Cloud project. Turn them on "
-                           "in Google Cloud Console under APIs & Services, then sync again.")
-    return None
+    event = _SETUP_EVENTS.get(problem)
+    if event is None:
+        return None
+    apis = "Google Drive API" if personal else "Google Drive API and the Admin SDK API"
+    return DriveNotice(auth, error, event, setup_problem_message(problem, apis=apis, admin_email=admin_email,
+                                                                 client_id=client_id))
+
 
 
 class DriveRunReport:
@@ -139,9 +129,9 @@ class DriveRunReport:
             await self._send(DriveNotice(
                 NotificationType.CONNECTOR_WARNING, NotificationSeverity.WARNING,
                 "some selected folders cannot be opened",
-                f"{count} folder{'s' if count != 1 else ''} in this connector's folder filter cannot be opened by "
-                "anyone it syncs, so nothing inside is synced. Share the folders with a person who uses PipesHub, "
-                "or remove them from the folder filter."))
+                f"{count} folder{'s' if count != 1 else ''} in this connector's folder filter cannot be found or "
+                "opened by anyone it syncs, so nothing inside is synced. Check that the folder IDs are right, share "
+                "the folders with a person who uses PipesHub, or remove them from the folder filter."))
         stored = await self._sync_point.read_sync_point(RUN_HEALTH_SYNC_POINT_KEY) or {}
         runs = int(stored.get("incompleteRuns") or 0)
         if complete:

@@ -26,6 +26,7 @@ import httpx
 from gitlab import Gitlab
 
 from app.sources.client.gitlab.gitlab import GitLabResponse
+from app.sources.client.http.address_guard import guarded_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -89,7 +90,7 @@ class GitLabDataSource:
     def http_client(self) -> httpx.AsyncClient:
         """Return the lazily-initialised shared async HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(
+            self._http_client = guarded_async_client(
                 follow_redirects=True,
                 timeout=60.0,
             )
@@ -664,6 +665,24 @@ class GitLabDataSource:
         """Fetch a branch object.  ``data`` has a ``commit`` field with the HEAD SHA."""
         try:
             return GitLabResponse(success=True, data=self._project(project_id).branches.get(branch))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
+    #   gitlab/filters.py - FiltersHelper._branch_filter_options
+    def list_branches(
+        self,
+        project_id: int | str,
+        search: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> GitLabResponse:
+        """One page of a project's branches, by name; ``search`` matches part of the name."""
+        params: dict[str, object] = {"page": page, "per_page": per_page, "get_all": False}
+        if search:
+            params["search"] = search
+        try:
+            return GitLabResponse(success=True, data=self._project(project_id).branches.list(**params))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 

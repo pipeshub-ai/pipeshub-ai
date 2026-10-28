@@ -10,8 +10,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 MANIFEST_PATH = "manifest.json"
+#: The record's typed property values (``RecordMetadata``); readers that do not use it skip it.
+PROPERTIES_PATH = "properties.json"
 #: Bumped when a file's layout changes in a way a reader must know about.
-WRITER_VERSION = 1
+#: 2: image blocks keep a non-canonical media type; record.json holds the container's
+#: fields and the stored copy's identity (the owner's, for shared content).
+WRITER_VERSION = 2
+#: In an image block's data: the media type its data URI spelled, when not the asset's own.
+ASSET_MEDIA_TYPE = "asset_media_type"
 
 
 class ArtifactRef(BaseModel):
@@ -76,6 +82,9 @@ class Manifest(BaseModel):
     rev: str
     orgId: str
     producedAt: int
+    #: The stored write (run token) this set was built from; a reader serves the set only
+    #: while the mapping's ``currentRun`` and ``storedRun`` are this run.
+    storedRun: str
     writerVersion: int = WRITER_VERSION
     producerVersions: dict[str, str] = Field(default_factory=dict)
     artifacts: dict[str, ArtifactEntry]

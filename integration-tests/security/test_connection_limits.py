@@ -91,7 +91,7 @@ def _rest_search(base_url: str, token: str, query: str, filters: dict | None = N
 
 
 async def _call_tools(url: str, token: str, calls: list[tuple[str, dict]]) -> list[tuple[str, bool]]:
-    async with Client(StreamableHttpTransport(url, auth=token), timeout=300) as client:
+    async with Client(StreamableHttpTransport(url, auth=token), timeout=300, mode="legacy") as client:
         results = []
         for name, args in calls:
             result = await client.call_tool_mcp(name, args)
@@ -278,17 +278,22 @@ class TestSearch:
         text = _rest_search(base_url, collection_pat, corpus["outside_needle"], {"kb": [corpus["kb_out"]]})
         assert corpus["outside_record"] not in text
 
+    @pytest.mark.parametrize("key", ["connectionApps", "connectionRecordGroups", "connectionRecords"])
     def test_a_client_cannot_send_the_servers_own_limit_keys(
-        self, base_url, unlimited_pat, collection_pat, corpus,
+        self, base_url, unlimited_pat, collection_pat, corpus, key,
     ) -> None:
-        # A limited token cannot widen its limit by sending one of its own ...
-        widened = _rest_search(base_url, collection_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_out"]]})
-        assert corpus["outside_record"] not in widened
-        # ... and an unlimited one is not narrowed by a client-sent key either: it is dropped.
-        ignored = _rest_search(base_url, unlimited_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_in"]]})
-        assert corpus["outside_record"] in ignored
+        """The gateway refuses the keys the server sets the limit with, so a
+        limited token cannot widen its limit with one, nor an unlimited one
+        narrow itself. Behind the gateway the query service drops them too."""
+        for token, ids in ((collection_pat, [corpus["kb_out"]]), (unlimited_pat, [corpus["kb_in"]])):
+            resp = requests.post(
+                f"{base_url}/api/v1/search",
+                headers=_bearer(token),
+                json={"query": corpus["outside_needle"], "limit": 10, "filters": {key: ids}},
+                timeout=120,
+            )
+            assert resp.status_code == 400, f"{resp.status_code} {resp.text[:400]}"
+            assert key in resp.text and corpus["outside_record"] not in resp.text, resp.text[:400]
 
     def test_the_website_session_is_not_limited(self, base_url, user_jwt, corpus) -> None:
         assert corpus["outside_record"] in _rest_search(base_url, user_jwt, corpus["outside_needle"])
@@ -352,15 +357,20 @@ class TestMcp:
         assert corpus["outside_needle"] not in outside
 
     def test_browsing_shows_only_what_is_shared(self, base_url, collection_pat, unlimited_pat, corpus) -> None:
-        (root, _), (opened_out, err_out) = mcp(
+        # Depth 3 lists records across the root's apps (app, folder, file),
+        # whatever a depth-1 root lists: the limit has to hold over records.
+        records = {"mode": "navigate", "depth": 3, "limit": 200}
+        (root, _), (root_records, _), (opened_out, err_out) = mcp(
             base_url, collection_pat,
             ("pipeshub_get_record_content", {"mode": "navigate"}),
+            ("pipeshub_get_record_content", records),
             ("pipeshub_get_record_content", {"mode": "navigate", "nodeId": corpus["kb_out"]}),
         )
-        (control_root, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
-        # The root lists records flattened across apps, not the collections themselves.
-        assert corpus["outside_record"] in control_root, "the unlimited token should list both collections' records"
-        assert corpus["inside_record"] in root and corpus["outside_record"] not in root, root[:1500]
+        (control_records, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", records))
+        assert corpus["outside_record"] in control_records, "the unlimited token should list both collections' records"
+        assert corpus["inside_record"] in root_records, root_records[:1500]
+        assert corpus["outside_record"] not in root_records, root_records[:1500]
+        assert corpus["kb_out"] not in root and corpus["outside_record"] not in root, root[:1500]
         assert err_out or OUTSIDE_MESSAGE in opened_out, opened_out[:1000]
         assert corpus["outside_record"] not in opened_out
 
@@ -457,7 +467,7 @@ class TestOAuthApps:
             create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
                              knowledge_limit={"apps": []})
 
-    def test_a_new_limit_and_a_lifted_one_both_revoke_the_apps_tokens(
+    def test_a_new_limit_revokes_the_apps_tokens_and_a_lifted_one_keeps_them_at_their_limit(
         self, base_url, user_jwt, corpus,
     ) -> None:
         app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}")
@@ -474,11 +484,19 @@ class TestOAuthApps:
             after = authorization_code_token(base_url, user_jwt, app)
             assert _claims(after["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
 
-            # Users agreed to the limit, so lifting it makes them connect again.
+            # Lifting widens what the app may reach, so connected clients stay connected, each at the
+            # limit its user agreed to; the new reach comes with the next connection.
             lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
             assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
-            with pytest.raises(RuntimeError):
-                refresh_token_grant(base_url, app, after["refresh_token"])
+            # The access token issued under the limit is not revoked either.
+            assert corpus["inside_record"] in _rest_search(
+                base_url, after["access_token"], corpus["inside_needle"],
+            )
+            kept = refresh_token_grant(base_url, app, after["refresh_token"])
+            assert _claims(kept["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+            assert corpus["outside_record"] not in _rest_search(
+                base_url, kept["access_token"], corpus["outside_needle"],
+            )
             again = authorization_code_token(base_url, user_jwt, app)
             assert "knowledgeLimit" not in _claims(again["access_token"])
         finally:
@@ -581,7 +599,9 @@ class TestKnowledgeBaseRoutes:
         assert corpus["inside_needle"] in content.text
         assert folder not in content.text and folder_name not in content.text
 
-        # The whole collection's limit shares the folder, so the same file names it.
+        # The whole collection's limit shares the folder, so the same file names
+        # it, by its source parent: the details' ``folder`` is not filled for a
+        # collection file on either store, limited or not.
         whole = requests.get(record_url, headers=_bearer(collection_pat), timeout=60)
         assert whole.status_code == 200, whole.text[:300]
-        assert (whole.json().get("folder") or {}).get("id") == folder
+        assert (whole.json().get("record") or {}).get("externalParentId") == folder, whole.text[:500]

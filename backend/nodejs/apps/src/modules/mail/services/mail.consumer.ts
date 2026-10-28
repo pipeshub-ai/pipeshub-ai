@@ -3,12 +3,17 @@ import {
   IMessageConsumer,
   StreamMessage,
 } from '../../../libs/types/messaging.types';
+import {
+  getCurrentOrgId,
+  makeOrgContext,
+  runWithOrgContext,
+} from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
-import { INotification } from '../../notification/schema/notification.schema';
+import type { NotificationEventPayload } from '../../notification/service/notification.producer';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
 import { MailBody } from '../middlewares/types';
@@ -115,7 +120,26 @@ export class MailConsumer {
     });
   }
 
-  private async deliver(payload: MailEventPayload): Promise<void> {
+  /**
+   * Runs the delivery inside the event's org. A signed envelope already bound it; an unsigned job carries only the
+   * `orgId` the producer took from the inviting user's verified request, so that is bound here (the audit write needs it).
+   */
+  private deliver(payload: MailEventPayload): Promise<void> {
+    const orgId = payload.orgId;
+    if (getCurrentOrgId() !== undefined || orgId === undefined || orgId === '')
+      return this.deliverInOrg(payload);
+    return runWithOrgContext(
+      makeOrgContext({
+        orgId,
+        userId: null,
+        kind: 'service',
+        source: 'legacy-payload',
+      }),
+      () => this.deliverInOrg(payload),
+    );
+  }
+
+  private async deliverInOrg(payload: MailEventPayload): Promise<void> {
     const smtpConfig = await this.sender.getSmtpConfig(payload.orgId);
     if (!smtpConfig) {
       // Not retryable until an admin configures SMTP.
@@ -334,7 +358,7 @@ export class MailConsumer {
             error: details.error,
             suppressedFailures: details.suppressedFailures,
           },
-        } as unknown as INotification,
+        } as unknown as NotificationEventPayload,
       });
     } catch (publishError) {
       this.logger.error('Failed to publish mail failure notification', {

@@ -139,6 +139,36 @@ export function ConnectorPanel() {
   const [syncSaveConfirmOpen, setSyncSaveConfirmOpen] = useState(false);
   const [syncSaveConfirmKind, setSyncSaveConfirmKind] = useState<'manual' | 'wide_sync'>('wide_sync');
   const [disableFirstConfigSaveOpen, setDisableFirstConfigSaveOpen] = useState(false);
+  /**
+   * Credentials that passed the check, kept while the admin confirms disabling the connector they
+   * were entered for. The panel stays mounted when it closes, so they name that connector.
+   */
+  const [authAwaitingDisable, setAuthAwaitingDisable] = useState<{
+    connectorId: string;
+    auth: Record<string, unknown>;
+  } | null>(null);
+  /** Counts edit-mode auth saves, so only the latest one clears the saving state. */
+  const authSaveGenRef = useRef(0);
+  /**
+   * Counts panel sessions: closing, opening or switching connector starts a new one, so a save
+   * from a closed session can't touch a reopened panel for the same connector. A store
+   * subscription runs as the store changes, before any save can finish after it.
+   */
+  const panelSessionRef = useRef(0);
+  useEffect(
+    () =>
+      useConnectorsStore.subscribe((state, prev) => {
+        if (state.isPanelOpen !== prev.isPanelOpen || state.panelConnectorId !== prev.panelConnectorId) {
+          panelSessionRef.current += 1;
+        }
+      }),
+    []
+  );
+  useEffect(() => {
+    if (authAwaitingDisable && (!isPanelOpen || authAwaitingDisable.connectorId !== panelConnectorId)) {
+      setAuthAwaitingDisable(null);
+    }
+  }, [isPanelOpen, panelConnectorId, authAwaitingDisable]);
 
   const connectorPanelNestedModalHost = useWorkspaceDrawerNestedModalHost(isPanelOpen);
 
@@ -534,6 +564,86 @@ export function ConnectorPanel() {
     [connectorType, panelConnectorId, setConnectionCheck, t]
   );
 
+  /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */
+  const saveEditedAuth = useCallback(async (editId: string, finalAuth: Record<string, unknown>) => {
+    // The loading, error and tab state is the panel's, shared by every connector it shows: a save
+    // that finishes after the panel moved on to another connector leaves that state alone.
+    const editType = connectorType;
+    const session = panelSessionRef.current;
+    const isStillOpen = () => {
+      const s = useConnectorsStore.getState();
+      return (
+        panelSessionRef.current === session &&
+        s.panelConnectorId === editId &&
+        s.panelConnector?.type === editType
+      );
+    };
+    const saveGen = ++authSaveGenRef.current;
+    setIsSavingAuth(true);
+    try {
+      setSaveError(null);
+
+      await ConnectorsApi.saveAuthConfig(editId, {
+        auth: {
+          ...finalAuth,
+          connectorScope: selectedScope,
+        },
+        baseUrl: browserOAuthBaseUrl(),
+      });
+
+      if (!isStillOpen()) {
+        return;
+      }
+      let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
+      try {
+        setIsLoadingConfig(true);
+        const [schemaRes, fetched] = await Promise.all([
+          ConnectorsApi.getConnectorSchema(connectorType),
+          ConnectorsApi.getConnectorConfig(editId),
+        ]);
+        configRes = fetched;
+        if (isStillOpen()) {
+          setSchemaAndConfig(schemaRes.schema, configRes);
+        }
+      } catch {
+        // Non-fatal — user can reopen panel
+      } finally {
+        if (isStillOpen()) {
+          setIsLoadingConfig(false);
+        }
+      }
+
+      if (!isStillOpen()) {
+        return;
+      }
+      if (isOAuthType(selectedAuthType)) {
+        setPanelActiveTab(
+          isConnectorConfigAuthenticated(configRes) ? 'configure' : 'authorize'
+        );
+      } else {
+        setPanelActiveTab('configure');
+      }
+    } catch (err: unknown) {
+      if (isStillOpen()) {
+        setSaveError(getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError')));
+      }
+    } finally {
+      if (authSaveGenRef.current === saveGen) {
+        setIsSavingAuth(false);
+      }
+    }
+  }, [
+    connectorType,
+    selectedScope,
+    selectedAuthType,
+    setSchemaAndConfig,
+    setIsLoadingConfig,
+    setPanelActiveTab,
+    setIsSavingAuth,
+    setSaveError,
+    t,
+  ]);
+
   const handleSaveAuth = useCallback(async () => {
     if (!resolveAuthenticateOrReturn()) {
       return;
@@ -545,6 +655,13 @@ export function ConnectorPanel() {
       : trimmedAuth;
 
     if (connectorSchema?.supportsConnectionCheck && !(await passesConnectionCheck(finalAuth))) {
+      return;
+    }
+
+    // The server refuses new credentials on an enabled connector: offer to disable it here, so
+    // the admin keeps what they entered instead of leaving the panel to disable it.
+    if (!isCreateMode && useConnectorsStore.getState().panelConnector?.isActive) {
+      setAuthAwaitingDisable({ connectorId: panelConnectorId!, auth: finalAuth });
       return;
     }
     setIsSavingAuth(true);
@@ -623,57 +740,11 @@ export function ConnectorPanel() {
         setIsSavingAuth(false);
       }
     } else {
-      // Edit mode: PUT /config/auth
-      try {
-        setSaveError(null);
-
-        await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
-          auth: {
-            ...finalAuth,
-            connectorScope: selectedScope,
-          },
-          baseUrl: browserOAuthBaseUrl(),
-        });
-
-        const editId = panelConnectorId!;
-        const editType = connectorType;
-        let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
-        try {
-          setIsLoadingConfig(true);
-          const [schemaRes, fetched] = await Promise.all([
-            ConnectorsApi.getConnectorSchema(connectorType),
-            ConnectorsApi.getConnectorConfig(panelConnectorId!),
-          ]);
-          configRes = fetched;
-          const s = useConnectorsStore.getState();
-          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
-            setSchemaAndConfig(schemaRes.schema, configRes);
-          }
-        } catch {
-          // Non-fatal — user can reopen panel
-        } finally {
-          const s = useConnectorsStore.getState();
-          if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
-            setIsLoadingConfig(false);
-          }
-        }
-
-        if (isOAuthType(selectedAuthType)) {
-          setPanelActiveTab(
-            isConnectorConfigAuthenticated(configRes) ? 'configure' : 'authorize'
-          );
-        } else {
-          setPanelActiveTab('configure');
-        }
-      } catch (err: unknown) {
-        const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError'));
-        setSaveError(message);
-      } finally {
-        setIsSavingAuth(false);
-      }
+      await saveEditedAuth(panelConnectorId!, finalAuth);
     }
   }, [
     isCreateMode,
+    saveEditedAuth,
     selectedScope,
     resolveAuthenticateOrReturn,
     connectorSchema,
@@ -1105,6 +1176,20 @@ export function ConnectorPanel() {
         actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveConfig')}
         disabledNoticeSource={connectorType}
         onProceed={performSaveConfig}
+        container={connectorPanelNestedModalHost}
+      />
+    )}
+    {authAwaitingDisable && authAwaitingDisable.connectorId === panelConnectorId && (
+      <DisableFirstDialog
+        open
+        onOpenChange={(open) => {
+          if (!open) setAuthAwaitingDisable(null);
+        }}
+        connectorId={authAwaitingDisable.connectorId}
+        connectorName={connectorName || connectorTypeName}
+        actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveAuth')}
+        disabledNoticeSource={connectorType}
+        onProceed={() => saveEditedAuth(authAwaitingDisable.connectorId, authAwaitingDisable.auth)}
         container={connectorPanelNestedModalHost}
       />
     )}

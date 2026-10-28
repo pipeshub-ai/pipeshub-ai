@@ -413,6 +413,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "knowledgegraph__search",
             "knowledgegraph__list_files",
             "knowledgegraph__fetch_record",
+            "knowledgegraph__find_records_by_person",
         }),
         instructions_factory=_internal_exploration_instructions,
         max_turns=_EXPLORATION_MAX_TURNS,

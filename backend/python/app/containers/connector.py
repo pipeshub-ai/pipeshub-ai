@@ -18,6 +18,9 @@ from app.edition_services import bootstrap_guard
 from app.health.health import Health
 from app.migrations.all_team_migration import run_all_team_migration
 from app.migrations.app_org_id_migration import run_app_org_id_migration
+from app.migrations.service_account_kind_migration import (
+    run_service_account_kind_migration,
+)
 from app.migrations.folder_mime_type_migration import run_folder_mime_type_migration
 from app.migrations.hierarchy_backfill_migration import run_hierarchy_backfill_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
@@ -361,6 +364,27 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                     logger.info(f"✅ App orgId migration stamped {org_result.get('backfilled', 0)} App(s)")
             except Exception as e:
                 logger.error(f"❌ App orgId migration error: {e}")
+
+            # User nodes that predate `kind` get it from the list the user
+            # management service stages, which is the only place that knows
+            # which accounts are machines. Not fatal: the next startup retries,
+            # and that service keeps staging until this records it done.
+            try:
+                kind_result = await run_service_account_kind_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if not kind_result.get("success"):
+                    logger.error(
+                        f"❌ Service-account kind migration failed: {kind_result.get('error')}"
+                    )
+                elif not kind_result.get("skipped"):
+                    logger.info(
+                        f"✅ Service-account kind migration marked {kind_result.get('stamped', 0)} user node(s)"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Service-account kind migration error: {e}")
 
             logger.info("✅ Container initialization completed successfully")
 

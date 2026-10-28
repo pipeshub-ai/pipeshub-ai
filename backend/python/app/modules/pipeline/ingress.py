@@ -10,10 +10,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.resource_governor.tiers import classify as classify_tier
 
@@ -66,9 +68,11 @@ class StageIngress:
         """Record ``embed`` for the record's revision and dispatch its successors."""
         container = record.block_containers
         facts = content_facts(container)
-        document = await self._graph.get_document(record.id, CollectionNames.RECORDS.value)
-        if document is None:
-            raise LookupError(f"record {record.id} is gone")
+        document = await self._graph.get_document(
+            record.id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if document is None or not is_live_record(document):
+            raise RecordDeletedError(record.id)
         rev = document.get("contentRev")
         if not isinstance(rev, str) or not rev:
             # Paths that never saw the source bytes (re-index from a stored blob) still

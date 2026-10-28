@@ -474,6 +474,28 @@ class TestOnNewRecords:
         proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_record_the_connector_stored_failed_is_not_published(self) -> None:
+        """A page that answered an error is stored FAILED with its reason; indexing must not
+        fetch it again and replace that reason with its own."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.indexing_status = ProgressStatus.FAILED.value
+        record.reason = "The page returned an error (400 Bad Request)."
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     async def test_exception_propagated(self):
         """Transaction errors propagate."""
         proc = _make_processor()
@@ -528,6 +550,45 @@ class TestUnchangedRecordsAreNotRepublished:
 
         proc.messaging_producer.send_messages.assert_not_awaited()
         assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_unchanged_password_protected_record_publishes_nothing(self) -> None:
+        """A full re-sync does not queue a locked file again: the same bytes need the same password."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_password_protected_record_is_indexed_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_failed_record_is_still_queued_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.FAILED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_changed_completed_record_is_requeued_and_published(self):

@@ -7,7 +7,7 @@ The mechanism is in ``auth.middleware.ts``. On every request it loads the most
 recent ``UserActivities`` row whose type is in ``SESSION_INVALIDATING_ACTIVITIES``
 — LOGOUT, PASSWORD_CHANGED, ROLE_CHANGED and ACCOUNT_BLOCKED — and rejects the
 token if that activity is newer than the token's ``iat``. It also rejects a token
-whose user is flagged ``isDeleted``. Five wrong passwords lock the account and
+whose user is flagged ``isDeleted``. Ten wrong passwords lock the account and
 record ACCOUNT_BLOCKED, so a session opened before the lockout ends with it.
 """
 

@@ -38,6 +38,18 @@ class UnitShardsTest(unittest.TestCase):
             expected = owners[unit_shards.nearest_owner(test_file, owners)]
             self.assertEqual(runners, [expected], test_file)
 
+    def test_shard_owns_matches_the_files_a_shard_collects(self):
+        golden = "tests/unit/services/vector_db/test_bm25_golden.py"
+        self.assertTrue((unit_shards.PYTHON_ROOT / golden).exists())
+        owning = [s for s in unit_shards.SHARDS if unit_shards.shard_owns(s, golden)]
+        self.assertEqual(owning, ["services"])
+        for shard in unit_shards.SHARDS:
+            self.assertEqual(
+                unit_shards.shard_owns(shard, golden),
+                _collected_by(unit_shards.pytest_args(shard), golden),
+                shard,
+            )
+
     def test_every_owned_path_exists(self):
         root = unit_shards.PYTHON_ROOT
         for shard, entries in unit_shards.SHARDS.items():

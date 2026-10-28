@@ -24,6 +24,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
 from app.models.entities import (
@@ -859,7 +860,7 @@ class TestSyncProjects:
 
         connector._project_to_records.assert_awaited_once_with("proj-1", {"team-1"})
         dep.on_new_records.assert_awaited_once_with([(mock_project, [])])
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1_705_400_000_000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1_705_400_000_000
 
     @pytest.mark.asyncio
     async def test_sync_projects_empty_teams(self):
@@ -996,7 +997,7 @@ class TestFilterOptions:
 
         teams = [{"id": "t1", "name": "Eng", "key": "ENG"}]
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_paginated_response({"teams": teams}))
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_paginated_response({"teams": teams}))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector.get_filter_options("team_ids")
@@ -1017,13 +1018,13 @@ class TestFilterOptions:
         # Linear filters; it answers with the teams that matched.
         teams = [{"id": "t1", "name": "Engineering", "key": "ENG"}]
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_paginated_response({"teams": teams}))
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_paginated_response({"teams": teams}))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await connector._get_team_options(search="eng")
             assert len(result.options) == 1
 
-        assert mock_ds.teams.await_args.kwargs["filter"] == {"or": [
+        assert mock_ds.execute_operation.await_args.args[1]["filter"] == {"or": [
             {"name": {"containsIgnoreCase": "eng"}},
             {"key": {"containsIgnoreCase": "eng"}},
         ]}
@@ -1034,12 +1035,12 @@ class TestFilterOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_paginated_response({"teams": []}))
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_paginated_response({"teams": []}))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._get_team_options(search="   ")
 
-        assert mock_ds.teams.await_args.kwargs["filter"] is None
+        assert mock_ds.execute_operation.await_args.args[1]["filter"] is None
 
     @pytest.mark.asyncio
     async def test_get_team_options_failure(self):
@@ -1047,7 +1048,7 @@ class TestFilterOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_response(success=False, message="fail"))
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_response(success=False, message="fail"))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             with pytest.raises(RuntimeError, match="Failed"):

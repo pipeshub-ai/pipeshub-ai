@@ -58,6 +58,13 @@ export interface ItemActionMenuProps {
  * The parent is responsible for positioning (e.g. absolute for sidebar,
  * inline for list rows). This component renders the trigger + dropdown.
  */
+function isEditableElement(el: Element | null): boolean {
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLInputElement) return !['button', 'checkbox', 'radio'].includes(el.type);
+  return el instanceof HTMLElement && el.isContentEditable;
+}
+
 export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, triggerSize = '1' }: ItemActionMenuProps) {
   const visibleActions = actions.filter(Boolean) as MenuAction[];
   // Phones get 44px rows, as the workspace row menus do.
@@ -101,6 +108,11 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
           WebkitBackdropFilter: 'blur(25px)',
         }}
         onClick={(e) => e.stopPropagation()}
+        onCloseAutoFocus={(e) => {
+          // An action such as Rename focuses its own field while the menu is still
+          // closing; handing focus back to the trigger would take it away again.
+          if (isEditableElement(document.activeElement)) e.preventDefault();
+        }}
       >
         {visibleActions.map((action, i) => {
           const iconColor =

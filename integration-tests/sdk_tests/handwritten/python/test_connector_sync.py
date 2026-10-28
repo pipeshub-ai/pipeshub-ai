@@ -31,8 +31,8 @@ def wait_for_idle(pipeshub: Pipeshub, connector_id: str) -> None:
         time.sleep(2)
 
 
-def test_handwritten_connector_sync(pipeshub: Pipeshub):
-    created = pipeshub.connector_instances.create_connector_instance(
+def test_handwritten_connector_sync(admin: Pipeshub):
+    created = admin.connector_instances.create_connector_instance(
         connector_type="RSS",
         # Connector names are unique in an org.
         instance_name=f"sdk-test-rss-{uuid.uuid4()}",
@@ -50,46 +50,45 @@ def test_handwritten_connector_sync(pipeshub: Pipeshub):
     try:
         # RSS has no auth, so its saved settings are enough for filter options, but none of
         # them come from the service. It cannot resync before it is enabled.
-        filters = pipeshub.connector_filters.get_connector_filters(
+        filters = admin.connector_filters.get_connector_filters(
             connector_id=connector_id
         )
         assert filters.success is True
         assert filters.filter_options == {}
         with raises_status(404):
-            pipeshub.connector_filters.get_filter_field_options(
+            admin.connector_filters.get_filter_field_options(
                 connector_id=connector_id, filter_key="sdk_test_no_such_filter"
             )
         with raises_status(400):
-            pipeshub.connector_instances.resync_connector(
+            admin.connector_instances.resync_connector(
                 connector_id=connector_id, connector_name="RSS"
             )
 
-        toggled = pipeshub.connector_control.toggle_connector(
+        toggled = admin.connector_control.toggle_connector(
             connector_id=connector_id, type_="sync"
         )
         assert toggled.success is True
-        wait_for_idle(pipeshub, connector_id)
+        wait_for_idle(admin, connector_id)
 
-        stats = pipeshub.connector_instances.get_connector_stats(
-            connector_id=connector_id
-        )
+        stats = admin.connector_instances.get_connector_stats(connector_id=connector_id)
         assert stats.data.connector_id == connector_id
 
-        app = pipeshub.knowledge_hub.get_knowledge_hub_child_nodes(
+        # The listing declares a Retry-After header, so the SDK wraps its body in `result`.
+        app = admin.knowledge_hub.get_knowledge_hub_child_nodes(
             parent_type="app", parent_id=connector_id
-        )
+        ).result
         feed = next(
             (item for item in app.items if item.node_type == "recordGroup"), None
         )
         assert feed is not None, "the sync made no record group"
-        reindexed = pipeshub.knowledge_base.reindex_record_group(
+        reindexed = admin.knowledge_base.reindex_record_group(
             record_group_id=feed.id, depth=0
         )
         assert reindexed.record_group_id == feed.id
 
-        group = pipeshub.knowledge_hub.get_knowledge_hub_child_nodes(
+        group = admin.knowledge_hub.get_knowledge_hub_child_nodes(
             parent_type="recordGroup", parent_id=feed.id
-        )
+        ).result
         article = next(
             (
                 item
@@ -100,24 +99,22 @@ def test_handwritten_connector_sync(pipeshub: Pipeshub):
         )
         assert article is not None, "the sync made no record with a URL"
 
-        lookup = pipeshub.connector.lookup_record_by_identifier(
+        lookup = admin.connector.lookup_record_by_identifier(
             identifiers=[article.web_url]
         )
         assert article.id in [match.id for match in lookup.matches]
 
-        content = pipeshub.connector.get_record_content(record_id=article.id)
+        content = admin.connector.get_record_content(record_id=article.id)
         assert article.id in content.content
 
-        resynced = pipeshub.connector_instances.resync_connector(
+        resynced = admin.connector_instances.resync_connector(
             connector_id=connector_id, connector_name="RSS"
         )
         assert resynced.resync_connector_response.success is True
 
-        stopped = pipeshub.connector_instances.stop_connector_sync(
+        stopped = admin.connector_instances.stop_connector_sync(
             connector_id=connector_id
         )
         assert stopped.success is True
     finally:
-        pipeshub.connector_instances.delete_connector_instance(
-            connector_id=connector_id
-        )
+        admin.connector_instances.delete_connector_instance(connector_id=connector_id)

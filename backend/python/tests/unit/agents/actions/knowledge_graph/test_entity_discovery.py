@@ -1,5 +1,6 @@
 """Unit tests for ``ops/entity_discovery.py`` (``search_entities``)."""
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     ENTITY_INDEX_CACHE_KEY,
+    LIMITED_SCOPE_NOTE,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
 from app.modules.retrieval.entity_permissions import (
@@ -19,6 +21,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityHit,
     EntitySearchTimedOut,
 )
+from app.modules.retrieval.selection_scope import SelectionScope
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -64,6 +67,20 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock]:
     monkeypatch.setattr(entity_filters, "get_entity_access_context", access)
     monkeypatch.setattr(entity_discovery, "search_entities_for_user", search)
     return access, search
+
+
+class TestEmptyResultInsideASelection:
+    @pytest.mark.asyncio
+    async def test_it_says_only_the_selection_was_searched(self, patched) -> None:
+        patched[0].return_value = replace(CONTEXT, row_scopes=(SelectionScope(groups={"g": "kb-1"}),))
+        ok, text = await execute_search_entities(_state(), "KG Tools")
+        payload = json.loads(text)
+        assert ok and payload["results"] == [] and payload["scopeNote"] == LIMITED_SCOPE_NOTE
+
+    @pytest.mark.asyncio
+    async def test_without_a_selection_there_is_no_note(self, patched) -> None:
+        ok, text = await execute_search_entities(_state(), "KG Tools")
+        assert ok and "scopeNote" not in json.loads(text)
 
 
 class TestGuards:
@@ -409,3 +426,22 @@ class TestWithoutEntitySearch:
     async def test_queries_are_not_taken(self, patched) -> None:
         ok, _ = await execute_search_entities(_state(), None, queries=["Acme"])
         assert ok is False
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_previewed_upload_shows_its_upload_date_not_a_modified_date(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        upload = {
+            **_row("r1", "kb-1"), "connectorName": "KB", "origin": "UPLOAD",
+            "createdAtTimestamp": uploaded, "sourceCreatedAtTimestamp": uploaded - 30,
+            "sourceLastModifiedTimestamp": uploaded - 30,
+        }
+        patched[1].return_value = [_hit("t1", "topic", records=[upload])]
+
+        ok, text = await execute_search_entities(_state(), "legal")
+
+        assert ok is True
+        preview = json.loads(text)["results"][0]["records"][0]
+        assert preview["uploaded"] == "2026-10-15"
+        assert "modified" not in preview

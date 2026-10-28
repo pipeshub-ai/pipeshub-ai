@@ -13,7 +13,10 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
+from app.connectors.core.registry.code_indexing_flags import (
+    branch_filter_field,
+    exclude_paths_filter_field,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -194,6 +197,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 required=True,
             )
         )
+        .add_filter_field(branch_filter_field())
         .add_filter_field(
             FilterField(
                 name=IndexingFilterKey.ISSUES.value,

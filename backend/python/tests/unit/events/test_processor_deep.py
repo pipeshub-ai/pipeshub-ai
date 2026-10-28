@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, RecordDeletedError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger(__name__)
@@ -187,7 +187,7 @@ class TestProcessMdDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """When record is missing from DB, indexing_complete is still yielded."""
+        """When record is missing from DB, the deletion is raised."""
         proc = _make_processor()
 
         md_parser = MagicMock()
@@ -197,11 +197,10 @@ class TestProcessMdDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(
-            proc.process_md_document("test.md", "r1", b"text", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_md_document("test.md", "r1", b"text", "vr1")
+            )
 
 
 # ============================================================================
@@ -280,7 +279,7 @@ class TestProcessExcelDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """Missing record yields indexing_complete without crashing."""
+        """Missing record raises RecordDeletedError."""
         excel_parser = MagicMock()
         excel_parser.new_document_parser.return_value = excel_parser
         excel_parser.load_workbook_from_binary = MagicMock()
@@ -292,11 +291,10 @@ class TestProcessExcelDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect_events(
-                proc.process_excel_document("test.xlsx", "r1", "1", "s", "o1", b"data", "vr1")
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_excel_document("test.xlsx", "r1", "1", "s", "o1", b"data", "vr1")
+                )
 
 
 # ============================================================================
@@ -343,11 +341,10 @@ class TestProcessPptxDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
         proc.docling_processor = mock_processor
 
-        events = await _collect_events(
-            proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -396,7 +393,7 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
-        """Missing record yields indexing_complete without crashing."""
+        """Missing record raises RecordDeletedError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -408,11 +405,10 @@ class TestProcessDocxDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
         proc.docling_processor = mock_processor
 
-        events = await _collect_events(
-            proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -497,10 +493,8 @@ class TestProcessImage:
         proc = _make_processor()
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(proc.process_image("r1", b"data", "vr1"))
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(proc.process_image("r1", b"data", "vr1"))
 
 
 # ============================================================================
@@ -569,12 +563,10 @@ class TestProcessDelimitedDocument:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            events = await _collect_events(
-                proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
+                )
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -646,12 +638,10 @@ class TestProcessPdfWithPymupdf:
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
-            events = await _collect_events(
-                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
+                )
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -748,11 +738,10 @@ class TestProcessPdfWithDocling:
         proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        events = await _collect_events(
-            proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+            )
 
 
 # ============================================================================
@@ -973,11 +962,10 @@ class TestProcessBlocks:
 
         blocks_dict = {"blocks": [], "block_groups": []}
 
-        events = await _collect_events(
-            proc.process_blocks("test", "r1", "1", "src", "o1", blocks_dict, "vr1")
-        )
-
-        assert any(e.event == "indexing_complete" for e in events)
+        with pytest.raises(RecordDeletedError):
+            await _collect_events(
+                proc.process_blocks("test", "r1", "1", "src", "o1", blocks_dict, "vr1")
+            )
 
 
 # ============================================================================
@@ -1271,13 +1259,12 @@ class TestProcessPdfDocumentWithOcr:
                 "llm": [],
             })
 
-            events = await _collect_events(
-                proc.process_pdf_document_with_ocr(
-                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+            with pytest.raises(RecordDeletedError):
+                await _collect_events(
+                    proc.process_pdf_document_with_ocr(
+                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                    )
                 )
-            )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_azure_ocr_failure_propagates(self):

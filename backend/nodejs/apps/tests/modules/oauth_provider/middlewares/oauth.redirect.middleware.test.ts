@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { createOAuthRedirectMiddleware } from '../../../../src/modules/oauth_provider/middlewares/oauth.redirect.middleware'
 
 describe('OAuthRedirectMiddleware', () => {
@@ -51,6 +52,19 @@ describe('OAuthRedirectMiddleware', () => {
       await mw(req, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
       expect((req as any).user.userId).to.equal('u1')
+    })
+
+    it('should run the handlers after it in the token organisation', async () => {
+      mockTokenService.verifyToken.resolves({ userId: 'u1', orgId: 'o1', email: 'u@e.com' })
+      let bound: string | undefined
+      const next = sinon.stub().callsFake(() => {
+        bound = getCurrentOrgId()
+      })
+      const mw = createOAuthRedirectMiddleware(mockTokenService, mockLogger, 'http://frontend:3000')
+
+      await mw({ headers: { authorization: 'Bearer valid-token' }, query: {} } as any, mockRes, next)
+
+      expect(bound).to.equal('o1')
     })
 
     it('should redirect when token is expired/invalid', async () => {

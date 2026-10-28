@@ -1,20 +1,8 @@
 import mongoose, { Schema, Document, Types, Model } from 'mongoose';
+import { AuthMethodType, type IAuthMethod } from '../types/auth-method';
 
-export interface IAuthMethod {
-  type: 'samlSso' | 'otp' | 'password' | 'google' | 'microsoft' | 'azureAd' | 'oauth' | 'github';
-}
-
-/** Every method a saved policy may name; edition.ts says which ones this edition offers. */
-export enum AuthMethodType {
-  SAML_SSO = 'samlSso',
-  OTP = 'otp',
-  PASSWORD = 'password',
-  GOOGLE = 'google',
-  MICROSOFT = 'microsoft',
-  AZURE_AD = 'azureAd',
-  OAUTH = 'oauth',
-  GITHUB = 'github',
-}
+export { AuthMethodType };
+export type { IAuthMethod };
 
 interface IAuthStep {
   order: number;

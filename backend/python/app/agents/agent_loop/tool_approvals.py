@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -43,6 +42,7 @@ from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
 from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
 from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
     get_mcp_tool_approval_claim_path,
@@ -201,42 +201,12 @@ def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
     )
 
 
-# Only what reads the same in MariaDB and Redshift is stripped: quoted literals, "-- " followed by
-# whitespace, and plain /* */ comments. Any other comment marker left after that makes the call
-# count as destructive, and backticks are kept, so a statement they could hide still counts.
-_SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
-_SQL_LEFTOVER_COMMENT_MARKERS = ("/*", "*/", "#", "--")
-_SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
-_SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
-_SQL_WORD = re.compile(r"[a-z_]+")
-
-
 def sql_keeps_its_kind(sql: str) -> bool:
-    """Whether a statement only reads, or makes an ordinary write (INSERT, UPDATE). Anything else,
-    such as DELETE, DROP, TRUNCATE, ALTER or GRANT, more than one statement, or text that can't be
-    read this way, counts as a call that can't be undone."""
-    if not isinstance(sql, str) or "\\" in sql:
-        # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
-        return False
-    code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
-    if any(marker in code for marker in _SQL_LEFTOVER_COMMENT_MARKERS):
-        # Fail closed: a comment the two dialects read differently (MySQL's /*! */ and /*M! */,
-        # "--" with no space, "#") could hide or change the statement that runs.
-        return False
-    statements = [part for part in code.split(";") if part.strip()]
-    if len(statements) != 1:
-        return False
-    words = _SQL_WORD.findall(statements[0])
-    if not words:
-        return False
-    if {"outfile", "dumpfile"} & set(words) or ("into" in words and words[0] != "insert"):
-        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB). Only an
-        # INSERT's own verb makes INTO safe: "insert" can be an alias on Redshift.
-        return False
-    if words[0] == "with":
-        # A CTE: what runs is what the statement does once its named queries are read.
-        return not ({"delete", "drop", "truncate", "alter", "grant", "revoke", "create", "merge", "replace", "call"} & set(words))
-    return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
+    """Whether a statement is one plain read, by the same test the SQL tools use to run it read-only
+    (`read_only_statement`). Anything else, such as INSERT, UPDATE, DELETE, DROP, more than one
+    statement, a call to a function that acts on the server, or text that can't be read this way,
+    needs a person's approval."""
+    return isinstance(sql, str) and read_only_statement(sql)[0] is not None
 
 
 # Docs batch requests that only add or restyle content. Anything else, a delete, a named-range
@@ -316,10 +286,16 @@ def starting_rule(*, kind: ToolKind, source: Source) -> Rule:
 
 def decide(
     *, own: Optional[Rule], kind: ToolKind, source: Source, watched: bool, approved_call: bool = False,
+    enabled_on_project: bool = False,
 ) -> Verdict:
     """The rule for one call. `approved_call`: this is the call a person just approved (it runs
-    unless something now blocks it)."""
+    unless something now blocks it). `enabled_on_project`: a project chat, where only the tools
+    the project enables are loaded; there a tool nobody set a rule for that would start at Block
+    asks instead, since enabling it on the project is a request to be able to use it. A Block
+    someone set still blocks, and an unwatched run still can't ask."""
     effective = own or starting_rule(kind=kind, source=source)
+    if own is None and effective == "block" and enabled_on_project:
+        effective = "ask"
     if effective == "block":
         return Verdict("block", "own" if own else "default")
     if effective == "allow" or approved_call:
@@ -529,6 +505,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             source=target.defaults or target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target))

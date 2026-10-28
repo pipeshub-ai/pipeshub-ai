@@ -4,7 +4,10 @@ import { MessageBrokerError } from '../errors/messaging.errors';
 import { Logger } from './logger.service';
 import { getRedisProvider } from './redis/connectionProviderFactory';
 import { redisConnectionConfigFromHostPort } from './redis/connectionConfig';
-import type { IRedisConnectionProvider, RedisClient } from './redis/connectionProvider.interface';
+import type {
+  IRedisConnectionProvider,
+  RedisClient,
+} from './redis/connectionProvider.interface';
 import { StreamReadPlanner } from './redis/streamReadPlanner';
 import {
   IMessageProducer,
@@ -23,6 +26,12 @@ import {
   runWithRequestContext,
 } from '../context/request-context';
 import {
+  EnvelopeRejected,
+  runWithEnvelope,
+  signMessage,
+} from '../context/envelope';
+import { spawnDetached } from '../context/orgContext';
+import {
   MESSAGING_HEALTH_MESSAGE_KEY,
   MESSAGING_HEALTH_MESSAGE_TYPE,
   MESSAGING_HEALTH_TOPIC,
@@ -37,9 +46,14 @@ type RedisStreamEntry = [id: string, fields: string[]];
 type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
 
 /** Serialize a message value, stamping the trace id into the envelope. */
-function serializeValueWithTrace(value: unknown): string {
+function serializeValueWithTrace(value: unknown, topic: string): string {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return JSON.stringify(injectEnvelope({ ...(value as Record<string, unknown>) }));
+    return JSON.stringify(
+      signMessage(
+        topic,
+        injectEnvelope({ ...(value as Record<string, unknown>) }),
+      ),
+    );
   }
   return JSON.stringify(value);
 }
@@ -217,7 +231,7 @@ export abstract class BaseRedisStreamsProducerConnection
         REDIS_STREAM_FIELDS.key,
         message.key,
         REDIS_STREAM_FIELDS.value,
-        serializeValueWithTrace(message.value),
+        serializeValueWithTrace(message.value, topic),
       ];
 
       if (message.headers) {
@@ -255,7 +269,7 @@ export abstract class BaseRedisStreamsProducerConnection
         REDIS_STREAM_FIELDS.key,
         message.key,
         REDIS_STREAM_FIELDS.value,
-        serializeValueWithTrace(message.value),
+        serializeValueWithTrace(message.value, topic),
       ];
       if (message.headers) {
         fields.push(
@@ -419,8 +433,7 @@ export abstract class BaseRedisStreamsConsumerConnection
           `Created consumer group ${this.groupId} for stream ${topic}`,
         );
       } catch (error: unknown) {
-        const errorMessage =
-          (error as Error).message;
+        const errorMessage = (error as Error).message;
         if (errorMessage.includes(REDIS_BUSYGROUP_SUBSTRING)) {
           this.logger.debug(
             `Consumer group ${this.groupId} already exists for stream ${topic}`,
@@ -445,7 +458,31 @@ export abstract class BaseRedisStreamsConsumerConnection
     await this.ensureConnection();
     this.running = true;
 
-    this.consumeLoopPromise = this.consumeLoop(handler);
+    // The loop outlives this call: it must not keep the caller's org context.
+    this.consumeLoopPromise = spawnDetached(() => this.consumeLoop(handler));
+  }
+
+  /** Run the handler under the message's trace and verified org context. A rejected envelope is dropped (and acked by the caller). */
+  private async handleMessage<T>(
+    stream: string,
+    entryId: string,
+    message: StreamMessage<T>,
+    handler: (message: StreamMessage<T>) => Promise<void>,
+  ): Promise<void> {
+    try {
+      await runWithRequestContext(contextFromEnvelope(message.value), () =>
+        runWithEnvelope(stream, message.value, (value) =>
+          handler({ ...message, value }),
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof EnvelopeRejected)) throw error;
+      this.logger.error('Envelope rejected, message dropped', {
+        stream,
+        entryId,
+        reason: error.reason,
+      });
+    }
   }
 
   /**
@@ -516,10 +553,7 @@ export abstract class BaseRedisStreamsConsumerConnection
                 >;
               }
 
-              await runWithRequestContext(
-                contextFromEnvelope(parsedMessage.value),
-                () => handler(parsedMessage),
-              );
+              await this.handleMessage(topic, entryId, parsedMessage, handler);
               await this.ackRedis.xack(topic, this.groupId, entryId);
               this.logger.info('Recovered pending message', {
                 stream: topic,
@@ -570,7 +604,10 @@ export abstract class BaseRedisStreamsConsumerConnection
       // Guarded by the length check above: groups[0] is always defined here.
       return this.xreadGroupCall(groups[0]!, this.blockMs);
     }
-    const perGroupBlockMs = Math.max(1, Math.floor(this.blockMs / groups.length));
+    const perGroupBlockMs = Math.max(
+      1,
+      Math.floor(this.blockMs / groups.length),
+    );
     const combined: unknown[] = [];
     let firstError: unknown = null;
     for (const group of groups) {
@@ -634,7 +671,10 @@ export abstract class BaseRedisStreamsConsumerConnection
 
         const xreadResult = await this.xreadGroupGrouped();
 
-        if (xreadResult === null || (Array.isArray(xreadResult) && xreadResult.length === 0)) {
+        if (
+          xreadResult === null ||
+          (Array.isArray(xreadResult) && xreadResult.length === 0)
+        ) {
           // Normal: BLOCK timeout expired with no new messages.
           continue;
         }
@@ -689,9 +729,11 @@ export abstract class BaseRedisStreamsConsumerConnection
                 >;
               }
 
-              await runWithRequestContext(
-                contextFromEnvelope(parsedMessage.value),
-                () => handler(parsedMessage),
+              await this.handleMessage(
+                streamName,
+                entryId,
+                parsedMessage,
+                handler,
               );
 
               await this.ackRedis.xack(streamName, this.groupId, entryId);

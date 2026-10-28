@@ -36,6 +36,13 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
+import {
+  GENERATION_KEY,
+  nextGeneration,
+  readMembership,
+  readStoredPlatformBlob,
+  savePutsArtifactReadsAtRisk,
+} from '../utils/artifactRollout';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import {
@@ -107,6 +114,11 @@ import {
   isSecretRevealAvailable,
 } from '../utils/secretReveal';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import {
+  SMTP_SETTINGS_PROBLEM_MESSAGES,
+  smtpSettingsProblem,
+} from '../../mail/utils/smtp-transport';
+import { SmtpConfig } from '../../mail/middlewares/types';
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
@@ -507,6 +519,26 @@ export const createSmtpConfig =
           );
           smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
         }
+      }
+
+      // Bad credentials would otherwise surface only when mail starts failing,
+      // after invites and resets were already reported as sent.
+      // Codes only in the log: the host and username are secret
+      // (maskSmtpConfig), and a server's refusal text can repeat the username.
+      let refusal: { code?: unknown; responseCode?: unknown } = {};
+      const problem = await smtpSettingsProblem(
+        smtpConfig as unknown as SmtpConfig,
+        (error) => {
+          const { code, responseCode } = (error ?? {}) as typeof refusal;
+          refusal = { code, responseCode };
+        },
+      );
+      if (problem) {
+        logger.warn('SMTP settings refused by the mail server', {
+          problem,
+          ...refusal,
+        });
+        throw new BadRequestError(SMTP_SETTINGS_PROBLEM_MESSAGES[problem]);
       }
 
       const encryptedSmtpConfig = encryptionService.encrypt(
@@ -924,6 +956,29 @@ export const setPlatformSettings =
     try {
       const { fileUploadMaxSizeBytes, featureFlags } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
+      const stored = await readStoredPlatformBlob(keyValueStoreService);
+      type Flags = Record<string, unknown> | undefined;
+      const storedFlags = stored.featureFlags as Flags;
+      const requestedFlags = featureFlags as Flags;
+      // Turning artifact reads on while an indexing member that does not follow the stored-write
+      // protocol may run, or while the membership check cannot be seen, could serve a mismatch.
+      if (savePutsArtifactReadsAtRisk(storedFlags, requestedFlags)) {
+        const verdict = await readMembership(keyValueStoreService);
+        if (!verdict.ok) {
+          throw new ConflictError(
+            verdict.reason === 'untagged'
+              ? `Artifact reads cannot be turned on while older indexing members run: ${verdict.untagged.join(', ')}`
+              : 'Artifact reads cannot be turned on: the indexing membership check is not available. Try again in a minute.',
+            { untagged: verdict.untagged, reason: verdict.reason },
+          );
+        }
+      }
+      // Server-side only: never taken from the request body.
+      const generation = nextGeneration(
+        stored[GENERATION_KEY],
+        storedFlags,
+        requestedFlags,
+      );
       const encryptedPlatformSettings = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
@@ -931,6 +986,7 @@ export const setPlatformSettings =
         JSON.stringify({
           fileUploadMaxSizeBytes,
           featureFlags,
+          [GENERATION_KEY]: generation,
           updatedAt: new Date().toISOString(),
         }),
       );
@@ -1559,10 +1615,10 @@ export const createGoogleWorkspaceCredentials =
               googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
 
             if (!validationResult.success) {
-              const formattedErrors = validationResult.error.errors
+              const formattedErrors = validationResult.error.issues
                 .map((err) => {
                   const fieldName = err.path[0] || 'Unknown field';
-                  return `  • ${fieldName}: ${err.message}  `;
+                  return `  • ${String(fieldName)}: ${err.message}  `;
                 })
                 .join('');
 
@@ -2585,6 +2641,25 @@ const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
   'decision',
 ] as const;
 
+/**
+ * Throws unless a bulk health check answered 200. A 400 means the settings are
+ * wrong (an empty or rejected key, an endpoint the deployment may not call), so
+ * its message, written for the admin, is passed on as a 400; anything else is
+ * ours and stays a 500.
+ */
+const throwUnlessHealthy = (
+  response: AIServiceResponse | undefined,
+  fallback: string,
+): void => {
+  if (response?.data && response.statusCode === 200) return;
+  if (response?.statusCode === 400) {
+    throw new BadRequestError(
+      healthCheckFailureMessage(response.data, fallback),
+    );
+  }
+  throw new InternalServerError(fallback, response?.data);
+};
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -2616,12 +2691,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of llm configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of llm configuration, check credentials again',
+        );
       }
 
       // Handle embedding health check
@@ -2640,12 +2713,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of embedding configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of embedding configuration, check credentials again',
+        );
       }
 
       // The llm and embedding health checks above refuse an endpoint the
@@ -2661,15 +2732,10 @@ export const createAIModelsConfig =
           body: otherModels,
         }).execute()) as AIServiceResponse;
 
-        if (endpointCheck?.statusCode !== 200) {
-          const fallback = 'Failed to check the model endpoints, try again';
-          if (endpointCheck?.statusCode === 400) {
-            throw new BadRequestError(
-              healthCheckFailureMessage(endpointCheck.data, fallback),
-            );
-          }
-          throw new InternalServerError(fallback, endpointCheck?.data);
-        }
+        throwUnlessHealthy(
+          endpointCheck,
+          'Failed to check the model endpoints, try again',
+        );
       }
 
       if (aiConfig.llm.length > 0) {
@@ -3397,6 +3463,27 @@ export const updateAIModelProvider =
         res.status(400).json({
           status: 'error',
           message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      // A deployment serves one model: carrying the stored one to a new model
+      // saves a label that disagrees with the traffic, and the health check
+      // passes on the old deployment.
+      const incoming = configuration as Record<string, unknown>;
+      const stored = targetModel.configuration as
+        Record<string, unknown> | undefined;
+      const trimmed = (value: unknown): string =>
+        typeof value === 'string' ? value.trim() : '';
+      if (
+        trimmed(stored?.deploymentName) !== '' &&
+        'model' in incoming &&
+        trimmed(incoming.model) !== trimmed(stored?.model) &&
+        trimmed(incoming.deploymentName) === ''
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Changing the model needs its deployment name.',
         });
         return;
       }

@@ -29,6 +29,25 @@ async def test_images_and_attachments_are_fetched_and_the_token_stays_on_the_api
     assert not world.index_failures, world.index_failures
 
 
+
+async def test_a_private_repository_s_attachments_are_fetched_with_the_token(world, org) -> None:
+    """github.com/user-attachments answers an anonymous request for a private
+    repository with 404. Only then is the token sent, to github.com and nowhere else."""
+    gh, repo = world.gh, org["repo"]
+    gh.behaviour.attachment_token_accepted = True
+    image = gh.upload(repo, "shot.png", b"\x89PNG\r\n\x1a\n" + b"0" * 100, image=True)
+    doc = gh.upload(repo, "notes.txt", b"meeting notes")
+    gh.add_issue(repo, "Screenshot", body=f"Look: ![shot]({image}) and [notes.txt]({doc})")
+    await world.sync()
+    text = await world.stream_text(f"{repo.id}/issues/1")
+    assert "data:image/png;base64" in text
+    key = next(k for k in (await world.by_type("FILE")) if k.startswith("https://"))
+    assert await world.stream(key) == b"meeting notes"
+    attachment_calls = [c for c in gh.calls if c.host == "github.com"]
+    assert [c.authorization for c in attachment_calls] == [False, True] * (len(attachment_calls) // 2)
+    assert not [c for c in gh.calls if c.host not in ("api.github.com", "github.com") and c.authorization]
+    assert not world.index_failures, world.index_failures
+
 async def test_links_to_other_hosts_are_never_fetched(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     body = ("![a](https://evil.example/user-attachments/assets/x) "

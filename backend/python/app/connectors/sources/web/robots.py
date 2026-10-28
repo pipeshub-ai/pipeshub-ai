@@ -48,7 +48,8 @@ class RobotsRules:
             key, value = (part.strip() for part in line.split(":", 1))
             key = key.lower()
             if key == "sitemap":
-                if value:
+                # One malformed line (``https://[bad``) must not break every later urljoin on the list.
+                if value and _parses(value):
                     sitemaps.append(value)
             elif key == "user-agent":
                 if in_rules:
@@ -88,6 +89,14 @@ class RobotsRules:
                 if best is None or candidate > best:  # longer wins; on equal length, Allow (True) wins
                     best = candidate
         return best is None or best[1]
+
+
+def _parses(url: str) -> bool:
+    try:
+        urlparse(url)
+    except ValueError:
+        return False
+    return True
 
 
 def _seconds(value: str) -> float | None:

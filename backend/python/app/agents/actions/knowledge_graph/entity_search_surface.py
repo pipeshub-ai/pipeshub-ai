@@ -77,7 +77,9 @@ _VARIANTS: dict[str, _Variant] = {
                 "and record titles, and the organizations, products, events, places and other "
                 "named things mentioned inside documents (entityType 'named_entity'; narrow with "
                 "named_entity_kinds). People are found by name with "
-                "knowledgegraph__search_by_entities. Only entities backed by records you can "
+                "knowledgegraph__search_by_entities (records that mention them) or "
+                "knowledgegraph__find_records_by_person (records they are assigned, reported, "
+                "created or lead). Only entities backed by records you can "
                 "access are returned.",
             ),
             _Edit(

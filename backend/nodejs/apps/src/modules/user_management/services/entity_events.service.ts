@@ -1,7 +1,8 @@
 import { injectable, inject } from 'inversify';
-import { ClientSession } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
-import { OutboxEvent } from '../../../libs/services/outbox/outbox.schema';
+import { sessionOf } from '../../../libs/repositories/mongo';
+import type { Tx } from '../../../libs/repositories/uow';
+import { getOutboxRepository } from '../../../libs/repositories/outbox';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 
 export enum AccountType {
@@ -61,6 +62,25 @@ export interface UserAddedEvent {
   email: string;
   designation?: string;
   syncAction: SyncAction;
+  /**
+   * What sort of principal this is. Carried so the permission graph can tell a
+   * machine identity from a person: the graph has no other way to know, and
+   * the Python services that read it cannot reach this collection.
+   *
+   * Optional because every other producer emits a person. The consumer treats
+   * its absence as `human`, so an older producer stays correct.
+   */
+  kind?: 'human' | 'service';
+  /**
+   * Whether an administrator has switched this account off. Carried because
+   * the permission graph has no other way to learn it: it lives in this
+   * collection, and the services that read the graph cannot reach it.
+   *
+   * Optional, and only ever sent for a service account. The consumer leaves
+   * the stored value alone when it is absent, so an event that says nothing
+   * about this — a rename, say — cannot switch an account back on.
+   */
+  isDisabled?: boolean;
 }
 
 export interface UserDeletedEvent {
@@ -78,6 +98,16 @@ export interface UserUpdatedEvent {
   fullName?: string;
   designation?: string;
   email: string;
+  /**
+   * Whether an administrator has switched this account off. Carried because
+   * the permission graph has no other way to learn it: it lives in this
+   * collection, and the services that read the graph cannot reach it.
+   *
+   * Optional, and only ever sent for a service account. The consumer leaves
+   * the stored value alone when it is absent, so an event that says nothing
+   * about this — a rename, say — cannot switch an account back on.
+   */
+  isDisabled?: boolean;
 }
 
 /**
@@ -146,9 +176,9 @@ export class EntitiesEventProducer {
    * explaining why. Writing it down instead makes delivery late rather than
    * lost.
    *
-   * Pass the `session` of the transaction that made the change, where the
+   * Pass the `tx` of the unit of work that made the change, where the
    * caller has one. The event is then stored by the same commit that stored
-   * the change, so the two cannot disagree. Without a session the write still
+   * the change, so the two cannot disagree. Without a transaction the write still
    * happens, just not atomically: the remaining gap is the microseconds
    * between two database writes, rather than the length of a broker outage.
    *
@@ -156,7 +186,7 @@ export class EntitiesEventProducer {
    * not a broker hiccup to be logged past; it means the caller's own operation
    * has not fully happened, and the caller should hear about it.
    */
-  async publishEvent(event: Event, session?: ClientSession): Promise<void> {
+  async publishEvent(event: Event, tx?: Tx): Promise<void> {
     const doc = {
       topic: this.topic,
       key: event.eventType,
@@ -171,12 +201,12 @@ export class EntitiesEventProducer {
       nextAttemptAt: new Date(),
     };
 
-    await OutboxEvent.create([doc], session ? { session } : {});
+    await getOutboxRepository().append(doc, tx);
 
     this.logger.debug('Event queued for delivery', {
       eventType: event.eventType,
       topic: this.topic,
-      transactional: Boolean(session),
+      transactional: Boolean(sessionOf(tx)),
     });
   }
 }

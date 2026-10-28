@@ -15,6 +15,7 @@ from app.connectors.sources.linear.api_gateway import (
 )
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
 from app.models.entities import (
@@ -333,7 +334,7 @@ class TestLinearConnectorFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_teams_response(
                 [
                     {"id": "team-1", "name": "Engineering", "key": "ENG"},
@@ -1967,20 +1968,20 @@ class TestLinearFilterOptions:
         c.data_source = MagicMock()
         mock_ds = MagicMock()
         # Linear applies the search; it returns only what matched.
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [{"id": "t1", "name": "Engineering", "key": "ENG"}],
             has_next=False,
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids", search="  eng ")
-        mock_ds.teams.assert_awaited_once_with(
-            first=20,
-            after=None,
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 20,
+            "after": None,
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         assert len(result.options) == 1
         assert "Engineering" in result.options[0].label
 
@@ -1989,7 +1990,7 @@ class TestLinearFilterOptions:
         c = _make_connector_cov()
         c.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [
                 {"id": "t1", "name": "Engineering", "key": "ENG"},
                 {"id": "t2", "name": "Design", "key": "DES"},
@@ -1998,7 +1999,7 @@ class TestLinearFilterOptions:
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids")
-        mock_ds.teams.assert_awaited_once_with(first=20, after=None, filter=None)
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {"first": 20, "after": None, "filter": None})
         assert [o.id for o in result.options] == ["t1", "t2"]
 
     @pytest.mark.asyncio
@@ -2009,7 +2010,7 @@ class TestLinearFilterOptions:
         failed = MagicMock()
         failed.success = False
         failed.message = "API error"
-        mock_ds.teams = AsyncMock(return_value=failed)
+        mock_ds.execute_operation = AsyncMock(return_value=failed)
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             with pytest.raises(RuntimeError, match="Failed to fetch team options"):
                 await c.get_filter_options("team_ids")
@@ -5106,14 +5107,14 @@ class TestSyncProjectsForTeams:
             ("proj-2", {"team-0", "team-1"}),
         ]
         assert connector.data_entities_processor.on_new_records.await_count == 2
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1705400000000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1705400000000
 
     @pytest.mark.asyncio
     async def test_sync_projects_incremental_filters_by_update_time(self) -> None:
         connector = _make_connector_fullcov()
         connector.sync_filters = None
         connector._now = MagicMock(return_value=1705400000000)
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
 
         mock_ds = MagicMock()
@@ -5138,7 +5139,7 @@ class TestSyncProjectsForTeams:
         connector = _make_connector_fullcov()
         connector.notify = AsyncMock()
         connector._now = MagicMock(return_value=1705400000000)
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
 
         failure = GraphQLResponse(success=False, message="Internal error", status_code=500)
@@ -5155,7 +5156,7 @@ class TestSyncProjectsForTeams:
         ):
             await connector._sync_projects_for_teams([(rg, perms)])
 
-        saved = connector.projects_sync_point.store["projects"]
+        saved = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert saved["last_sync_time"] == 1705300000000
         assert saved["resume_cursor"] == "cursor-1"
         connector.notify.assert_awaited_once()
@@ -5181,7 +5182,7 @@ class TestSyncProjectsForTeams:
         assert [c.args[0] for c in connector._sleep.await_args_list] == [5, 15, 30, 60, 120, 240]
         assert mock_ds.projects.await_count == 7
         connector.notify.assert_not_awaited()
-        assert "projects" not in connector.projects_sync_point.store
+        assert PROJECTS_CHECKPOINT_KEY not in connector.projects_sync_point.store
 
 
 # ===================================================================
@@ -5638,7 +5639,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_paginated(
                 "teams",
                 [
@@ -5659,14 +5660,14 @@ class TestGetTeamOptions:
             )
 
         # Linear does the matching, on name or key, so paging stays correct.
-        mock_ds.teams.assert_awaited_once_with(
-            first=2,
-            after="cursor-1",
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 2,
+            "after": "cursor-1",
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         # What Linear returned is shown as is: a key match is not filtered away.
         assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
         assert result.has_more is True
@@ -5678,7 +5679,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_response(success=False, message="Error")
         )
 

@@ -49,10 +49,12 @@ from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     _has_selection,
+    browsable_app_ids,
     ids_within_scope,
     navigation_nameable_ids,
     resolve_scope,
     selection_browse_refusal,
+    turn_picked_sources,
 )
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
@@ -272,12 +274,13 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, with a created: date "
-            "when known\n"
+            "when known (uploaded: for a knowledge-base file — an upload time, not a document date)\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
             "to filter children by source timestamp (see parameter descriptions for date format) — "
             "use this instead of fetching all children when the question specifies a date range. "
+            "Inside a knowledge base these filter by when each file was uploaded. "
             "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
             "from the user's timezone. If time-filtered results are empty or too few, widen the "
             "range or retry without time filters and filter manually from the listing."
@@ -464,21 +467,19 @@ class KnowledgeGraph:
 
         # Resolve connector/kb scope from agent config / filters
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
-        kb_ids = list(scope.kb_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
-        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
-            # Chat-mode fallback: use all user-visible connectors. A selection
-            # below app level is already the scope; substituting the connector
-            # catalog would hide a collection folder's children, because a
-            # collection is not one of those connectors.
+        # A selection below app level is already the scope; a connector
+        # filter would hide a collection folder's children.
+        if not connector_ids and not _has_selection(state.get("filters") or {}):
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.debug(
-                "navigate: empty agent scope — using catalog-wide scope (%d connectors)",
-                len(catalog),
-            )
-            connector_ids = catalog.connector_ids()
+            # Nothing picked: no connector filter, so the listing gates by the
+            # user's own access. The catalog would leave out knowledge bases.
+            # A picked turn with nothing browsable (only attachments) keeps the
+            # catalog; its rows are re-checked against the turn's limit below.
+            if turn_picked_sources(state):
+                connector_ids = catalog.connector_ids()
 
         # If node_id looks like a URL or issue key, try to resolve it first
         if node_id:
@@ -534,7 +535,6 @@ class KnowledgeGraph:
                 page=page,
                 limit=limit,
                 connector_ids=connector_ids or None,
-                record_group_ids=list(kb_ids) if kb_ids else None,
                 depth=depth,
                 created_at=created_at,
                 updated_at=updated_at,
@@ -677,7 +677,7 @@ class KnowledgeGraph:
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
         resolver = RecordResolver(
             graph_provider=graph_provider,
@@ -765,8 +765,13 @@ class KnowledgeGraph:
             "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
-            "All dates use the source system's timestamp (when the file was created in Drive, "
-            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "For connected apps these are the source system's timestamps (when the file was "
+            "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
+            "A knowledge-base upload is dated as its record header shows: by a date the "
+            "document states when one was found in it, otherwise only by the upload (the "
+            "file's last-modified time or the upload time), which is not when it was written. "
+            "A date filter can keep an upload dated only by its upload although it was written "
+            "outside the range, so check its header before treating it as in range.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -807,8 +812,9 @@ class KnowledgeGraph:
                     "Only include records created at the source on or after this date. "
                     "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
-                    "This filters by the document's original creation date at the source "
-                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "For connected apps this is the creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
+                    "knowledge-base upload, the date its record header shows. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -1156,6 +1162,80 @@ class KnowledgeGraph:
             percent_max=percent_max,
         )
 
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_person",
+        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        description=(
+            "List the records the connectors link to a person by role (assignee, reporter, "
+            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
+            "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
+            "the links the connectors write (mentioned/involved come from indexing): for any "
+            "other record whose text mentions a name, search instead.\n\n"
+            "Pass a full name or an email; several people with that name are listed for you to "
+            "pick by email. Pages with cursor, the next call printed in the output; \"That is "
+            "all N\" means the list is complete."
+        ),
+        parameters=[
+            ToolParameter(
+                name="person",
+                type=ParameterType.STRING,
+                description="The person's full name or email, or \"me\" for the user asking.",
+                required=True,
+            ),
+            ToolParameter(
+                name="roles",
+                type=ParameterType.ARRAY,
+                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                required=False,
+                items={
+                    "type": "string",
+                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                },
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'TICKET', 'PROJECT').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records linked to {args.get("person", "")}' if args.get("person") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records linked to a person",
+    )
+    async def find_records_by_person(
+        self,
+        person: str | None = None,
+        roles: list[str] | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.people import execute_find_records_by_person
+        return await execute_find_records_by_person(
+            self.state, person=person, roles=roles, record_types=record_types, limit=limit, cursor=cursor,
+        )
+
     # -----------------------------------------------------------------------
     # search_by_entities — offered only where the deployment turns it on
     # -----------------------------------------------------------------------
@@ -1181,7 +1261,8 @@ class KnowledgeGraph:
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
             "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
+            "surname alone is not looked up. For what a person is assigned, reported, created or "
+            "leads, use knowledgegraph__find_records_by_person. Only records indexed while named-entity extraction was on "
             "are linked to names, so confirm a name that is not found with search before saying it "
             "is absent."
         ),
@@ -1317,7 +1398,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
-                description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
+                description=(
+                    "Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'. For "
+                    "knowledge-base files createdAt and updatedAt are upload times, not "
+                    "document dates."
+                ),
                 required=False,
                 default="updatedAt",
             ),
@@ -1433,7 +1518,11 @@ class KnowledgeGraph:
                 description=(
                     "'created' (default) places each record by when it was created at its source: "
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
-                    "places it by its last update, for tickets or pages that changed over the span."
+                    "places it by its last update, for tickets or pages that changed over the span. "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found, otherwise by its file's last-modified time or its upload time; the "
+                    "result's header says when an upload dated only by its upload time is instead "
+                    "listed with no source date."
                 ),
                 required=False,
                 default="created",

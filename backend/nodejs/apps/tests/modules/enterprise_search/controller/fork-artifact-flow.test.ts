@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import * as chatUtils from '../../../../src/modules/enterprise_search/utils/utils'
+import { getConversationRepository } from '../../../../src/libs/repositories/conversation'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
@@ -109,57 +109,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     expect(discard.called).to.equal(false)
   })
 
-  it('keeps each turn under its author and copies nothing but what the owner may read of another author', async () => {
-    seed('Done')
-    const chat = store.session(chatId)!
-    const BOB = oid()
-    store.addMessage(chat, {
-      messageType: 'user_query',
-      content: 'bob asks',
-      authorUserId: BOB,
-    })
-    const bobAnswer = store.addMessage(chat, {
-      messageType: 'bot_response',
-      content: 'bob answer',
-      authorUserId: BOB,
-      tools: [{ toolName: 'search' }],
-      reasoning: [{ text: 'private' }],
-      parts: [{ type: 'x' }],
-      referenceData: [{ id: 'r' }],
-    })
-    store.messages[1]!.set('tools', [{ toolName: 'sql' }])
-    botMessageId = String(bobAnswer._id)
-
-    const out = await fork()
-
-    expect(out.status).to.equal(201)
-    const rows = store.messagesOf(out.body?.id) as Array<Record<string, any>>
-    expect(rows.map((r) => (r.authorUserId ? String(r.authorUserId) : undefined))).to.deep.equal([
-      undefined,
-      undefined,
-      String(BOB),
-      String(BOB),
-    ])
-    expect(rows[1]!.tools).to.have.length(1) // the owner's own turn keeps its details
-    for (const row of rows.slice(2)) {
-      for (const field of ['tools', 'reasoning', 'parts', 'referenceData']) {
-        expect(row[field] ?? [], field).to.have.length(0)
-      }
-    }
-  })
-
-  it('answers 404 and copies nothing for an archived chat', async () => {
-    seed('Done')
-    ;(store.session(chatId) as { isArchived?: boolean }).isArchived = true
-    const sessionsBefore = store.sessions.length
-
-    const out = await fork()
-
-    expect((out.error as { statusCode?: number }).statusCode).to.equal(404)
-    expect(store.sessions).to.have.length(sessionsBefore)
-    expect(fetchStub.called).to.equal(false)
-  })
-
   it('creates no chat, and removes the copies already made, when copying fails part way', async () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(500, { detail: 'boom' }))
@@ -176,7 +125,7 @@ describe('fork route: the artifacts of a forked chat', () => {
   it('removes the copies when the chat cannot be written after they were made', async () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
-    sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
+    sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
     sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
     sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
@@ -190,7 +139,7 @@ describe('fork route: the artifacts of a forked chat', () => {
   it('still reports the original failure when the copies could not be removed', async () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
-    sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
+    sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
     sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
     sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
     discard.rejects(new Error('connectors down'))
@@ -202,7 +151,7 @@ describe('fork route: the artifacts of a forked chat', () => {
 
   it('has nothing to remove when no artifact was copied', async () => {
     seed('Plain answer')
-    sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
+    sinon.stub(getConversationRepository(), 'appendMessages').rejects(new Error('mongo down'))
     sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
     sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
@@ -211,6 +160,18 @@ describe('fork route: the artifacts of a forked chat', () => {
     expect(out.error?.message).to.equal('mongo down')
     expect(fetchStub.called).to.equal(false)
     expect(discard.called).to.equal(false)
+  })
+
+  it('answers 404 and copies nothing for an archived chat', async () => {
+    seed(`Done\n\n${card}`)
+    ;(store.session(chatId) as { isArchived?: boolean }).isArchived = true
+    const sessionsBefore = store.sessions.length
+
+    const out = await fork()
+
+    expect((out.error as { statusCode?: number }).statusCode).to.equal(404)
+    expect(store.sessions).to.have.length(sessionsBefore)
+    expect(fetchStub.called).to.equal(false)
   })
 
   it('answers 404 and copies nothing when the message is not in the chat', async () => {

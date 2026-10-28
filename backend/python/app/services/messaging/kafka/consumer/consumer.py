@@ -2,11 +2,14 @@ import asyncio
 import json
 import ssl
 import time
+from collections import deque
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
+from app.core.org_context import bind_optional, spawn_detached
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
@@ -25,6 +28,36 @@ if TYPE_CHECKING:
     from app.services.messaging.retry_manager import RetryManager
 
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
+# How many recently settled offsets are remembered per partition for redelivery dedup.
+SETTLED_OFFSET_WINDOW = 4096
+
+
+class _SettledOffsets:
+    """The last ``limit`` offsets settled on one partition: O(1) lookup, bounded size."""
+
+    __slots__ = ("_order", "_seen")
+
+    def __init__(self, limit: int) -> None:
+        self._order: deque[int] = deque(maxlen=limit)
+        self._seen: set[int] = set()
+
+    def add(self, offset: int) -> None:
+        if offset in self._seen:
+            return
+        if len(self._order) == self._order.maxlen:
+            # An offset older than the window would be evicted next anyway; adding it
+            # would evict one a replay is about to redeliver, and so on down the span.
+            if offset < self._order[0]:
+                return
+            self._seen.discard(self._order[0])  # the append below evicts it
+        self._order.append(offset)
+        self._seen.add(offset)
+
+    def __contains__(self, offset: int) -> bool:
+        return offset in self._seen
+
+    def __len__(self) -> int:
+        return len(self._seen)
 
 
 class KafkaMessagingConsumer(IMessagingConsumer):
@@ -48,7 +81,10 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
-        self.processed_messages: dict[str, list[int]] = {}
+        # Recently settled offsets per "topic-partition", so a redelivery of one
+        # (a rebalance, a seek, a commit that failed) is skipped. Bounded per
+        # partition and O(1) to look up; see _SettledOffsets.
+        self.processed_messages: dict[str, _SettledOffsets] = {}
         self.consume_task = None
         self.message_handler = None
         self.retry_manager = retry_manager
@@ -141,7 +177,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 await self.initialize()
 
             # create a task for consuming messages
-            self.consume_task = asyncio.create_task(self.__consume_loop())
+            self.consume_task = spawn_detached(self.__consume_loop())
             self.logger.info("Started Kafka consumer task")
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
@@ -226,10 +262,20 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             if self.message_handler and parsed_message:
                 envelope = parsed_message if isinstance(parsed_message, dict) else {}
+                if not isinstance(parsed_message, dict):
+                    StreamMessage(**parsed_message)  # TypeError: not an envelope
                 token = bind_context(context_from_envelope(envelope))
                 try:
-                    stream_message = StreamMessage(**parsed_message)
-                    result = await self.message_handler(stream_message)
+                    try:
+                        opened = await open_configured(message.topic, envelope)
+                    except DuplicateEnvelope:
+                        return True, None
+                    except EnvelopeRejected as e:
+                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                        return False, e
+                    with bind_optional(opened.ctx):
+                        stream_message = StreamMessage(**opened.message)
+                        result = await self.message_handler(stream_message)
                     return result, None
                 except Exception as e:
                     self.logger.error(
@@ -497,5 +543,5 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
         if topic_partition not in self.processed_messages:
-            self.processed_messages[topic_partition] = []
-        self.processed_messages[topic_partition].append(offset)
+            self.processed_messages[topic_partition] = _SettledOffsets(SETTLED_OFFSET_WINDOW)
+        self.processed_messages[topic_partition].add(offset)

@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from helper import suite_extensions
+
 # A well-formed Mongo ObjectId that no document has.
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
@@ -355,6 +357,25 @@ PYTHON_CONDITIONAL_ADMIN = {
     # Everyone gets the listing; only admins see how an org server is reached.
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
+    # Members make and edit their own agents, and nothing here refuses them.
+    # One field needs an admin: the service account the agent searches as,
+    # because binding spends the access an administrator granted that account.
+    "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
+    "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # The directory of people. Everyone gets it; an administrator asking for
+    # service accounts gets those too, and nobody else does.
+    "api/routes/entity.py::get_users": "admin widens the directory",
+    # Every account joins the All team when it is created, service accounts
+    # included, so these answer a member a shorter member list than an
+    # administrator. An administrator also sees every team in the org; a member
+    # sees, and can read, only the teams they belong to.
+    "api/routes/entity.py::get_team": "admin widens the member list",
+    "api/routes/entity.py::get_user_teams": "admin widens the member list",
+    "api/routes/entity.py::get_team_users": "admin widens the member list",
+    # A team's OWNER may change or delete it, admin or not; an administrator may
+    # also change or delete any team in their org.
+    "api/routes/entity.py::update_team": "owner or admin",
+    "api/routes/entity.py::delete_team": "owner or admin",
 }
 
 
@@ -365,3 +386,38 @@ TOOL_RULES_HANDLERS = frozenset({
     "api/routes/toolsets.py::get_toolset_tool_rules",
     "api/routes/toolsets.py::update_toolset_tool_rules",
 })
+
+
+@dataclass(frozen=True)
+class SwitchedOff:
+    """A part of the product a stack may run without. While it is off, its
+    routes give this answer before any admin check, so the live suite skips
+    them on that stack instead of failing."""
+
+    path_prefix: str
+    status: int
+    words: str
+    why: str
+
+    def applies(self, route: AdminRoute, status: int, text: str) -> bool:
+        return (
+            route.path.startswith(self.path_prefix)
+            and status == self.status
+            and self.words.lower() in text.lower()
+        )
+
+
+SWITCHED_OFF: tuple[SwitchedOff, ...] = ()
+
+# Rows a downstream build adds (helper/suite_extensions.py). Last, so the
+# extension can build its rows with everything above.
+_extensions = suite_extensions.modules("admin_route_table")
+NODE_ADMIN_ROUTES = suite_extensions.add_rows(
+    NODE_ADMIN_ROUTES, "NODE_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+PYTHON_ADMIN_ROUTES = suite_extensions.add_rows(
+    PYTHON_ADMIN_ROUTES, "PYTHON_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+ADMIN_BODIES = suite_extensions.add_items(ADMIN_BODIES, "ADMIN_BODIES", _extensions)
+PYTHON_CONDITIONAL_ADMIN = suite_extensions.add_items(
+    PYTHON_CONDITIONAL_ADMIN, "PYTHON_CONDITIONAL_ADMIN", _extensions)
+SWITCHED_OFF = suite_extensions.add_rows(
+    SWITCHED_OFF, "SWITCHED_OFF", _extensions, key=lambda rule: rule.path_prefix)

@@ -16,8 +16,8 @@ import {
   personalConnectorHref,
 } from '../utils/admin-access-helpers';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -149,7 +149,7 @@ export function ConnectorDetailsLayout({
         height: '100%',
         paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
         paddingBottom: 64,
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >

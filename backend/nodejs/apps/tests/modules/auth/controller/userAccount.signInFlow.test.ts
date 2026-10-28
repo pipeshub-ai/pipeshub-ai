@@ -27,6 +27,7 @@ import { SessionService } from '../../../../src/modules/auth/services/session.se
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -903,18 +904,18 @@ describe('UserAccountController sign-in flow', () => {
       return authenticate(token, { method: 'password', credentials: { password } });
     }
 
-    it('locks after the fifth wrong password, warns the owner, and then refuses even the right password', async () => {
+    it('locks on the last allowed wrong password, warns the owner, and then refuses even the right password', async () => {
       await givePassword(alice);
 
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt < MAX_WRONG_CREDENTIAL_ATTEMPTS; attempt++) {
         const { error } = await tryPassword('wrong-guess');
         expect(error, `attempt ${attempt}`).to.be.instanceOf(BadRequestError);
         expect(error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
       expect(mailService.sendMail.called).to.be.false;
 
-      const fifth = await tryPassword('wrong-guess');
-      expect(fifth.error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      const last = await tryPassword('wrong-guess');
+      expect(last.error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       expect(credentialsByUser[alice._id]?.isBlocked).to.be.true;
       await settle();
       expect(mailService.sendMail.calledOnce).to.be.true;
@@ -935,7 +936,7 @@ describe('UserAccountController sign-in flow', () => {
       await givePassword(alice);
       Object.assign(credentialsByUser[alice._id] ?? {}, {
         isBlocked: true,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         blockExpiresAt: new Date(Date.now() - 1000),
       });
 
@@ -1214,7 +1215,7 @@ describe('UserAccountController sign-in flow', () => {
     function lock(user: DirectoryUser) {
       Object.assign(credentialsByUser[user._id] ?? {}, {
         isBlocked: true,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         blockExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
       });
     }
@@ -1222,8 +1223,8 @@ describe('UserAccountController sign-in flow', () => {
     it('refuses the attempt that locks an account like an unknown email, even when the lock email fails to send', async () => {
       await givePassword(alice);
       await giveOtp(mallory, '482913');
-      Object.assign(credentialsByUser[alice._id] ?? {}, { wrongCredentialCount: 4 });
-      Object.assign(credentialsByUser[mallory._id] ?? {}, { wrongCredentialCount: 4 });
+      Object.assign(credentialsByUser[alice._id] ?? {}, { wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1 });
+      Object.assign(credentialsByUser[mallory._id] ?? {}, { wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1 });
       mailService.sendMail.rejects(new Error('mail service unreachable'));
 
       const lockingPassword = await signIn(alice.email, { method: 'password', credentials: { password: 'wrong-guess' } }, [['password']]);

@@ -23,6 +23,19 @@ def mock_redis_cls():
         yield mock_cls
 
 
+class TestRespProtocol:
+    """redis-py 6+ defaults to RESP3, which returns FT.SEARCH / FT.INFO /
+    XREAD replies as maps. The vector store and streams code parse the RESP2
+    arrays, so every client the provider builds must ask for protocol 2."""
+
+    @pytest.mark.parametrize("blocking", [False, True])
+    def test_the_real_client_is_built_for_resp2(self, blocking: bool) -> None:
+        client = StandaloneRedisProvider(_config()).create_client(
+            ClientOptions(blocking=blocking)
+        )
+        assert client.connection_pool.connection_kwargs["protocol"] == 2
+
+
 class TestCreateClient:
     def test_create_client_returns_fresh_instance_each_time(self, mock_redis_cls):
         provider = StandaloneRedisProvider(_config())

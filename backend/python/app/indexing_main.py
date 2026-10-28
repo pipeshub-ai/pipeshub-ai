@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from functools import partial
@@ -22,8 +23,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.containers.indexing import initialize_container
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
+from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
+from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
@@ -40,7 +45,11 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
-from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.record_republish import (
+    is_parked_duplicate,
+    record_event,
+    republish_eligible,
+)
 from app.modules.indexing.recovery_budget import (
     ExhaustedRecordSink,
     record_handback,
@@ -61,7 +70,7 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
-from app.services.graph_db.common.utils import RESTORED_AT_FIELD
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.backpressure import (
@@ -84,6 +93,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
@@ -712,7 +722,23 @@ async def recover_in_progress_records(
             )
         except Exception as exc:
             logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
-        total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
+        try:
+            total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
+        except Exception as exc:
+            logger.warning(f"Pipeline stage sweep skipped this pass: {exc}")
+        total_records += await _sweep_retired_revisions(
+            app_container=app_container,
+            graph_provider=graph_provider,
+            logger=logger,
+            lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+            concurrency_manager=concurrency_manager,
+        )
+        total_records += await _sweep_stored_records(
+            app_container=app_container,
+            graph_provider=graph_provider,
+            logger=logger,
+            lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+        )
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -864,6 +890,159 @@ async def _sweep_pipeline_stages(
             report.republished, report.reclaimed, report.scanned,
         )
     return report.republished + report.reclaimed
+
+# Pages of virtualRecordToDocIdMapping one recovery tick retires revisions over.
+# Nothing here is urgent (the grace alone is a day), so a pass is spread over
+# many ticks; the cursor carries it forward and restarts at the top at the end.
+RETENTION_MAX_PAGES_PER_TICK = 4
+_retention_cursor: str | None = None
+
+
+async def _sweep_retired_revisions(
+    *,
+    app_container: IndexingAppContainer,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    lease_held: Callable[[], bool],
+    concurrency_manager: IDistributedLeaseManager | None = None,
+) -> int:
+    """Retire artifact sets and stage states of revisions nothing reads any more.
+
+    Under the recovery lease: stops at the next page or delete once it is lost,
+    leaving the cursor on the page it had not finished. Each virtual record is
+    retired under its holders' record leases, which a re-index holds.
+    """
+    global _retention_cursor  # noqa: PLW0603 - the cursor is per process by design
+
+    grace_seconds = messaging_env.revision_retention_grace_seconds
+    if grace_seconds <= 0:
+        return 0
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+    except Exception as exc:
+        logger.warning("Blob storage unavailable for revision retention: %s", exc)
+        return 0
+    sweep = RevisionRetentionSweep(
+        graph_provider,
+        NodeArtifactStore(blob_storage, logger),
+        logger,
+        grace_ms=int(grace_seconds * 1000),
+        leases=concurrency_manager,
+    )
+    total = RetentionReport()
+    budget = messaging_env.revision_retention_tick_budget_seconds
+    deadline = time.monotonic() + budget if budget > 0 else None
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
+    for _ in range(RETENTION_MAX_PAGES_PER_TICK):
+        if not lease_held() or (deadline is not None and time.monotonic() >= deadline):
+            break
+        try:
+            next_key, report = await sweep.run_page(
+                _retention_cursor, still_leader=lease_held, deadline=deadline
+            )
+        except Exception as exc:
+            logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
+            break
+        total.add(report)
+        if report.interrupted:
+            break
+        _retention_cursor = next_key
+        if next_key is None or report.cut_short:
+            break
+        # A pause can last ORPHAN_SCAN_MAX_PAUSE_SECONDS; do not sleep through the deadline.
+        if deadline is not None and deadline - time.monotonic() <= ORPHAN_SCAN_MAX_PAUSE_SECONDS:
+            break
+        await pacer.pause()
+    if total.cut_short:
+        logger.info(
+            "Revision retention stopped early this pass (time budget or failures in a row); "
+            "the next pass goes on from there"
+        )
+    if total.removed or total.failed:
+        logger.info(
+            "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
+            "%d virtual record(s) left whole for the trash, %d left for the next pass while a record "
+            "was busy, %d failure(s), of %d scanned",
+            total.revisions_deleted, total.stage_states_deleted, total.revisions_kept,
+            total.skipped_trashed, total.skipped_busy, total.failed, total.scanned,
+        )
+    return total.removed
+
+
+_stored_retention_cursor: str | None = None
+_stored_stray_cursor: str | None = None
+
+
+async def _sweep_stored_records(
+    *,
+    app_container: IndexingAppContainer,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    lease_held: Callable[[], bool],
+) -> int:
+    """Purge the documents stored writes replaced and the strays nothing names (see ``stored_retention``).
+
+    Runs whether the flags are on or off, and regardless of revision retention. Pauses while the
+    membership result is stale or lists a member that does not follow the stored-write protocol.
+    """
+    global _stored_retention_cursor, _stored_stray_cursor  # noqa: PLW0603 - the cursors are per process by design
+
+    from app.modules.artifacts.stored_retention import (
+        StoredRecordRetention,
+        StoredRetentionReport,
+    )
+    from app.services.messaging.membership import MembershipVerdict, reader_for
+
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+    except Exception as exc:
+        logger.warning("Blob storage unavailable for stored-record retention: %s", exc)
+        return 0
+    reader = reader_for(app_container.config_service())
+
+    async def membership() -> MembershipVerdict:
+        return await reader.verdict() if reader is not None else MembershipVerdict(False, (), "stale")
+
+    sweep = StoredRecordRetention(graph_provider, blob_storage, logger, membership=membership)
+    total = StoredRetentionReport()
+    for _ in range(RETENTION_MAX_PAGES_PER_TICK):
+        if not lease_held():
+            break
+        try:
+            next_key, report = await sweep.run_page(_stored_retention_cursor, still_leader=lease_held)
+        except Exception as exc:
+            logger.warning("Stored-record retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
+            break
+        total.add(report)
+        if report.interrupted or report.paused:
+            break
+        _stored_retention_cursor = next_key
+        if next_key is None:
+            break
+    if not total.paused and not total.interrupted and lease_held():
+        try:
+            _stored_stray_cursor, strays = await sweep.run_strays(_stored_stray_cursor, still_leader=lease_held)
+            total.add(strays)
+        except Exception as exc:
+            logger.warning("Stored-record stray pass skipped this tick: %s: %s", type(exc).__name__, exc)
+    if total.paused:
+        logger.warning(
+            "Stored-record retention paused: an indexing member does not follow the stored-write protocol, "
+            "or the membership check is not available",
+        )
+    if total.purged or total.strays_purged or total.failed:
+        logger.info(
+            "Stored-record retention: %d replaced document(s) and %d stray(s) purged, %d marked, %d held for "
+            "want of a retire route, %d mapping(s) left for a recent older-writer write, %d failure(s), of %d scanned",
+            total.purged, total.strays_purged, total.marked, total.held_no_fence, total.fingerprints,
+            total.failed, total.scanned,
+        )
+    return total.purged + total.strays_purged
+
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
@@ -1258,8 +1437,12 @@ async def _republish_stranded_records(
                 )
                 connector_active[connector_id] = None
             else:
+                # A connector or knowledge base being deleted owns its records' fate: a
+                # re-sent event would index content the delete is about to remove.
                 connector_active[connector_id] = bool(
-                    instance and instance.get("isActive", False)
+                    instance
+                    and instance.get("isActive", False)
+                    and instance.get("status") != APP_STATUS_DELETING
                 )
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
@@ -1445,16 +1628,13 @@ async def _republish_stranded_records(
                     continue
                 # Uploads are otherwise left alone: a new one waits on its file
                 # reaching storage. A restored file's content is already there,
-                # and its restore was the only thing that would have queued it.
-                restored_upload = (
-                    status_value == ProgressStatus.NOT_STARTED.value
-                    and bool(record.get(RESTORED_AT_FIELD))
-                    and is_live_record(record)
-                )
+                # and its restore was the only thing that would have queued it;
+                # so is a pushed record's (see republish_eligible).
+                eligible, restored_upload = republish_eligible(record, status_value)
                 if (
                     not record_key
                     or not connector_id
-                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
+                    or not eligible
                     # A stub for an ancestor that was never synced: nothing to
                     # index, and the connector refuses to stream it.
                     or record.get("isPlaceholder")
@@ -1627,11 +1807,95 @@ async def run_stale_recovery_loop(
         )
         await asyncio.sleep(startup_grace)
 
-    while True:
-        await recover_in_progress_records(app_container, graph_provider)
-        await asyncio.sleep(
-            max(1.0, messaging_env.stale_recovery_interval_seconds)
+    # On its own timer, so a slow lap or a paused sweep never makes the published result stale.
+    membership_task = spawn_detached(run_membership_publisher(app_container))
+    try:
+        while True:
+            await recover_in_progress_records(app_container, graph_provider)
+            await asyncio.sleep(
+                max(1.0, messaging_env.stale_recovery_interval_seconds)
+            )
+    finally:
+        membership_task.cancel()
+        await asyncio.gather(membership_task, return_exceptions=True)
+
+
+async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
+    """Publish which members of this service's consumer groups follow the stored-write protocol.
+
+    The check runs on its own 30 s timer, apart from the recovery lap and every sweep, under the
+    cluster-wide ``artifact-membership`` lease (one checker at a time); each writer has its own
+    key, so a briefly doubled leader or an ex-leader cannot hide a finding.
+    """
+    from app.services.messaging import membership as membership_module
+    from app.services.messaging.config import MessageBrokerType
+    from app.services.redis.config import RedisConnectionConfig
+    from app.services.redis.connection_provider_factory import get_redis_provider
+
+    logger = app_container.logger()
+    config_service = app_container.config_service()
+    broker_type = get_message_broker_type()
+    if broker_type == MessageBrokerType.POSTGRES:
+        # Its consumers register no group, so there is nothing to check. Nothing is published, which
+        # is the "stale" result: artifact readers stay on the stored record and retention stays paused.
+        logger.info(
+            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record",
+            broker_type.value,
         )
+        return
+    owner = f"membership:{uuid4().hex[:12]}"
+    lease_seconds = max(90.0, 3 * membership_module.CHECK_PERIOD_SECONDS)
+
+    def manager() -> Any:  # noqa: ANN401
+        consumers = getattr(app_container, "kafka_consumers", [])
+        return getattr(consumers[0][1], "concurrency_manager", None) if consumers else None
+
+    async def is_leader() -> bool:
+        leases = manager()
+        if leases is None:
+            return True
+        if await leases.renew("artifact-membership", owner, lease_seconds):
+            return True
+        return bool(await leases.try_acquire("artifact-membership", owner, 1, lease_seconds))
+
+    async def check(groups: dict[str, list[str]]) -> list[str]:
+        if broker_type == MessageBrokerType.KAFKA:
+            from aiokafka.admin import AIOKafkaAdminClient
+
+            from app.services.messaging.kafka.config.kafka_config import (
+                kafka_security_kwargs,
+            )
+
+            cfg = await MessagingUtils.create_producer_config_from_service(config_service, client_id="membership_check")
+
+            def factory() -> Any:  # noqa: ANN401
+                return AIOKafkaAdminClient(
+                    bootstrap_servers=",".join(cfg.bootstrap_servers),
+                    client_id=f"{cfg.client_id}-admin",
+                    **kafka_security_kwargs(ssl_enabled=cfg.ssl, sasl=cfg.sasl),
+                )
+
+            return await membership_module.kafka_untagged(factory, list(groups))
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        provider = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config))
+        redis = provider.get_client()
+        streams: dict[str, list[str]] = {}
+        for group, topics in groups.items():
+            found = set(topics)
+            for topic in topics:
+                async for key in redis.scan_iter(match=f"{topic}.*"):
+                    found.add(key.decode() if isinstance(key, bytes) else str(key))
+            streams[group] = sorted(found)
+        return await membership_module.redis_untagged(redis, streams)
+
+    publisher = membership_module.MembershipPublisher(
+        logger,
+        check,
+        lambda key, entry, ttl: membership_module.publish_entry(config_service, key, entry, ttl),
+        holder=owner,
+        is_leader=is_leader,
+    )
+    await publisher.run()
 
 
 class _Closable(Protocol):
@@ -1714,6 +1978,12 @@ def _indexing_worker_count() -> int:
     return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
 
 
+def _distributed_leases_wanted() -> bool:
+    """On PostgreSQL state the leases are rows in the database, so they are always kept: a stage and a re-index of one record
+    exclude each other (``record:<id>``) whatever the capacity switch says."""
+    return messaging_env.distributed_concurrency_enabled or uses_pg_state()
+
+
 async def _start_stages_when_topics_exist(
     admin: IMessageAdmin,
     topics: list[str],
@@ -1764,16 +2034,8 @@ async def start_kafka_consumers(
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
 
-        if messaging_env.distributed_concurrency_enabled:
-            concurrency_manager = DistributedConcurrencyManager(
-                logger,
-                redis_config,
-                key_prefix=messaging_env.concurrency_key_prefix,
-                operation_timeout_seconds=(
-                    messaging_env.concurrency_redis_timeout_seconds
-                ),
-                max_connections=messaging_env.concurrency_redis_max_connections,
-            )
+        if _distributed_leases_wanted():
+            concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
             # Fails the startup, like the RetryManager ping above: Redis is a
             # hard requirement for this service on either broker, so degrading
             # here would only mask a Redis that the line above already proved
@@ -1846,6 +2108,7 @@ async def start_kafka_consumers(
         pipeline_runtime = await _resolve_pipeline_runtime(app_container)
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
+        record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer
@@ -1916,7 +2179,7 @@ async def start_kafka_consumers(
             setattr(
                 app_container,
                 "stage_startup_task",
-                asyncio.create_task(
+                spawn_detached(
                     _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
                 ),
             )
@@ -1986,6 +2249,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container
     logger = app.container.logger()
     logger.info("🚀 Starting application")
+
+    await configure_envelope(app_container.config_service())
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -2089,19 +2354,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             worker_loop,
         )
     else:
-        app.state.recovery_task = asyncio.create_task(
+        app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
         )
-        app.state.backfill_task = asyncio.create_task(
+        app.state.backfill_task = spawn_detached(
             run_vector_membership_backfill_loop(app_container, graph_provider)
         )
-        app.state.entity_index_task = asyncio.create_task(
+        app.state.entity_index_task = spawn_detached(
             run_entity_index_rebuild_loop(app_container, graph_provider)
         )
-        app.state.label_repair_task = asyncio.create_task(
+        app.state.label_repair_task = spawn_detached(
             run_record_label_repair_loop(app_container, graph_provider)
         )
-        app.state.named_entity_sweep_task = asyncio.create_task(
+        app.state.named_entity_sweep_task = spawn_detached(
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
 
@@ -2114,7 +2379,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             completion_loop,
         )
     else:
-        app.state.named_entity_completion_task = asyncio.create_task(
+        app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
         )
 
@@ -2314,8 +2579,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
     try:
-        from app.modules.parsers.parse_pool import shutdown_parse_pool
-        if shutdown_parse_pool():
+        from app.modules.parsers import parse_pool
+        # Cleared first, or the next submit in this process starts a new pool.
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
             logger.info("✅ Parse worker pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")

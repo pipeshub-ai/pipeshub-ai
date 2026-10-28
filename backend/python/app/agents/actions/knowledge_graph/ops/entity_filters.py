@@ -18,18 +18,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.scope import (
-    apps_usable_whole,
-    derive_scope,
-)
+from app.agents.actions.knowledge_graph.ops.scope import derive_scope
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     TAXONOMY_ENTITY_TYPES,
     EntityAccessContext,
+    EntityAccessError,
     get_entity_access_context,
 )
+from app.modules.retrieval.selection_scope import SelectionTooLargeError
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
@@ -55,21 +54,40 @@ ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
 RECORD_SCOPED_ENTITY_CACHE_KEY = "_kg_record_scoped_entities"
 ENTITY_INDEX_CACHE_KEY = "_kg_entity_index"
 
+# Appended to an empty result when the turn is limited, so "nothing here" is
+# not read as "nothing anywhere".
+LIMITED_SCOPE_NOTE = (
+    "Only the sources this conversation is limited to were searched; "
+    "it may exist outside them."
+)
+
+
+def limited_scope_note(context: EntityAccessContext) -> str:
+    """``LIMITED_SCOPE_NOTE`` when ``context`` is limited to part of its apps."""
+    return LIMITED_SCOPE_NOTE if context.row_scopes else ""
+
 
 async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
     """The entity access context for this run's scope, honouring
-    ``strictScope`` and switched-off demo apps as content search does."""
+    ``strictScope``, the turn's selection or bound, and switched-off demo apps
+    as content search does. Every app the turn touches is a source; a
+    selection or bound that covers one only in part limits its records."""
     scope = derive_scope(state)
     filters = state.get("filters") or {}
-    return await get_entity_access_context(
-        state,
-        state.get("graph_provider"),
-        org_id=state.get("org_id", ""),
-        user_id=state.get("user_id", ""),
-        source_ids=apps_usable_whole(state, [*scope.app_ids, *scope.kb_ids]),
-        strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
-        exclude_app_ids=excluded_app_ids(state),
-    )
+    try:
+        return await get_entity_access_context(
+            state,
+            state.get("graph_provider"),
+            org_id=state.get("org_id", ""),
+            user_id=state.get("user_id", ""),
+            source_ids=[*scope.app_ids, *scope.kb_ids],
+            strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
+            exclude_app_ids=excluded_app_ids(state),
+            filters=filters,
+        )
+    except SelectionTooLargeError as exc:
+        # Fail closed: a limit too large to resolve never widens to its whole apps.
+        raise EntityAccessError("The conversation's limit is too large to check") from exc
 
 
 def is_filterable_entity(entity_type: str | None, entity_name: str | None) -> bool:
@@ -134,6 +152,8 @@ __all__ = [
     "SEARCHABLE_ENTITY_TYPES",
     "TAXONOMY_ENTITY_TYPES",
     "is_filterable_entity",
+    "LIMITED_SCOPE_NOTE",
+    "limited_scope_note",
     "load_entity_access_context",
     "merge_filter_groups",
     "remember_entities",

@@ -245,6 +245,8 @@ class SyncFilterKey(str, Enum):
     REPO_IDS = "repo_ids"
     # Code repositories: gitignore-style paths whose files get no record
     EXCLUDE_PATHS = "exclude_paths"
+    # Code repositories: the branch whose files are synced; unset = default branch
+    BRANCH = "branch"
 
     # Content filters
     CONTENT_STATUS = "content_status"
@@ -260,6 +262,16 @@ class SyncFilterKey(str, Enum):
     CREATED_BY = "created_by"
     USERS = "users"
     GROUPS = "groups"
+
+    # SQL Connectors
+    TABLES = "tables"
+    SCHEMAS = "schemas"
+    DATABASES = "databases"
+    VIEWS = "views"
+    STAGES = "stages"
+    FILES = "files"
+    MAX_ROWS_PER_TABLE = "max_rows_per_table"
+    DERIVE_CONSTRAINTS = "derive_constraints"
 
 
 class IndexingFilterKey(str, Enum):

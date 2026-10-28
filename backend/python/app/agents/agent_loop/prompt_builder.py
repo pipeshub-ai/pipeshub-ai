@@ -83,6 +83,17 @@ _PROMOTED_EXTRA_SECTIONS = ("preloaded_skills", "preloaded_tools")
 _CURRENT_REQUEST_ANCHOR_CHARS = 2_000
 
 
+# An agent's persona sits above these; without saying how the two combine, a
+# persona rule (a reply language, a fixed format) silently won over the
+# project's and the person's question.
+_PROJECT_INSTRUCTIONS_PREAMBLE = (
+    "This chat belongs to a project, and its author set the instructions below for every chat "
+    "in it. Follow them together with any persona and agent instructions above; where the two "
+    "conflict, these take precedence for this chat. Neither replaces the person's current "
+    "request: always answer it."
+)
+
+
 def _quote(tag: str, text: str) -> str:
     """`text` between `<tag>` lines, so a heading or rule inside the person's words can't pass as
     part of this prompt; a literal closing tag in the text is escaped so it can't end the quote."""
@@ -211,7 +222,7 @@ _RESPONSE_FORMAT = """
 ## Response Format
 - State findings directly. Render dates/times as "Mon, Jul 27, 3:45 PM PDT" using the user's time zone.
 - Render tool output as markdown tables or prose — never raw JSON.
-- When a tool result item has a real URL (a Jira issue, a Drive file, a Slack message, ...), render it as `[display name or key](url)`. Include every URL that exists in the data; a block's Citation ID is NOT a URL — see Citation Rules.
+- Link every tool result item with a real URL: by its key alone if it has one (`[PP-421](url)`, `[#1234](url)`) and do not write its title next to it; else by its name. A block's Citation ID is NOT a URL — see Citation Rules.
 - For people fields, format as "Name (email)" when an email address is available.
 - **Multiple items (3+)**: use a markdown table with columns chosen for comparison and action. Include the most relevant fields; omit internal IDs, avatar URLs, and empty fields.
 - **Single item**: present key fields as a clean summary with the item's title as a heading.
@@ -334,7 +345,8 @@ used. Web search results use a different marker instead: `url/Citation ID: https
 - Use a Citation ID ONLY inside `[source](...)` — it is an opaque system token, not a
   URL the user can open. The system replaces `[source](...)` with a numbered citation
   carrying the real link.
-- Cite the block each fact actually came from; use a distinct ID for each distinct claim.
+- Cite the block each fact actually came from, only for what it states; use a distinct ID for
+  each distinct claim.
 - One ID per link, inline right after the key claim it supports. The system numbers them.
   Omit the citation when no Citation ID is available for a fact.
 - Keep prose readable: cite the specific claim it backs, not every clause or sentence in a
@@ -852,7 +864,8 @@ class PipesHubPromptBuilder:
         # its conversation is linked to a project. See `AgentContext.
         # project_instructions`.
         tpl.set("project_instructions", (
-            f"## Project Instructions\n{self._context.project_instructions.strip()}"
+            f"## Project Instructions\n{_PROJECT_INSTRUCTIONS_PREAMBLE}\n\n"
+            f"{self._context.project_instructions.strip()}"
             if self._context.project_instructions and self._context.project_instructions.strip()
             else None
         ))

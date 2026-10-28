@@ -1,22 +1,27 @@
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
-import { Org } from '../../user_management/schema/org.schema'
-import { Users } from '../../user_management/schema/users.schema'
+import { getUserRepository } from '../../../libs/repositories/user'
 import {
-  OAuthApp,
-  IOAuthApp,
+  getOAuthAppRepository,
   OAuthAppStatus,
   OAuthGrantType,
-} from '../schema/oauth.app.schema'
+  type OAuthAppDto,
+} from '../../../libs/repositories/oauth-app'
+import { getIdentityPort } from '../../../libs/repositories/identity'
 import { AgentMcpScopes } from '../config/scopes.config'
 import { ScopeValidatorService } from './scope.validator.service'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const CLIENT_SECRET_BYTES = 32
+
+// A refresh token is minted only for offline_access, so without it a device
+// login, refresh_token grant and all, would end with its one-hour access token.
+const DEVICE_APP_SCOPES = [...AgentMcpScopes, OAuthScopeNames.OFFLINE_ACCESS];
 
 /**
  * Ensures the official "PipesHub agent" OAuth app exists so coding agents
@@ -43,11 +48,16 @@ export class FirstPartyDeviceAppService {
    * yet or the agent preset cannot be granted under current MCP_SCOPES.
    */
   async getOrCreate(): Promise<string | null> {
-    const existing = await OAuthApp.findOne({
-      clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
-    })
+    // Discovery and the device endpoint arrive with no session: the server itself runs this as the install's organisation.
+    return inInstallOrg('oauth.first_party_device', () => this.ensure(), null);
+  }
+
+  private async ensure(): Promise<string | null> {
+    const repo = getOAuthAppRepository()
+    const existing = await repo.findByClientId(FIRST_PARTY_DEVICE_CLIENT_ID)
     if (existing) {
-      return existing.clientId
+      await this.addNewPresetScopes(existing);
+      return existing.clientId;
     }
 
     const owner = await this.resolveOwner()
@@ -71,9 +81,7 @@ export class FirstPartyDeviceAppService {
       })
       return app.clientId
     } catch (error) {
-      const winner = await OAuthApp.findOne({
-        clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
-      })
+      const winner = await repo.findByClientId(FIRST_PARTY_DEVICE_CLIENT_ID)
       if (winner) {
         return winner.clientId
       }
@@ -85,9 +93,9 @@ export class FirstPartyDeviceAppService {
     orgId: string,
     createdBy: string,
     allowedScopes: string[],
-  ): Promise<IOAuthApp> {
+  ): Promise<OAuthAppDto> {
     const clientSecret = crypto.randomBytes(CLIENT_SECRET_BYTES).toString('hex')
-    return OAuthApp.create({
+    return getOAuthAppRepository().create({
       clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
       // Public client: device poll uses token_endpoint_auth_method none.
       // Schema still requires a stored secret; it is never used to authenticate.
@@ -97,8 +105,8 @@ export class FirstPartyDeviceAppService {
         'Official coding-agent device login for this instance. Public client; ' +
         'device_code and refresh_token only. Not a third-party app and not ' +
         'created through dynamic client registration.',
-      orgId: new Types.ObjectId(orgId),
-      createdBy: new Types.ObjectId(createdBy),
+      orgId,
+      createdBy,
       redirectUris: [],
       allowedGrantTypes: [OAuthGrantType.DEVICE_CODE, OAuthGrantType.REFRESH_TOKEN],
       allowedScopes,
@@ -108,12 +116,39 @@ export class FirstPartyDeviceAppService {
     })
   }
 
+  /**
+   * The app is created once, so a scope added to the agent preset later never
+   * reaches it on its own and device logins keep minting tokens without it.
+   * Add what the preset grants now; never remove a scope, and leave tokens
+   * already issued alone (the next consent picks the new scopes up).
+   */
+  private async addNewPresetScopes(app: OAuthAppDto): Promise<void> {
+    const held = new Set(app.allowedScopes);
+    const missing = this.resolveScopes().filter((scope) => !held.has(scope));
+    if (missing.length === 0) {
+      return;
+    }
+    try {
+      await getOAuthAppRepository().addAllowedScopes(app._id, missing);
+      this.logger.info('First-party device app gained new preset scopes', {
+        clientId: app.clientId,
+        scopes: missing,
+      });
+    } catch (error) {
+      // Discovery must keep working; the next call retries the update.
+      this.logger.warn('First-party device app scope update failed', {
+        clientId: app.clientId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private resolveScopes(): string[] {
     const mcp = new Set(this.appConfig.mcpScopes || [])
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
-    return AgentMcpScopes.filter((scope) => {
+    return DEVICE_APP_SCOPES.filter((scope) => {
       if (!memberAllowed.has(scope)) {
         return false
       }
@@ -128,24 +163,14 @@ export class FirstPartyDeviceAppService {
     orgId: string
     createdBy: string
   } | null> {
-    const orgs = await Org.find({ isDeleted: { $ne: true } })
-      .sort({ createdAt: 1 })
-      .select('_id')
-      .lean()
-    const org = orgs[0]
-    if (!org) {
+    const orgId = await getIdentityPort().oldestOrgId()
+    if (!orgId) {
       return null
     }
-    const user = await Users.findOne({
-      orgId: org._id,
-      isDeleted: { $ne: true },
-    })
-      .sort({ createdAt: 1 })
-      .select('_id')
-      .lean()
-    if (!user?._id) {
+    const oldestUserId = await getUserRepository().getOldestId(orgId)
+    if (!oldestUserId) {
       return null
     }
-    return { orgId: org._id.toString(), createdBy: user._id.toString() }
+    return { orgId, createdBy: oldestUserId }
   }
 }

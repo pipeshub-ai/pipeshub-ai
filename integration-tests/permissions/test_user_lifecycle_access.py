@@ -53,8 +53,8 @@ logger = logging.getLogger("user-lifecycle-access")
 pytestmark = [pytest.mark.integration, pytest.mark.permissions]
 
 KB_PREFIX = "it-user-lifecycle"
-# authenticateWithPassword locks the account on the fifth wrong password.
-WRONG_ATTEMPTS_TO_LOCK = 5
+# authenticateWithPassword locks the account on the tenth wrong password.
+WRONG_ATTEMPTS_TO_LOCK = 10
 # The session check compares the lock time with the token's iat, which has
 # one-second resolution; see security/test_credential_change_invalidation.py.
 TOKEN_CLOCK_MARGIN_SEC = 3

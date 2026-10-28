@@ -25,6 +25,7 @@ from app.connectors.sources.linear.api_gateway import (
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
     LINEAR_TRANSIENT_RETRIES,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
 from app.connectors.sources.linear.team_access import WORKSPACE_MEMBERS_GROUP_ID
@@ -42,6 +43,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.graphql.response import GraphQLResponse
+from app.sources.client.linear.graphql_op import LinearGraphQLOperations
 
 
 # ===========================================================================
@@ -447,11 +449,20 @@ class TestFetchTeams:
             (EntityType.GROUP, "t-sec", PermissionType.READ),
         ]
 
+    def test_team_queries_keep_members_small(self) -> None:
+        teams = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
+        team_list = LinearGraphQLOperations.get_operation_with_fragments("query", "teamList")
+        assert "members(first: 10)" in teams
+        assert "...TeamFields" in team_list
+        assert "members" not in team_list
+
     @pytest.mark.asyncio
-    async def test_members_beyond_the_first_hundred_are_fetched(self) -> None:
+    async def test_members_beyond_the_first_ten_are_fetched(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.organization_url_key = "test-org"
+        emails = [f"m{i}@x.com" for i in range(25)]
+        inline, rest = emails[:10], emails[10:]
 
         ds = MagicMock()
         ds.teams = AsyncMock(return_value=_mock_gql_response({
@@ -460,8 +471,8 @@ class TestFetchTeams:
                     "id": "t-big", "name": "Everyone", "key": "ALL",
                     "description": "", "private": True, "parent": None,
                     "members": {
-                        "nodes": [{"email": "a@x.com"}],
-                        "pageInfo": {"hasNextPage": True, "endCursor": "m-100"},
+                        "nodes": [{"email": e} for e in inline],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "m-10"},
                     },
                 }],
                 "pageInfo": {"hasNextPage": False},
@@ -470,24 +481,54 @@ class TestFetchTeams:
 
         async def execute_operation(operation, variables) -> GraphQLResponse:
             assert operation == "teamMembers"
-            if variables["after"] == "m-100":
-                nodes, info = [{"email": "b@x.com"}], {"hasNextPage": True, "endCursor": "m-200"}
+            if variables["after"] == "m-10":
+                nodes, info = rest[:10], {"hasNextPage": True, "endCursor": "m-20"}
             else:
-                nodes, info = [{"email": "C@x.com"}], {"hasNextPage": False, "endCursor": None}
-            return _mock_gql_response({"team": {"members": {"nodes": nodes, "pageInfo": info}}})
+                nodes, info = rest[10:], {"hasNextPage": False, "endCursor": None}
+            members = {"nodes": [{"email": e} for e in nodes], "pageInfo": info}
+            return _mock_gql_response({"team": {"members": members}})
 
         ds.execute_operation = AsyncMock(side_effect=execute_operation)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        user_map = {e: _make_app_user(e) for e in ("a@x.com", "b@x.com", "c@x.com")}
-        ugs, _ = await connector._fetch_teams(user_email_map=user_map)
+        ugs, _ = await connector._fetch_teams(user_email_map={e: _make_app_user(e) for e in emails})
 
         assert [c.args for c in ds.execute_operation.await_args_list] == [
-            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-100"}),
-            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-200"}),
+            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-10"}),
+            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-20"}),
         ]
         _, members = ugs[0]
-        assert [m.email for m in members] == ["a@x.com", "b@x.com", "c@x.com"]
+        assert [m.email for m in members] == emails
+
+    @pytest.mark.asyncio
+    async def test_team_with_ten_members_needs_no_member_request(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        emails = [f"m{i}@x.com" for i in range(10)]
+
+        ds = MagicMock()
+        ds.teams = AsyncMock(return_value=_mock_gql_response({
+            "teams": {
+                "nodes": [{
+                    "id": "t-small", "name": "Small", "key": "SML",
+                    "description": "", "private": True, "parent": None,
+                    "members": {
+                        "nodes": [{"email": e} for e in emails],
+                        "pageInfo": {"hasNextPage": False, "endCursor": "m-10"},
+                    },
+                }],
+                "pageInfo": {"hasNextPage": False},
+            }
+        }))
+        ds.execute_operation = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        ugs, _ = await connector._fetch_teams(user_email_map={e: _make_app_user(e) for e in emails})
+
+        ds.execute_operation.assert_not_awaited()
+        _, members = ugs[0]
+        assert [m.email for m in members] == emails
 
     @pytest.mark.asyncio
     async def test_unreadable_member_page_fails_the_team_listing(self) -> None:
@@ -1256,7 +1297,7 @@ class TestSyncProjectsForTeams:
         await connector._sync_projects_for_teams([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_awaited_once_with([(mock_proj, [])])
         connector._project_to_records.assert_awaited_once_with("p1", {"t1"})
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1700000005000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1700000005000
 
     @pytest.mark.asyncio
     async def test_project_shared_by_two_teams_is_read_once(self) -> None:
@@ -1285,7 +1326,7 @@ class TestSyncProjectsForTeams:
         connector = _make_connector()
         connector.sync_filters = None
         connector.notify = AsyncMock()
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000}
         rg = _team_rg()
 
         ds = MagicMock()
@@ -1304,7 +1345,7 @@ class TestSyncProjectsForTeams:
         assert connector._project_to_records.await_count == 2
         connector.data_entities_processor.on_new_records.assert_awaited_once_with(good)
         connector.notify.assert_awaited_once()
-        stored = connector.projects_sync_point.store["projects"]
+        stored = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert stored["last_sync_time"] == 1700000000000
         assert stored["held_runs"] == 1
 
@@ -1313,7 +1354,7 @@ class TestSyncProjectsForTeams:
         connector = _make_connector()
         connector.sync_filters = None
         connector.notify = AsyncMock()
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000, "held_runs": 3}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000, "held_runs": 3}
         rg = _team_rg()
 
         ds = MagicMock()
@@ -1325,7 +1366,7 @@ class TestSyncProjectsForTeams:
 
         await connector._sync_projects_for_teams([(rg, [])])
 
-        stored = connector.projects_sync_point.store["projects"]
+        stored = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert stored["last_sync_time"] > 1700000000000
         assert stored["held_runs"] == 0
 

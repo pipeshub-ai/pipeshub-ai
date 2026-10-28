@@ -560,6 +560,24 @@ async def _walk_hops(
     return too_many_redirects_response(walk.url)
 
 
+_SKIP_REASON_HEADER = "X-Fetch-Skip-Reason"
+# The answers this module makes itself; a site's own response may carry any header.
+_GUARD_STRATEGIES = frozenset({"address_guard", "redirect_guard", "size_guard"})
+# What the log says for each refusal the fetcher makes itself.
+_SKIP_REASONS = {
+    "too_many_redirects": "it redirects in a loop, or more times than the limit",
+    "unsafe_address": "it is on a private or internal address",
+    "max_size_exceeded": "it is larger than the size limit",
+}
+
+
+def refusal_reason(result: FetchResponse) -> str | None:
+    """Why the fetcher refused this URL itself (a loop, a private address, too large), or None
+    when the response is the site's own answer."""
+    reason = result.headers.get(_SKIP_REASON_HEADER) if result.strategy in _GUARD_STRATEGIES else None
+    return _SKIP_REASONS.get(reason, reason) if reason else None
+
+
 def unsafe_address_response(url: str) -> FetchResponse:
     """A finished failure for a URL on a private or internal address: never requested, not retried."""
     return FetchResponse(
@@ -1035,6 +1053,20 @@ async def fetch_url_with_fallback(
 
                 # ---- SUCCESS ----
                 if status < HttpStatusCode.BAD_REQUEST.value:
+                    return result
+
+                # ---- Our own refusal (a redirect loop, a private address, too large) ----
+                # Its status is made up here (508 for a loop): not the site's answer.
+                skip_reason = refusal_reason(result)
+                if skip_reason:
+                    # The refusal is about where the walk ended (a redirect may lead
+                    # a public page to a private address), not where it started.
+                    target = result.final_url or url
+                    logger.warning(
+                        "⚠️ [%s] Skipping %s%s: %s",
+                        strategy_name, target, f" (reached from {url})" if target != url else "",
+                        skip_reason,
+                    )
                     return result
 
                 # ---- 429 / 503: Rate limited or CDN overload -> exponential backoff, same attempt ----

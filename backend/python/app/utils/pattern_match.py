@@ -35,6 +35,11 @@ from app.modules.retrieval.selection_scope import (
     resolve_request_scopes,
     selection_app_ids,
 )
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
@@ -1950,18 +1955,23 @@ def _record_in_time_range(
         except (ValueError, TypeError):
             return None
 
+    # An upload dated only by its upload was written at or before that time:
+    # an after-bound still rules it out, a before-bound cannot.
+    undated = record.get("source_timestamp_origin") == "upload" and upload_times_undated()
+    if undated and time_range.get(DATED_ONLY_TIME_RANGE_KEY):
+        return False
     created = _ts("source_created_at")
     modified = _ts("source_updated_at")
     if "source_created_after_ms" in time_range:
         if created is None or created < time_range["source_created_after_ms"]:
             return False
-    if "source_created_before_ms" in time_range:
+    if "source_created_before_ms" in time_range and not undated:
         if created is None or created > time_range["source_created_before_ms"]:
             return False
     if "source_updated_after_ms" in time_range:
         if modified is None or modified < time_range["source_updated_after_ms"]:
             return False
-    if "source_updated_before_ms" in time_range:
+    if "source_updated_before_ms" in time_range and not undated:
         if modified is None or modified > time_range["source_updated_before_ms"]:
             return False
     return True
@@ -2564,6 +2574,7 @@ def _graph_record_in_time_range(
     adapted = {
         "source_created_at": graph_record.get("sourceCreatedAtTimestamp"),
         "source_updated_at": graph_record.get("sourceLastModifiedTimestamp"),
+        "source_timestamp_origin": graph_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
     }
     return _record_in_time_range(adapted, time_range)
 

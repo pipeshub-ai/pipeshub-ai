@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { MailConsumer } from '../../../../src/modules/mail/services/mail.consumer';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { classifyMailError } from '../../../../src/modules/mail/types/mail-event.types';
 
 describe('MailConsumer - asynchronous mail delivery', () => {
@@ -80,6 +81,19 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     await deliver(payload());
 
     expect(mockSender.getSmtpConfig.firstCall.args[0]).to.equal(payload().orgId);
+  });
+
+  it('delivers inside the event org, so the audit write has an org context, and binds nothing for a job with no org', async () => {
+    const seen: Array<string | undefined> = []
+    mockSender.send.callsFake(async () => {
+      seen.push(getCurrentOrgId())
+      return { status: 'sent' }
+    })
+    await deliver(payload())
+    await deliver(payload({ orgId: undefined }))
+
+    expect(seen).to.deep.equal([payload().orgId, undefined])
+    expect(getCurrentOrgId()).to.equal(undefined)
   });
 
   it('sends once and does not notify when delivery succeeds', async () => {

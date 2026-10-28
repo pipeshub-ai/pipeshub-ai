@@ -174,6 +174,7 @@ export function PDFRenderer({
   // Holds a citation highlight to scroll to once the viewer becomes ready.
   const pendingCitationScroll = useRef<IHighlight | null>(null);
   const navigatingTimeoutRef = useRef<number | null>(null);
+  const pendingScrollTimeoutRef = useRef<number | null>(null);
 
   const clearNavigatingSoon = useCallback(() => {
     if (navigatingTimeoutRef.current !== null) {
@@ -189,6 +190,9 @@ export function PDFRenderer({
     () => () => {
       if (navigatingTimeoutRef.current !== null) {
         window.clearTimeout(navigatingTimeoutRef.current);
+      }
+      if (pendingScrollTimeoutRef.current !== null) {
+        window.clearTimeout(pendingScrollTimeoutRef.current);
       }
     },
     [],
@@ -543,7 +547,11 @@ export function PDFRenderer({
                 if (pendingCitationScroll.current) {
                   const highlight = pendingCitationScroll.current;
                   pendingCitationScroll.current = null;
-                  setTimeout(() => {
+                  if (pendingScrollTimeoutRef.current !== null) {
+                    window.clearTimeout(pendingScrollTimeoutRef.current);
+                  }
+                  pendingScrollTimeoutRef.current = window.setTimeout(() => {
+                    pendingScrollTimeoutRef.current = null;
                     navigateToHighlightSafely(scrollTo, highlight);
                   }, 100);
                 }

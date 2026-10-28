@@ -1,20 +1,12 @@
 /**
- * Shared chats and searches are rendered for the person looking at them, not
- * for the author. Citations, attachments and answer text built from records the
- * viewer cannot read are replaced here, before anything reaches the response:
- * a redacted field carries no original text, only `redacted: true`, a reason and
- * what the viewer needs to ask for access.
- *
- * Answer text is cut into sentences. A sentence cites sources with `[N]`
- * markers, where N is the `chunkIndex` of one of the message's citations
- * (citations.py renumbers them 1..n in order of appearance).
- *   - every citation of the sentence unreadable: the sentence becomes REDACTED_TOKEN;
- *   - mixed: the sentence stays, without the unreadable markers;
- *   - uncited, in an answer that used unreadable sources: the message is flagged
- *     `redaction.partial` so the UI shows "partially based on sources you can't access";
- *   - every citation of the message unreadable: the whole body is dropped.
- * Paraphrase in uncited or mixed sentences can still reflect unreadable content
- * (accepted residual risk).
+ * A shared conversation or search is rendered for the person looking at it: as
+ * the owner sees it, except that every structured reference to a record the
+ * viewer cannot read (citation, attachment, reference data, applied filter,
+ * tool result, search hit) loses its id, name, link and text and shows as a
+ * placeholder. The owner sees everything.
+ * Free text stays as written: the answer, reasoning prose and follow-up
+ * questions (accepted residual risk, as before). Tool steps and their results
+ * are shown as written too; per-record redaction of them is a follow-up.
  */
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -22,907 +14,326 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
 import type { AppConfig } from '../../tokens_manager/config/config';
-import mongoose, { Types } from 'mongoose';
-import Citation, { ICitationMetadata } from '../schema/citation.schema';
-import type { IMessage } from '../types/conversation.interfaces';
-import { Users } from '../../user_management/schema/users.schema';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
-export const REDACTED_TOKEN = '{{redacted}}';
-/** Stored in `sourceRecordIds` for output no record id names; no viewer can read it. */
-export const OPAQUE_SOURCE = '*';
-export const REDACTION_REASON = 'no_access';
-export const ACCESS_REQUESTS_ENDPOINT = '/api/v1/access-requests';
+export const REDACTED = { redacted: true, reason: 'no_access' } as const;
 const ACCESS_CHECK_BATCH = 500;
 
-export interface RequestAccessInfo {
-  recordId: string;
-  /** native: the owner approves in PipesHub. connector: ask at the source. */
-  kind: 'native' | 'connector';
-  /** Collection record: asking is asking for the whole collection (its name is not disclosed). */
-  collection?: boolean;
-  endpoint: string;
+type Viewer = { userId: string; orgId: string };
+
+export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
+  userId: String(userId),
+  orgId: String(orgId),
+});
+
+/** Readable record ids and, apart from them, readable record addresses. */
+export interface Readable {
+  ids: Set<string>;
+  urls: Set<string>;
 }
 
-export interface RedactedItem {
-  redacted: true;
-  reason: typeof REDACTION_REASON;
-  requestAccess: RequestAccessInfo;
-}
-
-export interface MessageRedaction {
-  redacted: boolean;
-  /** The answer used sources the viewer cannot read but still has some text. */
-  partial: boolean;
-  reason: typeof REDACTION_REASON;
-}
-
-type Json = Record<string, unknown>;
-
-/** A citation document as stored in `citations`, populated into a message or a search. */
-interface CitedDoc {
-  _id?: unknown;
-  chunkIndex?: number;
-  metadata?: Partial<ICitationMetadata>;
-}
-
-/** A message citation: a bare reference, or one populated with its document. */
-type CitationEntry = Partial<RedactedItem> & {
-  citationId?: Types.ObjectId | CitedDoc;
-  citationData?: CitedDoc;
-};
-
-/** The message fields redaction reads or rewrites; any other field passes through untouched. */
-export interface ViewerMessage {
-  messageType?: IMessage['messageType'];
-  content?: string;
-  authorUserId?: { toString(): string };
-  // A legacy row can hold a null entry; populate nulls `citationId` when its document is gone.
-  citations?: Array<CitationEntry | null>;
-  attachments?: Array<{ recordId?: string } & Partial<RedactedItem>>;
-  tools?: unknown;
-  reasoning?: unknown;
-  parts?: unknown;
-  referenceData?: unknown;
-  followUpQuestions?: unknown;
-  /** Records the turn drew on; read for the access check, never sent out. */
-  sourceRecordIds?: unknown[];
-  askedBy?: { userId: string; name: string };
-  redaction?: MessageRedaction;
-  detailsHidden?: boolean;
-}
-
-/** A saved search's hit: a bare reference, a populated citation, or its redacted stand-in. */
-type SearchHit = Types.ObjectId | (CitedDoc & Partial<RedactedItem>) | null;
-
-/** The saved-search fields redaction reads or rewrites. */
-export interface ViewerSearch {
-  userId?: Types.ObjectId | string;
-  citationIds?: SearchHit[];
-  records?: Record<string, unknown>;
-  redaction?: { redacted: boolean; reason: typeof REDACTION_REASON };
-}
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
 
 /**
- * POST to Python's per-user record routes, signed as `user` with the
- * conversation-permissions scope. Throws on transport errors and non-2xx.
+ * Record ids and record addresses the viewer may read,
+ * from the query service's `check_access`. Fails closed: an error means none.
  */
-export const callRecordAccess = async <T>(
-  appConfig: AppConfig,
-  user: { userId: string; orgId: string },
-  path: 'access' | 'access-grant',
-  body: Json,
-): Promise<T> => {
-  const token = new AuthTokenService(
-    appConfig.jwtSecret,
-    appConfig.scopedJwtSecret,
-  ).generateScopedToken(
-    {
-      userId: user.userId,
-      orgId: user.orgId,
-      scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
-    },
-    '5m',
-  );
-  const response = await new AIServiceCommand<T>({
-    uri: `${appConfig.aiBackend}/api/v1/chat/records/${path}`,
-    method: HttpMethod.POST,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body,
-    timeoutMs: 15000,
-  }).execute();
-  if (response.statusCode !== 200) {
-    throw new Error(`record ${path} returned ${response.statusCode}`);
-  }
-  return response.data as T;
-};
-
-/** Record ids the viewer may read, from Python's `check_access`. Batched; fails closed. */
 export const readableRecordIds = async (
   appConfig: AppConfig,
-  viewer: { userId: string; orgId: string },
+  viewer: Viewer,
   recordIds: string[],
-): Promise<Set<string>> => {
+  webUrls: string[] = [],
+): Promise<Readable> => {
   const ids = [...new Set(recordIds.filter(Boolean))];
-  const readable = new Set<string>();
+  const urls = [...new Set(webUrls.filter(Boolean))];
+  const readable: Readable = { ids: new Set(), urls: new Set() };
+  if (ids.length === 0 && urls.length === 0) return readable;
   try {
-    for (let i = 0; i < ids.length; i += ACCESS_CHECK_BATCH) {
-      const data = await callRecordAccess<{ accessible?: string[] } | null>(
-        appConfig,
-        viewer,
-        'access',
-        { recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH) },
-      );
-      for (const id of data?.accessible ?? []) readable.add(id);
+    const token = new AuthTokenService(
+      appConfig.jwtSecret,
+      appConfig.scopedJwtSecret,
+    ).generateScopedToken(
+      {
+        userId: viewer.userId,
+        orgId: viewer.orgId,
+        scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
+      },
+      '5m',
+    );
+    for (
+      let i = 0;
+      i < Math.max(ids.length, urls.length);
+      i += ACCESS_CHECK_BATCH
+    ) {
+      const response = await new AIServiceCommand<{
+        accessible?: string[];
+        accessibleUrls?: string[];
+      }>({
+        uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
+        method: HttpMethod.POST,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: {
+          recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH),
+          webUrls: urls.slice(i, i + ACCESS_CHECK_BATCH),
+        },
+        timeoutMs: 15000,
+      }).execute();
+      if (response.statusCode !== 200) {
+        throw new Error(
+          `record access returned ${String(response.statusCode)}`,
+        );
+      }
+      const accessible: unknown = response.data?.accessible ?? [];
+      const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      // Only lists of strings: a string is read per character, String(['id']) is 'id'.
+      if (!isStringList(accessible) || !isStringList(accessibleUrls)) {
+        throw new Error('record access returned a malformed body');
+      }
+      for (const id of accessible) readable.ids.add(id);
+      for (const u of accessibleUrls) readable.urls.add(u);
     }
     return readable;
   } catch (error: unknown) {
-    // Unknown is unreadable: a failed check must never show the author's text.
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return new Set();
+    return { ids: new Set(), urls: new Set() };
   }
 };
 
-/**
- * Which markers are real citations of a message: the number is one of its
- * citations' chunk indexes and, written as a link, the target is that citation's
- * own record URL (or web URL). Citations without a populated document resolve
- * nothing, so their text stays uncited (the message then has no readable source).
- */
-const citationResolver = (
-  citations: Array<CitationEntry | null>,
-): CitationResolver => {
-  const byIndex = new Map<number, CitedDoc>();
-  for (const c of citations) {
-    const doc = citationDoc(c);
-    if (typeof doc?.chunkIndex === 'number') byIndex.set(doc.chunkIndex, doc);
-  }
-  return (n, target) => {
-    const doc = byIndex.get(n);
-    if (!doc) return false;
-    // Only the link form is canonical; a bare `[2]` or `[[2]]` is not trusted as a citation.
-    if (target === undefined) return 'unreadable';
-    const recordId = doc.metadata?.recordId;
-    const web = doc.metadata?.webUrl;
-    const own =
-      (!!recordId && target.includes(`/record/${recordId}/`)) ||
-      (!!web && target.split('#')[0] === web.split('#')[0]);
-    return own ? true : 'unreadable';
-  };
-};
+/** A cited document: populated, or just an id. Only the record id is read. */
+interface CitedDoc {
+  _id?: { toString: () => string };
+  metadata?: { recordId?: string };
+}
+interface CitationEntry {
+  citationId?: CitedDoc | string | null;
+  citationData?: CitedDoc | string | null;
+}
+interface AttachmentEntry {
+  recordId?: string;
+}
+/** An item of `referenceData` or `appliedFilters.*`: a named reference to a record or node. */
+interface RefEntry {
+  id?: string;
+  recordId?: string;
+  name?: string;
+  webUrl?: string;
+  metadata?: { recordId?: string } | Map<string, string>;
+}
+export interface ViewerMessage {
+  citations?: Array<CitationEntry | null>;
+  attachments?: Array<AttachmentEntry | null>;
+  referenceData?: Array<RefEntry | null>;
+  appliedFilters?: object;
+}
+export interface ViewerSearch {
+  userId?: unknown;
+  citationIds?: unknown[];
+  records?: Map<string, string> | Record<string, string>;
+  toObject?: () => ViewerSearch;
+}
 
-/** The populated citation document, whichever way the message was shaped. */
-const citationDoc = (citation: CitationEntry | null): CitedDoc | undefined => {
-  const doc = citation?.citationData ?? citation?.citationId;
-  return isCitationDoc(doc) ? doc : undefined;
-};
-
-const citationRecordId = (citation: CitationEntry | null): string | undefined =>
-  citationDoc(citation)?.metadata?.recordId;
-
-const requestAccessFor = (
-  recordId: string | undefined,
-  metadata: Partial<ICitationMetadata> | undefined,
-  native: boolean,
-): RequestAccessInfo => {
-  const kind =
-    native || metadata?.origin !== 'CONNECTOR' ? 'native' : 'connector';
-  const collection =
-    kind === 'native' && String(metadata?.connector).toUpperCase() === 'KB';
-  return {
-    recordId: recordId ?? '',
-    kind,
-    ...(collection ? { collection } : {}),
-    endpoint: ACCESS_REQUESTS_ENDPOINT,
-  };
-};
-
-const redactedItem = <E extends object>(
-  extra: E,
-  info: RequestAccessInfo,
-): E & RedactedItem => ({
-  ...extra,
-  redacted: true,
-  reason: REDACTION_REASON,
-  requestAccess: info,
+const RESTRICTED = 'Restricted source';
+const restrictedRef = (): Record<string, unknown> => ({
+  ...REDACTED,
+  name: RESTRICTED,
 });
+const FILTER_LISTS = ['apps', 'kb', 'recordGroups', 'records', 'recordsExact'];
 
-/** A citation as stored: `[N]`, `[[N]]`, or a markdown link `[N](url)`. */
-const CITE = /\[{1,2}(\d+)\]{1,2}(?:\(([^)\s]*)\))?/g;
-const LINE_PREFIX = /^(\s*(?:[-*+]|\d+\.|#{1,6}|>)\s+)/;
-/** Only separators between the citations of one group. */
-const GROUP_SEPARATOR = /^[\s,;]*$/;
-/** Punctuation written right after a citation group belongs to its span. */
-const TRAILING_PUNCTUATION = /^[.!?。！？…,;:)"'”’」』]*/;
-
+const refMeta = (e: RefEntry): string | undefined =>
+  e.metadata instanceof Map ? e.metadata.get('recordId') : e.metadata?.recordId;
+const refId = (e: RefEntry): string | undefined =>
+  e.recordId ?? refMeta(e) ?? e.id;
 /**
- * Classifies `[n]` (with link target `target`, when written as a link):
- *   - `true`: the canonical form, `[n](own record or web URL)`, a real citation;
- *   - `'unreadable'`: the number is one of the message's citations but the form is
- *     not canonical (bare `[2]`, `[[2]]`, a foreign or wrong URL). It ends a span
- *     as an UNREADABLE group, so the span is redacted;
- *   - `false`: the number is none of its citations (`arr[9]`): plain text.
- * A marker inside code is always `'unreadable'` when its number resolves.
+ * Shown only if its record is readable. Applied filters name a node by its own
+ * id. Reference data names things by a vendor id, which is never trusted: its
+ * PipesHub `recordId` decides if it has one, else the record(s) at its `webUrl`,
+ * else it is hidden.
  */
-export type CitationResolver = (
-  n: number,
-  target?: string,
-) => boolean | 'unreadable';
-const anyMarker: CitationResolver = (_n, target) =>
-  target === undefined ? 'unreadable' : true;
-
-interface Cite {
-  start: number;
-  end: number;
-  n: number;
-  /** Counts as an unreadable citation whatever the viewer may read. */
-  bad: boolean;
-}
-
-const INLINE_CODE = /`[^`\n]*`/g;
-
-const citesIn = (text: string, resolves: CitationResolver): Cite[] => {
-  const code = [...text.matchAll(INLINE_CODE)].map((m): [number, number] => [
-    m.index,
-    m.index + m[0].length,
-  ]);
-  const cites: Cite[] = [];
-  for (const m of text.matchAll(new RegExp(CITE.source, 'g'))) {
-    const verdict = resolves(Number(m[1]), m[2]);
-    if (verdict === false) continue;
-    const inCode = code.some(([a, b]) => m.index >= a && m.index < b);
-    // `[[2]](url)` and `[2]` are not the canonical `[N](url)`.
-    const canonical = /^\[\d+\]\(/.test(m[0]);
-    cites.push({
-      start: m.index,
-      end: m.index + m[0].length,
-      n: Number(m[1]),
-      bad: verdict === 'unreadable' || inCode || !canonical,
-    });
+const refVisible = (
+  e: RefEntry | null,
+  ok: (id?: string) => boolean,
+  okUrl?: (url?: string) => boolean,
+): boolean => {
+  if (!e) return true;
+  if (okUrl === undefined) {
+    const id = refId(e);
+    if (id !== undefined && id !== '') return ok(id);
+    return (e.name ?? '') === '' && (e.webUrl ?? '') === '';
   }
-  return cites;
+  const recordId = e.recordId ?? refMeta(e) ?? '';
+  if (recordId !== '') return ok(recordId);
+  return (e.webUrl ?? '') !== '' && okUrl(e.webUrl);
+};
+const refIds = (e: RefEntry | null): string[] => {
+  const id = e === null ? undefined : refId(e);
+  return id === undefined || id === '' ? [] : [id];
+};
+const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
+  FILTER_LISTS.flatMap((k) =>
+    Array.isArray((f as Record<string, unknown> | undefined)?.[k])
+      ? [[k, (f as Record<string, RefEntry[]>)[k]] as [string, RefEntry[]]]
+      : [],
+  );
+
+/** The cited document of a message citation: populated, or a bare id to look up. */
+const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
+  const d = c?.citationData ?? c?.citationId;
+  if (!d) return undefined;
+  if (typeof d === 'string') return d;
+  if (d.metadata) return d;
+  const id: { toString: () => string } = d._id ?? d;
+  return id.toString();
 };
 
 /**
- * Fail-closed attribution by citation spans. In a turn that
- * used any source the viewer cannot read, only spans whose group has a readable
- * citation survive. A span is the text from the end of the previous citation
- * group (or the block start) up to and including the next group, plus the
- * punctuation right after it; a group is citations separated only by whitespace,
- * commas or semicolons. A mixed group keeps its text and shows only its readable
- * citations. Everything else, uncited text, all-unreadable groups, is replaced by
- * the redacted notice.
+ * Redacts what `viewer` cannot read in the messages of conversations they do not
+ * own. `ownerOf` gives a message's conversation owner; the owner's own pass through.
  */
-const redactSpans = (
-  text: string,
-  unreadable: Set<number>,
-  resolves: CitationResolver,
-): string => {
-  const isBad = (c: Cite): boolean => c.bad || unreadable.has(c.n);
-  const groups: Cite[][] = [];
-  for (const c of citesIn(text, resolves)) {
-    const last = groups[groups.length - 1];
-    const tail = last?.[last.length - 1];
-    if (last && tail && GROUP_SEPARATOR.test(text.slice(tail.end, c.start))) {
-      last.push(c);
-    } else {
-      groups.push([c]);
-    }
-  }
-  /** The notice for a dropped stretch, keeping the whitespace or list marker that opened its last line. */
-  const notice = (dropped: string): string => {
-    const lastLine = dropped.slice(dropped.lastIndexOf('\n') + 1);
-    const marker = dropped.includes('\n')
-      ? (LINE_PREFIX.exec(lastLine)?.[1] ?? '')
-      : '';
-    const space = /^\s*/.exec(dropped)?.[0] ?? '';
-    return (marker ? `\n${marker}` : space) + REDACTED_TOKEN;
-  };
-  let out = '';
-  let pos = 0;
-  for (const group of groups) {
-    const first = group[0];
-    const final = group[group.length - 1];
-    if (!first || !final) continue;
-    const start = first.start;
-    const groupEnd = final.end;
-    const end =
-      groupEnd +
-      (TRAILING_PUNCTUATION.exec(text.slice(groupEnd))?.[0].length ?? 0);
-    const lead = text.slice(pos, start);
-    if (group.every(isBad)) {
-      out += notice(lead);
-    } else {
-      out += lead;
-      let p = start;
-      for (const c of group) {
-        if (!isBad(c)) out += text.slice(p, c.end);
-        p = c.end;
-      }
-      out += text.slice(groupEnd, end);
-    }
-    pos = end;
-  }
-  // Text after the last group is uncited.
-  const rest = text.slice(pos);
-  return out + (rest.trim() === '' ? rest : notice(rest));
-};
+export const redactMessagesFor = async <M extends ViewerMessage>(
+  appConfig: AppConfig,
+  viewer: Viewer,
+  messages: M[],
+  ownerOf: (message: M) => string | undefined,
+): Promise<M[]> => {
+  const others = messages.filter((m) => ownerOf(m) !== viewer.userId);
+  if (others.length === 0) return messages;
 
-/** Only notices (and the list, quote or heading marks that carried them) are left. */
-const isHidden = (text: string): boolean =>
-  text.trim() !== '' &&
-  text
-    .split('\n')
-    .every(
-      (l) =>
-        /^(\s*([-*+]|\d+\.|#{1,6}|>)\s+)?(\{\{redacted\}\}\s*)+$/.test(l) ||
-        l.trim() === '',
-    );
-
-const isTableRow = (line: string): boolean => line.trimStart().startsWith('|');
-const isSeparatorRow = (line: string): boolean =>
-  /^\s*\|?(\s*:?-{3,}:?\s*\|?)+\s*$/.test(line);
-
-/** A contiguous run of plain lines, a heading, or a list item: spans may reach back across its line breaks. */
-const redactRun = (
-  run: string,
-  unreadable: Set<number>,
-  resolves: CitationResolver,
-): string => {
-  const prefix = LINE_PREFIX.exec(run)?.[1] ?? '';
-  return prefix + redactSpans(run.slice(prefix.length), unreadable, resolves);
-};
-
-/**
- * Each cell is its own block: it keeps only what a readable citation in that cell
- * covers. A table with nothing visible left is one hidden block (the caller merges
- * it), so its rows and columns are not revealed.
- */
-const redactTable = (
-  rows: string[],
-  unreadable: Set<number>,
-  resolves: CitationResolver,
-): string => {
-  const shown = rows
-    .map((row) =>
-      isSeparatorRow(row)
-        ? row
-        : row
-            .split('|')
-            .map((cell) =>
-              cell.trim() === ''
-                ? cell
-                : ` ${redactSpans(cell.trim(), unreadable, resolves)} `,
-            )
-            .join('|'),
-    )
-    .join('\n');
-  const cells = shown
-    .split('\n')
-    .filter((row) => !isSeparatorRow(row))
-    .flatMap((row) => row.split('|'))
-    .map((cell) => cell.trim())
-    .filter(Boolean);
-  return cells.every((cell) => cell === REDACTED_TOKEN)
-    ? REDACTED_TOKEN
-    : shown;
-};
-
-type Unit = {
-  kind: 'blank' | 'heading' | 'run' | 'table' | 'fence';
-  lines: string[];
-};
-
-interface Part {
-  text: string;
-  kind: 'blank' | 'hidden' | 'shown';
-}
-
-const toUnits = (content: string): Unit[] => {
-  const units: Unit[] = [];
-  let fence: string[] | null = null;
-  const push = (kind: Unit['kind'], line: string): void => {
-    const last = units[units.length - 1];
-    if (
-      last?.kind === kind &&
-      (kind === 'run' || kind === 'table' || kind === 'blank')
-    )
-      last.lines.push(line);
-    else units.push({ kind, lines: [line] });
-  };
-  for (const line of content.split('\n')) {
-    const isFence = /^\s*```/.test(line);
-    if (fence) {
-      fence.push(line);
-      if (isFence) {
-        units.push({ kind: 'fence', lines: fence });
-        fence = null;
-      }
-    } else if (isFence) fence = [line];
-    else if (line.trim() === '') push('blank', line);
-    else if (/^\s*#{1,6}\s/.test(line))
-      units.push({ kind: 'heading', lines: [line] });
-    else if (isTableRow(line)) push('table', line);
-    else push('run', line);
-  }
-  if (fence) units.push({ kind: 'fence', lines: fence });
-  return units;
-};
-
-/**
- * Redacts answer text for a viewer who cannot read every source of the turn
- * (`unreadable` is the set of their unreadable citation numbers). Blocks are never
- * crossed: blank lines, headings, table cells and fenced code. Inside one
- * contiguous run of lines a span reaches back across line breaks and list items to
- * the previous citation group. Fenced code is dropped whole: markers inside code
- * never count as citations. A turn the viewer can read in full is returned as is.
- * One function for the viewer response, the model history and the SSE complete
- * frame; tokens only ever stream to the person the turn belongs to.
- */
-export const redactAnswerText = (
-  content: string,
-  unreadable: Set<number>,
-  resolves: CitationResolver = anyMarker,
-): string => {
-  if (unreadable.size === 0) return content;
-  const parts = toUnits(content).map((unit): Part => {
-    if (unit.kind === 'blank')
-      return { text: unit.lines.join('\n'), kind: 'blank' };
-    if (unit.kind === 'fence') return { text: REDACTED_TOKEN, kind: 'hidden' };
-    const text =
-      unit.kind === 'table'
-        ? redactTable(unit.lines, unreadable, resolves)
-        : redactRun(unit.lines.join('\n'), unreadable, resolves);
-    return isHidden(text)
-      ? { text: REDACTED_TOKEN, kind: 'hidden' }
-      : { text, kind: 'shown' };
-  });
-  // Hidden blocks with nothing visible between them become one notice.
-  const out: string[] = [];
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i];
-    if (!part) continue;
-    if (part.kind === 'hidden') {
-      let k = i;
-      while (parts[k + 1]?.kind === 'blank' && parts[k + 2]?.kind === 'hidden')
-        k += 2;
-      out.push(REDACTED_TOKEN);
-      i = k;
-    } else out.push(part.text);
-  }
-  return out
-    .join('\n')
-    .replace(
-      /(\{\{redacted\}\}\s*){2,}/g,
-      (m) => REDACTED_TOKEN + (/\s$/.test(m) ? ' ' : ''),
-    );
-};
-
-/** Every record id a page of messages points at (citations and attachments). */
-export const collectMessageRecordIds = (
-  messages: ViewerMessage[],
-): string[] => {
-  const ids: string[] = [];
-  for (const m of messages) {
+  // Citations stored as bare ids (archives) are resolved to their record here.
+  const bare = new Set<string>();
+  for (const m of others) {
     for (const c of m.citations ?? []) {
-      const id = citationRecordId(c);
-      if (id) ids.push(id);
-    }
-    for (const a of m.attachments ?? []) if (a.recordId) ids.push(a.recordId);
-    for (const id of m.sourceRecordIds ?? []) {
-      if (id !== OPAQUE_SOURCE) ids.push(String(id));
+      const d = citedDoc(c);
+      if (typeof d === 'string') bare.add(d);
     }
   }
-  return ids;
-};
-
-/**
- * Redacts messages for a viewer who is not their author. Besides
- * unreadable sources, tool results, reasoning and the activity transcript are
- * always dropped (`detailsHidden`): tool output can carry record content that no
- * citation lets us verify per viewer.
- */
-export const redactMessagesForViewer = (
-  messages: ViewerMessage[],
-  readable: Set<string>,
-): ViewerMessage[] =>
-  messages.map((message) => {
-    const citations = message.citations ?? [];
-    const attachments = message.attachments ?? [];
-    const isReadable = (id?: string): boolean => !!id && readable.has(id);
-
-    const unreadable = new Set<number>();
-    // Set inside the callbacks below; `as boolean` keeps it from narrowing to `false`.
-    let anyUnreadable = false as boolean;
-    const newCitations = citations.map((c) => {
-      const id = citationRecordId(c);
-      if (isReadable(id)) return c;
-      anyUnreadable = true;
-      const doc = citationDoc(c);
-      if (typeof doc?.chunkIndex === 'number') unreadable.add(doc.chunkIndex);
-      const raw = c?.citationId;
-      return redactedItem(
-        { citationId: isCitationDoc(raw) ? (raw._id ?? raw) : raw },
-        requestAccessFor(id, doc?.metadata, false),
-      );
-    });
-    const newAttachments = attachments.map((a) => {
-      if (isReadable(a.recordId)) return a;
-      anyUnreadable = true;
-      return redactedItem(
-        { recordId: a.recordId },
-        requestAccessFor(a.recordId, undefined, true),
-      );
-    });
-
-    // Records the turn drew on, cited or not. Any the viewer cannot read counts as
-    // an unreadable source; a missing list (older answers) is unknown.
-    const isAnswer = message.messageType === 'bot_response';
-    const sources: string[] | undefined = Array.isArray(message.sourceRecordIds)
-      ? message.sourceRecordIds.map(String)
-      : undefined;
-    const hiddenSources =
-      isAnswer &&
-      !!sources?.some((id) => id === OPAQUE_SOURCE || !readable.has(id));
-    const uncitedUnknown =
-      isAnswer &&
-      citations.length === 0 &&
-      (sources === undefined || hiddenSources);
-
-    const {
-      tools,
-      reasoning,
-      parts,
-      referenceData,
-      followUpQuestions,
-      sourceRecordIds: _internal,
-      ...rest
-    } = message;
-    const hadDetails = [tools, reasoning, parts, referenceData].some(
-      (v) => Array.isArray(v) && v.length > 0,
+  const recordOfCitation = new Map<string, string>();
+  if (bare.size > 0) {
+    const docs = await getConversationRepository().getCitations(
+      [...bare],
+      viewer.orgId,
     );
-    const closed = anyUnreadable || hiddenSources || uncitedUnknown;
-    const base = {
-      ...rest,
-      ...(Array.isArray(followUpQuestions)
-        ? { followUpQuestions: closed ? [] : followUpQuestions }
-        : {}),
-      ...(hadDetails ? { detailsHidden: true } : {}),
-    };
-    if (!closed) return base;
-    // Only an assistant answer is "based on" sources; a question with a hidden
-    // attachment just shows that attachment's request row.
-    if (!isAnswer) {
-      return { ...base, citations: newCitations, attachments: newAttachments };
+    for (const d of docs) {
+      const recordId = (d.metadata as { recordId?: string } | undefined)
+        ?.recordId;
+      if (d._id && recordId !== undefined && recordId !== '')
+        recordOfCitation.set(d._id, recordId);
     }
-
-    // A citation with no populated document cannot be judged: nothing of the answer is shown.
-    const everyCitationUnreadable =
-      uncitedUnknown ||
-      (citations.length > 0 &&
-        (newCitations.every((c) => c?.redacted) ||
-          citations.some((c) => !citationDoc(c))));
-    const redaction: MessageRedaction = {
-      redacted: everyCitationUnreadable,
-      partial: !everyCitationUnreadable,
-      reason: REDACTION_REASON,
-    };
-    return {
-      ...base,
-      content: everyCitationUnreadable
-        ? ''
-        : redactAnswerText(
-            message.content ?? '',
-            // An unreadable source that nothing cites still closes the answer to
-            // the spans a readable citation covers (no marker is numbered -1).
-            unreadable.size === 0 ? new Set([-1]) : unreadable,
-            citationResolver(citations),
-          ),
-      citations: newCitations,
-      attachments: newAttachments,
-      redaction,
-    };
-  });
-
-/** Who a message was generated for: its stamp, else the conversation's initiator. */
-export const messageAuthorId = (
-  message: ViewerMessage,
-  initiatorId: string | undefined,
-): string | undefined => {
-  return message.authorUserId?.toString() ?? initiatorId;
-};
-
-/** The source list is for the access check only; no response carries it, the author's own turns included. */
-const withoutSourceIds = <T extends { sourceRecordIds?: unknown }>(
-  message: T,
-): Omit<T, 'sourceRecordIds'> => {
-  const { sourceRecordIds: _internal, ...rest } = message;
-  return rest;
-};
-
-/**
- * THE choke point for messages leaving for a viewer. Redaction is per turn: a
- * message the viewer authored is theirs, in full, tool results and reasoning
- * included; every other message, the conversation owner's view of someone else's
- * turn included, is checked against the viewer's own access (one batched call)
- * and redacted. Every response, stream frame and model history that carries a
- * shared conversation's messages goes through this.
- */
-export const redactMessagesFor = async (
-  appConfig: AppConfig,
-  messages: ViewerMessage[],
-  initiatorId: string | undefined,
-  viewer: { userId: string; orgId: string },
-): Promise<ViewerMessage[]> => {
-  const isOthers = (m: ViewerMessage): boolean => {
-    const author = messageAuthorId(m, initiatorId);
-    // Callers may hand over an ObjectId where a string is typed.
-    const viewerId: unknown = viewer.userId;
-    // A turn with no known author (no stamp, no initiator) is nobody's: it is treated as someone else's.
-    return author !== String(viewerId);
+  }
+  const recordIdOf = (c: CitationEntry | null): string | undefined => {
+    const d = citedDoc(c);
+    return typeof d === 'string'
+      ? recordOfCitation.get(d)
+      : d?.metadata?.recordId;
   };
-  const others = messages.filter(isOthers);
-  if (others.length === 0) return messages.map(withoutSourceIds);
+
+  // One batched check for every record the viewer is shown a reference to.
   const readable = await readableRecordIds(
     appConfig,
     viewer,
-    collectMessageRecordIds(others),
+    others.flatMap((m) => [
+      ...(m.citations ?? []).map(recordIdOf),
+      ...(m.attachments ?? []).map((a) => a?.recordId),
+      ...(m.referenceData ?? []).flatMap((e) => {
+        const id = e?.recordId ?? (e ? refMeta(e) : undefined);
+        return id === undefined || id === '' ? [] : [id];
+      }),
+      ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
+    ]) as string[],
+    others.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
   );
-  const askers = await askerNames(
-    others.filter((m) => m.messageType === 'user_query'),
-    initiatorId,
-    viewer.orgId,
-  );
+  const ok = (id?: string): boolean => id !== undefined && readable.ids.has(id);
+  const okUrl = (u?: string): boolean =>
+    u !== undefined && readable.urls.has(u);
   return messages.map((m) => {
-    if (!isOthers(m)) return withoutSourceIds(m);
-    const [redacted] = redactMessagesForViewer([m], readable);
-    if (!redacted || m.messageType !== 'user_query') return redacted ?? m;
-    const userId = messageAuthorId(m, initiatorId) ?? '';
-    return { ...redacted, askedBy: { userId, name: askers.get(userId) ?? '' } };
-  });
-};
-
-export const userDisplayName = (user: {
-  fullName?: string;
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-}): string => {
-  const fullName = user.fullName?.trim();
-  if (fullName) return fullName;
-  const parts = [user.firstName, user.lastName]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(' ')
-    .trim();
-  return parts || user.email?.trim() || '';
-};
-
-/** Display names of the users who asked these questions, looked up in the viewer's own org only. */
-const askerNames = async (
-  questions: ViewerMessage[],
-  initiatorId: string | undefined,
-  orgId: string,
-): Promise<Map<string, string>> => {
-  const ids = [
-    ...new Set(
-      questions.map((m) => messageAuthorId(m, initiatorId)).filter(Boolean),
-    ),
-  ] as string[];
-  if (ids.length === 0 || !mongoose.isValidObjectId(orgId)) return new Map();
-  try {
-    const users = await Users.find({
-      orgId: new mongoose.Types.ObjectId(orgId),
-      isDeleted: false,
-      _id: { $in: ids.filter((id) => mongoose.isValidObjectId(id)) },
-    })
-      .select('fullName firstName lastName email')
-      .lean()
-      .exec();
-    return new Map(users.map((u) => [String(u._id), userDisplayName(u)]));
-  } catch (error: unknown) {
-    logger.warn('Could not resolve who asked', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return new Map();
-  }
-};
-
-/** A conversation object `{ initiator, messages, ... }` for the viewer. */
-export const redactConversationFor = async <
-  T extends { initiator?: { toString(): string }; messages?: ViewerMessage[] },
->(
-  appConfig: AppConfig,
-  conversation: T,
-  viewer: { userId: string; orgId: string },
-): Promise<T> => {
-  // No initiator (legacy row): every unstamped turn counts as someone else's and is redacted.
-  const initiator = conversation.initiator?.toString();
-  const messages = await redactMessagesFor(
-    appConfig,
-    conversation.messages ?? [],
-    initiator,
-    viewer,
-  );
-  return messages === conversation.messages
-    ? conversation
-    : { ...conversation, messages };
-};
-
-/**
- * Error frames carry a whole conversation only when every message in it is the
- * receiving user's own. Anyone else's client refetches through the redacted GET.
- */
-export const conversationForAuthorOnly = <
-  T extends { initiator?: { toString(): string }; messages?: ViewerMessage[] },
->(
-  conversation: T,
-  userId: string | undefined,
-): T | undefined => {
-  const initiator = conversation.initiator?.toString();
-  return userId &&
-    initiator &&
-    (conversation.messages ?? []).every(
-      (m) => messageAuthorId(m, initiator) === userId,
-    )
-    ? {
-        ...conversation,
-        messages: ((conversation.messages as Json[] | undefined) ?? []).map(
-          withoutSourceIds,
+    if (ownerOf(m) === viewer.userId) return m;
+    const view: Record<string, unknown> = { ...(m as object) };
+    if (m.citations)
+      view.citations = m.citations.map((c) =>
+        ok(recordIdOf(c)) ? c : { ...REDACTED },
+      );
+    // Dropped, not replaced: the chat UI renders every attachment as a file chip.
+    if (m.attachments)
+      view.attachments = m.attachments.filter((a) => ok(a?.recordId));
+    if (m.referenceData)
+      view.referenceData = m.referenceData.map((e) =>
+        refVisible(e, ok, okUrl) ? e : restrictedRef(),
+      );
+    if (m.appliedFilters)
+      view.appliedFilters = {
+        ...m.appliedFilters,
+        ...Object.fromEntries(
+          filterLists(m.appliedFilters).map(([k, l]) => [
+            k,
+            l.map((e) => (refVisible(e, ok) ? e : restrictedRef())),
+          ]),
         ),
-      }
-    : undefined;
-};
-
-const PLACEHOLDER_TIME = new Date(0).toISOString();
-
-/** A search's stored hits: unreadable citations lose their text, name and URL. */
-export const redactSearchForViewer = (
-  search: ViewerSearch,
-  readable: Set<string>,
-): ViewerSearch => {
-  const citations = search.citationIds ?? [];
-  // Set inside the callback below; `as boolean` keeps it from narrowing to `false`.
-  let changed = false as boolean;
-  const citationIds = citations.map((c): SearchHit => {
-    const doc = isCitationDoc(c) ? c : undefined;
-    const id = doc?.metadata?.recordId;
-    if (id && readable.has(id)) return c;
-    changed = true;
-    // The hit keeps the fields the API documents as always present, with empty
-    // placeholders, so a client that reads them does not break; none carries the source's text or name.
-    return redactedItem(
-      {
-        _id: doc?._id ?? c,
-        content: '',
-        chunkIndex: 0,
-        citationType: '',
-        metadata: {
-          orgId: doc?.metadata?.orgId ?? '',
-          mimeType: '',
-          recordId: id ?? '',
-          recordName: '',
-          origin: '',
-        },
-        createdAt: PLACEHOLDER_TIME,
-        updatedAt: PLACEHOLDER_TIME,
-      },
-      requestAccessFor(id, doc?.metadata, false),
-    );
+      };
+    return view as M;
   });
-  // `records` can name records no hit cites, so it is filtered on its own.
-  const entries = Object.entries(search.records ?? {});
-  const records = Object.fromEntries(
-    entries.filter(([id]) => readable.has(id)),
-  );
-  if (!changed && Object.keys(records).length === entries.length) return search;
-  return {
-    ...search,
-    citationIds,
-    records,
-    redaction: { redacted: true, reason: REDACTION_REASON },
-  };
 };
 
-export const collectSearchRecordIds = (search: ViewerSearch): string[] => [
-  ...(search.citationIds ?? []).flatMap((c) =>
-    isCitationDoc(c) && c.metadata?.recordId ? [c.metadata.recordId] : [],
-  ),
-  ...Object.keys(search.records ?? {}),
-];
-
-const isCitationDoc = (c: unknown): c is CitedDoc =>
-  !!c && typeof c === 'object' && 'metadata' in c;
+const plain = (s: ViewerSearch): ViewerSearch =>
+  s.toObject ? s.toObject() : s;
+// A saved search keys `records` by the record's `_id` or `_key`.
+const keyToRecordId = (key: string): string => key.split('/').pop() ?? key;
+// A hit stored as a bare id carries no text and cannot be checked.
+const isBareId = (h: unknown): boolean =>
+  typeof h === 'string' ||
+  (typeof h === 'object' &&
+    h !== null &&
+    typeof (h as { toHexString?: unknown }).toHexString === 'function');
+const isHit = (h: unknown): boolean => !isBareId(h);
+const hitRecord = (h: unknown): string | undefined =>
+  (h as CitedDoc | null)?.metadata?.recordId;
+const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
+  s.records instanceof Map ? [...s.records] : Object.entries(s.records ?? {});
 
 /**
- * Saved searches for their viewer (by id and in the history list): the author's
- * own come back as they are; a shared one has its hits checked against the
- * viewer's access, populating hits that were stored as bare ids first.
+ * Saved searches of other users shared with the viewer: unreadable hits become
+ * placeholders (a populated hit without a readable record is unreadable; a bare id is dropped) and unreadable entries
+ * leave `records`.
  */
-export const redactSearchesFor = async (
+export const redactSearchesFor = async <S extends ViewerSearch>(
   appConfig: AppConfig,
-  searches: ViewerSearch[],
-  viewer: { userId: string; orgId: string },
-): Promise<ViewerSearch[]> => {
-  const shared = searches.filter((s) => String(s.userId) !== viewer.userId);
-  if (shared.length === 0) return searches;
-
-  const bareIds = shared.flatMap((s) =>
-    (s.citationIds ?? []).filter((c): c is Types.ObjectId => !isCitationDoc(c)),
-  );
-  const docs = bareIds.length
-    ? await Citation.find({
-        _id: { $in: bareIds },
-        'metadata.orgId': viewer.orgId,
-      })
-        .select('-__v')
-        .lean()
-    : [];
-  const byId = new Map<string, CitedDoc>(docs.map((d) => [String(d._id), d]));
-  const withDocs = (s: ViewerSearch): ViewerSearch => ({
-    ...s,
-    // A hit whose document is gone or foreign stays a bare id: unreadable.
-    citationIds: (s.citationIds ?? []).map((c): SearchHit =>
-      isCitationDoc(c) ? c : (byId.get(String(c)) ?? c),
-    ),
-  });
-
-  const hydrated = searches.map((s) =>
-    String(s.userId) === viewer.userId ? s : withDocs(s),
-  );
+  viewer: Viewer,
+  searches: S[],
+): Promise<S[]> => {
+  const isOthers = (s: ViewerSearch): boolean =>
+    String(s.userId) !== viewer.userId;
+  const others = searches.filter(isOthers).map(plain);
+  if (others.length === 0) return searches;
   const readable = await readableRecordIds(
     appConfig,
     viewer,
-    hydrated
-      .filter((s) => String(s.userId) !== viewer.userId)
-      .flatMap(collectSearchRecordIds),
+    others.flatMap((s) => [
+      ...(s.citationIds ?? []).filter(isHit).map(hitRecord),
+      ...recordEntries(s).map(([k]) => keyToRecordId(k)),
+    ]) as string[],
   );
-  return hydrated.map((s) =>
-    String(s.userId) === viewer.userId ? s : redactSearchForViewer(s, readable),
-  );
-};
-
-/**
- * The record ids the viewer was actually sent as redacted sources in these messages: what
- * `redactMessagesForViewer` turns into `redacted` citations and attachments for the turns they
- * did not author. `readable` is the set of ids the viewer may read.
- */
-export const redactedSourceCandidates = (
-  messages: ViewerMessage[],
-  initiatorId: string | undefined,
-  viewerId: string,
-  readable: Set<string>,
-): Set<string> => {
-  const ids = new Set<string>();
-  const others = messages.filter(
-    (m) => messageAuthorId(m, initiatorId) !== viewerId,
-  );
-  for (const m of redactMessagesForViewer(others, readable)) {
-    for (const item of [...(m.citations ?? []), ...(m.attachments ?? [])]) {
-      if (item?.redacted) ids.add(item.requestAccess?.recordId ?? '');
-    }
-  }
-  ids.delete('');
-  return ids;
-};
-
-/** The record ids a viewer was actually sent as redacted hits of a search shared with them. */
-export const redactedSearchCandidates = (
-  search: ViewerSearch,
-  viewerId: string,
-  readable: Set<string>,
-): Set<string> => {
-  const ids = new Set<string>();
-  if (String(search.userId) === viewerId) return ids;
-  for (const hit of redactSearchForViewer(search, readable).citationIds ?? []) {
-    const sent = hit as Partial<RedactedItem> | null;
-    if (sent?.redacted && sent.requestAccess?.recordId)
-      ids.add(sent.requestAccess.recordId);
-  }
-  return ids;
+  return searches.map((s) => {
+    if (!isOthers(s)) return s;
+    const o = plain(s);
+    const view: Record<string, unknown> = {
+      ...o,
+      // The spec types the history's `citationIds` as id strings, so a bare id (it cannot be
+      // checked) is left out; a populated hit the viewer cannot read becomes a placeholder.
+      citationIds: (o.citationIds ?? []).flatMap((h) =>
+        isHit(h)
+          ? [readable.ids.has(hitRecord(h) ?? '') ? h : { ...REDACTED }]
+          : [],
+      ),
+      records: Object.fromEntries(
+        recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
+      ),
+    };
+    return view as S;
+  });
 };

@@ -277,39 +277,43 @@ function parseSSEBuffer(buffer: string): {
   let i = 0;
   let lastCompleteLineIndex = -1;
 
-  while (i < lines.length) {
-    const line = lines[i];
+  // The last split entry is incomplete until another newline arrives.
+  while (i < lines.length - 1) {
+    const rawLine = lines[i];
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     // Empty line marks end of event
-    if (line.trim() === '') {
-      if (currentEvent.event && currentEvent.data) {
+    if (line === '') {
+      if (currentEvent.data) {
         try {
           complete.push({
-            event: currentEvent.event,
+            event: currentEvent.event || 'message',
             data: JSON.parse(currentEvent.data),
           });
-          lastCompleteLineIndex = i;
         } catch (e) {
           console.error('Failed to parse SSE data:', currentEvent.data, e);
         }
-        currentEvent = {};
       }
+      currentEvent = {};
+      lastCompleteLineIndex = i;
       i++;
       continue;
     }
 
-    // Parse event field
-    if (line.startsWith('event: ')) {
-      currentEvent.event = line.substring(7).trim();
+    const colonIndex = line.indexOf(':');
+    const field = colonIndex >= 0 ? line.substring(0, colonIndex) : line;
+    const rawValue = colonIndex >= 0 ? line.substring(colonIndex + 1) : '';
+    const value = rawValue.startsWith(' ') ? rawValue.substring(1) : rawValue;
+
+    if (field === 'event') {
+      currentEvent.event = value;
       i++;
       continue;
     }
 
-    // Parse data field
-    if (line.startsWith('data: ')) {
+    if (field === 'data') {
       // A frame may carry several data lines; the SSE format joins them with a newline.
-      const chunk = line.substring(6).trim();
-      currentEvent.data = currentEvent.data === undefined ? chunk : `${currentEvent.data}\n${chunk}`;
+      currentEvent.data = currentEvent.data === undefined ? value : `${currentEvent.data}\n${value}`;
       i++;
       continue;
     }

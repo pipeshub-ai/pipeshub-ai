@@ -11,6 +11,7 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
 } from '../../../../src/libs/errors/oauth.errors'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ServiceAccountDelegation } from '../../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 
@@ -79,6 +80,24 @@ describe('OAuthAuthMiddleware', () => {
       expect(mockNext.calledOnce).to.be.true
       expect(req.oauth.clientId).to.equal('cid')
       expect(req.oauth.scopes).to.deep.equal(['org:read', 'org:write'])
+    })
+
+    it('runs the handlers after it in the token organisation', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        client_id: 'cid',
+        userId: 'user-1',
+        orgId: 'org-1',
+        scope: 'openid',
+      })
+      let boundInNext: string | undefined
+      const next = sinon.stub().callsFake(() => {
+        boundInNext = getCurrentOrgId()
+      })
+      const req = { headers: { authorization: 'Bearer valid-token' } } as any
+
+      await middleware.authenticate(req, mockRes, next)
+
+      expect(boundInNext).to.equal('org-1')
     })
 
     it('should return 401 when the token carries no scopes', async () => {

@@ -148,7 +148,11 @@
     "tabArchived": "Archivované",
     "archivedEmptyState": "Žádné archivované projekty",
     "archivedEmptyStateHint": "Projekty, které archivujete, se zobrazí zde.",
-    "actionsLabel": "Akce projektu"
+    "actionsLabel": "Akce projektu",
+    "noSearchResults": "Hledání „{{query}}“ neodpovídá žádný projekt",
+    "noSearchResultsHint": "Zkuste jiný název nebo vymažte hledání.",
+    "clearSearch": "Vymazat hledání",
+    "cardActionsLabel": "Akce pro {{name}}"
   },
   "timeGroup": {
     "today": "Dnes",
@@ -432,25 +436,16 @@
     "filterOnlyUnread": "Nepřečtená",
     "filterArchived": "Archivovaná",
     "filterTooltip": "Filtr: {{filter}}",
+    "chatShared": {
+      "title": "Chat s vámi sdílí {{name}}",
+      "titleAgent": "Chat agenta s vámi sdílí {{name}}",
+      "body": "Nyní můžete otevřít „{{chat}}“.",
+      "bodyNoTitle": "Nyní jej můžete otevřít v části „{{place}}“.",
+      "someone": "Kolega"
+    },
     "loadFailed": "Nepodařilo se načíst oznámení",
     "updateFailed": "Oznámení se nepodařilo aktualizovat",
-    "removeFailed": "Oznámení se nepodařilo odebrat",
-    "accessRequest": {
-      "approve": "Schválit",
-      "deny": "Zamítnout",
-      "approved": "Přístup udělen",
-      "denied": "Žádost zamítnuta",
-      "failed": "Rozhodnutí se nepodařilo uložit. Zkuste to prosím znovu.",
-      "approveTitle": "Schválit přístup?",
-      "approveBodyCollection": "Uživatel {{user}} tím získá přístup pro čtení k celé kolekci „{{name}}“.",
-      "approveBodyRecord": "Uživatel {{user}} tím získá přístup pro čtení k tomuto záznamu.",
-      "cancel": "Zrušit",
-      "alreadyDecided": "O této žádosti již bylo rozhodnuto.",
-      "someone": "Někdo",
-      "alreadyApproved": "Již schváleno",
-      "alreadyDeclined": "Již zamítnuto",
-      "forwarded": "Přístup k tomuto záznamu se uděluje v jeho zdrojovém systému."
-    }
+    "removeFailed": "Oznámení se nepodařilo odebrat"
   },
   "action": {
     "find": "Najít",
@@ -551,7 +546,7 @@
     "willBeReindexed": "bude přeindexováno",
     "reindexConfirm": "Přeindexovat {{type}}?",
     "reindexDescription": "Tím se aktualizuje vyhledávací index pro {{type}} a jeho obsah.",
-    "deleteCollectionBody": "'{{name}}' a vše v ní bude smazáno.",
+    "deleteCollectionBody": "'{{name}}' a vše v ní bude trvale smazáno. Bude také odebrána ze všech agentů, kteří ji používají. Tuto akci nelze vrátit zpět.",
     "deleteFolderBody": "'{{name}}' a vše v ní bude z této kolekce smazáno.",
     "deleteFileBody": "'{{name}}' bude z této kolekce smazán."
   },
@@ -779,8 +774,11 @@
       "empty": "Prázdné",
       "paused": "Pozastaveno",
       "needsMultimodalModel": "Vyžaduje multimodální model",
+      "passwordProtected": "Chráněno heslem",
       "skipped": "Přeskočeno",
-      "pending": "Čeká"
+      "pending": "Čeká",
+      "emptyFileZeroBytes": "Prázdný soubor – není co indexovat (0 bajtů)",
+      "emptyNoContent": "Prázdné – nebyl nalezen žádný text k indexování"
     },
     "allRecordsBusy_one": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundu.",
     "allRecordsBusy_few": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
@@ -793,7 +791,9 @@
       "open": "Otevřít",
       "preview": "Náhled",
       "goToParent": "Přejít na nadřazenou složku",
-      "goToNamed": "Přejít do {{name}}"
+      "goToNamed": "Přejít do {{name}}",
+      "moreFor": "Další možnosti pro {{name}}",
+      "select": "Vybrat {{name}}"
     },
     "upload": {
       "title": "Nahrát data",
@@ -826,6 +826,10 @@
     "createDialog": {
       "titlePlaceholder": "např. Vývoj",
       "descriptionPlaceholder": "např. Dokumenty týmu"
+    },
+    "nameRules": {
+      "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
+      "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     }
   },
   "connectorTypes": {
@@ -928,8 +932,6 @@
     "sharedChats": "Sdílené chaty",
     "sharedBy": "Sdílí {{name}}",
     "agentChat": "Chat s agentem",
-    "askedBy": "{{name}} se zeptal(a)",
-    "askedByUnknown": "Zeptal se jiný uživatel",
     "noSharedChats": "Žádné sdílené chaty",
     "yourChats": "Vaše chaty",
     "noChatsFound": "Nebyly nalezeny žádné chaty",
@@ -1060,6 +1062,8 @@
     "stoppedMarker": "Zastaveno",
     "toolCard": {
       "arguments": "Argumenty",
+      "query": "Dotaz",
+      "queryCutOff": "Uložil se jen začátek tohoto dotazu, proto ho nelze zkopírovat.",
       "result": "Výsledek",
       "error": "Chyba",
       "blocked": "Blokováno",
@@ -1377,7 +1381,6 @@
         "connectorsStatusCount_few": "{{count}} připojené",
         "connectorsStatusCount_many": "{{count}} připojeného",
         "connectorsStatusCount_other": "{{count}} připojených",
-        "toolsStatusDefault": "Výchozí",
         "toolsStatusCount_one": "{{count}} povolený",
         "toolsStatusCount_few": "{{count}} povolené",
         "toolsStatusCount_many": "{{count}} povoleného",
@@ -1387,7 +1390,20 @@
         "suggestPlanWork": "Naplánovat část práce",
         "suggestWriteInstructions": "Napsat pokyny projektu",
         "suggestSummariseDocumentPrompt": "Shrň nejdůležitější dokument ze souborů tohoto projektu.",
-        "suggestPlanWorkPrompt": "Pomoz mi naplánovat část práce pro tento projekt. Rozděl ji na konkrétní další kroky."
+        "suggestPlanWorkPrompt": "Pomoz mi naplánovat část práce pro tento projekt. Rozděl ji na konkrétní další kroky.",
+        "visibilityShared": "Sdíleno s: {{members}}",
+        "visibilityPrivateOwner": "Soukromý, pouze pro vlastníka",
+        "toolsStatusNone": "Žádné povolené",
+        "toolsSubtitle": "Chaty v tomto projektu mohou používat jen nástroje, které zde zaškrtnete.",
+        "toolKind": {
+          "read": "Čte data",
+          "write": "Provádí změny",
+          "destructive": "Maže nebo nelze vrátit",
+          "unknown": "Ostatní"
+        },
+        "toolNeedsApproval": "Vyžaduje schválení",
+        "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
+        "indexingStatusLabel": "Indexování: {{status}}"
       },
       "moveDialog": {
         "title": "Přesunout do projektu",
@@ -1398,16 +1414,71 @@
       },
       "deleteDialog": {
         "title": "Smazat tento projekt?",
-        "description": "Tím se projekt odstraní a jeho chaty se od něj odpojí. Samotné chaty se nesmažou.",
+        "description": "Smazání projektu nelze vrátit zpět:",
         "confirm": "Smazat projekt",
         "deleting": "Mazání…",
-        "failed": "Nepodařilo se smazat projekt"
+        "failed": "Nepodařilo se smazat projekt",
+        "filesDeleted": "Soubory nahrané do projektu se trvale smažou.",
+        "membersLoseAccess": "Všichni, se kterými je sdílen, ztratí přístup.",
+        "chatsKept": "Chaty zůstanou, ale už nebudou součástí projektu."
       },
       "roles": {
         "owner": "Vlastník",
         "editor": "Editor",
         "viewer": "Čtenář"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Vlastník",
+          "description": "Vytvořil(a) projekt a spravuje, kdo jej může používat"
+        },
+        "editor": {
+          "label": "Může upravovat",
+          "description": "Měnit název, pokyny, soubory, konektory a nástroje a chatovat v projektu"
+        },
+        "viewer": {
+          "label": "Může zobrazit",
+          "description": "Otevřít projekt a chatovat s jeho soubory a nástroji"
+        }
+      },
+      "unknownMember": "Neznámý člen",
+      "unknownTeam": "Neznámý tým",
+      "allMembersTeam": "Všichni ve vaší organizaci",
+      "ownerCannotChange": "Přístup vlastníka projektu zde nelze změnit.",
+      "sharingSettings": {
+        "saved": "Nastavení sdílení uloženo",
+        "saveFailed": "Nastavení sdílení se nepodařilo uložit",
+        "visibilityLabel": "Kdo může tento projekt najít",
+        "visibilityPrivate": "Pouze lidé, se kterými je sdílen",
+        "visibilityOrg": "Všichni ve vaší organizaci",
+        "visibilityPrivateHint": "Otevřít jej můžete jen vy a lidé nebo týmy níže.",
+        "visibilityOrgHint": "Kdokoli ve vaší organizaci jej může najít a otevřít.",
+        "chatSharingLabel": "Nové chaty v tomto projektu",
+        "chatSharingPrivate": "Soukromé pro toho, kdo je zahájí",
+        "chatSharingMembers": "Sdílené se členy projektu",
+        "chatSharingPrivateHint": "Každý chat zůstane soukromý, dokud jej autor nesdílí.",
+        "chatSharingMembersHint": "Členové vidí nové chaty; autor může chat stále nastavit jako soukromý."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Upravit podrobnosti projektu",
+        "saved": "Podrobnosti projektu uloženy",
+        "saveFailed": "Podrobnosti projektu se nepodařilo uložit"
+      },
+      "editDetails": "Upravit název a popis",
+      "leaveProject": "Opustit projekt",
+      "leaveDialog": {
+        "title": "Opustit {{name}}?",
+        "description": "Ztratíte přístup k tomuto projektu a jeho souborům. Vaše chaty vám zůstanou. Vlastník vás může přidat zpět.",
+        "leaving": "Opouštění…",
+        "left": "Opustili jste projekt",
+        "failed": "Projekt se nepodařilo opustit",
+        "inherited": "Tento projekt nemůžete opustit: přístup máte přes svou organizaci nebo tým. Požádejte vlastníka, aby změnil, s kým je sdílený."
+      },
+      "archiveSuccess": "Projekt archivován",
+      "archivedNoNewChats": "Tento projekt je archivovaný, nelze v něm zahájit nové chaty.",
+      "archivedBanner": "Tento projekt je archivovaný. Chcete-li zahájit nové chaty, zrušte archivaci.",
+      "archivedBannerMember": "Tento projekt je archivovaný, nelze zahájit nové chaty. Požádejte vlastníka o zrušení archivace."
     },
     "scrollAttachmentsLeft": "Posunout přílohy doleva",
     "scrollAttachmentsRight": "Posunout přílohy doprava",
@@ -1486,9 +1557,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "U tohoto agenta není nakonfigurováno",
       "internalSearch": "Interní vyhledávání",
-      "webSearch": "Vyhledávání na webu",
-      "deepResearch": "Hloubkový průzkum",
-      "deepResearchNeedsWebSearch": "Pro hloubkový průzkum zapněte vyhledávání na webu"
+      "webSearch": "Vyhledávání na webu"
     },
     "resizePanels": "Změnit velikost panelů chatu a náhledu",
     "sendMessage": "Odeslat zprávu",
@@ -1556,18 +1625,17 @@
       "downloading": "Stahování artefaktu"
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
-    "redaction": {
-      "partial": "Tato odpověď částečně vychází ze zdrojů, ke kterým nemáte přístup.",
-      "hidden": "Tato odpověď vychází ze zdrojů, ke kterým nemáte přístup.",
-      "sourceLabel": "Zdroj, ke kterému nemáte přístup",
-      "requestAccess": "Požádat o přístup",
-      "requested": "O přístup bylo požádáno",
-      "requestFailed": "Žádost se nepodařilo odeslat. Zkuste to prosím znovu.",
-      "openInSource": "Otevřít ve zdroji",
-      "inlineHidden": "Skryto: nemáte přístup",
-      "alreadyAccessible": "Tento zdroj již můžete otevřít. Obnovte chat.",
-      "detailsHidden": "Podrobnosti, jako jsou výsledky nástrojů a uvažování, jsou pro sdílené diváky skryté.",
-      "collectionLabel": "Požádat o přístup ke kolekci, která obsahuje tento zdroj"
+    "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
+    "removeSelectedSource": "Odebrat {{name}}",
+    "diagramSourceCopied": "Zdroj diagramu zkopírován",
+    "diagramImageCopied": "Obrázek diagramu zkopírován",
+    "diagramImageDownloaded": "Schránka není k dispozici, diagram byl uložen jako PNG",
+    "diagramCopyFailed": "Diagram se nepodařilo zkopírovat",
+    "fitDiagram": "Přizpůsobit obrazovce",
+    "answerMode": {
+      "internalSearch": "Interní vyhledávání",
+      "webSearch": "Vyhledávání na webu",
+      "internalAndWebSearch": "Interní + webové vyhledávání"
     }
   },
   "workspaceMenu": {
@@ -1708,7 +1776,33 @@
         "editError": "Pozvánku se nepodařilo aktualizovat",
         "editTitle": "Upravit pozvánku",
         "update": "Aktualizovat pozvánku",
-        "smtpNotConfiguredTooltip": "SMTP není nakonfigurováno. Před odesíláním pozvánek nastavte e-mail."
+        "smtpNotConfiguredTooltip": "SMTP není nakonfigurováno. Před odesíláním pozvánek nastavte e-mail.",
+        "userCount_one": "{{count}} uživatel",
+        "userCount_few": "{{count}} uživatelé",
+        "userCount_many": "{{count}} uživatele",
+        "userCount_other": "{{count}} uživatelů",
+        "successDescriptionCount_one": "{{count}} uživatel byl pozván",
+        "successDescriptionCount_few": "{{count}} uživatelé byli pozváni",
+        "successDescriptionCount_many": "{{count}} uživatele bylo pozváno",
+        "successDescriptionCount_other": "{{count}} uživatelů bylo pozváno",
+        "alreadyMembersSkipped_one": "{{count}} adresa už patří členovi, proto na ni nebyla odeslána pozvánka.",
+        "alreadyMembersSkipped_few": "{{count}} adresy už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersSkipped_many": "{{count}} adresy už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersSkipped_other": "{{count}} adres už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersTitle": "Už jsou členy – pozvánky nebyly odeslány",
+        "alreadyMembersDescription_one": "Tato adresa už patří aktivnímu členovi.",
+        "alreadyMembersDescription_few": "Všechny adresy už patří aktivním členům.",
+        "alreadyMembersDescription_many": "Všechny adresy už patří aktivním členům.",
+        "alreadyMembersDescription_other": "Všechny adresy už patří aktivním členům.",
+        "importUnsupportedType": "Importovat lze jen soubory .csv, .xlsx a .xls.",
+        "importTooLongSkipped_one": "{{count}} položka delší než 254 znaků byla vynechána.",
+        "importTooLongSkipped_few": "{{count}} položky delší než 254 znaků byly vynechány.",
+        "importTooLongSkipped_many": "{{count}} položky delší než 254 znaků byly vynechány.",
+        "importTooLongSkipped_other": "{{count}} položek delších než 254 znaků bylo vynecháno.",
+        "invalidBlocksSend_one": "{{count}} neplatná adresa je označená červeně. Opravte ji nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_few": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_many": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_other": "{{count}} neplatných adres je označeno červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky."
       },
       "bulk": {
         "resendInvite": "Znovu odeslat pozvánku",
@@ -1852,7 +1946,11 @@
         "viewTeam": "Zobrazit tým",
         "delete": "Smazat",
         "deleteSuccess": "Tým byl smazán",
-        "deleteError": "Tým se nepodařilo smazat"
+        "deleteError": "Tým se nepodařilo smazat",
+        "deleteConfirmTitle": "Smazat tým?",
+        "deleteConfirmMessage": "Tým \"{{name}}\" bude smazán a jeho členové ztratí přístup sdílený jeho prostřednictvím. Tuto akci nelze vrátit.",
+        "deleteConfirmButton": "Smazat tým",
+        "deleting": "Mazání…"
       },
       "create": {
         "title": "Vytvořit tým",
@@ -1871,7 +1969,8 @@
         "successDescription": "Tým \"{{name}}\" byl úspěšně vytvořen",
         "errorGeneric": "Tým se nepodařilo vytvořit",
         "applyToAll": "Použít pro všechny",
-        "memberRoles": "Role členů"
+        "memberRoles": "Role členů",
+        "errorDescription": "Tým se nepodařilo vytvořit. Zkuste to prosím znovu."
       },
       "detail": {
         "nameLabel": "Název týmu",
@@ -2904,7 +3003,8 @@
         "errorFallback": "Konektor se nepodařilo zakázat. Zkuste to prosím znovu.",
         "actions": {
           "removeInstance": "odebrat tuto instanci konektoru",
-          "saveConfig": "uložit změny konfigurace"
+          "saveConfig": "uložit změny konfigurace",
+          "saveAuth": "uložit nové přihlašovací údaje"
         }
       },
       "adminAccessDialog": {
@@ -3020,6 +3120,8 @@
         "statFailedSub": "Chyby (problémy s API / oprávněními)",
         "statUnsupported": "Nepodporované",
         "statUnsupportedSub": "Nelze zpracovat",
+        "statPasswordProtected": "Chráněno heslem",
+        "statPasswordProtectedSub": "Bez hesla nelze přečíst",
         "statInProgressSub": "Stále se indexují",
         "statQueued": "Ve frontě",
         "statQueuedSub": "Čekají na indexování",
@@ -3036,7 +3138,24 @@
         "localWatcherLabel": "MÍSTNÍ SLEDOVÁNÍ",
         "localWatcherStatus": "{{state}} · {{pending}} čeká · {{failed}} selhalo",
         "classification": "Klasifikace",
-        "classificationSkipped": "Přeskočeno",
+        "enrichment": {
+          "title": "Extrakce dat pomocí AI",
+          "description": "Běží na pozadí, jakmile je záznam prohledávatelný. Vyhledávání na něj nečeká.",
+          "classificationHint": "Přidává shrnutí, témata a kategorie",
+          "entities": "Extrakce entit",
+          "entitiesHint": "Hledá osoby, organizace a místa",
+          "progress": "{{completed}} z {{total}}",
+          "waiting": "Čeká",
+          "skipped": "Přeskočeno",
+          "notStarted": "Začne, jakmile budou záznamy prohledávatelné",
+          "inProgress": "Probíhá",
+          "done": "Hotovo",
+          "failedCount_one": "{{count}} selhal",
+          "failedCount_few": "{{count}} selhaly",
+          "failedCount_many": "{{count}} selhalo",
+          "failedCount_other": "{{count}} selhalo",
+          "retry": "Zopakovat"
+        },
         "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
         "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
         "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
@@ -3125,7 +3244,9 @@
           "ready": "Dokončeno",
           "readyTooltip": "Konfigurace je dokončena a ověřena. Po povolení může synchronizace běžet.",
           "desktopOffline": "Desktop je offline",
-          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači."
+          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači.",
+          "actionNeeded": "Vyžaduje akci",
+          "actionNeededTooltip": "Vyžaduje vaši pozornost: {{items}}"
         },
         "sync": {
           "kind": "Synchronizace",
@@ -3372,6 +3493,12 @@
           "wholeSite": "Celý web",
           "onePage": "Jedna stránka"
         }
+      },
+      "actionItems": {
+        "badge": "Vyžaduje akci",
+        "title": "Vyžaduje akci",
+        "openAuthentication": "Aktualizovat ověření",
+        "viewSteps": "Zobrazit postup nastavení"
       }
     },
     "mcpServers": {
@@ -4095,7 +4222,12 @@
         "title": "Heslo a zabezpečení",
         "accountPassword": "Heslo účtu",
         "followEmailDescription": "Dokončete nastavení hesla podle pokynů v e-mailu",
-        "changePassword": "Změnit heslo"
+        "changePassword": "Změnit heslo",
+        "setPassword": "Nastavit heslo",
+        "setPasswordDescription": "Zatím jste si nenastavili heslo. Pošleme vám e-mailem odkaz pro jeho nastavení; pokud to váš pracovní prostor povoluje, budete se pak moci přihlašovat také e-mailem a heslem.",
+        "setPasswordDialogTitle": "Nastavit heslo",
+        "setPasswordDialogMessage": "Odkaz pro nastavení hesla pošleme na vaši registrovanou e-mailovou adresu a odhlásíme vás z této relace.",
+        "setPasswordDialogConfirm": "Odeslat odkaz pro nastavení hesla"
       },
       "rolesPermissions": {
         "title": "Role a oprávnění",
@@ -4149,6 +4281,10 @@
         "saveErrorDescription": "Váš profil se nepodařilo aktualizovat",
         "passwordUpdated": "Heslo bylo aktualizováno",
         "passwordUpdatedDescription": "Odhlásíme vás. Přihlaste se prosím znovu...",
+        "passwordSetupEmailSent": "Odkaz pro nastavení hesla odeslán",
+        "passwordSetupEmailSentDescription": "Zkontrolujte e-mail a nastavte si heslo. Odhlašujeme vás z této relace…",
+        "passwordSetupEmailError": "E-mail se nepodařilo odeslat",
+        "passwordSetupEmailErrorDescription": "Zkuste to prosím znovu.",
         "emailVerificationSent": "Ověřovací odkaz byl odeslán e-mailem",
         "emailVerificationSentDescription": "Po ověření e-mailu budete odhlášeni",
         "discardSuccess": "Úpravy zahozeny",
@@ -4521,6 +4657,12 @@
         "selectAllScopes": "Vybrat vše",
         "clearAllScopes": "Zrušit výběr",
         "expiryDays": "{{count}} dní",
+        "expiryCustom": "Vlastní",
+        "expiryCustomLabel": "Počet dní do vypršení tokenu",
+        "expiryCustomUnit": "dní",
+        "expiryCustomHelp": "Zadejte počet dní od 1 do {{max}}.",
+        "expiryCustomInvalid": "Zadejte celý počet dní od 1 do {{max}}.",
+        "expiryCustomPreview": "Vyprší {{date}}",
         "expiresInDays": "Zbývá dní: {{count}}",
         "expiringSoon": "Tokeny s brzy končící platností: {{count}}. Pro každý vytvořte náhradu, přepojte integrace a poté staré tokeny zneplatněte."
       },
@@ -4778,20 +4920,17 @@
     "agentName": "Název",
     "createdBy": "Vytvořil(a)",
     "agentNamePlaceholder": "např. Bot podpory",
-    "serviceAccountBadge": "Servisní agent",
-    "serviceAccountBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
-    "convertToServiceAccount": "Převést na servisního agenta",
-    "convertToServiceAccountTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
-    "convertToServiceAccountTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
-    "createAsServiceAccount": "Servisní agent",
-    "createAsServiceAccountTooltip": "Vytvořit se sadami nástrojů na úrovni agenta a sdílením s celou organizací. Ve znalostech vyhledává s vaším přístupem.",
+    "serviceAgentBadge": "Servisní agent",
+    "serviceAgentBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
+    "convertToServiceAgentTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
+    "convertToServiceAgentTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
     "agentActionsMenuAria": "Nabídka agenta",
     "agentMenuCreateAsServiceAgent": "Vytvořit jako servisního agenta",
     "agentMenuConvertToServiceAgent": "Převést na servisního agenta",
     "share": "Sdílet",
     "shareWithOrg": "Sdílet se všemi",
     "shareWithOrgTooltip": "Sdílet tohoto agenta se všemi ve vaší organizaci.",
-    "serviceAccountShareTooltip": "Servisní agenti jsou vždy sdíleni s celou organizací.",
+    "serviceAgentShareTooltip": "Servisní agenti jsou vždy sdíleni s celou organizací.",
     "saving": "Ukládání…",
     "saveChanges": "Uložit změny",
     "createAgent": "Vytvořit agenta",
@@ -4801,8 +4940,19 @@
     "userAgentDesc": "Osobní agent s ověřováním sad nástrojů pro každého uživatele zvlášť.",
     "serviceAgent": "Servisní agent",
     "serviceAgentDesc": "Agent pro celou organizaci s přihlašovacími údaji sad nástrojů na úrovni agenta. Ve znalostech vyhledává s přístupem svého autora.",
+    "identitySearchesAs": "Vyhledává jako {{identity}}",
+    "identityCreator": "jeho tvůrce",
+    "identityBoundUnknown": "servisní účet",
+    "identityTooltip": "Zvolte identitu, pod kterou tento agent prohledává znalosti. Každý, kdo ho použije, uvidí výsledky z toho, co tato identita může číst.",
+    "identityDialogTitle": "Prohledávat znalosti jako",
+    "identityDialogBody": "Tento agent je sdílený s celou vaší organizací, takže toto rozhoduje, kam až dosáhnou dotazy všech. Výchozí je jeho tvůrce. Servisní účet je identita, kterou správce uděluje záměrně.",
+    "identityChoose": "Zvolit",
+    "identityLoading": "Načítání servisních účtů…",
+    "identityLoadError": "Servisní účty se nepodařilo načíst.",
+    "identityRetry": "Zkusit znovu",
+    "identityNone": "Zatím žádné servisní účty. Vytvořte jeden v Pracovní prostor → Servisní účty.",
     "nameRequired": "Pro pokračování zadejte název.",
-    "saveAsServiceAccountFirst": "Nejprve uložte agenta jako servisního agenta a poté nastavte přihlašovací údaje sad nástrojů.",
+    "saveAsServiceAgentFirst": "Nejprve uložte agenta jako servisního agenta a poté nastavte přihlašovací údaje sad nástrojů.",
     "hidePalette": "Skrýt paletu",
     "showPalette": "Zobrazit paletu",
     "openInChat": "Otevřít v chatu",
@@ -4820,7 +4970,7 @@
     "agentLoadFailedTitle": "Tohoto agenta se nepodařilo načíst",
     "agentLoadFailedDescription": "Zkontrolujte připojení a zkuste to znovu. Dokud se agent nenačte, nic se neuloží.",
     "agentLoadRetry": "Zkusit znovu",
-    "paletteViewOnlyServiceAccount": "Pouze pro čtení. Paleta a nastavení sad nástrojů jsou pro tohoto servisního agenta organizace uzamčeny.",
+    "paletteViewOnlyServiceAgent": "Pouze pro čtení. Paleta a nastavení sad nástrojů jsou pro tohoto servisního agenta organizace uzamčeny.",
     "paletteActionBlockedViewOnly": "Pouze pro čtení. Tohoto servisního agenta organizace zde nelze měnit.",
     "viewerPaletteDragBlocked": "Pouze pro čtení. Tok je uzamčen; ověřte sady nástrojů v části Nástroje.",
     "paletteViewerAuthenticateInTools": "Pouze pro čtení. Přetahování na plátno je vypnuto; přihlaste se k sadám nástrojů v části Nástroje.",
@@ -4837,8 +4987,8 @@
     "skillDisabled": "Tato dovednost je zakázána a agentovi nebude k dispozici, dokud ji znovu nepovolíte",
     "collapse": "Sbalit",
     "expand": "Rozbalit",
-    "serviceAccountCreated": "Servisní agent byl vytvořen. Nastavte každou sadu nástrojů pomocí ikony klíče v paletě.",
-    "serviceAccountConverted": "Agent byl převeden na servisního agenta. Nastavte přihlašovací údaje sad nástrojů pomocí ikony klíče v paletě.",
+    "serviceAgentCreated": "Servisní agent byl vytvořen. Nastavte každou sadu nástrojů pomocí ikony klíče v paletě.",
+    "serviceAgentConverted": "Agent byl převeden na servisního agenta. Nastavte přihlašovací údaje sad nástrojů pomocí ikony klíče v paletě.",
     "unsavedChangesConfirm": "Máte neuložené změny. Opravdu chcete odejít?",
     "agentUpdated": "Agent byl aktualizován",
     "agentUpdatedDesc": "Vaše změny byly uloženy.",
@@ -5406,7 +5556,9 @@
       "orgEmailVerifyFailedDescription": "Odkaz může být neplatný nebo jeho platnost vypršela. Zaregistrujte se prosím znovu.",
       "loadFailedTitle": "Přihlášení se nepodařilo načíst",
       "loadFailedDescription": "PipesHub se nepodařilo spojit se serverem a načíst možnosti přihlášení. Zkontrolujte své připojení nebo adresu serveru a zkuste to znovu.",
-      "retry": "Zkusit znovu"
+      "retry": "Zkusit znovu",
+      "tabPassword": "Heslo",
+      "tabEmailOtp": "Kód e-mailem"
     },
     "common": {
       "signIn": "Přihlásit se",
@@ -5443,12 +5595,53 @@
       "integrationTitle": "Autorizace odeslána do PipesHub",
       "description": "Tuto kartu můžete zavřít a vrátit se do aplikace PipesHub.",
       "openApp": "Otevřít PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "Zkontrolujte svou doručenou poštu",
+      "resetLinkSent": "Pokud k tomuto e-mailu existuje účet, byl odeslán odkaz pro obnovení hesla.",
+      "resetRequestFailed": "Obnovení hesla se nepodařilo vyžádat",
+      "tryAgainLater": "Zkuste to prosím později.",
+      "contactAdmin": "Obraťte se prosím na svého správce.",
+      "noPasswordSetTitle": "Tento účet nemá nastavené heslo.",
+      "noPasswordSetDescription": "Heslo si nastavte pomocí odkazu Zapomenuté heslo níže.",
+      "checkEmail": "Zkontrolujte svůj e-mail",
+      "otpSentDescription": "Pokud se tento e-mail může přihlásit kódem, kód se odesílá. Pokud do několika minut nic nepřijde, zkontrolujte složku se spamem nebo to zkuste později.",
+      "otpSendFailed": "Ověřovací kód se nepodařilo odeslat",
+      "additionalVerification": "Je vyžadováno další ověření",
+      "completeNextStep": "Pokračujte dokončením dalšího kroku.",
+      "signInFailedTitle": "Přihlášení se nezdařilo",
+      "unexpectedResponse": "Neočekávaná odpověď. Zkuste to prosím znovu.",
+      "signInFailed": "Přihlášení se nezdařilo. Zkuste to prosím znovu.",
+      "verificationFailed": "Ověření se nezdařilo. Zkuste to prosím znovu.",
+      "googleSignInFailed": "Přihlášení přes Google se nezdařilo. Zkuste to prosím znovu.",
+      "microsoftSignInFailed": "Přihlášení přes Microsoft se nezdařilo. Zkuste to prosím znovu.",
+      "tryAgainAfter": "Zkuste to znovu po {{time}}."
     }
   },
   "healthGate": {
     "title": "Nelze se připojit k serveru",
     "description": "Server je momentálně nedostupný. Může se právě spouštět nebo na něm probíhá údržba. Pokoušíme se znovu připojit.",
-    "contactAdmin": "Pokud problém přetrvává, kontaktujte prosím svého správce PipesHub."
+    "contactAdmin": "Pokud problém přetrvává, kontaktujte prosím svého správce PipesHub.",
+    "toasts": {
+      "servicesUnavailableTitle": "Některé služby nejsou k dispozici",
+      "affected": "Dotčené: {{services}}",
+      "featuresUnavailableReconnect": "Některé funkce jsou dočasně nedostupné. Připojíme se automaticky znovu; pokud to přetrvá, obraťte se na správce.",
+      "featuresUnavailable": "Některé funkce jsou dočasně nedostupné",
+      "viewStatus": "Zobrazit stav",
+      "servicesDown_one": "{{services}} momentálně není k dispozici",
+      "servicesDown_other": "{{services}} momentálně nejsou k dispozici",
+      "servicesDown_few": "{{services}} momentálně nejsou k dispozici",
+      "servicesDown_many": "{{services}} momentálně nejsou k dispozici"
+    },
+    "serviceGate": {
+      "title": "Služba není k dispozici",
+      "requires_one": "Tato stránka vyžaduje {{services}}, která momentálně není k dispozici. Znovu bude dostupná automaticky, jakmile se služba obnoví.",
+      "requires_few": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "requires_many": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "requires_other": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "memberBody": "Tato stránka je dočasně nedostupná. Vrátí se automaticky; pokud to přetrvá, obraťte se na správce.",
+      "viewStatus": "Zobrazit stav služeb"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Otázka :",
@@ -5485,7 +5678,8 @@
     "serverError": "Chyba serveru",
     "timedOut": "Vypršel časový limit požadavku",
     "somethingWentWrong": "Něco se pokazilo",
-    "tryAgainShortly": "Zkuste to prosím za chvíli znovu"
+    "tryAgainShortly": "Zkuste to prosím za chvíli znovu",
+    "connectedServiceProblem": "Problém s připojenou službou"
   },
   "validation": {
     "password": {
@@ -5549,13 +5743,15 @@
         "description": "Pouze přístup pro zobrazení"
       }
     },
-    "chatRoles": {
-      "writer": "Může zobrazit chat a posílat zprávy. Odpovědi používají jeho vlastní přístup.",
-      "reader": "Může chat pouze zobrazit."
-    },
     "team": "Tým",
     "teamsNoRoles": "Týmy nemají role",
-    "invite": "Pozvat do Pipeshub"
+    "invite": "Pozvat do Pipeshub",
+    "searchPlaceholderTeams": "E-maily, týmy nebo jména (oddělené čárkami)",
+    "searchPlaceholderUsers": "E-maily nebo jména (oddělené čárkami)",
+    "alreadyRemoved": "Už odebráno",
+    "alreadyRemovedDescription": "{{name}} už přístup neměl(a)",
+    "removeConfirmTitle": "Odebrat přístup?",
+    "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet."
   },
   "demoData": {
     "badge": {

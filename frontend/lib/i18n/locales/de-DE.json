@@ -40,7 +40,11 @@
     "tabArchived": "Archiviert",
     "archivedEmptyState": "Keine archivierten Projekte",
     "archivedEmptyStateHint": "Archivierte Projekte werden hier angezeigt.",
-    "actionsLabel": "Projektaktionen"
+    "actionsLabel": "Projektaktionen",
+    "noSearchResults": "Keine Projekte passen zu „{{query}}“",
+    "noSearchResultsHint": "Versuchen Sie einen anderen Namen oder leeren Sie die Suche.",
+    "clearSearch": "Suche leeren",
+    "cardActionsLabel": "Aktionen für {{name}}"
   },
   "timeGroup": {
     "today": "Heute",
@@ -312,25 +316,16 @@
     "filterOnlyUnread": "Ungelesen",
     "filterArchived": "Archiviert",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} hat einen Chat mit Ihnen geteilt",
+      "titleAgent": "{{name}} hat einen Agenten-Chat mit Ihnen geteilt",
+      "body": "Sie können „{{chat}}“ jetzt öffnen.",
+      "bodyNoTitle": "Sie können ihn jetzt unter „{{place}}“ öffnen.",
+      "someone": "Ein Kollege"
+    },
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
-    "accessRequest": {
-      "approve": "Genehmigen",
-      "deny": "Ablehnen",
-      "approved": "Zugriff gewährt",
-      "denied": "Anfrage abgelehnt",
-      "failed": "Ihre Entscheidung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
-      "approveTitle": "Zugriff genehmigen?",
-      "approveBodyCollection": "Damit erhält {{user}} Lesezugriff auf die gesamte Sammlung „{{name}}“.",
-      "approveBodyRecord": "Damit erhält {{user}} Lesezugriff auf diesen Datensatz.",
-      "cancel": "Abbrechen",
-      "alreadyDecided": "Diese Anfrage wurde bereits entschieden.",
-      "someone": "Jemand",
-      "alreadyApproved": "Bereits genehmigt",
-      "alreadyDeclined": "Bereits abgelehnt",
-      "forwarded": "Der Zugriff auf diesen Datensatz wird im Quellsystem gewährt."
-    }
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",
@@ -431,7 +426,7 @@
     "willBeReindexed": "wird neu indiziert",
     "reindexConfirm": "Diesen {{type}} neu indizieren?",
     "reindexDescription": "Dies aktualisiert den Suchindex für diesen {{type}} und seinen Inhalt.",
-    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht.",
+    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden endgültig gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden. Dies kann nicht rückgängig gemacht werden.",
     "deleteFolderBody": "'{{name}}' und alle Inhalte werden aus dieser Sammlung gelöscht.",
     "deleteFileBody": "'{{name}}' wird aus dieser Sammlung gelöscht."
   },
@@ -654,8 +649,11 @@
       "empty": "Leer",
       "paused": "Pausiert",
       "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "passwordProtected": "Passwortgeschützt",
       "skipped": "Übersprungen",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "emptyFileZeroBytes": "Leere Datei – nichts zu indizieren (0 Byte)",
+      "emptyNoContent": "Leer – kein Text zum Indizieren gefunden"
     },
     "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
     "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden.",
@@ -666,7 +664,9 @@
       "open": "Öffnen",
       "preview": "Vorschau",
       "goToParent": "Zum übergeordneten Ordner",
-      "goToNamed": "Zu {{name}}"
+      "goToNamed": "Zu {{name}}",
+      "moreFor": "Weitere Optionen für {{name}}",
+      "select": "{{name}} auswählen"
     },
     "upload": {
       "title": "Daten hochladen",
@@ -693,6 +693,10 @@
     "createDialog": {
       "titlePlaceholder": "z. B. Engineering",
       "descriptionPlaceholder": "z. B. Dokumente fürs Dev-Team"
+    },
+    "nameRules": {
+      "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
+      "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     }
   },
   "connectorTypes": {
@@ -795,8 +799,6 @@
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
     "agentChat": "Agent-Chat",
-    "askedBy": "{{name}} hat gefragt",
-    "askedByUnknown": "Ein anderer Nutzer hat gefragt",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -887,6 +889,8 @@
     "stoppedMarker": "Gestoppt",
     "toolCard": {
       "arguments": "Argumente",
+      "query": "Abfrage",
+      "queryCutOff": "Nur der Anfang dieser Abfrage wurde gespeichert, daher kann sie nicht kopiert werden.",
       "result": "Ergebnis",
       "error": "Fehler",
       "blocked": "Blockiert",
@@ -1193,7 +1197,6 @@
         "connectorsStatusNone": "Keine",
         "connectorsStatusCount_one": "{{count}} verbunden",
         "connectorsStatusCount_other": "{{count}} verbunden",
-        "toolsStatusDefault": "Standard",
         "toolsStatusCount_one": "{{count}} aktiviert",
         "toolsStatusCount_other": "{{count}} aktiviert",
         "membersStatusOnlyYou": "Nur Sie",
@@ -1201,7 +1204,20 @@
         "suggestPlanWork": "Eine Aufgabe planen",
         "suggestWriteInstructions": "Die Projektanweisungen schreiben",
         "suggestSummariseDocumentPrompt": "Fasse das wichtigste Dokument in den Dateien dieses Projekts zusammen.",
-        "suggestPlanWorkPrompt": "Hilf mir, eine Aufgabe für dieses Projekt zu planen. Unterteile sie in konkrete nächste Schritte."
+        "suggestPlanWorkPrompt": "Hilf mir, eine Aufgabe für dieses Projekt zu planen. Unterteile sie in konkrete nächste Schritte.",
+        "visibilityShared": "Geteilt mit {{members}}",
+        "visibilityPrivateOwner": "Privat für den Eigentümer",
+        "toolsStatusNone": "Keine aktiviert",
+        "toolsSubtitle": "Chats in diesem Projekt können nur die hier angehakten Tools verwenden.",
+        "toolKind": {
+          "read": "Liest Daten",
+          "write": "Nimmt Änderungen vor",
+          "destructive": "Löscht oder ist nicht umkehrbar",
+          "unknown": "Sonstige"
+        },
+        "toolNeedsApproval": "Erfordert Genehmigung",
+        "toolNeedsApprovalHint": "Dieses Tool kann Daten löschen. In einem Projekt-Chat wird es erst nach einer Genehmigung ausgeführt.",
+        "indexingStatusLabel": "Indizierung: {{status}}"
       },
       "moveDialog": {
         "title": "In Projekt verschieben",
@@ -1212,16 +1228,71 @@
       },
       "deleteDialog": {
         "title": "Dieses Projekt löschen?",
-        "description": "Das Projekt wird entfernt und die Verknüpfung mit den Chats aufgehoben. Die Chats selbst werden nicht gelöscht.",
+        "description": "Das Löschen eines Projekts kann nicht rückgängig gemacht werden:",
         "confirm": "Projekt löschen",
         "deleting": "Wird gelöscht…",
-        "failed": "Projekt konnte nicht gelöscht werden"
+        "failed": "Projekt konnte nicht gelöscht werden",
+        "filesDeleted": "In das Projekt hochgeladene Dateien werden endgültig gelöscht.",
+        "membersLoseAccess": "Alle, mit denen es geteilt ist, verlieren den Zugriff.",
+        "chatsKept": "Chats bleiben erhalten, gehören aber zu keinem Projekt mehr."
       },
       "roles": {
         "owner": "Eigentümer",
         "editor": "Bearbeiter",
         "viewer": "Betrachter"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Eigentümer",
+          "description": "Hat das Projekt erstellt und verwaltet, wer es nutzen kann"
+        },
+        "editor": {
+          "label": "Kann bearbeiten",
+          "description": "Name, Anweisungen, Dateien, Konnektoren und Tools ändern und im Projekt chatten"
+        },
+        "viewer": {
+          "label": "Kann ansehen",
+          "description": "Das Projekt öffnen und mit seinen Dateien und Tools chatten"
+        }
+      },
+      "unknownMember": "Unbekanntes Mitglied",
+      "unknownTeam": "Unbekanntes Team",
+      "allMembersTeam": "Alle in Ihrer Organisation",
+      "ownerCannotChange": "Der Zugriff des Projekteigentümers kann hier nicht geändert werden.",
+      "sharingSettings": {
+        "saved": "Freigabeeinstellungen gespeichert",
+        "saveFailed": "Freigabeeinstellungen konnten nicht gespeichert werden",
+        "visibilityLabel": "Wer dieses Projekt finden kann",
+        "visibilityPrivate": "Nur Personen, mit denen es geteilt ist",
+        "visibilityOrg": "Alle in Ihrer Organisation",
+        "visibilityPrivateHint": "Nur Sie und die unten aufgeführten Personen oder Teams können es öffnen.",
+        "visibilityOrgHint": "Jede Person in Ihrer Organisation kann es finden und öffnen.",
+        "chatSharingLabel": "Neue Chats in diesem Projekt",
+        "chatSharingPrivate": "Privat für die Person, die sie startet",
+        "chatSharingMembers": "Mit Projektmitgliedern geteilt",
+        "chatSharingPrivateHint": "Jeder Chat bleibt privat, bis die Person, die ihn erstellt hat, ihn teilt.",
+        "chatSharingMembersHint": "Mitglieder sehen neue Chats; Autoren können einen Chat weiterhin privat machen."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Projektdetails bearbeiten",
+        "saved": "Projektdetails gespeichert",
+        "saveFailed": "Projektdetails konnten nicht gespeichert werden"
+      },
+      "editDetails": "Name und Beschreibung bearbeiten",
+      "leaveProject": "Projekt verlassen",
+      "leaveDialog": {
+        "title": "{{name}} verlassen?",
+        "description": "Sie verlieren den Zugriff auf dieses Projekt und seine Dateien. Ihre Chats bleiben Ihnen erhalten. Der Eigentümer kann Sie wieder hinzufügen.",
+        "leaving": "Wird verlassen…",
+        "left": "Sie haben das Projekt verlassen",
+        "failed": "Projekt konnte nicht verlassen werden",
+        "inherited": "Sie können dieses Projekt nicht verlassen: Ihr Zugriff kommt über Ihre Organisation oder ein Team. Bitten Sie den Eigentümer, die Freigabe zu ändern."
+      },
+      "archiveSuccess": "Projekt archiviert",
+      "archivedNoNewChats": "Dieses Projekt ist archiviert, daher können darin keine neuen Chats gestartet werden.",
+      "archivedBanner": "Dieses Projekt ist archiviert. Heben Sie die Archivierung auf, um neue Chats zu starten.",
+      "archivedBannerMember": "Dieses Projekt ist archiviert, daher können keine neuen Chats gestartet werden. Bitten Sie den Eigentümer, die Archivierung aufzuheben."
     },
     "scrollAttachmentsLeft": "Anhänge nach links scrollen",
     "scrollAttachmentsRight": "Anhänge nach rechts scrollen",
@@ -1296,9 +1367,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche",
-      "deepResearch": "Tiefenrecherche",
-      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
+      "webSearch": "Websuche"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "demoBanner": "Sie sehen Acme Corp, ein kleines fiktives Unternehmen mit geladenen Demodaten. Probieren Sie eine dieser Fragen aus oder",
@@ -1401,18 +1470,17 @@
       "downloading": "Artefakt wird heruntergeladen"
     },
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
-    "redaction": {
-      "partial": "Diese Antwort basiert teilweise auf Quellen, auf die Sie keinen Zugriff haben.",
-      "hidden": "Diese Antwort basiert auf Quellen, auf die Sie keinen Zugriff haben.",
-      "sourceLabel": "Quelle ohne Zugriff",
-      "requestAccess": "Zugriff anfragen",
-      "requested": "Zugriff angefragt",
-      "requestFailed": "Die Anfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
-      "openInSource": "In der Quelle öffnen",
-      "inlineHidden": "Ausgeblendet: kein Zugriff",
-      "alreadyAccessible": "Sie können diese Quelle bereits öffnen. Laden Sie den Chat neu.",
-      "detailsHidden": "Details wie Tool-Ergebnisse und Begründungen sind für geteilte Ansichten ausgeblendet.",
-      "collectionLabel": "Zugriff auf die Sammlung anfragen, die diese Quelle enthält"
+    "noResultsFor": "Keine Ergebnisse für „{{query}}“",
+    "removeSelectedSource": "{{name}} entfernen",
+    "diagramSourceCopied": "Diagrammquelle kopiert",
+    "diagramImageCopied": "Diagrammbild kopiert",
+    "diagramImageDownloaded": "Zwischenablage nicht verfügbar, Diagramm als PNG gespeichert",
+    "diagramCopyFailed": "Diagramm konnte nicht kopiert werden",
+    "fitDiagram": "An Bildschirm anpassen",
+    "answerMode": {
+      "internalSearch": "Interne Suche",
+      "webSearch": "Websuche",
+      "internalAndWebSearch": "Interne + Websuche"
     }
   },
   "workspaceMenu": {
@@ -1553,7 +1621,21 @@
         "editError": "Einladung konnte nicht aktualisiert werden",
         "editTitle": "Einladung bearbeiten",
         "update": "Einladung aktualisieren",
-        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden."
+        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden.",
+        "userCount_one": "{{count}} Benutzer",
+        "userCount_other": "{{count}} Benutzer",
+        "successDescriptionCount_one": "{{count}} Benutzer wurde eingeladen",
+        "successDescriptionCount_other": "{{count}} Benutzer wurden eingeladen",
+        "alreadyMembersSkipped_one": "{{count}} Adresse gehört bereits einem Mitglied, daher wurde keine Einladung gesendet.",
+        "alreadyMembersSkipped_other": "{{count}} Adressen gehören bereits Mitgliedern, daher wurden keine Einladungen gesendet.",
+        "alreadyMembersTitle": "Bereits Mitglieder – keine Einladungen gesendet",
+        "alreadyMembersDescription_one": "Diese Adresse gehört bereits einem aktiven Mitglied.",
+        "alreadyMembersDescription_other": "Jede Adresse gehört bereits einem aktiven Mitglied.",
+        "importUnsupportedType": "Nur .csv-, .xlsx- und .xls-Dateien können importiert werden.",
+        "importTooLongSkipped_one": "{{count}} Eintrag mit mehr als 254 Zeichen wurde ausgelassen.",
+        "importTooLongSkipped_other": "{{count}} Einträge mit mehr als 254 Zeichen wurden ausgelassen.",
+        "invalidBlocksSend_one": "{{count}} ungültige Adresse ist rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden.",
+        "invalidBlocksSend_other": "{{count}} ungültige Adressen sind rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden."
       },
       "bulk": {
         "resendInvite": "Einladung erneut senden",
@@ -1685,7 +1767,11 @@
         "viewTeam": "Team anzeigen",
         "delete": "Löschen",
         "deleteSuccess": "Team gelöscht",
-        "deleteError": "Team konnte nicht gelöscht werden"
+        "deleteError": "Team konnte nicht gelöscht werden",
+        "deleteConfirmTitle": "Team löschen?",
+        "deleteConfirmMessage": "\"{{name}}\" wird gelöscht, und seine Mitglieder verlieren den darüber geteilten Zugriff. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmButton": "Team löschen",
+        "deleting": "Wird gelöscht…"
       },
       "create": {
         "title": "Team erstellen",
@@ -1704,7 +1790,8 @@
         "successDescription": "\"{{name}}\" wurde erfolgreich erstellt",
         "errorGeneric": "Team konnte nicht erstellt werden",
         "applyToAll": "Auf alle anwenden",
-        "memberRoles": "Mitgliederrollen"
+        "memberRoles": "Mitgliederrollen",
+        "errorDescription": "Das Team konnte nicht erstellt werden. Bitte versuchen Sie es erneut."
       },
       "detail": {
         "nameLabel": "Teamname",
@@ -2668,7 +2755,8 @@
         "errorFallback": "Konnektor konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
         "actions": {
           "removeInstance": "diese Konnektor-Instanz zu entfernen",
-          "saveConfig": "Konfigurationsänderungen zu speichern"
+          "saveConfig": "Konfigurationsänderungen zu speichern",
+          "saveAuth": "die neuen Anmeldedaten zu speichern"
         }
       },
       "adminAccessDialog": {
@@ -2784,6 +2872,8 @@
         "statFailedSub": "Fehler (API- / Berechtigungsprobleme)",
         "statUnsupported": "Nicht unterstützt",
         "statUnsupportedSub": "Kann nicht verarbeitet werden",
+        "statPasswordProtected": "Passwortgeschützt",
+        "statPasswordProtectedSub": "Ohne Passwort nicht lesbar",
         "statInProgressSub": "Wird noch indexiert",
         "statQueued": "Warteschlange",
         "statQueuedSub": "Warten auf Indizierung",
@@ -2800,7 +2890,22 @@
         "localWatcherLabel": "LOKALER WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
         "classification": "Klassifizierung",
-        "classificationSkipped": "Übersprungen",
+        "enrichment": {
+          "title": "Datenextraktion mit KI",
+          "description": "Läuft im Hintergrund, sobald ein Datensatz durchsuchbar ist. Die Suche wartet nicht darauf.",
+          "classificationHint": "Fügt Zusammenfassung, Themen und Kategorien hinzu",
+          "entities": "Entitätenextraktion",
+          "entitiesHint": "Findet Personen, Organisationen und Orte",
+          "progress": "{{completed}} von {{total}}",
+          "waiting": "Wartend",
+          "skipped": "Übersprungen",
+          "notStarted": "Startet, sobald Datensätze durchsuchbar sind",
+          "inProgress": "In Bearbeitung",
+          "done": "Fertig",
+          "failedCount_one": "{{count}} fehlgeschlagen",
+          "failedCount_other": "{{count}} fehlgeschlagen",
+          "retry": "Wiederholen"
+        },
         "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
         "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
         "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
@@ -2889,7 +2994,9 @@
           "ready": "Abgeschlossen",
           "readyTooltip": "Die Konfiguration ist abgeschlossen und authentifiziert. Die Synchronisierung kann nach der Aktivierung starten.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
+          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren.",
+          "actionNeeded": "Handlung erforderlich",
+          "actionNeededTooltip": "Erfordert Ihre Aufmerksamkeit: {{items}}"
         },
         "sync": {
           "kind": "Synchronisierung",
@@ -3136,6 +3243,12 @@
           "wholeSite": "Ganze Website",
           "onePage": "Eine Seite"
         }
+      },
+      "actionItems": {
+        "badge": "Handlung erforderlich",
+        "title": "Handlung erforderlich",
+        "openAuthentication": "Authentifizierung aktualisieren",
+        "viewSteps": "Einrichtungsschritte ansehen"
       }
     },
     "mcpServers": {
@@ -3691,7 +3804,12 @@
         "title": "Passwort & Sicherheit",
         "accountPassword": "Konto-Passwort",
         "followEmailDescription": "Bitte folgen Sie den Anweisungen in der E-Mail, um Ihr Passwort festzulegen",
-        "changePassword": "Passwort ändern"
+        "changePassword": "Passwort ändern",
+        "setPassword": "Passwort festlegen",
+        "setPasswordDescription": "Sie haben noch kein Passwort festgelegt. Wir senden Ihnen einen Link per E-Mail, um eines festzulegen. Wenn Ihr Arbeitsbereich es erlaubt, können Sie sich dann auch mit E-Mail und Passwort anmelden.",
+        "setPasswordDialogTitle": "Passwort festlegen",
+        "setPasswordDialogMessage": "Wir senden einen Link zum Festlegen Ihres Passworts an Ihre registrierte E-Mail-Adresse und melden Sie von dieser Sitzung ab.",
+        "setPasswordDialogConfirm": "Link zum Festlegen senden"
       },
       "rolesPermissions": {
         "title": "Rollen & Berechtigungen",
@@ -3738,6 +3856,10 @@
         "saveErrorDescription": "Ihr Profil konnte nicht aktualisiert werden",
         "passwordUpdated": "Passwort wurde aktualisiert",
         "passwordUpdatedDescription": "Sie werden abgemeldet. Bitte melden Sie sich erneut an...",
+        "passwordSetupEmailSent": "Link zum Festlegen gesendet",
+        "passwordSetupEmailSentDescription": "Prüfen Sie Ihr Postfach, um Ihr Passwort festzulegen. Sie werden von dieser Sitzung abgemeldet…",
+        "passwordSetupEmailError": "E-Mail konnte nicht gesendet werden",
+        "passwordSetupEmailErrorDescription": "Bitte versuchen Sie es erneut.",
         "emailVerificationSent": "E-Mail-Bestätigungslink gesendet",
         "emailVerificationSentDescription": "Sie werden abgemeldet, wenn Sie die E-Mail bestätigen",
         "discardSuccess": "Änderungen verworfen",
@@ -4309,6 +4431,12 @@
         "scopesHelp": "Wählen Sie aus, was dieses Token tun darf. Es gibt keine Standardauswahl: Eine unbeaufsichtigt verwendete Anmeldeinformation sollte nur die bewusst vergebenen Berechtigungen besitzen.",
         "expiryLabel": "Läuft ab nach",
         "expiryDays": "{{count}} Tagen",
+        "expiryCustom": "Benutzerdefiniert",
+        "expiryCustomLabel": "Tage bis zum Ablauf des Tokens",
+        "expiryCustomUnit": "Tage",
+        "expiryCustomHelp": "Geben Sie eine Anzahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomPreview": "Läuft am {{date}} ab",
         "existing": "Tokens",
         "none": "Dieses Konto besitzt noch keine Tokens.",
         "lastUsed": "Zuletzt verwendet: {{date}}",
@@ -4573,20 +4701,17 @@
     "agentName": "Agentenname",
     "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
-    "serviceAccountBadge": "Service-Agent",
-    "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
-    "convertToServiceAccount": "In Service-Agent umwandeln",
-    "convertToServiceAccountTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
-    "convertToServiceAccountTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
-    "createAsServiceAccount": "Service-Agent",
-    "createAsServiceAccountTooltip": "Mit agentbezogenen Toolsets erstellen, für die gesamte Organisation freigegeben. Die Wissenssuche nutzt Ihren Zugriff.",
+    "serviceAgentBadge": "Service-Agent",
+    "serviceAgentBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
+    "convertToServiceAgentTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
+    "convertToServiceAgentTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
     "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
     "share": "Teilen",
     "shareWithOrg": "Mit allen teilen",
     "shareWithOrgTooltip": "Diesen Agenten mit allen in Ihrer Organisation teilen.",
-    "serviceAccountShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
+    "serviceAgentShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
     "saving": "Wird gespeichert…",
     "saveChanges": "Änderungen speichern",
     "createAgent": "Agenten erstellen",
@@ -4596,8 +4721,19 @@
     "userAgentDesc": "Persönlicher Agent mit benutzerspezifischer Toolset-Authentifizierung.",
     "serviceAgent": "Service-Agent",
     "serviceAgentDesc": "Organisationsweiter Agent mit Agent-Level-Toolset-Anmeldedaten. Durchsucht Wissen mit dem Zugriff seines Erstellers.",
+    "identitySearchesAs": "Sucht als {{identity}}",
+    "identityCreator": "Ersteller",
+    "identityBoundUnknown": "ein Dienstkonto",
+    "identityTooltip": "Wählen Sie die Identität, mit der dieser Agent Wissen durchsucht. Alle, die ihn nutzen, sehen Ergebnisse aus dem, was diese Identität lesen darf.",
+    "identityDialogTitle": "Wissen durchsuchen als",
+    "identityDialogBody": "Dieser Agent wird mit Ihrer gesamten Organisation geteilt, daher entscheidet dies, was die Fragen aller erreichen können. Standard ist sein Ersteller. Ein Dienstkonto ist eine Identität, die eine Administratorin oder ein Administrator bewusst vergibt.",
+    "identityChoose": "Auswählen",
+    "identityLoading": "Dienstkonten werden geladen…",
+    "identityLoadError": "Dienstkonten konnten nicht geladen werden.",
+    "identityRetry": "Erneut versuchen",
+    "identityNone": "Noch keine Dienstkonten. Erstellen Sie eines unter Arbeitsbereich → Dienstkonten.",
     "nameRequired": "Name ist erforderlich",
-    "saveAsServiceAccountFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
+    "saveAsServiceAgentFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
     "hidePalette": "Palette ausblenden",
     "showPalette": "Palette einblenden",
     "openInChat": "Im Chat öffnen",
@@ -4615,7 +4751,7 @@
     "agentLoadFailedTitle": "Dieser Agent konnte nicht geladen werden",
     "agentLoadFailedDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut. Bis der Agent geladen ist, wird nichts gespeichert.",
     "agentLoadRetry": "Erneut versuchen",
-    "paletteViewOnlyServiceAccount": "Nur Ansicht — Palette und Toolset-Einrichtung sind für diesen Organisations-Service-Agenten gesperrt.",
+    "paletteViewOnlyServiceAgent": "Nur Ansicht — Palette und Toolset-Einrichtung sind für diesen Organisations-Service-Agenten gesperrt.",
     "paletteActionBlockedViewOnly": "Nur Ansicht: Dieser Organisations-Service-Agent und seine Toolsets können hier nicht geändert werden.",
     "viewerPaletteDragBlocked": "Nur Ansicht: Den Ablauf können Sie hier nicht ändern. Sie können Toolsets weiter unten bei „Tools“ authentifizieren.",
     "paletteViewerAuthenticateInTools": "Nur Ansicht — Ziehen von Modellen, Wissen und Tools auf die Leinwand ist deaktiviert. Nutzen Sie „Tools“ unten, um sich bei benötigten Toolsets anzumelden.",
@@ -4627,8 +4763,8 @@
     "noCollections": "Keine Sammlungen verfügbar",
     "collapse": "Einklappen",
     "expand": "Ausklappen",
-    "serviceAccountCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
-    "serviceAccountConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
+    "serviceAgentCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
+    "serviceAgentConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
     "unsavedChangesConfirm": "Sie haben nicht gespeicherte Änderungen. Möchten Sie die Seite wirklich verlassen?",
     "agentUpdated": "Agent aktualisiert",
     "agentUpdatedDesc": "Ihre Änderungen wurden gespeichert.",
@@ -5155,7 +5291,9 @@
       "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut.",
       "loadFailedTitle": "Anmeldung konnte nicht geladen werden",
       "loadFailedDescription": "PipesHub konnte den Server nicht erreichen, um die Anmeldeoptionen zu laden. Prüfen Sie Ihre Verbindung oder die Serveradresse und versuchen Sie es erneut.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "tabPassword": "Passwort",
+      "tabEmailOtp": "E-Mail-Code"
     },
     "common": {
       "signIn": "Anmelden",
@@ -5192,12 +5330,49 @@
       "integrationTitle": "Autorisierung an PipesHub gesendet",
       "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
       "openApp": "PipesHub öffnen"
+    },
+    "toasts": {
+      "checkInbox": "Prüfen Sie Ihren Posteingang",
+      "resetLinkSent": "Falls ein Konto mit dieser E-Mail-Adresse existiert, wurde ein Link zum Zurücksetzen des Passworts gesendet.",
+      "resetRequestFailed": "Zurücksetzen des Passworts konnte nicht angefordert werden",
+      "tryAgainLater": "Bitte versuchen Sie es später erneut.",
+      "contactAdmin": "Bitte wenden Sie sich an Ihren Administrator.",
+      "noPasswordSetTitle": "Für dieses Konto ist kein Passwort festgelegt.",
+      "noPasswordSetDescription": "Verwenden Sie unten „Passwort vergessen“, um ein Passwort festzulegen.",
+      "checkEmail": "Prüfen Sie Ihre E-Mails",
+      "otpSentDescription": "Falls sich diese E-Mail-Adresse mit einem Code anmelden kann, wird einer gesendet. Kommt in einigen Minuten nichts an, prüfen Sie Ihren Spam-Ordner oder versuchen Sie es später erneut.",
+      "otpSendFailed": "Bestätigungscode konnte nicht gesendet werden",
+      "additionalVerification": "Zusätzliche Bestätigung erforderlich",
+      "completeNextStep": "Schließen Sie den nächsten Schritt ab, um fortzufahren.",
+      "signInFailedTitle": "Anmeldung fehlgeschlagen",
+      "unexpectedResponse": "Unerwartete Antwort. Bitte versuchen Sie es erneut.",
+      "signInFailed": "Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "verificationFailed": "Bestätigung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "googleSignInFailed": "Google-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "microsoftSignInFailed": "Microsoft-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "tryAgainAfter": "Versuchen Sie es nach {{time}} erneut."
     }
   },
   "healthGate": {
     "title": "Verbindung zum Server nicht möglich",
     "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
-    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
+    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator.",
+    "toasts": {
+      "servicesUnavailableTitle": "Einige Dienste sind nicht verfügbar",
+      "affected": "Betroffen: {{services}}",
+      "featuresUnavailableReconnect": "Einige Funktionen sind vorübergehend nicht verfügbar. Wir verbinden uns automatisch neu; hält das an, wenden Sie sich an Ihren Administrator.",
+      "featuresUnavailable": "Einige Funktionen sind vorübergehend nicht verfügbar",
+      "viewStatus": "Status anzeigen",
+      "servicesDown_one": "{{services}} ist derzeit nicht verfügbar",
+      "servicesDown_other": "{{services}} sind derzeit nicht verfügbar"
+    },
+    "serviceGate": {
+      "title": "Dienst nicht verfügbar",
+      "requires_one": "Diese Seite benötigt {{services}}, der derzeit nicht verfügbar ist. Sie ist automatisch wieder verfügbar, sobald sich der Dienst erholt hat.",
+      "requires_other": "Diese Seite benötigt {{services}}, die derzeit nicht verfügbar sind. Sie ist automatisch wieder verfügbar, sobald sich die Dienste erholt haben.",
+      "memberBody": "Diese Seite ist vorübergehend nicht verfügbar. Sie kommt automatisch zurück; hält das an, wenden Sie sich an Ihren Administrator.",
+      "viewStatus": "Dienststatus anzeigen"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Frage :",
@@ -5359,7 +5534,8 @@
     "serverError": "Serverfehler",
     "timedOut": "Zeitüberschreitung der Anfrage",
     "somethingWentWrong": "Etwas ist schiefgelaufen",
-    "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal"
+    "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal",
+    "connectedServiceProblem": "Problem mit einem verbundenen Dienst"
   },
   "validation": {
     "password": {
@@ -5421,13 +5597,15 @@
         "description": "Nur Lesezugriff"
       }
     },
-    "chatRoles": {
-      "writer": "Kann ansehen und Nachrichten senden. Antworten nutzen den eigenen Zugriff.",
-      "reader": "Kann den Chat nur ansehen."
-    },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
-    "invite": "Zu PipesHub einladen"
+    "invite": "Zu PipesHub einladen",
+    "searchPlaceholderTeams": "E-Mails, Teams oder Namen (durch Kommas getrennt)",
+    "searchPlaceholderUsers": "E-Mails oder Namen (durch Kommas getrennt)",
+    "alreadyRemoved": "Bereits entfernt",
+    "alreadyRemovedDescription": "{{name}} hatte bereits keinen Zugriff mehr",
+    "removeConfirmTitle": "Zugriff entfernen?",
+    "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen."
   },
   "demoData": {
     "badge": {

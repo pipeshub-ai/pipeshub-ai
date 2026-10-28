@@ -37,7 +37,7 @@ export function DestructiveTypedConfirmationDialog({
   cancelLabel = 'Cancel',
   onConfirm,
   isLoading = false,
-  confirmLoadingLabel = 'ΓÇª',
+  confirmLoadingLabel = '…',
   container,
 }: DestructiveTypedConfirmationDialogProps) {
   const [input, setInput] = useState('');

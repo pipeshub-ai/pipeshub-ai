@@ -2,9 +2,10 @@
 
 """Gmail Workspace integration fixtures (DESIGN.md in connectors/gmail/).
 
-``gmail_ws`` is class-scoped: it builds the simulated Workspace (the Drive Workspace suite's users and service
-account), makes sure the test users exist in PipesHub, creates a Gmail Workspace connector with the Drive suite's
-credentials, runs the first sync, and on teardown deletes the connector and checks its graph is gone.
+``gmail_ws`` is class-scoped: it builds the simulated Workspace (gmail_sim.env's users, and a service account
+whose key this run generated), makes sure the test users exist in PipesHub and are active in its graph, creates
+a Gmail Workspace connector with that service account, runs the first sync, and on teardown deletes the
+connector and checks its graph is gone.
 """
 
 from __future__ import annotations
@@ -16,12 +17,12 @@ from typing import Any
 
 import pytest_asyncio
 
-from connectors.gmail.gmail_env import workspace_env
+from connectors.gmail.gmail_env import WORKSPACE_VARS, workspace_env
 from connectors.gmail.gmail_sim import GmailSim, workspace_app
+from connectors.gmail.gmail_users import ensure_active_user
 from connectors.gmail_workspace.gmail_workspace_scenario import workspace_scenario
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     connector_filters,
-    ensure_pipeshub_user_exists,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
@@ -40,15 +41,13 @@ async def gmail_ws(
     try:
         env = workspace_env()
     except ValueError as e:
-        source_unavailable(f"The Google Workspace credentials the Drive suite uses are not configured: {e}")
+        source_unavailable(f"The simulated Workspace is not configured: {e}", secrets=WORKSPACE_VARS)
     sim = GmailSim()
-    if not sim.reachable():
-        source_unavailable(f"The Gmail simulator is not reachable at {sim.base_url} (compose profile gmail-sim)")
+    sim.require_reachable()
 
     sim.load({**workspace_scenario(env), "app": workspace_app(env)})
-    user_ids = {}
-    for email in (env.test_user, env.second_user):
-        user_ids[email], _ = ensure_pipeshub_user_exists(users_client, email)
+    user_ids = {email: await ensure_active_user(users_client, graph_provider, email)
+                for email in (env.test_user, env.second_user)}
 
     instance = pipeshub_client.create_connector(
         connector_type="Gmail Workspace",

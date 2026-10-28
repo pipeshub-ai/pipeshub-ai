@@ -12,14 +12,16 @@ import socket
 import ssl
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 from aiolimiter import AsyncLimiter
-from pydantic import BaseModel
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -30,21 +32,26 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
     ConnectorInitError,
 )
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.sql_stream_errors import (
     to_sql_response_error,
     to_sql_stream_error,
 )
 from app.connectors.core.base.error.stream_errors import connector_not_ready
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.constants import IconPaths
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -53,7 +60,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -65,13 +71,15 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     NumberOperator,
     OptionSourceType,
+    SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.base.sync_point.sync_point import (
-    SyncDataPointType,
-    SyncPoint,
-)
 from app.connectors.sources.postgres.apps import PostgreSQLApp
+from app.connectors.sources.postgres.catalog_diff import (
+    PostgresTableState,
+    TableChange,
+    diff_catalog,
+)
 from app.models.entities import (
     AppUser,
     ProgressStatus,
@@ -80,39 +88,56 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SQLColumnRecord,
     SQLTableRecord,
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.postgres.postgres import PostgreSQLConfig, PostgreSQLResponse
 from app.sources.external.postgres.postgres_ import (
-    PostgreSQLDataSource,
     ColumnInfo,
-    CheckConstraintInfo,
+    ColumnProfile,
     DDLResult,
     ForeignKeyInfo,
+    PostgreSQLDataSource,
     PrimaryKeyInfo,
     SchemaInfo,
+    TableColumnStatistics,
     TableDetail,
     TableListEntry,
     TableStats,
+    countable_column_names,
+    looks_personal,
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.url_fetcher import HostCheckError
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
 # Cap on the rows' text in one table's document; Postgres stops sending rows
 # past it, so a table of wide rows can't exhaust the connector's memory.
 MAX_TABLE_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_COLUMN_VALUES_STREAMED = 1000
 
 SYNC_STATE_KEY = "postgres_tables_state"
 # Bump when a saved state can no longer be trusted to describe what is indexed;
 # a state saved under another version sends the next run to a full sync.
 # 2: states saved before it could list tables that were never synced.
-SYNC_STATE_VERSION = 2
+# 3: column records saved before it have no stats or value profile.
+# 4: states saved before it carry no table or column ids to follow a rename
+#    with, and no constraint or storage digest.
+SYNC_STATE_VERSION = 4
+
+# Dropped tables removed per cascade; each batch is one delete and one
+# on_sql_records_deleted call.
+TABLES_REMOVED_PER_BATCH = 200
+# Tries at saving the state mid-run, after records moved.
+SYNC_STATE_SAVE_ATTEMPTS = 3
+
+# Exact per-column distinct/null counts sort every column of the table, so they
+# are taken only where rows x columns stays under this; larger tables rely on
+# pg_stats estimates.
+EXACT_COLUMN_STATS_MAX_CELLS = 1_000_000
 
 
 # The user waits on the setup form while this runs; a firewall that drops
@@ -247,7 +272,7 @@ def _fqn_part(name: str) -> str:
     return name
 
 
-def split_table_fqn(fqn: str) -> Tuple[str, str]:
+def split_table_fqn(fqn: str) -> tuple[str, str]:
     """Inverse of ``table_fqn``. Raises ValueError for anything it didn't write."""
     schema_name, rest = _read_fqn_part(fqn)
     if not rest.startswith("."):
@@ -258,12 +283,12 @@ def split_table_fqn(fqn: str) -> Tuple[str, str]:
     return schema_name, table_name
 
 
-def _read_fqn_part(text: str) -> Tuple[str, str]:
+def _read_fqn_part(text: str) -> tuple[str, str]:
     """Read one part off the front of ``text``; returns it and what follows."""
     if not text.startswith('"'):
         dot = text.find(".")
         return (text, "") if dot == -1 else (text[:dot], text[dot:])
-    chars: List[str] = []
+    chars: list[str] = []
     i = 1
     while i < len(text):
         if text[i] == '"':
@@ -280,39 +305,46 @@ def _read_fqn_part(text: str) -> Tuple[str, str]:
 @dataclass
 class PostgresSchema:
     name: str
-    owner: Optional[str] = None
+    owner: str | None = None
 
 
-class PostgresTableState(BaseModel):
-    column_hash: str = ""
-    n_tup_ins: int = 0
-    n_tup_upd: int = 0
-    n_tup_del: int = 0
-    # An estimate that ANALYZE moves without any write, so revision() ignores it.
-    n_live_tup: int = 0
-    schema_name: str = ""
-    table_name: str = ""
-    # Hash of the sampled rows, set only on a standby, where replayed writes
-    # leave the counters above unchanged.
-    sample_hash: str = ""
+def _table_revision(state: PostgresTableState) -> str:
+    """The table record's revision, written as structure:content.
 
-    def revision(self) -> str:
-        key = f"{self.column_hash}:{self.n_tup_ins}:{self.n_tup_upd}:{self.n_tup_del}"
-        if self.sample_hash:
-            key += f":{self.sample_hash}"
-        return hashlib.md5(key.encode()).hexdigest()
+    The first part alone says whether the table's name, columns or keys
+    changed, which is what decides if what was derived from it is out of date.
+    """
+    return f"{state.structure()}:{state.revision()}"
+
+
+def _table_ids(batch: list[tuple[Record, list[Permission]]]) -> list[str]:
+    """The table ids in a batch, which also holds the tables' column records."""
+    return [r.external_record_id for r, _ in batch if r.record_type == RecordType.SQL_TABLE]
+
+
+def _stored_structure(revision: str | None) -> str | None:
+    """The structure part of a saved revision; None for one saved before it had two parts."""
+    if not revision or ":" not in revision:
+        return None
+    return revision.split(":", 1)[0]
 
 
 @dataclass
 class PostgresTable:
     name: str
     schema_name: str
-    row_count: Optional[int] = None
-    owner: Optional[str] = None
-    columns: List[ColumnInfo] = None
-    foreign_keys: List[ForeignKeyInfo] = None
-    primary_keys: List[str] = None
-    state: Optional[PostgresTableState] = None
+    row_count: int | None = None
+    db_row_count: int | None = None
+    owner: str | None = None
+    columns: list[ColumnInfo] = None
+    foreign_keys: list[ForeignKeyInfo] = None
+    primary_keys: list[str] = None
+    state: PostgresTableState | None = None
+    column_stats: tuple[int, list[dict[str, Any]]] | None = None
+    column_profiles: dict[str, ColumnProfile] | None = None
+    # Profiling raised: the stored column stats and profiles are kept rather
+    # than overwritten with empty values.
+    profiling_failed: bool = False
 
     def __post_init__(self):
         if self.columns is None:
@@ -327,10 +359,57 @@ class PostgresTable:
         return table_fqn(self.schema_name, self.name)
 
 
-def _column_hash(columns: List[ColumnInfo]) -> str:
+def _column_hash(columns: list[ColumnInfo]) -> str:
     """MD5 of a table's column definitions, for spotting schema changes."""
     column_str = json.dumps([col.model_dump() for col in columns], sort_keys=True, default=str)
     return hashlib.md5(column_str.encode()).hexdigest()
+
+
+def _table_shape(columns: list[tuple[int, dict]], constraint_shape: str) -> str:
+    """MD5 of a table's columns, by attnum, and keys, with no name in either."""
+    key = json.dumps([sorted(columns, key=lambda column: column[0]), constraint_shape], sort_keys=True, default=str)
+    return hashlib.md5(key.encode()).hexdigest()
+
+
+def _column_revision(
+    table_revision: str | None,
+    stats: dict[str, Any],
+    profile: ColumnProfile | None,
+) -> str | None:
+    """The table's revision, extended by the column's stats and profile.
+
+    A stored record is rewritten only when its revision changes, so without
+    this a profile that moved while the rows did not would never be saved:
+    on a full sync, or after an ANALYZE, which incremental sync re-profiles.
+    profiled_at is left out: it changes on every sync.
+    """
+    facts = {key: stats.get(key) for key in ("distinct_count", "null_count", "cardinality_ratio")}
+    if profile is not None:
+        facts.update(profile.model_dump(exclude={"profiled_at"}))
+    if not any(value is not None for value in facts.values()):
+        return table_revision
+    digest = hashlib.md5(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
+    return f"{table_revision}:{digest}"
+
+
+def _stored_stats_and_profile(record: Record) -> tuple[dict[str, Any], ColumnProfile | None]:
+    """A saved column record's stats and value profile, as a fresh profile run would give them."""
+    stats = {
+        "distinct_count": getattr(record, "distinct_count", None),
+        "null_count": getattr(record, "null_count", None),
+        "cardinality_ratio": getattr(record, "cardinality_ratio", None),
+    }
+    profile = None
+    if getattr(record, "profiled_at", None) is not None:
+        profile = ColumnProfile(
+            top_values=getattr(record, "top_values", None),
+            top_value_frequencies=getattr(record, "top_value_frequencies", None),
+            min_value=getattr(record, "min_value", None),
+            max_value=getattr(record, "max_value", None),
+            numeric_text=getattr(record, "numeric_text", None),
+            profiled_at=record.profiled_at,
+        )
+    return stats, profile
 
 
 def _json_default(value: Any) -> Any:
@@ -352,7 +431,7 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
-def _decode_json_columns(rows: List[Dict[str, Any]], columns: List[ColumnInfo]) -> List[Dict[str, Any]]:
+def _decode_json_columns(rows: list[dict[str, Any]], columns: list[ColumnInfo]) -> list[dict[str, Any]]:
     """Parse json/jsonb values, which asyncpg returns as text.
 
     Left as text they would be encoded a second time, as a quoted string.
@@ -375,12 +454,34 @@ def _decode_json_columns(rows: List[Dict[str, Any]], columns: List[ColumnInfo]) 
 
 
 @dataclass
+class SyncOutcome:
+    """What one sync changed, for whatever runs after the sync."""
+
+    # Record ids of tables that are new, or whose name, columns or keys
+    # changed: what was extracted about them no longer describes them.
+    restructured: set[str] = field(default_factory=set)
+    # Their table ids, collected while records are built: a table saved after
+    # one that references it takes over the stand-in that table created, and
+    # with it the stand-in's record id, so ids are only known once saved.
+    restructured_tables: set[str] = field(default_factory=set)
+    # Record ids of every table and column the sync removed.
+    removed: set[str] = field(default_factory=set)
+    # Record ids of tables whose relations may be out of date though nothing
+    # else about them changed: one pointed at something removed, or only
+    # names changed.
+    relations_only: set[str] = field(default_factory=set)
+    # Record ids of tables renamed, or with columns renamed: what was derived
+    # from them is renamed in place.
+    renamed: set[str] = field(default_factory=set)
+
+
+@dataclass
 class SyncStats:
     schemas_synced: int = 0
     tables_new: int = 0
     errors: int = 0
     
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> dict[str, int]:
         return {
             'schemas_synced': self.schemas_synced,
             'tables_new': self.tables_new,
@@ -399,7 +500,7 @@ class SyncStats:
     .in_group("PostgreSQL")\
     .with_description("Sync schemas and tables from PostgreSQL")\
     .with_categories(["Database"])\
-    .with_scopes([ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         # Option 1: Individual connection fields
@@ -477,7 +578,7 @@ class SyncStats:
             "setup"
         ))
         .add_filter_field(FilterField(
-            name="schemas",
+            name=SyncFilterKey.SCHEMAS.value,
             display_name="Schemas",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
@@ -486,7 +587,7 @@ class SyncStats:
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
-            name="tables",
+            name=SyncFilterKey.TABLES.value,
             display_name="Tables",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
@@ -528,7 +629,7 @@ class PostgreSQLConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str = ConnectorScope.TEAM.value,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
     ) -> None:
         super().__init__(
             PostgreSQLApp(connector_id),
@@ -542,20 +643,32 @@ class PostgreSQLConnector(BaseConnector):
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.POSTGRESQL
-        self.data_source: Optional[PostgreSQLDataSource] = None
-        self.database_name: Optional[str] = None
+        self.data_source: PostgreSQLDataSource | None = None
+        self.database_name: str | None = None
+        # host:port and pg_database.oid: with the name, which database a saved
+        # sync state describes. Read again after each connect.
+        self.server_address: str | None = None
+        self.database_oid: int | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(25, 1)
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
+        self.connector_scope: str | None = scope
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
         self.sync_stats: SyncStats = SyncStats()
+        self.sync_outcome: SyncOutcome = SyncOutcome()
+        # Set during a full sync: see _build_table_record.
+        self._keep_legacy_revisions = False
+        # Tables an incremental sync found with other columns or keys, or with
+        # only other names; see _is_restructured.
+        self._structure_changed: set[str] = set()
+        self._names_changed: set[str] = set()
+        # The state saved as an incremental sync moves records; see run_incremental_sync.
+        self._checkpoint: dict[str, PostgresTableState] | None = None
         self._frontend_url: str = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
 
-        self._schema_filter_cache: List[FilterOption] = []
-        self._table_filter_cache:  List[FilterOption] = []
-        self._filter_cache_rebuild_event: Optional[asyncio.Event] = None
+        self._schema_filter_cache: list[FilterOption] = []
+        self._table_filter_cache:  list[FilterOption] = []
+        self._filter_cache_rebuild_event: asyncio.Event | None = None
 
         # Initialize sync point for incremental sync
         org_id = self.data_entities_processor.org_id
@@ -566,7 +679,7 @@ class PostgreSQLConnector(BaseConnector):
             data_store_provider=data_store_provider
         )
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for PostgreSQL connector."""
         return [
             AppUser(
@@ -634,11 +747,13 @@ class PostgreSQLConnector(BaseConnector):
                 return False
 
             self.database_name = connection_kwargs["database"]
+            self.server_address = f"{(connection_kwargs.get('host') or '').lower()}:{connection_kwargs.get('port')}"
+            self.database_oid = None
             self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
 
-            pg_config_kwargs: Dict[str, Any] = {
+            pg_config_kwargs: dict[str, Any] = {
                 **connection_kwargs,
                 "timeout": int(config.get("timeout", 30)),
             }
@@ -675,6 +790,13 @@ class PostgreSQLConnector(BaseConnector):
     async def run_sync(self) -> None:
         try:
             self.logger.info("📦 [Sync] Starting PostgreSQL sync...")
+            # Before anything that can raise: a failed sync must not report the
+            # previous one's tables again.
+            self.sync_stats = SyncStats()
+            self.sync_outcome = SyncOutcome()
+            self._structure_changed = set()
+            self._names_changed = set()
+            self._checkpoint = None
 
             if not self.data_source:
                 raise ConnectionError("PostgreSQL connector not initialized")
@@ -683,33 +805,95 @@ class PostgreSQLConnector(BaseConnector):
                 self.config_service, "postgresql", self.connector_id, self.logger
             )
 
-            self.sync_stats = SyncStats()
-
             stored_state = await self.tables_sync_point.read_sync_point(SYNC_STATE_KEY)
+            await self._load_database_oid()
 
-            if self._has_usable_state(stored_state):
-                self.logger.info("📦 [Sync] Found existing sync state, running incremental sync...")
-                await self.run_incremental_sync()
-            else:
-                self.logger.info("📦 [Sync] No usable sync state, running full sync...")
-                await self._run_full_sync_internal()
+            try:
+                if self._has_usable_state(stored_state):
+                    self.logger.info("📦 [Sync] Found existing sync state, running incremental sync...")
+                    await self.run_incremental_sync()
+                else:
+                    self.logger.info("📦 [Sync] No usable sync state, running full sync...")
+                    await self._run_full_sync_internal()
+            finally:
+                # Also after a failure: the tables saved before it still changed.
+                await self._resolve_restructured()
+                await self._announce_renames()
 
             self.sync_stats.log_summary(self.logger)
+            self.logger.info(
+                f"📦 [Sync] {len(self.sync_outcome.restructured)} table(s) new or restructured, "
+                f"{len(self.sync_outcome.removed)} record(s) removed"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
 
-    @staticmethod
-    def _has_usable_state(stored_state: Optional[Dict[str, Any]]) -> bool:
+    async def _resolve_restructured(self) -> None:
+        """Turn the restructured tables' ids into the ids of the records saved for them.
+
+        The state is saved by now, so a table left out here would not come up
+        as changed again: a failed lookup is tried again before it is given up.
+        """
+        for fqn in sorted(self.sync_outcome.restructured_tables):
+            for attempt in range(1, SYNC_STATE_SAVE_ATTEMPTS + 1):
+                try:
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=fqn, raise_on_error=True,
+                    )
+                    break
+                except Exception as e:
+                    if attempt == SYNC_STATE_SAVE_ATTEMPTS:
+                        self.sync_stats.errors += 1
+                        self.logger.error(
+                            f"Could not look up the record of restructured table {fqn}; "
+                            f"it is not reported as restructured until it changes: {e}"
+                        )
+                        record = None
+                    else:
+                        await asyncio.sleep(attempt)
+            if record and record.id:
+                self.sync_outcome.restructured.add(record.id)
+
+    async def _announce_renames(self) -> None:
+        """Tell the processor which tables were renamed, or had columns renamed.
+
+        When that fails, they are reported as restructured instead: a rename
+        alone would never bring them up again.
+        """
+        renamed = sorted(self.sync_outcome.renamed - self.sync_outcome.removed)
+        if not renamed:
+            return
+        try:
+            await self.data_entities_processor.on_sql_records_renamed(renamed, self.connector_id)
+        except Exception as e:
+            self.logger.warning(
+                f"Could not report {len(renamed)} renamed table(s); "
+                f"reporting them as restructured instead: {e}"
+            )
+            self.sync_outcome.restructured.update(renamed)
+
+    async def _load_database_oid(self) -> None:
+        if self.database_oid is None:
+            self.database_oid = await self.data_source.get_database_oid()
+
+    def _has_usable_state(self, stored_state: dict[str, Any] | None) -> bool:
+        # Saved for another database: the connector was pointed elsewhere, the
+        # same name is on another server, or the database was dropped and made
+        # again. Nothing in it describes this one, and its table oids would
+        # match unrelated tables here.
         return bool(
             stored_state
             and stored_state.get("table_states")
             and stored_state.get("state_version") == SYNC_STATE_VERSION
+            and stored_state.get("database") == self.database_name
+            and stored_state.get("server") == self.server_address
+            and stored_state.get("database_oid") == self.database_oid
         )
 
     @staticmethod
-    def _passes_filter(value: str, selected: Optional[List[str]], operator: str) -> bool:
+    def _passes_filter(value: str, selected: list[str] | None, operator: str) -> bool:
         if not selected:
             return True
         if operator == MultiselectOperator.NOT_IN.value:
@@ -718,7 +902,7 @@ class PostgreSQLConnector(BaseConnector):
 
     def _get_filter_values(
         self,
-    ) -> Tuple[Optional[List[str]], str, Optional[List[str]], str]:
+    ) -> tuple[list[str] | None, str, list[str] | None, str]:
         schema_filter = self.sync_filters.get("schemas")
         if schema_filter and schema_filter.value:
             selected_schemas = schema_filter.value
@@ -738,6 +922,7 @@ class PostgreSQLConnector(BaseConnector):
         return selected_schemas, schemas_op, selected_tables, tables_op
 
     async def _run_full_sync_internal(self) -> None:
+        self._keep_legacy_revisions = True
         try:
             self.logger.info("📦 [Full Sync] Starting full sync...")
 
@@ -753,6 +938,7 @@ class PostgreSQLConnector(BaseConnector):
             snapshot, _ = await self._get_current_table_states(
                 selected_schemas, schemas_op, selected_tables, tables_op
             )
+            self._structure_changed |= await self._columns_changed_since_older_state(snapshot)
 
             schemas = await self._fetch_schemas()
 
@@ -765,8 +951,8 @@ class PostgreSQLConnector(BaseConnector):
             if any(s.name == self.database_name for s in schemas):
                 await self._remove_database_group_self_links()
 
-            listed: Set[str] = set()
-            synced: Set[str] = set()
+            listed: set[str] = set()
+            synced: set[str] = set()
             for schema in schemas:
                 table_names = [
                     n for n in await self._list_table_names(schema.name)
@@ -776,6 +962,7 @@ class PostgreSQLConnector(BaseConnector):
                 listed.update(table_fqn(schema.name, n) for n in table_names)
                 tables = await self._load_tables(schema.name, table_names, snapshot)
                 synced |= await self._sync_tables(schema.name, tables)
+                await self._remove_dropped_columns(schema.name, tables)
 
             self.sync_stats.tables_new += len(synced)
 
@@ -794,6 +981,34 @@ class PostgreSQLConnector(BaseConnector):
             self.sync_stats.errors += 1
             self.logger.error(f"❌ [Full Sync] Error: {e}", exc_info=True)
             raise
+        finally:
+            self._keep_legacy_revisions = False
+
+    async def _columns_changed_since_older_state(
+        self, snapshot: dict[str, PostgresTableState],
+    ) -> set[str]:
+        """Tables whose columns differ from a state saved by an earlier version.
+
+        Earlier versions synced once and saved that state: everything changed in
+        the database since then is found by the first sync after the upgrade,
+        which is a full one. Their records carry revisions that cannot say
+        whether the columns moved, so the old state is asked instead. It kept no
+        keys, so a key changed since then is found only when it changes again.
+        """
+        try:
+            stored = await self.tables_sync_point.read_sync_point(SYNC_STATE_KEY)
+            if not stored or stored.get("state_version") == SYNC_STATE_VERSION or not stored.get("table_states"):
+                return set()
+            older = json.loads(stored["table_states"])
+        except Exception as e:
+            self.logger.warning(f"Could not read the sync state saved by an earlier version: {e}")
+            return set()
+        return {
+            fqn for fqn, state in snapshot.items()
+            if isinstance(older.get(fqn), dict)
+            and older[fqn].get("column_hash")
+            and older[fqn]["column_hash"] != state.column_hash
+        }
 
     async def _create_database_record_group(self) -> None:
         permissions = await self._get_permissions()
@@ -815,7 +1030,7 @@ class PostgreSQLConnector(BaseConnector):
             return f"{self.database_name}.{schema_name}"
         return schema_name
 
-    async def _fetch_schemas(self) -> List[PostgresSchema]:
+    async def _fetch_schemas(self) -> list[PostgresSchema]:
         response = await self.data_source.list_schemas()
         if not response.success:
             raise RuntimeError(f"Failed to list schemas: {response.error}")
@@ -829,7 +1044,7 @@ class PostgreSQLConnector(BaseConnector):
             ))
         return schemas
 
-    async def _list_table_names(self, schema: str) -> List[str]:
+    async def _list_table_names(self, schema: str) -> list[str]:
         response = await self.data_source.list_tables(schema=schema)
         if not response.success:
             raise RuntimeError(f"Failed to list tables in {schema}: {response.error}")
@@ -839,12 +1054,12 @@ class PostgreSQLConnector(BaseConnector):
         self,
         schema_name: str,
         table_name: str,
-        state: Optional[PostgresTableState] = None,
+        state: PostgresTableState | None = None,
     ) -> PostgresTable:
-        """Read a table's columns and keys.
+        """Read a table's columns and keys, and profile its columns.
 
-        Raises if any of them can't be read: syncing the table without them would
-        index it as though it had none.
+        Raises if the columns or keys can't be read: syncing the table without
+        them would index it as though it had none. Profiling never raises.
         """
         info, fks, pks = await asyncio.gather(
             self.data_source.get_table_info(schema_name, table_name),
@@ -857,7 +1072,7 @@ class PostgreSQLConnector(BaseConnector):
                     f"Failed to read {what} of {schema_name}.{table_name}: {response.error}"
                 )
 
-        return PostgresTable(
+        table = PostgresTable(
             name=table_name,
             schema_name=schema_name,
             row_count=state.n_live_tup if state else None,
@@ -866,13 +1081,15 @@ class PostgreSQLConnector(BaseConnector):
             primary_keys=[PrimaryKeyInfo.model_validate(pk).column_name for pk in (pks.data or [])],
             state=state,
         )
+        await self._profile_table(table)
+        return table
 
     async def _load_tables(
         self,
         schema_name: str,
-        table_names: List[str],
-        states: Dict[str, PostgresTableState],
-    ) -> List[PostgresTable]:
+        table_names: list[str],
+        states: dict[str, PostgresTableState],
+    ) -> list[PostgresTable]:
         tables = []
         for name in table_names:
             try:
@@ -884,17 +1101,109 @@ class PostgreSQLConnector(BaseConnector):
                 self.logger.error(f"Skipping table {schema_name}.{name}: {e}")
         return tables
 
-    async def _get_permissions(self) -> List[Permission]:
-        return [Permission(
-            type=PermissionType.OWNER,
-            entity_type=EntityType.ORG,
-        )]
+    async def _profile_table(self, table: PostgresTable) -> None:
+        """Attach column stats and value profiles; the table syncs without them on failure."""
+        if not self.data_source:
+            return
+        try:
+            statistics = await self.data_source.fetch_column_statistics(table.schema_name, table.name)
+            estimated_rows = self._estimated_rows(table, statistics)
+            if (
+                estimated_rows is not None
+                and estimated_rows * len(table.columns) <= EXACT_COLUMN_STATS_MAX_CELLS
+            ):
+                await self._attach_column_stats(table)
+            # Stored values and extremes are row data; keep them out of the
+            # graph when the admin turned table indexing off.
+            if statistics is None or (
+                self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value)
+            ):
+                return
+            exact_stats = None
+            if table.column_stats:
+                exact_stats = {s["name"]: s for s in table.column_stats[1] if s.get("name")}
+            table.column_profiles = await self.data_source.profile_columns(
+                table.schema_name,
+                table.name,
+                table.columns,
+                statistics,
+                row_count=table.db_row_count if table.db_row_count is not None else estimated_rows,
+                exact_stats=exact_stats,
+            )
+        except Exception as e:
+            table.profiling_failed = True
+            self.logger.warning(f"Could not profile columns of {table.fqn}: {e}")
+
+    @staticmethod
+    def _estimated_rows(
+        table: PostgresTable,
+        statistics: TableColumnStatistics | None,
+    ) -> int | None:
+        """The larger row estimate, or None when neither is above zero.
+
+        Zero is not taken as empty: n_live_tup reads 0 after a stats reset and
+        reltuples -1 before the first ANALYZE, whatever the table holds. A new
+        table nobody has analyzed still counts its inserts in n_live_tup, so
+        only one whose counters were reset goes unprofiled until analyzed.
+        """
+        estimates = [table.row_count, statistics.reltuples if statistics else None]
+        positive = [int(n) for n in estimates if n is not None and n > 0]
+        return max(positive) if positive else None
+
+    async def _attach_column_stats(self, table: PostgresTable) -> None:
+        """One heap scan for row count and per-column distinct/null stats."""
+        if not self.data_source:
+            return
+        row_count, column_stats = await self.data_source.fetch_table_row_and_column_stats(
+            table.schema_name,
+            table.name,
+            countable_column_names(table.columns or []),
+        )
+        if row_count is not None:
+            table.db_row_count = row_count
+            if row_count > 0:
+                table.row_count = row_count
+        if column_stats is not None:
+            table.column_stats = column_stats
+
+    def _indexed_row_count(self, db_row_count: int | None) -> int | None:
+        if db_row_count is None:
+            return None
+        max_rows = min(
+            int(self.indexing_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
+            MAX_ROWS_PER_TABLE_LIMIT,
+        )
+        return min(db_row_count, max_rows)
+
+    async def _get_permissions(self) -> list[Permission]:
+        """Who reaches the database, and through it every schema, table and column.
+
+        Team scope: the whole organisation. Personal scope: the creator only;
+        with no creator to name, nobody rather than everybody.
+        """
+        if self.scope == ConnectorScope.TEAM.value:
+            return [Permission(type=PermissionType.OWNER, entity_type=EntityType.ORG)]
+        if not self.creator_email:
+            await self._load_creator_email()
+        if self.creator_email:
+            return [Permission(
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                external_id=self.created_by,
+            )]
+        self.logger.warning(
+            "Personal PostgreSQL connector %s has no creator email; its database is shared with no one",
+            self.connector_id,
+        )
+        return []
 
     async def _build_table_record(
         self,
         schema_name: str,
         table: PostgresTable,
-    ) -> Tuple[SQLTableRecord, bool]:
+    ) -> tuple[SQLTableRecord, bool]:
         """Build the record for a table; the flag says whether one is already stored."""
         fqn = table_fqn(schema_name, table.name)
         existing = await self.data_entities_processor.get_record_by_external_id(
@@ -903,11 +1212,25 @@ class PostgreSQLConnector(BaseConnector):
         )
 
         current_time = get_epoch_timestamp_in_ms()
-        # Derived from the table's own state, so syncing an unchanged table again
-        # finds the revision it stored last time and does not re-index it.
-        revision = table.state.revision() if table.state else str(current_time)
+        revision = _table_revision(table.state) if table.state else str(current_time)
+        if (
+            self._keep_legacy_revisions
+            and existing is not None
+            and table.state is not None
+            and existing.external_revision_id == table.state.legacy_revision()
+        ):
+            # Saved by an earlier version, whose revisions were written another
+            # way, and the rows are as they were then. A new revision would
+            # re-index every table of every connector on the first sync after
+            # an upgrade; the next change to the table writes one.
+            revision = existing.external_revision_id
         record_id = existing.id if existing else str(uuid.uuid4())
         changed = existing is None or existing.external_revision_id != revision
+        if self._is_restructured(
+            existing, table.state,
+            structure_changed=fqn in self._structure_changed, names_only=fqn in self._names_changed,
+        ):
+            self.sync_outcome.restructured_tables.add(fqn)
 
         record = SQLTableRecord(
             id=record_id,
@@ -924,9 +1247,9 @@ class PostgreSQLConnector(BaseConnector):
             weburl=f"{self._frontend_url}/record/{record_id}" if self._frontend_url else "",
             source_created_at=existing.source_created_at if existing else current_time,
             source_updated_at=current_time if changed else existing.source_updated_at,
+            database_name=self.database_name,
+            schema_name=schema_name,
             row_count=table.row_count,
-            # 0 on an existing record lets the save bump the stored version only
-            # when the revision changed.
             version=0 if existing else 1,
             inherit_permissions=True,
         )
@@ -955,24 +1278,409 @@ class PostgreSQLConnector(BaseConnector):
 
         return record, existing is not None
 
+    @staticmethod
+    def _is_restructured(
+        existing: Record | None,
+        state: PostgresTableState | None,
+        *,
+        structure_changed: bool = False,
+        names_only: bool = False,
+    ) -> bool:
+        """Whether what is known about the table no longer describes it.
+
+        ``structure_changed`` is what a comparison with the saved sync state
+        says, and it counts whatever the record says: the record may have been
+        written by a run that failed before handing the table on. A record saved
+        before revisions carried the structure cannot be compared by its
+        revision, so an upgrade does not report every table as changed.
+        ``names_only`` is that comparison finding only names changed, which the
+        record's structure, written with the names, cannot tell apart.
+        """
+        if existing is None or getattr(existing, "is_placeholder", False) or structure_changed:
+            return True
+        if names_only:
+            return False
+        stored = _stored_structure(existing.external_revision_id)
+        return state is not None and stored is not None and stored != state.structure()
+
+    def _column_fqn(self, table_fqn: str, column_name: str) -> str:
+        return f"{self.database_name}.{table_fqn}.{column_name}"
+
+    def _build_column_records(
+        self,
+        table_record: SQLTableRecord,
+        table: PostgresTable,
+        stored: dict[str, Record] | None = None,
+    ) -> list[SQLColumnRecord]:
+        """Column records for ``table``.
+
+        ``stored`` maps column FQN to the saved record; when this sync's
+        profiling failed, the saved stats and profile are kept.
+        """
+        table_fqn = table_record.external_record_id
+        seen: set[str] = set()
+        column_records: list[SQLColumnRecord] = []
+
+        stats_by_name: dict[str, dict[str, Any]] = {}
+        if table.column_stats:
+            _total_rows, stats_list = table.column_stats
+            stats_by_name = {
+                str(s.get("name")): s
+                for s in stats_list
+                if s.get("name")
+            }
+
+        for position, col in enumerate(table.columns):
+            name = (col.name or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            col_fqn = self._column_fqn(table_fqn, name)
+            col_stats = stats_by_name.get(name, {})
+            profile = (table.column_profiles or {}).get(name)
+            previous = (stored or {}).get(col_fqn) if table.profiling_failed else None
+            if previous is not None:
+                col_stats, profile = _stored_stats_and_profile(previous)
+            column_records.append(
+                SQLColumnRecord(
+                    id=str(uuid.uuid4()),
+                    record_name=name,
+                    record_type=RecordType.SQL_COLUMN,
+                    record_group_type=table_record.record_group_type,
+                    external_record_group_id=table_record.external_record_group_id,
+                    external_record_id=col_fqn,
+                    external_revision_id=_column_revision(
+                        table_record.external_revision_id, col_stats, profile
+                    ),
+                    parent_external_record_id=table_fqn,
+                    parent_record_type=RecordType.SQL_TABLE,
+                    origin=OriginTypes.CONNECTOR.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    mime_type=MimeTypes.SQL_COLUMN.value,
+                    weburl="",
+                    source_created_at=table_record.source_created_at,
+                    source_updated_at=table_record.source_updated_at,
+                    version=table_record.version,
+                    inherit_permissions=True,
+                    is_dependent_node=True,
+                    parent_node_id=table_record.id,
+                    is_internal=True,
+                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                    fqn=col_fqn,
+                    table_fqn=table_fqn,
+                    data_type=col.data_type,
+                    nullable=bool(col.nullable),
+                    is_primary_key=bool(col.is_primary_key),
+                    is_unique=bool(col.is_unique),
+                    is_part_of_composite_primary_key=bool(col.is_part_of_composite_primary_key),
+                    is_part_of_composite_unique=bool(col.is_part_of_composite_unique),
+                    default=col.default,
+                    ordinal_position=position,
+                    distinct_count=col_stats.get("distinct_count"),
+                    null_count=col_stats.get("null_count"),
+                    cardinality_ratio=col_stats.get("cardinality_ratio"),
+                    top_values=profile.top_values if profile else None,
+                    top_value_frequencies=profile.top_value_frequencies if profile else None,
+                    min_value=profile.min_value if profile else None,
+                    max_value=profile.max_value if profile else None,
+                    numeric_text=profile.numeric_text if profile else None,
+                    profiled_at=profile.profiled_at if profile else None,
+                )
+            )
+        return column_records
+
+    async def _stored_columns(self, table_fqn: str) -> dict[str, Record]:
+        async with self.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_records_by_parent(
+                self.connector_id, table_fqn, RecordType.SQL_COLUMN.value,
+            )
+        return {child.external_record_id: child for child in existing}
+
+    async def _with_profiles(self, stored: dict[str, Record]) -> dict[str, Record]:
+        """Saved column records as ``SQLColumnRecord``s, which carry the stats and
+        profile the plain records lack.
+
+        Raises when any of them cannot be read so: a plain record in its place
+        would write the column back with no profile.
+        """
+        ids = [record.id for record in stored.values() if record.id]
+        typed = await self.data_entities_processor.get_typed_records_by_ids(ids, raise_on_error=True)
+        missing = [record_id for record_id in ids if record_id not in typed]
+        if missing:
+            raise RuntimeError(f"Could not read the stored profiles of {len(missing)} column record(s)")
+        return {fqn: typed.get(record.id, record) for fqn, record in stored.items()}
+
+    async def _remove_records(self, record_ids: list[str], *, table_record_id: str | None = None) -> None:
+        """Delete table or column records with everything built from them.
+
+        A table's columns go with it. ``table_record_id`` is the table the
+        columns in ``record_ids`` belong to, when only columns are removed.
+        """
+        await self._note_tables_to_relate_again(record_ids, table_record_id=table_record_id)
+        removed = await self.data_entities_processor.on_sql_records_deleted(
+            record_ids, self.connector_id, table_record_id=table_record_id,
+        )
+        self.sync_outcome.removed.update(removed)
+
+    async def _note_tables_to_relate_again(self, record_ids: list[str], *, table_record_id: str | None) -> None:
+        """Note the tables whose relations depended on these records, before they go.
+
+        Nothing else about those tables changed, so no other sync would look
+        at them again. Best effort.
+        """
+        try:
+            sources = await self.data_entities_processor.sql_tables_to_relate_again(
+                [table_record_id] if table_record_id else record_ids,
+                column_ids=record_ids if table_record_id else None,
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not find the tables related through {len(record_ids)} removed record(s): {e}")
+            return
+        self.sync_outcome.relations_only.update(sources)
+
+    async def _remove_dropped_columns(self, schema_name: str, tables: list[PostgresTable]) -> None:
+        """Delete the records of columns these tables no longer have.
+
+        For a full sync, which saves every table's current columns without
+        looking at the stored ones the way a changed table's sync does.
+        """
+        for table in tables:
+            fqn = table_fqn(schema_name, table.name)
+            try:
+                current = {
+                    self._column_fqn(fqn, (col.name or "").strip()) for col in table.columns or []
+                }
+                stored = await self._stored_columns(fqn)
+                dropped = [
+                    record.id for external_id, record in stored.items()
+                    if external_id not in current and record.id
+                ]
+                if not dropped:
+                    continue
+                table_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=fqn,
+                )
+                await self._remove_records(
+                    dropped, table_record_id=table_record.id if table_record else None,
+                )
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.warning(f"Failed to remove dropped columns of {fqn}: {e}")
+
+    async def _rename_tables(self, renamed: dict[str, str], *, blocked: set[str] = frozenset()) -> set[str]:
+        """Move the records of renamed tables to their new names; returns the new names not moved.
+
+        Only their ids change here; the sync of each table that follows rewrites
+        the rest. Keeping the records keeps what hangs off them: the notes
+        people wrote and anything else linked to the table.
+
+        One write moves them all, so tables that swapped names, or a chain of
+        renames, move together. A table waits when the name it moves into is
+        not free: a ``blocked`` name (a dropped table there could not be
+        removed), or the name of a table that could not move out of it.
+        """
+        moves: dict[str, tuple[Record, list[Record]]] = {}
+        unmoved: set[str] = set()
+        for old_fqn, new_fqn in sorted(renamed.items()):
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    table = await tx_store.get_record_by_external_id(
+                        self.connector_id, old_fqn, raise_on_error=True,
+                    )
+                    if table is None:
+                        # Never stored, or moved by a run that failed after this step.
+                        continue
+                    columns = await tx_store.get_records_by_parent(
+                        self.connector_id, old_fqn, RecordType.SQL_COLUMN.value,
+                    )
+                moves[old_fqn] = (table, columns)
+            except Exception as e:
+                self.sync_stats.errors += 1
+                unmoved.add(new_fqn)
+                self.logger.error(f"Error renaming table {old_fqn} to {new_fqn}: {e}", exc_info=True)
+
+        self._hold_renames(renamed, moves, unmoved, blocked)
+        for old_fqn in sorted(moves):
+            new_fqn = renamed[old_fqn]
+            if new_fqn in moves:
+                continue  # left by a table that moves too
+            try:
+                await self._remove_occupant(new_fqn, moves[old_fqn][0])
+            except Exception as e:
+                self.sync_stats.errors += 1
+                unmoved.add(new_fqn)
+                moves.pop(old_fqn)
+                self.logger.error(f"Error freeing {new_fqn} for table {old_fqn}: {e}", exc_info=True)
+        self._hold_renames(renamed, moves, unmoved, blocked)
+
+        updates: list[dict[str, Any]] = []
+        for old_fqn, (table, columns) in moves.items():
+            new_fqn = renamed[old_fqn]
+            updates.append({"id": table.id, "externalRecordId": new_fqn})
+            updates.extend(
+                {
+                    "id": column.id,
+                    "externalRecordId": self._column_fqn(new_fqn, column.record_name),
+                    "externalParentId": new_fqn,
+                }
+                for column in columns if column.id
+            )
+        if updates:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.error(f"Error renaming {len(moves)} table(s): {e}", exc_info=True)
+                return unmoved | {renamed[old_fqn] for old_fqn in moves}
+        for old_fqn in sorted(moves):
+            self.logger.info(f"Table {old_fqn} is now {renamed[old_fqn]}; kept its record")
+        return unmoved
+
+    @staticmethod
+    def _hold_renames(
+        renamed: dict[str, str],
+        moves: dict[str, tuple[Record, list[Record]]],
+        unmoved: set[str],
+        blocked: set[str],
+    ) -> None:
+        """Hold back every rename into a name that will not be free."""
+        held = True
+        while held:
+            held = False
+            for old_fqn, new_fqn in renamed.items():
+                if new_fqn in unmoved:
+                    continue
+                if new_fqn in blocked or (new_fqn in renamed and renamed[new_fqn] in unmoved):
+                    unmoved.add(new_fqn)
+                    moves.pop(old_fqn, None)
+                    held = True
+
+    async def _remove_occupant(self, fqn: str, table: Record) -> None:
+        """Remove what is stored under a name a renamed table moves into.
+
+        A table that references the renamed one and was synced first leaves a
+        stand-in there; the tables that reference it keep their foreign keys,
+        moved to the real record, since they are not synced again until they
+        change. Anything else there belongs to a table that is gone.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            occupant = await tx_store.get_record_by_external_id(self.connector_id, fqn, raise_on_error=True)
+        if occupant is None or occupant.id == table.id:
+            return
+        await self.data_entities_processor.move_incoming_relations(occupant.id, table.id)
+        await self._remove_records([occupant.id])
+
+    async def _on_table_renamed(self, table_record_id: str) -> None:
+        """Tell the processor a table, or one of its columns, was renamed."""
+        try:
+            await self.data_entities_processor.on_sql_table_renamed(table_record_id)
+        except Exception as e:
+            self.sync_stats.errors += 1
+            self.logger.warning(f"Could not handle the rename of table record {table_record_id}: {e}")
+
+    async def _rename_column_records(
+        self,
+        table_fqn: str,
+        renames: dict[str, str],
+        *,
+        table_record_id: str | None = None,
+    ) -> None:
+        """Move stored column records to their columns' new names.
+
+        One write moves them all, so columns that swapped names (``id`` became
+        ``legacy_id`` and ``uuid`` became ``id``) keep their records. A record
+        under a name a renamed column takes, whose own column was not renamed
+        away, belonged to a column that was dropped: it goes first.
+        """
+        if not renames:
+            return
+        stored = await self._stored_columns(table_fqn)
+        displaced: list[str] = []
+        for old_name, new_name in renames.items():
+            occupant = stored.get(self._column_fqn(table_fqn, new_name))
+            # Moved there already when the old name holds no record: by a run
+            # that failed after this step.
+            if (
+                new_name not in renames
+                and self._column_fqn(table_fqn, old_name) in stored
+                and occupant is not None
+                and occupant.id
+            ):
+                displaced.append(occupant.id)
+        if displaced:
+            await self._remove_records(displaced, table_record_id=table_record_id)
+        updates = [
+            {"id": column.id, "externalRecordId": self._column_fqn(table_fqn, new_name)}
+            for old_name, new_name in renames.items()
+            if (column := stored.get(self._column_fqn(table_fqn, old_name))) is not None and column.id
+        ]
+        if updates:
+            async with self.data_store_provider.transaction() as tx_store:
+                await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+            await self._checkpoint_column_renames(table_fqn, renames)
+
+    async def _sync_table_columns(
+        self,
+        table_record: SQLTableRecord,
+        table: PostgresTable,
+        column_renames: dict[str, str] | None = None,
+    ) -> None:
+        table_fqn = table_record.external_record_id
+        desired_fqns = {
+            self._column_fqn(table_fqn, (col.name or "").strip())
+            for col in (table.columns or [])
+            if (col.name or "").strip()
+        }
+
+        await self._rename_column_records(table_fqn, column_renames or {}, table_record_id=table_record.id)
+
+        async with self.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_records_by_parent(
+                self.connector_id,
+                table_fqn,
+                RecordType.SQL_COLUMN.value,
+            )
+        dropped = [
+            child.id for child in existing
+            if child.external_record_id not in desired_fqns and child.id
+        ]
+        if dropped:
+            await self._remove_records(dropped, table_record_id=table_record.id)
+
+        stored = {child.external_record_id: child for child in existing}
+        if table.profiling_failed:
+            stored = await self._with_profiles(stored)
+        col_records = self._build_column_records(table_record, table, stored)
+        if col_records:
+            await self.data_entities_processor.on_new_records(
+                [(record, []) for record in col_records]
+            )
+
     async def _process_tables_generator(
         self,
         schema_name: str,
-        tables: List[PostgresTable],
-    ) -> AsyncGenerator[Tuple[Record, List[Permission]], None]:
+        tables: list[PostgresTable],
+    ) -> AsyncGenerator[tuple[Record, list[Permission]], None]:
 
         for table in tables:
             try:
                 record, _ = await self._build_table_record(schema_name, table)
+                yield (record, [])
+                stored = (
+                    await self._with_profiles(await self._stored_columns(record.external_record_id))
+                    if table.profiling_failed else None
+                )
+                for col_record in self._build_column_records(record, table, stored):
+                    yield (col_record, [])
+                await asyncio.sleep(0)
             except Exception as e:
                 self.sync_stats.errors += 1
                 self.logger.error(f"Error processing table {table.name}: {e}", exc_info=True)
                 continue
 
-            yield (record, [])
-            await asyncio.sleep(0)
-
-    async def _sync_schemas(self, schemas: List[PostgresSchema]) -> None:
+    async def _sync_schemas(self, schemas: list[PostgresSchema]) -> None:
         if not schemas:
             return
         groups = []
@@ -991,13 +1699,13 @@ class PostgreSQLConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups(groups)
         self.logger.info(f"Synced {len(groups)} schemas")
 
-    async def _sync_tables(self, schema_name: str, tables: List[PostgresTable]) -> Set[str]:
+    async def _sync_tables(self, schema_name: str, tables: list[PostgresTable]) -> set[str]:
         """Save records for these tables; returns the ones that were saved."""
-        synced: Set[str] = set()
+        synced: set[str] = set()
         if not tables:
             return synced
 
-        batch: List[Tuple[Record, List[Permission]]] = []
+        batch: list[tuple[Record, list[Permission]]] = []
 
         async for record, perms in self._process_tables_generator(schema_name, tables):
             batch.append((record, perms))
@@ -1005,19 +1713,24 @@ class PostgreSQLConnector(BaseConnector):
             if len(batch) >= self.batch_size:
                 self.logger.debug(f"Processing batch of {len(batch)} tables")
                 await self.data_entities_processor.on_new_records(batch)
-                synced.update(r.external_record_id for r, _ in batch)
+                synced.update(_table_ids(batch))
                 batch = []
 
         if batch:
             await self.data_entities_processor.on_new_records(batch)
-            synced.update(r.external_record_id for r, _ in batch)
+            synced.update(_table_ids(batch))
 
         self.logger.info(f"Synced {len(synced)} tables in {schema_name}")
         return synced
 
-    async def _sync_updated_tables(self, schema_name: str, tables: List[PostgresTable]) -> Set[str]:
+    async def _sync_updated_tables(
+        self,
+        schema_name: str,
+        tables: list[PostgresTable],
+        changes: dict[str, TableChange] | None = None,
+    ) -> set[str]:
         """Re-sync tables whose content or columns changed; returns the ones saved."""
-        synced: Set[str] = set()
+        synced: set[str] = set()
         if not tables:
             return synced
 
@@ -1025,15 +1738,23 @@ class PostgreSQLConnector(BaseConnector):
 
         for table in tables:
             fqn = table_fqn(schema_name, table.name)
+            change = (changes or {}).get(fqn)
             try:
                 record, existed = await self._build_table_record(schema_name, table)
                 if existed:
                     await self.data_entities_processor.on_record_content_update(record)
                 else:
-                    # Known to the saved state but never stored: create it rather
-                    # than skip it, or nothing would ever create it.
                     self.logger.warning(f"No record for changed table {fqn}; creating it")
                     await self.data_entities_processor.on_new_records([(record, [])])
+                await self._sync_table_columns(
+                    record, table, change.column_renames if change else None,
+                )
+                if change and (change.previous_fqn or change.column_renames or change.rename_pending):
+                    await self._on_table_renamed(record.id)
+                    self.sync_outcome.renamed.add(record.id)
+                    if change.names_only:
+                        # Its pairs are ranked by name, and nothing else changed.
+                        self.sync_outcome.relations_only.add(record.id)
                 synced.add(fqn)
                 self.logger.debug(f"Published content update for table: {fqn}")
             except Exception as e:
@@ -1046,8 +1767,8 @@ class PostgreSQLConnector(BaseConnector):
     async def stream_record(
         self,
         record: Record,
-        user_id: Optional[str] = None,
-        convertTo: Optional[str] = None
+        user_id: str | None = None,
+        convertTo: str | None = None
     ) -> StreamingResponse:
         try:
             if not self.data_source:
@@ -1063,7 +1784,8 @@ class PostgreSQLConnector(BaseConnector):
                         table_info_response.error, connector=self.display_name
                     )
                 detail = TableDetail.model_validate(table_info_response.data)
-                columns: List[ColumnInfo] = detail.columns
+                columns: list[ColumnInfo] = detail.columns
+                primary_keys = list(detail.primary_keys or [])
                 self.logger.info(f"✅ Retrieved {len(columns)} columns for {schema}.{table}")
 
                 # These queries only fail on a driver error — a table with no
@@ -1079,16 +1801,6 @@ class PostgreSQLConnector(BaseConnector):
                     ForeignKeyInfo.model_validate(fk) for fk in (fks_response.data or [])
                 ]
 
-                pks_response = await self.data_source.get_primary_keys(schema, table)
-                if not pks_response.success:
-                    self.logger.error(f"❌ Failed to get primary keys for {schema}.{table}: {pks_response.error}")
-                    raise to_sql_response_error(
-                        pks_response.error, connector=self.display_name
-                    )
-                primary_keys: List[str] = [
-                    PrimaryKeyInfo.model_validate(pk).column_name
-                    for pk in (pks_response.data or [])
-                ]
 
                 sync_filters, _ = await load_connector_filters(
                     self.config_service, "postgresql", self.connector_id, self.logger
@@ -1132,15 +1844,82 @@ class PostgreSQLConnector(BaseConnector):
                     json_iterator(), filename=f"{table}.json", mime_type=MimeTypes.SQL_TABLE.value
                 )
 
+            if record.record_type == RecordType.SQL_COLUMN:
+                return await self._stream_column(record)
+
             raise HTTPException(status_code=400, detail="Unsupported record type")
 
         except Exception as e:
             self.logger.error(f"Error streaming record: {e}", exc_info=True)
             raise
 
-    def _split_table_fqn(self, record: Record) -> Tuple[str, str]:
-        """Schema and table of a table record."""
-        fqn = record.external_record_id or ""
+    async def _stream_column(self, record: Record) -> StreamingResponse:
+        """A column's definition, its stored profile, and its live value counts."""
+        schema, table = self._split_table_fqn(
+            record, fqn=getattr(record, "table_fqn", None) or record.parent_external_record_id,
+        )
+        column = record.record_name
+        # The counts group the whole table, past the rows a table stream is
+        # capped to, so a column that looks personal gets none, as it gets no
+        # top values in its profile.
+        withheld = looks_personal(column)
+        value_counts: list[dict[str, Any]] = []
+        if not withheld:
+            try:
+                # One past the limit, to tell a cut-off list from one that fits exactly.
+                value_counts = await self.data_source.fetch_column_value_counts(
+                    schema, table, column, limit=MAX_COLUMN_VALUES_STREAMED + 1,
+                )
+            except Exception as e:
+                self.logger.error(f"❌ Failed to read values of {schema}.{table}.{column}: {e}")
+                raise to_sql_stream_error(e, connector=self.display_name) from e
+
+        top_values = getattr(record, "top_values", None) or []
+        frequencies = getattr(record, "top_value_frequencies", None) or []
+        data = {
+            "column_name": column,
+            "table_name": table,
+            "schema_name": schema,
+            "database_name": self.database_name,
+            "data_type": getattr(record, "data_type", None),
+            "nullable": getattr(record, "nullable", None),
+            "is_primary_key": getattr(record, "is_primary_key", None),
+            "is_unique": getattr(record, "is_unique", None),
+            "default": getattr(record, "default", None),
+            "ordinal_position": getattr(record, "ordinal_position", None),
+            "profile": {
+                "distinct_count": getattr(record, "distinct_count", None),
+                "null_count": getattr(record, "null_count", None),
+                "cardinality_ratio": getattr(record, "cardinality_ratio", None),
+                "min_value": getattr(record, "min_value", None),
+                "max_value": getattr(record, "max_value", None),
+                "numeric_text": getattr(record, "numeric_text", None),
+                "profiled_at": getattr(record, "profiled_at", None),
+                "top_values": [
+                    {"value": value, "frequency": frequency}
+                    for value, frequency in zip(top_values, frequencies)
+                ],
+            },
+            "value_counts": [
+                {"value": row["value"], "count": row["count"]}
+                for row in value_counts[:MAX_COLUMN_VALUES_STREAMED]
+            ],
+            "value_counts_truncated": len(value_counts) > MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_withheld": withheld,
+            "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
+        }
+        json_bytes = json.dumps(data, default=_json_default).encode("utf-8")
+
+        async def json_iterator() -> AsyncGenerator[bytes, None]:
+            yield json_bytes
+
+        return create_stream_record_response(
+            json_iterator(), filename=f"{table}.{column}.json", mime_type=MimeTypes.SQL_COLUMN.value
+        )
+
+    def _split_table_fqn(self, record: Record, fqn: str | None = None) -> tuple[str, str]:
+        """Schema and table of a table record, or of the table ``fqn`` names."""
+        fqn = (fqn if fqn is not None else record.external_record_id) or ""
         try:
             return split_table_fqn(fqn)
         except ValueError:
@@ -1233,13 +2012,15 @@ class PostgreSQLConnector(BaseConnector):
                 self.data_source = None
 
             self.database_name = None
+            self.server_address = None
+            self.database_oid = None
 
             self.logger.info("PostgreSQL connector cleanup completed")
 
         except Exception as e:
             self.logger.error(f"Error during PostgreSQL connector cleanup: {e}", exc_info=True)
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """
         Get a signed URL for a record.
         
@@ -1250,7 +2031,7 @@ class PostgreSQLConnector(BaseConnector):
         """
         return None
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """
         Handle webhook notifications from PostgreSQL.
 
@@ -1262,7 +2043,7 @@ class PostgreSQLConnector(BaseConnector):
             "Use scheduled sync or PostgreSQL logical replication for change tracking."
         )
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """
         Reindex records for PostgreSQL.
 
@@ -1294,17 +2075,11 @@ class PostgreSQLConnector(BaseConnector):
 
     async def run_incremental_sync(self) -> None:
         """
-        Run incremental sync for PostgreSQL using cumulative DML counters.
+        Sync what changed in the database since the last run.
 
-        Compares current table states (n_tup_ins, n_tup_upd, n_tup_del, column_hash)
-        with previously stored states to detect changes.
-
-        Change detection:
-        - New tables: Not in stored state → full sync for table
-        - Schema changes: Column hash differs → reindex
-        - Data changes: Any DML counter increased → reindex
-        - Stats reset: Any counter decreased → assume table changed and resync
-        - Deleted tables: In stored state but not in DB → handle deletion
+        The catalog is read again and compared with the state saved last time
+        (see ``catalog_diff``): tables that are new, renamed or moved, changed
+        in structure or in rows, only re-analyzed, or gone.
 
         The state saved for the next run is the snapshot taken here for every
         table this run handled, and the previous state for any it could not, so
@@ -1321,13 +2096,14 @@ class PostgreSQLConnector(BaseConnector):
 
         try:
             stored_state = await self.tables_sync_point.read_sync_point(SYNC_STATE_KEY)
+            await self._load_database_oid()
 
             if not self._has_usable_state(stored_state):
                 self.logger.info("No usable sync state, running full sync")
                 await self._run_full_sync_internal()
                 return
 
-            stored: Dict[str, PostgresTableState] = {
+            stored: dict[str, PostgresTableState] = {
                 fqn: PostgresTableState.model_validate(state)
                 for fqn, state in json.loads(stored_state["table_states"]).items()
             }
@@ -1335,42 +2111,86 @@ class PostgreSQLConnector(BaseConnector):
             filters = self._get_filter_values()
             current, unreadable = await self._get_current_table_states(*filters)
 
-            new_tables = sorted(current.keys() - stored.keys())
-            missing = stored.keys() - current.keys() - unreadable
-            deleted_tables = await self._confirm_dropped(sorted(missing), stored, filters)
-            changed_tables = sorted(
-                fqn for fqn in current.keys() & stored.keys()
-                if self._has_table_changed(current[fqn], stored[fqn])
-            )
+            diff = diff_catalog(stored, current, unreadable)
+            deleted_tables = await self._confirm_dropped(diff.missing, stored, filters)
 
             self.logger.info(
-                f"📊 Change detection: new={len(new_tables)}, "
-                f"changed={len(changed_tables)}, deleted={len(deleted_tables)}, "
+                f"📊 Change detection: new={len(diff.added)}, "
+                f"changed={len(diff.changed)}, renamed={len(diff.renamed)}, "
+                f"reanalyzed={len(diff.reanalyzed)}, "
+                f"deleted={len(deleted_tables)}, replaced={len(diff.replaced)}, "
                 f"unreadable={len(unreadable)}"
             )
 
             # Unreadable, or missing from the stats but still listed: keep what
-            # was known and look again next run.
-            next_state: Dict[str, PostgresTableState] = {
+            # was known and look again next run. Every other table's state is
+            # the one just read once it is synced, and the stored one until then,
+            # so the next run finds what this one could not finish.
+            next_state: dict[str, PostgresTableState] = {
                 fqn: stored[fqn]
-                for fqn in (unreadable & stored.keys()) | (missing - set(deleted_tables))
+                for fqn in (unreadable & stored.keys()) | (set(diff.missing) - set(deleted_tables))
             }
-            for fqn in current.keys() & stored.keys():
+            for fqn in diff.unchanged:
                 next_state[fqn] = current[fqn]
 
-            for fqn in await self._sync_new_tables(new_tables, current):
-                next_state[fqn] = current[fqn]
+            # Saved as records move, so a run cut off after a move starts the
+            # next one from where the records are: moved again, swapped tables
+            # would trade their records back.
+            self._checkpoint = dict(stored)
 
-            synced_changed = await self._sync_changed_tables(changed_tables, current)
-            for fqn in changed_tables:
-                if fqn not in synced_changed:
+            # A dropped table whose name a renamed one took goes first, so the
+            # name is free when that table moves into it.
+            replaced = await self._handle_deleted_tables(diff.replaced)
+            for fqn in diff.replaced:
+                if fqn not in replaced:
                     next_state[fqn] = stored[fqn]
+
+            # Before anything else is synced: a table that references a renamed
+            # one would otherwise create a stand-in under the new name.
+            unmoved = await self._rename_tables(diff.renamed, blocked=set(diff.replaced) - replaced)
+            # Still held by a table that could not move out of it.
+            held = {old for old, new in diff.renamed.items() if new in unmoved}
+            moved = {old: new for old, new in diff.renamed.items() if new not in unmoved}
+            if replaced or moved:
+                await self._checkpoint_moves(replaced, moved, current)
+
+            added = await self._sync_new_tables([fqn for fqn in diff.added if fqn not in held], current)
+            for fqn in added:
+                next_state[fqn] = current[fqn]
+
+            to_sync = {fqn: change for fqn, change in diff.changed.items() if fqn not in unmoved}
+            self._structure_changed = {
+                fqn for fqn, change in to_sync.items() if change.structure and not change.names_only
+            }
+            self._names_changed = {fqn for fqn, change in to_sync.items() if change.names_only}
+            synced_changed = await self._sync_changed_tables(to_sync, current)
+            for fqn, change in diff.changed.items():
+                previous = change.previous_fqn or fqn
+                if fqn in synced_changed:
+                    next_state[fqn] = current[fqn]
+                elif previous != fqn and fqn not in unmoved:
+                    # Its record moved, so the next run finds it under the new
+                    # name and finishes the rename. Under the old name, a table
+                    # created there since would be taken for it.
+                    next_state[fqn] = self._checkpoint[fqn]
+                else:
+                    # As before this run, so the next one sees the same change;
+                    # with its columns' new names once their records moved.
+                    next_state[previous] = self._checkpoint.get(previous, stored[previous])
+
+            synced_reanalyzed = await self._sync_reanalyzed_tables(diff.reanalyzed, current)
+            for fqn in diff.reanalyzed:
+                next_state[fqn] = current[fqn] if fqn in synced_reanalyzed else stored[fqn]
+
+            await self._relink_referencing_tables(
+                added, current, skip=added | synced_changed | synced_reanalyzed,
+            )
 
             removed = await self._handle_deleted_tables(deleted_tables)
             for fqn in deleted_tables:
                 if fqn not in removed:
                     next_state[fqn] = stored[fqn]
-            if removed:
+            if removed or replaced or diff.renamed:
                 await self._remove_stale_schema_groups(filters=filters)
 
             await self._save_tables_sync_state(next_state)
@@ -1383,10 +2203,10 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _confirm_dropped(
         self,
-        candidates: List[str],
-        stored: Dict[str, PostgresTableState],
-        filters: Tuple[Optional[List[str]], str, Optional[List[str]], str],
-    ) -> List[str]:
+        candidates: list[str],
+        stored: dict[str, PostgresTableState],
+        filters: tuple[list[str] | None, str, list[str] | None, str],
+    ) -> list[str]:
         """Of the tables missing from the stats, those that are really gone.
 
         Gone means the sync filters now exclude the table, or the table listing
@@ -1395,15 +2215,20 @@ class PostgreSQLConnector(BaseConnector):
         remove tables that still exist. Raises if a listing fails.
         """
         selected_schemas, schemas_op, selected_tables, tables_op = filters
-        dropped: List[str] = []
-        to_check: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        dropped: list[str] = []
+        to_check: dict[str, list[tuple[str, str]]] = defaultdict(list)
 
         for fqn in candidates:
             state = stored[fqn]
             if state.schema_name:
                 schema_name, table_name = state.schema_name, state.table_name
             else:
-                schema_name, table_name = split_table_fqn(fqn)
+                try:
+                    schema_name, table_name = split_table_fqn(fqn)
+                except ValueError:
+                    # A name no listing can hold, kept by a delete that failed.
+                    dropped.append(fqn)
+                    continue
             if not (
                 self._passes_filter(schema_name, selected_schemas, schemas_op)
                 and self._passes_filter(fqn, selected_tables, tables_op)
@@ -1425,24 +2250,26 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _get_current_table_states(
         self,
-        selected_schemas: Optional[List[str]],
+        selected_schemas: list[str] | None,
         schemas_op: str = MultiselectOperator.IN.value,
-        selected_tables: Optional[List[str]] = None,
+        selected_tables: list[str] | None = None,
         tables_op: str = MultiselectOperator.IN.value,
-    ) -> Tuple[Dict[str, PostgresTableState], Set[str]]:
+    ) -> tuple[dict[str, PostgresTableState], set[str]]:
         """Fetch current table states from PostgreSQL for comparison.
 
         Retrieves cumulative DML counters (n_tup_ins, n_tup_upd, n_tup_del) along with
         column hash for reliable change detection that survives ANALYZE runs. On a
         standby, where replayed writes leave the counters still, each table's row
-        sample is hashed as well.
+        sample is hashed as well. Each state also carries what a rename leaves
+        alone (the table's oid, its columns' attnums) and digests of its
+        constraints and storage, which no row counter reflects.
 
         Returns the states and, separately, the tables that could not be read this
         run: those are unknown, not dropped. Raises if the stats or columns can't
         be read at all, since an empty answer would read as every table dropped.
         """
-        table_states: Dict[str, PostgresTableState] = {}
-        unreadable: Set[str] = set()
+        table_states: dict[str, PostgresTableState] = {}
+        unreadable: set[str] = set()
 
         # For IN, push schema filter down to SQL; for NOT_IN, fetch all and exclude client-side.
         schemas_exclude = schemas_op == MultiselectOperator.NOT_IN.value
@@ -1451,7 +2278,7 @@ class PostgreSQLConnector(BaseConnector):
         if not stats_response.success:
             raise RuntimeError(f"Failed to get table stats: {stats_response.error}")
 
-        stats_by_fqn: Dict[str, TableStats] = {}
+        stats_by_fqn: dict[str, TableStats] = {}
         for stat_dict in stats_response.data:
             stat = TableStats.model_validate(stat_dict)
             fqn = table_fqn(stat.schema_name, stat.table_name)
@@ -1468,11 +2295,34 @@ class PostgreSQLConnector(BaseConnector):
         columns_response = await self.data_source.get_columns(scope)
         if not columns_response.success:
             raise RuntimeError(f"Failed to get columns: {columns_response.error}")
-        columns_by_table: Dict[Tuple[str, str], List[ColumnInfo]] = defaultdict(list)
+        columns_by_table: dict[tuple[str, str], list[ColumnInfo]] = defaultdict(list)
+        column_ids: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+        column_shapes: dict[tuple[str, str], list[tuple[int, dict]]] = defaultdict(list)
+        # A column with no attnum cannot be told apart from a renamed one.
+        unplaced: set[tuple[str, str]] = set()
         for row in columns_response.data:
             row = dict(row)
             key = (row.pop("schema_name"), row.pop("table_name"))
-            columns_by_table[key].append(ColumnInfo.model_validate(row))
+            attnum = row.pop("attnum", None)
+            column = ColumnInfo.model_validate(row)
+            columns_by_table[key].append(column)
+            if attnum is None:
+                unplaced.add(key)
+                continue
+            column_ids[key][str(attnum)] = row.get("name") or ""
+            column_shapes[key].append((int(attnum), column.model_dump(exclude={"name"})))
+
+        constraints_response = await self.data_source.get_constraint_hashes(scope)
+        if not constraints_response.success:
+            raise RuntimeError(f"Failed to get constraints: {constraints_response.error}")
+        constraint_hashes = {
+            (row["schema_name"], row["table_name"]): row["constraint_hash"] or ""
+            for row in constraints_response.data
+        }
+        constraint_shapes = {
+            (row["schema_name"], row["table_name"]): row.get("constraint_shape") or ""
+            for row in constraints_response.data
+        }
 
         primary_keys = await self._primary_keys_if_standby(scope)
         max_rows = self._max_rows(self.sync_filters)
@@ -1481,12 +2331,21 @@ class PostgreSQLConnector(BaseConnector):
             key = (stat.schema_name, stat.table_name)
             state = PostgresTableState(
                 column_hash=_column_hash(columns_by_table.get(key, [])),
+                constraint_hash=constraint_hashes.get(key, ""),
                 n_tup_ins=stat.n_tup_ins or 0,
                 n_tup_upd=stat.n_tup_upd or 0,
                 n_tup_del=stat.n_tup_del or 0,
                 n_live_tup=stat.n_live_tup or 0,
                 schema_name=stat.schema_name,
                 table_name=stat.table_name,
+                analyze_count=stat.analyze_count or 0,
+                oid=stat.oid or 0,
+                storage_id=stat.storage_id or "",
+                columns=column_ids.get(key, {}),
+                row_limit=max_rows,
+                shape="" if key in unplaced else _table_shape(
+                    column_shapes.get(key, []), constraint_shapes.get(key, ""),
+                ),
             )
             if primary_keys is not None:
                 sample = await self.data_source.get_sample_hash(
@@ -1505,8 +2364,8 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _primary_keys_if_standby(
         self,
-        scope: Optional[List[str]],
-    ) -> Optional[Dict[Tuple[str, str], List[str]]]:
+        scope: list[str] | None,
+    ) -> dict[tuple[str, str], list[str]] | None:
         """Primary keys per table when the server is a standby, else None."""
         recovery = await self.data_source.is_in_recovery()
         if not recovery.success:
@@ -1517,7 +2376,7 @@ class PostgreSQLConnector(BaseConnector):
         response = await self.data_source.get_primary_keys_by_table(scope)
         if not response.success:
             raise RuntimeError(f"Failed to get primary keys: {response.error}")
-        keys: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        keys: dict[tuple[str, str], list[str]] = defaultdict(list)
         for row in response.data:
             keys[(row["schema_name"], row["table_name"])].append(row["column_name"])
         return keys
@@ -1527,48 +2386,17 @@ class PostgreSQLConnector(BaseConnector):
         value = sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)
         return max(1, min(int(value), MAX_ROWS_PER_TABLE_LIMIT))
 
-    def _has_table_changed(
-        self,
-        current: PostgresTableState,
-        stored: PostgresTableState
-    ) -> bool:
-        """Check if table has changed by comparing metadata.
-
-        Uses cumulative DML counters (n_tup_ins, n_tup_upd, n_tup_del) for reliable
-        change detection. Also detects if stats were reset (e.g., pg_stat_reset()
-        or server restart) and triggers resync in that case.
-        """
-        if current.column_hash != stored.column_hash:
-            return True
-
-        stats_were_reset = (
-            current.n_tup_ins < stored.n_tup_ins or
-            current.n_tup_upd < stored.n_tup_upd or
-            current.n_tup_del < stored.n_tup_del
-        )
-
-        if stats_were_reset:
-            self.logger.info("Stats reset detected, triggering resync")
-            return True
-
-        return (
-            current.n_tup_ins != stored.n_tup_ins or
-            current.n_tup_upd != stored.n_tup_upd or
-            current.n_tup_del != stored.n_tup_del or
-            current.sample_hash != stored.sample_hash
-        )
-
     async def _sync_new_tables(
         self,
-        table_fqns: List[str],
-        states: Dict[str, PostgresTableState],
-    ) -> Set[str]:
+        table_fqns: list[str],
+        states: dict[str, PostgresTableState],
+    ) -> set[str]:
         """Sync newly discovered tables; returns the ones saved.
 
         Also ensures parent schema RecordGroups exist for any new schemas
         that weren't present during the initial full sync.
         """
-        synced: Set[str] = set()
+        synced: set[str] = set()
         if not table_fqns:
             return synced
 
@@ -1591,17 +2419,22 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _sync_changed_tables(
         self,
-        table_fqns: List[str],
-        states: Dict[str, PostgresTableState],
-    ) -> Set[str]:
+        changes: dict[str, TableChange],
+        states: dict[str, PostgresTableState],
+    ) -> set[str]:
         """Sync changed tables; returns the ones saved."""
-        synced: Set[str] = set()
-        if not table_fqns:
+        synced: set[str] = set()
+        if not changes:
             return synced
 
-        self.logger.info(f"Syncing {len(table_fqns)} changed tables")
+        self.logger.info(f"Syncing {len(changes)} changed tables")
 
-        for fqn in table_fqns:
+        # A table moved into a schema that was not synced before needs its group.
+        moved_into = sorted({states[fqn].schema_name for fqn, c in changes.items() if c.previous_fqn})
+        if moved_into:
+            await self._sync_schemas([PostgresSchema(name=s) for s in moved_into])
+
+        for fqn in sorted(changes):
             state = states[fqn]
             try:
                 table = await self._load_table(state.schema_name, state.table_name, state)
@@ -1609,35 +2442,126 @@ class PostgreSQLConnector(BaseConnector):
                 self.sync_stats.errors += 1
                 self.logger.error(f"Error reading changed table {fqn}: {e}")
                 continue
-            synced |= await self._sync_updated_tables(state.schema_name, [table])
+            synced |= await self._sync_updated_tables(state.schema_name, [table], changes)
 
         return synced
 
-    async def _handle_deleted_tables(self, table_fqns: List[str]) -> Set[str]:
-        """Delete records of tables that no longer exist; returns the ones handled."""
-        handled: Set[str] = set()
+    async def _sync_reanalyzed_tables(
+        self,
+        table_fqns: list[str],
+        states: dict[str, PostgresTableState],
+    ) -> set[str]:
+        """Re-profile tables ANALYZE ran on since the last sync; returns the ones saved.
+
+        Only their column records are saved. The rows did not change, and a
+        content update on the table record would re-index it.
+        """
+        synced: set[str] = set()
+        for fqn in table_fqns:
+            state = states[fqn]
+            try:
+                table = await self._load_table(state.schema_name, state.table_name, state)
+                record, existed = await self._build_table_record(state.schema_name, table)
+                if existed:
+                    await self._sync_table_columns(record, table)
+                    synced.add(fqn)
+                else:
+                    synced |= await self._sync_updated_tables(state.schema_name, [table])
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.error(f"Error re-profiling table {fqn}: {e}", exc_info=True)
+        return synced
+
+    async def _handle_deleted_tables(self, table_fqns: list[str]) -> set[str]:
+        """Delete records of tables that no longer exist; returns the ones handled.
+
+        One whose record could not be looked up is not handled, so its state
+        stays and the next run tries again: a failed lookup is not an answer
+        that nothing is stored.
+        """
+        handled: set[str] = set()
         if not table_fqns:
             return handled
 
         self.logger.info(f"Handling {len(table_fqns)} deleted tables")
 
+        record_ids: dict[str, str] = {}
         for fqn in table_fqns:
             try:
                 record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=fqn
+                    connector_id=self.connector_id, external_record_id=fqn, raise_on_error=True,
                 )
-                if record and record.id:
-                    await self.data_entities_processor.on_record_deleted(record.id)
-                    self.logger.debug(f"Deleted record for table: {fqn}")
-                handled.add(fqn)
             except Exception as e:
                 self.sync_stats.errors += 1
-                self.logger.warning(f"Failed to delete record for {fqn}: {e}")
-
+                self.logger.warning(f"Failed to look up the record of deleted table {fqn}: {e}")
+                continue
+            if record and record.id:
+                record_ids[fqn] = record.id
+            else:
+                handled.add(fqn)
+        for chunk in self._removal_batches(sorted(record_ids.items())):
+            try:
+                await self._remove_records([record_id for _, record_id in chunk])
+                handled.update(fqn for fqn, _ in chunk)
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.warning(f"Failed to delete the records of {len(chunk)} deleted table(s): {e}")
         return handled
 
-    async def _remove_stale_tables(self, listed_fqns: Set[str]) -> Dict[str, PostgresTableState]:
+    @staticmethod
+    def _removal_batches(items: list[Any]) -> list[list[Any]]:
+        return [items[i:i + TABLES_REMOVED_PER_BATCH] for i in range(0, len(items), TABLES_REMOVED_PER_BATCH)]
+
+    async def _relink_referencing_tables(
+        self,
+        added: set[str],
+        current: dict[str, PostgresTableState],
+        *,
+        skip: set[str],
+    ) -> None:
+        """Write again the foreign keys of the tables that point at tables just added.
+
+        A table that comes back (the filter includes it again, the connector
+        can read it again) gets a new record; the edges into the one it had went
+        with it, and the tables they came from did not change, so they are not
+        synced. Best effort: a table missed here gets its edges back the next
+        time it changes.
+        """
+        oids = [current[fqn].oid for fqn in sorted(added) if current[fqn].oid]
+        if not oids:
+            return
+        try:
+            response = await self.data_source.get_referencing_tables(oids)
+            if not response.success:
+                raise RuntimeError(response.error)
+        except Exception as e:
+            self.sync_stats.errors += 1
+            self.logger.warning(f"Could not find the tables that reference new tables: {e}")
+            return
+        for row in response.data or []:
+            fqn = table_fqn(row["schema_name"], row["table_name"])
+            if fqn in skip or fqn not in current:
+                continue
+            state = current[fqn]
+            try:
+                fks = await self.data_source.get_foreign_keys(state.schema_name, state.table_name)
+                if not fks.success:
+                    raise RuntimeError(fks.error)
+                table = PostgresTable(
+                    name=state.table_name,
+                    schema_name=state.schema_name,
+                    row_count=state.n_live_tup,
+                    foreign_keys=[ForeignKeyInfo.model_validate(fk) for fk in (fks.data or [])],
+                    state=state,
+                )
+                record, existed = await self._build_table_record(state.schema_name, table)
+                if existed:
+                    await self.data_entities_processor.on_record_metadata_update(record)
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.warning(f"Could not write the foreign keys of {fqn} again: {e}")
+
+    async def _remove_stale_tables(self, listed_fqns: set[str]) -> dict[str, PostgresTableState]:
         """Delete records of tables that were dropped or are now filtered out.
 
         Returns a placeholder state for each table whose delete failed.
@@ -1646,30 +2570,31 @@ class PostgreSQLConnector(BaseConnector):
             self.connector_id, RecordType.SQL_TABLE
         )
         stale = [r for r in records if r.external_record_id not in listed_fqns]
-        undeleted: Dict[str, PostgresTableState] = {}
+        undeleted: dict[str, PostgresTableState] = {}
         if not stale:
             return undeleted
 
         self.logger.info(f"Removing {len(stale)} tables that are no longer synced")
-        for record in stale:
+        for chunk in self._removal_batches(stale):
             try:
-                await self.data_entities_processor.on_record_deleted(record.id)
+                await self._remove_records([record.id for record in chunk])
             except Exception as e:
                 self.sync_stats.errors += 1
-                self.logger.warning(f"Failed to delete record for {record.external_record_id}: {e}")
-                try:
-                    schema_name, table_name = self._split_table_fqn(record)
-                except HTTPException:
-                    schema_name, table_name = "", ""
-                undeleted[record.external_record_id] = PostgresTableState(
-                    schema_name=schema_name, table_name=table_name
-                )
+                self.logger.warning(f"Failed to delete the records of {len(chunk)} table(s): {e}")
+                for record in chunk:
+                    try:
+                        schema_name, table_name = self._split_table_fqn(record)
+                    except HTTPException:
+                        schema_name, table_name = "", ""
+                    undeleted[record.external_record_id] = PostgresTableState(
+                        schema_name=schema_name, table_name=table_name
+                    )
         return undeleted
 
     async def _remove_stale_schema_groups(
         self,
-        synced_schemas: Optional[List[str]] = None,
-        filters: Optional[Tuple[Optional[List[str]], str, Optional[List[str]], str]] = None,
+        synced_schemas: list[str] | None = None,
+        filters: tuple[list[str] | None, str, list[str] | None, str] | None = None,
     ) -> None:
         """Delete the groups of schemas that were dropped or are now filtered out.
 
@@ -1698,10 +2623,26 @@ class PostgreSQLConnector(BaseConnector):
                     },
                 )
             stale = sorted({g.get("externalGroupId") for g in groups} - keep - {None})
-            for external_group_id in stale:
-                await self.data_entities_processor.on_record_group_deleted(
-                    external_group_id, self.connector_id
-                )
+            group_ids = {
+                g.get("externalGroupId"): str(g.get("id") or g.get("_key"))
+                for g in groups if g.get("id") or g.get("_key")
+            }
+            deleted: list[str] = []
+            try:
+                for external_group_id in stale:
+                    if not await self.data_entities_processor.on_record_group_deleted(
+                        external_group_id, self.connector_id
+                    ):
+                        # Still there, so its search entries stay too; tried again next run.
+                        self.sync_stats.errors += 1
+                        continue
+                    if external_group_id in group_ids:
+                        deleted.append(group_ids[external_group_id])
+            finally:
+                # A group deleted is not listed again, so its search entries
+                # are cleaned up now even if a later group failed.
+                if deleted:
+                    await self.data_entities_processor.on_sql_record_groups_deleted(deleted, self.connector_id)
             if stale:
                 self.logger.info(f"Removed {len(stale)} schema groups that are no longer synced")
         except Exception as e:
@@ -1731,19 +2672,69 @@ class PostgreSQLConnector(BaseConnector):
                     edge_collection,
                 )
 
-    async def _save_tables_sync_state(self, states: Dict[str, PostgresTableState]) -> None:
-        """Save table states for the next incremental sync to compare against."""
+    async def _checkpoint_moves(
+        self, replaced: set[str], moved: dict[str, str], current: dict[str, PostgresTableState],
+    ) -> None:
+        """Save that these tables went and these records moved, before anything else is synced."""
+        checkpoint = self._checkpoint
+        moving = {old: checkpoint.pop(old) for old in moved if old in checkpoint}
+        for fqn in replaced:
+            checkpoint.pop(fqn, None)
+        for old, state in moving.items():
+            new = moved[old]
+            checkpoint[new] = state.model_copy(update={
+                "schema_name": current[new].schema_name,
+                "table_name": current[new].table_name,
+                "renamed_from": old,
+            })
+        await self._save_checkpoint()
+
+    async def _checkpoint_column_renames(self, table_fqn: str, renames: dict[str, str]) -> None:
+        """Save that this table's column records moved to their new names."""
+        state = (self._checkpoint or {}).get(table_fqn)
+        if state is None:
+            return
+        self._checkpoint[table_fqn] = state.model_copy(update={
+            "columns": {attnum: renames.get(name, name) for attnum, name in state.columns.items()},
+            "renamed_from": state.renamed_from or table_fqn,
+        })
+        await self._save_checkpoint()
+
+    async def _save_checkpoint(self) -> None:
+        for attempt in range(1, SYNC_STATE_SAVE_ATTEMPTS + 1):
+            try:
+                await self._save_tables_sync_state(self._checkpoint, checkpoint=True)
+                return
+            except Exception as e:
+                if attempt == SYNC_STATE_SAVE_ATTEMPTS:
+                    self.sync_stats.errors += 1
+                    self.logger.error(
+                        f"Could not save where this run moved records; cut off before it ends, "
+                        f"the next run would move them again: {e}"
+                    )
+                    return
+                await asyncio.sleep(attempt)
+
+    async def _save_tables_sync_state(
+        self, states: dict[str, PostgresTableState], *, checkpoint: bool = False,
+    ) -> None:
+        """Save table states for the next incremental sync to compare against.
+
+        A ``checkpoint`` is saved mid-run, so it leaves the last sync time alone.
+        """
         serialized_states = json.dumps(
             {fqn: state.model_dump() for fqn, state in states.items()}
         )
-        await self.tables_sync_point.update_sync_point(
-            SYNC_STATE_KEY,
-            {
-                "last_sync_time": get_epoch_timestamp_in_ms(),
-                "state_version": SYNC_STATE_VERSION,
-                "table_states": serialized_states,
-            }
-        )
+        data: dict[str, Any] = {
+            "state_version": SYNC_STATE_VERSION,
+            "database": self.database_name,
+            "server": self.server_address,
+            "database_oid": self.database_oid,
+            "table_states": serialized_states,
+        }
+        if not checkpoint:
+            data["last_sync_time"] = get_epoch_timestamp_in_ms()
+        await self.tables_sync_point.update_sync_point(SYNC_STATE_KEY, data)
         self.logger.debug(f"Saved sync state for {len(states)} tables")
 
     async def _populate_filter_cache(self) -> None:
@@ -1765,8 +2756,8 @@ class PostgreSQLConnector(BaseConnector):
             if not schemas_resp.success:
                 raise RuntimeError(schemas_resp.error or "Failed to fetch schemas")
 
-            schema_cache: List[FilterOption] = []
-            table_cache:  List[FilterOption] = []
+            schema_cache: list[FilterOption] = []
+            table_cache:  list[FilterOption] = []
 
             for schema_dict in schemas_resp.data:
                 schema_info = SchemaInfo.model_validate(schema_dict)
@@ -1800,8 +2791,8 @@ class PostgreSQLConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None,
+        search: str | None = None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
         try:
             page  = max(1, page)

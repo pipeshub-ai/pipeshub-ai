@@ -1580,7 +1580,15 @@ th code {
   .touch-hit {
     position: relative;
   }
-  .touch-hit::after {
+  /* Segment items are wider than 44px, so growing them never reaches a neighbour; checkboxes
+     sit alone at the start of a row. Radix draws the checkbox box with ::before, not ::after. */
+  .rt-SegmentedControlItem,
+  .rt-BaseCheckboxRoot {
+    position: relative;
+  }
+  .touch-hit::after,
+  .rt-SegmentedControlItem::after,
+  .rt-BaseCheckboxRoot::after {
     content: '';
     position: absolute;
     top: 50%;
@@ -1591,14 +1599,30 @@ th code {
   }
 }
 
-/* iOS Safari zooms into inputs under 16px. */
+/* Grows the element itself to 44px on touch screens. For controls packed tightly in a row, where a
+   .touch-hit overlay would reach into the neighbour's tap area. Margin 0 undoes a ghost button's
+   negative margin, which would otherwise pull two grown boxes over each other. */
+@media (pointer: coarse) {
+  .touch-size {
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+  }
+}
+
+/* iOS Safari zooms into any focused field under 16px. !important beats the inline font sizes
+   several fields set (the chat composer among them); the composer's backdrop and placeholder
+   follow so the chips stay aligned with the text. */
 @media (max-width: 768px) and (pointer: coarse) {
   .rt-TextFieldInput,
   .rt-TextAreaInput,
   textarea,
   input,
-  select {
-    font-size: 16px;
+  select,
+  [contenteditable]:not([contenteditable='false']),
+  .chat-input-backdrop,
+  .chat-placeholder-shimmer {
+    font-size: 16px !important;
   }
 }
 

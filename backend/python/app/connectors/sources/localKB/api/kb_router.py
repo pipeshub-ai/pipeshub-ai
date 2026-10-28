@@ -1,10 +1,13 @@
 # router.py fixes - Add return type annotations
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 
 from app.api.connection_limit import (
     hide_record_parents_outside_connection,
@@ -47,7 +50,15 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     ConnectionCheck,
     KnowledgeBaseService,
 )
+from app.connectors.sources.localKB.push import admission
+from app.connectors.sources.localKB.push import api as push_api
+from app.connectors.sources.localKB.push.contract import PushRefusal
+from app.connectors.sources.localKB.push.gate import GatedRoute, KbPushFlagMiddleware
+from app.connectors.sources.localKB.push.service import KbPushService
 from app.containers.connector import ConnectorAppContainer
+from app.core import org_context
+from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from app.services.storage_documents import StorageDocuments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -1797,3 +1808,164 @@ async def move_record(
             status_code=500,
             detail=action_failed("move this file")
         )
+
+
+# ---- push: application/blocks records and the KB's property schema --------------------------------
+
+# Its own router, included after ``kb_router``: its routes match only while ENABLE_KB_PUSH is on
+# (``push/gate.py``; the app needs ``KbPushFlagMiddleware``), so the flag is checked before the
+# connection check and any other dependency, and with it off the app answers as if they were absent.
+kb_push_router = APIRouter(
+    prefix="/api/v1/kb",
+    tags=["Knowledge Base"],
+    dependencies=[Depends(keep_path_inside_connection)],
+    route_class=GatedRoute,
+)
+
+
+def install_push_routes(app: FastAPI) -> None:
+    """Add the push routes and the middleware that reads ENABLE_KB_PUSH before routing, ahead of
+    authentication and any graph call. Without the flag the routes do not match."""
+    app.include_router(kb_push_router)
+    app.add_middleware(KbPushFlagMiddleware)
+
+
+def _refusal_response(r: PushRefusal) -> JSONResponse:
+    return JSONResponse(status_code=r.status, content=push_api.error_body(r), headers=push_api.error_headers(r))
+
+
+def _bound_org_id() -> str | None:
+    """The org the request is bound to, or None when it is not bound (the push routes then refuse)."""
+    try:
+        return org_context.current_org_id()
+    except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+        return None
+
+
+def _require_bound_org() -> str:
+    org_id = _bound_org_id()
+    if not org_id:
+        raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
+    return org_id
+
+
+def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_service: KafkaService) -> KbPushService:
+    container: ConnectorAppContainer = request.app.container
+    runtime = push_api.runtime_for(request.app)
+    config_service = container.config_service()
+
+    async def publish(event: dict[str, Any]) -> bool:
+        return await kafka_service.publish_event("record-events", event) is not False
+
+    return KbPushService(
+        graph_provider=request.app.state.graph_provider,
+        kb_service=kb_service,
+        processor_for_kb=kb_service.processor_for_kb,
+        schema_registry=MetadataSchemaRegistry(config_service),
+        storage=StorageDocuments(config_service, container.logger()),
+        worker=runtime.worker,
+        spool=runtime.spool,
+        publish_event=publish,
+    )
+
+
+@kb_push_router.post(
+    "/{kb_id}/records",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
+)
+async def push_record(
+    kb_id: str,
+    request: Request,
+    folderId: str | None = Query(None),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    """Create or update one ``application/blocks`` record by ``externalRecordId``.
+
+    The endpoint declares no body parameter, so nothing is read before the caller's role is
+    known; the body is then read by hand, bounded and timed (``push/admission.py``).
+    """
+    user = request.state.user
+    user_id, org_id = user.get("userId"), _bound_org_id()
+    try:
+        if not user_id or not org_id:
+            raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
+        service = _push_service(request, kb_service, kafka_service)
+        user_key = await service.authorize(kb_id, user_id)
+        admission = push_api.runtime_for(request.app).admission
+        admission.claim(user_key)  # one push at a time per caller per process: held until the push ends
+        task: asyncio.Future[Any] | None = None
+        try:
+            body = await admission.read_body(request.headers, request.stream())
+            # Once the body is in, the push finishes even if the client goes away; the caller's
+            # slot is then released when the push itself ends.
+            task = org_context.spawn_in_request(
+                service.push(kb_id=kb_id, user_id=user_id, org_id=org_id, body=body, folder_id=folderId)
+            )
+            task.add_done_callback(lambda _t: admission.release(user_key))
+            result = await asyncio.shield(task)
+        finally:
+            if task is None:
+                admission.release(user_key)
+        return JSONResponse(status_code=result.http_status, content=result.to_json())
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except ClientDisconnect:
+        # The caller went away mid-body: nothing was read to the end and nothing is written.
+        _log.info("push_record: the client disconnected before the body ended")
+        return _refusal_response(PushRefusal(400, "CLIENT_DISCONNECTED", "The client closed the connection before the body ended."))
+    except Exception as e:
+        _log.error("push_record failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("push this record")))
+
+
+@kb_push_router.put("/{kb_id}/schema", dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))])
+async def put_kb_schema(
+    kb_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    user = request.state.user
+    try:
+        org_id = _require_bound_org()
+        service = _push_service(request, kb_service, kafka_service)
+        await service.authorize(kb_id, user.get("userId"), ["OWNER"])
+        try:
+            body = push_api.SchemaIn.model_validate_json(
+                await admission.read_bounded(
+                    request.headers, request.stream(), admission.MAX_SCHEMA_BYTES, admission.SCHEMA_READ_TIMEOUT_S,
+                )
+            )
+        except ValidationError as e:
+            first = e.errors()[0]
+            raise PushRefusal(400, "ENVELOPE_INVALID", "The schema body is invalid.", ".".join(str(x) for x in first["loc"])) from None
+        out = await push_api.put_schema(service.schemas, org_id, kb_id, body)
+        return JSONResponse(status_code=200, content=out)
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except Exception as e:
+        _log.error("put_kb_schema failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("save this schema")))
+
+
+@kb_push_router.get("/{kb_id}/schema", dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))])
+async def get_kb_schema(
+    kb_id: str,
+    request: Request,
+    version: int | None = Query(None, ge=1),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    user = request.state.user
+    try:
+        org_id = _require_bound_org()
+        service = _push_service(request, kb_service, kafka_service)
+        await service.authorize(kb_id, user.get("userId"), None)
+        out = await push_api.get_schema(service.schemas, org_id, kb_id, version)
+        return JSONResponse(status_code=200, content=out)
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except Exception as e:
+        _log.error("get_kb_schema failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("read this schema")))

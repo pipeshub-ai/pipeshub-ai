@@ -25,11 +25,18 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    OpenAICachePlan,
+)
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.prompt_cache import (
     AnthropicCacheStrategy,
     OpenAICacheStrategy,
+)
+from tests.unit.agents.agent_loop.prompt_cache.conftest import (
+    chat_reply,
+    responses_reply,
 )
 
 if TYPE_CHECKING:
@@ -92,7 +99,7 @@ def _messages() -> list[Any]:
 
 
 def _transport(model: Any, strategy: Any = None, **kwargs: Any) -> LangChainTransport:  # noqa: ANN401
-    return LangChainTransport(model, model_name="gpt-5.4", cache_strategy=strategy or OpenAICacheStrategy(KWARGS),
+    return LangChainTransport(model, model_name="gpt-5.4", cache_strategy=strategy or OpenAICacheStrategy(OpenAICachePlan(KWARGS)),
                               **kwargs)
 
 
@@ -164,21 +171,33 @@ class TestEveryCallCarriesTheStrategy:
 
 
 class TestRejectedCacheParameter:
-    async def test_complete_resends_once_without_them(self) -> None:
+    async def test_complete_resends_once_without_the_refused_one(self) -> None:
         model = _RecordingModel(errors=[_bad_request("Unrecognized request argument supplied: prompt_cache_retention")])
         transport = _transport(model)
         response = await transport.complete(_messages(), tools=TOOLS, system_blocks=[STABLE, VOLATILE])
         assert response.message.content[0].text == "ok"
-        assert [call["kwargs"] for call in model.calls] == [KWARGS, {}]
+        key_only = {"prompt_cache_key": KWARGS["prompt_cache_key"]}
+        assert [call["kwargs"] for call in model.calls] == [KWARGS, key_only]
         await transport.complete(_messages(), tools=TOOLS)
-        assert model.calls[-1]["kwargs"] == {}
-        assert REJECTED_CACHE_PARAMS.rejected("gpt-5.4", None)
+        assert model.calls[-1]["kwargs"] == key_only
+        assert REJECTED_CACHE_PARAMS.refused("gpt-5.4", None) == {"prompt_cache_retention"}
 
-    async def test_stream_resends_once_without_them(self) -> None:
+    async def test_stream_resends_once_without_the_refused_one(self) -> None:
         model = _RecordingModel(errors=[_bad_request("Unknown parameter: 'prompt_cache_key'.")])
         events = await _stream(_transport(model))
         assert isinstance(events[-1], StreamCompleteEvent)
-        assert [call["kwargs"] for call in model.calls] == [KWARGS, {}]
+        assert [call["kwargs"] for call in model.calls] == [KWARGS, {"prompt_cache_retention": "24h"}]
+
+    async def test_a_refused_breakpoint_keeps_the_key(self) -> None:
+        refusal = _bad_request("{'error': {'message': 'prompt_cache_breakpoint is not supported on this model'}}")
+        model = _RecordingModel(errors=[refusal])
+        strategy = OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True))
+        await _transport(model, strategy).complete(_messages(), tools=TOOLS, system_blocks=[STABLE, VOLATILE])
+        first, retry = model.calls
+        assert first["messages"][0].content[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert retry["kwargs"] == {"prompt_cache_key": "k"}
+        assert retry["messages"][0].content == f"{STABLE}\n\n{VOLATILE}"
+        assert "prompt_cache_breakpoint" not in json.dumps([m.content for m in retry["messages"]])
 
     async def test_anthropic_markers_are_dropped_too(self) -> None:
         import anthropic
@@ -236,6 +255,30 @@ class TestUsage:
         # Pins langchain-aws reporting input without cached tokens; if it starts
         # including them, this transport would count them twice.
         assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (1100, 900, 100)
+
+
+class TestGpt56Usage:
+    """GPT-5.6+ reports cache writes (1.25x) next to reads; both reach
+    TokenUsage, and input still counts them, through the real client."""
+
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_reads_and_writes(self, endpoint: Any, responses: bool) -> None:  # noqa: ANN401
+        from langchain_openai import ChatOpenAI
+
+        if responses:
+            reply = responses_reply(text="ok")
+            reply["usage"] = {"input_tokens": 3331, "output_tokens": 5, "total_tokens": 3336,
+                              "input_tokens_details": {"cached_tokens": 3265, "cache_write_tokens": 63},
+                              "output_tokens_details": {"reasoning_tokens": 0}}
+        else:
+            reply = chat_reply(text="ok")
+            reply["usage"] = {"prompt_tokens": 3331, "completion_tokens": 5, "total_tokens": 3336,
+                              "prompt_tokens_details": {"cached_tokens": 3265, "cache_write_tokens": 63}}
+        endpoint.replies = [reply]
+        llm = ChatOpenAI(model="gpt-6.1-sol", api_key="test", base_url=endpoint.url, max_retries=0,
+                         use_responses_api=responses)
+        usage = (await LangChainTransport(llm, model_name="gpt-6.1-sol").complete(_messages())).usage
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (3331, 3265, 63)
 
 
 class TestPrefixStaysTheSame:

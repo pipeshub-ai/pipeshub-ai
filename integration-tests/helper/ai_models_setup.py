@@ -74,6 +74,10 @@ from pipeshub_client import PipeshubClient
 logger = logging.getLogger("ai-models-setup")
 
 _PROVIDERS_PATH = "/api/v1/configurationManager/ai-models/providers"
+# Adding a provider waits on its live health check, which Node allows 620 s
+# (AI_SERVICE_TIMEOUT_MS). Scripts load this module with only helper/ on sys.path, so
+# it keeps its own copy of AIModelsClient's limit.
+PROVIDER_HEALTH_CHECK_TIMEOUT_S = 630
 _LLM_BY_TYPE_PATH = "/api/v1/configurationManager/ai-models/llm"
 _EMBEDDING_BY_TYPE_PATH = "/api/v1/configurationManager/ai-models/embedding"
 
@@ -550,7 +554,7 @@ def _post_provider_model(
         url,
         headers=_admin_headers(client),
         json=payload,
-        timeout=client.timeout_seconds,
+        timeout=PROVIDER_HEALTH_CHECK_TIMEOUT_S,
     )
 
     if resp.status_code >= 300:

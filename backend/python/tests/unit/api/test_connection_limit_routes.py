@@ -224,7 +224,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
         fetch.assert_not_awaited()
 
@@ -234,7 +234,7 @@ class TestRecordsById:
         with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -250,7 +250,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
              patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", self._reader_request(graph), mode="thread", query=None,
-                                      start_block=None, start_record=0, max_chars=40_000)
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
         state = fetch.call_args.kwargs["scope_state"]
         assert await ids_within_scope(state, graph, "ukey-1", "org-1", ["rec-in", "rec-out"]) == {"rec-in"}
 
@@ -830,6 +830,81 @@ class TestSourcePathsUnderALimit:
         assert listed["records"][0]["fileRecord"]["path"] == SOURCE_PATH
 
 
+def _collection_file(store: str) -> dict:
+    """A collection file in a folder, as each store returns it. Its folder is
+    named by the source parent, the folder's own id, with no parent node set:
+    Arango returns the empty parent keys as null, and Neo4j, which stores no
+    null property, leaves them out."""
+    doc = {"_key": "rec-in", "recordName": "budget.xlsx", "connectorId": "app-in",
+           "externalGroupId": "app-in", "externalParentId": "folder-in"}
+    if store == "arango":
+        doc.update(recordGroupId=None, rootRecordGroupId=None, parentNodeId=None)
+    return doc
+
+
+STORES = ["neo4j", "arango"]
+
+
+class TestCollectionFilesWithNoParentNode:
+    @staticmethod
+    async def _search(limit: dict | None, store: str) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        doc = _collection_file(store)
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body)
+
+    @staticmethod
+    async def _details(limit: dict | None, store: str) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={
+            "record": _collection_file(store), "knowledgeBase": None, "folder": None,
+        })
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
+            return await get_record_by_id("rec-in", request, graph_provider=graph)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    async def test_a_search_hit_named_alone_does_not_name_its_folder(self, store) -> None:
+        body = await self._search(FILE_LIMIT, store)
+
+        assert body["records"][0]["externalParentId"] is None
+        assert body["virtual_to_record_map"]["v-in"]["externalParentId"] is None
+        assert "folder-in" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    async def test_record_details_of_a_file_named_alone_name_no_folder(self, store) -> None:
+        details = await self._details(FILE_LIMIT, store)
+
+        assert details["record"]["externalParentId"] is None
+        assert "folder-in" not in json.dumps(details)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    @pytest.mark.parametrize("limit", [FOLDER_LIMIT, LIMIT, None])
+    async def test_a_folder_the_limit_shares_stays_named(self, limit, store) -> None:
+        body = await self._search(limit, store)
+        details = await self._details(limit, store)
+
+        assert body["records"][0]["externalParentId"] == "folder-in"
+        assert details["record"]["externalParentId"] == "folder-in"
+
+
 class TestWhatAReadNamesBesideTheRecord:
     """Every read by id hands the connection's limit to what it names beside
     the record (links, related tables, source parent, live ticket fields)."""
@@ -867,7 +942,7 @@ class TestWhatAReadNamesBesideTheRecord:
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch), \
              patch("app.api.routes.records.read_record", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", request, mode="record", query=None,
-                                      start_block=None, start_record=0, max_chars=40_000)
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert fetch.await_args.kwargs["connection_sources"] == limit
 
     @staticmethod

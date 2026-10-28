@@ -41,6 +41,7 @@ import {
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  AGENT_CREATE_TOOLSET_NAMES,
   createAgentSchema,
   getWebSearchProviderUsageRequestSchema,
   getModelUsageRequestSchema,
@@ -725,6 +726,18 @@ describe('enterprise_search/validators/es_validators', () => {
       const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
       expect(omitted.success).to.be.true
       expect(omitted.data!.body).to.not.have.property('rewriteQuery')
+    })
+
+    it('keeps saveHistory when the caller sets it, and refuses one that is not a boolean', () => {
+      for (const saveHistory of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.saveHistory).to.equal(saveHistory)
+      }
+      for (const saveHistory of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success, JSON.stringify(saveHistory)).to.be.false
+      }
     })
 
     it('rejects a rewriteQuery that is not a boolean', () => {
@@ -2153,6 +2166,98 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    // A Zod object drops unknown keys and the middleware writes the parsed
+    // body back onto the request, so a field missing from the schema never
+    // reaches the service at all -- it is silently dropped, not rejected.
+    it('keeps serviceAccountUserId on create', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: true,
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.serviceAccountUserId).to.equal(
+          '65f1a2b3c4d5e6f701020304',
+        )
+      }
+    })
+
+    it('rejects an empty serviceAccountUserId rather than storing one', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: true,
+          serviceAccountUserId: '   ',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('refuses a binding on create unless the agent is a service agent', () => {
+      // Dropping it would create an agent that searches as its creator, the
+      // wider identity, while whoever asked believed they had narrowed it.
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal([
+          'body',
+          'serviceAccountUserId',
+        ])
+      }
+    })
+
+    it('refuses a binding on create when the flag is explicitly false', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: false,
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('does not require serviceAccountUserId', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Nightly agent', models: [validModel], isServiceAccount: true },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('keeps serviceAccountUserId on update, including null to clear it', () => {
+      const bound = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { serviceAccountUserId: '65f1a2b3c4d5e6f701020304' },
+      })
+      expect(bound.success).to.be.true
+      if (bound.success) {
+        expect(bound.data.body.serviceAccountUserId).to.equal(
+          '65f1a2b3c4d5e6f701020304',
+        )
+      }
+
+      const cleared = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { serviceAccountUserId: null },
+      })
+      expect(cleared.success).to.be.true
+      if (cleared.success) {
+        expect(cleared.data.body).to.have.property('serviceAccountUserId', null)
+      }
+    })
+
     it('should accept dialog-style body with empty optional strings', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -2390,6 +2495,29 @@ describe('enterprise_search/validators/es_validators', () => {
         },
       })
       expect(result.success).to.be.false
+    })
+
+    it('should accept the Google Docs and Sheets toolsets', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [
+            { name: 'docs', displayName: 'Docs', tools: [] },
+            { name: 'sheets', displayName: 'Sheets', tools: [] },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should list the same toolset names as the OpenAPI AgentCreateToolsetName enum', () => {
+      const spec = yaml.load(
+        fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+      ) as { components: { schemas: { AgentCreateToolsetName: { enum: string[] } } } }
+      expect([...spec.components.schemas.AgentCreateToolsetName.enum].sort()).to.deep.equal(
+        [...AGENT_CREATE_TOOLSET_NAMES].sort(),
+      )
     })
 
     it('should reject unknown toolset name', () => {

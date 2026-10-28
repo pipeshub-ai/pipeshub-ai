@@ -39,6 +39,11 @@ class TestRenderedBlocks:
 
 
 class TestBuildUrl:
+    def test_html_custom_property_value_does_not_hide_citation_text(self) -> None:
+        html = '<p style="--var: &quot;; display: none;&quot;">Visible citation passage with four words and a sentence.</p>'
+        url = generator.build_url(BASE, html, SourceFormat.HTML)
+        assert ":~:text=" in url
+
     def test_leading_symbols_do_not_drop_words(self) -> None:
         url = generator.build_url(BASE, "**Q3** results - the e-mail from Zürich isn't ready")
         directive = _directive_of(url)
@@ -108,6 +113,13 @@ class TestBuildDirective:
     def test_ineligible_blocks_are_skipped(self) -> None:
         directive = generator.build_directive("a\n\nreal content block here")
         assert directive == TextDirective(start="real content block here")
+
+    @pytest.mark.parametrize("contraction", ["don't", "don’t"])
+    def test_mixed_script_range_does_not_end_inside_contraction(self, contraction: str) -> None:
+        snippet = f"日,本,語,{contraction} words here with enough content and trailing units 東京大阪京都札幌"
+        directive = _directive_of(generator.build_url(BASE, snippet, SourceFormat.PLAIN))
+        assert directive.start.endswith(contraction)
+        assert directive.end is not None
 
     def test_cjk_terms_are_never_cut_inside_a_run(self) -> None:
         sentence = "日本語のテキストは単語の間に空白がありません"

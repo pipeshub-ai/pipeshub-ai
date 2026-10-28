@@ -6,6 +6,7 @@ import { UploadDocumentService } from '../../../../src/modules/storage/controlle
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import {
   ConflictError,
+  NotFoundError,
   ServiceUnavailableError,
   UnprocessableEntityError,
 } from '../../../../src/libs/errors/http.errors'
@@ -18,6 +19,9 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
   let adapter: any
   let findOne: sinon.SinonStub
   let create: sinon.SinonStub
+  // What the idempotency lookup finds, and the row an update reloads.
+  let lookup: unknown
+  let current: any
 
   const details = () => ({
     buffer: Buffer.from('{"a":1}'),
@@ -60,16 +64,20 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
       objectExistsAtPath: sinon.stub().resolves(false),
     }
     sinon.stub(DocumentModel, 'init').resolves(DocumentModel as any)
-    findOne = sinon.stub(DocumentModel, 'findOne')
-    create = sinon.stub(DocumentModel, 'create')
+    lookup = null
+    current = null
+    findOne = sinon
+      .stub(DocumentModel, 'findOne')
+      .callsFake(((filter: any) => Promise.resolve('idempotencyKey' in filter ? lookup : current)) as never)
+    create = sinon.stub(DocumentModel, 'create').callsFake((async (input: any) => (current = current ?? input)) as never)
   })
 
   afterEach(() => { sinon.restore() })
 
   it('stores the key, the fingerprint and a lease, then finishes only while holding it', async () => {
     const doc = unfinished()
-    findOne.resolves(null)
-    create.resolves(doc as any)
+    lookup = null
+    current = doc
     adapter.uploadDocumentToStorageService.resolves(stored)
     const res = response()
 
@@ -88,14 +96,14 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
   it('answers a retry of a finished upload with the stored document', async () => {
     // First attempt, only to learn the fingerprint the retry must match.
-    findOne.resolves(null)
-    create.resolves(unfinished() as any)
+    lookup = null
+    current = unfinished()
     adapter.uploadDocumentToStorageService.resolves(stored)
     await service().handleDocumentUpload(request(), response(), details)
     const fingerprint = (create.firstCall.args[0] as any).idempotencyFingerprint
 
     const finished = { _id: 'doc-1', idempotencyFingerprint: fingerprint, s3: { url: 'https://b.s3/doc-1' } }
-    findOne.resolves(finished as any)
+    lookup = finished
     adapter.uploadDocumentToStorageService.resetHistory()
     const res = response()
 
@@ -111,8 +119,8 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
     const findOneAndUpdate = sinon.stub(DocumentModel, 'findOneAndUpdate')
 
     // First attempt: the storage write fails.
-    findOne.resolves(null)
-    create.resolves(unfinished() as any)
+    lookup = null
+    current = unfinished()
     adapter.uploadDocumentToStorageService.onFirstCall().resolves({ statusCode: 500, msg: 'disk full' })
     try {
       await service().handleDocumentUpload(request(), response(), details)
@@ -128,8 +136,9 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
     // Retry: finds the unfinished document, claims it, and finishes it.
     const reclaimed = unfinished({ idempotencyFingerprint: first.idempotencyFingerprint })
-    findOne.resolves(unfinished({ idempotencyFingerprint: first.idempotencyFingerprint }) as any)
+    lookup = unfinished({ idempotencyFingerprint: first.idempotencyFingerprint })
     findOneAndUpdate.resolves(reclaimed as any)
+    current = reclaimed
     adapter.uploadDocumentToStorageService.onSecondCall().resolves(stored)
     const res = response()
 
@@ -144,13 +153,13 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
   })
 
   it('refuses a retry while another attempt still holds the upload', async () => {
-    findOne.resolves(null)
-    create.resolves(unfinished() as any)
+    lookup = null
+    current = unfinished()
     adapter.uploadDocumentToStorageService.resolves(stored)
     await service().handleDocumentUpload(request(), response(), details)
     const fingerprint = (create.firstCall.args[0] as any).idempotencyFingerprint
 
-    findOne.resolves(unfinished({ idempotencyFingerprint: fingerprint }) as any)
+    lookup = unfinished({ idempotencyFingerprint: fingerprint })
     sinon.stub(DocumentModel, 'findOneAndUpdate').resolves(null)
     adapter.uploadDocumentToStorageService.resetHistory()
 
@@ -164,7 +173,7 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
   })
 
   it('refuses a key reused for a different upload', async () => {
-    findOne.resolves(unfinished({ idempotencyFingerprint: 'another-request' }) as any)
+    lookup = unfinished({ idempotencyFingerprint: 'another-request' })
 
     try {
       await service().handleDocumentUpload(request(), response(), details)
@@ -179,8 +188,8 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
     const doc = unfinished({
       save: sinon.stub().rejects(new mongoose.Error.DocumentNotFoundError({}, 'Document', 0, {})),
     })
-    findOne.resolves(null)
-    create.resolves(doc as any)
+    lookup = null
+    current = doc
     adapter.uploadDocumentToStorageService.resolves(stored)
     sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
 
@@ -192,10 +201,25 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
     }
   })
 
+  it('answers not found, not a takeover conflict, when an upload without a key loses its row', async () => {
+    const doc = unfinished({
+      save: sinon.stub().rejects(new mongoose.Error.DocumentNotFoundError({}, 'Document', 0, {})),
+    })
+    current = doc
+    adapter.uploadDocumentToStorageService.resolves(stored)
+
+    try {
+      await service().handleDocumentUpload(request(null), response(), details)
+      expect.fail('expected not found')
+    } catch (error) {
+      expect(error).to.be.instanceOf(NotFoundError)
+    }
+  })
+
   it('answers a failed storage write without a key, in plain words, and removes the unstored document', async () => {
     const updateOne = sinon.stub(DocumentModel, 'updateOne')
     const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
-    create.resolves(unfinished() as any)
+    current = unfinished()
     adapter.uploadDocumentToStorageService.resolves({ statusCode: 500, msg: 'disk full' })
 
     try {
@@ -214,7 +238,7 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
   it('keeps the document when storage cannot say whether the file arrived', async () => {
     const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
-    create.resolves(unfinished() as any)
+    current = unfinished()
     adapter.uploadDocumentToStorageService.rejects(new Error('socket hang up'))
     // A request can time out after storage kept the file.
     adapter.objectExistsAtPath.rejects(new Error('connection reset'))
@@ -230,7 +254,7 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
   it('keeps the document when the file turns out to be stored after all', async () => {
     const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
-    create.resolves(unfinished() as any)
+    current = unfinished()
     adapter.uploadDocumentToStorageService.rejects(new Error('timeout of 30000ms exceeded'))
     adapter.objectExistsAtPath.resolves(true)
 
@@ -245,7 +269,7 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
   it('removes the unstored document when the storage vendor throws', async () => {
     const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
-    create.resolves(unfinished() as any)
+    current = unfinished()
     adapter.uploadDocumentToStorageService.rejects(new Error('ENOTDIR: not a directory'))
 
     try {
@@ -259,7 +283,7 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
 
   it('still reports the storage failure when removing the document fails too', async () => {
     sinon.stub(DocumentModel, 'deleteOne').rejects(new Error('mongo down'))
-    create.resolves(unfinished() as any)
+    current = unfinished()
     adapter.uploadDocumentToStorageService.resolves({ statusCode: 500, msg: 'disk full' })
 
     try {

@@ -49,6 +49,7 @@ from app.modules.indexing.record_label_repair import (
     RecordLabelRepair,
     RecordLabelRepairState,
 )
+from app.modules.transformers.blob_storage import StoredRecordNotFound
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -478,6 +479,23 @@ class _Blob:
     def __init__(self) -> None:
         self.stored: dict[str, dict[str, Any]] = {}
         self.writes: list[str] = []
+        # The repair reads the artifact settings through the blob store's config service.
+        self.config_service = MagicMock()
+        self.config_service.get_config = AsyncMock(return_value={"featureFlags": {}})
+
+    async def rewrite_semantic_metadata(
+        self, org_id, record_id, vrid, transform, *, stored_write, sidecar=None,
+    ) -> dict[str, Any] | None:
+        """One read of the stored record, the repair's plan from it, one write (as BlobStorage does)."""
+        stored = await self.get_record_from_storage(vrid, org_id)
+        if stored is None:
+            raise StoredRecordNotFound(vrid)
+        new = await transform(stored)
+        if new is None:
+            return None
+        written = {**stored, "semantic_metadata": new}
+        await self.update_record_buffer(org_id, f"doc-{vrid}", written, vrid)
+        return written
 
     async def get_document_id_by_virtual_record_id(self, vrid) -> dict[str, str] | None:
         return {"record_doc_id": f"doc-{vrid}"} if vrid in self.stored else None

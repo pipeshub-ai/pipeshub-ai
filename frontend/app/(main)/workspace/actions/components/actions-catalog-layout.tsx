@@ -7,8 +7,8 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { ActionCatalogItem } from '../types';
 import { ActionCard, type ActionCardCta } from './action-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 interface SegmentedTab {
   value: string;
@@ -146,7 +146,7 @@ export function ActionsCatalogLayout({
         height: '100%',
         paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
@@ -227,7 +227,7 @@ export function ActionsCatalogLayout({
           </Text>
         </Flex>
       ) : (
-        <Grid columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }} gap="4" style={{ width: '100%' }}>
+        <Grid columns={{ initial: '1', sm: '2', md: '3', lg: '3' }} gap="4" style={{ width: '100%' }}>
           {filtered.map((item) => {
             const { cta, label } = resolveCta(item);
             return (
