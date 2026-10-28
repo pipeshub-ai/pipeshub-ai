@@ -167,3 +167,47 @@ def test_a_stuck_renderer_cannot_block_the_caller_past_the_deadline(monkeypatch:
     thread.join(timeout=10)
     pool.close_all()
     assert not stuck, "the request write has no deadline: the caller blocks while the renderer is stopped"
+
+
+# --- round 4 ---------------------------------------------------------------------
+
+
+def test_the_renderer_does_not_inherit_secrets_whose_names_look_like_locale_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R4-D1: the allowlist takes every ``LC_*`` name, so ``LC_<anything>`` reaches the renderer."""
+    pool = _fresh_pool(monkeypatch)
+    monkeypatch.setenv("LC_AWS_SECRET_ACCESS_KEY", "qa-lc-secret")
+    monkeypatch.setenv("LC_API_TOKEN", "qa-lc-token")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")  # a real locale variable may pass
+    svg_worker.run_bounded(_b64(GOOD))
+    environ = Path(f"/proc/{pool._idle[0].process.pid}/environ").read_bytes()
+    pool.close_all()
+    assert b"qa-lc-secret" not in environ
+    assert b"qa-lc-token" not in environ
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["[" * 200000, '{"png": ' + "[" * 100000, '{"png": ' + "{\"a\":" * 100000],
+    ids=["deep-list", "deep-png", "deep-object"],
+)
+def test_a_reply_nested_too_deeply_is_a_processing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reply: str
+) -> None:
+    """R4-D2: ``json.loads`` raises RecursionError (not ValueError) on deep nesting, which escapes raw."""
+    pool = _fresh_pool(monkeypatch)
+    _fake_child(
+        monkeypatch,
+        tmp_path,
+        f"import sys\nfor line in sys.stdin:\n    sys.stdout.write({reply!r} + '\\n'); sys.stdout.flush()\n",
+    )
+    used: list[svg_worker._Renderer] = []
+    acquire = pool.acquire
+    monkeypatch.setattr(pool, "acquire", lambda deadline: used.append(acquire(deadline)) or used[-1])
+    try:
+        with pytest.raises(DocumentProcessingError):
+            svg_worker.run_bounded(_b64(GOOD), timeout=3.0)
+        assert not used[0].alive()  # the renderer that sent it is not reused
+    finally:
+        pool.close_all()
