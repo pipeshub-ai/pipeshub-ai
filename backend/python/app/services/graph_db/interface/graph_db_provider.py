@@ -396,6 +396,7 @@ if TYPE_CHECKING:
         RecordGroup,
         User,
     )
+    from app.modules.named_entities.graph_ops import NamedEntityQuery
     from app.services.graph_db.common.utils import (
         EntityCandidateRows,
         PermittedEntityRows,
@@ -8359,6 +8360,15 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Mention edges between ``record_ids`` (records the caller already resolved)
         and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_values_in_records(
+        self, org_id: str, query: "NamedEntityQuery | None", record_ids: list[str], per_record: int = 10,
+    ) -> dict[str, list[str]]:
+        """For ``record_ids`` (records the caller already resolved), the names of
+        their values that satisfy ``query``'s value constraints, up to
+        ``per_record`` each, by name. Entity-node constraints are ignored."""
         raise NotImplementedError
 
     @abstractmethod

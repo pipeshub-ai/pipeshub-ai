@@ -277,13 +277,37 @@ RECORD_HITS_AQL = f"""
 FOR recordId IN @recordIds
   LET r = DOCUMENT("{_RECORDS}", recordId)
   FILTER r != null AND r.isDeleted != true AND r.orgId == @orgId
-  RETURN {{ recordId: r._key, virtualRecordId: r.virtualRecordId, connectorId: r.connectorId }}
+  RETURN {{
+    recordId: r._key, virtualRecordId: r.virtualRecordId, connectorId: r.connectorId,
+    recordType: r.recordType, sortTs: r.sourceLastModifiedTimestamp || r.updatedAtTimestamp || 0
+  }}
 """
 
 RECORD_HITS_CYPHER = f"""
 MATCH (r:{_RECORD_LABEL})
 WHERE r.id IN $recordIds AND r.orgId = $orgId AND coalesce(r.isDeleted, false) = false
-RETURN r.id AS recordId, r.virtualRecordId AS virtualRecordId, r.connectorId AS connectorId
+RETURN r.id AS recordId, r.virtualRecordId AS virtualRecordId, r.connectorId AS connectorId,
+       r.recordType AS recordType, coalesce(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) AS sortTs
+"""
+
+# The values of already-checked records that satisfy one value constraint, to
+# show why a record matched; a record's first few by name are enough for that.
+VALUES_IN_RECORDS_AQL = f"""
+FOR v IN {_VALUES}
+  FILTER v.recordId IN @recordIds AND v.orgId == @orgId
+{_VALUE_FILTERS_AQL}
+  COLLECT recordId = v.recordId INTO named = v.name
+  RETURN {{ recordId: recordId, names: SLICE(SORTED_UNIQUE(named), 0, @perRecord) }}
+"""
+
+VALUES_IN_RECORDS_CYPHER = f"""
+MATCH (v:{_VALUE_LABEL})
+WHERE v.recordId IN $recordIds AND v.orgId = $orgId
+WITH v
+{_VALUE_FILTERS_CYPHER}
+WITH v ORDER BY v.name
+WITH v.recordId AS recordId, collect(DISTINCT v.name) AS named
+RETURN recordId, named[0..$perRecord] AS names
 """
 
 DELETE_STALE_VALUES_AQL = f"""
@@ -800,6 +824,28 @@ class NamedEntityGraph:
         statement = MENTIONS_IN_RECORDS_AQL if self._dialect == "arango" else MENTIONS_IN_RECORDS_CYPHER
         return _unwrap(await self._execute(statement, binds))
 
+    async def values_in_records(
+        self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int,
+    ) -> dict[str, list[str]]:
+        """Each record's value names (up to ``per_record``, by name) that satisfy
+        one of the query's value constraints; entity-node constraints are skipped."""
+        if query is None or not record_ids:
+            return {}
+        found: dict[str, list[str]] = {}
+        statement = VALUES_IN_RECORDS_AQL if self._dialect == "arango" else VALUES_IN_RECORDS_CYPHER
+        for parts in _predicates(None, query):
+            for part in parts:
+                if part.source != "value":
+                    continue
+                binds = {
+                    **part.binds, "orgId": org_id,
+                    "recordIds": list(dict.fromkeys(record_ids)), "perRecord": per_record,
+                }
+                for row in _unwrap(await self._execute(statement, binds)):
+                    names = found.setdefault(str(row["recordId"]), [])
+                    names.extend(n for n in row.get("names") or [] if n and n not in names)
+        return {record_id: sorted(names)[:per_record] for record_id, names in found.items()}
+
     async def add_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str], now: int
     ) -> None:
@@ -1138,6 +1184,11 @@ class NamedEntityGraphMixin:
         self, org_id: str, entity_ids: list[str], record_ids: list[str]
     ) -> list[dict]:
         return await self._named_entity_graph().mentions_in_records(org_id, entity_ids, record_ids)
+
+    async def get_named_entity_values_in_records(
+        self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int = 10,
+    ) -> dict[str, list[str]]:
+        return await self._named_entity_graph().values_in_records(org_id, query, record_ids, per_record)
 
     async def add_named_entity_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]

@@ -14,6 +14,7 @@ answer are fakes; the real permission query is covered by
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -128,19 +129,22 @@ async def test_indexed_values_are_queryable_and_only_for_readable_in_scope_recor
     with (
         patch.object(values, "_named_entities_enabled", AsyncMock(return_value=True)),
         patch.object(values, "load_entity_access_context", AsyncMock(return_value=_agent_scope(f"{org_id}-conn"))),
+        patch.object(values, "resolve_frontend_url", AsyncMock(return_value=None)),
     ):
-        for query in (
-            {"amount_min": 20_000, "amount_max": 30_000, "currency": "USD"},
-            {"date_from": _ms(2026, 3, 1), "date_to": _ms(2026, 3, 31)},
-            {"kinds": ["organization"], "name": "acme"},
+        for query, matched in (
+            ({"amount_min": 20_000, "amount_max": 30_000, "currency": "USD"}, True),
+            ({"date_from": _ms(2026, 3, 1), "date_to": _ms(2026, 3, 31)}, True),
+            ({"kinds": ["organization"], "name": "acme"}, False),
         ):
             ok, body = await values.execute_find_records_by_value(state, **query)
             assert ok, body
-            assert json.loads(body)["records"] == [{"virtualRecordId": f"v-{readable}", "recordId": readable}], query
+            assert re.findall(r"record_id=([\w-]+)", body) == [readable], query
+            # Value filters show the values that matched; a name filter has none to show.
+            assert ("| matched: " in body) is matched, query
         assert other_app not in user_graph.checked
 
         ok, body = await values.execute_find_records_by_value(state, amount_min=1, amount_max=100, currency="USD")
-        assert ok and json.loads(body)["records"] == []
+        assert (ok, body) == (True, values.NO_MATCH_MSG)
 
 
 async def test_a_deleted_records_entities_leave_the_graph_and_the_agent_tool_after_the_sweep(graph) -> None:  # noqa: F811

@@ -510,6 +510,7 @@ class TestAbstractMethodInventory:
         "get_named_entities_by_ids",
         "find_named_entities_by_key_prefix",
         "get_named_entity_mentions_in_records",
+        "get_named_entity_values_in_records",
         "add_named_entity_aliases",
         "query_named_entities",
         "get_records_for_named_entities",

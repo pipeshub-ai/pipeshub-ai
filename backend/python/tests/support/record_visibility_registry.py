@@ -140,6 +140,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_named_entity_mentions_in_records": (
         Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
     ),
+    "get_named_entity_values_in_records": (
+        Rule.ALL, _STRUCTURE + "; find_records_by_value passes only records it already permission-checked",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),

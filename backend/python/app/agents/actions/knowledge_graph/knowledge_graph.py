@@ -1110,8 +1110,9 @@ class KnowledgeGraph:
         description=(
             "Find records the user can access that mention a typed value: a date range, "
             "an amount in a currency, a quantity, or a percentage. Requires named-entity "
-            "extraction to be enabled. A match set that is too large is rejected rather "
-            "than truncated."
+            "extraction to be enabled. Lists readable records most recently modified first, "
+            "each with the values that matched, in pages: continue with the call it prints. "
+            "record_types keeps one kind of record (FILE, MAIL, TICKET, ...)."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
@@ -1126,6 +1127,9 @@ class KnowledgeGraph:
             ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
+            ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Records per page (default 20, max 50).", required=False),
+            ToolParameter(name="cursor", type=ParameterType.STRING, description="Cursor from the previous page's continue call.", required=False),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         display_name="Found records by typed value",
@@ -1144,6 +1148,9 @@ class KnowledgeGraph:
         dimension: str | None = None,
         percent_min: float | None = None,
         percent_max: float | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         from .ops.values import execute_find_records_by_value
         return await execute_find_records_by_value(
@@ -1160,6 +1167,9 @@ class KnowledgeGraph:
             dimension=dimension,
             percent_min=percent_min,
             percent_max=percent_max,
+            record_types=record_types,
+            limit=limit,
+            cursor=cursor,
         )
 
     @tool(
