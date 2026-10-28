@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
@@ -62,6 +63,32 @@ def _without_frames(error: Exception) -> Exception:
         current.__traceback__ = None
         pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
     return error
+
+
+class _RenderSink:
+    """Where a pool thread hands over rendered pages.
+
+    The thread keeps its job and arguments until it next runs, which can be after
+    the awaiting coroutine has moved on or been cancelled; a render can even finish
+    after that. Images passed back as a result or kept in a plain dict would stay
+    alive there. Once closed, the sink holds nothing and takes nothing.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pages: dict[int, str] = {}
+        self._closed = False
+
+    def put(self, pages: dict[int, str]) -> None:
+        with self._lock:
+            if not self._closed:
+                self._pages.update(pages)
+
+    def close(self) -> dict[int, str]:
+        with self._lock:
+            self._closed = True
+            pages, self._pages = self._pages, {}
+        return pages
 
 class VLMOCRStrategy(OCRStrategy):
     """OCR strategy that uses Vision Language Models to convert PDF pages to markdown"""
@@ -305,11 +332,15 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.debug(
                 "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
             )
-            batch_images = await asyncio.to_thread(
-                self._render_page_batch_to_base64, batch
-            )
-            self._page_images.update(batch_images)
-            del batch_images
+            sink = _RenderSink()
+            try:
+                await asyncio.to_thread(self._render_into, batch, sink)
+                self._page_images.update(sink.close())
+            finally:
+                sink.close()
+
+    def _render_into(self, page_numbers: list[int], sink: "_RenderSink") -> None:
+        sink.put(self._render_page_batch_to_base64(page_numbers))
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
