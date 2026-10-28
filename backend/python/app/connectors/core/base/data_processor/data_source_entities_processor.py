@@ -29,6 +29,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     is_transient_conflict,
     is_write_conflict,
     retry_on_deadlock,
+    will_retry,
 )
 from app.connectors.core.sync.full_sync_coverage import (
     GROUP_MEMBERS_UNSURE,
@@ -392,6 +393,13 @@ class DataSourceEntitiesProcessor:
             run = self._full_sync_run(connector_id)
             if run is not None:
                 run.add(collection, node_id)
+
+    def _log_failure(self, message: str, error: Exception, *, exc_info: bool = False) -> None:
+        """Log a failure a retried method is about to raise: as a warning when
+        retry_on_deadlock will run the method again, which it reports itself, and
+        as an error when nothing will."""
+        log = self.logger.warning if will_retry(self, error) else self.logger.error
+        log(message, exc_info=exc_info)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
         """Whether a handler that logs a failure and goes on has to let this one
@@ -2543,7 +2551,7 @@ class DataSourceEntitiesProcessor:
             await self._flush_pending_blob_moves(pending_moves)
 
         except Exception as e:
-            self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
+            self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
 
     async def _process_record(
@@ -3177,7 +3185,7 @@ class DataSourceEntitiesProcessor:
                     records_to_publish, pending_moves, moved_virtual_record_ids
                 )
         except Exception as e:
-            self.logger.error(f"Transaction on_new_records failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
             raise e
 
 
@@ -3813,7 +3821,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         except Exception as e:
-            self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
+            self._log_failure(f"on_records_moved failed: {e}", e, exc_info=True)
             raise
 
     @retry_on_deadlock()
@@ -4610,7 +4618,7 @@ class DataSourceEntitiesProcessor:
             )
             return published_ids
         except Exception as e:
-            self.logger.error(f"Failed to publish reindex events: {str(e)}")
+            self._log_failure(f"Failed to publish reindex events: {str(e)}", e)
             raise e
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
@@ -5100,7 +5108,7 @@ class DataSourceEntitiesProcessor:
             await self._flush_pending_blob_moves(pending_moves)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_record_groups failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5177,7 +5185,7 @@ class DataSourceEntitiesProcessor:
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
+            self._log_failure(f"Failed to update record group name for {folder_id}: {e}", e, exc_info=True)
             raise
 
         # Best-effort, post-commit -- same posture as every other move-tree
@@ -5215,7 +5223,7 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_app_users(users)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_users failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5345,7 +5353,7 @@ class DataSourceEntitiesProcessor:
                 connector_id,
             )
         except Exception as e:
-            self.logger.error(f"Transaction on_external_app_users failed: {str(e)}")
+            self._log_failure(f"Transaction on_external_app_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5373,7 +5381,7 @@ class DataSourceEntitiesProcessor:
                 )
             return reaped
         except Exception as e:
-            self.logger.error(f"Transaction reap_external_app_users failed: {str(e)}")
+            self._log_failure(f"Transaction reap_external_app_users failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5469,7 +5477,7 @@ class DataSourceEntitiesProcessor:
             await self._access_changed(rewritten)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_user_groups failed: {str(e)}", e)
             raise e
 
     @retry_on_deadlock()
@@ -5556,7 +5564,7 @@ class DataSourceEntitiesProcessor:
             await self._access_changed(rewritten)
 
         except Exception as e:
-            self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")
+            self._log_failure(f"Transaction on_new_app_roles failed: {str(e)}", e)
             raise e
 
     async def on_new_app(self, app: App) -> None:
@@ -6242,8 +6250,8 @@ class DataSourceEntitiesProcessor:
                 return True
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to rename user group {external_group_id}: {e}",
+            self._log_failure(
+                f"Failed to rename user group {external_group_id}: {e}", e,
                 exc_info=True,
             )
             raise
@@ -6311,7 +6319,7 @@ class DataSourceEntitiesProcessor:
                 await tx_store.delete_user_group_by_id(group_id)
                 self.logger.debug(f"Successfully deleted user group with ID: {group_id}")
         except Exception as e:
-            self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
+            self._log_failure(f"Failed to delete user group {group_id}: {str(e)}", e,exc_info=True)
             raise
 
     @retry_on_deadlock()
