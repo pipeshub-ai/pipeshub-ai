@@ -17,7 +17,7 @@ from app.utils.chat_helpers import (
     build_record_page_web_url,
     resolve_frontend_url,
 )
-from app.utils.citations import LISTED_FACTS_KEY
+from app.utils.citations import LISTED_FACTS_KEY, listing_citation_url
 
 from .views import _compact_date
 
@@ -31,8 +31,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Lines of `Record.to_llm_context()` that state facts about the record rather
-# than identify it (ids, URLs, MIME type).
-_FACT_LINE_PREFIXES = ("Created At:", "Last Updated At:", "* ")
+# than identify it (ids, URLs, MIME type). The dates follow
+# `RecordDates.header_lines`, which an uploaded file's header uses too.
+_FACT_LINE_PREFIXES = (
+    "Created At:", "Last Updated", "Document Date:", "File Last Modified:", "Uploaded At:", "* ",
+)
 
 
 def row_facts(row: NodeRow) -> str:
@@ -80,7 +83,7 @@ async def cite_listed_records(
         record_id = doc.get("_key") or doc.get("id")
         if record_id in facts:
             listed[record_id] = {**doc, "id": record_id, LISTED_FACTS_KEY: facts[record_id]}
-    urls = {rid: build_record_page_web_url(frontend_url, rid) for rid in listed}
+    urls = {rid: listing_citation_url(build_record_page_web_url(frontend_url, rid)) for rid in listed}
     listed = {rid: doc for rid, doc in listed.items() if urls[rid]}
     if not listed:
         return {}

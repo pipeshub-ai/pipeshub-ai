@@ -167,3 +167,53 @@ def test_a_file_listing_marks_each_citable_record_too() -> None:
     assert "cite=" not in second
     assert "e.g. [source](ref4)" in text
     assert "cite=" not in _render_flat_text(response, "BBS", None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_listing_is_quoted_even_when_a_search_holds_the_same_record() -> None:
+    searched = {
+        "id": "r1", "record_name": "Bug Bash: Release Checklist", "virtual_record_id": "v1",
+        "semantic_metadata": {"summary": "Checklist for the OSS release bug bash."},
+    }
+    summary_ref_url = f"{FRONTEND}/record/r1"
+    mapper = CitationRefMapper()
+    summary_ref = mapper.get_or_create_ref(summary_ref_url)
+    state = _state(citation_ref_mapper=mapper, tool_records=[searched])
+    refs = await cite_listed_records(state, _graph(_doc("r1", "Bug Bash: Release Checklist")), "org", {"r1": "Created 2026-10-26"})
+    assert refs["r1"] != summary_ref
+
+    answer = f"It was created on Oct 26 [source]({refs['r1']}). It covers the release [source]({summary_ref})."
+    _, citations = normalize_citations_and_chunks(
+        answer, [], state["tool_records"], ref_to_url=mapper.ref_to_url,
+        virtual_record_id_to_result={"v1": searched},
+    )
+    listed, summary = citations
+    assert listed["content"] == "Created 2026-10-26"
+    assert listed["metadata"]["webUrl"] == summary_ref_url
+    assert summary["content"] == "Checklist for the OSS release bug bash."
+
+
+@pytest.mark.asyncio
+async def test_a_record_listed_by_name_only_is_cited_by_its_name() -> None:
+    state = _state()
+    doc = {**_doc("r1", "BBS 025"), "semantic_metadata": {"summary": "Text list_files never showed."}}
+    refs = await cite_listed_records(state, _graph(doc), "org", {"r1": ""})
+    _, citations = normalize_citations_and_chunks(
+        f"See [source]({refs['r1']}).", [], state["tool_records"],
+        ref_to_url=state["citation_ref_mapper"].ref_to_url,
+    )
+    assert citations[0]["content"] == "BBS 025"
+    assert citations[0]["metadata"]["blockType"] == RECORD_PAGE_LISTED_FACTS
+
+
+def test_an_uploaded_files_dates_are_kept() -> None:
+    block = "\n".join([
+        "Record ID: r1", "Uploaded At: 2026-10-26 07:05 UTC (upload time, not a document date)",
+        "Document Date: 2026-09-01 (stated in the document)",
+        "File Last Modified: 2026-10-25 10:00 UTC (the uploaded file's timestamp, not a document date)",
+    ])
+    facts = context_facts(block)
+    assert facts.startswith("Uploaded At:")
+    assert "Document Date: 2026-09-01" in facts
+    assert "File Last Modified:" in facts
+    assert "Record ID" not in facts
