@@ -1410,15 +1410,15 @@ records:
       from a fintech in Lisbon and has already asked where the good coffee is. Say hi!
 
   - id: sn-hr-1241
-    container: servicenow-hr
+    container: zendesk-people
     type: TICKET
-    title: "ServiceNow HR0001241: Day-one laptop has a US keyboard"
+    title: "Zendesk #1241: Day-one laptop has a US keyboard"
     author: leo
     reporter: leo
     assignee: tomas
     created: 2026-04-20T08:45:00Z
     updated: 2026-04-22T11:00:00Z
-    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001241
+    web_url: https://zendesk.acme-demo.example/agent/tickets/1241
     body: |
       **Status:** Resolved
 
@@ -1429,15 +1429,15 @@ records:
       first one goes back to stock.
 
   - id: sn-hr-1242
-    container: servicenow-hr
+    container: zendesk-people
     type: TICKET
-    title: "ServiceNow HR0001242: GitHub and Jira access for Payments"
+    title: "Zendesk #1242: GitHub and Jira access for Payments"
     author: leo
     reporter: leo
     assignee: tomas
     created: 2026-04-20T09:30:00Z
     updated: 2026-04-21T10:15:00Z
-    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001242
+    web_url: https://zendesk.acme-demo.example/agent/tickets/1242
     body: |
       **Status:** Resolved
 
@@ -1448,15 +1448,15 @@ records:
       confirmed.
 
   - id: sn-hr-1247
-    container: servicenow-hr
+    container: zendesk-people
     type: TICKET
-    title: "ServiceNow HR0001247: Payroll bank details form"
+    title: "Zendesk #1247: Payroll bank details form"
     author: leo
     reporter: leo
     assignee: tomas
     created: 2026-04-23T14:00:00Z
     updated: 2026-04-24T09:20:00Z
-    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001247
+    web_url: https://zendesk.acme-demo.example/agent/tickets/1247
     body: |
       **Status:** Resolved
 
@@ -1466,15 +1466,15 @@ records:
       in time for the April payroll run.
 
   - id: sn-hr-1218
-    container: servicenow-hr
+    container: zendesk-people
     type: TICKET
-    title: "ServiceNow HR0001218: Working from Portugal for six weeks"
+    title: "Zendesk #1218: Working from Portugal for six weeks"
     author: alice
     reporter: alice
     assignee: tomas
     created: 2026-03-24T10:00:00Z
     updated: 2026-03-26T15:00:00Z
-    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001218
+    web_url: https://zendesk.acme-demo.example/agent/tickets/1218
     body: |
       **Status:** Approved
 
@@ -1485,15 +1485,15 @@ records:
       this length.
 
   - id: sn-hr-1229
-    container: servicenow-hr
+    container: zendesk-people
     type: TICKET
-    title: "ServiceNow HR0001229: Security training while on call"
+    title: "Zendesk #1229: Security training while on call"
     author: grace
     reporter: grace
     assignee: tomas
     created: 2026-04-16T12:00:00Z
     updated: 2026-04-21T10:30:00Z
-    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001229
+    web_url: https://zendesk.acme-demo.example/agent/tickets/1229
     body: |
       **Status:** Closed
 

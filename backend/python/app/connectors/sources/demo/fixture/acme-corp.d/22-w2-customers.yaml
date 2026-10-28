@@ -136,7 +136,7 @@ records:
       The new certificate had been uploaded to Globex's IdP but not to their Acme
       workspace. Walked their admin through uploading the new metadata XML under
       Admin → Security on 13 March; logins restored at 14:50 UTC. Mirrored in
-      ServiceNow as CS0004488.
+      Zendesk as #4488.
 
   - id: sf-case-globex-0041
     container: sf-acct-globex
@@ -211,20 +211,20 @@ records:
 
       ## Internal notes
       Reproduced on a test workspace with SAML enabled. Escalated to engineering as
-      SUP-127; tracked in ServiceNow as CS0004500. No fix date yet.
+      SUP-127; tracked in Zendesk as #4500. No fix date yet.
 
-  # --- ServiceNow: Globex and Globus tickets -----------------------------------
+  # --- Zendesk: Globex and Globus tickets --------------------------------------
 
   - id: sn-4488
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004488: SAML logins fail after IdP certificate rotation — Globex"
+    title: "Zendesk #4488: SAML logins fail after IdP certificate rotation — Globex"
     author: chioma
     reporter: victor
     assignee: chioma
     created: 2026-03-12T09:05:00Z
     updated: 2026-03-13T15:00:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004488
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4488
     mentions_orgs: [globex]
     body: |
       **Customer:** Globex Corporation (Enterprise) · **Status:** Solved · **Priority:** P2
@@ -240,15 +240,15 @@ records:
       - Suggested they add the workspace to their certificate-rotation checklist.
 
   - id: sn-4496
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004496: Acme Flow drops custom fields with dots (Globex)"
+    title: "Zendesk #4496: Acme Flow drops custom fields with dots (Globex)"
     author: chioma
     reporter: victor
     assignee: chioma
     created: 2026-04-15T10:20:00Z
     updated: 2026-04-28T17:30:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004496
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4496
     relations:
       - { type: RELATED, to: jira-flow-312 }
     mentions_orgs: [globex]
@@ -268,15 +268,15 @@ records:
         confirm the 14 fields now populate. Waiting on their confirmation.
 
   - id: sn-4497
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004497: Globex: SSO login loop in Safari"
+    title: "Zendesk #4497: Globex: SSO login loop in Safari"
     author: lucas
     reporter: victor
     assignee: lucas
     created: 2026-04-22T08:40:00Z
     updated: 2026-04-27T14:10:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004497
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4497
     mentions_orgs: [globex]
     body: |
       **Customer:** Globex Corporation (Enterprise) · **Status:** Open · **Priority:** P3
@@ -294,15 +294,15 @@ records:
         redirect back from the IdP.
 
   - id: sn-4499
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004499: Globus Partners: partner sandbox workspace access"
+    title: "Zendesk #4499: Globus Partners: partner sandbox workspace access"
     author: chioma
     reporter: ines
     assignee: chioma
     created: 2026-04-24T13:30:00Z
     updated: 2026-04-28T10:05:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004499
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4499
     mentions_orgs: [globus]
     body: |
       **Customer:** Globus Partners (Partner) · **Status:** Open · **Priority:** P4
@@ -318,15 +318,15 @@ records:
         on sign-off; sandbox to be created the day it arrives.
 
   - id: sn-4500
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004500: Globex: audit log export has no SSO login events"
+    title: "Zendesk #4500: Globex: audit log export has no SSO login events"
     author: chioma
     reporter: olivia
     assignee: chioma
     created: 2026-04-21T11:00:00Z
     updated: 2026-04-29T09:20:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004500
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4500
     relations:
       - { type: RELATED, to: jira-sup-127 }
     mentions_orgs: [globex]
@@ -361,7 +361,7 @@ records:
 
       The audit log CSV export drops every event of type `sso.login` and `sso.logout`.
       The in-app audit view shows them, so the events are recorded; something in the
-      export path filters them out. Customer: Globex Corporation (CS0004500), who
+      export path filters them out. Customer: Globex Corporation (#4500), who
       need the events for a security review before signing their expansion.
 
       Steps: enable SAML on a test workspace, log in twice, export the audit log for
@@ -1113,15 +1113,15 @@ records:
   # --- February predecessor (before the rename) ------------------------------
 
   - id: sn-4485
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004485: Acme Sync duplicated records — Contoso"
+    title: "Zendesk #4485: Acme Sync duplicated records — Contoso"
     author: sam
     reporter: jonas
     assignee: sam
     created: 2026-02-19T10:25:00Z
     updated: 2026-02-20T16:40:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004485
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4485
     mentions_orgs: [contoso]
     body: |
       **Customer:** Contoso (Enterprise) · **Status:** Solved · **Priority:** P2
@@ -1199,15 +1199,15 @@ records:
       CIO, Bluebird Health
 
   - id: sn-4490
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004490: Acme Flow sync stalled — Bluebird Health"
+    title: "Zendesk #4490: Acme Flow sync stalled — Bluebird Health"
     author: lucas
     reporter: kwame
     assignee: lucas
     created: 2026-04-08T07:30:00Z
     updated: 2026-04-10T15:20:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004490
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4490
     relations:
       - { type: RELATED, to: jira-sup-125 }
     mentions_orgs: [bluebird]
@@ -1243,15 +1243,15 @@ records:
       Jonas
 
   - id: sn-4492
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004492: Acme Flow sync delayed — Contoso"
+    title: "Zendesk #4492: Acme Flow sync delayed — Contoso"
     author: chioma
     reporter: jonas
     assignee: chioma
     created: 2026-04-08T11:00:00Z
     updated: 2026-04-10T15:35:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004492
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4492
     relations:
       - { type: RELATED, to: jira-sup-125 }
     mentions_orgs: [contoso]
@@ -1290,9 +1290,9 @@ records:
       8 April. Connections report "running" while their queues grow.
 
       Customer reports, in order (UTC):
-      - 07:30 Bluebird Health (pilot) — CS0004490. Lucas Moreau was first responder
+      - 07:30 Bluebird Health (pilot) — #4490. Lucas Moreau was first responder
         and spotted that more than one workspace was lagging.
-      - 11:00 Contoso — CS0004492.
+      - 11:00 Contoso — #4492.
       - 13:15 Globex Corporation — came in by email to their account team; Hannah
         Schmidt tracks it on their Salesforce case 00001041.
 
@@ -1320,7 +1320,7 @@ records:
       ## Description
       Pilot workspace: Acme Flow stopped syncing from the scheduling system at about
       06:15 UTC on 8 April. Logged on the account so the deal team sees it during the
-      pilot. Support ticket CS0004490 holds the work notes.
+      pilot. Support ticket #4490 holds the work notes.
 
       ## Resolution
       Platform-wide Flow delay (several customers). Fixed 10 April; backlog drained
@@ -1342,7 +1342,7 @@ records:
 
       ## Description
       Service-desk connection about four and a half hours behind on 8 April. Logged
-      on the account for the renewal team's visibility; support ticket CS0004492.
+      on the account for the renewal team's visibility; support ticket #4492.
 
       ## Resolution
       Fixed with the platform-wide Flow fix on 10 April; customer confirmed the same
@@ -1365,7 +1365,7 @@ records:
       ## Description
       About 2,300 CRM records duplicated overnight by Acme Sync after a burst of
       webhook retries. Customer's opportunity reports double counted. Support ticket
-      CS0004485.
+      #4485.
 
       ## Resolution
       Engineering fixed webhook retry handling and removed 2,297 duplicates on
@@ -1557,15 +1557,15 @@ records:
       wait for the SUP ticket to be triaged.
 
   - id: sn-4493
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004493: SSO — can group claims set workspace roles? (Fabrikam)"
+    title: "Zendesk #4493: SSO — can group claims set workspace roles? (Fabrikam)"
     author: chioma
     reporter: ahmed
     assignee: chioma
     created: 2026-04-09T09:15:00Z
     updated: 2026-04-14T12:00:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004493
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4493
     mentions_orgs: [fabrikam]
     body: |
       **Customer:** Fabrikam (Business) · **Status:** Solved · **Priority:** P4
@@ -1801,15 +1801,15 @@ records:
       Account executive, Acme
 
   - id: sn-4501
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004501: Export download link expired before use — Northwind Traders"
+    title: "Zendesk #4501: Export download link expired before use — Northwind Traders"
     author: sam
     reporter: harriet
     assignee: sam
     created: 2026-04-21T09:30:00Z
     updated: 2026-04-21T15:10:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004501
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4501
     mentions_orgs: [northwind]
     body: |
       **Customer:** Northwind Traders (Enterprise) · **Status:** Solved · **Priority:** P4
@@ -2301,21 +2301,21 @@ records:
 
       ## Description
       Pilot admin needs SAML SSO with Okta before inviting the 40 pilot users.
-      Support ticket CS0004487.
+      Support ticket #4487.
 
       ## Resolution
       Configured on 20 March; all pilot users invited through SSO. Closed.
 
   - id: sn-4487
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004487: Pilot SAML SSO setup with Okta — Bluebird Health"
+    title: "Zendesk #4487: Pilot SAML SSO setup with Okta — Bluebird Health"
     author: lucas
     reporter: kwame
     assignee: lucas
     created: 2026-03-18T09:20:00Z
     updated: 2026-03-20T10:50:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004487
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4487
     mentions_orgs: [bluebird]
     body: |
       **Customer:** Bluebird Health (Pilot) · **Status:** Solved · **Priority:** P3
@@ -2781,7 +2781,7 @@ records:
       The fix for custom fields with dots in their names is live. Could your admin
       run a full re-sync on both Flow connections and check that the 14 affected
       fields (region.code, cost.centre and the rest) now have values? Once you
-      confirm, I'll close CS0004496. You can drop the calculated-field workaround
+      confirm, I'll close #4496. You can drop the calculated-field workaround
       afterwards.
 
       Chioma
@@ -2812,7 +2812,7 @@ records:
     mentions_orgs: [globex]
     body: |
       FLOW-312 (dots in custom field names) is merged and deployed. Asked Globex to
-      re-sync and confirm; CS0004496 stays open until they do. Known-issues page
+      re-sync and confirm; #4496 stays open until they do. Known-issues page
       updated.
 
   - id: mail-support-0414
@@ -2844,15 +2844,15 @@ records:
       Acme Support, EMEA
 
   - id: sn-4494
-    container: servicenow
+    container: zendesk-support
     type: TICKET
-    title: "ServiceNow CS0004494: Add a third Flow connection for the HR system — Contoso"
+    title: "Zendesk #4494: Add a third Flow connection for the HR system — Contoso"
     author: chioma
     reporter: jonas
     assignee: sam
     created: 2026-04-16T13:00:00Z
     updated: 2026-04-20T09:40:00Z
-    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004494
+    web_url: https://zendesk.acme-demo.example/agent/tickets/4494
     mentions_orgs: [contoso]
     body: |
       **Customer:** Contoso (Enterprise) · **Status:** Solved · **Priority:** P4

@@ -446,3 +446,9 @@ containers:
   - { id: drive-recruiting,  system: DRIVE, kind: folder, name: Recruiting (restricted),       group: recruiting,        web_url: https://drive.acme-demo.example/drive/folders/acme-recruiting }
   - { id: drive-hr-casework, system: DRIVE, kind: folder, name: People casework (restricted),  group: hr-casework,       web_url: https://drive.acme-demo.example/drive/folders/acme-hr-casework }
   - { id: drive-security,    system: DRIVE, kind: folder, name: Security incidents (restricted), group: security-incident, web_url: https://drive.acme-demo.example/drive/folders/acme-security }
+
+  # --- Zendesk groups ------------------------------------------------------------
+  # Tickets that name a requester and an assignee live here: the ServiceNow
+  # connector syncs knowledge articles only, so its records name nobody.
+  - { id: zendesk-support, system: ZENDESK, kind: group, name: Acme Support,     group: support-readers, web_url: https://zendesk.acme-demo.example/admin/people/team/groups/acme-support }
+  - { id: zendesk-people,  system: ZENDESK, kind: group, name: Acme People Desk, group: people-readers,  web_url: https://zendesk.acme-demo.example/admin/people/team/groups/acme-people-desk }
