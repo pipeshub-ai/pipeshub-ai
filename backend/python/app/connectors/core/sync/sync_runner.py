@@ -71,6 +71,7 @@ async def write_app_status(
     *,
     is_locked: bool | None = None,
     full_sync_owed: bool = False,
+    full_sync_started: bool = False,
     run_started: bool = False,
 ) -> bool:
     """Best-effort status write; a DB blip must never fail the sync itself.
@@ -80,6 +81,9 @@ async def write_app_status(
 
     ``full_sync_owed`` sets pendingFullSync in the same write, for a caller
     clearing a full sync that never finished (see ``_finalize``).
+    ``full_sync_started`` clears it in the same write: the full sync it asked
+    for is now running. A separate write to the app doc at the same moment
+    fails one of the two in ArangoDB (write-write conflict, or a lock timeout).
     ``run_started`` stamps lastSyncStartedAtTimestamp, for the write that starts a run.
     """
     payload: dict[str, Any] = {
@@ -91,6 +95,8 @@ async def write_app_status(
         payload["isLocked"] = is_locked
     if full_sync_owed:
         payload[ConnectorStateKeys.PENDING_FULL_SYNC] = True
+    elif full_sync_started:
+        payload[ConnectorStateKeys.PENDING_FULL_SYNC] = False
     if run_started:
         payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
@@ -739,7 +745,10 @@ async def run_sync_task(
         connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(graph_provider, logger, connector_id, start_status, run_started=True)
+        await write_app_status(
+            graph_provider, logger, connector_id, start_status,
+            full_sync_started=full_sync, run_started=True,
+        )
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an

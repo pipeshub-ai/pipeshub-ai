@@ -977,19 +977,10 @@ class EventService:
                     await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                 else:
                     handed_off = True
+                    # The task's first status write clears pendingFullSync. Clearing
+                    # it here as well wrote the app doc at the same moment, and
+                    # ArangoDB failed one of the two writes.
                     self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
-
-                    # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
-                    if pending_full_sync:
-                        try:
-                            await self.graph_provider.update_node(
-                                connector_id,
-                                CollectionNames.APPS.value,
-                                {ConnectorStateKeys.PENDING_FULL_SYNC: False},
-                            )
-                            self.logger.info(f"Cleared pendingFullSync flag for connector {connector_id}")
-                        except Exception as clear_err:
-                            self.logger.error(f"Failed to clear pendingFullSync flag for connector {connector_id}: {clear_err}")
 
             except Exception as e:
                 self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
