@@ -9,11 +9,24 @@ import random
 import threading
 import time
 import weakref
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _collect_only_new_objects() -> Iterator[None]:
+    # A full collection walks every object of the imported backend (~0.9 s each);
+    # the images under test are all created after the freeze.
+    gc.freeze()
+    yield
+    gc.unfreeze()
 
 
 class _Image(str):
@@ -147,6 +160,34 @@ class TestNoDeadlock:
         rig.strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
         await asyncio.wait_for(rig.strategy._preprocess_document(), 30)
         assert rig.peak_after_render <= 4
+
+
+    @pytest.mark.parametrize("fail_every", [1, 2, 3])
+    async def test_a_chained_page_error_does_not_keep_its_image(self, fail_every: int) -> None:
+        """A provider error raised while handling another keeps that one as __context__,
+        whose traceback holds the frame, and so the image, of the failed call."""
+        rig = _Rig(pages=60, window=4, concurrency=4)
+
+        def send(image_base64: str) -> None:
+            raise KeyError("upstream")
+
+        async def call_llm(image_base64: str, page_number: int) -> str:
+            await asyncio.sleep(0)
+            if page_number % fail_every == 0:
+                try:
+                    send(image_base64)
+                except KeyError:
+                    raise ValueError(f"bad{page_number}")  # noqa: B904 - the implicit chain is the point
+            return "x"
+
+        rig.strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
+        try:
+            await asyncio.wait_for(rig.strategy._preprocess_document(), 30)
+        except ValueError:
+            assert fail_every == 1  # every page failing fails the document
+        gc.collect()
+        assert rig.peak_after_render <= 4
+        assert len(rig.live) == 0
 
 
 class TestProducerFailure:

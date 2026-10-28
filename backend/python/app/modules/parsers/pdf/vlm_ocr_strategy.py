@@ -12,6 +12,7 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import (
     AISettingsUnavailableError,
     DocumentProcessingError,
@@ -42,6 +43,25 @@ DEFAULT_MAX_PAGES = 500
 def vlm_ocr_max_pages() -> int:
     return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
+
+
+def _without_frames(error: Exception) -> Exception:
+    """Drop the tracebacks of *error* and of every exception chained to it.
+
+    A traceback keeps the frames of the failed call alive, and those frames hold
+    the page image; ``with_traceback(None)`` alone leaves ``__cause__`` and
+    ``__context__`` holding theirs.
+    """
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        current.__traceback__ = None
+        pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
+    return error
 
 class VLMOCRStrategy(OCRStrategy):
     """OCR strategy that uses Vision Language Models to convert PDF pages to markdown"""
@@ -423,11 +443,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
 
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
-        # Why each page that failed after every retry was indexed empty.
-        unreadable: list[Exception] = []
+        # Pages that failed after every retry were indexed empty. Only a count and the
+        # last error, without its frames, are kept, so failed pages keep no images.
+        unreadable_count = 0
+        last_unreadable: Exception | None = None
 
         async def process_page_with_retry(page: object, page_number: int) -> Dict[str, Any]:
             """Process page with retry logic (3 total attempts)"""
+            nonlocal unreadable_count, last_unreadable
             async with semaphore:
                 last_error = None
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
@@ -452,8 +475,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 "Page %s could not be read after %d attempts (%s); indexing it empty",
                                 page_number, attempt + 1, last_error,
                             )
-                            # Its frames hold this page's image; keeping them would outgrow the window.
-                            unreadable.append(e.with_traceback(None))
+                            unreadable_count += 1
+                            last_unreadable = _without_frames(e)
                             return {
                                 "page_number": page_number,
                                 "markdown": "",
@@ -497,8 +520,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                     self._page_images.pop(number, None)
                     slots.release()
 
-        tasks = [asyncio.create_task(produce())]
-        tasks += [asyncio.create_task(work()) for _ in range(n_workers)]
+        tasks = [spawn_in_request(produce())]
+        tasks += [spawn_in_request(work()) for _ in range(n_workers)]
         try:
             await asyncio.gather(*tasks)
         except BaseException:
@@ -513,11 +536,11 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self._page_images = {}
         pages_results = [results[n] for n in range(1, len(pages) + 1)]
 
-        if pages and len(unreadable) == len(pages):
+        if pages and last_unreadable is not None and unreadable_count == len(pages):
             # Every page failing alike (no rendered images, output always truncated) is
             # systemic: an empty document would be indexed as a success. Fail the record.
             self.logger.error("❌ VLM OCR could not read any of the %d pages", len(pages))
-            raise unreadable[-1]
+            raise last_unreadable
 
         doc_markdown = "\n\n---\n\n".join([page["markdown"] for page in pages_results])
         result = {

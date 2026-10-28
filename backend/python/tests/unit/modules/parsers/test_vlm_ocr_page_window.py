@@ -6,6 +6,7 @@ import gc
 import hashlib
 import logging
 import weakref
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +15,18 @@ from app.modules.parsers.pdf import vlm_ocr_strategy
 from app.modules.parsers.pdf.pdf_rasterizer import _worker_render_batch_from_path
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 from tests.support.pdf_samples import text_pdf
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _collect_only_new_objects() -> Iterator[None]:
+    # A full collection walks every object of the imported backend (~0.9 s each);
+    # the images under test are all created after the freeze.
+    gc.freeze()
+    yield
+    gc.unfreeze()
 
 
 def _numbered_pdf(pages: int) -> bytes:

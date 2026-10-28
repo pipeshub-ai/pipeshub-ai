@@ -6,11 +6,24 @@ import gc
 import logging
 import time
 import weakref
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _collect_only_new_objects() -> Iterator[None]:
+    # A full collection walks every object of the imported backend (~0.9 s each);
+    # the images under test are all created after the freeze.
+    gc.freeze()
+    yield
+    gc.unfreeze()
 
 
 class _Image(str):
