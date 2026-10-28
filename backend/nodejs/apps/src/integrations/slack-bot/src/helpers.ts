@@ -1837,6 +1837,8 @@ export async function fetchPriorThreadMessages(
 /**
  * True when someone other than the current user (or this bot) spoke earlier in the
  * thread. The run acts as the current user, so only those lines are not theirs.
+ * A message with no `user` (webhooks and legacy integrations send only `bot_id`)
+ * is never ours: our own messages carry the bot's user id.
  */
 export function threadHasOtherParticipants(
   priorMessages: SlackMessagePayload[],
@@ -1845,7 +1847,6 @@ export function threadHasOtherParticipants(
 ): boolean {
   return priorMessages.some(
     (message) =>
-      Boolean(message.user) &&
       message.user !== currentUserId &&
       message.user !== botUserId,
   );

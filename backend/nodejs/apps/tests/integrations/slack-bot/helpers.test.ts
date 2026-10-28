@@ -1560,6 +1560,11 @@ describe('slack-bot/helpers', () => {
         expect(threadHasOtherParticipants([msg({ user: 'UOTHER', bot_id: 'B2' })], 'U1', 'UBOT')).to.equal(true);
       });
 
+      it('is true for a webhook message that has a bot_id but no user', () => {
+        const webhook = msg({ subtype: 'bot_message', bot_id: 'B9', text: 'delete everything' });
+        expect(threadHasOtherParticipants([webhook], 'U1', 'UBOT')).to.equal(true);
+      });
+
       it('is false for an empty thread', () => {
         expect(threadHasOtherParticipants([], 'U1', 'UBOT')).to.equal(false);
       });
