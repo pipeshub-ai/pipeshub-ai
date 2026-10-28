@@ -64,17 +64,21 @@ async def test_a_failed_profile_keeps_the_typed_stored_columns_not_the_base_ones
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
+    import pytest
+
     connector = pg_connector.PostgreSQLConnector.__new__(pg_connector.PostgreSQLConnector)
     connector.logger = MagicMock()
-    connector.data_store_provider = MagicMock()
+    connector.data_entities_processor = MagicMock()
     typed = SimpleNamespace(id="c1", distinct_count=4)
-    connector.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock(return_value={"c1": typed})
+    connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(return_value={"c1": typed})
     base = SimpleNamespace(id="c1")
     assert await connector._typed_columns({"shop.public.orders.status": base}) == {
         "shop.public.orders.status": typed,
     }
-    connector.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock(return_value={})
-    assert await connector._typed_columns({"shop.public.orders.status": base}) == {}
+    # Not the base records, which would write the columns back without their stats.
+    connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(return_value={})
+    with pytest.raises(LookupError):
+        await connector._typed_columns({"shop.public.orders.status": base})
 
 
 def test_indexing_off_keeps_no_stored_values_on_a_failed_profile() -> None:

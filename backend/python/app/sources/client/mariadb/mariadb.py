@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import spawn_in_request
 from app.sources.client.iclient import IClient
 from app.utils.url_fetcher import HostCheckError, vetted_addresses
 
@@ -378,7 +379,7 @@ class MariaDBClient:
         if slots is not None:
             await slots.acquire()
         try:
-            work = asyncio.ensure_future(asyncio.to_thread(_read_only, kwargs, query, timeout_s, max_rows, params))
+            work = spawn_in_request(asyncio.to_thread(_read_only, kwargs, query, timeout_s, max_rows, params))
         except BaseException:
             if slots is not None:
                 slots.release()
