@@ -1176,7 +1176,9 @@ class TestIdleUnload:
         loaded: list[str] = []
         with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
             await manager.encode("m", ["x"])
-            used_at = manager._last_used["m"]
+            # Not time.monotonic(): just below a power of two, (t + 60) - t rounds to
+            # 59.99999999999955 and the boundary check below failed on CI runners.
+            used_at = manager._last_used["m"] = 1000.0
 
             assert manager.reap_idle(now=used_at + 59) == []
             assert manager.list_loaded_models() == ["m"]
