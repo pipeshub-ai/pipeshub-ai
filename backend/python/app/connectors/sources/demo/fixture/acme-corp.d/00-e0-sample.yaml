@@ -4,10 +4,10 @@
 # the knowledge-graph ground truth are checked against it.
 
 organizations:
-  - id: globex
-    name: Globex Corporation
-    aliases: ["Globex"]
-    domain: globex.example
+  - id: vandelay
+    name: Vandelay Industries
+    aliases: ["Vandelay"]
+    domain: vandelay.example
     crm: true
   - id: initech
     name: Initech
@@ -18,10 +18,10 @@ organizations:
 people:
   - id: gina
     name: Gina Moretti
-    email: gina.moretti@globex.example
-    title: Head of Finance Systems, Globex
+    email: gina.moretti@vandelay.example
+    title: Head of Finance Systems, Vandelay
     kind: external
-    company: globex
+    company: vandelay
     aliases: ["Gina M."]
 
 containers:
@@ -31,20 +31,20 @@ containers:
     name: ENG — Engineering
     group: engineering-readers
     web_url: https://confluence.acme-demo.example/spaces/ENG
-  - id: gmail-omar
+  - id: gmail-e0-omar
     system: GMAIL
     kind: mailbox
     name: Omar Haddad's mailbox
     owner: omar
     group: sales-readers
     web_url: https://mail.acme-demo.example/omar
-  - id: sf-globex
+  - id: sf-vandelay
     system: SALESFORCE
     kind: account
-    name: Globex Corporation
-    organization: globex
+    name: Vandelay Industries
+    organization: vandelay
     group: sales-readers
-    web_url: https://salesforce.acme-demo.example/accounts/globex
+    web_url: https://salesforce.acme-demo.example/accounts/vandelay
   - id: kb-eng
     system: KB
     kind: collection
@@ -70,44 +70,44 @@ records:
       Initech's reconciliation tool polls the export endpoint every minute, which
       is the load the queue was built to absorb.
 
-  - id: gmail-e0-globex-renewal
-    container: gmail-omar
+  - id: gmail-e0-vandelay-renewal
+    container: gmail-e0-omar
     type: MAIL
-    title: "Globex renewal: revised order form"
+    title: "Vandelay renewal: revised order form"
     from: omar
     to: [gina]
     cc: [lena]
     created: 2026-04-14T09:20:00Z
-    mentions_orgs: [globex]
+    mentions_orgs: [vandelay]
     body: |
       Hi Gina,
 
-      Attached is the revised order form for the Globex renewal: 400 seats on
+      Attached is the revised order form for the Vandelay renewal: 400 seats on
       the annual plan, with the ledger export add-on included.
 
       Omar
 
-  - id: sf-e0-globex-renewal
-    container: sf-globex
+  - id: sf-e0-vandelay-renewal
+    container: sf-vandelay
     type: DEAL
-    title: "Globex — 2026 renewal"
+    title: "Vandelay — 2026 renewal"
     owner: omar
     created: 2026-03-30T12:00:00Z
     updated: 2026-04-14T09:30:00Z
     body: |
       Stage: Negotiation. Amount: $96,000. Close date: 2026-05-15.
 
-  - id: sf-e0-globex-case
-    container: sf-globex
+  - id: sf-e0-vandelay-case
+    container: sf-vandelay
     type: CASE
-    title: "Case 00981: Ledger export times out for Globex"
+    title: "Case 00981: Ledger export times out for Vandelay"
     author: omar
     owner: sam
     reporter: gina
     created: 2026-04-16T08:45:00Z
     updated: 2026-04-17T11:00:00Z
     body: |
-      Status: Closed. The nightly ledger export for Globex timed out twice;
+      Status: Closed. The nightly ledger export for Vandelay timed out twice;
       rerun after the batch queue rollout completed in four minutes.
 
   - id: kb-e0-export-faq
@@ -136,13 +136,13 @@ records:
   - id: jira-e0-sup-140
     container: jira-sup
     type: TICKET
-    title: "SUP-140: Globex asks for export status emails"
+    title: "SUP-140: Vandelay asks for export status emails"
     author: sam
     reporter: bob
     assignee: priya
     created: 2026-04-18T09:00:00Z
     body: |
-      Globex wants an email when a queued ledger export finishes.
+      Vandelay wants an email when a queued ledger export finishes.
 
   - id: drive-e0-export-rollout
     container: drive-engineering
@@ -154,5 +154,5 @@ records:
     updated: 2026-04-20T17:00:00Z
     body: |
       1. Enable the batch queue for internal accounts.
-      2. Enable it for Globex after their sign-off.
+      2. Enable it for Vandelay after their sign-off.
       3. Remove the synchronous export path.

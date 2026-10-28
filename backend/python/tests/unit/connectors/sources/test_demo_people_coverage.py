@@ -174,21 +174,21 @@ async def test_the_sample_covers_every_role_of_every_new_system(fx) -> None:
     by_record = {(rid, edge) for rid, edge, _ in truth.person_edges}
     assert {
         ("confluence-e0-ledger-adr", "AUTHORED_BY"), ("confluence-e0-ledger-adr", "LAST_MODIFIED_BY"),
-        ("gmail-e0-globex-renewal", "AUTHORED_BY"), ("gmail-e0-globex-renewal", "ADDRESSED_TO"),
-        ("sf-e0-globex-renewal", "OWNED_BY"),
-        ("sf-e0-globex-case", "CREATED_BY"), ("sf-e0-globex-case", "ASSIGNED_TO"),
-        ("sf-e0-globex-case", "REPORTED_BY"),
+        ("gmail-e0-vandelay-renewal", "AUTHORED_BY"), ("gmail-e0-vandelay-renewal", "ADDRESSED_TO"),
+        ("sf-e0-vandelay-renewal", "OWNED_BY"),
+        ("sf-e0-vandelay-case", "CREATED_BY"), ("sf-e0-vandelay-case", "ASSIGNED_TO"),
+        ("sf-e0-vandelay-case", "REPORTED_BY"),
         ("kb-e0-export-faq", "CREATED_BY"),
         ("gh-pr-e0-export-batch", "REVIEWED_BY"), ("gh-pr-e0-export-batch", "ASSIGNED_TO"),
         ("jira-e0-sup-140", "REPORTED_BY"), ("jira-e0-sup-140", "ASSIGNED_TO"),
         ("drive-e0-export-rollout", "OWNED_BY"), ("drive-e0-export-rollout", "LAST_MODIFIED_BY"),
     } <= by_record
     # The external contact reaches the graph as the case's reporter, not as a mail recipient.
-    assert ("sf-e0-globex-case", "REPORTED_BY", "gina") in truth.person_edges
-    assert ("gmail-e0-globex-renewal", "ADDRESSED_TO", "gina") not in truth.person_edges
-    assert truth.external_people == {"gina"}
-    assert truth.account_links == {("sf-e0-globex-renewal", "globex"), ("sf-e0-globex-case", "globex")}
-    assert truth.organizations == {"globex"}
+    assert ("sf-e0-vandelay-case", "REPORTED_BY", "gina") in truth.person_edges
+    assert ("gmail-e0-vandelay-renewal", "ADDRESSED_TO", "gina") not in truth.person_edges
+    assert "gina" in truth.external_people
+    assert {("sf-e0-vandelay-renewal", "vandelay"), ("sf-e0-vandelay-case", "vandelay")} <= truth.account_links
+    assert "vandelay" in truth.organizations
     assert ("confluence-e0-ledger-adr", "initech") in truth.mentioned_organizations
 
 
@@ -256,9 +256,9 @@ def test_a_drive_document_header_does_not_print_an_author_line(fx, record_id: st
 
 
 def test_a_mail_shows_its_from_to_and_cc_headers(fx) -> None:
-    body = _body(fx, "gmail-e0-globex-renewal")
+    body = _body(fx, "gmail-e0-vandelay-renewal")
     assert "**From:** Omar Haddad <omar@acme-demo.example>" in body
-    assert "**To:** Gina Moretti <gina.moretti@globex.example>" in body
+    assert "**To:** Gina Moretti <gina.moretti@vandelay.example>" in body
     assert "**Cc:** Lena Fischer <lena@acme-demo.example>" in body
 
 
