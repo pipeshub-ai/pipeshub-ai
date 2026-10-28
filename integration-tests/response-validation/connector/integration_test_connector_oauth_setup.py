@@ -277,6 +277,7 @@ class TestSavedOAuthApps:
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
         assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 400)
 
     def test_update_oauth_config_with_array_config_is_500(
@@ -468,6 +469,7 @@ class TestCreateAndDeleteOAuthApp:
         resp = oauth_configs_api.post("/Jira", data='"not-an-object"')
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
         assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 400)
 
     def test_create_oauth_config_unauthenticated_is_401(

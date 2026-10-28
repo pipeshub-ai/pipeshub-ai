@@ -637,6 +637,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
         assert body["error"]["message"] == "Conversation not found", body
+        assert body["error"]["code"] == "HTTP_NOT_FOUND", body
         assert_error_response_matches_openapi_operation(
             body, _STREAM_AGENT_CONVERSATION_MESSAGE, 404
         )

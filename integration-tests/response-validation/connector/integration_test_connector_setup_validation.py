@@ -330,6 +330,7 @@ class TestMalformedBodies:
         resp = _send(connectors_api, method, path, '"not-an-object"')
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
         assert_error_response_matches_openapi_operation(resp.json(), operation_id, 400)
 
     def test_update_auth_with_array_auth(
