@@ -1,5 +1,8 @@
 import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth.types';
 
+/** Stored on every token in a grant when a rotated refresh token is presented again. */
+export const REFRESH_REUSE_DETECTED = 'refresh_reuse_detected';
+
 export enum OAuthDeviceCodeStatus {
   PENDING = 'pending',
   APPROVED = 'approved',
@@ -163,6 +166,11 @@ export interface OAuthTokenRepository {
    * write. True for exactly one of any number of concurrent callers.
    */
   rotateRefresh(id: string): Promise<boolean>;
+  /**
+   * Marks a refresh token as replayed after it was already rotated. The
+   * winner of that rotation re-reads the row and kills its new pair.
+   */
+  flagRefreshReplayed(id: string): Promise<void>;
   /** Best-effort recency stamp; callers throttle. */
   touchAccessLastUsed(id: string, at: Date): Promise<void>;
 
@@ -178,7 +186,7 @@ export interface OAuthTokenRepository {
   /** Every token the user holds, under every client. */
   revokeAllForUser(userId: string): Promise<void>;
   revokeAllForClientUser(clientId: string, userId: string): Promise<void>;
-  /** The same, recording why (authorization code reuse). */
+  /** The same, recording why (authorization-code or refresh-token reuse). */
   revokeAllForClientUserBecause(
     clientId: string,
     userId: string,

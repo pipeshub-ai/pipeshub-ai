@@ -227,6 +227,14 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       expect(await tokens.rotateRefresh(rt._id)).to.equal(false);
     });
 
+    it('flagRefreshReplayed stamps refresh_reuse_detected on that row', async () => {
+      const h = sha(uniq('rt'));
+      const rt = await tokens.issueRefresh({ tokenHash: h, clientId: 'c', userId: fx.newId(), orgId: ORG, scopes: ['a'], expiresAt: future() });
+      await tokens.rotateRefresh(rt._id);
+      await tokens.flagRefreshReplayed(rt._id);
+      expect((await tokens.findRefreshByHash(h))?.revokedReason).to.equal('refresh_reuse_detected');
+    });
+
     it(`consumeCode: exactly one of ${CONTENDERS} concurrent redemptions wins, ${ROUNDS} rounds`, async () => {
       for (let i = 0; i < ROUNDS; i++) {
         const c = { code: uniq('code'), clientId: uniq('client'), userId: fx.newId(), orgId: ORG, redirectUri: 'https://a.example/cb', scopes: ['a'], expiresAt: future() };

@@ -27,6 +27,7 @@ import {
 } from '../oauth-app/pg-org';
 import {
   OAuthDeviceCodeStatus,
+  REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
   type AuthorizationCodeDto,
   type DeviceCodeDto,
@@ -325,6 +326,18 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
         [k.orgId, rid, now],
       );
       return r.rowCount === 1;
+    });
+  }
+
+  async flagRefreshReplayed(id: string): Promise<void> {
+    const rid = id24(id);
+    if (!rid) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      const now = new Date();
+      await k.query(
+        `/* pipeshub:oauth.refresh_flag_replayed */ UPDATE oauth.refresh_tokens SET revoked_reason = $3, updated_at = $4 WHERE org_id = $1 AND id = $2`,
+        [k.orgId, rid, REFRESH_REUSE_DETECTED, now],
+      );
     });
   }
 

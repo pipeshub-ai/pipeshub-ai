@@ -5,6 +5,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { forOrg } from '../../../libs/context/orgContext';
 import {
   getOAuthTokenRepository,
+  REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
 } from '../../../libs/repositories/oauth-token';
 import {
@@ -461,8 +462,13 @@ export class OAuthTokenService {
     // Revoke old refresh token (rotation), atomically: of two refreshes
     // presenting the same token only one rotates it; the other has lost the
     // token and must not be issued a second pair.
-    if (!(await getOAuthTokenRepository().rotateRefresh(storedToken._id))) {
-      throw new InvalidGrantError('Refresh token has already been used');
+    const repo = getOAuthTokenRepository();
+    if (!(await repo.rotateRefresh(storedToken._id))) {
+      await this.rejectRefreshReplay(
+        app.clientId,
+        storedToken.userId,
+        storedToken._id,
+      );
     }
 
     // Generate new tokens
@@ -484,6 +490,24 @@ export class OAuthTokenService {
       },
     );
 
+    // A replay that ran while this pair was being minted left a flag; take
+    // the new tokens back so the thief does not keep the winner's grant.
+    const afterMint = await repo.findRefreshByHash(tokenHash);
+    if (afterMint?.revokedReason === REFRESH_REUSE_DETECTED) {
+      await repo.revokeIssued(
+        this.hashToken(newTokens.accessToken),
+        newTokens.refreshToken
+          ? this.hashToken(newTokens.refreshToken)
+          : undefined,
+      );
+      await repo.revokeAllForClientUserBecause(
+        app.clientId,
+        storedToken.userId,
+        REFRESH_REUSE_DETECTED,
+      );
+      throw new InvalidGrantError('Refresh token has already been used');
+    }
+
     this.logger.info('Tokens refreshed', {
       clientId: app.clientId,
       userId: payload.userId,
@@ -491,6 +515,30 @@ export class OAuthTokenService {
     });
 
     return newTokens;
+  }
+
+  /**
+   * A used refresh token presented again: revoke the grant (RFC 6819) and
+   * refuse. Flag first so a winner still minting sees the replay after it
+   * inserts its pair.
+   */
+  private async rejectRefreshReplay(
+    clientId: string,
+    userId: string,
+    refreshId: string,
+  ): Promise<never> {
+    this.logger.warn(
+      'Refresh token reuse detected. Revoking all tokens for this client and user',
+      { clientId, userId },
+    );
+    const repo = getOAuthTokenRepository();
+    await repo.flagRefreshReplayed(refreshId);
+    await repo.revokeAllForClientUserBecause(
+      clientId,
+      userId,
+      REFRESH_REUSE_DETECTED,
+    );
+    throw new InvalidGrantError('Refresh token has already been used');
   }
 
   /**

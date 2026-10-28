@@ -291,8 +291,11 @@ describe('project.controller', () => {
 
     it('revokes the org team KB permission when visibility changes to private', async () => {
       stubNoTeamMemberships()
+      const current = makeProjectDoc({ visibility: 'org', linkedKnowledgeBaseId: 'kb-1' })
       const updated = makeProjectDoc({ visibility: 'private', linkedKnowledgeBaseId: 'kb-1' })
-      sinon.stub(ProjectService, 'update').resolves(updated)
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'owner', project: current })
+      const updateStub = sinon.stub(ProjectService, 'update').resolves(updated)
+      sinon.stub(ProjectService, 'computeRole').returns('owner')
       const syncStub = sinon.stub(ProjectKnowledgeBaseService, 'syncMemberPermissions').resolves()
       const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokeOrgVisibility').resolves()
 
@@ -305,7 +308,8 @@ describe('project.controller', () => {
 
       await updateProject(createMockAppConfig())(req, res, next)
 
-      expect(revokeStub.calledWith(sinon.match.any, sinon.match.any, updated)).to.be.true
+      expect(revokeStub.calledWith(sinon.match.any, sinon.match.any, current)).to.be.true
+      expect(revokeStub.calledBefore(updateStub)).to.be.true
       expect(syncStub.called).to.be.false
     })
 
@@ -361,10 +365,11 @@ describe('project.controller', () => {
       expect(res.status.called).to.be.false
     })
 
-    it('reports a failed org-visibility revoke instead of answering 200 with a stale KB edge', async () => {
+    it('does not save private visibility when the org-visibility revoke fails', async () => {
       stubNoTeamMemberships()
-      const updated = makeProjectDoc({ visibility: 'private', linkedKnowledgeBaseId: 'kb-1' })
-      sinon.stub(ProjectService, 'update').resolves(updated)
+      const current = makeProjectDoc({ visibility: 'org', linkedKnowledgeBaseId: 'kb-1' })
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'owner', project: current })
+      const updateStub = sinon.stub(ProjectService, 'update')
       const error = new Error('KB service unavailable')
       sinon.stub(ProjectKnowledgeBaseService, 'revokeOrgVisibility').rejects(error)
 
@@ -374,8 +379,28 @@ describe('project.controller', () => {
 
       await updateProject(createMockAppConfig())(req, res, next)
 
+      expect(updateStub.called).to.be.false
       expect(next.calledOnceWith(error)).to.be.true
       expect(res.status.called).to.be.false
+    })
+
+    it('refuses a non-owner visibility change before touching the knowledge base', async () => {
+      stubNoTeamMemberships()
+      const current = makeProjectDoc({ visibility: 'org', linkedKnowledgeBaseId: 'kb-1' })
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'editor', project: current })
+      const updateStub = sinon.stub(ProjectService, 'update')
+      const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokeOrgVisibility').resolves()
+
+      const req = createMockRequest({ params: { projectId: PROJECT_ID }, body: { visibility: 'private' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateProject(createMockAppConfig())(req, res, next)
+
+      expect(revokeStub.called).to.be.false
+      expect(updateStub.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
     })
 
     it('passes the resolved caller team ids to both the update and the role computation', async () => {
