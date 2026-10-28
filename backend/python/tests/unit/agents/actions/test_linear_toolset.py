@@ -111,6 +111,9 @@ async def test_get_teams_with_ten_members_makes_no_member_request() -> None:
     (GraphQLResponse(success=False, message="Query too complex", status_code=400), "Query too complex"),
     (GraphQLResponse(success=True, data={"team": {"members": {
         "nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "m-10"}}}}), "without a cursor"),
+    (GraphQLResponse(success=True, data=None), "no members page"),
+    (GraphQLResponse(success=True, data={"team": None}), "no members page"),
+    (GraphQLResponse(success=True, data={"team": {"members": None}}), "no members page"),
 ])
 async def test_get_teams_fails_rather_than_return_part_of_a_roster(member_page, error) -> None:
     tool = _teams_tool({"id": "t-big", "members": _member_page(["a@x.com"], "m-10")})

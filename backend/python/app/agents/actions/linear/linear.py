@@ -241,7 +241,9 @@ class Linear:
                 "teamMembers", {"id": team.get("id"), "first": 100, "after": cursor})
             if not page.success:
                 return page.message or f"Failed to read the members of team {team.get('id')}"
-            more = ((page.data or {}).get("team") or {}).get("members") or {}
+            more = ((page.data or {}).get("team") or {}).get("members")
+            if more is None:
+                return f"Linear returned no members page for team {team.get('id')}"
             nodes.extend(more.get("nodes") or [])
             info = more.get("pageInfo") or {}
         if members:
