@@ -113,8 +113,11 @@ _ENV_ALLOWLIST = frozenset({
     "PATH", "HOME", "TMPDIR", "TZ", "LANG", "LANGUAGE", "LD_LIBRARY_PATH",
     "FONTCONFIG_FILE", "FONTCONFIG_PATH", "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
     "XDG_DATA_HOME", "XDG_DATA_DIRS",
+    # The locale categories by name: a prefix would also pass LC_SECRET_TOKEN.
+    "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC",
+    "LC_TIME", "LC_ADDRESS", "LC_IDENTIFICATION", "LC_MEASUREMENT", "LC_NAME",
+    "LC_PAPER", "LC_TELEPHONE",
 })
-_ENV_ALLOWED_PREFIXES = ("LC_",)
 # `-I` (isolated): no PYTHON* variables, no working directory on sys.path.
 _BOOT = "import runpy, sys; sys.path.insert(0, sys.argv[1]); runpy.run_module(sys.argv[3], run_name='__main__')"
 # CPU time a renderer may spend on one SVG beyond the wall-clock deadline.
@@ -125,7 +128,7 @@ def _renderer_environment() -> dict[str, str]:
     return {
         key: value
         for key, value in os.environ.items()
-        if key in _ENV_ALLOWLIST or key.startswith(_ENV_ALLOWED_PREFIXES)
+        if key in _ENV_ALLOWLIST
     }
 
 
@@ -232,7 +235,7 @@ class _Renderer:
             png, error = reply.get("png"), reply.get("error")
             if png is not None and not isinstance(png, str):
                 raise TypeError("png is not a string")
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             _logger.warning("An SVG was not rasterised: the renderer sent an unreadable reply")
             self.close()
             raise DocumentProcessingError("SVG renderer sent an unreadable reply") from None
@@ -464,6 +467,10 @@ def main() -> None:
     """The renderer process: one JSON request per line in, one JSON reply per line out."""
     if len(sys.argv) > 2:
         _die_with_parent(int(sys.argv[2]))
+    # A crash while parsing hostile input must not write its memory to a core file.
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     from cairosvg import svg2png
 
     from app.modules.parsers.image_parser import svg_core

@@ -211,3 +211,26 @@ def test_a_reply_nested_too_deeply_is_a_processing_error(
         assert not used[0].alive()  # the renderer that sent it is not reused
     finally:
         pool.close_all()
+
+
+
+def test_a_renderer_writes_no_core_file() -> None:
+    """It parses hostile input; a crash must not write that memory to disk."""
+    import subprocess
+    import sys
+
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import resource, sys\n"
+            "import app.modules.parsers.image_parser.svg_worker as w\n"
+            "sys.stdin = open('/dev/null')\n"
+            "w.main()\n"
+            "print(resource.getrlimit(resource.RLIMIT_CORE), file=sys.stderr)\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "(0, 0)" in child.stderr, child.stderr[-500:]
