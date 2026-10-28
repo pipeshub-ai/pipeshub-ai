@@ -11,6 +11,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -704,6 +705,36 @@ class TestProfileReuse:
         assert self._profile_fetches(c) == 2
         persisted = c.data_entities_processor.on_new_app_users.call_args.args[0]
         assert persisted[0].email == "frank@example.com"
+
+    async def test_connectors_syncing_together_fetch_each_profile_once(self) -> None:
+        connectors = [make_mock_connector() for _ in range(3)]
+        for i, c in enumerate(connectors):
+            c.connector_id = f"github-conn-{i}"
+        release = asyncio.Event()
+
+        def dispatch_for(c: MagicMock) -> object:
+            async def dispatch(method: object, *args: object, **kwargs: object) -> object:
+                if method is c.data_source.list_org_members:
+                    return ok_response([make_named_user(user_id=6, login="frank")])
+                if method is c.data_source.get_user:
+                    await release.wait()  # every sync reaches the lookup before the first answer
+                    return ok_response(make_named_user(user_id=6, login="frank", completed=True))
+                return failed_response("unmocked")
+            return dispatch
+
+        syncs = []
+        for c in connectors:
+            c.runtime.ds_call.side_effect = dispatch_for(c)
+            sync = UsersSync(c)
+            sync._resolve_target_orgs = MagicMock_async((["acme"], True))
+            syncs.append(sync)
+
+        running = asyncio.gather(*(sync.sync_users() for sync in syncs))
+        await asyncio.sleep(0.01)
+        release.set()
+        await running
+
+        assert sum(self._profile_fetches(c) for c in connectors) == 1
 
     async def test_profile_older_than_a_day_is_fetched_again(self) -> None:
         c = make_mock_connector()

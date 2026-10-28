@@ -63,6 +63,10 @@ _GITHUB_LOGIN_RE = re.compile(r"[A-Za-z0-9-]{1,39}")
 # the same whichever token fetched it. Only successful fetches are kept, so a
 # failed or rate-limited lookup is retried on the next sync.
 _recent_profiles: dict[tuple[str, int], tuple[float, object]] = {}
+# One lookup at a time per profile, so connectors syncing together on a cold
+# cache wait for one fetch instead of each making their own. All syncs of a
+# process run on its one event loop.
+_profile_fetch_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
 
 def _recent_profile(org_id: str, user_id: int) -> object | None:
@@ -73,10 +77,12 @@ def _recent_profile(org_id: str, user_id: int) -> object | None:
 
 
 def _forget_expired_profiles() -> None:
-    """Drop expired entries, so members who left an org are not kept forever."""
+    """Drop expired entries and idle locks, so members who left an org are not kept forever."""
     now = time.monotonic()
     for key in [k for k, (at, _) in _recent_profiles.items() if now - at >= _GITHUB_PROFILE_REUSE_SECONDS]:
         del _recent_profiles[key]
+    for key in [k for k, lock in _profile_fetch_locks.items() if not lock.locked() and k not in _recent_profiles]:
+        del _profile_fetch_locks[key]
 
 
 class UsersSync:
@@ -485,7 +491,8 @@ class UsersSync:
         A profile fetched within ``_GITHUB_PROFILE_REUSE_SECONDS``, by this
         connector or another of the org, is reused instead of fetched again.
         That includes one that had no public email: it is the usual case, and
-        it would otherwise be fetched again on every sync.
+        it would otherwise be fetched again on every sync. A profile another
+        sync is fetching right now is waited for, not fetched twice.
 
         Concurrency bounded by ``_GITHUB_USER_ENRICHMENT_CONCURRENCY``. Falls
         back to the original (partial) member payload on any per-user failure
@@ -494,31 +501,32 @@ class UsersSync:
         c = self.c
         org_id = c.data_entities_processor.org_id
         _forget_expired_profiles()
-        enriched: dict[int, Any] = {}
-        to_fetch: list[int] = []
-        for uid in ids_to_enrich:
-            profile = _recent_profile(org_id, uid)
-            if profile is not None:
-                enriched[uid] = profile
-            else:
-                to_fetch.append(uid)
-        reused = len(enriched)
         sem = asyncio.Semaphore(_GITHUB_USER_ENRICHMENT_CONCURRENCY)
+        reused = fetched = 0
 
         async def fetch_full_user(uid: int) -> tuple[int, Any, bool]:
+            nonlocal reused, fetched
             member = dict_member[uid]
             login = getattr(member, "login", None)
             if not login:
                 return uid, member, True
-            async with sem:
-                res = await c.runtime.ds_call(c.data_source.get_user, login)
+            key = (org_id, uid)
+            async with _profile_fetch_locks.setdefault(key, asyncio.Lock()):
+                profile = _recent_profile(org_id, uid)
+                if profile is not None:
+                    reused += 1
+                    return uid, profile, True
+                async with sem:
+                    fetched += 1
+                    res = await c.runtime.ds_call(c.data_source.get_user, login)
                 if res.success and res.data is not None:
-                    _recent_profiles[(org_id, uid)] = (time.monotonic(), res.data)
+                    _recent_profiles[key] = (time.monotonic(), res.data)
                     return uid, res.data, True
                 return uid, member, False
 
+        enriched: dict[int, Any] = {}
         failed = 0
-        for fut in asyncio.as_completed([fetch_full_user(uid) for uid in to_fetch]):
+        for fut in asyncio.as_completed([fetch_full_user(uid) for uid in ids_to_enrich]):
             uid, obj, ok = await fut
             enriched[uid] = obj
             if not ok:
@@ -526,7 +534,7 @@ class UsersSync:
         if reused:
             self.logger.info(
                 "Reused %s GitHub profile(s) fetched in the last %s h; fetched %s",
-                reused, int(_GITHUB_PROFILE_REUSE_SECONDS // 3600), len(to_fetch),
+                reused, int(_GITHUB_PROFILE_REUSE_SECONDS // 3600), fetched,
             )
         if failed:
             self.logger.info(

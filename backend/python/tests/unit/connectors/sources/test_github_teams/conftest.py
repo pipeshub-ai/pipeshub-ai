@@ -134,8 +134,10 @@ def _no_reused_github_profiles() -> Iterator[None]:
     from app.connectors.sources.github_teams import users
 
     users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
     yield
     users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
 
 
 @pytest.fixture()
