@@ -238,8 +238,9 @@ def render_navigation_view_with_ids(
         for row in view.rows:
             owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener))
-    elif view.current and not view.linked_children:
-        lines.append("\n(no children)")
+    elif view.current:
+        if not view.linked_children:
+            lines.append("\n(no children)")
     else:
         lines.append("\n(no items at root — no connected apps or no access)")
 
@@ -273,7 +274,7 @@ def render_navigation_view_with_ids(
         and not is_not_indexed(view.indexing_status)
     ):
         readable.append(view.current.id)
-    for row in view.rows:
+    for row in (*view.rows, *(view.linked_children if page == 1 else ())):
         if row.is_record and row.id and row.id not in readable:
             readable.append(row.id)
     if readable:

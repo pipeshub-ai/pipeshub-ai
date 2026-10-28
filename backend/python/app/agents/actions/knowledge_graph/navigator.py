@@ -36,6 +36,8 @@ _CROSS_REF_RELATIONS = [
 ]
 # An epic can have dozens of stories; they get their own list, not the related cap.
 _MAX_LINKED_CHILDREN = 50
+# The providers read at most this many neighbours before the access check.
+_MAX_LINKS_READ = 500
 
 _MAX_RELATED = 10
 _MIN_LIMIT = 50
@@ -392,23 +394,23 @@ class GraphNavigator:
         # ── Linked records (page 1, record/folder nodes only) ──────────
         if page == 1 and node_id and parent_type in ("record", "folder"):
             try:
-                linked = await self._graph.get_linked_records(
+                # One read for both lists, each capped on its own, so an epic's
+                # stories cannot push its other links out.
+                linked = [d for d in await self._graph.get_linked_records(
                     record_id=node_id,
                     org_id=self._org_id,
                     user_key=self._user_key,
-                    relation_types=_CROSS_REF_RELATIONS,
-                    limit=_MAX_RELATED,
+                    relation_types=[*_CROSS_REF_RELATIONS, RecordRelations.CHILD_OF.value],
+                    limit=_MAX_LINKS_READ,
+                ) if d.get("id")]
+                is_child_link = [d.get("relationshipType") == RecordRelations.CHILD_OF.value for d in linked]
+                children = sorted(
+                    (d for d, child in zip(linked, is_child_link) if child and not d.get("outgoing")),
+                    key=lambda d: (str(d.get("name") or ""), d["id"]),
                 )
-                under = await self._graph.get_linked_records(
-                    record_id=node_id,
-                    org_id=self._org_id,
-                    user_key=self._user_key,
-                    relation_types=[RecordRelations.CHILD_OF.value],
-                    limit=_MAX_LINKED_CHILDREN + 2,
-                )
-                parents = [d for d in under if d.get("id") and d.get("outgoing")]
-                children = [d for d in under if d.get("id") and not d.get("outgoing")]
-                related = [_linked_dict_to_row(d) for d in [*parents, *linked] if d.get("id")]
+                parents = [d for d, child in zip(linked, is_child_link) if child and d.get("outgoing")]
+                others = [d for d, child in zip(linked, is_child_link) if not child][:_MAX_RELATED]
+                related = [_linked_dict_to_row(d) for d in [*parents, *others]]
                 linked_children = [_linked_dict_to_row(d) for d in children[:_MAX_LINKED_CHILDREN]]
                 more_linked_children = len(children) > _MAX_LINKED_CHILDREN
             except PermissionVerificationUnavailableError:

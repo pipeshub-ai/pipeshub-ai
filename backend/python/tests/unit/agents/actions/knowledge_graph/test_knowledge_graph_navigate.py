@@ -1795,7 +1795,7 @@ class TestEpicChildrenByLink:
         gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
 
         async def linked(*, relation_types: list[str], limit: int, **_: object) -> list[dict]:
-            return (child_links if relation_types == ["CHILD_OF"] else other_links)[:limit]
+            return [r for r in [*child_links, *other_links] if r["relationshipType"] in relation_types][:limit]
 
         gp.get_linked_records = AsyncMock(side_effect=linked)
         return state
@@ -1824,7 +1824,7 @@ class TestEpicChildrenByLink:
         stories = [self._link(f"s{i}", f"[PA-{i}] Story {i}", outgoing=False) for i in range(3)]
         text = await self._navigate(self._state_for(epic, stories, [self._link("b1", "Blocker", outgoing=True, kind="BLOCKS")]), "epic-1")
         assert "Linked under it (3 shown):" in text and "[PA-0] Story 0" in text
-        assert "(no children)" not in text and "Blocker" in text
+        assert "(no children)" not in text and "no items at root" not in text and "Blocker" in text
 
     @pytest.mark.asyncio
     async def test_more_linked_items_than_listed_says_so(self) -> None:
@@ -1842,3 +1842,15 @@ class TestEpicChildrenByLink:
         assert "KG Tools" in text and "parent" in text and "Linked under it" not in text
 
 
+
+
+    @pytest.mark.asyncio
+    async def test_many_children_never_push_out_other_links_and_are_listed_by_name(self) -> None:
+        epic = {"id": "epic-1", "name": "Epic", "nodeType": "record", "subType": "TICKET", "connector": "JIRA"}
+        stories = [self._link(f"s{i}", f"Story {i:02}", outgoing=False) for i in (3, 1, 2)]
+        blocker = self._link("b1", "Blocker", outgoing=True, kind="BLOCKS")
+        initiative = self._link("i1", "Initiative", outgoing=True)
+        text = await self._navigate(self._state_for(epic, [*stories, initiative], [blocker]), "epic-1")
+        under = text.split("Linked under it")[1]
+        assert under.index("Story 01") < under.index("Story 02") < under.index("Story 03")
+        assert "Blocker" in text and "Initiative" in text and "parent" in text
