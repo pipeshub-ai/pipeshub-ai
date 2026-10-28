@@ -11,10 +11,11 @@ BookStack on the simulator – what reaches PipesHub, and when
   TC-BSSIM-SYNC-005  A page moved with BookStack's Move action follows its new book's access [F-MOVES]
   TC-BSSIM-SYNC-006  A chapter moved on the book sort screen takes its pages and their access [F-MOVES]
   TC-BSSIM-SYNC-007  A first sync at BookStack's default 180 requests a minute loses nothing [F-RATE-LIMIT]
+  TC-BSSIM-SYNC-008  Shelves are not synced, whatever is done to them; only books, chapters and pages [C-NO-SHELVES]
 """
 
 import pytest
-from connectors.bookstack.sim_instances import plain_instance, small_instance
+from connectors.bookstack.sim_instances import DENY_ALL, plain_instance, small_instance
 from connectors.bookstack.sim_world import BookStackWorld, succeeded
 
 
@@ -75,3 +76,17 @@ class TestBookStackSimSync:
         w = bookstack_world
         assert succeeded(await w.start(small_instance(pages=120, books=2), behaviours={"requests_per_minute": 180}))
         await w.assert_matches_source("after a first sync at 180 requests a minute")
+
+    async def test_tc_bssim_sync_008_shelves_are_not_synced(self, bookstack_world: BookStackWorld) -> None:
+        w = bookstack_world
+        assert succeeded(await w.start(plain_instance()))
+        await w.assert_matches_source("after the first sync")
+        w.ops({"op": "create_shelf", "key": "team", "data": {"name": "Team", "books": ["@handbook"]}},
+              {"op": "update_shelf", "id": "company", "data": {"name": "Company wide", "books": ["@finance"]}},
+              {"op": "set_permissions", "kind": "bookshelf", "id": "company",
+               "data": {"role_permissions": [{"role_id": "@role:finance", "view": True, "create": False,
+                                              "update": False, "delete": False}],
+                        "fallback_permissions": {"inheriting": False, **DENY_ALL}}})
+        assert succeeded(await w.sync())
+        assert succeeded(await w.sync(full=True))
+        await w.assert_matches_source("after shelves were created, changed and restricted, and a full sync")

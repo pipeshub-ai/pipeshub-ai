@@ -28,8 +28,8 @@ drive its control API on `127.0.0.1:8110`.
 `sim_world.py`: each test loads an instance (`sim_instances.py`), creates a connector, syncs, changes the
 instance, syncs again, and then every probed person (a PipesHub account with a BookStack user's email) opens every
 record of the connector. That must match the simulator's oracle exactly: LEAK, DENIED, MISSING, STALE,
-DUPLICATE, UNSETTLED, and any request the simulator does not model, fail the test. A fault that never fired fails
-the test too.
+DUPLICATE, UNSETTLED, and any request the simulator does not model, fail the test. So does any stored shelf
+(SHELF): only books, chapters and pages are synced. A fault that never fired fails the test too.
 
 ## Cases
 

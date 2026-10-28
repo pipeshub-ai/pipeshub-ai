@@ -1,4 +1,4 @@
-"""Deleted shelves, books and chapters leave the graph with everything below them.
+"""Deleted books and chapters leave the graph with everything below them.
 
 BookStack logs no page_delete for the pages of a deleted chapter or book, so
 only the group delete can take those pages away. A deleted item can come back
@@ -39,12 +39,11 @@ def connector() -> BookStackConnector:
     conn.data_source = MagicMock()
     conn.data_source.list_chapters = AsyncMock(return_value=_listing())
     conn.data_source.list_books = AsyncMock(return_value=_listing())
-    conn.data_source.list_shelves = AsyncMock(return_value=_listing())
     return conn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content_type", ["chapter", "book", "bookshelf"])
+@pytest.mark.parametrize("content_type", ["chapter", "book"])
 async def test_a_confirmed_delete_removes_the_group_and_its_subtree(connector, content_type) -> None:
     done = await connector._handle_record_group_delete_event({"loggable_id": 7}, content_type)
 

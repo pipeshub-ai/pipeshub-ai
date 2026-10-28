@@ -250,6 +250,18 @@ class BookStackWorld:
                 "r.recordName AS recordName, r.isDeleted AS isDeleted", params)
         return [r for r in rows or [] if not r.get("isDeleted")]
 
+    async def record_groups(self) -> list[dict[str, Any]]:
+        params = {"c": self.connector_id}
+        if os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower() == "arango":
+            rows = await self.graph.execute_query(
+                "FOR g IN recordGroups FILTER g.connectorId == @c RETURN {externalGroupId: g.externalGroupId, "
+                "name: g.groupName}", bind_vars=params)
+        else:
+            rows = await self.graph.client.execute_query(
+                "MATCH (g:RecordGroup {connectorId: $c}) RETURN g.externalGroupId AS externalGroupId, "
+                "g.groupName AS name", params)
+        return list(rows or [])
+
     # ---- the comparison --------------------------------------------------------------------------------
 
     async def _who_opens(self, records: Iterable[dict[str, Any]]) -> dict[tuple[str, str], int]:
@@ -301,6 +313,9 @@ class BookStackWorld:
                 elif email in viewers and not can_open:
                     problems.append({"type": "DENIED", "user": email, "item": record["recordName"],
                                      "status": status})
+        # Shelves are not synced: only books, chapters and pages.
+        problems += [{"type": "SHELF", "item": g["name"], "id": g["externalGroupId"]}
+                     for g in await self.record_groups() if str(g["externalGroupId"]).startswith("bookshelf/")]
         problems += [{"type": "SIM_UNMODELED", **e} for e in self.sim.call("GET", "/_sim/bookstack/unmodeled")]
         problems += [{"type": "SIM_SPEC", **e} for e in self.sim.call("GET", "/_sim/bookstack/spec-problems")]
         return problems

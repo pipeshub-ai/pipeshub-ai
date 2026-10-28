@@ -98,21 +98,32 @@ from app.utils.streaming import create_stream_record_response
 _AUDIT_LOG_PAGE_SIZE = 500
 _RECORD_SCAN_PAGE_SIZE = 1000
 _LISTING_PAGE_SIZE = 500
-# The sync point that holds the last audit event applied. Its accessModel says how stored access was worked out;
-# a run that finds an older one (or none, or the old time-based cursors only) reads everything again.
+# The sync point that holds the last audit event applied. Its accessModel says how what is stored was worked out
+# (who may view it, and which kinds are synced); a run that finds an older one (or none, or the old time-based
+# cursors only) reads everything again, which also removes the shelves older versions stored.
 _CURSOR_KEY = generate_record_sync_point_key("bookstack", "audit_log", "global")
-_ACCESS_MODEL = 2
-_GROUP_TYPES = {"bookshelf": RecordGroupType.SHELF, "book": RecordGroupType.BOOK, "chapter": RecordGroupType.CHAPTER}
+_ACCESS_MODEL = 3
+# Shelves are not synced: only books, chapters and pages. A shelf holds no content and gives no access to its books.
+_GROUP_TYPES = {"book": RecordGroupType.BOOK, "chapter": RecordGroupType.CHAPTER}
+_SHELF = "bookshelf"
 _PAGE_UPSERT_EVENTS = frozenset({"page_create", "page_update", "page_move", "page_restore", "revision_restore"})
-_GROUP_UPSERT_EVENTS = frozenset({"book_create", "book_update", "chapter_create", "chapter_update", "chapter_move",
-                                  "bookshelf_create", "bookshelf_update"})
-# Converting a chapter into a book, or a book into a shelf, moves pages and destroys the old item without an event
-# for either: only reading everything again finds where they went.
+_GROUP_UPSERT_EVENTS = frozenset({"book_create", "book_update", "chapter_create", "chapter_update", "chapter_move"})
+# Converting a chapter into a book, or a book into a shelf (its chapters become books), moves pages and destroys the
+# old item without an event for either: only reading everything again finds where they went.
 _RESHAPE_EVENTS = frozenset({"book_create_from_chapter", "bookshelf_create_from_book"})
 
 
+def _about_a_shelf(event: dict) -> bool:
+    """Whether an audit event only changes a shelf, which is not synced. Turning a book into a shelf is not: it
+    moves the book's pages."""
+    if event.get("type") in _RESHAPE_EVENTS:
+        return False
+    ref = entity_ref(event) or restored_ref(event)
+    return str(event.get("type") or "").startswith(f"{_SHELF}_") or (ref is not None and ref[0] == _SHELF)
+
+
 def _deleted_item_id(event: dict) -> int | None:
-    """The item id of a page, chapter, book or shelf delete audit event, when it still has one.
+    """The item id of a page, chapter or book delete audit event, when it still has one.
 
     Only loggable_id is trusted. A purge (the recycle bin emptied, or set to
     keep nothing) clears it and rewrites the detail to the bare item name, and
@@ -276,7 +287,8 @@ def _gone(response: object) -> bool:
 class BookStackConnector(BaseConnector):
     """
     Connector for synchronizing data from a BookStack instance.
-    Syncs shelves, books and chapters (record groups), pages (records), users, roles, and who may view what.
+    Syncs books and chapters (record groups), pages (records), users, roles, and who may view what. Shelves are
+    not synced.
     """
     bookstack_base_url: str
 
@@ -721,7 +733,7 @@ class BookStackConnector(BaseConnector):
                 self._health.raise_if_failed()
 
     async def _sync_everything(self, users: List[AppUser]) -> None:
-        """Users, roles, then every shelf, book, chapter and page with its access, and the removal of what
+        """Users, roles, then every book, chapter and page with its access, and the removal of what
         BookStack no longer has or the filters no longer include."""
         self.logger.info("Reading everything in BookStack.")
         if users:
@@ -753,6 +765,7 @@ class BookStackConnector(BaseConnector):
     #-------------------------------Changes from the audit log-----------------------------------#
     async def _apply_events(self, events: List[Dict], users: List[AppUser]) -> None:
         """Apply the audit events since the last run, by what they change."""
+        events = [e for e in events if not _about_a_shelf(e)]
         if not events:
             # Nothing changed: no role, permission or page needs reading.
             return
@@ -836,7 +849,7 @@ class BookStackConnector(BaseConnector):
             await self._upsert_page(page_id)
 
         unnamed = False
-        for kind in ("page_delete", "chapter_delete", "book_delete", "bookshelf_delete"):
+        for kind in ("page_delete", "chapter_delete", "book_delete"):
             for event in by_type.get(kind, []):
                 content_type = kind.rsplit("_", 1)[0]
                 item_id = _deleted_item_id(event)
@@ -932,7 +945,7 @@ class BookStackConnector(BaseConnector):
         return rows
 
     async def _access(self, kind: str, item: Dict) -> Optional[ItemAccess]:
-        """Who may view one shelf, book, chapter or page, as permissions; None when it cannot be worked out."""
+        """Who may view one book, chapter or page, as permissions; None when it cannot be worked out."""
         item_id = int(item["id"])
         chain_refs = [(kind, item_id)]
         if kind == "page" and item.get("chapter_id"):
@@ -956,10 +969,10 @@ class BookStackConnector(BaseConnector):
             target.discard(key)
         return access
 
-    #-------------------------------Shelves, books, chapters-----------------------------------#
+    #-------------------------------Books, chapters-----------------------------------#
     async def _list_all(self, list_method: Callable[..., Awaitable[BookStackResponse]],
                         filters: Optional[Dict[str, str]], what: str) -> Optional[List[Dict]]:
-        """Every row of a shelf, book or chapter listing, or None when it was not read to the end."""
+        """Every row of a book or chapter listing, or None when it was not read to the end."""
         rows: List[Dict] = []
         offset = 0
         while True:
@@ -1019,8 +1032,7 @@ class BookStackConnector(BaseConnector):
         complete = True
         batch: List[Tuple[RecordGroup, Optional[List[Permission]]]] = []
         books_in_scope: Set[int] = set()
-        for kind, list_method in (("bookshelf", self.data_source.list_shelves), ("book", self.data_source.list_books),
-                                  ("chapter", self.data_source.list_chapters)):
+        for kind, list_method in (("book", self.data_source.list_books), ("chapter", self.data_source.list_chapters)):
             items = await self._list_all(list_method, None, f"{kind}s")
             if items is None:
                 complete = False
@@ -1048,8 +1060,7 @@ class BookStackConnector(BaseConnector):
         if kind not in _GROUP_TYPES:
             return
         if item is None:
-            fetch = {"book": self.data_source.get_book, "bookshelf": self.data_source.get_shelf,
-                     "chapter": self.data_source.get_chapter}[kind]
+            fetch = {"book": self.data_source.get_book, "chapter": self.data_source.get_chapter}[kind]
             response = await fetch(item_id)
             if not response.success:
                 if response.status_code == HttpStatusCode.NOT_FOUND.value:
@@ -1059,7 +1070,7 @@ class BookStackConnector(BaseConnector):
                 return
             item = response.data
         book_id = item_id if kind == "book" else item.get("book_id")
-        if kind != "bookshelf" and not self._book_in_scope(book_id):
+        if not self._book_in_scope(book_id):
             group = await self.data_entities_processor.get_record_group_by_external_id(
                 self.connector_id, f"{kind}/{item_id}")
             if group is not None and not await self.data_entities_processor.on_record_group_deleted(
@@ -1072,8 +1083,8 @@ class BookStackConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups([(self._group_for(kind, item), access.permissions)])
 
     async def _remove_groups_not_listed(self, listed: Set[str]) -> bool:
-        """Remove the shelves, books and chapters complete listings no longer return (gone, or now outside the
-        book filter), with what is under them."""
+        """Remove the books and chapters complete listings no longer return (gone, or now outside the book
+        filter), with what is under them, and any shelf an older version stored."""
         try:
             stored = await self.data_entities_processor.get_nodes_by_filters(
                 CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id},
@@ -1086,7 +1097,7 @@ class BookStackConnector(BaseConnector):
         for node in stored:
             external_id = node.get("externalGroupId") or ""
             kind, _, raw = external_id.partition("/")
-            if kind not in _GROUP_TYPES or not raw.isdigit() or external_id in listed:
+            if not raw.isdigit() or external_id in listed or (kind not in _GROUP_TYPES and kind != _SHELF):
                 continue
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
             try:
@@ -1099,8 +1110,7 @@ class BookStackConnector(BaseConnector):
     async def _remove_groups_no_longer_in_bookstack(self) -> bool:
         listed: Set[str] = set()
         books_in_scope: Set[int] = set()
-        for kind, list_method in (("bookshelf", self.data_source.list_shelves), ("book", self.data_source.list_books),
-                                  ("chapter", self.data_source.list_chapters)):
+        for kind, list_method in (("book", self.data_source.list_books), ("chapter", self.data_source.list_chapters)):
             items = await self._list_all(list_method, None, f"{kind}s")
             if items is None:
                 return False
@@ -1831,7 +1841,7 @@ class BookStackConnector(BaseConnector):
         return record is None or await self._delete_page_record(record, page_id)
 
     async def _handle_record_group_delete_event(self, event: dict, content_type: str) -> bool:
-        """Remove a deleted shelf, book or chapter with everything below it, once BookStack confirms it is gone.
+        """Remove a deleted book or chapter with everything below it, once BookStack confirms it is gone.
 
         BookStack sends no page_delete for the pages of a deleted chapter or book,
         so the group delete takes its pages and child chapters with it. Deleted
@@ -1863,9 +1873,8 @@ class BookStackConnector(BaseConnector):
         return await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id)
 
     async def _content_exists(self, content_type: str, item_id: int) -> bool | None:
-        """Whether BookStack still lists a shelf, book or chapter by id; None when it gives no usable answer."""
+        """Whether BookStack still lists a book or chapter by id; None when it gives no usable answer."""
         list_method = {
-            "bookshelf": self.data_source.list_shelves,
             "book": self.data_source.list_books,
             "chapter": self.data_source.list_chapters,
         }[content_type]

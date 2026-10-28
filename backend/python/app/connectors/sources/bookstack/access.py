@@ -1,4 +1,4 @@
-"""Who may view a BookStack shelf, book, chapter or page, worked out as BookStack works it out.
+"""Who may view a BookStack book, chapter or page, worked out as BookStack works it out.
 
 BookStack decides per item and per role (``JointPermissionBuilder``), then per user over all of the user's
 roles (``PermissionApplicator::restrictEntityQuery``):
