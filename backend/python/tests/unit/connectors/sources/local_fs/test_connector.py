@@ -4372,6 +4372,16 @@ class TestEventsLeavingScope:
         )
         assert folder_connector._external_record_id_for_rel_path("locked.pdf") in seen
 
+    async def test_a_file_without_a_hash_out_of_scope_is_retired_not_kept(self, folder_connector, tmp_path) -> None:
+        seen: set[str] = set()
+        _stats, retired = await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "notes.txt", sha256=None)], self.PDF_ONLY,
+            seen_external_ids=seen,
+        )
+        ext_id = folder_connector._external_record_id_for_rel_path("notes.txt")
+        assert ext_id not in seen
+        assert retired == [ext_id]
+
     async def test_a_move_without_a_hash_retires_only_the_path_it_left(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("MOVED", "b/x.pdf", "a/x.pdf", sha256=None)],

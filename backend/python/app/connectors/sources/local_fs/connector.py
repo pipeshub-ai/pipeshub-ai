@@ -1717,9 +1717,14 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                 )
                 skipped += 1
-                # The file is still there: a full run must not prune its record
-                # while it cannot be read.
-                if seen_external_ids is not None and not event.isDirectory:
+                in_scope = self._pass_extension_filters(
+                    Path(rel_path), sync_filters, is_directory=event.isDirectory
+                ) and self._pass_date_filters(event, sync_filters)
+                if not in_scope:
+                    retire.append(new_ext_id)
+                elif seen_external_ids is not None and not event.isDirectory:
+                    # The file is still there and in scope: a full run must not
+                    # prune its record while it cannot be read.
                     seen_external_ids.add(new_ext_id)
                 if moved_from_ext_id:
                     retire.append(moved_from_ext_id)
