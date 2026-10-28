@@ -1385,6 +1385,26 @@ class TestRetryOnDeadlockDecorator:
         assert seen == [True, False]
 
     @pytest.mark.asyncio
+    async def test_a_nested_retried_call_that_fails_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> Never:
+            raise create_deadlock_error()
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            with contextlib.suppress(Exception):
+                await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
     async def test_retries_on_single_deadlock(self) -> None:
         """Test that function retries once on deadlock and succeeds."""
         call_count = 0
