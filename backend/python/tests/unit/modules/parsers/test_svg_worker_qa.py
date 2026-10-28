@@ -102,7 +102,12 @@ def test_a_renderer_in_the_middle_of_an_svg_does_not_outlive_its_parent(tmp_path
             sys.path.insert(0, {PYTHON_ROOT!r})
             from app.modules.parsers.image_parser import svg_worker
             svg = {_b64(_hostile())!r}
-            threading.Thread(target=lambda: svg_worker.run_bounded(svg), daemon=True).start()
+            def go():
+                try:
+                    svg_worker.run_bounded(svg)
+                except Exception:
+                    pass  # the renderer is closed when this process exits
+            threading.Thread(target=go, daemon=True).start()
             time.sleep(2)
             import psutil
             print(psutil.Process().children()[0].pid, flush=True)
@@ -155,7 +160,10 @@ def test_a_stuck_renderer_cannot_block_the_caller_past_the_deadline(monkeypatch:
     thread.start()
     thread.join(timeout=8)
     stuck = thread.is_alive()
-    os.kill(renderer.process.pid, signal.SIGCONT)  # lets a blocked write finish so the test can clean up
+    # The renderer is killed at the deadline; with the old blocking write it was still
+    # stopped here and this let the blocked write finish so the test could clean up.
+    with __import__("contextlib").suppress(ProcessLookupError):
+        os.kill(renderer.process.pid, signal.SIGCONT)
     thread.join(timeout=10)
     pool.close_all()
     assert not stuck, "the request write has no deadline: the caller blocks while the renderer is stopped"

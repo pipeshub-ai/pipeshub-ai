@@ -124,3 +124,114 @@ REAL_WORLD = {
 @pytest.mark.parametrize("name", sorted(REAL_WORLD))
 def test_ordinary_svgs_still_render(name: str) -> None:
     assert ImageParser.svg_base64_to_png_base64(_b64(REAL_WORLD[name])).startswith("iVBOR")
+
+
+def test_the_renderer_environment_is_an_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in ("MONGO_URI", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "JWT_SECRET", "PYTHONSTARTUP", "SOME_OTHER"):
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = svg_worker._renderer_environment()
+    assert set(env) <= svg_worker._ENV_ALLOWLIST | {k for k in env if k.startswith("LC_")}
+    assert env["PATH"] == "/usr/bin"
+    assert env["LC_ALL"] == "C.UTF-8"
+    assert "MONGO_URI" not in env and "SOME_OTHER" not in env
+
+
+def test_a_renderer_is_not_returned_to_the_pool_after_a_protocol_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+) -> None:
+    pool = svg_worker._Renderers()
+    monkeypatch.setattr(svg_worker, "_renderers", pool)
+    (tmp_path / "fake_renderer.py").write_text(
+        "import sys\nfor line in sys.stdin:\n    sys.stdout.write('[1, 2]\\n'); sys.stdout.flush()\n"
+    )
+    monkeypatch.setattr(svg_worker, "_MODULE", "fake_renderer")
+    monkeypatch.setattr(svg_worker, "_PYTHON_ROOT", str(tmp_path))
+    try:
+        with pytest.raises(DocumentProcessingError):
+            svg_worker.run_bounded(_b64(GOOD), timeout=3.0)
+        assert pool._idle == [] or all(r.alive() for r in pool._idle) and len(pool._all) <= 1
+    finally:
+        pool.close_all()
+
+
+def test_a_kill_leaves_a_warm_spare_and_the_deadline_holds_when_cold(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = svg_worker._Renderers()
+    monkeypatch.setattr(svg_worker, "_renderers", pool)
+    hostile = _slow_but_countable(15000)
+    try:
+        start = time.monotonic()
+        with pytest.raises(DocumentProcessingError, match="timed out"):
+            svg_worker.run_bounded(_b64(hostile), timeout=2.0)  # cold renderer
+        assert time.monotonic() - start < 4.5
+        assert len(pool._idle) == 1 and pool._idle[0].alive()  # the spare
+        start = time.monotonic()
+        with pytest.raises(DocumentProcessingError, match="timed out"):
+            svg_worker.run_bounded(_b64(hostile), timeout=2.0)
+        assert time.monotonic() - start < 4.5
+    finally:
+        pool.close_all()
+
+
+def test_at_most_four_renderers_exist_and_the_others_wait_for_their_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = svg_worker._Renderers()
+    monkeypatch.setattr(svg_worker, "_renderers", pool)
+    peak = 0
+    results: list[object] = []
+    lock = __import__("threading").Lock()
+
+    def call() -> None:
+        nonlocal peak
+        try:
+            results.append(svg_worker.run_bounded(_b64(GOOD), timeout=30.0))
+        except DocumentProcessingError as exc:
+            results.append(exc)
+        with lock:
+            peak = max(peak, len(pool._all))
+
+    import threading
+
+    threads = [threading.Thread(target=call) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    try:
+        assert len(results) == 50
+        assert peak <= svg_worker._MAX_RENDERERS
+        assert all(isinstance(r, str) for r in results)
+    finally:
+        pool.close_all()
+
+
+def test_a_caller_that_finds_every_renderer_busy_gives_up_at_its_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = svg_worker._Renderers()
+    monkeypatch.setattr(svg_worker, "_renderers", pool)
+    held = [pool.acquire(time.monotonic() + 5) for _ in range(svg_worker._MAX_RENDERERS)]
+    try:
+        start = time.monotonic()
+        with pytest.raises(DocumentProcessingError, match="busy"):
+            svg_worker.run_bounded(_b64(GOOD), timeout=1.0)
+        assert time.monotonic() - start < 2.5
+    finally:
+        pool.close_all()
+        assert len(held) == svg_worker._MAX_RENDERERS
+
+
+def test_a_renderer_is_killed_by_its_cpu_limit_even_if_the_parent_never_asks() -> None:
+    # The CPU limit is a little above the deadline: ask for 1 s of wall clock
+    # and the renderer's own limit (3 s) ends it even if nobody kills it.
+    pool = svg_worker._Renderers()
+    try:
+        renderer = pool.acquire(time.monotonic() + 5)
+        request = {**svg_worker._request(_b64(_slow_but_countable(15000)), None, None, 1.0, None), "cpu": 0}
+        assert svg_worker._write_all(
+            renderer._stdin_fd, (__import__("json").dumps(request) + "\n").encode(), time.monotonic() + 5
+        )
+        deadline = time.monotonic() + 20
+        while renderer.alive() and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not renderer.alive()
+    finally:
+        pool.close_all()

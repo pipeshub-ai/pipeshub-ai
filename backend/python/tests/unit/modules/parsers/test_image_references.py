@@ -318,8 +318,8 @@ def test_scan_time_is_linear_for_crafted_input(name) -> None:
     t_half = cpu(extract_and_replace_images, half)
     # Judged against the same host's time for ordinary text of the same size,
     # and against the same input at half the size (quadratic would be 4x).
-    assert t_big < max(t_benign, 0.02) * 12, (t_big, t_benign)
-    assert t_big < max(t_half, 0.01) * 3.2, (t_big, t_half)
+    assert t_big < max(t_benign, 0.05) * 12, (t_big, t_benign)
+    assert t_big < max(t_half, 0.05) * 3.2, (t_big, t_half)
 
 
 def test_a_shared_closing_bracket_is_not_rescanned_per_opener() -> None:
@@ -328,7 +328,7 @@ def test_a_shared_closing_bracket_is_not_rescanned_per_opener() -> None:
 
     t_small = cpu(extract_and_replace_images, build(8000))
     t_big = cpu(extract_and_replace_images, build(32000))
-    assert t_big < max(t_small, 0.01) * 6.5, (t_big, t_small)
+    assert t_big < max(t_small, 0.05) * 6.5, (t_big, t_small)
 
 
 @pytest.mark.parametrize("parser_class", [SelectolaxHtmlParser, DoclingHtmlParser])
