@@ -9,7 +9,8 @@ import pytest
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers import parse_pool
 from app.modules.parsers.image_parser import svg_worker
-from app.modules.parsers.image_parser.image_parser import ImageParser, check_svg_budget
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.image_parser.svg_core import check_svg_budget
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
@@ -36,7 +37,7 @@ def test_a_child_that_runs_past_its_deadline_is_killed(monkeypatch: pytest.Monke
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 1.0)
     start = time.monotonic()
     with pytest.raises(DocumentProcessingError, match="timed out"):
-        svg_worker.run_bounded(_b64(_slow_but_countable(40000)), timeout=1.0)
+        svg_worker.run_bounded(_b64(_slow_but_countable(15000)), timeout=1.0)
     assert time.monotonic() - start < 4.0
 
 
