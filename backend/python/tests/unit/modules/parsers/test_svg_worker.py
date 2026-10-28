@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import time
 
 import pytest
@@ -282,25 +283,86 @@ async def test_svg_waits_never_take_a_thread_of_the_default_executor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_time_queued_for_a_waiter_thread_counts_against_the_deadline(
+async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Every slot busy: further calls hold no queued work (and no SVG in the pool's
+    queue), and each gives up at its own deadline without ever being submitted."""
     import asyncio
-    import threading
 
     monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 0.3)
-    gate = threading.Event()
-    busy = [svg_worker._waiter_threads().submit(gate.wait, 5) for _ in range(svg_worker._MAX_RENDERERS)]
+    waiters = svg_worker._waiters
+    for _ in range(svg_worker._MAX_RENDERERS):
+        assert waiters.slots.acquire(blocking=False)
+    submitted: list[object] = []
+    pool = waiters.get()
+    monkeypatch.setattr(pool, "submit", lambda *a, **k: submitted.append(a))
     try:
-        job = asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)))
-        await asyncio.sleep(0.6)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        calls = [asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))) for _ in range(20)]
+        outcomes = await asyncio.gather(*calls, return_exceptions=True)
+        elapsed = loop.time() - start
     finally:
-        gate.set()
-    for f in busy:
-        f.result(timeout=5)
-    # A valid SVG, refused only because it started after its deadline.
-    with pytest.raises(DocumentProcessingError, match="timed out before it started"):
-        await asyncio.wait_for(job, 5)
+        for _ in range(svg_worker._MAX_RENDERERS):
+            waiters.slots.release()
+    assert all(isinstance(o, DocumentProcessingError) for o in outcomes), outcomes
+    assert all("waiting for a renderer" in str(o) for o in outcomes)
+    assert submitted == []
+    assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_every_path_gives_its_renderer_slot_back() -> None:
+    import asyncio
+
+    waiters = svg_worker._waiters
+    results = await asyncio.gather(
+        *(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)) for _ in range(6)),
+        *(ImageParser.svg_base64_to_png_base64_async(_b64("<svg><g></svg>")) for _ in range(3)),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(r, str) for r in results) == 6
+    cancelled = asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)))
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await cancelled
+    await asyncio.sleep(0.5)
+    held = 0
+    while waiters.slots.acquire(blocking=False):
+        held += 1
+    for _ in range(held):
+        waiters.slots.release()
+    assert held == svg_worker._MAX_RENDERERS
+
+
+def test_closing_a_renderer_does_not_wait_for_a_process_that_will_not_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    import threading
+
+    reaped = threading.Event()
+
+    class StuckProcess:
+        pid = 2**22 + 7  # nothing to signal; killpg's error is suppressed
+        stdin = stdout = None
+
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("renderer", timeout)
+            reaped.set()
+            return -9
+
+    renderer = svg_worker._Renderer.__new__(svg_worker._Renderer)
+    renderer.process = StuckProcess()  # type: ignore[assignment]
+    renderer._closed = False
+    monkeypatch.setattr(renderer, "release_pipes", lambda: None)
+    start = time.monotonic()
+    renderer.close()
+    assert time.monotonic() - start < 1.0
+    assert reaped.wait(2), "the stuck renderer is still reaped, in the background"
 
 
 def test_a_deadline_already_passed_is_refused_without_taking_a_renderer() -> None:

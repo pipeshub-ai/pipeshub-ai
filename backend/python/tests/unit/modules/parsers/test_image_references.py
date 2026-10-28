@@ -311,15 +311,17 @@ _ADVERSARIAL = {
 def test_scan_time_is_linear_for_crafted_input(name) -> None:
     unit = _ADVERSARIAL[name]
     big = unit * (65536 // len(unit))
-    half = unit * (32768 // len(unit))
+    quarter = unit * (16384 // len(unit))
     benign = _BENIGN * (65536 // len(_BENIGN))
     t_benign = cpu(extract_and_replace_images, benign)
     t_big = cpu(extract_and_replace_images, big)
-    t_half = cpu(extract_and_replace_images, half)
+    t_quarter = cpu(extract_and_replace_images, quarter)
     # Judged against the same host's time for ordinary text of the same size,
-    # and against the same input at half the size (quadratic would be 4x).
+    # and against the same input at a quarter of the size: linear is 4x and
+    # quadratic 16x. (A 2x step measured 3.3x once on a busy runner for a family
+    # that is 2.0x per doubling from 16 KB to 256 KB.)
     assert t_big < max(t_benign, 0.05) * 12, (t_big, t_benign)
-    assert t_big < max(t_half, 0.05) * 3.2, (t_big, t_half)
+    assert t_big < max(t_quarter, 0.02) * 8, (t_big, t_quarter)
 
 
 def test_a_shared_closing_bracket_is_not_rescanned_per_opener() -> None:

@@ -54,6 +54,38 @@ def _svg_references(node: object) -> list[str]:
     return refs
 
 
+class _OverBudget(Exception):
+    def __init__(self, elements: int) -> None:
+        super().__init__(elements)
+        self.elements = elements
+
+
+def _budget_builder() -> object:
+    from xml.etree.ElementTree import TreeBuilder
+
+    class BudgetBuilder(TreeBuilder):
+        """Stops the parse at the first element past the count or depth limit, so
+        refusing a huge document costs what parsing up to the limit costs."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.count = 0
+            self.depth = 0
+
+        def start(self, tag: str, attrs: dict[str, str]) -> object:
+            self.count += 1
+            self.depth += 1
+            if self.count > _MAX_SVG_ELEMENTS or self.depth > _MAX_SVG_DEPTH:
+                raise _OverBudget(self.count)
+            return super().start(tag, attrs)
+
+        def end(self, tag: str) -> object:
+            self.depth -= 1
+            return super().end(tag)
+
+    return BudgetBuilder()
+
+
 def check_svg_budget(svg_str: str) -> None:
     """Refuse an SVG that is too big, or draws too much, to rasterise.
 
@@ -69,7 +101,11 @@ def check_svg_budget(svg_str: str) -> None:
     if len(svg_str) > _MAX_SVG_BYTES:
         raise DocumentProcessingError("SVG is too large to rasterise", details={"bytes": len(svg_str)})
     try:
-        root = safe_et.fromstring(svg_str.encode("utf-8"))
+        parser = safe_et.XMLParser(target=_budget_builder())
+        parser.feed(svg_str.encode("utf-8"))
+        root = parser.close()
+    except _OverBudget as e:
+        raise DocumentProcessingError("SVG is too complex to rasterise", details={"elements": e.elements}) from e
     except DefusedXmlException as e:
         raise DocumentProcessingError("SVG uses entities or DTDs", details={"error": str(e)}) from e
     except Exception as e:

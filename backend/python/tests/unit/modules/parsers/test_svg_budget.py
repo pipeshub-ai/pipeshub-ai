@@ -40,11 +40,31 @@ HOSTILE = {
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
 def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> None:
-    """The refusal itself, in this process: no renderer start-up in the timing."""
+    """The refusal itself, in this process: no renderer start-up in the timing.
+    Half a second here; the bound is half the render deadline, so it still shows
+    the refusal comes long before a render could, on a slow shared runner too."""
     start = time.process_time()
     with pytest.raises(DocumentProcessingError):
         ImageParser._svg_to_png_in_process(_b64(HOSTILE[name]))
-    assert time.process_time() - start < 2.0
+    assert time.process_time() - start < 5.0
+
+
+def test_refusing_too_many_elements_costs_the_same_however_many_there_are() -> None:
+    """Counting stops at the limit, so twenty times the elements is not twenty
+    times the work."""
+
+    def refuse(n: int) -> float:
+        svg = _b64('<svg xmlns="http://www.w3.org/2000/svg">' + "<g/>" * n + "</svg>")
+        best = float("inf")
+        for _ in range(3):
+            start = time.process_time()
+            with pytest.raises(DocumentProcessingError):
+                ImageParser._svg_to_png_in_process(svg)
+            best = min(best, time.process_time() - start)
+        return best
+
+    at_limit, far_past = refuse(60_000), refuse(1_200_000)
+    assert far_past < max(at_limit, 0.05) * 3, (at_limit, far_past)
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))

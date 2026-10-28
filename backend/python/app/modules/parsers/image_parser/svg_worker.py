@@ -25,7 +25,6 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
-import functools
 import json
 import logging
 import os
@@ -54,6 +53,10 @@ SVG_EXTRA_MEMORY_BYTES = 1024 * 1024 * 1024
 # deadline. Worst-case memory is therefore this many times SVG_EXTRA_MEMORY_BYTES.
 _IDLE_SECONDS = 30.0
 _MAX_RENDERERS = 4
+# How often an async caller checks for a free renderer slot while it waits.
+_ADMISSION_POLL_SECONDS = 0.02
+# How long close() waits for a killed renderer before reaping it in the background.
+_REAP_WAIT_SECONDS = 0.2
 _PYTHON_ROOT = str(Path(__file__).resolve().parents[4])
 _MODULE = "app.modules.parsers.image_parser.svg_worker"
 
@@ -247,8 +250,13 @@ class _Renderer:
             else:  # pragma: no cover
                 self.process.kill()
         self.release_pipes()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            self.process.wait(timeout=5)
+        # A killed process is normally gone at once; one stuck in the kernel must
+        # not hold the caller (and its waiter thread) past the deadline, so it is
+        # reaped in the background.
+        try:
+            self.process.wait(timeout=_REAP_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            threading.Thread(target=self.process.wait, name="svg-reaper", daemon=True).start()
 
     def release_pipes(self) -> None:
         for stream in (self.process.stdin, self.process.stdout):
@@ -369,6 +377,9 @@ class _WaiterThreads:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
+        # Admission: a call holds one from before it is submitted until its job
+        # ends, so the pool never queues work (or the SVG it carries).
+        self.slots = threading.Semaphore(_MAX_RENDERERS)
 
     def get(self) -> concurrent.futures.ThreadPoolExecutor:
         with self._lock:
@@ -382,13 +393,10 @@ class _WaiterThreads:
         # After fork: the parent's threads do not exist here, and its lock may be held.
         self._lock = threading.Lock()
         self._pool = None
+        self.slots = threading.Semaphore(_MAX_RENDERERS)
 
 
 _waiters = _WaiterThreads()
-
-
-def _waiter_threads() -> concurrent.futures.ThreadPoolExecutor:
-    return _waiters.get()
 
 
 def _after_fork_in_child() -> None:
@@ -444,11 +452,27 @@ def run_bounded(
 
 async def render_async(svg: str) -> str:
     """Rasterise for async callers; see the module docstring."""
-    # The deadline starts now, so time queued for a waiter thread counts too.
     deadline = time.monotonic() + SVG_DEADLINE_SECONDS
-    return await asyncio.get_running_loop().run_in_executor(
-        _waiter_threads(), functools.partial(run_bounded, svg, deadline=deadline)
-    )
+    waiters = _waiters
+    while not waiters.slots.acquire(blocking=False):
+        if time.monotonic() >= deadline:
+            raise DocumentProcessingError("SVG rasterising timed out waiting for a renderer")
+        await asyncio.sleep(_ADMISSION_POLL_SECONDS)
+
+    def job() -> str:
+        try:
+            return run_bounded(svg, deadline=deadline)
+        finally:
+            waiters.slots.release()
+
+    try:
+        future = waiters.get().submit(job)
+    except BaseException:
+        waiters.slots.release()
+        raise
+    # A job cancelled before it starts never reaches its finally.
+    future.add_done_callback(lambda f: f.cancelled() and waiters.slots.release())
+    return await asyncio.wrap_future(future)
 
 
 def _die_with_parent(parent_pid: int) -> None:
