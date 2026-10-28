@@ -1,0 +1,448 @@
+# Acme Corp, grown into a knowledge-graph test bed: the cast.
+#
+# New people, organisations, groups and containers only. Everyone and everything in
+# acme-corp.yaml stays as it is; the loader merges these lists into it and rejects
+# a duplicate id. The story bible (kg-eval/BIBLE.md) says who does what in which story.
+#
+# Existing members have no `team` field (acme-corp.yaml is frozen); their teams are
+# in the bible. Group membership comes only from `people[].groups`, so existing people
+# are not members of the groups added here. That matters only for sign-in personas,
+# all of which are new people with their memberships set below.
+
+groups:
+  # Open to all staff (not the contractor): the company wiki, help centre and #general.
+  - id: all-staff
+    name: All staff
+    installer_joins: true
+  # The Kubernetes migration (Project Keel). The only group the contractor is in.
+  - id: migration-team
+    name: Project Keel migration team
+    installer_joins: true
+  # The four restricted spaces. The installer joins none of them.
+  - id: exec-staff
+    name: Exec staff
+  - id: recruiting
+    name: Recruiting
+  - id: hr-casework
+    name: People casework
+  - id: security-incident
+    name: Security incident response
+
+people:
+  # --- operations (exec, finance, people) --------------------------------------
+  - id: rafael
+    name: Rafael Costa
+    email: rafael@acme-demo.example
+    title: Chief executive officer
+    team: operations
+    kind: member
+    aliases: ["Rafa"]
+    login: true
+    persona: exec
+    # Sees almost everything; not People casework.
+    groups: [all-staff, migration-team, exec-staff, recruiting, security-incident,
+             engineering-readers, support-readers, pricing-committee, sales-readers,
+             deal-desk, marketing-readers, launch-core, finance-readers,
+             payments-contract, people-readers, people-managers]
+  - id: owen
+    name: Owen Gallagher
+    email: owen@acme-demo.example
+    title: Chief operating officer
+    team: operations
+    kind: member
+    groups: [all-staff, exec-staff, hr-casework, security-incident, recruiting,
+             finance-readers, payments-contract, people-readers, people-managers,
+             support-readers, sales-readers, deal-desk]
+  - id: zara
+    name: Zara Ahmed
+    email: zara@acme-demo.example
+    title: Talent partner (recruiting)
+    team: operations
+    kind: member
+    login: true
+    persona: recruiter
+    groups: [all-staff, people-readers, recruiting]
+
+  # --- marketing (product and marketing) ---------------------------------------
+  - id: elena
+    name: Elena Petrova
+    email: elena@acme-demo.example
+    title: Head of product and marketing
+    team: marketing
+    kind: member
+    groups: [all-staff, exec-staff, marketing-readers, launch-core, engineering-readers, sales-readers]
+  - id: mateo
+    name: Mateo García
+    email: mateo@acme-demo.example
+    title: Content marketing manager
+    team: marketing
+    kind: member
+    aliases: ["Mateo Garcia"]
+    groups: [all-staff, marketing-readers]
+
+  # --- sales -------------------------------------------------------------------
+  - id: sofia
+    name: Sofia Rossi
+    email: sofia@acme-demo.example
+    title: Account executive
+    team: sales
+    kind: member
+    login: true
+    persona: account_exec
+    # Sales only: no support, engineering or deal-desk spaces.
+    groups: [all-staff, sales-readers]
+  - id: daniel
+    name: Daniel Kim
+    email: daniel@acme-demo.example
+    title: Solutions engineer
+    team: sales
+    kind: member
+    groups: [all-staff, sales-readers]
+  - id: jack
+    name: Jack Thornton
+    email: jack@acme-demo.example
+    title: Revenue operations and deal desk analyst
+    team: sales
+    kind: member
+    groups: [all-staff, sales-readers, deal-desk]
+
+  # --- support -----------------------------------------------------------------
+  - id: chioma
+    name: Chioma Eze
+    email: chioma@acme-demo.example
+    title: Support engineer
+    team: support
+    kind: member
+    login: true
+    persona: support_eng
+    groups: [all-staff, support-readers]
+  - id: lucas
+    name: Lucas Moreau
+    email: lucas@acme-demo.example
+    title: Support engineer, EMEA
+    team: support
+    kind: member
+    groups: [all-staff, support-readers]
+  - id: hannah
+    name: Hannah Schmidt
+    email: hannah@acme-demo.example
+    title: Technical account manager
+    team: support
+    kind: member
+    groups: [all-staff, support-readers, sales-readers]
+
+  # --- platform ----------------------------------------------------------------
+  - id: raj
+    name: Raj Mehta
+    email: raj@acme-demo.example
+    title: Engineering manager, Platform
+    team: platform
+    kind: member
+    login: true
+    persona: eng_manager
+    groups: [all-staff, engineering-readers, support-readers, migration-team, recruiting, security-incident]
+  # Planted look-alike of Priya Natarajan (Payments): same first name, same initial.
+  - id: priya-nair
+    name: Priya Nair
+    email: priya.nair@acme-demo.example
+    title: Senior site reliability engineer, Platform
+    team: platform
+    kind: member
+    aliases: ["P. Nair"]
+    groups: [all-staff, engineering-readers, migration-team, security-incident]
+  - id: yusuf
+    name: Yusuf Demir
+    email: yusuf@acme-demo.example
+    title: Platform engineer
+    team: platform
+    kind: member
+    groups: [all-staff, engineering-readers, migration-team, security-incident]
+  - id: grace
+    name: Grace Liu
+    email: grace@acme-demo.example
+    title: Platform engineer, observability; tech lead for Acme Flow
+    team: platform
+    kind: member
+    groups: [all-staff, engineering-readers, migration-team]
+  - id: tobias
+    name: Tobias Weber
+    email: tobias@acme-demo.example
+    title: Contract engineer, Platform (via Globus Partners)
+    team: platform
+    kind: member
+    aliases: ["Tobi"]
+    login: true
+    persona: contractor
+    # Very restricted: the migration team's spaces and nothing else.
+    groups: [migration-team]
+
+  # --- payments ----------------------------------------------------------------
+  - id: leo
+    name: Leo Martins
+    email: leo@acme-demo.example
+    title: Engineer, Payments (joined 2026-04-20)
+    team: payments
+    kind: member
+    login: true
+    persona: new_hire
+    groups: [all-staff, engineering-readers, migration-team]
+  - id: kenji
+    name: Kenji Watanabe
+    email: kenji@acme-demo.example
+    title: Senior engineer, Payments (owner of svc-invoicing)
+    team: payments
+    kind: member
+    groups: [all-staff, engineering-readers, migration-team]
+  - id: fatima
+    name: Fatima Zahra Benali
+    email: fatima@acme-demo.example
+    title: Engineer, Payments
+    team: payments
+    kind: member
+    aliases: ["Fatima Benali"]
+    groups: [all-staff, engineering-readers]
+
+  # --- external contacts (customers, partner, prospect) ------------------------
+  - id: harriet
+    name: Harriet Cole
+    email: harriet.cole@northwind.example
+    title: Head of operations, Northwind Traders
+    kind: external
+    company: northwind
+  - id: jonas
+    name: Jonas Becker
+    email: jonas.becker@contoso.example
+    title: Head of IT operations, Contoso
+    kind: external
+    company: contoso
+  - id: ahmed
+    name: Ahmed Rahman
+    email: ahmed.rahman@fabrikam.example
+    title: IT director, Fabrikam
+    kind: external
+    company: fabrikam
+  - id: victor
+    name: Victor Alvarez
+    email: victor.alvarez@globex.example
+    title: VP engineering, Globex Corporation
+    kind: external
+    company: globex
+  - id: olivia
+    name: Olivia Grant
+    email: olivia.grant@globex.example
+    title: Procurement manager, Globex Corporation
+    kind: external
+    company: globex
+  - id: kwame
+    name: Kwame Mensah
+    email: kwame.mensah@bluebird.example
+    title: Chief information officer, Bluebird Health
+    kind: external
+    company: bluebird
+  - id: ines
+    name: Inês Duarte
+    email: ines.duarte@globus.example
+    title: Engagement manager, Globus Partners
+    kind: external
+    company: globus
+    aliases: ["Ines Duarte"]
+  - id: paul
+    name: Paul Whitaker
+    email: paul.whitaker@kestrel.example
+    title: Director of operations, Kestrel Logistics
+    kind: external
+    company: kestrel
+
+organizations:
+  - id: northwind
+    name: Northwind Traders
+    aliases: ["Northwind"]
+    domain: northwind.example
+    crm: true
+  - id: contoso
+    name: Contoso
+    aliases: ["Contoso Ltd"]
+    domain: contoso.example
+    crm: true
+  - id: fabrikam
+    name: Fabrikam
+    aliases: ["Fabrikam Inc"]
+    domain: fabrikam.example
+    crm: true
+  # Customer. Its look-alike, Globus Partners, is a partner, not a customer.
+  - id: globex
+    name: Globex Corporation
+    aliases: ["Globex", "Globex Corp"]
+    domain: globex.example
+    crm: true
+  - id: bluebird
+    name: Bluebird Health
+    aliases: ["Bluebird"]
+    domain: bluebird.example
+    crm: true
+  - id: globus
+    name: Globus Partners
+    aliases: ["Globus"]
+    domain: globus.example
+    crm: false
+  - id: tessera
+    name: Tessera Analytics
+    aliases: ["Tessera"]
+    domain: tessera.example
+    crm: false
+  - id: kestrel
+    name: Kestrel Logistics
+    aliases: ["Kestrel"]
+    domain: kestrel.example
+    crm: false
+
+containers:
+  # --- Confluence spaces -------------------------------------------------------
+  - id: cf-eng
+    system: CONFLUENCE
+    kind: space
+    name: ENG — Engineering
+    group: engineering-readers
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG
+  - id: cf-mig
+    system: CONFLUENCE
+    kind: space
+    name: KEEL — Project Keel (Kubernetes migration)
+    group: migration-team
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL
+  - id: cf-wiki
+    system: CONFLUENCE
+    kind: space
+    name: ACME — Company wiki
+    group: all-staff
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME
+  - id: cf-sup
+    system: CONFLUENCE
+    kind: space
+    name: SUPKB — Support knowledge
+    group: support-readers
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SUPKB
+  - id: cf-sales
+    system: CONFLUENCE
+    kind: space
+    name: SALES — Sales enablement
+    group: sales-readers
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES
+  - id: cf-exec
+    system: CONFLUENCE
+    kind: space
+    name: EXEC — Exec staff (restricted)
+    group: exec-staff
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC
+
+  # --- Gmail mailboxes (one per member who sends mail) -------------------------
+  # A mailbox is readable by its owner's team readers group (exec mailboxes by exec staff).
+  - { id: gmail-rafael,  system: GMAIL, kind: mailbox, owner: rafael,  name: "Rafael Costa — mailbox",  group: exec-staff,          web_url: https://mail.acme-demo.example/mail/u/rafael }
+  - { id: gmail-owen,    system: GMAIL, kind: mailbox, owner: owen,    name: "Owen Gallagher — mailbox", group: exec-staff,         web_url: https://mail.acme-demo.example/mail/u/owen }
+  - { id: gmail-zara,    system: GMAIL, kind: mailbox, owner: zara,    name: "Zara Ahmed — mailbox",    group: recruiting,          web_url: https://mail.acme-demo.example/mail/u/zara }
+  - { id: gmail-tomas,   system: GMAIL, kind: mailbox, owner: tomas,   name: "Tomás Rivera — mailbox",  group: people-readers,      web_url: https://mail.acme-demo.example/mail/u/tomas }
+  - { id: gmail-ingrid,  system: GMAIL, kind: mailbox, owner: ingrid,  name: "Ingrid Larsen — mailbox", group: finance-readers,     web_url: https://mail.acme-demo.example/mail/u/ingrid }
+  - { id: gmail-elena,   system: GMAIL, kind: mailbox, owner: elena,   name: "Elena Petrova — mailbox", group: marketing-readers,   web_url: https://mail.acme-demo.example/mail/u/elena }
+  - { id: gmail-nina,    system: GMAIL, kind: mailbox, owner: nina,    name: "Nina Park — mailbox",     group: marketing-readers,   web_url: https://mail.acme-demo.example/mail/u/nina }
+  - { id: gmail-mateo,   system: GMAIL, kind: mailbox, owner: mateo,   name: "Mateo García — mailbox",  group: marketing-readers,   web_url: https://mail.acme-demo.example/mail/u/mateo }
+  - { id: gmail-lena,    system: GMAIL, kind: mailbox, owner: lena,    name: "Lena Fischer — mailbox",  group: sales-readers,       web_url: https://mail.acme-demo.example/mail/u/lena }
+  - { id: gmail-omar,    system: GMAIL, kind: mailbox, owner: omar,    name: "Omar Haddad — mailbox",   group: sales-readers,       web_url: https://mail.acme-demo.example/mail/u/omar }
+  - { id: gmail-sofia,   system: GMAIL, kind: mailbox, owner: sofia,   name: "Sofia Rossi — mailbox",   group: sales-readers,       web_url: https://mail.acme-demo.example/mail/u/sofia }
+  - { id: gmail-daniel,  system: GMAIL, kind: mailbox, owner: daniel,  name: "Daniel Kim — mailbox",    group: sales-readers,       web_url: https://mail.acme-demo.example/mail/u/daniel }
+  - { id: gmail-jack,    system: GMAIL, kind: mailbox, owner: jack,    name: "Jack Thornton — mailbox", group: sales-readers,       web_url: https://mail.acme-demo.example/mail/u/jack }
+  - { id: gmail-bob,     system: GMAIL, kind: mailbox, owner: bob,     name: "Bob Okafor — mailbox",    group: support-readers,     web_url: https://mail.acme-demo.example/mail/u/bob }
+  - { id: gmail-sam,     system: GMAIL, kind: mailbox, owner: sam,     name: "Sam Reyes — mailbox",     group: support-readers,     web_url: https://mail.acme-demo.example/mail/u/sam }
+  - { id: gmail-chioma,  system: GMAIL, kind: mailbox, owner: chioma,  name: "Chioma Eze — mailbox",    group: support-readers,     web_url: https://mail.acme-demo.example/mail/u/chioma }
+  - { id: gmail-lucas,   system: GMAIL, kind: mailbox, owner: lucas,   name: "Lucas Moreau — mailbox",  group: support-readers,     web_url: https://mail.acme-demo.example/mail/u/lucas }
+  - { id: gmail-hannah,  system: GMAIL, kind: mailbox, owner: hannah,  name: "Hannah Schmidt — mailbox", group: support-readers,    web_url: https://mail.acme-demo.example/mail/u/hannah }
+  - { id: gmail-raj,     system: GMAIL, kind: mailbox, owner: raj,     name: "Raj Mehta — mailbox",     group: engineering-readers, web_url: https://mail.acme-demo.example/mail/u/raj }
+  - { id: gmail-marcus,  system: GMAIL, kind: mailbox, owner: marcus,  name: "Marcus Webb — mailbox",   group: engineering-readers, web_url: https://mail.acme-demo.example/mail/u/marcus }
+
+  # --- Salesforce accounts (one per CRM organisation) --------------------------
+  - { id: sf-acct-northwind, system: SALESFORCE, kind: account, organization: northwind, name: Northwind Traders,  group: sales-readers, web_url: https://acme-demo.lightning.force.example/lightning/r/Account/001NORTHWIND/view }
+  - { id: sf-acct-contoso,   system: SALESFORCE, kind: account, organization: contoso,   name: Contoso,            group: sales-readers, web_url: https://acme-demo.lightning.force.example/lightning/r/Account/001CONTOSO/view }
+  - { id: sf-acct-fabrikam,  system: SALESFORCE, kind: account, organization: fabrikam,  name: Fabrikam,           group: sales-readers, web_url: https://acme-demo.lightning.force.example/lightning/r/Account/001FABRIKAM/view }
+  - { id: sf-acct-globex,    system: SALESFORCE, kind: account, organization: globex,    name: Globex Corporation, group: sales-readers, web_url: https://acme-demo.lightning.force.example/lightning/r/Account/001GLOBEX/view }
+  - { id: sf-acct-bluebird,  system: SALESFORCE, kind: account, organization: bluebird,  name: Bluebird Health,    group: sales-readers, web_url: https://acme-demo.lightning.force.example/lightning/r/Account/001BLUEBIRD/view }
+
+  # --- Knowledge-base collections ----------------------------------------------
+  - id: kb-help
+    system: KB
+    kind: collection
+    name: Help centre articles
+    group: all-staff
+    web_url: https://kb.acme-demo.example/collections/help-centre
+  - id: kb-sales-answers
+    system: KB
+    kind: collection
+    name: Security and RFP answer library
+    group: sales-readers
+    web_url: https://kb.acme-demo.example/collections/rfp-answers
+
+  # --- Jira projects -----------------------------------------------------------
+  - id: jira-pay
+    system: JIRA
+    kind: project
+    name: PAY — Payments
+    group: engineering-readers
+    web_url: https://jira.acme-demo.example/browse/PAY
+  - id: jira-plat
+    system: JIRA
+    kind: project
+    name: PLAT — Platform
+    group: engineering-readers
+    web_url: https://jira.acme-demo.example/browse/PLAT
+  - id: jira-mig
+    system: JIRA
+    kind: project
+    name: KEEL — Project Keel (Kubernetes migration)
+    group: migration-team
+    web_url: https://jira.acme-demo.example/browse/KEEL
+  - id: jira-flow
+    system: JIRA
+    kind: project
+    name: FLOW — Acme Flow (formerly Acme Sync)
+    group: engineering-readers
+    web_url: https://jira.acme-demo.example/browse/FLOW
+  - id: jira-sec
+    system: JIRA
+    kind: project
+    name: SEC — Security incidents (restricted)
+    group: security-incident
+    web_url: https://jira.acme-demo.example/browse/SEC
+
+  # --- GitHub repositories -----------------------------------------------------
+  - id: gh-platform-infra
+    system: GITHUB
+    kind: repository
+    name: acme/platform-infra
+    group: migration-team
+    web_url: https://github.acme-demo.example/platform-infra
+  - id: gh-svc-invoicing
+    system: GITHUB
+    kind: repository
+    name: acme/svc-invoicing
+    group: engineering-readers
+    web_url: https://github.acme-demo.example/svc-invoicing
+  - id: gh-flow-engine
+    system: GITHUB
+    kind: repository
+    name: acme/flow-engine
+    group: engineering-readers
+    web_url: https://github.acme-demo.example/flow-engine
+
+  # --- Slack channels ----------------------------------------------------------
+  - { id: slack-general,       system: SLACK, kind: channel, name: "#general",       group: all-staff,           web_url: https://slack.acme-demo.example/archives/C01GENERAL }
+  - { id: slack-platform,      system: SLACK, kind: channel, name: "#platform",      group: engineering-readers, web_url: https://slack.acme-demo.example/archives/C01PLATFORM }
+  - { id: slack-keel,          system: SLACK, kind: channel, name: "#proj-keel",     group: migration-team,      web_url: https://slack.acme-demo.example/archives/C01KEEL }
+  - { id: slack-acct-globex,   system: SLACK, kind: channel, name: "#acct-globex",   group: sales-readers,       web_url: https://slack.acme-demo.example/archives/C01ACCTGLOBEX }
+  - { id: slack-exec-staff,    system: SLACK, kind: channel, name: "#exec-staff",    group: exec-staff,          web_url: https://slack.acme-demo.example/archives/C01EXEC }
+  - { id: slack-recruiting,    system: SLACK, kind: channel, name: "#recruiting",    group: recruiting,          web_url: https://slack.acme-demo.example/archives/C01RECRUIT }
+  - { id: slack-sec-incident,  system: SLACK, kind: channel, name: "#sec-incident",  group: security-incident,   web_url: https://slack.acme-demo.example/archives/C01SECINC }
+
+  # --- Drive folders -----------------------------------------------------------
+  - { id: drive-migration,   system: DRIVE, kind: folder, name: Project Keel,                  group: migration-team,    web_url: https://drive.acme-demo.example/drive/folders/acme-keel }
+  - { id: drive-exec,        system: DRIVE, kind: folder, name: Exec staff (restricted),       group: exec-staff,        web_url: https://drive.acme-demo.example/drive/folders/acme-exec }
+  - { id: drive-recruiting,  system: DRIVE, kind: folder, name: Recruiting (restricted),       group: recruiting,        web_url: https://drive.acme-demo.example/drive/folders/acme-recruiting }
+  - { id: drive-hr-casework, system: DRIVE, kind: folder, name: People casework (restricted),  group: hr-casework,       web_url: https://drive.acme-demo.example/drive/folders/acme-hr-casework }
+  - { id: drive-security,    system: DRIVE, kind: folder, name: Security incidents (restricted), group: security-incident, web_url: https://drive.acme-demo.example/drive/folders/acme-security }

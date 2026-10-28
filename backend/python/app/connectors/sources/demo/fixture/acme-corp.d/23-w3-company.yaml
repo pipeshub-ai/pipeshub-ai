@@ -1,0 +1,2742 @@
+# W3 — the company side of Acme: exec staff and the board (S10), hiring and People
+# (S11), Sync becoming Flow and the Globex case study (S12), finance and company
+# policies (S13). Story bible: kg-eval/BIBLE.md. People roles live in the structured
+# fields; bodies show people only the way the source system would.
+
+threads:
+  # --- S10 exec staff ---------------------------------------------------------
+  - id: slack-exec-staff-0409
+    container: slack-exec-staff
+    title: "#exec-staff thread: Flow sync delays and the Northwind renewal (2026-04-09)"
+  - id: slack-exec-staff-0414
+    container: slack-exec-staff
+    title: "#exec-staff thread: final review of the Q1 board deck (2026-04-14)"
+  - id: slack-exec-staff-0427
+    container: slack-exec-staff
+    title: "#exec-staff thread: decision on customer success (2026-04-27)"
+  # --- S11 recruiting ---------------------------------------------------------
+  - id: slack-recruiting-0406
+    container: slack-recruiting
+    title: "#recruiting thread: REQ-15 Support engineer, EMEA is open (2026-04-06)"
+  - id: slack-recruiting-0417
+    container: slack-recruiting
+    title: "#recruiting thread: REQ-14 phone screen result (2026-04-17)"
+  - id: slack-recruiting-0422
+    container: slack-recruiting
+    title: "#recruiting thread: REQ-14 onsite debrief (2026-04-22)"
+  - id: slack-recruiting-0428
+    container: slack-recruiting
+    title: "#recruiting thread: REQ-14 offer approval (2026-04-28)"
+  # --- S12 rename and marketing ----------------------------------------------
+  - id: slack-launch-0211
+    container: slack-launch
+    title: "#launch thread: rolling out the Acme Flow name (2026-02-11)"
+  - id: slack-launch-0302
+    container: slack-launch
+    title: "#launch thread: Acme Flow rename day (2026-03-02)"
+  - id: slack-launch-0424
+    container: slack-launch
+    title: "#launch thread: Globex case study draft (2026-04-24)"
+
+records:
+
+  # ===========================================================================
+  # S10 — Exec staff and the Q1 board update (restricted: exec-staff)
+  # ===========================================================================
+
+  - id: drive-exec-board-q1
+    container: drive-exec
+    type: FILE
+    title: "Q1 2026 board update"
+    owners: [owen]
+    last_modified_by: rafael
+    created: 2026-04-06T09:00:00Z
+    updated: 2026-04-14T20:40:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-board-q1-2026
+    mentions_orgs: [northwind, globex]
+    body: |
+      Board meeting: Thursday 16 April 2026. Quarter ended 31 March 2026.
+
+      ## Headline numbers
+      - Revenue: $3.48M for Q1 (Q4 2025: $3.21M).
+      - ARR: $14.2M at 31 March, up from $13.1M at 31 December 2025.
+      - Net revenue retention: 112% (trailing twelve months).
+      - Gross churn: 3.1% (trailing twelve months).
+      - Cash runway: 31 months at the Q1 net burn.
+
+      ## Risks
+      1. Northwind Traders renewal (30 June; Omar). Early-April export timeouts broke
+         their monthly reporting and they told us they were looking at alternatives.
+         Fix shipped 14 April; joint check of their first export booked.
+      2. Acme Flow reliability. INC-2040 (8–10 April): syncs ran up to six hours behind
+         for three customers after the engine moved to Kubernetes. Memory limit raised
+         and a lag alert added; postmortem actions tracked by Platform.
+
+      ## Upside
+      Globex Corporation expansion from 180 to 750 seats, $212,000 ARR, in negotiation
+      (Sofia). Target close end of May.
+
+      ## Team
+      Headcount reaches 30 on 20 April when the Payments hire starts. Plan: 36 by the
+      end of Q3 through six requisitions, four to open in Q2 and two in Q3.
+
+      ## Asks of the board
+      Approve the hiring plan; views on how far we go on the Northwind renewal.
+
+  - id: drive-exec-board-q4-2025
+    container: drive-exec
+    type: FILE
+    title: "Q4 2025 board update"
+    owners: [owen]
+    last_modified_by: owen
+    created: 2026-01-12T10:00:00Z
+    updated: 2026-01-20T16:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-board-q4-2025
+    mentions_orgs: [globex]
+    body: |
+      Board meeting: Thursday 22 January 2026. Quarter ended 31 December 2025.
+
+      ## Headline numbers
+      - Revenue: $3.21M for Q4.
+      - ARR: $13.1M at 31 December, up from $12.3M at 30 September.
+      - Net revenue retention: 109% (trailing twelve months).
+      - Gross churn: 3.6% (trailing twelve months).
+      - Cash runway: 33 months.
+
+      ## Highlights
+      - Globex Corporation signed on 3 November: Enterprise, 180 seats, with the Acme
+        Sync add-on under discussion.
+      - Billing worker and export services stable through the holiday peak.
+
+      ## Plan for Q1
+      Close the Q1 renewals, start a contract engineer on the Kubernetes migration, and
+      hire a Payments engineer.
+
+      Next board meeting: Thursday 16 April 2026.
+
+  - id: drive-exec-board-q1-appendix
+    container: drive-exec
+    type: FILE
+    title: "Q1 2026 board update — metrics appendix"
+    owners: [ingrid]
+    last_modified_by: owen
+    created: 2026-04-08T11:00:00Z
+    updated: 2026-04-13T15:10:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-board-q1-appendix
+    body: |
+      ## Revenue by month (Q1 2026)
+      | Month | Revenue |
+      |---|---|
+      | January | $1.12M |
+      | February | $1.15M |
+      | March | $1.21M |
+
+      ## ARR bridge, 31 December → 31 March
+      Opening $13.1M; new business +$0.62M; expansion +$0.71M; contraction −$0.12M;
+      churn −$0.11M; closing $14.2M.
+
+      ## Cash
+      Cash and deposits at 31 March: $28.9M. Average monthly net burn in Q1: $0.93M.
+
+      ## Notes
+      Contractor costs (Project Keel) are in operating expense, not headcount. The
+      Contoso invoice reissue in April falls in Q2.
+
+  - id: drive-exec-board-minutes-0416
+    container: drive-exec
+    type: FILE
+    title: "Board meeting minutes — 16 April 2026"
+    owners: [rafael]
+    last_modified_by: owen
+    created: 2026-04-16T17:30:00Z
+    updated: 2026-04-17T10:05:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-board-minutes-2026-04-16
+    mentions_orgs: [northwind, tessera]
+    body: |
+      Present: the chair, two independent directors, Rafael Costa (CEO). Attending:
+      Owen Gallagher (COO).
+
+      1. Q1 results. Accepted as presented in the Q1 board update.
+      2. Hiring plan. Approved: six requisitions, headcount 30 → 36 by the end of Q3.
+      3. Acme Flow reliability. The board asked for a one-page reliability report every
+         month from May: sync lag, incidents and customer impact, progress on actions.
+      4. Northwind Traders renewal. Management to keep the concession inside the deal
+         desk's normal limits; update at the next meeting.
+      5. Any other business. A director asked whether the trademark matter with Tessera
+         Analytics is closed. Rafael to confirm with Elena.
+
+      Next meeting: July, date to be confirmed by the chair.
+
+  - id: drive-exec-cs-team-proposal
+    container: drive-exec
+    type: FILE
+    title: "Proposal: a Customer Success team"
+    owners: [owen]
+    last_modified_by: owen
+    created: 2026-04-21T08:30:00Z
+    updated: 2026-04-24T18:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-cs-team-proposal
+    mentions_orgs: [northwind, contoso, globex, bluebird]
+    body: |
+      For decision at exec staff on Monday 27 April.
+
+      ## Proposal
+      Set up a Customer Success team from 1 June 2026, led by Hannah Schmidt, reporting
+      to Owen. Support stays with Bob as it is today.
+
+      ## Why now
+      Northwind Traders and Contoso both renew this year, Globex Corporation is
+      expanding to 750 seats and Bluebird Health is mid-pilot. Adoption and renewal
+      health sit with whoever has time; April showed what that costs.
+
+      ## Scope
+      Onboarding and adoption reviews for Enterprise accounts; renewal health checks
+      90 days out; the voice of the customer in roadmap reviews.
+
+      ## People
+      Hannah moves from technical account management. One new hire: REQ-17, customer
+      success manager, posted once this is agreed. The posting should not name the
+      team lead until we have told Support.
+
+      ## Cost
+      One requisition already inside the six the board approved; no extra budget.
+
+  - id: drive-exec-hiring-plan-2026
+    container: drive-exec
+    type: FILE
+    title: "Hiring plan 2026 — Q2 and Q3 requisitions"
+    owners: [owen]
+    last_modified_by: rafael
+    created: 2026-03-24T09:00:00Z
+    updated: 2026-04-17T08:45:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-hiring-plan-2026
+    body: |
+      Approved by the board on 16 April 2026. Headcount 30 → 36 by 30 September.
+
+      | Req | Role | Team | Hiring manager | Opens |
+      |---|---|---|---|---|
+      | REQ-14 | Senior SRE (Kubernetes) | Platform | Raj Mehta | 9 March |
+      | REQ-15 | Support engineer, EMEA | Support | Bob Okafor | 6 April |
+      | REQ-16 | Solutions engineer | Sales | Lena Fischer | 23 March |
+      | REQ-17 | Customer success manager | COO organisation | Owen Gallagher | end of April |
+      | REQ-18 | Engineer, Payments | Payments | Marcus Webb | July |
+      | REQ-19 | Product designer | Product and marketing | Elena Petrova | August |
+
+      REQ-12 (Payments engineer) was filled in March and is not one of the six.
+      Budget per role is in FIN-46. Recruiting runs every loop to the wiki rubric.
+
+  - id: cf-exec-staff-notes-0330
+    container: cf-exec
+    type: PAGE
+    title: "Exec staff notes — 30 March 2026"
+    author: owen
+    last_modified_by: owen
+    created: 2026-03-30T09:00:00Z
+    updated: 2026-03-30T12:15:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3301
+    mentions_orgs: [bluebird, globex]
+    body: |
+      ## Q1 close
+      Ingrid closes the books by 7 April. Owen drafts the board update by 6 April;
+      Ingrid owns the metrics appendix.
+
+      ## Customers
+      - Bluebird Health pilot: 40 users since 16 March, good early usage.
+      - Globex Corporation expansion: in negotiation, 750 seats proposed.
+
+      ## People
+      REQ-16 (Solutions engineer) opened 23 March. Leo starts in Payments on 20 April.
+
+      ## Actions
+      Elena: one product slide for the board. Rafael: review the risk section.
+
+  - id: cf-exec-staff-notes-0406
+    container: cf-exec
+    type: PAGE
+    title: "Exec staff notes — 6 April 2026"
+    author: owen
+    last_modified_by: rafael
+    created: 2026-04-06T09:00:00Z
+    updated: 2026-04-07T08:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3302
+    mentions_orgs: [northwind]
+    body: |
+      ## Board update
+      First draft is in the exec folder. Numbers to lock with finance by Monday 13th.
+
+      ## Customers
+      Northwind Traders: full-workspace exports have been timing out since 2 April and
+      their reporting team is frustrated. Support has a workaround; engineering is
+      moving large exports to a background queue. Omar keeps Lena posted daily.
+
+      ## People
+      REQ-15 (Support engineer, EMEA) opens today.
+
+      ## Actions
+      Rafael: ask Omar and Lena for the renewal picture before the deck locks.
+
+  - id: cf-exec-staff-notes-0413
+    container: cf-exec
+    type: PAGE
+    title: "Exec staff notes — 13 April 2026"
+    author: owen
+    last_modified_by: elena
+    created: 2026-04-13T09:00:00Z
+    updated: 2026-04-14T10:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3303
+    mentions_orgs: [bluebird, contoso, globex, northwind, tessera]
+    body: |
+      ## Acme Flow delays (INC-2040)
+      8–10 April: syncs fell hours behind for Bluebird Health, Contoso and Globex
+      Corporation after the engine moved to Kubernetes. Fixed 10 April. Bluebird was
+      first to report and is mid-pilot, so Sofia owes Kwame a recovery plan. Status-page
+      wording agreed; no service credits unless a customer asks.
+
+      ## Northwind Traders
+      Told Omar on 9 April they are evaluating alternatives and named Tessera Analytics.
+      The export fix ships 14 April; joint check of their first export after that.
+
+      ## Board deck
+      Locked tonight. Product slide to say Acme Flow throughout.
+
+  - id: cf-exec-staff-notes-0420
+    container: cf-exec
+    type: PAGE
+    title: "Exec staff notes — 20 April 2026"
+    author: owen
+    last_modified_by: rafael
+    created: 2026-04-20T09:00:00Z
+    updated: 2026-04-21T07:50:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3304
+    mentions_orgs: [northwind, contoso, globus]
+    body: |
+      ## Board debrief
+      Hiring plan approved. The board wants a monthly Acme Flow reliability report from
+      May; Rafael has asked Raj and Marcus.
+
+      ## Customers
+      - Northwind Traders: back on track after the 16 April call; renewal proposal next.
+      - Contoso: April invoice charged VAT on an exempt line. Finance reissues it this
+        week; the billing rule fix is with Payments.
+
+      ## Vendors
+      Globus Partners' March invoice is paid. Raj wants to keep the contract engineer
+      past June; Ingrid to check the SOW headroom first.
+
+      ## Next week
+      Owen brings the customer success proposal for a decision.
+
+  - id: cf-exec-staff-notes-0427
+    container: cf-exec
+    type: PAGE
+    title: "Exec staff notes — 27 April 2026"
+    author: owen
+    last_modified_by: owen
+    created: 2026-04-27T09:00:00Z
+    updated: 2026-04-27T13:40:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3305
+    mentions_orgs: [globex, fabrikam]
+    body: |
+      ## Decision: Customer Success team
+      Agreed: a Customer Success team from 1 June 2026, led by Hannah Schmidt and
+      reporting to Owen. Rafael tells Hannah on 28 April; Bob tells Support before any
+      company announcement, planned for mid-May. REQ-17 (customer success manager) posts
+      on Wednesday 29 April without naming the lead.
+
+      ## Customers
+      - Globex Corporation asked for a larger discount on the expansion; the deal desk
+        is handling it this week.
+      - Fabrikam: +80 seats signed 22 April, live from 1 May.
+
+      ## Actions
+      Owen: brief Tomás on the reporting line change. Elena: first account list for the
+      new team, starting with Globex.
+
+  - id: cf-exec-okrs-q2
+    container: cf-exec
+    type: PAGE
+    title: "Company OKRs — Q2 2026"
+    author: rafael
+    last_modified_by: elena
+    created: 2026-04-02T08:00:00Z
+    updated: 2026-04-15T16:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/EXEC/pages/3290
+    mentions_orgs: [globex, northwind, bluebird]
+    body: |
+      ## O1 Make Acme Flow boringly reliable
+      - KR1 p95 sync lag under 10 minutes every week of May and June.
+      - KR2 No SEV-2 incident on Acme Flow after 1 May.
+      - KR3 Monthly reliability report to the board from May.
+
+      ## O2 Grow the enterprise base
+      - KR1 Close the Globex Corporation expansion.
+      - KR2 Renew Northwind Traders by 30 June.
+      - KR3 Move Bluebird Health from pilot to contract.
+
+      ## O3 Build the team
+      - KR1 Fill REQ-14 to REQ-17 by the end of Q3.
+      - KR2 Everyone completes security awareness training on time.
+
+  - id: slack-exec-staff-0409-1
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Rafael Costa, 2026-04-09 08:15"
+    author: rafael
+    created: 2026-04-09T08:15:00Z
+    thread: slack-exec-staff-0409
+    mentions_orgs: [bluebird, contoso, globex]
+    body: |
+      Three customers hit by the Flow sync delays yesterday: Bluebird Health, Contoso
+      and Globex. Raj says the memory fix goes in tomorrow. Do we owe them anything
+      beyond the all-clear?
+
+  - id: slack-exec-staff-0409-2
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Owen Gallagher, 2026-04-09 08:31"
+    author: owen
+    created: 2026-04-09T08:31:00Z
+    thread: slack-exec-staff-0409
+    mentions_orgs: [bluebird]
+    body: |
+      Hannah and Lucas have the customer side. No credits unless someone asks.
+      Bluebird is mid-pilot, so Sofia should call Kwame herself today.
+
+  - id: slack-exec-staff-0409-3
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Elena Petrova, 2026-04-09 08:40"
+    author: elena
+    created: 2026-04-09T08:40:00Z
+    thread: slack-exec-staff-0409
+    mentions_orgs: [northwind]
+    body: |
+      I'll draft the status-page wording. Bigger revenue risk this week is Northwind
+      though: exports still failing and the renewal is in June.
+
+  - id: slack-exec-staff-0414-1
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Owen Gallagher, 2026-04-14 16:05"
+    author: owen
+    created: 2026-04-14T16:05:00Z
+    thread: slack-exec-staff-0414
+    body: |
+      Board deck v3 is in the exec folder. Numbers locked with Ingrid this morning:
+      Q1 revenue $3.48M, ARR $14.2M.
+
+  - id: slack-exec-staff-0414-2
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Rafael Costa, 2026-04-14 16:40"
+    author: rafael
+    created: 2026-04-14T16:40:00Z
+    thread: slack-exec-staff-0414
+    body: |
+      Tightened the risks section and added the INC-2040 timeline. I'll send it to the
+      board tonight.
+
+  - id: slack-exec-staff-0414-3
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Elena Petrova, 2026-04-14 16:52"
+    author: elena
+    created: 2026-04-14T16:52:00Z
+    thread: slack-exec-staff-0414
+    body: |
+      Product slide is fine. One nit: there is still a "Sync" on slide 9, it should say
+      Acme Flow everywhere.
+
+  - id: slack-exec-staff-0427-1
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Owen Gallagher, 2026-04-27 11:02"
+    author: owen
+    created: 2026-04-27T11:02:00Z
+    thread: slack-exec-staff-0427
+    body: |
+      Recorded in the notes: Customer Success team from 1 June, led by Hannah Schmidt,
+      reporting to me. REQ-17 goes up on Wednesday.
+
+  - id: slack-exec-staff-0427-2
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Rafael Costa, 2026-04-27 11:10"
+    author: rafael
+    created: 2026-04-27T11:10:00Z
+    thread: slack-exec-staff-0427
+    body: |
+      Agreed. I'll tell Hannah tomorrow morning. Nothing in #general until Bob has told
+      the support team.
+
+  - id: slack-exec-staff-0427-3
+    container: slack-exec-staff
+    type: MESSAGE
+    title: "#exec-staff — Elena Petrova, 2026-04-27 11:14"
+    author: elena
+    created: 2026-04-27T11:14:00Z
+    thread: slack-exec-staff-0427
+    mentions_orgs: [globex]
+    body: |
+      Fine by me. Globex should be the first account run the new way.
+
+  - id: mail-exec-0409
+    container: gmail-rafael
+    type: MAIL
+    title: "Northwind — where are we?"
+    from: rafael
+    to: [omar, lena]
+    cc: [owen]
+    created: 2026-04-09T19:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/rafael/#inbox/exec-0409
+    mentions_orgs: [northwind]
+    body: |
+      Hi both,
+
+      I hear Northwind's exports have been failing for a week and their head of
+      operations is unhappy. Before the board deck locks on Monday I need three things:
+      the renewal date and seats at stake, whether they are talking to anyone else, and
+      what we are prepared to offer. Short answers are fine.
+
+      Rafael
+
+  - id: mail-exec-0417
+    container: gmail-rafael
+    type: MAIL
+    title: "Board ask: a monthly Acme Flow reliability report"
+    from: rafael
+    to: [raj, marcus]
+    cc: [owen]
+    created: 2026-04-17T09:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/rafael/#inbox/exec-0417
+    body: |
+      The board asked yesterday for a one-page Acme Flow reliability report every month,
+      starting with May's numbers in the first week of June.
+
+      What it should show: p95 and worst sync lag per week, incidents with customer
+      impact, and progress on the INC-2040 actions. Please own it together and cover
+      the payments services as well, so it reads as one platform.
+
+      Rafael
+
+  - id: mail-board-0414
+    container: gmail-rafael
+    type: MAIL
+    title: "Board deck — final for Thursday"
+    from: rafael
+    to: [owen, elena]
+    created: 2026-04-14T21:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/rafael/#inbox/board-0414
+    body: |
+      Sent the Q1 update to the board tonight. Last changes: risks re-ordered so
+      reliability sits next to the renewal, the INC-2040 timeline added, and the cash
+      figures checked once more against the appendix.
+
+      Pre-read call with the chair on Wednesday at 17:00.
+
+  - id: mail-board-0417
+    container: gmail-rafael
+    type: MAIL
+    title: "Board question about Tessera"
+    from: rafael
+    to: [elena]
+    created: 2026-04-17T09:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/rafael/#inbox/board-0417
+    mentions_orgs: [tessera]
+    body: |
+      Elena, one director asked whether Tessera Analytics' lawyers have been back in
+      touch since the rename, and whether the old /v1/sync API path could reopen it.
+      I said the matter was closed. Can you confirm in writing for the minutes?
+
+  - id: mail-exec-0428
+    container: gmail-rafael
+    type: MAIL
+    title: "Customer Success team"
+    from: rafael
+    to: [hannah]
+    cc: [owen]
+    created: 2026-04-28T08:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/rafael/#inbox/exec-0428
+    body: |
+      Hannah,
+
+      Following yesterday's exec staff: we'd like you to lead a new Customer Success
+      team from 1 June, reporting to Owen. Owen will walk you through the scope this
+      week. Please keep it to yourself until Bob has spoken to Support; we plan to
+      announce in mid-May.
+
+      Rafael
+
+  - id: mail-board-0403
+    container: gmail-owen
+    type: MAIL
+    title: "Q1 numbers for the board deck"
+    from: owen
+    to: [ingrid]
+    created: 2026-04-03T10:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/owen/#inbox/board-0403
+    body: |
+      Ingrid, can you send me the Q1 close numbers by Wednesday: revenue by month, the
+      ARR bridge, cash and average burn. I'll write the deck; the metrics appendix is
+      yours, so please create it in the exec folder and I'll link to it.
+
+  - id: mail-exec-0422
+    container: gmail-owen
+    type: MAIL
+    title: "Customer success proposal — draft for Monday"
+    from: owen
+    to: [rafael]
+    cc: [elena]
+    created: 2026-04-22T17:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/owen/#inbox/exec-0422
+    body: |
+      Draft is in the exec folder. Short version: a dedicated team from 1 June with
+      Hannah leading, one new hire, no extra budget beyond the six requisitions. I'd
+      like a decision on Monday so the posting can go up on Wednesday.
+
+  - id: mail-exec-0429
+    container: gmail-owen
+    type: MAIL
+    title: "REQ-17 — wording for the posting"
+    from: owen
+    to: [zara]
+    cc: [tomas]
+    created: 2026-04-29T08:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/owen/#inbox/exec-0429
+    body: |
+      Zara, please post REQ-17 today. I'm the hiring manager for now. Describe it as
+      reporting into the COO organisation and leave out who leads the team; we announce
+      that in May.
+
+  # ===========================================================================
+  # S11 — Hiring and recruiting (restricted: recruiting; hr-casework)
+  # ===========================================================================
+
+  - id: drive-rec-req-12
+    container: drive-recruiting
+    type: FILE
+    title: "REQ-12 — Engineer, Payments"
+    owners: [zara]
+    last_modified_by: marcus
+    created: 2026-01-19T10:00:00Z
+    updated: 2026-03-27T16:20:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req-12
+    body: |
+      Status: **Filled.** Leo Martins accepted on 27 March 2026; starts Monday 20 April.
+
+      ## Role
+      Engineer on the Payments team (billing worker, invoicing, dunning). Python, a
+      payments or billing background, comfortable on call from month two.
+
+      ## Hiring manager and panel
+      Hiring manager Marcus Webb, who joins the debrief but does not score. Panel:
+      Kenji, Alice and Priya from Payments, one round each (coding, collaboration,
+      payments domain).
+
+      ## Funnel
+      64 applicants, 9 recruiter screens, 3 onsites, 1 offer, 1 acceptance.
+
+      ## Onsite, Leo Martins, 18 March
+      Strong hire from all three interviewers. Offer approved 24 March, accepted
+      27 March. Onboarding buddy: Kenji.
+
+  - id: drive-rec-req12-fb-kenji
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-12 — 2026-03-18 — coding"
+    owners: [kenji]
+    last_modified_by: kenji
+    created: 2026-03-18T15:30:00Z
+    updated: 2026-03-18T16:05:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req12-fb-coding
+    body: |
+      Candidate: Leo Martins. Round: coding (60 min, invoice line rounding kata).
+
+      Problem solving 3 · Craft 4 · Collaboration 3 · Ownership 3 → **strong hire**.
+
+      Wrote tests before touching the rounding code and spotted the half-even case
+      without a hint. Slightly quiet when stuck; asked good questions once prompted.
+
+  - id: drive-rec-req12-fb-alice
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-12 — 2026-03-18 — collaboration"
+    owners: [alice]
+    last_modified_by: alice
+    created: 2026-03-18T16:40:00Z
+    updated: 2026-03-18T17:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req12-fb-collaboration
+    body: |
+      Candidate: Leo Martins. Round: collaboration (45 min, code review of a real PR).
+
+      Problem solving 3 · Craft 3 · Collaboration 4 · Ownership 3 → **strong hire**.
+
+      Review comments were specific and kind; pushed back once on a naming choice with
+      a good reason. Would be a good reviewer on svc-export within a quarter.
+
+  - id: drive-rec-req12-fb-priya
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-12 — 2026-03-18 — payments domain"
+    owners: [priya]
+    last_modified_by: priya
+    created: 2026-03-18T17:20:00Z
+    updated: 2026-03-19T08:45:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req12-fb-payments
+    body: |
+      Candidate: Leo Martins. Round: payments domain (45 min).
+
+      Problem solving 4 · Craft 3 · Collaboration 3 · Ownership 3 → **strong hire**.
+
+      Asked him how he'd retry a failed card charge across a dozen workers. He got to
+      backoff with jitter on his own and asked about idempotency keys before I did.
+
+  - id: drive-rec-req-14
+    container: drive-recruiting
+    type: FILE
+    title: "REQ-14 — Senior SRE (Kubernetes)"
+    owners: [zara]
+    last_modified_by: raj
+    created: 2026-03-09T09:30:00Z
+    updated: 2026-04-28T15:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req-14
+    body: |
+      Opened 9 March 2026. Team: Platform. Hiring manager: Raj Mehta.
+      Panel: Priya Nair (Kubernetes operations), Yusuf Demir (networking and ingress),
+      Dana Okafor (systems design); Raj takes the hiring-manager round.
+
+      ## Must have
+      Production Kubernetes at scale, Helm, ingress and cert-manager, a real on-call
+      history. Nice to have: migrating stateful services off VMs.
+
+      ## Candidates
+      - **Arjun Patel.** Recruiter screen 2 April, phone screen 8 April, onsite
+        22 April: strong hire from all four interviewers. Offer approved 28 April at
+        $172,000 base. Offer letter goes out 29 April; start date to be agreed.
+      - **Mia Johansson.** Phone screen 17 April: no hire. Strong Terraform, but no
+        Helm in production and vague on certificate rotation.
+      - Three more in recruiter screening.
+
+  - id: drive-rec-req14-fb-priya-nair
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-14 — 2026-04-22 — Kubernetes operations"
+    owners: [priya-nair]
+    last_modified_by: priya-nair
+    created: 2026-04-22T13:10:00Z
+    updated: 2026-04-22T13:55:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req14-fb-k8s
+    body: |
+      Candidate: Arjun Patel. Round: Kubernetes operations (60 min).
+
+      Problem solving 4 · Craft 4 · Collaboration 3 · Ownership 4 → **strong hire**.
+
+      Walked through a node-pool upgrade with PodDisruptionBudgets and surge settings
+      without notes. Debugged my broken readiness probe in under ten minutes. Has moved
+      a Postgres-backed service onto StatefulSets and can explain what went wrong.
+
+  - id: drive-rec-req14-fb-yusuf
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-14 — 2026-04-22 — networking and ingress"
+    owners: [yusuf]
+    last_modified_by: yusuf
+    created: 2026-04-22T14:20:00Z
+    updated: 2026-04-22T14:40:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req14-fb-networking
+    body: |
+      Candidate: Arjun Patel. Round: networking and ingress (45 min).
+
+      Problem solving 3 · Craft 4 · Collaboration 3 · Ownership 3 → **strong hire**.
+
+      Solid on ingress controllers and NetworkPolicy egress rules. Knew the
+      ACME HTTP-01 vs DNS-01 trade-off in cert-manager and when a staging issuer bites.
+
+  - id: drive-rec-req14-fb-dana
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-14 — 2026-04-22 — systems design"
+    owners: [dana]
+    last_modified_by: dana
+    created: 2026-04-22T15:30:00Z
+    updated: 2026-04-22T16:10:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req14-fb-design
+    body: |
+      Candidate: Arjun Patel. Round: systems design (60 min, multi-tenant queue).
+
+      Problem solving 4 · Craft 3 · Collaboration 4 · Ownership 3 → **strong hire**.
+
+      Started from failure modes, not boxes. Sized the queue from the customer lag
+      budget. Took a hint about noisy neighbours well and changed his design.
+
+  - id: drive-rec-req14-fb-raj
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-14 — 2026-04-22 — hiring manager"
+    owners: [raj]
+    last_modified_by: raj
+    created: 2026-04-22T16:45:00Z
+    updated: 2026-04-22T17:05:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req14-fb-hm
+    body: |
+      Candidate: Arjun Patel. Round: hiring manager (45 min).
+
+      Problem solving 3 · Craft 3 · Collaboration 4 · Ownership 4 → **strong hire**.
+
+      Clear about why he wants a smaller company. Ran incident command at his last job
+      and writes postmortems people read. Wants to start after mid-May.
+
+  - id: drive-rec-req14-screen-0417
+    container: drive-recruiting
+    type: FILE
+    title: "Phone screen — REQ-14 — 2026-04-17"
+    owners: [zara]
+    last_modified_by: zara
+    created: 2026-04-17T11:00:00Z
+    updated: 2026-04-17T11:25:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req14-screen-0417
+    body: |
+      Candidate: Mia Johansson. 45-minute technical phone screen.
+
+      Strong Terraform and cloud networking. Has not run Helm in production; answered
+      the certificate rotation question in general terms only. Outcome: **no hire** for
+      this role. Worth keeping warm for a future infrastructure role.
+
+  - id: drive-rec-req-15
+    container: drive-recruiting
+    type: FILE
+    title: "REQ-15 — Support engineer, EMEA"
+    owners: [zara]
+    last_modified_by: bob
+    created: 2026-04-06T09:00:00Z
+    updated: 2026-04-28T17:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req-15
+    body: |
+      Opened 6 April 2026. Team: Support. Hiring manager: Bob Okafor. Remote within the
+      EU, working Central European hours.
+
+      ## Must have
+      Fluent English plus German or French. Two years in B2B SaaS support. Comfortable
+      reading a SAML trace and an API error log.
+
+      ## Interview loop
+      1. Recruiter screen, 30 minutes (Zara).
+      2. Troubleshooting exercise, 45 minutes: a broken SSO setup and an export that
+         never arrives (Lucas Moreau).
+      3. Customer role-play, 45 minutes: an unhappy admin after an outage (Chioma Eze).
+      4. Hiring manager, 30 minutes (Bob).
+      Every interviewer files a scorecard against the wiki rubric within 24 hours.
+
+      ## Candidates
+      - Elif Kaya: onsite 28 April.
+      - Two more at recruiter screen.
+
+  - id: drive-rec-req15-fb-chioma
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-15 — 2026-04-28 — customer role-play"
+    owners: [chioma]
+    last_modified_by: chioma
+    created: 2026-04-28T14:15:00Z
+    updated: 2026-04-28T14:50:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req15-fb-roleplay
+    body: |
+      Candidate: Elif Kaya. Round: customer role-play (45 min).
+
+      Problem solving 3 · Craft 3 · Collaboration 4 · Ownership 3 → **strong hire**.
+
+      Stayed calm with an angry admin, didn't over-promise a fix date, and wrote a clear
+      follow-up mail in the last ten minutes. Switched to German for a minute when asked.
+
+  - id: drive-rec-req15-fb-bob
+    container: drive-recruiting
+    type: FILE
+    title: "Onsite feedback — REQ-15 — 2026-04-28 — hiring manager"
+    owners: [bob]
+    last_modified_by: bob
+    created: 2026-04-29T09:10:00Z
+    updated: 2026-04-29T09:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req15-fb-hm
+    body: |
+      Candidate: Elif Kaya. Round: hiring manager (30 min).
+
+      Problem solving 3 · Craft 3 · Collaboration 3 · Ownership 4 → **hire**.
+
+      Good instincts on escalation. Wants a path into technical account management in a
+      year, which we can offer. Waiting on the troubleshooting round before deciding.
+
+  - id: drive-rec-req-16
+    container: drive-recruiting
+    type: FILE
+    title: "REQ-16 — Solutions engineer"
+    owners: [zara]
+    last_modified_by: lena
+    created: 2026-03-23T10:00:00Z
+    updated: 2026-04-15T12:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req-16
+    body: |
+      Opened 23 March 2026. Team: Sales. Hiring manager: Lena Fischer.
+      Panel: Daniel Kim (technical demo), Jack Thornton (deal process).
+
+      ## Must have
+      Has run security questionnaires and proofs of concept for regulated buyers;
+      can deploy our connector agent in a customer's own cluster.
+
+      ## Candidates
+      - Sara Lindqvist: employee referral received 14 April; recruiter screen booked
+        for 21 April.
+      - Four applicants at screening; none past phone screen yet.
+
+  - id: drive-rec-req-17
+    container: drive-recruiting
+    type: FILE
+    title: "REQ-17 — Customer success manager"
+    owners: [zara]
+    last_modified_by: owen
+    created: 2026-04-27T15:00:00Z
+    updated: 2026-04-29T08:55:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-req-17
+    body: |
+      Posted 29 April 2026. Hiring manager: Owen Gallagher. Reports into the COO
+      organisation.
+
+      ## Role
+      Owns onboarding and adoption for eight to ten Enterprise accounts: kickoff plans,
+      quarterly adoption reviews, and renewal health checks 90 days before renewal.
+      Works closely with account executives and Support.
+
+      ## Must have
+      Three years in customer success or account management for B2B software; has run
+      a rollout of more than 500 users.
+
+      ## Loop
+      Recruiter screen, account-plan exercise with an account executive, hiring manager.
+
+  - id: drive-rec-pipeline-0427
+    container: drive-recruiting
+    type: FILE
+    title: "Recruiting pipeline — week of 27 April"
+    owners: [zara]
+    last_modified_by: zara
+    created: 2026-04-27T08:00:00Z
+    updated: 2026-04-29T16:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-rec-pipeline-0427
+    body: |
+      | Req | Applicants | Screens | Onsites | Offers | Note |
+      |---|---|---|---|---|---|
+      | REQ-14 Senior SRE | 41 | 6 | 1 | 1 approved | Offer to Arjun Patel out 29 Apr |
+      | REQ-15 Support engineer, EMEA | 23 | 4 | 1 | — | Debrief waits on one scorecard |
+      | REQ-16 Solutions engineer | 18 | 3 | — | — | Referral in screening |
+      | REQ-17 Customer success manager | — | — | — | — | Posted 29 Apr |
+
+      Time to fill so far: REQ-12 took 67 days from posting to acceptance.
+
+  - id: slack-recruiting-0406-1
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-06 10:00"
+    author: zara
+    created: 2026-04-06T10:00:00Z
+    thread: slack-recruiting-0406
+    body: |
+      REQ-15 (Support engineer, EMEA) is open as of today. Bob is hiring manager;
+      loop and panel are in the req doc.
+
+  - id: slack-recruiting-0406-2
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Bob Okafor, 2026-04-06 10:12"
+    author: bob
+    created: 2026-04-06T10:12:00Z
+    thread: slack-recruiting-0406
+    body: |
+      Thanks. German or French is a must — two of our Berlin-based customers want calls
+      in their own language.
+
+  - id: slack-recruiting-0417-1
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-17 15:30"
+    author: zara
+    created: 2026-04-17T15:30:00Z
+    thread: slack-recruiting-0417
+    body: |
+      Phone screen with Mia Johansson for REQ-14 this morning: no hire. Strong on
+      Terraform, no Helm in production, vague on cert rotation.
+
+  - id: slack-recruiting-0417-2
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Raj Mehta, 2026-04-17 15:42"
+    author: raj
+    created: 2026-04-17T15:42:00Z
+    thread: slack-recruiting-0417
+    body: |
+      Agree, thanks. Is Arjun's onsite still on for the 22nd?
+
+  - id: slack-recruiting-0417-3
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-17 15:44"
+    author: zara
+    created: 2026-04-17T15:44:00Z
+    thread: slack-recruiting-0417
+    body: |
+      Yes, Wednesday 22 April, four interviews, scorecards in the REQ-14 folder.
+
+  - id: slack-recruiting-0422-1
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Raj Mehta, 2026-04-22 17:30"
+    author: raj
+    created: 2026-04-22T17:30:00Z
+    thread: slack-recruiting-0422
+    body: |
+      Debrief for Arjun Patel done: strong hire from all four of us. Priya's Kubernetes
+      operations round was the strongest signal.
+
+  - id: slack-recruiting-0422-2
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-22 17:41"
+    author: zara
+    created: 2026-04-22T17:41:00Z
+    thread: slack-recruiting-0422
+    body: |
+      Great. I'll prepare the offer at $172,000 base and send it to Owen for approval.
+
+  - id: slack-recruiting-0422-3
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Raj Mehta, 2026-04-22 17:45"
+    author: raj
+    created: 2026-04-22T17:45:00Z
+    thread: slack-recruiting-0422
+    body: |
+      Works for me. He has another process going, so let's not sit on it.
+
+  - id: slack-recruiting-0428-1
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Owen Gallagher, 2026-04-28 14:05"
+    author: owen
+    created: 2026-04-28T14:05:00Z
+    thread: slack-recruiting-0428
+    body: |
+      Approved the REQ-14 offer: $172,000 base, standard equity for the level.
+
+  - id: slack-recruiting-0428-2
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-28 14:20"
+    author: zara
+    created: 2026-04-28T14:20:00Z
+    thread: slack-recruiting-0428
+    body: |
+      Thanks. Offer letter goes to Arjun tomorrow morning.
+
+  - id: slack-recruiting-0428-3
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Raj Mehta, 2026-04-28 14:31"
+    author: raj
+    created: 2026-04-28T14:31:00Z
+    thread: slack-recruiting-0428
+    body: |
+      I'd like him to start in early June, after the svc-invoicing cutover on 12 May.
+      Let's see what he says before we promise anything.
+
+  - id: slack-recruiting-0429
+    container: slack-recruiting
+    type: MESSAGE
+    title: "#recruiting — Zara Ahmed, 2026-04-29 16:10"
+    author: zara
+    created: 2026-04-29T16:10:00Z
+    body: |
+      REQ-15 onsite was yesterday: two of three panel scorecards are in. Waiting on the
+      troubleshooting round before we hold the debrief.
+
+  - id: mail-rec-0304
+    container: gmail-zara
+    type: MAIL
+    title: "REQ-14 job description — the Kubernetes part"
+    from: zara
+    to: [priya-nair]
+    cc: [yusuf, grace]
+    created: 2026-03-04T10:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0304
+    body: |
+      Hi Priya,
+
+      Raj asked me to get the Senior SRE posting up next week. I can write everything
+      except the technical bit: could you draft the "what you'll do" and "must have"
+      sections for the Kubernetes side? Copying Yusuf and Grace in case they want to add
+      anything.
+
+      Thanks,
+      Zara
+
+  - id: mail-rec-0305
+    container: gmail-zara
+    type: MAIL
+    title: "Re: REQ-14 job description — the Kubernetes part"
+    from: priya-nair
+    to: [zara]
+    cc: [yusuf]
+    created: 2026-03-05T16:40:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0305
+    relations:
+      - { type: RELATED, to: mail-rec-0304 }
+    body: |
+      Here's a draft.
+
+      What you'll do: run our managed Kubernetes clusters day to day; finish moving
+      four services off VMs (Project Keel); own upgrades, autoscaling and capacity;
+      share the Platform on-call.
+
+      Must have: production Kubernetes for 3+ years; Helm; ingress controllers and
+      cert-manager; StatefulSets and PodDisruptionBudgets; Prometheus alerting.
+
+      Yusuf added the NetworkPolicy line. Grace had nothing to add.
+
+  - id: mail-rec-0327
+    container: gmail-zara
+    type: MAIL
+    title: "Leo Martins accepted — starting 20 April"
+    from: zara
+    to: [marcus]
+    cc: [tomas]
+    created: 2026-03-27T17:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0327
+    body: |
+      Marcus, Leo signed this afternoon. Start date Monday 20 April. Tomás will set up
+      the HR onboarding and the laptop; Kenji has agreed to be his buddy. REQ-12 is
+      closed.
+
+  - id: mail-rec-0410
+    container: gmail-zara
+    type: MAIL
+    title: "REQ-14 onsite panel — Wednesday 22 April"
+    from: zara
+    to: [priya-nair, yusuf, dana]
+    cc: [raj]
+    created: 2026-04-10T09:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0410
+    body: |
+      Hi Priya, Yusuf and Dana,
+
+      Thanks for agreeing to interview for the Senior SRE role. The onsite is on
+      Wednesday 22 April: Kubernetes operations at 10:00, networking and ingress at
+      11:15, systems design at 13:30. Raj does the hiring-manager round at 15:00.
+
+      Please put your scorecard in the REQ-14 folder within 24 hours, scored against the
+      wiki rubric.
+
+      Zara
+
+  - id: mail-rec-0414
+    container: gmail-zara
+    type: MAIL
+    title: "Referral: Sara Lindqvist for the Solutions engineer role"
+    from: daniel
+    to: [zara]
+    cc: [lena]
+    created: 2026-04-14T13:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0414
+    body: |
+      Hi Zara,
+
+      I'd like to refer Sara Lindqvist for REQ-16. We worked together a few years ago:
+      she ran security reviews and proofs of concept for hospital groups and has
+      deployed agents into customer Kubernetes clusters. Lena suggested I send it
+      straight to you rather than through the form. CV attached.
+
+  - id: mail-rec-0423
+    container: gmail-zara
+    type: MAIL
+    title: "REQ-14 offer approval"
+    from: zara
+    to: [owen]
+    cc: [raj]
+    created: 2026-04-23T10:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0423
+    body: |
+      Owen, asking for approval of the Senior SRE offer to Arjun Patel: $172,000 base,
+      standard equity for the level, within the band Tomás agreed for this role. Four
+      strong-hire scorecards are in the REQ-14 folder. He has another process running,
+      so a decision this week would help.
+
+  - id: mail-rec-0429
+    container: gmail-zara
+    type: MAIL
+    title: "REQ-17 is live"
+    from: zara
+    to: [owen]
+    created: 2026-04-29T11:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/zara/#inbox/rec-0429
+    body: |
+      Posted on the careers page and the wiki this morning, worded as you asked:
+      reports into the COO organisation, hiring manager you. I'll send the first
+      shortlist on 8 May.
+
+  - id: cf-wiki-open-roles
+    container: cf-wiki
+    type: PAGE
+    title: "Open roles"
+    author: zara
+    last_modified_by: zara
+    created: 2026-03-09T12:00:00Z
+    updated: 2026-04-29T10:45:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1401
+    body: |
+      Know someone? Send them to the careers page or refer them (see the referral policy).
+
+      | Req | Role | Team | Posted |
+      |---|---|---|---|
+      | REQ-14 | Senior SRE (Kubernetes) | Platform | 9 March 2026 |
+      | REQ-16 | Solutions engineer | Sales | 23 March 2026 |
+      | REQ-15 | Support engineer, EMEA (German or French) | Support | 6 April 2026 |
+      | REQ-17 | Customer success manager | COO organisation | 29 April 2026 |
+
+      Two more roles are planned for Q3 and will be listed here when they open.
+
+  - id: cf-wiki-interview-rubric
+    container: cf-wiki
+    type: PAGE
+    title: "Interview rubric"
+    author: zara
+    last_modified_by: tomas
+    created: 2026-01-12T10:00:00Z
+    updated: 2026-03-30T14:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1388
+    body: |
+      Every interview at Acme is scored on the same four dimensions:
+
+      1. **Problem solving** — breaks a problem down, checks assumptions.
+      2. **Craft** — quality of the work itself: code, writing, a customer reply.
+      3. **Collaboration** — listens, explains, takes and gives feedback.
+      4. **Ownership** — follows through, owns mistakes, thinks about the customer.
+
+      Each dimension is scored 1 to 4 (1 clear concern, 2 some concern, 3 meets the bar,
+      4 well above).
+
+      ## Outcomes
+      - **Strong hire:** no score below 3.
+      - **Hire:** average of 3 or more with at most one 2.
+      - **No hire:** anything else.
+
+      ## Process
+      File your scorecard in the requisition folder within 24 hours, before you talk to
+      other interviewers. The debrief happens within two working days of the onsite.
+
+      ## Change log
+      30 March 2026: "strong hire" used to mean an average of 3 or more; it now needs no
+      score below 3. Scorecards older than this date are not re-scored.
+
+  - id: cf-wiki-referral-policy
+    container: cf-wiki
+    type: PAGE
+    title: "Employee referral policy"
+    author: tomas
+    last_modified_by: zara
+    created: 2025-09-01T10:00:00Z
+    updated: 2026-04-02T09:40:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1212
+    body: |
+      ## Bonus
+      If someone you refer is hired, you get **$3,000**, paid with the payroll after your
+      referral's 90th day at Acme. (Raised from $2,000 on 2 April 2026.)
+
+      ## How to refer
+      Send the CV and a line on how you know the person to the talent partner, or use the
+      referral form on the careers page. Tell the candidate first.
+
+      ## Who is not eligible
+      Hiring managers for their own requisitions, interviewers on the same loop, and
+      the People team.
+
+  - id: cf-wiki-k8s-guild
+    container: cf-wiki
+    type: PAGE
+    title: "Kubernetes guild"
+    author: yusuf
+    last_modified_by: priya-nair
+    created: 2026-01-15T11:00:00Z
+    updated: 2026-04-09T17:10:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1390
+    body: |
+      An open group for anyone running or deploying on Kubernetes at Acme.
+
+      ## Who
+      Chair: Priya Nair. Members: Yusuf Demir, Grace Liu, Daniel Kim. Guest for Project
+      Keel: Tobias Weber.
+
+      ## When
+      Every other Thursday, 16:00–16:45 CET. Notes go on this page.
+
+      ## Recent sessions
+      - 19 March: running stateful services on Kubernetes (tech talk, see the wiki).
+      - 26 March: deploying the connector agent in customer clusters.
+      - 9 April: cert-manager issuers, staging vs production, and how not to mix them.
+
+      ## Getting help
+      Ask in #platform. For customer-cluster questions about the connector agent, start
+      with the help-centre article.
+
+  - id: cf-wiki-talk-stateful-k8s
+    container: cf-wiki
+    type: PAGE
+    title: "Tech talk: running stateful services on Kubernetes"
+    author: priya-nair
+    last_modified_by: priya-nair
+    created: 2026-03-19T17:00:00Z
+    updated: 2026-03-20T09:15:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1395
+    body: |
+      Notes and slides from Thursday's talk (19 March).
+
+      ## Takeaways
+      1. StatefulSets give stable names and volumes, not safety: you still need
+         PodDisruptionBudgets and a tested restore.
+      2. Drain one node at a time and watch the replication lag before the next.
+      3. Keep the queue consumers stateless and the state in the managed database;
+         most of our services can do this.
+      4. Readiness probes must check the dependency the pod actually needs.
+
+      ## Q&A
+      Most questions were about cutover order for Project Keel: export first, then the
+      Flow engine, then the billing worker and invoicing.
+
+      Thanks to Priya Natarajan for the billing-worker case study on retries during a
+      cutover.
+
+  - id: cf-wiki-talk-retries
+    container: cf-wiki
+    type: PAGE
+    title: "Tech talk: retries without thundering herds"
+    author: priya
+    last_modified_by: priya
+    created: 2026-04-02T17:00:00Z
+    updated: 2026-04-03T08:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1402
+    body: |
+      Notes from the 2 April talk.
+
+      ## The problem
+      In March twelve billing-worker replicas retried the payments provider on the same
+      5-second tick and turned a short blip into a 90-minute delay (INC-2031).
+
+      ## The fix
+      Exponential backoff with full jitter, capped at 120 seconds, six attempts, and a
+      histogram of the actual delay so you can see the spread.
+
+      ## Q&A
+      "Does this change on Kubernetes?" No. The backoff lives in the worker, wherever
+      it runs; autoscaling more replicas makes jitter more important, not less.
+
+  - id: cf-wiki-talk-alerting
+    container: cf-wiki
+    type: PAGE
+    title: "Tech talk: alert on symptoms, not causes"
+    author: grace
+    last_modified_by: grace
+    created: 2026-04-16T17:00:00Z
+    updated: 2026-04-16T17:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1407
+    body: |
+      Notes from the 16 April talk.
+
+      - Page on what customers feel: sync lag, error rate, failed exports. Not on CPU.
+      - Every page needs a runbook link and an owner.
+      - Our new Acme Flow lag alert fires at 15 minutes behind for 10 minutes; it would
+        have caught last week's delays two hours earlier.
+      - Dashboards are for diagnosis, alerts are for waking people up. Keep them apart.
+
+  - id: kb-help-agent-on-k8s
+    container: kb-help
+    type: KB_FILE
+    title: "Running the Acme connector agent on Kubernetes"
+    author: daniel
+    created: 2026-03-26T14:00:00Z
+    web_url: https://kb.acme-demo.example/collections/help-centre/agent-on-kubernetes
+    body: |
+      Some customers run the connector agent inside their own network. On Kubernetes,
+      install it with our Helm chart, `acme/connector-agent` version 2.3 or later.
+
+      ## Resources
+      Requests: 250m CPU and 512Mi memory per replica. Limits: 1 CPU and 1Gi. One replica
+      handles up to 50 connectors; add replicas beyond that.
+
+      ## Network
+      Outbound HTTPS (443) to your Acme region endpoint only. If you use NetworkPolicy,
+      allow that egress and DNS; no inbound traffic is needed.
+
+      ## Secrets
+      Store the agent token in a Kubernetes Secret and reference it in `values.yaml`;
+      never in a ConfigMap.
+
+      ## Supported versions
+      Kubernetes 1.27 to 1.30.
+
+  - id: slack-general-0317
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Nina Park, 2026-03-17 10:00"
+    author: nina
+    created: 2026-03-17T10:00:00Z
+    body: |
+      Thursday's tech talk, 19 March at 16:00 CET: Priya Nair on running stateful
+      services on Kubernetes, with lessons from Project Keel. Everyone welcome, no
+      Kubernetes background needed.
+
+  - id: slack-general-0401
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Priya Natarajan, 2026-04-01 15:20"
+    author: priya
+    created: 2026-04-01T15:20:00Z
+    body: |
+      Tomorrow at 16:00 CET I'm giving a tech talk: retries without thundering herds.
+      What went wrong in INC-2031 and how jitter fixed it. Notes go on the wiki after.
+
+  - id: slack-general-0420
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Tomás Rivera, 2026-04-20 09:05"
+    author: tomas
+    created: 2026-04-20T09:05:00Z
+    body: |
+      Please welcome Leo Martins, who joins Payments today as an engineer. Leo comes
+      from a fintech in Lisbon and has already asked where the good coffee is. Say hi!
+
+  - id: sn-hr-1241
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001241: Day-one laptop has a US keyboard"
+    author: leo
+    reporter: leo
+    assignee: tomas
+    created: 2026-04-20T08:45:00Z
+    updated: 2026-04-22T11:00:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001241
+    body: |
+      **Status:** Resolved
+
+      The laptop waiting for me has a US keyboard; I asked for Portuguese layout in the
+      pre-start form. Can it be swapped?
+
+      Resolution: replacement laptop with a Portuguese keyboard delivered 22 April; the
+      first one goes back to stock.
+
+  - id: sn-hr-1242
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001242: GitHub and Jira access for Payments"
+    author: leo
+    reporter: leo
+    assignee: tomas
+    created: 2026-04-20T09:30:00Z
+    updated: 2026-04-21T10:15:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001242
+    body: |
+      **Status:** Resolved
+
+      I can sign in to Slack but not to GitHub or Jira. My manager says I need the
+      Payments engineering groups and the Project Keel space.
+
+      Resolution: added to the engineering and migration groups on 21 April; access
+      confirmed.
+
+  - id: sn-hr-1247
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001247: Payroll bank details form"
+    author: leo
+    reporter: leo
+    assignee: tomas
+    created: 2026-04-23T14:00:00Z
+    updated: 2026-04-24T09:20:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001247
+    body: |
+      **Status:** Resolved
+
+      The payroll form rejects my IBAN with "invalid country". It's a Portuguese account.
+
+      Resolution: the form only accepted German IBANs; fixed and resubmitted on 24 April,
+      in time for the April payroll run.
+
+  - id: sn-hr-1218
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001218: Working from Portugal for six weeks"
+    author: alice
+    reporter: alice
+    assignee: tomas
+    created: 2026-03-24T10:00:00Z
+    updated: 2026-03-26T15:00:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001218
+    body: |
+      **Status:** Approved
+
+      I'd like to work from Portugal from 1 June to 10 July. The handbook says more than
+      four weeks abroad needs People approval.
+
+      Answer: approved for the dates given; no change to payroll or tax for a stay of
+      this length.
+
+  - id: sn-hr-1229
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001229: Security training while on call"
+    author: grace
+    reporter: grace
+    assignee: tomas
+    created: 2026-04-16T12:00:00Z
+    updated: 2026-04-21T10:30:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001229
+    body: |
+      **Status:** Closed
+
+      I'm on call the week the security training is due. Can I get a few extra days?
+
+      Answer: no individual extension needed; the company deadline moved to 15 May on
+      21 April.
+
+  - id: drive-people-onboarding-leo
+    container: drive-people
+    type: FILE
+    title: "Onboarding plan — Leo Martins (Payments)"
+    owners: [tomas]
+    last_modified_by: marcus
+    created: 2026-04-14T10:00:00Z
+    updated: 2026-04-20T16:40:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-onboarding-leo
+    body: |
+      Start date: Monday 20 April 2026. Team: Payments. Buddy: Kenji Watanabe.
+
+      ## Week 1
+      Laptop and accounts on day one. Ship a small change with Kenji: the invoice PDF
+      rounding issue (PAY-97). Read the on-call handbook and the INC-2031 postmortem.
+
+      ## Month 1
+      Pair on the VAT validation work with Kenji. Join the Payments planning meeting.
+
+      ## Month 2
+      Shadow the Payments on-call rota for one week in June.
+
+      ## 90-day goals
+      To be agreed with Marcus by 15 May.
+
+  - id: drive-hrcase-c2026-03
+    container: drive-hr-casework
+    type: FILE
+    title: "Case HR-C-2026-03: on-call load concern, Platform team"
+    owners: [tomas]
+    last_modified_by: owen
+    created: 2026-03-18T15:00:00Z
+    updated: 2026-04-15T12:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-hrcase-c2026-03
+    body: |
+      **People casework — confidential**
+
+      Opened 18 March 2026 after two Platform engineers raised, separately, that the
+      Platform rota had them on call one week in four, primary or secondary, while the
+      Kubernetes migration added evening cutovers. Raj Mehta informed 19 March.
+
+      ## Findings
+      Secondary weeks were unpaid; primary weeks were paid at the standard on-call rate.
+      Cutover evenings were not counted as on-call at all.
+
+      ## Outcome (resolved 15 April 2026)
+      1. A secondary on-call stipend of $300 per week, from 1 May 2026.
+      2. Grace Liu added to the Platform rota, making it one week in five.
+      3. Planned cutovers count as on-call time.
+
+      Approved by Owen Gallagher. Both engineers told on 15 April.
+
+  # ===========================================================================
+  # S12 — Sync becomes Flow, the Globex case study, the partner webinar
+  # ===========================================================================
+
+  - id: mail-mkt-0129
+    container: gmail-elena
+    type: MAIL
+    title: "Tessera Analytics' lawyers on the name 'Acme Sync'"
+    from: elena
+    to: [rafael, owen]
+    created: 2026-01-29T09:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/elena/#inbox/mkt-0129
+    mentions_orgs: [tessera]
+    body: |
+      Rafael, Owen,
+
+      A letter from Tessera Analytics' counsel arrived yesterday (28 January). They say
+      "Acme Sync" is confusingly similar to their registered "TesseraSync" mark in the
+      same class and ask us to stop using it. Our outside counsel thinks we would
+      probably win, slowly and expensively. My view: rename before the spring campaigns
+      rather than fight. I'll bring options by 5 February.
+
+      Elena
+
+  - id: drive-mkt-naming-options
+    container: drive-marketing
+    type: FILE
+    title: "Naming options after the TesseraSync objection"
+    owners: [elena]
+    last_modified_by: elena
+    created: 2026-01-30T10:00:00Z
+    updated: 2026-02-05T17:20:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-naming-options
+    mentions_orgs: [tessera]
+    body: |
+      ## Background
+      Tessera Analytics objected on 28 January to "Acme Sync" because of their
+      TesseraSync trademark. We will not use any name containing "Sync".
+
+      ## Shortlist
+      | Name | Trademark search | Domain | Notes |
+      |---|---|---|---|
+      | Acme Flow | clear | available | describes continuous data movement |
+      | Acme Bridge | one conflict in class 9 | taken | rejected |
+      | Acme Relay | clear | available | sounds like messaging |
+
+      ## Recommendation
+      Acme Flow. Keep the API path /v1/sync for existing integrations until 2027 so no
+      customer has to change code this year.
+
+  - id: drive-mkt-flow-naming-brief
+    container: drive-marketing
+    type: FILE
+    title: "Naming brief — Acme Sync becomes Acme Flow"
+    owners: [elena]
+    last_modified_by: nina
+    created: 2026-02-10T09:00:00Z
+    updated: 2026-02-10T18:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-flow-naming-brief
+    mentions_orgs: [tessera]
+    body: |
+      ## Decision (10 February 2026)
+      The integration and sync product is renamed **Acme Flow**, effective 1 March 2026.
+      Reason: the trademark objection from Tessera Analytics over TesseraSync.
+
+      ## Dates
+      - 17 Feb: internal announcement in #general and the wiki page.
+      - 24 Feb: email to customer admins.
+      - 1 Mar: new name in the product, docs, help centre and website.
+      - 2 Mar: repository renamed to acme/flow-engine.
+
+      ## Rules
+      - Write "Acme Flow (formerly Acme Sync)" until 30 June, then "Acme Flow" only.
+      - The API path /v1/sync stays until 2027; do not call it legacy in customer copy.
+      - Never compare ourselves to TesseraSync in public material.
+
+  - id: mail-mkt-0210
+    container: gmail-elena
+    type: MAIL
+    title: "Decision: Acme Sync becomes Acme Flow on 1 March"
+    from: elena
+    to: [nina, mateo]
+    cc: [rafael]
+    created: 2026-02-10T17:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/elena/#inbox/mkt-0210
+    body: |
+      Nina, Mateo,
+
+      Rafael signed off this afternoon: Acme Flow, effective 1 March. The brief is in
+      the Marketing folder. Nina owns the customer email (out 24 February); Mateo owns
+      the help-centre FAQ and the rename checklist. I'll write the wiki page and the
+      #general post for the 17th.
+
+  - id: slack-launch-0211-1
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-02-11 10:00"
+    author: nina
+    created: 2026-02-11T10:00:00Z
+    thread: slack-launch-0211
+    body: |
+      Rename work kicks off today. Customer email draft by Friday; I need one line from
+      engineering on what happens to webhooks and the API.
+
+  - id: slack-launch-0211-2
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Mateo García, 2026-02-11 10:08"
+    author: mateo
+    created: 2026-02-11T10:08:00Z
+    thread: slack-launch-0211
+    body: |
+      I count 46 help-centre articles that say "Sync". I'll do them in two batches and
+      add a redirect for every old URL.
+
+  - id: slack-launch-0211-3
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Elena Petrova, 2026-02-11 10:15"
+    author: elena
+    created: 2026-02-11T10:15:00Z
+    thread: slack-launch-0211
+    body: |
+      Engineering line: webhooks and the /v1/sync API keep working unchanged until 2027.
+      Nothing for customers to do.
+
+  - id: slack-general-0217
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Elena Petrova, 2026-02-17 09:30"
+    author: elena
+    created: 2026-02-17T09:30:00Z
+    body: |
+      Product news: on 1 March Acme Sync becomes **Acme Flow**. Same product, new name.
+      Why, and what changes (and what doesn't), is on the wiki page "Acme Sync is now
+      Acme Flow". Customers hear from us on 24 February, so please don't mention it to
+      them before then.
+
+  - id: mail-mkt-0224
+    container: gmail-nina
+    type: MAIL
+    title: "Acme Sync is becoming Acme Flow on 1 March"
+    from: nina
+    to: [harriet, jonas, ahmed, victor]
+    created: 2026-02-24T14:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/nina/#inbox/mkt-0224
+    body: |
+      Hello,
+
+      On 1 March 2026, Acme Sync will be renamed Acme Flow. It is the same product, run
+      by the same team; only the name changes.
+
+      What you need to do: nothing. Your connections, schedules, webhooks and API
+      calls keep working. The API path /v1/sync stays as it is until 2027, and we will
+      give you at least twelve months' notice before it changes.
+
+      You'll see the new name in the app, our help centre and your invoices from
+      1 March.
+
+      Nina Park, Product marketing, Acme
+
+  - id: cf-wiki-flow-rename
+    container: cf-wiki
+    type: PAGE
+    title: "Acme Sync is now Acme Flow"
+    author: elena
+    last_modified_by: mateo
+    created: 2026-02-17T09:00:00Z
+    updated: 2026-03-02T15:10:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1360
+    mentions_orgs: [tessera]
+    body: |
+      ## What happened
+      On 1 March 2026 our integration product Acme Sync was renamed **Acme Flow**.
+
+      ## Why
+      On 28 January 2026 Tessera Analytics' lawyers objected that "Acme Sync" was too
+      close to their TesseraSync trademark. Rather than a long dispute, we decided on
+      10 February to rename. Tessera Analytics has since confirmed the matter is closed.
+
+      ## Timeline
+      - 10 February: decision.
+      - 17 February: announced to staff (this page).
+      - 24 February: customer admins emailed.
+      - 1 March: new name live in the product, help centre and website.
+      - 2 March: repository sync-engine renamed acme/flow-engine (PR #702).
+
+      ## What did not change
+      The API path /v1/sync stays until 2027. Webhooks, connectors and customer
+      configuration are untouched. Old help-centre links redirect.
+
+      ## How to talk about it
+      Say "Acme Flow (formerly Acme Sync)" until 30 June. Some customers will keep saying
+      Sync; that's fine, don't correct them.
+
+  - id: drive-mkt-rename-checklist
+    container: drive-marketing
+    type: FILE
+    title: "Acme Flow rename checklist"
+    owners: [mateo]
+    last_modified_by: elena
+    created: 2026-02-12T09:00:00Z
+    updated: 2026-03-03T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-flow-rename-checklist
+    body: |
+      | Item | Due | Status |
+      |---|---|---|
+      | Wiki page and #general post | 17 Feb | done |
+      | Customer admin email | 24 Feb | done (sent 24 Feb, 38% open in 48h) |
+      | Help-centre articles, batch 1 (23) | 27 Feb | done |
+      | Help-centre articles, batch 2 (23) | 1 Mar | done |
+      | Name FAQ in the help centre | 1 Mar | done |
+      | In-app name and banner | 1 Mar | done |
+      | Website and pricing page | 1 Mar | done |
+      | Repository rename | 2 Mar | done (Platform) |
+      | Sales deck and RFP answers | 6 Mar | done |
+      | Invoice line item text | 1 Apr | done (Finance) |
+
+  - id: kb-help-flow-name-faq
+    container: kb-help
+    type: KB_FILE
+    title: "Acme Flow (formerly Acme Sync): name change FAQ"
+    author: mateo
+    created: 2026-03-01T08:00:00Z
+    web_url: https://kb.acme-demo.example/collections/help-centre/flow-name-faq
+    body: |
+      **Is Acme Flow a new product?**
+      No. Acme Sync was renamed Acme Flow on 1 March 2026. Same product, same team.
+
+      **Do I need to change my API calls or webhooks?**
+      No. The API path /v1/sync keeps working until 2027, and we will give at least
+      twelve months' notice before any change.
+
+      **Do I need to reconnect my connectors?**
+      No. Connections, schedules and field mappings are unchanged.
+
+      **Why the new name?**
+      The old name was too close to another company's trademark.
+
+      **Will my invoice change?**
+      Only the name of the line item, from April invoices onwards.
+
+  - id: slack-launch-0302-1
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Mateo García, 2026-03-02 09:10"
+    author: mateo
+    created: 2026-03-02T09:10:00Z
+    thread: slack-launch-0302
+    body: |
+      Day two of Acme Flow: all 46 help-centre articles updated, name FAQ live since
+      Sunday, zero broken links in the crawl this morning.
+
+  - id: slack-launch-0302-2
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Grace Liu, 2026-03-02 11:40"
+    author: grace
+    created: 2026-03-02T11:40:00Z
+    thread: slack-launch-0302
+    body: |
+      Repo renamed: sync-engine is now acme/flow-engine (PR #702). GitHub redirects the
+      old URL, so existing clones keep working.
+
+  - id: slack-launch-0302-3
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-03-02 11:52"
+    author: nina
+    created: 2026-03-02T11:52:00Z
+    thread: slack-launch-0302
+    body: |
+      Thanks both. Support has the FAQ link for anyone who writes in confused.
+
+  - id: slack-general-0302
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Mateo García, 2026-03-02 12:00"
+    author: mateo
+    created: 2026-03-02T12:00:00Z
+    body: |
+      Acme Flow is live everywhere: app, website, help centre. If you spot a stray
+      "Acme Sync" anywhere customer-facing, drop me a link.
+
+  - id: drive-mkt-tessera-battlecard
+    container: drive-marketing
+    type: FILE
+    title: "Competitive note: Tessera Analytics"
+    owners: [nina]
+    last_modified_by: mateo
+    created: 2026-04-20T10:00:00Z
+    updated: 2026-04-22T15:45:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-battlecard-tessera
+    mentions_orgs: [tessera, northwind, bluebird, kestrel]
+    body: |
+      **Internal only. Never name Tessera in customer-facing material.**
+
+      ## Who they are
+      Tessera Analytics sells TesseraSync, a data sync tool bundled with their
+      reporting suite. Not to be confused with our old product name, Acme Sync.
+
+      ## Where we meet them (2026)
+      - Northwind Traders looked at a Tessera demo in April during the export problems.
+      - Bluebird Health is trialling Tessera alongside our pilot.
+      - Kestrel Logistics uses Tessera today (outbound prospect).
+
+      ## Where we win
+      Field-level mapping, audit logs, SSO group sync on the roadmap, and support that
+      answers in hours.
+
+      ## Where they win
+      Bundled price when the customer already buys their reporting suite.
+
+  - id: drive-mkt-globex-case-study
+    container: drive-marketing
+    type: FILE
+    title: "Case study draft — Globex Corporation"
+    owners: [mateo]
+    last_modified_by: nina
+    created: 2026-04-24T09:00:00Z
+    updated: 2026-04-24T17:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-case-study-globex
+    mentions_orgs: [globex, globus]
+    body: |
+      **Draft for customer review. Publish date: 6 May 2026.** Written permission from
+      Globex received 23 April.
+
+      # How Globex Corporation keeps 40 engineering tools in step with Acme Flow
+
+      Globex Corporation became an Acme customer in November 2025. Its engineering
+      organisation uses Acme Flow to keep issue trackers, the asset inventory and the
+      on-call roster in sync across regions.
+
+      > "We stopped writing glue scripts. Flow just moves the data and tells us when it
+      > can't." — Victor Alvarez, VP engineering, Globex Corporation
+
+      ## Results
+      - 40 tools connected in the first ten weeks.
+      - Weekly manual reconciliation went from a day and a half to under an hour.
+
+      ## Rollout
+      Globex's implementation partner, Globus Partners, runs the rollout workshops
+      for new business units.
+
+  - id: mail-mkt-0423
+    container: gmail-nina
+    type: MAIL
+    title: "Re: Victor's OK for the Globex case study"
+    from: nina
+    to: [mateo]
+    created: 2026-04-23T16:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/nina/#inbox/mkt-0423
+    mentions_orgs: [globex]
+    body: |
+      Great news. Sofia's forward counts as the written permission the messaging guide
+      asks for, so keep it with the draft. Can you have something for me tomorrow? I'd
+      like to send it to Victor by Friday and publish on 6 May.
+
+  - id: mail-mkt-0424
+    container: gmail-mateo
+    type: MAIL
+    title: "Globex case study — draft for your review"
+    from: mateo
+    to: [victor]
+    cc: [sofia, nina]
+    created: 2026-04-24T18:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/mateo/#inbox/mkt-0424
+    mentions_orgs: [globex]
+    body: |
+      Hi Victor,
+
+      Thank you again for agreeing to the case study. The draft is attached: one page,
+      your quote, and two numbers from the kickoff review. Could you let me know by
+      Wednesday 29 April if anything needs changing? We plan to publish on 6 May.
+
+      Best,
+      Mateo García, Content marketing, Acme
+
+  - id: mail-mkt-0427
+    container: gmail-mateo
+    type: MAIL
+    title: "Re: Globex case study — draft for your review"
+    from: victor
+    to: [mateo]
+    cc: [sofia]
+    created: 2026-04-27T15:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/mateo/#inbox/mkt-0427
+    relations:
+      - { type: RELATED, to: mail-mkt-0424 }
+    mentions_orgs: [globex]
+    body: |
+      Mateo,
+
+      Looks good. Two changes: say "more than 40 tools" rather than 40, and drop the
+      bit about the on-call roster, that's not live in every region yet. Everyone here
+      still calls it Sync, by the way; I'm fine with Flow in print.
+
+      Approved with those edits.
+      Victor
+
+  - id: slack-launch-0424-1
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Mateo García, 2026-04-24 09:30"
+    author: mateo
+    created: 2026-04-24T09:30:00Z
+    thread: slack-launch-0424
+    mentions_orgs: [globex]
+    body: |
+      Globex case study draft is in the Marketing folder. Permission came through Sofia
+      yesterday. Target publish date 6 May.
+
+  - id: slack-launch-0424-2
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-04-24 17:35"
+    author: nina
+    created: 2026-04-24T17:35:00Z
+    thread: slack-launch-0424
+    body: |
+      Tightened the intro and the quote. Mateo, it's good to go to Victor.
+
+  - id: drive-mkt-webinar-plan
+    container: drive-marketing
+    type: FILE
+    title: "Partner webinar plan — Rolling out Acme Flow at scale"
+    owners: [nina]
+    last_modified_by: nina
+    created: 2026-03-26T10:00:00Z
+    updated: 2026-04-21T11:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-webinar-flow-at-scale
+    mentions_orgs: [globus]
+    body: |
+      ## Event
+      "Rolling out Acme Flow at scale", live webinar, Thursday 14 May 2026, 16:00 CET,
+      45 minutes plus Q&A. Co-hosted with Globus Partners.
+
+      ## Speakers
+      - Nina Park, Acme (host)
+      - Inês Duarte, engagement manager, Globus Partners: their rollout method for
+        large organisations
+      - Grace Liu, Acme: live demo of field mapping and the new lag alert
+
+      ## Targets
+      300 registrations, 40% live attendance. 184 registered on 21 April.
+
+      ## Rules
+      No customer is named on the webinar; Globus Partners presents its method, not
+      client stories. Recording goes to the help centre a week later.
+
+  - id: mail-mkt-0325
+    container: gmail-nina
+    type: MAIL
+    title: "Co-hosting a webinar on rolling out Acme Flow"
+    from: nina
+    to: [ines]
+    cc: [grace]
+    created: 2026-03-25T15:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/nina/#inbox/mkt-0325
+    mentions_orgs: [globus]
+    body: |
+      Hi Inês,
+
+      Would Globus Partners co-host a webinar with us in mid-May on rolling out Acme Flow
+      across a large organisation? Your team's rollout method would be the core of it,
+      and Grace from our Platform team would do a live demo. I'm thinking 14 May.
+
+      Best,
+      Nina
+
+  - id: mail-mkt-0326
+    container: gmail-nina
+    type: MAIL
+    title: "Re: Co-hosting a webinar on rolling out Acme Flow"
+    from: ines
+    to: [nina]
+    cc: [grace]
+    created: 2026-03-26T08:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/nina/#inbox/mkt-0326
+    relations:
+      - { type: RELATED, to: mail-mkt-0325 }
+    mentions_orgs: [globus]
+    body: |
+      Hi Nina,
+
+      Yes, Globus Partners would be glad to. 14 May works. I'll present our five-step
+      rollout method; we won't name clients. Send me the run of show when you have it.
+
+      Inês
+
+  - id: mail-mkt-0421
+    container: gmail-nina
+    type: MAIL
+    title: "Webinar run of show — 14 May"
+    from: nina
+    to: [grace, ines]
+    created: 2026-04-21T11:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/nina/#inbox/mkt-0421
+    body: |
+      Hi both,
+
+      Run of show: 16:00 welcome (me, 3 min); 16:03 rollout method (Inês, 15 min);
+      16:18 live demo (Grace, 15 min); 16:33 Q&A (all, 12 min). Dry run on Thursday
+      7 May at 15:00. 184 registered so far.
+
+      Nina
+
+  - id: slack-launch-0428
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-04-28 10:20"
+    author: nina
+    created: 2026-04-28T10:20:00Z
+    body: |
+      Webinar on 14 May: 231 registered. Grace's demo dry run is 7 May. Mateo, can the
+      recording page be ready the following week?
+
+  - id: mail-mkt-0417
+    container: gmail-elena
+    type: MAIL
+    title: "Re: Board question about Tessera"
+    from: elena
+    to: [rafael]
+    created: 2026-04-17T11:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/elena/#inbox/mkt-0417
+    relations:
+      - { type: RELATED, to: mail-board-0417 }
+    mentions_orgs: [tessera]
+    body: |
+      Confirmed. Tessera Analytics' counsel wrote on 20 February that the objection is
+      withdrawn as long as we stop using "Acme Sync" in marketing from 1 March, which we
+      did. They accepted /v1/sync as a technical identifier. Nothing from them since.
+
+  # ===========================================================================
+  # S13 — Finance and company operations
+  # ===========================================================================
+
+  - id: drive-fin-globus-sow
+    container: drive-finance
+    type: FILE
+    title: "Statement of work — Globus Partners, contract engineer for Project Keel"
+    owners: [ingrid]
+    last_modified_by: owen
+    created: 2026-02-09T10:00:00Z
+    updated: 2026-02-11T16:45:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-sow-globus-2026
+    mentions_orgs: [globus]
+    body: |
+      ## Parties
+      Acme Corp and Globus Partners, under the master services agreement of 2024.
+
+      ## Services
+      One contract platform engineer, Tobias Weber, working on the Kubernetes migration
+      (Project Keel): Helm charts, autoscaling and cutover support.
+
+      ## Term
+      16 February 2026 to 30 June 2026.
+
+      ## Fees
+      Day rate €1,150, invoiced monthly in arrears for days worked. Fees under this SOW
+      are capped at €92,000 (80 days). Days beyond the cap need a signed amendment.
+
+      ## Approvals
+      Timesheets approved by Raj Mehta before each invoice is paid. Payment terms 30
+      days.
+
+      ## Signatures
+      Signed for Acme by Owen Gallagher, COO, on 11 February 2026, and for Globus
+      Partners by Inês Duarte, engagement manager.
+
+  - id: jira-fin-41
+    container: jira-fin
+    type: TICKET
+    title: "FIN-41: Pay Globus Partners invoice GP-0312 (March)"
+    author: ingrid
+    reporter: raj
+    assignee: ingrid
+    created: 2026-04-02T09:00:00Z
+    updated: 2026-04-09T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-41
+    mentions_orgs: [globus]
+    body: |
+      **Status:** Done
+
+      Invoice GP-0312 from Globus Partners: 21 days in March, €24,150. Timesheet
+      approved 3 April. Paid 9 April by bank transfer.
+
+  - id: jira-fin-42
+    container: jira-fin
+    type: TICKET
+    title: "FIN-42: Monitoring vendor quote for the June renewal"
+    author: ingrid
+    reporter: ingrid
+    assignee: ingrid
+    created: 2026-04-03T10:00:00Z
+    updated: 2026-04-15T16:30:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-42
+    relations:
+      - { type: RELATED, to: jira-fin-40 }
+    body: |
+      **Status:** In progress · Follows FIN-40
+
+      Quote received 15 April: **$38,400 a year** for the same plan size, up from
+      $34,800 last year. Above $25,000, so it needs the COO's sign-off before we sign.
+      Renewal date 1 June.
+
+  - id: jira-fin-43
+    container: jira-fin
+    type: TICKET
+    title: "FIN-43: Design tool subscription for Marketing (3 seats)"
+    author: nina
+    reporter: nina
+    assignee: ingrid
+    created: 2026-04-07T11:00:00Z
+    updated: 2026-04-10T09:30:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-43
+    body: |
+      **Status:** Done
+
+      Three seats of a design tool for the case-study and webinar work, $1,080 a year,
+      billed annually. No customer data in the tool. Approved and purchased on the
+      company card 10 April.
+
+  - id: jira-fin-44
+    container: jira-fin
+    type: TICKET
+    title: "FIN-44: Pay Globus Partners invoice GP-0412 (April)"
+    author: ingrid
+    reporter: raj
+    assignee: ingrid
+    created: 2026-04-14T09:00:00Z
+    updated: 2026-04-28T16:10:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-44
+    mentions_orgs: [globus]
+    body: |
+      **Status:** In progress
+
+      April accrual for the Globus Partners SOW. Invoice GP-0412 received 28 April:
+      22 days, €25,300. Awaiting Raj's timesheet approval before payment.
+
+  - id: jira-fin-45
+    container: jira-fin
+    type: TICKET
+    title: "FIN-45: Software request — load-testing service for Platform"
+    author: yusuf
+    reporter: yusuf
+    assignee: ingrid
+    created: 2026-04-15T13:00:00Z
+    updated: 2026-04-16T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-45
+    body: |
+      **Status:** Done
+
+      Load-testing service for the Kubernetes cutovers, $4,200 a year. Sends synthetic
+      traffic only; no customer data. Approved 16 April.
+
+  - id: jira-fin-46
+    container: jira-fin
+    type: TICKET
+    title: "FIN-46: Q2–Q3 headcount budget for six requisitions"
+    author: owen
+    reporter: owen
+    assignee: ingrid
+    created: 2026-04-17T09:00:00Z
+    updated: 2026-04-24T12:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-46
+    body: |
+      **Status:** In progress
+
+      The board approved six requisitions on 16 April (REQ-14 to REQ-19). Load the
+      loaded-cost model per role into the forecast, with REQ-14 to REQ-17 starting in Q2
+      and REQ-18 and REQ-19 in Q3. Recruiting fees at 0 (all direct or referral).
+
+  - id: jira-fin-47
+    container: jira-fin
+    type: TICKET
+    title: "FIN-47: Expense over $2,500 — Northwind on-site visit in May"
+    author: omar
+    reporter: omar
+    assignee: ingrid
+    created: 2026-04-21T15:00:00Z
+    updated: 2026-04-22T09:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-47
+    mentions_orgs: [northwind]
+    body: |
+      **Status:** In review
+
+      Flights and two nights' hotel for an on-site renewal meeting at Northwind Traders,
+      12–13 May: $2,860 estimated. Over $2,500, so finance approves.
+
+  - id: jira-fin-48
+    container: jira-fin
+    type: TICKET
+    title: "FIN-48: Update the vendor register for the security audit"
+    author: owen
+    reporter: owen
+    assignee: ingrid
+    created: 2026-04-23T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-48
+    body: |
+      **Status:** To do
+
+      The auditors want every vendor that can touch customer data, with its contract end
+      date and data-processing agreement. Due 22 May.
+
+  - id: jira-fin-49
+    container: jira-fin
+    type: TICKET
+    title: "FIN-49: Renew the cyber insurance policy"
+    author: ingrid
+    reporter: ingrid
+    assignee: ingrid
+    created: 2026-04-27T09:30:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-49
+    body: |
+      **Status:** To do
+
+      Policy ends 30 June. Broker quote due 15 May; they want the incident list for the
+      last 12 months and our training completion rate.
+
+  - id: jira-fin-50
+    container: jira-fin
+    type: TICKET
+    title: "FIN-50: Globus Partners SOW — amendment if the Keel contract is extended"
+    author: owen
+    reporter: owen
+    assignee: ingrid
+    created: 2026-04-29T16:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-50
+    mentions_orgs: [globus]
+    body: |
+      **Status:** To do
+
+      Raj wants to keep the contract engineer to 31 August. The current SOW runs out of
+      headroom in early June, so any extension needs an amendment raising the cap and
+      the end date. Draft it once Raj confirms.
+
+  - id: drive-fin-q1-close
+    container: drive-finance
+    type: FILE
+    title: "Q1 2026 close — operating expense summary"
+    owners: [ingrid]
+    last_modified_by: ingrid
+    created: 2026-04-07T15:00:00Z
+    updated: 2026-04-08T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-q1-close-opex
+    mentions_orgs: [globus]
+    body: |
+      Books for Q1 closed on 7 April.
+
+      ## Operating expense
+      $2.71M for the quarter, 2% under budget. Largest variances: travel (under, fewer
+      customer visits) and cloud (over, two clusters running in parallel during the
+      Kubernetes migration).
+
+      ## Contractors
+      Globus Partners: February (10 days, invoice GP-0228, paid 9 March) and March
+      (21 days, GP-0312, due 9 April), €35,650 in total.
+
+      ## Accruals
+      March invoice accrued; monitoring renewal not yet accrued (quote pending).
+
+  - id: drive-fin-vendor-register
+    container: drive-finance
+    type: FILE
+    title: "Vendor register 2026"
+    owners: [ingrid]
+    last_modified_by: ingrid
+    created: 2025-10-01T10:00:00Z
+    updated: 2026-04-23T11:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-vendor-register
+    mentions_orgs: [globus]
+    body: |
+      | Vendor | What for | Owner | Contract end | Customer data |
+      |---|---|---|---|---|
+      | Globus Partners | contract engineer (SOW) | Raj Mehta | 30 Jun 2026 | no |
+      | Monitoring vendor | metrics and alerting | Raj Mehta | 31 May 2026 | no |
+      | Load-testing service | synthetic traffic | Yusuf Demir | Apr 2027 | no |
+      | Design tool | marketing design | Nina Park | Apr 2027 | no |
+      | Payments provider | card processing | Ingrid Larsen | see contract | yes |
+      | Cloud provider | hosting | Raj Mehta | rolling | yes |
+
+  - id: drive-fin-headcount-q2
+    container: drive-finance
+    type: FILE
+    title: "Headcount budget — Q2 and Q3 2026"
+    owners: [ingrid]
+    last_modified_by: owen
+    created: 2026-04-20T10:00:00Z
+    updated: 2026-04-24T11:50:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-headcount-budget-2026
+    body: |
+      Six requisitions approved by the board on 16 April. Loaded cost covers salary,
+      payroll taxes, benefits and equipment, counted from the planned start month.
+
+      | Req | Planned start | 2026 loaded cost |
+      |---|---|---|
+      | REQ-14 Senior SRE | June | $133,000 |
+      | REQ-15 Support engineer, EMEA | July | $54,000 |
+      | REQ-16 Solutions engineer | July | $81,000 |
+      | REQ-17 Customer success manager | July | $63,000 |
+      | REQ-18 Engineer, Payments | September | $46,000 |
+      | REQ-19 Product designer | October | $31,000 |
+
+      Total 2026 impact: $408,000, inside the plan the board approved.
+
+  - id: mail-fin-0402
+    container: gmail-ingrid
+    type: MAIL
+    title: "GP-0312 — please approve the March timesheet"
+    from: ingrid
+    to: [raj]
+    created: 2026-04-02T09:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/ingrid/#inbox/fin-0402
+    mentions_orgs: [globus]
+    body: |
+      Hi Raj,
+
+      Globus Partners' March invoice says 21 days. Can you approve the timesheet in the
+      contractor portal so I can pay it next week? Ticket is FIN-41.
+
+      Thanks, Ingrid
+
+  - id: mail-fin-0415
+    container: gmail-ingrid
+    type: MAIL
+    title: "Monitoring vendor quote: $38,400 a year"
+    from: ingrid
+    to: [owen]
+    created: 2026-04-15T16:40:00Z
+    web_url: https://mail.acme-demo.example/mail/u/ingrid/#inbox/fin-0415
+    body: |
+      Owen, the monitoring vendor's renewal quote came in at $38,400 a year, up about
+      10% for the same plan. It needs your sign-off. Raj says we could drop one
+      environment after the migration and save roughly $6,000, but not before June.
+      Details in FIN-42.
+
+  - id: mail-fin-0428-1
+    container: gmail-ingrid
+    type: MAIL
+    title: "Invoice GP-0412 — April"
+    from: ines
+    to: [ingrid]
+    created: 2026-04-28T08:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/ingrid/#inbox/fin-0428-1
+    mentions_orgs: [globus]
+    body: |
+      Dear Ingrid,
+
+      Please find attached Globus Partners invoice GP-0412 for April: 22 days, €25,300,
+      payable within 30 days.
+
+      Kind regards,
+      Inês Duarte, Globus Partners
+
+  - id: mail-fin-0428-2
+    container: gmail-ingrid
+    type: MAIL
+    title: "GP-0412 needs your timesheet approval"
+    from: ingrid
+    to: [raj]
+    cc: [owen]
+    created: 2026-04-28T16:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/ingrid/#inbox/fin-0428-2
+    relations:
+      - { type: RELATED, to: mail-fin-0428-1 }
+    mentions_orgs: [globus]
+    body: |
+      Hi Raj,
+
+      The April invoice from Globus Partners is in (22 days). I can't pay it until the
+      April timesheet is approved in the portal. FIN-44 is waiting on that.
+
+      Ingrid
+
+  - id: mail-fin-0429
+    container: gmail-ingrid
+    type: MAIL
+    title: "Globus SOW cap — we hit it in early June"
+    from: ingrid
+    to: [owen]
+    created: 2026-04-29T10:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/ingrid/#inbox/fin-0429
+    mentions_orgs: [globus]
+    body: |
+      Owen,
+
+      Where the Globus Partners SOW stands:
+      - GP-0228, February, 10 days, €11,500 (paid 9 March)
+      - GP-0312, March, 21 days, €24,150 (paid 9 April)
+      - GP-0412, April, 22 days, €25,300 (waiting for Raj's timesheet approval)
+
+      Total invoiced €60,950 of the €92,000 cap, so 27 days are left. At full time that
+      runs out in the first week of June, before the SOW ends on 30 June. If Raj wants
+      to extend, we need an amendment either way; I've opened FIN-50.
+
+      Ingrid
+
+  - id: cf-wiki-security-training
+    container: cf-wiki
+    type: PAGE
+    title: "Security awareness training 2026"
+    author: owen
+    last_modified_by: owen
+    created: 2026-03-02T09:00:00Z
+    updated: 2026-04-21T09:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1371
+    body: |
+      Everyone at Acme completes the annual security awareness course: a 45-minute
+      module and a ten-question phishing quiz (pass mark 8).
+
+      **Due: 15 May 2026.**
+
+      ## What it covers
+      Phishing and payment-change fraud, handling customer data, reporting a lost device,
+      and secrets in code and logs.
+
+      ## How
+      Sign in to the training portal with SSO. Completion is recorded automatically;
+      the cyber insurer asks for the completion rate.
+
+      ## Change
+      21 April: the deadline moved from 30 April to 15 May, because the updated
+      phishing module only went live on 20 April.
+
+  - id: cf-wiki-requesting-software
+    container: cf-wiki
+    type: PAGE
+    title: "Requesting software and subscriptions"
+    author: ingrid
+    last_modified_by: ingrid
+    created: 2026-01-20T10:00:00Z
+    updated: 2026-04-08T14:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1352
+    body: |
+      ## The rule
+      Any software subscription, whatever it costs, needs finance approval through a
+      FIN ticket. This comes from the expense policy; it applies to monthly plans and
+      to free tiers that ask for a card.
+
+      ## How to ask
+      Open a FIN ticket with: the tool, the price and billing period, the number of seats,
+      who owns it, and whether it will hold customer data.
+
+      ## If it holds customer data
+      Security review first. The COO approves; allow five working days.
+
+      ## Trials
+      A trial of up to 30 days is fine without a ticket if no customer data goes in and
+      no card is needed.
+
+      ## Never
+      Put a subscription on a personal card and expense it.
+
+  - id: cf-wiki-office-days
+    container: cf-wiki
+    type: PAGE
+    title: "Office and remote days"
+    author: tomas
+    last_modified_by: tomas
+    created: 2026-02-02T10:00:00Z
+    updated: 2026-04-14T09:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1345
+    body: |
+      We have offices in Berlin and Lisbon.
+
+      ## Office days
+      If you live within 50 km of an office, come in on **Tuesdays and Thursdays**. Other
+      days are your choice. If you live further away you are remote, and we pay travel
+      for team weeks.
+
+      ## Team weeks
+      Each team meets in person for one week a quarter. Book travel through the travel
+      tool at least three weeks ahead.
+
+      ## Working abroad
+      More than four weeks outside your country of employment needs People approval;
+      raise an HR desk ticket.
+
+  - id: cf-wiki-device-policy
+    container: cf-wiki
+    type: PAGE
+    title: "Laptops and devices"
+    author: owen
+    last_modified_by: yusuf
+    created: 2025-11-05T10:00:00Z
+    updated: 2026-03-10T11:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1320
+    body: |
+      ## Your laptop
+      Company laptops are encrypted and enrolled in device management on day one. Keep
+      the operating system updated within 14 days of a release.
+
+      ## Lost or stolen
+      Report it **within one hour** to security@acme-demo.example and your manager,
+      even at night. We wipe the device remotely and rotate your sessions; you get a
+      replacement within two working days. A police report is needed only for theft.
+
+      ## Personal devices
+      Slack and email on your phone are fine with the company profile installed.
+      Customer data never goes on a personal device.
+
+  - id: cf-wiki-holidays-2026
+    container: cf-wiki
+    type: PAGE
+    title: "Company holidays 2026"
+    author: tomas
+    last_modified_by: tomas
+    created: 2025-12-10T10:00:00Z
+    updated: 2026-01-05T09:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1301
+    body: |
+      Acme closes everywhere on these days in 2026:
+
+      - Thursday 1 January
+      - Friday 1 May
+      - Thursday 24 and Friday 25 December
+      - Thursday 31 December
+
+      All other public holidays follow your country of employment. On-call over any
+      holiday is voluntary and paid as the on-call handbook says.
+
+  - id: cf-wiki-expenses-quick-guide
+    container: cf-wiki
+    type: PAGE
+    title: "Expenses: a quick guide"
+    author: ingrid
+    last_modified_by: ingrid
+    created: 2026-01-16T10:00:00Z
+    updated: 2026-01-16T10:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ACME/pages/1349
+    body: |
+      The full expense policy lives in the Finance folder. In short:
+
+      - Up to $250: buy it, keep the receipt, submit within 30 days.
+      - Over $250 and up to $2,500: ask your manager first.
+      - Over $2,500, or any software subscription: a FIN ticket for finance.
+      - Flights under six hours are economy.
+
+  - id: kb-help-reset-sso
+    container: kb-help
+    type: KB_FILE
+    title: "Reset SSO for a customer workspace"
+    author: chioma
+    created: 2026-03-03T11:00:00Z
+    web_url: https://kb.acme-demo.example/collections/help-centre/reset-sso
+    body: |
+      Use this when a customer's identity provider changed or its certificate expired
+      and nobody can sign in. You need the **owner** role on the workspace; admins
+      cannot do this.
+
+      1. In Admin → Security, turn off **Enforce SSO**. Owners can now sign in with
+         email and password.
+      2. Under SAML settings choose **Reset IdP metadata**, then upload the new metadata
+         XML or paste the metadata URL.
+      3. Test with **Sign in with SSO** in a private window.
+      4. Turn **Enforce SSO** back on.
+
+      If the owner is locked out too, Support can send a one-time recovery link after
+      verifying the request with a second owner.
+
+  - id: kb-help-large-exports
+    container: kb-help
+    type: KB_FILE
+    title: "Downloading a large workspace export"
+    author: mateo
+    created: 2026-04-21T09:00:00Z
+    web_url: https://kb.acme-demo.example/collections/help-centre/large-exports
+    body: |
+      Since 14 April, exports of more than 5,000 records run in the background.
+
+      1. Choose **Export workspace**. You'll see "Export in progress".
+      2. We email you a download link, usually within a few minutes.
+      3. The link works for 24 hours. After that, start a new export.
+
+      Smaller exports still download immediately.
+
+  - id: slack-general-0414
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Tomás Rivera, 2026-04-14 11:00"
+    author: tomas
+    created: 2026-04-14T11:00:00Z
+    body: |
+      Offsite planning: we want to get everyone together this year. Tell us your
+      preferred month and city in the survey (link in the People space) by 24 April.
+      Nothing is booked yet.
+
+  - id: slack-general-0421
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Owen Gallagher, 2026-04-21 09:30"
+    author: owen
+    created: 2026-04-21T09:30:00Z
+    body: |
+      I've moved the security awareness training deadline to 15 May. The new phishing
+      module only went live yesterday. Wiki page updated.
+
+  - id: slack-general-0428
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Tomás Rivera, 2026-04-28 10:00"
+    author: tomas
+    created: 2026-04-28T10:00:00Z
+    body: |
+      Reminder: Friday 1 May is a company holiday everywhere. If you're on call, the
+      handbook rules for holidays apply.
+
+  - id: slack-general-0429
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Zara Ahmed, 2026-04-29 11:15"
+    author: zara
+    created: 2026-04-29T11:15:00Z
+    body: |
+      New role on the wiki today: customer success manager. That makes four open roles.
+      Referral bonus is now $3,000, so send people our way.
+
+  - id: slack-general-0430
+    container: slack-general
+    type: MESSAGE
+    title: "#general — Rafael Costa, 2026-04-30 16:00"
+    author: rafael
+    created: 2026-04-30T16:00:00Z
+    body: |
+      All-hands next Thursday, 7 May, 15:00 CET: how Q1 went, what the board said, and
+      the plan for the rest of the year. Questions in advance welcome in this channel.
+
+  - id: jira-fin-51
+    container: jira-fin
+    type: TICKET
+    title: "FIN-51: Two conference tickets for the Kubernetes guild"
+    author: yusuf
+    reporter: yusuf
+    assignee: ingrid
+    created: 2026-04-30T10:00:00Z
+    updated: 2026-04-30T11:15:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-51
+    body: |
+      **Status:** Closed — not needed
+
+      Two tickets for a cloud-native conference in June, $1,340 in total.
+      Finance note: under $2,500 and not a subscription, so this only needs Raj's
+      approval; no FIN ticket required. Closing.
+
+  - id: slack-people-0415
+    container: slack-people
+    type: MESSAGE
+    title: "#people — Tomás Rivera, 2026-04-15 09:40"
+    author: tomas
+    created: 2026-04-15T09:40:00Z
+    body: |
+      Booking time off around May? Friday 1 May is a company holiday everywhere, so you
+      don't need to book it. The handbook update with the five-day carry-over has
+      slipped to May; the March announcement still stands.
+
+  - id: mail-hr-0330
+    container: gmail-tomas
+    type: MAIL
+    title: "Interview rubric — strong-hire rule updated"
+    from: tomas
+    to: [zara]
+    created: 2026-03-30T14:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/tomas/#inbox/hr-0330
+    body: |
+      Zara, I've changed the strong-hire rule on the wiki rubric as we agreed after the
+      calibration session: no score below 3, instead of an average of 3. Please mention
+      it in the next panel briefings. Old scorecards stay as they are.
+
+  - id: mail-hr-0414
+    container: gmail-tomas
+    type: MAIL
+    title: "Leo's first week"
+    from: tomas
+    to: [marcus]
+    cc: [kenji]
+    created: 2026-04-14T10:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/tomas/#inbox/hr-0414
+    body: |
+      Marcus, Kenji,
+
+      Leo starts on Monday. Laptop arrives Friday, accounts are requested, and his
+      onboarding plan is in the People folder. Could one of you meet him at 09:30 in the
+      Lisbon office? Welcome session with me at 11:00.
+
+      Tomás

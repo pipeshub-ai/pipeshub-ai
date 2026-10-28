@@ -1,0 +1,2926 @@
+# Writer W2: customers. Storylines S6 (Globex), S7 (Acme Flow delays across customers),
+# S8 (Northwind, Contoso, Fabrikam, the Kestrel prospect) and S9 (Bluebird Health).
+#
+# People roles live in the structured fields (owner, reporter, assignee, from/to/cc, owners,
+# last_modified_by); bodies name people only the way the source system shows them.
+# Two strings are kept out on purpose because acme-corp.yaml's acceptance questions treat them
+# as deal-desk leaks for Alice: the Northwind term is written "three years", never hyphenated,
+# and no discount percentage appears outside drive-deal-desk and the sales mailboxes.
+
+threads:
+  - id: slack-deals-0302
+    container: slack-deals
+    title: "#deals thread: Globex Corporation moves from Omar to Sofia (2026-03-02)"
+  - id: slack-acct-globex-0408
+    container: slack-acct-globex
+    title: "#acct-globex thread: Victor reports Flow is hours behind (2026-04-08)"
+  - id: slack-acct-globex-0414
+    container: slack-acct-globex
+    title: "#acct-globex thread: Globex asks for a dedicated cluster (2026-04-14)"
+  - id: slack-acct-globex-0428
+    container: slack-acct-globex
+    title: "#acct-globex thread: deal desk answer on the Globex expansion (2026-04-28)"
+  - id: slack-support-escalations-0408
+    container: slack-support-escalations
+    title: "#support-escalations thread: Acme Flow sync delays, three customers (2026-04-08)"
+  - id: slack-support-escalations-0410
+    container: slack-support-escalations
+    title: "#support-escalations thread: Acme Flow all-clear (2026-04-10)"
+  - id: slack-deals-0413
+    container: slack-deals
+    title: "#deals thread: Bluebird Health after the Flow delay (2026-04-13)"
+
+records:
+
+  # ===========================================================================
+  # S6 — Globex Corporation: expansion, handover, open cases
+  # ===========================================================================
+
+  # --- Salesforce: deals -------------------------------------------------------
+
+  - id: sf-deal-globex-new-business
+    container: sf-acct-globex
+    type: DEAL
+    title: "Globex Corporation — New business (180 seats)"
+    owner: omar
+    created: 2025-08-19T10:00:00Z
+    updated: 2025-10-28T16:30:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006GLOBEXNB/view
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Stage:** Closed Won · **Amount (ARR):** $54,000 ·
+      **Close date:** 2025-10-28 · **Type:** New business · **Seats:** 180
+
+      ## Description
+      Enterprise plan, 180 seats, one-year term starting 3 November 2025. Initial
+      rollout covers Globex's engineering and IT operations teams. Champion is their
+      VP engineering. Competitive: none (replacing an in-house tool).
+
+      ## Next steps
+      Closed. Expansion potential noted: Globex has roughly 750 knowledge workers in
+      scope once the pilot teams are happy.
+
+  - id: sf-deal-globex-flow-addon
+    container: sf-acct-globex
+    type: DEAL
+    title: "Globex Corporation — Acme Flow add-on"
+    owner: omar
+    created: 2026-02-09T14:20:00Z
+    updated: 2026-03-20T17:05:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006GLOBEXFLOW/view
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Stage:** Closed Won · **Amount (ARR):** $36,000 ·
+      **Close date:** 2026-03-20 · **Type:** Add-on
+
+      ## Description
+      Opened as "Acme Sync add-on" on 9 February; renamed to Acme Flow after the
+      product rename on 1 March. Adds Acme Flow for all 180 existing seats so Globex
+      can sync their ticketing and CRM data into their workspace. Co-terminous with
+      the main contract.
+
+      ## History
+      - 2026-02-09 Opportunity created after the Sync demo for Globex IT.
+      - 2026-03-02 Account territory moved; this opportunity stays with its original
+        owner until close, per the territory rules.
+      - 2026-03-20 Order form countersigned. Closed Won.
+
+  - id: sf-deal-globex-expansion
+    container: sf-acct-globex
+    type: DEAL
+    title: "Globex Corporation — Expansion to 750 seats"
+    owner: sofia
+    created: 2026-03-09T09:30:00Z
+    updated: 2026-04-28T15:40:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006GLOBEXEXP/view
+    mentions_orgs: [globex, globus]
+    body: |
+      **Account:** Globex Corporation · **Stage:** Negotiation · **Amount (ARR):** $212,000 ·
+      **Close date:** 2026-05-29 · **Type:** Expansion · **Seats:** 180 → 750 ·
+      **Probability:** 70%
+
+      ## Description
+      Company-wide rollout of Acme with Acme Flow. Globex wants to move from 180 to
+      750 seats once the platform team signs off. Globus Partners runs the rollout
+      workshops for Globex in May.
+
+      ## Next steps (updated 28 April)
+      - Procurement redlines received 20 April; legal answered 21 April.
+      - Deal desk answered the discount request 28 April; revised order form to
+        Olivia Grant by 29 April.
+      - Open asks that could slow signature: dedicated cluster / data residency
+        (case 00001044) and SSO events in the audit log export (case 00001046).
+
+  # --- Salesforce: cases ------------------------------------------------------
+
+  - id: sf-case-globex-0037
+    container: sf-acct-globex
+    type: CASE
+    title: "Case 00001037: SAML certificate rollover failed"
+    owner: chioma
+    reporter: victor
+    created: 2026-03-12T08:55:00Z
+    updated: 2026-03-13T15:10:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500GLOBEX0037/view
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Globex rotated their IdP signing certificate on 12 March and every SAML login
+      started failing with "Signature validation failed". About 180 users locked out
+      of the web app; API tokens unaffected.
+
+      ## Resolution
+      The new certificate had been uploaded to Globex's IdP but not to their Acme
+      workspace. Walked their admin through uploading the new metadata XML under
+      Admin → Security on 13 March; logins restored at 14:50 UTC. Mirrored in
+      ServiceNow as CS0004488.
+
+  - id: sf-case-globex-0041
+    container: sf-acct-globex
+    type: CASE
+    title: "Case 00001041: Acme Flow sync running hours behind"
+    owner: hannah
+    reporter: victor
+    created: 2026-04-08T13:15:00Z
+    updated: 2026-04-11T10:20:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500GLOBEX0041/view
+    relations:
+      - { type: RELATED, to: jira-sup-125 }
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Customer reports that tickets created in their ticketing system since early
+      morning have not appeared in their workspace. Their email calls it "Sync"; this
+      is Acme Flow. Last successful sync for their main connection 07:02 UTC.
+
+      ## Resolution
+      Part of the Acme Flow delay affecting several customers (SUP-125, incident
+      INC-2040). Engineering raised the flow-engine memory limit on 10 April and the
+      backlog drained the same afternoon. Customer confirmed on 11 April that
+      tickets were current and that no records were lost. Closed.
+
+  - id: sf-case-globex-0044
+    container: sf-acct-globex
+    type: CASE
+    title: "Case 00001044: Dedicated cluster / data residency request"
+    owner: hannah
+    reporter: olivia
+    created: 2026-04-14T16:05:00Z
+    updated: 2026-04-24T11:30:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500GLOBEX0044/view
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Status:** Open · **Priority:** Medium ·
+      **Origin:** Email · **Type:** Feature request
+
+      ## Description
+      As part of the expansion, Globex procurement asks whether Acme can run their
+      workspace on a dedicated cluster with data kept in the EU (Frankfurt). Their
+      information-security policy requires it above 500 users.
+
+      ## Internal notes
+      - 15 April: platform engineering is evaluating a dedicated cluster for Globex in
+        KEEL-40. Roughly three weeks of work; decision due 15 May.
+      - 24 April: customer told the decision date; they accept it as long as the
+        answer comes before signature.
+
+  - id: sf-case-globex-0046
+    container: sf-acct-globex
+    type: CASE
+    title: "Case 00001046: Audit log export is missing SSO events"
+    owner: chioma
+    reporter: olivia
+    created: 2026-04-21T10:40:00Z
+    updated: 2026-04-29T09:15:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500GLOBEX0046/view
+    mentions_orgs: [globex]
+    body: |
+      **Account:** Globex Corporation · **Status:** Open · **Priority:** Medium ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Globex's security team exported the audit log for 1–20 April and found no SSO
+      login or logout events, only workspace and permission changes. Their auditors
+      need SSO events for the expansion's security review.
+
+      ## Internal notes
+      Reproduced on a test workspace with SAML enabled. Escalated to engineering as
+      SUP-127; tracked in ServiceNow as CS0004500. No fix date yet.
+
+  # --- ServiceNow: Globex and Globus tickets -----------------------------------
+
+  - id: sn-4488
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004488: SAML logins fail after IdP certificate rotation — Globex"
+    author: chioma
+    reporter: victor
+    assignee: chioma
+    created: 2026-03-12T09:05:00Z
+    updated: 2026-03-13T15:00:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004488
+    mentions_orgs: [globex]
+    body: |
+      **Customer:** Globex Corporation (Enterprise) · **Status:** Solved · **Priority:** P2
+
+      All SAML logins for Globex fail with "Signature validation failed" since their
+      IdP certificate rotation this morning. 180 users affected.
+
+      Work notes:
+      - Compared the certificate fingerprint in the workspace (expires 2026-03-11)
+        with the one in their IdP metadata: different.
+      - Customer admin uploaded the new metadata under Admin → Security; logins
+        working again at 14:50 UTC on 13 March.
+      - Suggested they add the workspace to their certificate-rotation checklist.
+
+  - id: sn-4496
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004496: Acme Flow drops custom fields with dots (Globex)"
+    author: chioma
+    reporter: victor
+    assignee: chioma
+    created: 2026-04-15T10:20:00Z
+    updated: 2026-04-28T17:30:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004496
+    relations:
+      - { type: RELATED, to: jira-flow-312 }
+    mentions_orgs: [globex]
+    body: |
+      **Customer:** Globex Corporation (Enterprise) · **Status:** Open (awaiting customer) ·
+      **Priority:** P3
+
+      Globex maps CRM custom fields such as `region.code` and `cost.centre` into their
+      workspace with Acme Flow. Any field whose name contains a dot arrives empty; the
+      rest of the record syncs. 14 fields affected across two connections.
+
+      Work notes:
+      - 15 Apr: reproduced with a test connection; filed FLOW-312 for engineering.
+      - 15 Apr: workaround sent — rename the source field without the dot, or map it
+        through a calculated field.
+      - 28 Apr: FLOW-312 fix merged. Asked the customer to re-run a full sync and
+        confirm the 14 fields now populate. Waiting on their confirmation.
+
+  - id: sn-4497
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004497: Globex: SSO login loop in Safari"
+    author: lucas
+    reporter: victor
+    assignee: lucas
+    created: 2026-04-22T08:40:00Z
+    updated: 2026-04-27T14:10:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004497
+    mentions_orgs: [globex]
+    body: |
+      **Customer:** Globex Corporation (Enterprise) · **Status:** Open · **Priority:** P3
+
+      Some Globex users on Safari (macOS 15) are bounced between the IdP and the
+      workspace login page until the browser gives up. Chrome and Firefox are fine.
+      Around 25 users affected.
+
+      Work notes:
+      - 22 Apr: interim workaround sent to the customer — turn off "Prevent cross-site
+        tracking" in Safari's privacy settings for the duration, or use Chrome.
+      - 23 Apr: captured a HAR file from one affected user. Chioma to review the SAML
+        trace, since she handled their certificate rollover in March.
+      - 27 Apr: still investigating whether the session cookie is dropped on the
+        redirect back from the IdP.
+
+  - id: sn-4499
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004499: Globus Partners: partner sandbox workspace access"
+    author: chioma
+    reporter: ines
+    assignee: chioma
+    created: 2026-04-24T13:30:00Z
+    updated: 2026-04-28T10:05:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004499
+    mentions_orgs: [globus]
+    body: |
+      **Customer:** Globus Partners (Partner) · **Status:** Open · **Priority:** P4
+
+      Globus Partners asks for a partner sandbox workspace for six of their
+      consultants so they can prepare training material. They want it on the
+      partner plan (no billing) with Acme Flow enabled and sample data loaded.
+
+      Work notes:
+      - 24 Apr: partner sandboxes need sign-off from the partner manager before
+        provisioning. Asked internally.
+      - 28 Apr: names and email addresses for the six consultants received. Waiting
+        on sign-off; sandbox to be created the day it arrives.
+
+  - id: sn-4500
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004500: Globex: audit log export has no SSO login events"
+    author: chioma
+    reporter: olivia
+    assignee: chioma
+    created: 2026-04-21T11:00:00Z
+    updated: 2026-04-29T09:20:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004500
+    relations:
+      - { type: RELATED, to: jira-sup-127 }
+    mentions_orgs: [globex]
+    body: |
+      **Customer:** Globex Corporation (Enterprise) · **Status:** Open · **Priority:** P3
+
+      Globex's audit log export for 1–20 April contains workspace and permission
+      events but no SSO login or logout events. Their auditors need them for the
+      expansion's security review. Same request is on the account's Salesforce case.
+
+      Work notes:
+      - 21 Apr: reproduced on a SAML test workspace; the events are visible in the
+        in-app audit view but absent from the CSV export. Escalated as SUP-127.
+      - 29 Apr: no engineering update yet. Told the customer we will report back by
+        8 May.
+
+  - id: jira-sup-127
+    container: jira-sup
+    type: TICKET
+    title: "SUP-127: Audit log CSV export omits SSO events (Globex)"
+    author: chioma
+    reporter: chioma
+    assignee: yusuf
+    created: 2026-04-21T11:30:00Z
+    updated: 2026-04-29T09:00:00Z
+    web_url: https://jira.acme-demo.example/browse/SUP-127
+    relations:
+      - { type: RELATED, to: sn-4500 }
+    mentions_orgs: [globex]
+    body: |
+      **Priority:** Medium · **Status:** Open
+
+      The audit log CSV export drops every event of type `sso.login` and `sso.logout`.
+      The in-app audit view shows them, so the events are recorded; something in the
+      export path filters them out. Customer: Globex Corporation (CS0004500), who
+      need the events for a security review before signing their expansion.
+
+      Steps: enable SAML on a test workspace, log in twice, export the audit log for
+      today. Expected: two `sso.login` rows. Actual: none.
+
+      Not yet triaged to a root cause.
+
+  # --- Mail ---------------------------------------------------------------------
+
+  - id: mail-globex-0302
+    container: gmail-omar
+    type: MAIL
+    title: "Globex handover — notes for Sofia"
+    from: omar
+    to: [sofia]
+    cc: [lena]
+    created: 2026-03-02T11:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/globex-0302
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      Globex is yours from today. Quick notes:
+
+      - 180 seats, Enterprise since 3 November. Champion is Victor Alvarez (VP
+        engineering). Olivia Grant runs procurement and reads every clause.
+      - The Flow add-on (renamed from Sync yesterday) is in legal; I'll take it to
+        signature since it's nearly done, as the territory rules allow. Expect it by
+        20 March.
+      - Real upside is the company-wide rollout: Victor talks about 750 seats. I'd
+        open that as your own opportunity.
+      - Hannah is their TAM and knows the technical history.
+
+      Omar
+
+  - id: mail-globex-0305
+    container: gmail-sofia
+    type: MAIL
+    title: "Introduction — your new account executive at Acme"
+    from: sofia
+    to: [victor]
+    cc: [omar, hannah]
+    created: 2026-03-05T09:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/globex-0305
+    mentions_orgs: [globex]
+    body: |
+      Hi Victor,
+
+      From this week I am Globex Corporation's account executive at Acme; Omar has
+      moved to a different territory. He will still see the Acme Flow add-on through
+      to signature so nothing changes on that paperwork. Hannah stays your technical
+      account manager.
+
+      I'd love 30 minutes next week to hear how the first four months have gone and
+      what a wider rollout would need. Does Tuesday 10 March at 15:00 CET work?
+
+      Best,
+      Sofia
+
+  - id: mail-globex-0325
+    container: gmail-sofia
+    type: MAIL
+    title: "Globex rollout workshops — Globus Partners"
+    from: ines
+    to: [sofia]
+    cc: [hannah]
+    created: 2026-03-25T14:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0325
+    mentions_orgs: [globus, globex]
+    body: |
+      Hello Sofia,
+
+      Following our call: Globus Partners will run the Globex rollout workshops as
+      Globex's implementation partner. We have pencilled in two half-day sessions,
+      12 May and 19 May, at Globex's Rotterdam office — the first for admins
+      (connections, field mapping, SSO), the second for team leads.
+
+      We'll need a partner sandbox with Acme Flow before then so our consultants can
+      build the training material. Who should I ask for that?
+
+      Kind regards,
+      Inês Duarte
+      Engagement manager, Globus Partners
+
+  - id: mail-globex-0408
+    container: gmail-sofia
+    type: MAIL
+    title: "Sync is hours behind again"
+    from: victor
+    to: [sofia]
+    cc: [hannah]
+    created: 2026-04-08T13:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0408
+    body: |
+      Sofia, Hannah,
+
+      Sync is hours behind again. Nothing created in our ticketing system since about
+      7am UTC has shown up in Acme. My service desk leads are working from two
+      screens. This is exactly the kind of thing our board will ask about before we
+      put 750 people on it.
+
+      Can someone tell me what's going on and when it will catch up?
+
+      Victor
+
+  - id: mail-globex-0410
+    container: gmail-hannah
+    type: MAIL
+    title: "Re: Sync is hours behind again"
+    from: hannah
+    to: [victor]
+    cc: [sofia]
+    created: 2026-04-10T16:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/hannah/#sent/globex-0410
+    relations:
+      - { type: RELATED, to: mail-globex-0408 }
+    body: |
+      Hi Victor,
+
+      Acme Flow is fully caught up. The delay came from the sync engine running out
+      of memory after an infrastructure move; engineering raised the limit this
+      morning and added an alert on sync lag so we see it before you do. Your
+      connections drained their backlog by 14:40 UTC and nothing was lost.
+
+      Could your team spot-check a few tickets from Wednesday? Once you confirm I'll
+      close the case.
+
+      Hannah
+
+  - id: mail-globex-0414
+    container: gmail-sofia
+    type: MAIL
+    title: "Dedicated cluster and data residency for the expansion"
+    from: olivia
+    to: [sofia]
+    cc: [hannah]
+    created: 2026-04-14T15:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0414
+    mentions_orgs: [globex]
+    body: |
+      Dear Sofia,
+
+      Our information-security policy requires any SaaS tool with more than 500 Globex
+      users to keep data in the EU and, preferably, on infrastructure not shared with
+      other customers. Before we sign for 750 seats, please confirm:
+
+      1. Can Acme host our workspace on a dedicated cluster?
+      2. Can all data, including backups, stay in Frankfurt?
+      3. What would either option cost?
+
+      We need written answers before the contract goes to signature.
+
+      Regards,
+      Olivia Grant
+      Procurement manager, Globex Corporation
+
+  - id: mail-globex-0416
+    container: gmail-daniel
+    type: MAIL
+    title: "Globex data residency — what we can say today"
+    from: daniel
+    to: [sofia]
+    cc: [hannah]
+    created: 2026-04-16T10:25:00Z
+    web_url: https://mail.acme-demo.example/mail/u/daniel/#sent/globex-0416
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      On Olivia's three questions:
+
+      1. Dedicated cluster: not a standard offering. Platform is evaluating it for
+         Globex now; Raj's team expects a decision by 15 May. Don't promise it.
+      2. EU residency: yes today. Their workspace can be moved to our Frankfurt
+         region, backups included. It takes a scheduled two-hour window.
+      3. Cost: Frankfurt is list price. Dedicated cluster pricing waits on the
+         evaluation.
+
+      I'd answer 2 in writing now and say 1 and 3 follow by mid-May.
+
+      Daniel
+
+  - id: mail-globex-0420
+    container: gmail-sofia
+    type: MAIL
+    title: "Acme order form — Globex procurement redlines"
+    from: olivia
+    to: [sofia]
+    created: 2026-04-20T08:35:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0420
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      Attached is our redlined order form and MSA. The main points:
+
+      - Liability cap raised to 2× annual fees (you have 1×).
+      - Price protection: no increase above 3% at renewal.
+      - Uptime SLA of 99.9% with service credits, given the sync incident this month.
+      - Termination for convenience after 12 months.
+      - Data processing addendum to name the Frankfurt region explicitly.
+
+      We also need a better price than the list figure to get 750 seats approved
+      internally. Happy to discuss on a call this week.
+
+      Olivia
+
+  - id: mail-globex-0421
+    container: gmail-sofia
+    type: MAIL
+    title: "Re: Acme order form — Globex procurement redlines"
+    from: sofia
+    to: [olivia]
+    cc: [jack]
+    created: 2026-04-21T17:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/globex-0421
+    relations:
+      - { type: RELATED, to: mail-globex-0420 }
+    mentions_orgs: [globex]
+    body: |
+      Hi Olivia,
+
+      Our legal team's answers:
+
+      - Liability cap: we can go to 1.5× annual fees.
+      - Price protection: accepted at 5% at renewal; 3% is below our floor for a
+        multi-year agreement.
+      - Uptime SLA 99.9% with credits: accepted.
+      - Termination for convenience: not accepted; we can offer a one-time seat
+        reduction of up to 20% at the first anniversary instead.
+      - DPA naming Frankfurt: accepted.
+
+      On price, I am taking a request to our deal desk this week and will come back
+      with a revised order form.
+
+      Sofia
+
+  - id: mail-globex-0423
+    container: gmail-sofia
+    type: MAIL
+    title: "Case study — yes from our side"
+    from: victor
+    to: [sofia]
+    created: 2026-04-23T09:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0423
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      You have our written permission to publish a case study about how Globex
+      Corporation uses Acme and Sync — sorry, Flow — for our service desk. Conditions:
+      our comms team approves the final text, no figures about our ticket volumes,
+      and you can quote me by name.
+
+      Victor
+
+  - id: mail-globex-0423-2
+    container: gmail-sofia
+    type: MAIL
+    title: "Fwd: Case study — yes from our side"
+    from: sofia
+    to: [mateo]
+    cc: [nina]
+    created: 2026-04-23T09:40:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/globex-0423-2
+    relations:
+      - { type: RELATED, to: mail-globex-0423 }
+    mentions_orgs: [globex]
+    body: |
+      Mateo, Nina — Victor's written OK for the Globex case study is below. Note his
+      three conditions: Globex comms approves the final text, no ticket-volume
+      figures, and he can be quoted by name. Please send me the draft before it goes
+      to them; the expansion is in negotiation, so tone matters.
+
+      Sofia
+
+      ---------- Forwarded message ----------
+      From: Victor Alvarez <victor.alvarez@globex.example>
+      Subject: Case study — yes from our side
+
+  - id: mail-globex-0427
+    container: gmail-sofia
+    type: MAIL
+    title: "Deal desk request — Globex expansion"
+    from: sofia
+    to: [lena]
+    cc: [jack]
+    created: 2026-04-27T10:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/globex-0427
+    mentions_orgs: [globex]
+    body: |
+      Lena,
+
+      Requesting deal desk review for the Globex Corporation expansion (180 → 750
+      seats, $212,000 ARR at list). Olivia Grant says they need a better price to get
+      750 seats approved internally. I'm asking for an 18% discount on a one-year
+      term. Context: the April sync delay is fresh in their minds, they have given us
+      a case study, and the close date is 29 May.
+
+      Jack has the redline tracker if you need the legal positions.
+
+      Sofia
+
+  - id: mail-globex-0428
+    container: gmail-lena
+    type: MAIL
+    title: "Re: Deal desk request — Globex expansion"
+    from: lena
+    to: [sofia]
+    cc: [jack]
+    created: 2026-04-28T14:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/lena/#sent/globex-0428
+    relations:
+      - { type: RELATED, to: mail-globex-0427 }
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      Deal desk met this morning. Approved: 15% off list, on a two-year term rather
+      than one. We would not go to 18% for a single year. Jack will update the order
+      form and the opportunity. You can tell Olivia the revised form is on its way;
+      don't put the percentage in writing to them before it's on the form.
+
+      Lena
+
+  - id: mail-globex-0428-2
+    container: gmail-jack
+    type: MAIL
+    title: "Globex expansion — revised order form v4"
+    from: jack
+    to: [sofia]
+    cc: [lena]
+    created: 2026-04-28T17:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/jack/#sent/globex-0428-2
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      Order form v4 for Globex Corporation is in the deal folder. Changes from v3:
+      two-year term, the approved discount applied to both years, liability cap
+      1.5×, 5% renewal cap, Frankfurt named in the DPA, and the first-anniversary
+      seat-reduction clause. The opportunity in Salesforce is updated; amount stays
+      at list until signature, as usual.
+
+      Jack
+
+  - id: mail-globex-0429
+    container: gmail-sofia
+    type: MAIL
+    title: "Re: Acme order form — revised version"
+    from: olivia
+    to: [sofia]
+    cc: [victor]
+    created: 2026-04-29T16:25:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/globex-0429
+    relations:
+      - { type: RELATED, to: mail-globex-0421 }
+    body: |
+      Sofia,
+
+      Thank you for the revised order form. The two-year term works for us and legal
+      is comfortable with the seat-reduction clause in place of termination for
+      convenience. Two things remain before I can route it for signature: your
+      answer on the dedicated cluster (you said mid-May), and the SSO events missing
+      from the audit log export, which our auditors need.
+
+      If both land by 20 May we can still sign by the end of May.
+
+      Olivia
+
+  - id: mail-globex-0312
+    container: gmail-chioma
+    type: MAIL
+    title: "URGENT: nobody at Globex can log in"
+    from: victor
+    to: [chioma]
+    cc: [hannah]
+    created: 2026-03-12T08:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/chioma/#inbox/globex-0312
+    mentions_orgs: [globex]
+    body: |
+      Chioma,
+
+      Since 08:30 every SSO login to Acme fails with "Signature validation failed".
+      We rotated our IdP signing certificate this morning, which was scheduled. API
+      integrations still work. Please call me on my mobile; I have 180 people unable
+      to work.
+
+      Victor Alvarez
+      VP Engineering, Globex Corporation
+
+  - id: mail-globex-0422
+    container: gmail-lucas
+    type: MAIL
+    title: "Login keeps looping on Safari"
+    from: victor
+    to: [lucas]
+    created: 2026-04-22T08:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/lucas/#inbox/globex-0422
+    body: |
+      Hi Lucas,
+
+      About 25 of our Mac users get stuck in a loop when they sign in with SSO on
+      Safari: Acme sends them to our IdP, the IdP sends them back, and round it goes.
+      Same users are fine in Chrome. Started after the weekend. Can you take a look?
+      I can get you a screen recording.
+
+      Victor
+
+  - id: mail-globex-0424
+    container: gmail-hannah
+    type: MAIL
+    title: "Sandbox for our consultants ahead of the Globex workshops"
+    from: ines
+    to: [hannah]
+    created: 2026-04-24T12:55:00Z
+    web_url: https://mail.acme-demo.example/mail/u/hannah/#inbox/globex-0424
+    mentions_orgs: [globus, globex]
+    body: |
+      Hi Hannah,
+
+      Sofia pointed me to you. For the Globex rollout workshops on 12 and 19 May our
+      consultants need somewhere to build the exercises: a sandbox workspace with
+      Acme Flow and some sample data, for six Globus Partners consultants. I've
+      raised it with your support desk as well. Could you help it along? We'd like
+      it by 5 May.
+
+      Thanks,
+      Inês
+
+  - id: mail-globex-0425
+    container: gmail-hannah
+    type: MAIL
+    title: "Re: Sandbox for our consultants ahead of the Globex workshops"
+    from: hannah
+    to: [ines]
+    cc: [chioma]
+    created: 2026-04-25T09:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/hannah/#sent/globex-0425
+    relations:
+      - { type: RELATED, to: mail-globex-0424 }
+    mentions_orgs: [globex]
+    body: |
+      Hi Inês,
+
+      Chioma has your support request and will set the sandbox up as soon as the
+      partner sign-off comes through; please send her the six consultants' names
+      and emails. 5 May is realistic.
+
+      Hannah
+
+  # --- Slack -------------------------------------------------------------------
+
+  - id: slack-deals-0302-1
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Lena Fischer, 2026-03-02 09:05"
+    author: lena
+    created: 2026-03-02T09:05:00Z
+    thread: slack-deals-0302
+    mentions_orgs: [northwind, contoso, fabrikam, globex]
+    body: |
+      Territory change from today: Globex Corporation moves from Omar to Sofia.
+      Omar keeps Northwind, Contoso and Fabrikam. Opportunities already open stay
+      with their owner until they close.
+
+  - id: slack-deals-0302-2
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-03-02 09:12"
+    author: omar
+    created: 2026-03-02T09:12:00Z
+    thread: slack-deals-0302
+    body: |
+      Sent Sofia my handover notes. I'll finish the Flow add-on, it's in legal and
+      should close by 20 March.
+
+  - id: slack-deals-0302-3
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Sofia Rossi, 2026-03-02 09:20"
+    author: sofia
+    created: 2026-03-02T09:20:00Z
+    thread: slack-deals-0302
+    body: |
+      Thanks both. Intro mail to Victor goes out this week; I'll open the 750-seat
+      expansion once I've had the discovery call.
+
+  - id: slack-acct-globex-0408-1
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Sofia Rossi, 2026-04-08 13:22"
+    author: sofia
+    created: 2026-04-08T13:22:00Z
+    thread: slack-acct-globex-0408
+    body: |
+      Victor just emailed: "Sync is hours behind again". Nothing since 7am UTC.
+      Hannah, is this the same thing support is seeing elsewhere today?
+
+  - id: slack-acct-globex-0408-2
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Hannah Schmidt, 2026-04-08 13:31"
+    author: hannah
+    created: 2026-04-08T13:31:00Z
+    thread: slack-acct-globex-0408
+    mentions_orgs: [globex]
+    body: |
+      Yes. Two other customers reported it this morning; engineering has an incident
+      open on the Flow engine. I've opened a case for Globex and will keep Victor
+      updated directly.
+
+  - id: slack-acct-globex-0408-3
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Daniel Kim, 2026-04-08 13:40"
+    author: daniel
+    created: 2026-04-08T13:40:00Z
+    thread: slack-acct-globex-0408
+    body: |
+      If Victor asks: nothing is lost, the connections queue and catch up once the
+      engine recovers. Worth saying since their board is watching the rollout.
+
+  - id: slack-acct-globex-0414-1
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Sofia Rossi, 2026-04-14 16:10"
+    author: sofia
+    created: 2026-04-14T16:10:00Z
+    thread: slack-acct-globex-0414
+    body: |
+      Olivia wants a dedicated cluster and Frankfurt-only data before signing for
+      750 seats. Written answers needed. Daniel, what can we actually say?
+
+  - id: slack-acct-globex-0414-2
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Daniel Kim, 2026-04-14 16:25"
+    author: daniel
+    created: 2026-04-14T16:25:00Z
+    thread: slack-acct-globex-0414
+    body: |
+      Frankfurt: yes. Dedicated cluster: not today. I'll ask Raj whether platform
+      can evaluate it and write up an answer for you by Thursday.
+
+  - id: slack-acct-globex-0423
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Sofia Rossi, 2026-04-23 09:45"
+    author: sofia
+    created: 2026-04-23T09:45:00Z
+    mentions_orgs: [globex]
+    body: |
+      Good news: Victor gave written permission for a Globex case study. Forwarded
+      to marketing (Mateo and Nina).
+
+  - id: slack-acct-globex-0428-1
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Sofia Rossi, 2026-04-28 14:35"
+    author: sofia
+    created: 2026-04-28T14:35:00Z
+    thread: slack-acct-globex-0428
+    mentions_orgs: [globex]
+    body: |
+      Deal desk came back on Globex: approved, but on a two-year term. Revised order
+      form goes to Olivia tomorrow.
+
+  - id: slack-acct-globex-0428-2
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Jack Thornton, 2026-04-28 17:55"
+    author: jack
+    created: 2026-04-28T17:55:00Z
+    thread: slack-acct-globex-0428
+    body: |
+      Order form v4 is in the deal folder, Salesforce updated. Remaining blockers on
+      their side: the dedicated cluster answer and the audit log case.
+
+  # --- Drive and Confluence -------------------------------------------------------
+
+  - id: drive-sales-globex-plan
+    container: drive-sales
+    type: FILE
+    title: "Account plan — Globex Corporation"
+    owners: [sofia]
+    last_modified_by: hannah
+    created: 2025-11-04T10:00:00Z
+    updated: 2026-04-24T15:20:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-account-globex
+    mentions_orgs: [globex, globus]
+    body: |
+      ## Account
+      Globex Corporation, Enterprise since 3 November 2025, 180 seats, Acme Flow
+      add-on since 20 March 2026. Account executive changed on 2 March 2026
+      (territory change). Technical account manager unchanged.
+
+      ## Stakeholders
+      Victor Alvarez, VP engineering — champion; still calls the product "Sync".
+      Olivia Grant, procurement — owns the contract and the security review.
+      Inês Duarte, Globus Partners — Globex's implementation partner for the rollout
+      (Globus is a partner, not a customer; no Salesforce account).
+
+      ## Expansion
+      180 → 750 seats, $212,000 ARR, target signature 29 May. Rollout workshops run
+      by Globus Partners on 12 and 19 May.
+
+      ## Risks (updated 24 April)
+      - Dedicated cluster / EU data residency request; platform decision due 15 May.
+      - Audit log export missing SSO events; open, no fix date.
+      - Flow reliability: April sync delay resolved, but Victor's board noticed.
+      - Safari SSO login loop for ~25 users; support investigating.
+
+  - id: drive-sales-globex-redlines
+    container: drive-sales
+    type: FILE
+    title: "Globex MSA and order form — redline tracker"
+    owners: [jack]
+    last_modified_by: sofia
+    created: 2026-04-20T11:00:00Z
+    updated: 2026-04-28T18:05:00Z
+    web_url: https://docs.acme-demo.example/spreadsheets/d/acme-globex-redlines
+    mentions_orgs: [globex]
+    body: |
+      | # | Clause | Globex asked | Our position | Status |
+      |---|---|---|---|---|
+      | 1 | Liability cap | 2× annual fees | 1.5× | Agreed 29 Apr |
+      | 2 | Renewal price cap | 3% | 5% | Agreed 29 Apr |
+      | 3 | Uptime SLA | 99.9% with credits | Accepted | Agreed |
+      | 4 | Termination for convenience | After 12 months | One-time 20% seat reduction at first anniversary | Agreed 29 Apr |
+      | 5 | DPA region | Name Frankfurt | Accepted | Agreed |
+      | 6 | Price | Below list | Deal desk approved, two-year term (v4) | Sent 28 Apr |
+      | 7 | Dedicated cluster | Required >500 users | Evaluation, answer by 15 May | Open |
+      | 8 | SSO events in audit export | Required by auditors | Engineering investigating | Open |
+
+  - id: drive-dealdesk-globex
+    container: drive-deal-desk
+    type: FILE
+    title: "Deal desk decision — Globex Corporation expansion"
+    owners: [lena]
+    last_modified_by: jack
+    created: 2026-04-28T10:30:00Z
+    updated: 2026-04-28T12:10:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-dealdesk-globex
+    group: deal-desk
+    mentions_orgs: [globex]
+    body: |
+      **Deal desk members only** · Decided 28 April 2026
+
+      ## Request
+      Globex Corporation expansion, 180 → 750 seats, $212,000 ARR at list. Account
+      executive requested 18% off on a one-year term (procurement pressure; April
+      sync incident).
+
+      ## Decision
+      Approved 15% off list, conditional on a two-year term with the discount on both
+      years. 18% on one year declined. Floor price for this deal: $238 per seat per
+      year; any further concession below that comes back to the deal desk.
+
+      ## Reasoning
+      Two years of committed revenue justify the concession; a one-year term at 18%
+      would set the reference price for the renewal. No service credit stacking with
+      the new SLA.
+
+  - id: cf-sales-territory-2026
+    container: cf-sales
+    type: PAGE
+    title: "Territories and account assignments — 2026"
+    author: lena
+    last_modified_by: jack
+    created: 2026-01-08T10:00:00Z
+    updated: 2026-03-02T08:45:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES/pages/2101/territories-2026
+    mentions_orgs: [northwind, contoso, fabrikam, globex, bluebird]
+    body: |
+      ## Assignments (from 2 March 2026)
+      | Account | Segment | Account executive |
+      |---|---|---|
+      | Northwind Traders | Enterprise | Omar Haddad |
+      | Contoso | Enterprise | Omar Haddad |
+      | Fabrikam | Business | Omar Haddad |
+      | Globex Corporation | Enterprise | Sofia Rossi (Omar Haddad until 1 March) |
+      | Bluebird Health | New logo | Sofia Rossi |
+
+      ## Rules when an account changes hands
+      1. Opportunities already open on the change date stay with their owner until
+         they close, then the account owner takes over.
+      2. New opportunities belong to the new account owner.
+      3. The previous owner sends written handover notes within one working day and
+         joins the first customer call if asked.
+      4. Commission on an open opportunity goes to its owner at close.
+
+  - id: cf-sales-globex-map
+    container: cf-sales
+    type: PAGE
+    title: "Globex Corporation — mutual action plan (expansion)"
+    author: sofia
+    last_modified_by: daniel
+    created: 2026-03-16T12:00:00Z
+    updated: 2026-04-24T16:40:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES/pages/2188/globex-map
+    mentions_orgs: [globex, globus]
+    body: |
+      Shared with Globex in a simplified form. Target: signature by 29 May 2026.
+
+      | Step | Who | Due | Status |
+      |---|---|---|---|
+      | Discovery call | Acme sales, Globex VP engineering | 10 Mar | Done |
+      | Pilot extension to IT ops | Globex | 31 Mar | Done |
+      | Security review (incl. audit log) | Globex security, Acme SE | 15 May | In progress |
+      | Data residency answer | Acme platform | 15 May | In progress |
+      | Redlines | Globex procurement, Acme legal | 30 Apr | Done |
+      | Rollout workshops | Globus Partners | 12 and 19 May | Scheduled |
+      | Signature | Globex procurement | 29 May | — |
+
+      Notes: workshops are delivered by Globus Partners, Globex's implementation
+      partner; Acme provides a partner sandbox.
+
+  - id: cf-sales-partner-globus
+    container: cf-sales
+    type: PAGE
+    title: "Partner profile — Globus Partners"
+    author: daniel
+    last_modified_by: lena
+    created: 2026-02-20T10:00:00Z
+    updated: 2026-04-27T11:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES/pages/2150/partner-globus
+    mentions_orgs: [globus]
+    body: |
+      ## Who they are
+      Globus Partners is a systems integrator in Lisbon and Rotterdam, about 120
+      consultants. Engagement manager for Acme: Inês Duarte. Not a customer: there is
+      no Salesforce account and nothing is billed through them.
+
+      ## What they do with us
+      - Implementation partner: run rollout workshops and field-mapping projects for
+        customers who buy Acme Flow.
+      - Co-host of the partner webinar "Rolling out Acme Flow at scale" on 14 May.
+
+      ## Rules of engagement
+      Register a partner-sourced opportunity in Salesforce with the partner field set.
+      Partner sandboxes need sign-off from the VP Sales before support creates them.
+      No referral fees in 2026.
+
+  # ===========================================================================
+  # S7 — Acme Flow delays across customers
+  # ===========================================================================
+
+  # --- February predecessor (before the rename) ------------------------------
+
+  - id: sn-4485
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004485: Acme Sync duplicated records — Contoso"
+    author: sam
+    reporter: jonas
+    assignee: sam
+    created: 2026-02-19T10:25:00Z
+    updated: 2026-02-20T16:40:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004485
+    mentions_orgs: [contoso]
+    body: |
+      **Customer:** Contoso (Enterprise) · **Status:** Solved · **Priority:** P2
+
+      Contoso reports that Acme Sync created duplicate copies of about 2,300 records
+      overnight in their workspace. Every duplicate came from their CRM connection;
+      the timestamps line up with a burst of webhook retries from 01:10 to 01:55 UTC.
+
+      Work notes:
+      - 19 Feb: engineering opened INC-2036 (webhook retries duplicated records).
+        Customer asked not to delete anything until the fix is in.
+      - 20 Feb: fix deployed; engineering ran the de-duplication script against the
+        workspace at 15:30 UTC. 2,297 duplicates removed, none of the originals.
+        Customer verified a sample of 50 and confirmed. Solved.
+
+  - id: mail-contoso-0219
+    container: gmail-sam
+    type: MAIL
+    title: "Duplicate records after last night's Sync run"
+    from: jonas
+    to: [sam]
+    created: 2026-02-19T10:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sam/#inbox/contoso-0219
+    mentions_orgs: [contoso]
+    body: |
+      Hi Sam,
+
+      Acme Sync has duplicated a large number of our CRM records overnight — I count
+      roughly 2,300. Same title, same fields, different IDs. Our reports now double
+      count open opportunities. Please advise before my team starts deleting by hand.
+
+      Jonas Becker
+      Head of IT operations, Contoso Ltd
+
+  - id: mail-contoso-0220
+    container: gmail-sam
+    type: MAIL
+    title: "Re: Duplicate records after last night's Sync run"
+    from: sam
+    to: [jonas]
+    created: 2026-02-20T16:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sam/#sent/contoso-0220
+    relations:
+      - { type: RELATED, to: mail-contoso-0219 }
+    body: |
+      Hi Jonas,
+
+      The duplicates are gone: our engineers fixed how Acme Sync handles repeated
+      webhooks and removed 2,297 duplicate records from your workspace at 15:30 UTC
+      today. Originals were untouched. Thanks for checking the sample of 50 so
+      quickly. Your reports should count correctly from tonight's refresh.
+
+      Sam
+
+  # --- 8 April: three customers report delayed syncs --------------------------
+
+  - id: mail-bluebird-0408
+    container: gmail-lucas
+    type: MAIL
+    title: "Acme Flow not syncing since early this morning"
+    from: kwame
+    to: [lucas]
+    created: 2026-04-08T07:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/lucas/#inbox/bluebird-0408
+    mentions_orgs: [bluebird]
+    body: |
+      Lucas,
+
+      Our pilot users report that nothing from our scheduling system has synced into
+      Acme since around 06:15 UTC. The Flow status page in the admin console shows
+      "running" but the last-synced time isn't moving. We're three weeks into the
+      pilot and I have a steering meeting on Friday.
+
+      Kwame Mensah
+      CIO, Bluebird Health
+
+  - id: sn-4490
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004490: Acme Flow sync stalled — Bluebird Health"
+    author: lucas
+    reporter: kwame
+    assignee: lucas
+    created: 2026-04-08T07:30:00Z
+    updated: 2026-04-10T15:20:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004490
+    relations:
+      - { type: RELATED, to: jira-sup-125 }
+    mentions_orgs: [bluebird]
+    body: |
+      **Customer:** Bluebird Health (Pilot) · **Status:** Solved · **Priority:** P2
+
+      First report of the day: Acme Flow has not synced anything for the pilot
+      workspace since about 06:15 UTC. Connection shows "running"; queue depth for the
+      workspace keeps growing.
+
+      Work notes:
+      - 07:48 Checked three other Flow workspaces: two more lagging. Posted in
+        #support-escalations.
+      - 13:30 Linked to SUP-125; engineering incident open.
+      - 10 Apr 14:40 Backlog drained. Customer confirmed records from 8–9 April are
+        present. Solved.
+
+  - id: mail-contoso-0408
+    container: gmail-chioma
+    type: MAIL
+    title: "Flow delays — tickets missing since this morning"
+    from: jonas
+    to: [chioma]
+    created: 2026-04-08T11:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/chioma/#inbox/contoso-0408
+    body: |
+      Hi Chioma,
+
+      Acme Flow seems to be running several hours behind for us. Tickets raised in
+      our service desk after about 06:30 UTC are not in Acme yet. Is there a known
+      issue? We have an export deadline this afternoon.
+
+      Jonas
+
+  - id: sn-4492
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004492: Acme Flow sync delayed — Contoso"
+    author: chioma
+    reporter: jonas
+    assignee: chioma
+    created: 2026-04-08T11:00:00Z
+    updated: 2026-04-10T15:35:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004492
+    relations:
+      - { type: RELATED, to: jira-sup-125 }
+    mentions_orgs: [contoso]
+    body: |
+      **Customer:** Contoso (Enterprise) · **Status:** Solved · **Priority:** P2
+
+      Contoso's service-desk connection is about four and a half hours behind. Same
+      pattern Lucas logged for another customer at 07:30: connection running, queue
+      growing, nothing written.
+
+      Work notes:
+      - 11:15 Added to SUP-125. Told the customer it is a known issue under
+        investigation and that queued records will not be lost.
+      - 10 Apr 14:50 Lag back to under a minute. Customer confirmed. Solved.
+
+  - id: jira-sup-125
+    container: jira-sup
+    type: TICKET
+    title: "SUP-125: Acme Flow sync delays — three customers"
+    author: chioma
+    reporter: chioma
+    assignee: grace
+    created: 2026-04-08T11:30:00Z
+    updated: 2026-04-13T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/SUP-125
+    relations:
+      - { type: RELATED, to: sn-4490 }
+      - { type: RELATED, to: sn-4492 }
+      - { type: RELATED, to: sf-case-globex-0041 }
+      - { type: RELATED, to: jira-inc-2040 }
+    mentions_orgs: [bluebird, contoso, globex, fabrikam]
+    body: |
+      **Priority:** Highest · **Status:** Done
+
+      Acme Flow connections for several workspaces stopped writing records early on
+      8 April. Connections report "running" while their queues grow.
+
+      Customer reports, in order (UTC):
+      - 07:30 Bluebird Health (pilot) — CS0004490. Lucas Moreau was first responder
+        and spotted that more than one workspace was lagging.
+      - 11:00 Contoso — CS0004492.
+      - 13:15 Globex Corporation — came in by email to their account team; Hannah
+        Schmidt tracks it on their Salesforce case 00001041.
+
+      Engineering incident: INC-2040. Fix deployed 10 April (flow-engine memory limit
+      raised, lag alert added); all three backlogs drained by 15:00 UTC that day and
+      customers were told the same afternoon.
+
+      Closed 13 April after the postmortem was published. Not affected: Fabrikam,
+      which does not use Acme Flow.
+
+  - id: sf-case-bluebird-0042
+    container: sf-acct-bluebird
+    type: CASE
+    title: "Case 00001042: Pilot: Flow sync delayed"
+    owner: lucas
+    reporter: kwame
+    created: 2026-04-08T08:05:00Z
+    updated: 2026-04-10T15:30:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500BLUEBIRD0042/view
+    mentions_orgs: [bluebird]
+    body: |
+      **Account:** Bluebird Health · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Pilot workspace: Acme Flow stopped syncing from the scheduling system at about
+      06:15 UTC on 8 April. Logged on the account so the deal team sees it during the
+      pilot. Support ticket CS0004490 holds the work notes.
+
+      ## Resolution
+      Platform-wide Flow delay (several customers). Fixed 10 April; backlog drained
+      by 14:40 UTC and the customer confirmed nothing was missing. Closed 10 April.
+
+  - id: sf-case-contoso-0040
+    container: sf-acct-contoso
+    type: CASE
+    title: "Case 00001040: Acme Flow sync delayed"
+    owner: chioma
+    reporter: jonas
+    created: 2026-04-08T11:20:00Z
+    updated: 2026-04-10T15:40:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500CONTOSO0040/view
+    mentions_orgs: [contoso]
+    body: |
+      **Account:** Contoso · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Service-desk connection about four and a half hours behind on 8 April. Logged
+      on the account for the renewal team's visibility; support ticket CS0004492.
+
+      ## Resolution
+      Fixed with the platform-wide Flow fix on 10 April; customer confirmed the same
+      afternoon. Closed.
+
+  - id: sf-case-contoso-0029
+    container: sf-acct-contoso
+    type: CASE
+    title: "Case 00001029: Duplicate records created by Acme Sync"
+    owner: sam
+    reporter: jonas
+    created: 2026-02-19T10:30:00Z
+    updated: 2026-02-20T16:50:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500CONTOSO0029/view
+    mentions_orgs: [contoso]
+    body: |
+      **Account:** Contoso · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      About 2,300 CRM records duplicated overnight by Acme Sync after a burst of
+      webhook retries. Customer's opportunity reports double counted. Support ticket
+      CS0004485.
+
+      ## Resolution
+      Engineering fixed webhook retry handling and removed 2,297 duplicates on
+      20 February. Customer verified a sample. Closed.
+
+  - id: slack-support-escalations-0408-1
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Lucas Moreau, 2026-04-08 07:48"
+    author: lucas
+    created: 2026-04-08T07:48:00Z
+    thread: slack-support-escalations-0408
+    mentions_orgs: [bluebird]
+    body: |
+      Bluebird Health says Flow hasn't synced since ~06:15 UTC. I checked three other
+      Flow workspaces and two are lagging too, so this looks platform-wide. Anyone
+      from platform awake?
+
+  - id: slack-support-escalations-0408-2
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Chioma Eze, 2026-04-08 11:08"
+    author: chioma
+    created: 2026-04-08T11:08:00Z
+    thread: slack-support-escalations-0408
+    mentions_orgs: [contoso]
+    body: |
+      Contoso just reported the same thing, about 4.5 hours behind. Opening a SUP
+      ticket so engineering has one place to look.
+
+  - id: slack-support-escalations-0408-3
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Hannah Schmidt, 2026-04-08 13:25"
+    author: hannah
+    created: 2026-04-08T13:25:00Z
+    thread: slack-support-escalations-0408
+    mentions_orgs: [globex]
+    body: |
+      Third one: Globex emailed their AE at 13:15. I've logged it on their Salesforce
+      case and will handle comms with Victor myself.
+
+  - id: slack-support-escalations-0408-4
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Bob Okafor, 2026-04-08 13:40"
+    author: bob
+    created: 2026-04-08T13:40:00Z
+    thread: slack-support-escalations-0408
+    mentions_orgs: [fabrikam, globex]
+    body: |
+      Thanks all. SUP-125 is with Grace Liu, and Raj has opened an incident. Lucas,
+      please own customer comms for the all-clear once it's fixed. Hannah keeps
+      Globex. Check whether Fabrikam is affected before anyone emails them; I don't
+      think they use Flow.
+
+  - id: slack-support-escalations-0408-5
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Chioma Eze, 2026-04-08 13:52"
+    author: chioma
+    created: 2026-04-08T13:52:00Z
+    thread: slack-support-escalations-0408
+    mentions_orgs: [fabrikam]
+    body: |
+      Checked: Fabrikam has no Flow connections. Not affected. (Their open item with
+      me this week is an SSO question.)
+
+  - id: slack-support-escalations-0410-1
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Lucas Moreau, 2026-04-10 15:30"
+    author: lucas
+    created: 2026-04-10T15:30:00Z
+    thread: slack-support-escalations-0410
+    body: |
+      All-clear sent to Bluebird Health, Contoso and Globex. All three backlogs drained
+      by 15:00 UTC; nothing lost. I'll update the macro with what we learned.
+    mentions_orgs: [bluebird, contoso, globex]
+
+  - id: slack-support-escalations-0410-2
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Bob Okafor, 2026-04-10 15:41"
+    author: bob
+    created: 2026-04-10T15:41:00Z
+    thread: slack-support-escalations-0410
+    body: |
+      Nice work. Keep SUP-125 open until the postmortem is out, then close it.
+
+  - id: mail-support-0410
+    container: gmail-lucas
+    type: MAIL
+    title: "Resolved: Acme Flow sync delays on 8–10 April"
+    from: lucas
+    to: [kwame, jonas, victor]
+    cc: [chioma, hannah]
+    created: 2026-04-10T15:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/lucas/#sent/support-0410
+    body: |
+      Hello,
+
+      The Acme Flow sync delays that began early on 8 April are resolved. Our
+      engineers raised the memory available to the sync engine and added an alert on
+      sync lag. Every queued record has now been written to your workspace; nothing
+      was lost. If anything still looks out of date, reply to this email and we will
+      check your connection directly.
+
+      We are sorry for the disruption. A short incident summary will follow next week.
+
+      Lucas Moreau
+      Acme Support, EMEA
+
+  - id: cf-sup-flow-delay-macro
+    container: cf-sup
+    type: PAGE
+    title: "Macro: Acme Flow sync delay"
+    author: lucas
+    last_modified_by: chioma
+    created: 2026-04-09T09:00:00Z
+    updated: 2026-04-15T11:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SUPKB/pages/3301/macro-flow-delay
+    body: |
+      Use when a customer reports that Acme Flow records are missing or late.
+
+      ## Check first
+      1. Admin console → Flow → Connections: compare "last synced" with now. More than
+         15 minutes behind on an active connection counts as a delay.
+      2. Look at #support-escalations and open SUP tickets: if two or more workspaces
+         lag, treat it as platform-wide and link your ticket to the open SUP.
+
+      ## Reply to the customer
+      "Thanks for reporting this. Acme Flow is currently behind for your workspace.
+      Records waiting to sync are queued and will not be lost. We will update you
+      within two hours, or sooner when it catches up."
+
+      ## When it is fixed
+      - Ask the customer to spot-check five records created during the delay.
+      - Close only after they confirm.
+
+      ## Do not
+      Do not ask the customer to reconnect or re-authorise a connection during a
+      delay: it resets the queue position and can create duplicates (see the
+      February duplicates case).
+
+  - id: cf-sup-flow-known-issues
+    container: cf-sup
+    type: PAGE
+    title: "Acme Flow — known issues and workarounds"
+    author: chioma
+    last_modified_by: lucas
+    created: 2026-03-03T10:00:00Z
+    updated: 2026-04-28T16:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SUPKB/pages/3240/flow-known-issues
+    body: |
+      Acme Flow was called Acme Sync until 1 March 2026. The API path is still
+      `/v1/sync`; customers may use either name.
+
+      | Issue | Workaround | Status |
+      |---|---|---|
+      | Custom fields with a dot in the name arrive empty (FLOW-312) | Rename the source field without the dot, or map it through a calculated field | Fix merged 28 Apr; confirm with the customer after a full re-sync |
+      | Sync lag under heavy load (April) | None needed; queued records are kept | Fixed 10 Apr; lag alert in place |
+      | Webhook retries duplicated records (February) | — | Fixed 20 Feb |
+      | Field mapping UI times out above 400 fields | Map in two passes | Open, low priority |
+
+  - id: cf-sup-escalation-guide
+    container: cf-sup
+    type: PAGE
+    title: "When and how to escalate to engineering"
+    author: bob
+    last_modified_by: bob
+    created: 2025-12-01T10:00:00Z
+    updated: 2026-03-20T09:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SUPKB/pages/3005/escalation-guide
+    body: |
+      ## Escalate (open a SUP ticket) when any of these is true
+      - Two or more customers report the same symptom within 24 hours.
+      - Data is lost, duplicated or visible to the wrong people.
+      - A workaround does not exist or the customer cannot use it.
+      - An Enterprise customer has been blocked for more than four business hours.
+
+      ## How
+      1. Open a SUP ticket with steps to reproduce, the customer tickets, and impact.
+      2. Post the SUP number in #support-escalations.
+      3. The support lead assigns engineering; you stay the customer's contact.
+
+      ## Severity hints
+      Platform-wide outages go straight to the on-call incident commander; do not
+      wait for the SUP ticket to be triaged.
+
+  - id: sn-4493
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004493: SSO — can group claims set workspace roles? (Fabrikam)"
+    author: chioma
+    reporter: ahmed
+    assignee: chioma
+    created: 2026-04-09T09:15:00Z
+    updated: 2026-04-14T12:00:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004493
+    mentions_orgs: [fabrikam]
+    body: |
+      **Customer:** Fabrikam (Business) · **Status:** Solved · **Priority:** P4
+
+      Fabrikam's IT director asks whether the SAML group claim can set a user's
+      workspace role at login, ahead of their seat expansion.
+
+      Answer given 14 April: SAML can set the role at first login only; ongoing
+      group sync is the open feature request (SUP-098). Pointed them to the role
+      mapping section of the SSO guide. Solved. Not related to Acme Flow, which
+      Fabrikam does not use.
+
+  - id: jira-flow-351
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-351: Show sync lag per connection in the admin console"
+    author: grace
+    reporter: lucas
+    assignee: grace
+    created: 2026-04-13T10:30:00Z
+    updated: 2026-04-27T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-351
+    body: |
+      **Type:** Story · **Status:** In progress · **Priority:** Medium
+
+      During the 8 April delays, customers saw "running" while nothing was being
+      written. Support asked for the real lag to be visible.
+
+      Acceptance criteria:
+      - Each connection shows "behind by N minutes" when lag exceeds 5 minutes.
+      - The status turns amber at 15 minutes and red at 60.
+      - Same number is available from the `/v1/sync/connections` API.
+
+  - id: jira-flow-352
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-352: Acme Flow component on the public status page"
+    author: grace
+    reporter: bob
+    assignee: yusuf
+    created: 2026-04-14T09:00:00Z
+    updated: 2026-04-24T16:10:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-352
+    body: |
+      **Type:** Task · **Status:** In progress · **Priority:** Medium
+
+      Add an "Acme Flow" component to status.acme-demo.example, driven by the new lag
+      alert, so customers can see a platform-wide delay without opening a ticket.
+      Support wants it before the partner webinar on 14 May.
+
+  # ===========================================================================
+  # S8 — Northwind, Contoso, Fabrikam and the Kestrel prospect
+  # ===========================================================================
+
+  # --- Northwind Traders ----------------------------------------------------------
+
+  - id: sf-deal-northwind-renewal-2025
+    container: sf-acct-northwind
+    type: DEAL
+    title: "Northwind Traders — Renewal 2025"
+    owner: omar
+    created: 2025-03-28T10:00:00Z
+    updated: 2025-06-27T15:00:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006NORTHWIND25/view
+    mentions_orgs: [northwind]
+    body: |
+      **Account:** Northwind Traders · **Stage:** Closed Won · **Amount (ARR):** $159,600 ·
+      **Close date:** 2025-06-27 · **Type:** Renewal · **Seats:** 420
+
+      ## Description
+      First renewal after the 2024 purchase. One-year term, flat at 420 seats.
+      Customer asked for SSO group sync and a scheduled export; neither was a
+      condition of signature.
+
+  - id: sf-deal-northwind-renewal
+    container: sf-acct-northwind
+    type: DEAL
+    title: "Northwind Traders — Renewal 2026 (600 seats)"
+    owner: omar
+    created: 2026-03-31T09:00:00Z
+    updated: 2026-04-29T16:10:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006NORTHWIND26/view
+    mentions_orgs: [northwind]
+    body: |
+      **Account:** Northwind Traders · **Stage:** Negotiation · **Amount (ARR):** $240,000 ·
+      **Close date:** 2026-05-31 · **Type:** Renewal with expansion · **Seats:** 420 → 600 ·
+      **Term:** 36 months
+
+      ## Description
+      Renewal of the contract ending 30 June 2026, with expansion to 600 seats and a
+      term of three years. Pricing approved by the deal desk; see the deal desk
+      record for terms.
+
+      ## History
+      - 2026-03-31 Opportunity opened, 90 days before renewal.
+      - 2026-04-10 Flagged at risk: export timeouts, customer evaluating alternatives.
+      - 2026-04-16 Back on track after the export fix.
+      - 2026-04-29 Proposal sent to the customer. Target signature 31 May.
+
+  - id: sf-case-northwind-0031
+    container: sf-acct-northwind
+    type: CASE
+    title: "Case 00001031: Workspace export times out"
+    owner: sam
+    reporter: harriet
+    created: 2026-04-02T13:20:00Z
+    updated: 2026-04-15T16:00:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500NORTHWIND0031/view
+    mentions_orgs: [northwind]
+    body: |
+      **Account:** Northwind Traders · **Status:** Closed · **Priority:** High ·
+      **Origin:** Email · **Type:** Problem
+
+      ## Description
+      Full-workspace export fails with "Request timed out" after 30 seconds
+      (~48,000 records). Breaks the customer's monthly reporting. Support ticket
+      CS0004471; engineering escalation SUP-114.
+
+      ## Resolution
+      Background exports released 14 April. Customer ran a full export on 15 April
+      and received the download link by email. Closed 15 April.
+
+  - id: mail-northwind-0402
+    container: gmail-sam
+    type: MAIL
+    title: "Full export failing — month-end reporting blocked"
+    from: harriet
+    to: [sam]
+    created: 2026-04-02T13:05:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sam/#inbox/northwind-0402
+    mentions_orgs: [northwind]
+    body: |
+      Hello Sam,
+
+      Our monthly "Export workspace" job has failed four times since yesterday. It
+      spins for half a minute and then says "Request timed out". We feed that export
+      into our month-end operations report, which is due to our board on the 6th.
+
+      Is there a size limit we've hit? We're at roughly 48,000 records.
+
+      Harriet Cole
+      Head of operations, Northwind Traders
+
+  - id: mail-northwind-0409
+    container: gmail-omar
+    type: MAIL
+    title: "Exports — we need to talk about the renewal"
+    from: harriet
+    to: [omar]
+    created: 2026-04-09T17:40:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#inbox/northwind-0409
+    mentions_orgs: [tessera]
+    body: |
+      Omar,
+
+      I'll be direct. Our full export has not worked for a week, my team is stitching
+      reports together by hand, and nobody has given me a date. With the renewal at
+      the end of June I have to look at options: we have a demo of Tessera Analytics
+      next week.
+
+      I'd rather stay. Get me a fix date in writing.
+
+      Harriet
+
+  - id: mail-northwind-0410
+    container: gmail-omar
+    type: MAIL
+    title: "Re: Exports — we need to talk about the renewal"
+    from: omar
+    to: [harriet]
+    cc: [bob]
+    created: 2026-04-10T16:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/northwind-0410
+    relations:
+      - { type: RELATED, to: mail-northwind-0409 }
+    body: |
+      Harriet,
+
+      Fair, and I'm sorry it took this long. In writing: the fix ships on 14 April.
+      Large exports will run in the background and you'll get a download link by
+      email. Until then, exporting per project works and Bob Okafor, our support
+      lead (copied), can help your team set that up today.
+
+      I'd like to book 30 minutes on 16 April to check your first full export
+      together, with Bob on the call.
+
+      Omar
+
+  - id: mail-northwind-0416
+    container: gmail-omar
+    type: MAIL
+    title: "Thank you — export worked"
+    from: harriet
+    to: [omar]
+    cc: [bob]
+    created: 2026-04-16T18:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#inbox/northwind-0416
+    body: |
+      Omar, Bob,
+
+      Thanks for today. The full export ran overnight on the 15th and the link
+      arrived as promised; month-end reporting is back on schedule. I've cancelled
+      the other demo. Send me the renewal proposal when it's ready — we'll want to
+      talk about the larger rollout too.
+
+      Harriet
+
+  - id: mail-northwind-0429
+    container: gmail-omar
+    type: MAIL
+    title: "Northwind Traders — renewal proposal"
+    from: omar
+    to: [harriet]
+    cc: [lena]
+    created: 2026-04-29T15:55:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/northwind-0429
+    mentions_orgs: [northwind]
+    body: |
+      Harriet,
+
+      Attached is our renewal proposal:
+
+      - 600 seats from 1 July 2026 (up from 420).
+      - A term of three years, with pricing fixed for the full term.
+      - Background exports and per-project scheduling included.
+      - Quarterly reviews with your operations team, the first in September.
+
+      The pricing in the attached order form reflects the April disruption. If it
+      works for you, we can aim for signature by 31 May so your teams have a month
+      before the new seats go live.
+
+      Omar Haddad
+      Account executive, Acme
+
+  - id: sn-4501
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004501: Export download link expired before use — Northwind Traders"
+    author: sam
+    reporter: harriet
+    assignee: sam
+    created: 2026-04-21T09:30:00Z
+    updated: 2026-04-21T15:10:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004501
+    mentions_orgs: [northwind]
+    body: |
+      **Customer:** Northwind Traders (Enterprise) · **Status:** Solved · **Priority:** P4
+
+      A Northwind analyst clicked the export download link on Monday morning for an
+      export that finished on Friday; the link had expired. Links are valid for 72
+      hours.
+
+      Explained the expiry and showed them how to re-run the export or forward the
+      link to someone who will download it the same day. Customer asked for longer
+      links; logged as feedback for the export team. Solved.
+
+  - id: slack-deals-0331
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-03-31 09:15"
+    author: omar
+    created: 2026-03-31T09:15:00Z
+    mentions_orgs: [northwind]
+    body: |
+      Opened the Northwind Traders renewal in Salesforce: 90 days out, aiming for 600
+      seats on a longer term. Contract ends 30 June.
+
+  - id: slack-deals-0429
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-04-29 16:05"
+    author: omar
+    created: 2026-04-29T16:05:00Z
+    mentions_orgs: [northwind]
+    body: |
+      Northwind renewal proposal is out: 600 seats, three years. Harriet wants to sign
+      before the end of May. Thanks Bob for the joint call on the 16th, it turned this
+      one around.
+
+  - id: drive-sales-northwind-proposal
+    container: drive-sales
+    type: FILE
+    title: "Northwind Traders — renewal proposal (v3)"
+    owners: [omar]
+    last_modified_by: jack
+    created: 2026-04-20T10:00:00Z
+    updated: 2026-04-28T17:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-northwind-proposal-2026
+    mentions_orgs: [northwind]
+    body: |
+      ## Proposal for Northwind Traders
+      Prepared for Harriet Cole, Head of operations.
+
+      ## What changes
+      - Seats: 420 → 600 from 1 July 2026.
+      - Term: three years, pricing fixed for the term.
+      - Included: background exports, per-project scheduled exports, SSO with SAML.
+      - Quarterly operations reviews; named support lead for escalations.
+
+      ## Why now
+      The April export problem disrupted your month-end reporting. The fix shipped on
+      14 April and your first full export ran on 15 April. This proposal reflects
+      that disruption in its pricing (see order form).
+
+      ## Timeline
+      Proposal 29 April · questions by 15 May · signature by 31 May · new seats live
+      1 July.
+
+  # --- Contoso ---------------------------------------------------------------------
+
+  - id: sf-deal-contoso-renewal
+    container: sf-acct-contoso
+    type: DEAL
+    title: "Contoso — Renewal 2026"
+    owner: omar
+    created: 2026-04-02T10:00:00Z
+    updated: 2026-04-24T11:30:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006CONTOSO26/view
+    mentions_orgs: [contoso]
+    body: |
+      **Account:** Contoso · **Stage:** Qualification · **Amount (ARR):** $183,000 ·
+      **Close date:** 2026-09-30 · **Type:** Renewal · **Seats:** 610
+
+      ## Description
+      Renewal of the Enterprise contract (610 seats, Acme Flow included) ending
+      30 September 2026.
+
+      ## Watch items
+      - April: export timeout (fixed 14 April), Acme Flow delay on 8 April (fixed
+        10 April) and an invoice reissued for VAT on an exempt line (22 April).
+      - The billing rule behind the VAT error is still being fixed by finance.
+      - Quarterly business review planned for June.
+
+  - id: sf-case-contoso-0033
+    container: sf-acct-contoso
+    type: CASE
+    title: "Case 00001033: Invoice shows VAT on an exempt line"
+    owner: sam
+    reporter: jonas
+    created: 2026-04-20T11:05:00Z
+    updated: 2026-04-22T12:00:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500CONTOSO0033/view
+    mentions_orgs: [contoso]
+    body: |
+      **Account:** Contoso · **Status:** Closed · **Priority:** Medium ·
+      **Origin:** Email · **Type:** Billing
+
+      ## Description
+      Invoice INV-2026-0412 charges VAT on a line that is exempt (EU business customer
+      with a valid VAT number, reverse charge). Escalated as SUP-121; finance ticket
+      FIN-37.
+
+      ## Resolution
+      Finance issued a credit note and reissued the invoice on 22 April. Customer
+      confirmed receipt. Closed.
+
+  - id: mail-contoso-0420
+    container: gmail-sam
+    type: MAIL
+    title: "April invoice — VAT charged on exempt line"
+    from: jonas
+    to: [sam]
+    created: 2026-04-20T10:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sam/#inbox/contoso-0420
+    body: |
+      Hi Sam,
+
+      Our accounts-payable team rejected invoice INV-2026-0412: VAT is charged on the
+      Acme Flow seats line, which should be reverse charge like everything else. Can
+      you get it reissued? AP closes the month on the 24th.
+
+      Jonas
+
+  - id: mail-contoso-0422
+    container: gmail-sam
+    type: MAIL
+    title: "Re: April invoice — VAT charged on exempt line"
+    from: sam
+    to: [jonas]
+    created: 2026-04-22T11:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sam/#sent/contoso-0422
+    relations:
+      - { type: RELATED, to: mail-contoso-0420 }
+    body: |
+      Hi Jonas,
+
+      Ingrid Larsen in our finance team has issued a credit note for INV-2026-0412 and
+      reissued the invoice without VAT on that line; both should be in your AP inbox
+      now. Finance is also correcting the billing rule so it doesn't happen again on
+      lines added mid-term.
+
+      Sam
+
+  - id: mail-contoso-0424
+    container: gmail-omar
+    type: MAIL
+    title: "Contoso renewal — planning the June review"
+    from: omar
+    to: [jonas]
+    created: 2026-04-24T11:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/contoso-0424
+    mentions_orgs: [contoso]
+    body: |
+      Hi Jonas,
+
+      April was a rough month on our side — the export timeouts, the Flow delay on the
+      8th and the invoice — and I'd like to walk through all three properly at a
+      quarterly review in June, before we start on the September renewal. Would the
+      week of 15 June work for you and your service-desk lead?
+
+      Omar
+
+  # --- Fabrikam --------------------------------------------------------------------
+
+  - id: sf-case-fabrikam-0027
+    container: sf-acct-fabrikam
+    type: CASE
+    title: "Case 00001027: SSO group sync"
+    owner: chioma
+    reporter: ahmed
+    created: 2026-02-18T14:10:00Z
+    updated: 2026-04-14T12:10:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500FABRIKAM0027/view
+    mentions_orgs: [fabrikam]
+    body: |
+      **Account:** Fabrikam · **Status:** Open · **Priority:** Low ·
+      **Origin:** Email · **Type:** Feature request
+
+      ## Description
+      Fabrikam wants workspace group membership to follow their identity provider's
+      groups automatically, without manual changes. Logged as feature request SUP-098.
+
+      ## Internal notes
+      - 14 April: customer asked again ahead of their seat expansion; SAML can set a
+        role at first login only. No engineering ticket or date yet.
+
+  - id: mail-fabrikam-0218
+    container: gmail-omar
+    type: MAIL
+    title: "Group sync from our identity provider"
+    from: ahmed
+    to: [omar]
+    cc: [chioma]
+    created: 2026-02-18T13:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#inbox/fabrikam-0218
+    mentions_orgs: [fabrikam]
+    body: |
+      Omar,
+
+      Before we add more seats we need groups in Acme to follow our identity
+      provider. Today my team moves people between groups by hand every time
+      someone changes department. Is SSO group sync on your roadmap, and when?
+
+      Ahmed Rahman
+      IT director, Fabrikam Inc
+
+  - id: sf-deal-fabrikam-expansion
+    container: sf-acct-fabrikam
+    type: DEAL
+    title: "Fabrikam — Expansion (+80 seats)"
+    owner: omar
+    created: 2026-03-10T10:00:00Z
+    updated: 2026-04-22T16:45:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006FABRIKAMEXP/view
+    mentions_orgs: [fabrikam]
+    body: |
+      **Account:** Fabrikam · **Stage:** Closed Won · **Amount (ARR):** $28,800 ·
+      **Close date:** 2026-04-22 · **Type:** Expansion · **Seats:** 120 → 200 ·
+      **Start date:** 2026-05-01
+
+      ## Description
+      80 additional Business-plan seats for Fabrikam's finance and HR teams,
+      co-terminous with the existing contract. No Acme Flow.
+
+      ## Notes
+      Signed order form received 22 April. Customer cited the export fix and our
+      answer on SSO roles as the deciding factors; group sync remains an open
+      request.
+
+  - id: mail-fabrikam-0415
+    container: gmail-omar
+    type: MAIL
+    title: "Fabrikam — order form for 80 additional seats"
+    from: omar
+    to: [ahmed]
+    created: 2026-04-15T14:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/fabrikam-0415
+    mentions_orgs: [fabrikam]
+    body: |
+      Hi Ahmed,
+
+      Attached is the order form for 80 additional Business seats from 1 May,
+      co-terminous with your current contract: $28,800 a year. The export fix you
+      were waiting for shipped yesterday.
+
+      On group sync: it's still a feature request, but your SAML group claim can set
+      each user's role at first login, which covers the new finance and HR users.
+      Chioma can walk your team through the setup.
+
+      Omar
+
+  - id: mail-fabrikam-0422
+    container: gmail-omar
+    type: MAIL
+    title: "Re: Fabrikam — order form for 80 additional seats"
+    from: ahmed
+    to: [omar]
+    created: 2026-04-22T10:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#inbox/fabrikam-0422
+    relations:
+      - { type: RELATED, to: mail-fabrikam-0415 }
+    mentions_orgs: [fabrikam]
+    body: |
+      Omar,
+
+      Signed order form attached for the 80 seats from 1 May. Please send the new
+      users' invitations to me in one batch on the 30th so we can onboard them on the
+      Friday.
+
+      Ahmed
+
+  - id: drive-sales-fabrikam-plan
+    container: drive-sales
+    type: FILE
+    title: "Account plan — Fabrikam"
+    owners: [omar]
+    last_modified_by: omar
+    created: 2026-01-20T10:00:00Z
+    updated: 2026-04-22T17:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-account-fabrikam
+    mentions_orgs: [fabrikam]
+    body: |
+      ## Account
+      Fabrikam, Business plan. 120 seats until 30 April; 200 from 1 May after the
+      expansion signed 22 April. Does not use Acme Flow (their data stays in their
+      ERP; they import CSVs monthly).
+
+      ## Contacts
+      Ahmed Rahman, IT director — decision maker and day-to-day contact.
+
+      ## Open items
+      - SSO group sync: open feature request since February. Their single biggest ask.
+      - April export timeout: fixed 14 April, no complaints since.
+
+      ## Next
+      Enterprise upgrade conversation in Q3 if group sync is on the roadmap by then.
+
+  # --- Kestrel Logistics (prospect) and Tessera --------------------------------------
+
+  - id: mail-kestrel-0414
+    container: gmail-omar
+    type: MAIL
+    title: "Exports and reporting for logistics operations teams"
+    from: omar
+    to: [paul]
+    created: 2026-04-14T08:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#sent/kestrel-0414
+    mentions_orgs: [kestrel]
+    body: |
+      Hi Paul,
+
+      I work with operations teams at logistics and distribution companies, and I
+      noticed Kestrel Logistics is hiring three operations analysts in Leeds. Teams
+      like yours use Acme to keep tickets, shipments and reporting in one workspace,
+      with scheduled exports into their month-end reports.
+
+      Would 20 minutes in the next couple of weeks be useful?
+
+      Omar Haddad
+      Account executive, Acme
+
+  - id: mail-kestrel-0421
+    container: gmail-omar
+    type: MAIL
+    title: "Re: Exports and reporting for logistics operations teams"
+    from: paul
+    to: [omar]
+    created: 2026-04-21T12:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/omar/#inbox/kestrel-0421
+    relations:
+      - { type: RELATED, to: mail-kestrel-0414 }
+    mentions_orgs: [kestrel, tessera]
+    body: |
+      Omar,
+
+      Timing's decent. We use Tessera Analytics today and our contract is up in the
+      autumn; the reporting is fine but getting our ticket data into it is a manual
+      job every week. Happy to see how you'd do it. Tuesday 5 May at 14:00 UK time?
+
+      Paul Whitaker
+      Director of operations, Kestrel Logistics
+
+  - id: slack-deals-0421
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-04-21 13:10"
+    author: omar
+    created: 2026-04-21T13:10:00Z
+    mentions_orgs: [kestrel, tessera]
+    body: |
+      Outbound win: Kestrel Logistics (logistics, Leeds) replied. They're on Tessera
+      today, contract up in the autumn. Intro meeting 5 May. Not in Salesforce yet;
+      I'll create the account after the call if it qualifies.
+
+  - id: drive-sales-kestrel-notes
+    container: drive-sales
+    type: FILE
+    title: "Prospect notes — Kestrel Logistics"
+    owners: [omar]
+    last_modified_by: omar
+    created: 2026-04-21T13:30:00Z
+    updated: 2026-04-21T13:45:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-prospect-kestrel
+    mentions_orgs: [kestrel, tessera]
+    body: |
+      ## Company
+      Kestrel Logistics: road freight and warehousing, HQ Leeds. Operations team is
+      growing (three analyst roles open in April).
+
+      ## Contact
+      Paul Whitaker, Director of operations. Replied 21 April to the 14 April outbound.
+
+      ## Current tools
+      Tessera Analytics for reporting; contract renews in the autumn. Pain: weekly
+      manual import of ticket data.
+
+      ## Next step
+      Intro meeting Tuesday 5 May, 14:00 UK. Bring the background-exports story.
+      Not yet qualified; no Salesforce account until after the call.
+
+  - id: drive-sales-competitive-tessera
+    container: drive-sales
+    type: FILE
+    title: "Competitive brief — Tessera Analytics"
+    owners: [daniel]
+    last_modified_by: lena
+    created: 2026-02-02T10:00:00Z
+    updated: 2026-04-17T10:15:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-competitive-tessera
+    mentions_orgs: [tessera, northwind, bluebird]
+    body: |
+      ## Who they are
+      Tessera Analytics sells a reporting suite with a sync product, TesseraSync.
+      Their trademark objection is why Acme Sync became Acme Flow on 1 March.
+
+      ## Where we meet them
+      - Northwind Traders booked a Tessera demo in April during the export problem;
+        cancelled after the fix (16 April).
+      - Bluebird Health is running a Tessera trial alongside our pilot.
+
+      ## Their weak spots
+      1. TesseraSync is one-way: changes made in Tessera don't flow back to the source.
+      2. No SAML SSO below their top tier.
+      3. Hosting in the US only; no EU region.
+
+      ## Our answer
+      Two-way sync with Acme Flow, SSO on every Enterprise plan, US and EU regions.
+      Don't attack the reporting suite: it is good.
+
+  # --- Support weekly ---------------------------------------------------------------
+
+  - id: mail-support-0417
+    container: gmail-bob
+    type: MAIL
+    title: "Support weekly — week of 13 April"
+    from: bob
+    to: [sam, chioma, lucas, hannah]
+    created: 2026-04-17T16:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/bob/#sent/support-0417
+    mentions_orgs: [northwind, contoso, fabrikam, globex, bluebird]
+    body: |
+      Team,
+
+      - Exports: background exports shipped 14 April. Northwind's full export ran on
+        the 15th; Contoso and Fabrikam confirmed. CS0004471/4478/4480 closed.
+      - Acme Flow: SUP-125 closed 13 April after the postmortem. Thanks Lucas for the
+        all-clear to Bluebird Health, Contoso and Globex.
+      - Globex: new ticket for custom fields with dots (Chioma, FLOW-312 in
+        engineering). Hannah has their data-residency request.
+      - Fabrikam: SSO roles question answered; group sync is still a feature request.
+
+      Median first response this week: 38 minutes. Two tickets breached the four-hour
+      Enterprise target, both on the 8th.
+
+      Bob
+
+  # ===========================================================================
+  # S9 — Bluebird Health: the new logo
+  # ===========================================================================
+
+  - id: sf-deal-bluebird-new
+    container: sf-acct-bluebird
+    type: DEAL
+    title: "Bluebird Health — New business"
+    owner: sofia
+    created: 2026-03-02T15:00:00Z
+    updated: 2026-04-28T10:30:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Opportunity/006BLUEBIRDNB/view
+    mentions_orgs: [bluebird, tessera]
+    body: |
+      **Account:** Bluebird Health · **Stage:** Proposal · **Amount (ARR):** $96,000 ·
+      **Close date:** 2026-06-30 · **Type:** New business · **Seats:** 240 ·
+      **Probability:** 40%
+
+      ## Description
+      Regional healthcare provider (11 clinics). Paid pilot for 40 users started
+      16 March with Acme Flow connected to their scheduling system. Full purchase
+      covers 240 seats across clinic operations and IT.
+
+      ## Requirements
+      HIPAA business associate agreement (BAA), SAML SSO, data hosted in the US.
+
+      ## Competition
+      Running a Tessera Analytics trial in parallel.
+
+      ## Next steps (28 April)
+      Security questionnaire returned 17 April. BAA in legal review on both sides;
+      not signed. Pilot review with the CIO planned for mid-May.
+
+  - id: sf-case-bluebird-0045
+    container: sf-acct-bluebird
+    type: CASE
+    title: "Case 00001045: Pilot: SAML SSO with Okta"
+    owner: lucas
+    reporter: kwame
+    created: 2026-03-18T09:30:00Z
+    updated: 2026-03-20T11:00:00Z
+    web_url: https://acme-demo.lightning.force.example/lightning/r/Case/500BLUEBIRD0045/view
+    mentions_orgs: [bluebird]
+    body: |
+      **Account:** Bluebird Health · **Status:** Closed · **Priority:** Medium ·
+      **Origin:** Email · **Type:** Question
+
+      ## Description
+      Pilot admin needs SAML SSO with Okta before inviting the 40 pilot users.
+      Support ticket CS0004487.
+
+      ## Resolution
+      Configured on 20 March; all pilot users invited through SSO. Closed.
+
+  - id: sn-4487
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004487: Pilot SAML SSO setup with Okta — Bluebird Health"
+    author: lucas
+    reporter: kwame
+    assignee: lucas
+    created: 2026-03-18T09:20:00Z
+    updated: 2026-03-20T10:50:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004487
+    mentions_orgs: [bluebird]
+    body: |
+      **Customer:** Bluebird Health (Pilot) · **Status:** Solved · **Priority:** P3
+
+      Pilot workspace needs SAML SSO with Okta before 40 users are invited.
+
+      Work notes:
+      - 18 Mar: sent the Okta app settings (ACS URL, entity ID, name ID as email).
+      - 19 Mar: first test failed — Okta was sending the user's employee number as
+        the name ID. Customer changed it to email.
+      - 20 Mar: SSO enforced for the pilot workspace; 40 invitations sent. Solved.
+
+  - id: mail-bluebird-0302
+    container: gmail-sofia
+    type: MAIL
+    title: "Acme for Bluebird Health — pilot proposal"
+    from: sofia
+    to: [kwame]
+    cc: [daniel]
+    created: 2026-03-02T16:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/bluebird-0302
+    mentions_orgs: [bluebird]
+    body: |
+      Dear Kwame,
+
+      Thank you for your time last week. As discussed, I propose a six-week paid pilot
+      for 40 users from your clinic operations team, starting 16 March, with Acme Flow
+      connected to your scheduling system. Daniel Kim, our solutions engineer, will
+      run the technical setup and the security review with your team.
+
+      We'll agree success criteria in the kickoff; the pilot fee is credited against
+      a full purchase.
+
+      Kind regards,
+      Sofia Rossi
+
+  - id: mail-bluebird-0316
+    container: gmail-daniel
+    type: MAIL
+    title: "Your pilot workspace is live"
+    from: daniel
+    to: [kwame]
+    cc: [sofia]
+    created: 2026-03-16T09:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/daniel/#sent/bluebird-0316
+    mentions_orgs: [bluebird]
+    body: |
+      Kwame,
+
+      The Bluebird Health pilot workspace is live in our US region. Next steps:
+
+      1. Your admin sets up SAML SSO with Okta (our support team will help).
+      2. We connect Acme Flow to the scheduling system on Wednesday.
+      3. 40 pilot users invited once SSO is enforced.
+
+      The success criteria we agreed are on the shared pilot page.
+
+      Daniel Kim
+      Solutions engineer, Acme
+
+  - id: mail-bluebird-0402
+    container: gmail-sofia
+    type: MAIL
+    title: "Pilot check-in and what we need to buy"
+    from: kwame
+    to: [sofia]
+    cc: [daniel]
+    created: 2026-04-02T14:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/bluebird-0402
+    mentions_orgs: [tessera]
+    body: |
+      Sofia,
+
+      Pilot users are positive so far. For transparency: we are also trialling Tessera
+      Analytics with a different team, and we will decide between the two in June.
+
+      Whatever we buy must have, without exception:
+      1. A signed HIPAA business associate agreement.
+      2. SAML SSO (we have that working in the pilot).
+      3. All patient-adjacent data hosted in the US.
+
+      Our security team will send their questionnaire next week.
+
+      Kwame
+
+  - id: mail-bluebird-0413
+    container: gmail-sofia
+    type: MAIL
+    title: "After last week's sync delay — our plan for your pilot"
+    from: sofia
+    to: [kwame]
+    cc: [daniel]
+    created: 2026-04-13T10:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/bluebird-0413
+    body: |
+      Dear Kwame,
+
+      Your team was the first to tell us about the Acme Flow delay on 8 April, and
+      your pilot lost two days of it. I'm sorry. Here is what we are doing:
+
+      1. Extending the pilot by two weeks, to 15 May, at no cost.
+      2. A sync-lag alert now pages our engineers before customers notice.
+      3. Daniel will run a weekly 15-minute check on your Flow connection until the
+         pilot ends.
+      4. A written incident summary from our support team this week.
+
+      I'd also like to bring the pilot review forward so your steering group has
+      what it needs before June.
+
+      Sofia
+
+  - id: mail-bluebird-0417
+    container: gmail-daniel
+    type: MAIL
+    title: "Bluebird Health security questionnaire — completed"
+    from: daniel
+    to: [kwame]
+    cc: [sofia]
+    created: 2026-04-17T15:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/daniel/#sent/bluebird-0417
+    mentions_orgs: [bluebird]
+    body: |
+      Kwame,
+
+      Attached is your security questionnaire, all 212 questions answered, with our
+      SOC 2 Type II report and penetration test summary. Points your team will care
+      about:
+
+      - Data for your workspace stays in our US region, backups included.
+      - Encryption at rest (AES-256) and in transit (TLS 1.2+).
+      - We will sign a HIPAA BAA; the draft is with our COO for review.
+      - Breach notification within 72 hours under the BAA.
+
+      Happy to walk your security lead through it.
+
+      Daniel
+
+  - id: mail-bluebird-0422
+    container: gmail-sofia
+    type: MAIL
+    title: "Bluebird Health BAA — their redlines"
+    from: sofia
+    to: [owen]
+    cc: [daniel]
+    created: 2026-04-22T13:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/bluebird-0422
+    mentions_orgs: [bluebird]
+    body: |
+      Owen,
+
+      Bluebird Health returned our BAA template with two redlines: breach notification
+      in 48 hours instead of 72, and a right to audit once a year. Daniel thinks 72
+      hours is our floor operationally; the audit right we can live with if it's
+      remote. Since you sign BAAs, could you tell me what we can accept? Their legal
+      team wants our answer by 8 May.
+
+      Sofia
+
+  - id: mail-bluebird-0428
+    container: gmail-sofia
+    type: MAIL
+    title: "BAA timing and pilot review"
+    from: kwame
+    to: [sofia]
+    created: 2026-04-28T08:50:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#inbox/bluebird-0428
+    body: |
+      Sofia,
+
+      Two things. Our counsel asks when we will hear back on the BAA redlines; without
+      a signed BAA we can't put real patient-adjacent data into the workspace, so it
+      is on the critical path. And can we hold the pilot review on 14 May, the day
+      before the extended pilot ends?
+
+      Kwame
+
+  - id: mail-bluebird-0415
+    container: gmail-jack
+    type: MAIL
+    title: "Library answers for the Bluebird questionnaire"
+    from: jack
+    to: [daniel]
+    created: 2026-04-15T11:40:00Z
+    web_url: https://mail.acme-demo.example/mail/u/jack/#sent/bluebird-0415
+    mentions_orgs: [bluebird]
+    body: |
+      Daniel,
+
+      I pre-filled 171 of the 212 Bluebird Health questions from the answer library.
+      The 41 left are mostly healthcare-specific (PHI handling, BAA terms, workforce
+      training). Once you've answered them, can you add the HIPAA ones to the library
+      so we have them next time?
+
+      Jack
+
+  - id: kb-sales-answers-hipaa
+    container: kb-sales-answers
+    type: KB_FILE
+    title: "HIPAA and business associate agreements"
+    author: daniel
+    created: 2026-04-20T10:00:00Z
+    web_url: https://kb.acme-demo.example/collections/rfp-answers/hipaa
+    body: |
+      **Q: Is Acme HIPAA compliant? Will you sign a BAA?**
+
+      Acme supports customers who handle protected health information (PHI). We sign
+      a business associate agreement (BAA) with Enterprise customers in healthcare,
+      using our template. Our COO signs BAAs on Acme's behalf; account teams do not.
+
+      Standard terms in our BAA:
+      - Breach notification to the customer within 72 hours of discovery.
+      - PHI stored only in our US region, encrypted at rest (AES-256) and in transit.
+      - Subcontractors with PHI access bound by equivalent terms.
+      - Remote audit rights once a year on request.
+
+      Not covered: PHI in free-text fields synced from systems outside the BAA's scope.
+      Acme Flow connections to clinical systems must be listed in the BAA.
+
+  - id: kb-sales-answers-data-residency
+    container: kb-sales-answers
+    type: KB_FILE
+    title: "Data residency and hosting regions"
+    author: jack
+    created: 2026-03-10T10:00:00Z
+    web_url: https://kb.acme-demo.example/collections/rfp-answers/data-residency
+    body: |
+      **Q: Where is customer data hosted? Can it stay in one region?**
+
+      Acme runs in two regions: United States (Virginia) and European Union
+      (Frankfurt). A workspace lives in one region, including backups and search
+      indexes; data does not leave it except when a customer exports it. Moving an
+      existing workspace between regions takes a scheduled two-hour window.
+
+      **Q: Can we have a dedicated (single-tenant) cluster?**
+      Not as a standard offering. Workspaces share regional infrastructure with
+      logical isolation per customer. Ask your account executive for current options.
+
+  - id: kb-sales-answers-sso
+    container: kb-sales-answers
+    type: KB_FILE
+    title: "Single sign-on and user provisioning"
+    author: jack
+    created: 2026-02-05T10:00:00Z
+    web_url: https://kb.acme-demo.example/collections/rfp-answers/sso
+    body: |
+      **Q: Do you support SAML SSO?**
+      Yes, SAML 2.0 on every Enterprise plan, with any compliant identity provider
+      (Okta, Entra ID, Google Workspace tested). SSO can be enforced per workspace.
+
+      **Q: Do you support SCIM or group sync?**
+      Users can be created on first SAML login, and the SAML group claim can set the
+      user's role at first login. Ongoing group membership sync from the identity
+      provider is not available today.
+
+      **Q: Can admins see login events?**
+      Yes, in the in-app audit view.
+
+  - id: cf-sales-bluebird-pilot
+    container: cf-sales
+    type: PAGE
+    title: "Bluebird Health pilot — success criteria and status"
+    author: sofia
+    last_modified_by: daniel
+    created: 2026-03-12T10:00:00Z
+    updated: 2026-04-14T09:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES/pages/2175/bluebird-pilot
+    mentions_orgs: [bluebird]
+    body: |
+      Pilot: 40 users from clinic operations, 16 March to 1 May, extended to 15 May
+      after the 8 April sync delay.
+
+      ## Success criteria (agreed at kickoff)
+      1. Scheduling changes appear in Acme within 5 minutes, 99% of the time.
+      2. Clinic managers stop keeping the weekly staffing spreadsheet by week four.
+      3. SSO with Okta for every pilot user; no local passwords.
+      4. Security questionnaire and BAA acceptable to Bluebird's counsel.
+
+      ## Status (14 April)
+      1. Met except 8–10 April (Flow delay). 2. On track: 7 of 11 clinics stopped.
+      3. Met since 20 March. 4. Questionnaire due back 17 April; BAA not started.
+
+  - id: cf-sales-security-review
+    container: cf-sales
+    type: PAGE
+    title: "How to run a customer security review"
+    author: daniel
+    last_modified_by: jack
+    created: 2025-11-18T10:00:00Z
+    updated: 2026-04-16T14:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/SALES/pages/2050/security-review
+    body: |
+      ## Questionnaires
+      1. Send the questionnaire to the solutions engineer on the account the day it
+         arrives. Target turnaround: 10 business days.
+      2. Pre-fill from the Security and RFP answer library; flag anything new.
+      3. Attach the SOC 2 Type II report only under NDA.
+
+      ## Contracts that need a signature beyond the order form
+      - Data processing addendum: legal approves; standard template preferred.
+      - HIPAA BAA: our template; the COO signs. Expect two to four weeks.
+      - Custom security schedules: legal and the platform team review together.
+
+      ## After the review
+      Add new answers to the library within a week so the next team can reuse them.
+
+  - id: slack-deals-0413-1
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Sofia Rossi, 2026-04-13 10:20"
+    author: sofia
+    created: 2026-04-13T10:20:00Z
+    thread: slack-deals-0413
+    mentions_orgs: [bluebird, tessera]
+    body: |
+      Bluebird Health update: they were the first customer hit by the Flow delay last
+      week and they're trialling Tessera in parallel. Sent Kwame a recovery plan:
+      pilot extended to 15 May free, weekly Flow check with Daniel.
+
+  - id: slack-deals-0413-2
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Lena Fischer, 2026-04-13 10:34"
+    author: lena
+    created: 2026-04-13T10:34:00Z
+    thread: slack-deals-0413
+    body: |
+      Good. The BAA is the long pole on healthcare deals; get the draft to Owen early,
+      he signs those.
+
+  - id: slack-deals-0413-3
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Daniel Kim, 2026-04-13 10:41"
+    author: daniel
+    created: 2026-04-13T10:41:00Z
+    thread: slack-deals-0413
+    body: |
+      Questionnaire goes back Friday. Jack's library covers about 80% of it.
+
+  - id: slack-deals-0417
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Daniel Kim, 2026-04-17 15:40"
+    author: daniel
+    created: 2026-04-17T15:40:00Z
+    mentions_orgs: [bluebird]
+    body: |
+      Bluebird Health security questionnaire is back with them, all 212 answered.
+      Next blocker is the BAA.
+
+  - id: drive-sales-bluebird-questionnaire
+    container: drive-sales
+    type: FILE
+    title: "Bluebird Health — security questionnaire (returned 17 April)"
+    owners: [daniel]
+    last_modified_by: jack
+    created: 2026-04-09T10:00:00Z
+    updated: 2026-04-17T14:50:00Z
+    web_url: https://docs.acme-demo.example/spreadsheets/d/acme-bluebird-questionnaire
+    mentions_orgs: [bluebird]
+    body: |
+      212 questions in 9 sections. Received 9 April, returned 17 April.
+
+      | Section | Questions | From library | New answers |
+      |---|---|---|---|
+      | Governance | 18 | 18 | 0 |
+      | Access control and SSO | 31 | 29 | 2 |
+      | Encryption | 16 | 16 | 0 |
+      | Hosting and residency | 22 | 20 | 2 |
+      | PHI handling | 27 | 4 | 23 |
+      | Incident response | 24 | 22 | 2 |
+      | Business continuity | 26 | 26 | 0 |
+      | Vendors and subprocessors | 21 | 21 | 0 |
+      | Workforce and training | 27 | 15 | 12 |
+
+      Open follow-ups: BAA breach-notification window; annual audit right.
+
+  # ===========================================================================
+  # Follow-ups across the storylines
+  # ===========================================================================
+
+  - id: drive-sales-globex-discovery-0310
+    container: drive-sales
+    type: FILE
+    title: "Call notes — Globex Corporation discovery, 2026-03-10"
+    owners: [sofia]
+    last_modified_by: sofia
+    created: 2026-03-10T15:50:00Z
+    updated: 2026-03-10T16:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-call-globex-0310
+    mentions_orgs: [globex]
+    body: |
+      Attendees: Victor Alvarez (Globex), Sofia Rossi, Hannah Schmidt (Acme).
+
+      - Four months in: service desk and IT ops (180 users) use Acme daily; Sync
+        (Victor's word; now Acme Flow) pulls tickets from their ticketing system.
+      - Goal: every operations team on Acme by Q3, about 750 seats.
+      - Victor's board wants evidence of reliability and a security review before
+        approving the wider rollout.
+      - Procurement (Olivia Grant) will run the contract; expect tough redlines.
+      - They will use an implementation partner for training rather than our
+        services team.
+
+      Next: opportunity opened for the expansion; security review pack to Victor by
+      20 March.
+
+  - id: mail-globex-0309
+    container: gmail-hannah
+    type: MAIL
+    title: "Globex — technical history before your discovery call"
+    from: hannah
+    to: [sofia]
+    created: 2026-03-09T08:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/hannah/#sent/globex-0309
+    mentions_orgs: [globex]
+    body: |
+      Sofia,
+
+      Short version for tomorrow's call with Victor: onboarding in November went
+      smoothly; two connections on Acme Flow (ticketing and CRM) with about 60 custom
+      fields mapped; SSO via their own IdP; no open tickets today. He is impatient
+      with outages and very responsive when kept informed. He likes a written
+      summary after every call.
+
+      Hannah
+
+  - id: slack-acct-globex-0325
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Sofia Rossi, 2026-03-25 15:10"
+    author: sofia
+    created: 2026-03-25T15:10:00Z
+    mentions_orgs: [globus, globex]
+    body: |
+      Inês from Globus Partners confirmed they'll run the Globex rollout workshops
+      on 12 and 19 May. Reminder: Globus is the partner, Globex is the customer.
+      They'll need a partner sandbox.
+
+  - id: slack-acct-globex-0422
+    container: slack-acct-globex
+    type: MESSAGE
+    title: "#acct-globex — Hannah Schmidt, 2026-04-22 10:05"
+    author: hannah
+    created: 2026-04-22T10:05:00Z
+    mentions_orgs: [globex]
+    body: |
+      FYI: about 25 Globex Mac users are stuck in an SSO login loop on Safari. Lucas
+      in support has the ticket and gave them a workaround. Not related to the
+      certificate problem in March.
+
+  - id: mail-globex-0428-3
+    container: gmail-chioma
+    type: MAIL
+    title: "Custom fields with dots — fix deployed, please re-run a full sync"
+    from: chioma
+    to: [victor]
+    cc: [hannah]
+    created: 2026-04-28T17:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/chioma/#sent/globex-0428-3
+    body: |
+      Hi Victor,
+
+      The fix for custom fields with dots in their names is live. Could your admin
+      run a full re-sync on both Flow connections and check that the 14 affected
+      fields (region.code, cost.centre and the rest) now have values? Once you
+      confirm, I'll close CS0004496. You can drop the calculated-field workaround
+      afterwards.
+
+      Chioma
+
+  - id: mail-globex-0415
+    container: gmail-chioma
+    type: MAIL
+    title: "Some CRM fields come through empty"
+    from: victor
+    to: [chioma]
+    created: 2026-04-15T09:55:00Z
+    web_url: https://mail.acme-demo.example/mail/u/chioma/#inbox/globex-0415
+    body: |
+      Chioma,
+
+      Since we added the cost-centre fields to our CRM mapping, a handful of fields
+      sync as blank: region.code, cost.centre, owner.team and a few others. Other
+      fields on the same records are fine. We need these for the rollout reporting.
+
+      Victor
+
+  - id: slack-support-escalations-0428
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Chioma Eze, 2026-04-28 17:30"
+    author: chioma
+    created: 2026-04-28T17:30:00Z
+    mentions_orgs: [globex]
+    body: |
+      FLOW-312 (dots in custom field names) is merged and deployed. Asked Globex to
+      re-sync and confirm; CS0004496 stays open until they do. Known-issues page
+      updated.
+
+  - id: mail-support-0414
+    container: gmail-lucas
+    type: MAIL
+    title: "Incident summary: Acme Flow sync delays, 8–10 April"
+    from: lucas
+    to: [kwame, jonas, victor]
+    cc: [hannah, chioma]
+    created: 2026-04-14T14:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/lucas/#sent/support-0414
+    relations:
+      - { type: RELATED, to: mail-support-0410 }
+    body: |
+      Hello,
+
+      As promised, a summary of the Acme Flow delays:
+
+      - What happened: from about 06:10 UTC on 8 April the sync engine repeatedly ran
+        out of memory after moving to new infrastructure. Connections stayed "running"
+        but stopped writing. The longest delay was a little over six hours.
+      - Fix: on 10 April engineering raised the engine's memory and added an alert on
+        sync lag. All backlogs drained by 15:00 UTC that day.
+      - Data: no records were lost or duplicated.
+      - Next: per-connection lag in the admin console and an Acme Flow component on
+        our status page, both in progress.
+
+      Lucas Moreau
+      Acme Support, EMEA
+
+  - id: sn-4494
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004494: Add a third Flow connection for the HR system — Contoso"
+    author: chioma
+    reporter: jonas
+    assignee: sam
+    created: 2026-04-16T13:00:00Z
+    updated: 2026-04-20T09:40:00Z
+    web_url: https://servicenow.acme-demo.example/sn_customerservice_case.do?number=CS0004494
+    mentions_orgs: [contoso]
+    body: |
+      **Customer:** Contoso (Enterprise) · **Status:** Solved · **Priority:** P4
+
+      Contoso wants a third Acme Flow connection for their HR system and asks whether
+      their plan allows it. Enterprise allows five connections; they have two.
+
+      Work notes:
+      - 16 Apr: picked up from the queue; reassigned to Sam, who knows their setup.
+      - 20 Apr: Sam walked their admin through the connection and field mapping.
+        Solved.
+
+  - id: mail-bluebird-0429
+    container: gmail-sofia
+    type: MAIL
+    title: "Re: BAA timing and pilot review"
+    from: sofia
+    to: [kwame]
+    cc: [daniel]
+    created: 2026-04-29T09:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/sofia/#sent/bluebird-0429
+    relations:
+      - { type: RELATED, to: mail-bluebird-0428 }
+    body: |
+      Kwame,
+
+      14 May works for the pilot review; I'll send an invitation for 10:00 Eastern.
+      On the BAA: our COO is reviewing your two redlines and we will answer your
+      counsel by 8 May. I'll make sure nothing in the workspace needs real patient
+      data before then.
+
+      Sofia
+
+  - id: slack-deals-0428
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Jack Thornton, 2026-04-28 09:00"
+    author: jack
+    created: 2026-04-28T09:00:00Z
+    mentions_orgs: [globex, northwind, contoso, bluebird]
+    body: |
+      Salesforce hygiene before Thursday's forecast: Globex expansion, Northwind
+      renewal and Bluebird new business all need next steps dated this week. Contoso
+      renewal can stay in Qualification until the June review.
+
+  - id: drive-sales-forecast-0427
+    container: drive-sales
+    type: FILE
+    title: "Sales forecast notes — week of 27 April"
+    owners: [lena]
+    last_modified_by: jack
+    created: 2026-04-27T08:00:00Z
+    updated: 2026-04-29T18:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-forecast-0427
+    mentions_orgs: [globex, northwind, bluebird, contoso, kestrel, tessera]
+    body: |
+      ## Commit for Q2
+      - Northwind Traders renewal — Negotiation, close 31 May. Proposal sent 29 April.
+      - Globex Corporation expansion — Negotiation, close 29 May. Revised order form
+        sent; two open technical asks (dedicated cluster, audit log).
+
+      ## Best case
+      - Bluebird Health new business — Proposal, close 30 June. Blocked on the BAA;
+        competing with a Tessera trial.
+
+      ## Pipeline (later quarters)
+      - Contoso renewal — Qualification, close 30 September.
+      - Kestrel Logistics — intro meeting 5 May; not yet an opportunity.
+
+      ## Risks
+      Acme Flow reliability comes up in both Globex and Bluebird conversations.

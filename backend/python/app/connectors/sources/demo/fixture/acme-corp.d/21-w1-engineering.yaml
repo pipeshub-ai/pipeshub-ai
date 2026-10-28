@@ -1,0 +1,3083 @@
+# Writer W1: engineering storylines S1-S5 of kg-eval/BIBLE.md.
+#
+# S1 Project Keel (Kubernetes migration), S2 Payments (dunning, VAT rule, Leo's first
+# weeks), S3 Platform reliability (incidents, on-call), S4 SEC-7 (restricted:
+# security-incident), S5 Acme Flow engineering. Threads and records only; the cast,
+# organisations, groups and containers are in 10-cast.yaml.
+#
+# A few mails in gmail-raj set `group: support-readers` (sent to the support team) or
+# `group: security-incident` (the SEC-7 briefing): a mail's readers are its recipients,
+# and the mailbox group alone would hide them from the people they were sent to.
+
+threads:
+  # --- S1 #proj-keel -----------------------------------------------------------
+  - id: slack-keel-0216
+    container: slack-keel
+    title: "#proj-keel thread: welcome Tobias, first week on Keel (2026-02-16)"
+  - id: slack-keel-0324
+    container: slack-keel
+    title: "#proj-keel thread: svc-export cutover to Kubernetes (2026-03-24)"
+  - id: slack-keel-0402
+    container: slack-keel
+    title: "#proj-keel thread: flow-engine cutover to Kubernetes (2026-04-02)"
+  - id: slack-keel-0408
+    container: slack-keel
+    title: "#proj-keel thread: flow-engine pods OOM-killed, delayed syncs (2026-04-08)"
+  - id: slack-keel-0418
+    container: slack-keel
+    title: "#proj-keel thread: svc-billing-worker cutover (2026-04-18)"
+  # --- S2 #eng-payments --------------------------------------------------------
+  - id: slack-eng-payments-0409
+    container: slack-eng-payments
+    title: "#eng-payments thread: dunning proposal for failed renewals (2026-04-09)"
+  - id: slack-eng-payments-0420
+    container: slack-eng-payments
+    title: "#eng-payments thread: welcome Leo (2026-04-20)"
+  - id: slack-eng-payments-0424
+    container: slack-eng-payments
+    title: "#eng-payments thread: Leo's first PR merged (2026-04-24)"
+  # --- S3 #platform ------------------------------------------------------------
+  - id: slack-platform-0408
+    container: slack-platform
+    title: "#platform thread: INC-2040 Acme Flow sync delays (2026-04-08)"
+  - id: slack-platform-0424
+    container: slack-platform
+    title: "#platform thread: export download links failing, INC-2044 (2026-04-24)"
+  # --- S4 #sec-incident (restricted) -------------------------------------------
+  - id: slack-sec-incident-0412
+    container: slack-sec-incident
+    title: "#sec-incident thread: SEC-7 CI token in a public build log (2026-04-12)"
+
+records:
+
+  # ===========================================================================
+  # S1 — Project Keel: the Kubernetes migration
+  # ===========================================================================
+
+  # --- KEEL Jira tickets ------------------------------------------------------
+
+  - id: jira-mig-1
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-1: Project Keel — move four services from VMs to Kubernetes"
+    author: raj
+    reporter: raj
+    assignee: priya-nair
+    created: 2026-02-09T15:00:00Z
+    updated: 2026-04-27T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-1
+    body: |
+      **Type:** Epic · **Status:** In progress · **Due:** 2026-05-29
+
+      Move svc-export, flow-engine, svc-billing-worker and svc-invoicing off the
+      hand-managed VMs and onto the managed Kubernetes cluster (keel-prod) by the end
+      of May. The VMs are on an OS release that loses security updates in July.
+
+      Child work, in cutover order:
+      - KEEL-20 svc-export — done 24 Mar
+      - KEEL-27 flow-engine — done 2 Apr
+      - KEEL-38 svc-billing-worker — done 18 Apr
+      - KEEL-45 svc-invoicing — planned 12 May
+
+      Supporting tickets: KEEL-5 cluster, KEEL-8 ingress, KEEL-16 dashboards,
+      KEEL-31 network policy, KEEL-35 certificates, KEEL-42 VM decommissioning.
+
+  - id: jira-mig-5
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-5: Provision keel-prod and keel-staging clusters"
+    author: priya-nair
+    reporter: raj
+    assignee: priya-nair
+    created: 2026-02-10T09:30:00Z
+    updated: 2026-02-27T16:45:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-5
+    body: |
+      **Status:** Done · **Resolution:** Fixed
+
+      Provision two managed clusters in eu-west-1 via Terraform (platform-infra PR #601).
+
+      Production (keel-prod): Kubernetes 1.29, one system pool of 3 × m6i.large and a
+      general pool `pool-general` of m6i.2xlarge nodes, autoscaling 4 to 12.
+      Staging (keel-staging): same versions, general pool 2 to 4 nodes.
+
+      Both clusters use the managed control plane with private endpoints only; kubectl
+      goes through the bastion. Done 27 Feb after the node pool quota increase came
+      through on the 26th.
+
+  - id: jira-mig-8
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-8: Ingress controller and DNS for the keel clusters"
+    author: raj
+    reporter: raj
+    assignee: yusuf
+    created: 2026-02-16T10:00:00Z
+    updated: 2026-03-06T12:20:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-8
+    body: |
+      **Status:** Done
+
+      Install ingress-nginx and external-dns on keel-prod and keel-staging so services
+      get `*.keel.acme-demo.example` hostnames, and route the existing public hostnames
+      by weighted DNS during each cutover.
+
+      Done in platform-infra PR #605. Weighted records let a cutover move traffic
+      10% → 50% → 100% without changing what customers call.
+
+  - id: jira-mig-12
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-12: Helm chart for svc-export"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-02-23T09:00:00Z
+    updated: 2026-03-20T15:10:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-12
+    body: |
+      **Status:** Done
+
+      Chart for svc-export with separate Deployments for the API and the background
+      export worker (the queue consumer that ships in PR #211). Worker replicas scale
+      on queue depth later; start with 2 API and 2 worker pods.
+
+      Merged as platform-infra PR #603 on 20 Mar.
+
+  - id: jira-mig-14
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-14: Helm chart for flow-engine"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-03-09T09:00:00Z
+    updated: 2026-03-30T17:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-14
+    body: |
+      **Status:** Done
+
+      Chart for flow-engine: sync workers, webhook receiver and the scheduler as three
+      Deployments. Webhook receiver must keep the `/v1/sync` path. Memory request and
+      limit copied from the VM sizing for a first pass.
+
+      Merged as platform-infra PR #607 on 30 Mar.
+
+  - id: jira-mig-16
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-16: Dashboards and alerts for workloads on keel-prod"
+    author: raj
+    reporter: raj
+    assignee: grace
+    created: 2026-02-23T09:20:00Z
+    updated: 2026-03-23T11:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-16
+    body: |
+      **Status:** Done
+
+      One Grafana dashboard per migrated service (pods, restarts, CPU and memory
+      against limits, p95 latency, 5xx rate) and alert rules for crash loops and
+      node pressure. Must be in place before the first cutover on 24 Mar.
+
+  - id: jira-mig-20
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-20: Cut over svc-export to Kubernetes"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-03-02T10:00:00Z
+    updated: 2026-03-24T16:30:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-20
+    body: |
+      **Status:** Done · **Cutover date:** 2026-03-24
+
+      Move svc-export traffic from the VMs to keel-prod using the cutover checklist.
+      Window: Tuesday 24 Mar, 13:00–15:00 UTC.
+
+      Result: traffic at 100% on Kubernetes at 14:40 UTC. About three minutes of 502s
+      at 14:12 during the 50% step (readiness probe pointed at the wrong port; see the
+      cutover retro). VMs kept warm for one week.
+
+  - id: jira-mig-20-c1
+    container: jira-mig
+    type: COMMENT
+    title: "Comment on KEEL-20 — Alice Chen"
+    author: alice
+    created: 2026-03-24T16:05:00Z
+    parent: jira-mig-20
+    body: |
+      Ran a 2,000-record and a 48,000-record workspace export against the new pods.
+      Both completed, archive checksums match the VM output. Export side looks good
+      from me.
+
+  - id: jira-mig-22
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-22: Autoscale flow-engine sync workers on queue lag"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-03-23T11:00:00Z
+    updated: 2026-04-06T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-22
+    body: |
+      **Status:** Done
+
+      CPU is a poor signal for flow-engine: the workers are mostly waiting on partner
+      APIs. Scale the sync worker Deployment on `flow_queue_lag_seconds` instead
+      (target 120 s, min 3, max 16 replicas) via the custom metrics adapter.
+
+      Merged as platform-infra PR #611 on 6 Apr.
+
+  - id: jira-mig-27
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-27: Cut over flow-engine to Kubernetes"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-03-16T10:00:00Z
+    updated: 2026-04-02T17:20:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-27
+    body: |
+      **Status:** Done · **Cutover date:** 2026-04-02
+
+      Move flow-engine (sync workers, webhook receiver, scheduler) to keel-prod.
+      Window: Thursday 2 Apr, 13:00–16:00 UTC. Webhook receiver goes last.
+
+      Result: 100% on Kubernetes at 15:35 UTC, no customer-visible errors during the
+      window. VMs kept warm until 9 Apr.
+
+  - id: jira-mig-31
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-31: Network policy — egress allowlist for the payments provider"
+    author: priya-nair
+    reporter: priya-nair
+    assignee: yusuf
+    created: 2026-03-30T09:15:00Z
+    updated: 2026-04-16T15:40:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-31
+    body: |
+      **Status:** Done · **Blocks:** KEEL-38
+
+      The billing worker talks to Stripe. Under the default-deny baseline (PR #609)
+      nothing in the `payments` namespace can reach the internet, and the payments
+      provider requires that our outbound traffic comes from the two NAT addresses
+      registered with them.
+
+      Needed before svc-billing-worker can move:
+      - egress NetworkPolicy allowing only api.stripe.com:443 from `payments`
+      - route `payments` egress through the registered NAT gateway
+
+      This is why the billing-worker cutover moved from 11 Apr to 18 Apr. Implemented
+      in platform-infra PR #620, merged 16 Apr.
+
+  - id: jira-mig-33
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-33: Review resource requests and limits for every Keel workload"
+    author: raj
+    reporter: raj
+    assignee: tobias
+    created: 2026-04-10T11:30:00Z
+    updated: 2026-04-28T09:45:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-33
+    body: |
+      **Status:** In progress
+
+      Follow-up from INC-2040, where flow-engine pods hit their 512Mi limit. Compare
+      requests and limits in every chart against two weeks of real usage and fix any
+      workload that is within 30% of its limit at p99.
+
+      Progress (28 Apr): svc-export and flow-engine reviewed; svc-export worker raised
+      to 1.5Gi. svc-billing-worker to review after a full week on the cluster.
+
+  - id: jira-mig-35
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-35: cert-manager for keel ingress certificates"
+    author: priya-nair
+    reporter: priya-nair
+    assignee: yusuf
+    created: 2026-04-07T10:00:00Z
+    updated: 2026-04-24T13:10:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-35
+    body: |
+      **Status:** Done
+
+      Replace the manually uploaded certificates on keel ingress with cert-manager and
+      an ACME ClusterIssuer, so renewals happen without a person.
+
+      PR #618 added the issuers (merged 17 Apr). PR #622 (merged 24 Apr) removed the
+      staging issuer from production after it was picked up for a renewal.
+
+  - id: jira-mig-38
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-38: Cut over svc-billing-worker to Kubernetes"
+    author: raj
+    reporter: raj
+    assignee: priya-nair
+    created: 2026-03-30T10:00:00Z
+    updated: 2026-04-20T10:15:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-38
+    relations:
+      - { type: RELATED, to: jira-mig-31 }
+    body: |
+      **Status:** Done · **Cutover date:** 2026-04-18
+
+      Move svc-billing-worker to the `payments` namespace on keel-prod. Originally
+      planned for 11 Apr; moved to Saturday 18 Apr once KEEL-31 (egress allowlist for
+      the payments provider) was known to be a blocker.
+
+      Window: Sat 18 Apr, 07:00–09:00 UTC, the lowest renewal volume of the week.
+      Workers were scaled to zero on the VMs before the pods started, so no renewal
+      could be charged twice.
+
+      Result: all 12 replicas running on Kubernetes at 08:05 UTC. Priya Natarajan
+      verified renewals afterwards: the 08:00 and 09:00 renewal batches (1,812 charges)
+      completed with no duplicates and no retry spike. VMs stopped 20 Apr.
+
+  - id: jira-mig-38-c1
+    container: jira-mig
+    type: COMMENT
+    title: "Comment on KEEL-38 — Priya Nair"
+    author: priya-nair
+    created: 2026-04-18T09:40:00Z
+    parent: jira-mig-38
+    body: |
+      Cutover complete. Thanks to Priya Natarajan on the Payments side for checking the
+      renewal batches against Stripe; her numbers match ours. Leaving the VMs stopped
+      but not deleted until Monday.
+
+  - id: jira-mig-40
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-40: Evaluate a dedicated cluster for Globex Corporation"
+    author: raj
+    reporter: raj
+    assignee: priya-nair
+    created: 2026-04-15T08:30:00Z
+    updated: 2026-04-28T16:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-40
+    mentions_orgs: [globex]
+    body: |
+      **Status:** In progress · **Decision due:** 2026-05-15
+
+      Globex Corporation's procurement team asked on 14 Apr for a dedicated cluster
+      (or at least dedicated nodes) and for their data to stay in the EU. Their
+      expansion to 750 seats depends on the answer.
+
+      Scope of the evaluation (about three weeks of work):
+      - option A: dedicated node pool on keel-prod with taints and a separate namespace
+      - option B: a separate cluster in eu-central-1 run from the same Terraform
+      - what each means for on-call, upgrades and the Keel timeline
+      - which of our services would need tenant-aware deployment
+
+      Options write-up in the KEEL space. Decision with Raj and the account team by
+      15 May.
+
+  - id: jira-mig-42
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-42: Decommission the svc-export and flow-engine VMs"
+    author: raj
+    reporter: raj
+    assignee: yusuf
+    created: 2026-04-13T09:00:00Z
+    updated: 2026-04-27T11:00:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-42
+    body: |
+      **Status:** To Do · **Due:** 2026-05-08
+
+      Both services have been on Kubernetes for over three weeks. Snapshot the disks,
+      delete the six VMs (3 svc-export, 3 flow-engine), remove their DNS records and
+      monitoring targets. Saves roughly $5,200 a month.
+
+  - id: jira-mig-45
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-45: Cut over svc-invoicing to Kubernetes"
+    author: raj
+    reporter: raj
+    assignee: kenji
+    created: 2026-04-14T10:00:00Z
+    updated: 2026-04-29T09:30:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-45
+    body: |
+      **Status:** To Do · **Planned cutover:** 2026-05-12
+
+      Last of the four Keel services. Planned for Tuesday 12 May, 07:00–09:00 UTC,
+      after the April invoice run and before the mid-month one.
+
+      Prerequisites: the svc-invoicing Helm chart (platform-infra PR #625, in review),
+      the PDF renderer's font files moved into the image, and the VAT change in
+      svc-invoicing merged first so we don't cut over mid-review. Priya Nair pairs on
+      the day.
+
+  - id: jira-mig-47
+    container: jira-mig
+    type: TICKET
+    title: "KEEL-47: Runbook — roll a service back from Kubernetes to its VMs"
+    author: priya-nair
+    reporter: priya-nair
+    assignee: dana
+    created: 2026-04-20T14:00:00Z
+    updated: 2026-04-29T15:20:00Z
+    web_url: https://jira.acme-demo.example/browse/KEEL-47
+    body: |
+      **Status:** In progress
+
+      Once the VMs are deleted (KEEL-42) a rollback means rebuilding them. Write the
+      runbook for that case: Terraform module to recreate a service's VMs from the
+      last snapshot, DNS weights back to the VM pool, and how long each step takes.
+      Dry run against svc-export on staging before 8 May.
+
+  # --- KEEL Confluence pages --------------------------------------------------
+
+  - id: cf-mig-kickoff
+    container: cf-mig
+    type: PAGE
+    title: "Project Keel kickoff — 9 February 2026"
+    author: raj
+    last_modified_by: raj
+    created: 2026-02-09T16:00:00Z
+    updated: 2026-02-10T09:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-kickoff
+    mentions_orgs: [globus]
+    body: |
+      ## Why
+      Four services still run on hand-built VMs whose OS stops getting security
+      updates in July. Every deploy is a shell script; scaling means a ticket.
+
+      ## Goal
+      Move svc-export, flow-engine, svc-billing-worker and svc-invoicing to the managed
+      Kubernetes cluster by the end of May. Nothing customer-facing changes.
+
+      ## People
+      Priya Nair leads the migration technically. Yusuf owns ingress, DNS and network
+      policy; Grace owns dashboards and alerts; Dana reviews the architecture. A
+      contract engineer from Globus Partners joins on 16 Feb for Helm charts and
+      autoscaling, through 30 June. Each service's owning team signs off its own
+      cutover.
+
+      ## Ways of working
+      Tickets in the KEEL project, chat in #proj-keel, weekly check-in Mondays 15:00.
+      One cutover at a time, never on a Friday.
+
+  - id: cf-mig-keel-plan
+    container: cf-mig
+    type: PAGE
+    title: "Project Keel — Kubernetes migration plan"
+    author: dana
+    last_modified_by: priya-nair
+    created: 2026-02-12T11:00:00Z
+    updated: 2026-04-06T17:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-migration-plan
+    body: |
+      ## Scope
+      svc-export, flow-engine, svc-billing-worker and svc-invoicing move from VMs to
+      keel-prod. Stateful stores (Postgres, Redis, object storage) stay where they are.
+
+      ## Order and dates
+      | Service | Cutover | Ticket |
+      |---|---|---|
+      | svc-export | Tue 24 March | KEEL-20 |
+      | flow-engine | Thu 2 April | KEEL-27 |
+      | svc-billing-worker | **Sat 18 April** | KEEL-38 |
+      | svc-invoicing | Tue 12 May | KEEL-45 |
+
+      The billing worker moved from 11 April to 18 April (6 Apr): it needs the egress
+      allowlist for the payments provider (KEEL-31) in place first.
+
+      ## Approach
+      Each service gets a Helm chart, runs a week on keel-staging, then cuts over with
+      weighted DNS (10% → 50% → 100%) using the cutover checklist. VMs stay warm for at
+      least a week after each cutover.
+
+      ## Risks
+      - Memory sizing copied from VMs may be wrong for containers.
+      - Billing must never charge twice: scale VM workers to zero before pods start.
+      - svc-invoicing renders PDFs and needs its fonts inside the image.
+
+  - id: cf-mig-cutover-checklist
+    container: cf-mig
+    type: PAGE
+    title: "Keel cutover checklist"
+    author: priya-nair
+    last_modified_by: tobias
+    created: 2026-03-16T10:00:00Z
+    updated: 2026-04-15T12:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-cutover-checklist
+    body: |
+      ## Day before
+      1. Service has run 7 days on keel-staging without restarts above 2/day.
+      2. Dashboard and alerts exist for the service (KEEL-16 pattern).
+      3. Owning team has named who verifies the service after cutover.
+
+      ## On the day
+      4. Announce in #proj-keel and #platform 30 minutes before.
+      5. Shift weighted DNS 10% → 50% → 100%, holding each step for at least 20
+         minutes. Whole cutover takes about 90 minutes.
+      6. For workers that charge or send email, scale VM workers to zero *before*
+         starting the pods.
+
+      ## Roll back if
+      - p95 latency above 800 ms for 5 minutes, or
+      - 5xx rate above 1% for 5 minutes, or
+      - the owning team's verification fails.
+      Rollback is DNS weights back to 0% on Kubernetes; VMs must still be warm.
+
+      ## After
+      7. Keep the VMs warm for 7 days, then open a decommission ticket.
+      8. Readiness probes must point at the service port, not the metrics port
+         (added 15 Apr after the svc-export cutover retro).
+
+  - id: cf-mig-helm-conventions
+    container: cf-mig
+    type: PAGE
+    title: "Keel Helm chart conventions"
+    author: tobias
+    last_modified_by: yusuf
+    created: 2026-03-03T09:30:00Z
+    updated: 2026-04-20T10:40:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-helm-conventions
+    body: |
+      Every Keel service chart lives in `platform-infra/charts/<service>`.
+
+      - **Values**: `resources.requests` and `resources.limits` are set for every
+        container; requests equal limits for memory, CPU has no limit.
+      - **Names**: Deployments are `<service>-<role>`, e.g. `flow-engine-sync`,
+        `svc-export-worker`.
+      - **Labels**: `app.kubernetes.io/name`, `app.kubernetes.io/component`,
+        `acme.io/team` (payments or platform) and `acme.io/oncall` (rota name).
+      - **Probes**: readiness on the service port, liveness on `/healthz`, never the
+        metrics port.
+      - **Secrets**: from the external secrets operator only; no secrets in values.
+      - **Ingress**: annotate with `cert-manager.io/cluster-issuer: letsencrypt-prod`
+        (added 20 Apr; do not reference any other issuer in production charts).
+      - **Versioning**: chart version bumps on every change; app version is the
+        image tag.
+
+  - id: cf-mig-weekly-status
+    container: cf-mig
+    type: PAGE
+    title: "Keel weekly status"
+    author: raj
+    last_modified_by: raj
+    created: 2026-02-16T15:30:00Z
+    updated: 2026-04-27T15:45:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-weekly-status
+    mentions_orgs: [globex]
+    body: |
+      ## Week of 27 April
+      - Three of four services on Kubernetes: svc-export (24 Mar), flow-engine (2 Apr),
+        svc-billing-worker (18 Apr).
+      - svc-invoicing: chart in review (PR #625); cutover 12 May with Kenji.
+      - KEEL-40 (Globex dedicated cluster): options page drafted; decision due 15 May.
+      - KEEL-42 VM decommissioning by 8 May.
+      - Risk: KEEL-40 work competes with the invoicing cutover for Priya Nair's time.
+
+      ## Week of 20 April
+      - Billing worker cutover done on the 18th; renewals verified by Payments.
+      - Ingress certificate automation merged (PR #618).
+
+      ## Week of 13 April
+      - INC-2040 follow-ups: memory limits raised (PR #614), resource review KEEL-33.
+
+  - id: cf-mig-dedicated-cluster-options
+    container: cf-mig
+    type: PAGE
+    title: "KEEL-40: Dedicated cluster options for Globex Corporation"
+    author: priya-nair
+    last_modified_by: dana
+    created: 2026-04-20T09:00:00Z
+    updated: 2026-04-28T14:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/KEEL/pages/keel-40-options
+    mentions_orgs: [globex]
+    body: |
+      Globex Corporation asked for dedicated infrastructure and EU-only data.
+
+      ## Option A — dedicated node pool on keel-prod
+      Tainted pool `pool-globex`, Globex workloads in their own namespace. Data stays
+      in eu-west-1 (already EU). Shared control plane, so "dedicated cluster" is not
+      literally true. About 1 week of platform work.
+
+      ## Option B — separate cluster, eu-central-1
+      Same Terraform module as keel-prod. Truly dedicated, but doubles upgrade and
+      on-call work and every Keel chart needs a tenant flag. About 3 weeks before the
+      first service could run there.
+
+      ## Open questions
+      - Does "data residency" mean EU or Germany? Account team to confirm.
+      - Cost: not estimated yet for either option; needs node sizing first.
+
+      Dana (28 Apr): prefer A unless the customer needs a separate control plane in
+      writing; B blocks the Keel finish date.
+
+  # --- Drive: the two copies of the plan and migration docs -------------------
+
+  - id: drive-eng-keel-plan
+    container: drive-engineering
+    type: FILE
+    title: "Project Keel — Kubernetes migration plan"
+    owners: [dana]
+    last_modified_by: dana
+    created: 2026-02-05T14:00:00Z
+    updated: 2026-02-12T10:20:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-keel-migration-plan
+    body: |
+      ## Scope
+      svc-export, flow-engine, svc-billing-worker and svc-invoicing move from VMs to the
+      managed Kubernetes cluster. Postgres, Redis and object storage are not moving.
+
+      ## Order and dates (draft)
+      - svc-export — Tuesday 24 March (smallest blast radius, already stateless)
+      - flow-engine — Thursday 2 April
+      - svc-billing-worker — **Saturday 11 April**
+      - svc-invoicing — Tuesday 12 May (after the April invoice run)
+
+      ## Approach
+      Helm chart per service, a week on staging, weighted DNS cutover, VMs warm for a
+      week afterwards.
+
+      ## Open questions
+      - Do we need per-namespace network policy from day one?
+      - Who verifies billing after its cutover?
+      - Memory sizing: copy from the VMs, then tune.
+
+  - id: drive-mig-cost-model
+    container: drive-migration
+    type: FILE
+    title: "Keel cost model — VMs vs cluster"
+    owners: [priya-nair]
+    last_modified_by: raj
+    created: 2026-02-20T11:00:00Z
+    updated: 2026-03-12T16:00:00Z
+    web_url: https://docs.acme-demo.example/spreadsheets/d/acme-keel-cost-model
+    body: |
+      | Line | Today (VMs) | After Keel |
+      |---|---|---|
+      | Compute, 4 services | $14,300/month | $8,700/month (pool-general, avg 7 nodes) |
+      | Load balancers and NAT | $2,100/month | $1,600/month |
+      | Monitoring agents | $2,200/month | $1,600/month |
+      | **Total** | **$18,600/month** | **$11,900/month** |
+
+      Assumptions: the four services fit on an average of 7 m6i.2xlarge nodes with
+      30% headroom; autoscaling to 12 nodes at month-end invoice runs; managed
+      control plane fee included in compute. One-off cost of the migration (contractor
+      and team time) is tracked by finance, not here.
+
+      Raj (12 Mar): numbers reviewed; use the $11,900 figure in the board update.
+
+  - id: drive-mig-contractor-onboarding
+    container: drive-migration
+    type: FILE
+    title: "Keel contractor onboarding"
+    owners: [raj]
+    last_modified_by: priya-nair
+    created: 2026-02-13T10:00:00Z
+    updated: 2026-02-16T08:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-keel-contractor-onboarding
+    mentions_orgs: [globus]
+    body: |
+      For engineers joining Project Keel through Globus Partners.
+
+      ## Access you get
+      - acme/platform-infra (write; merges need one platform approval)
+      - the KEEL Jira project and the KEEL Confluence space
+      - #proj-keel on Slack
+      - the Project Keel Drive folder
+      - kubectl on keel-staging; read-only on keel-prod until your first cutover
+
+      ## Access you don't get
+      Incident tickets, the ENG Confluence space and customer support tools stay
+      employee-only. Ask in #proj-keel and someone will share what you need.
+
+      ## First week
+      Day 1 laptop and SSO; day 2 read the migration plan and the Helm conventions;
+      day 3 pair with Priya Nair on keel-staging; by Friday pick up KEEL-12.
+
+  - id: drive-mig-export-cutover-retro
+    container: drive-migration
+    type: FILE
+    title: "Retro — svc-export cutover, 24 March"
+    owners: [tobias]
+    last_modified_by: tobias
+    created: 2026-03-26T10:00:00Z
+    updated: 2026-03-26T15:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-keel-export-retro
+    body: |
+      ## What happened
+      At 14:12 UTC, moving from 10% to 50%, about three minutes of 502s on export
+      requests (roughly 140 failed requests). Rolled the weight back to 10%, fixed,
+      went to 50% at 14:25 and 100% at 14:40.
+
+      ## Root cause
+      The readiness probe in the svc-export chart checked port 9090 (metrics) instead
+      of 8080 (the service). Pods were marked ready before the app had loaded its
+      config, so the new pods received traffic they could not serve.
+
+      ## What we changed
+      - Probe fixed in the chart the same afternoon.
+      - Checklist step: readiness probes on the service port, never the metrics port.
+      - Hold each weight step 20 minutes instead of 10.
+
+      ## What went well
+      Alice's verification exports passed first time; rollback took under a minute.
+
+  # --- platform-infra pull requests -------------------------------------------
+
+  - id: gh-pr-601
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #601: Terraform — keel-prod and keel-staging clusters"
+    author: priya-nair
+    assignees: [priya-nair]
+    reviewers: [dana, yusuf]
+    created: 2026-02-18T10:00:00Z
+    updated: 2026-02-26T16:30:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/601
+    body: |
+      **Merged** 2026-02-26 · Closes KEEL-5
+
+      Adds `terraform/keel` with a module for a managed cluster and two instances,
+      keel-prod and keel-staging. Private API endpoint, system pool of 3 × m6i.large,
+      `pool-general` m6i.2xlarge autoscaling 4–12 in prod and 2–4 in staging.
+      State in the existing remote backend under `keel/`.
+
+  - id: gh-pr-603
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #603: Helm chart for svc-export"
+    author: tobias
+    assignees: [tobias]
+    reviewers: [priya-nair, yusuf]
+    created: 2026-03-10T09:00:00Z
+    updated: 2026-03-20T14:50:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/603
+    body: |
+      **Merged** 2026-03-20 · Closes KEEL-12
+
+      `charts/svc-export` with two Deployments, `svc-export-api` (2 replicas) and
+      `svc-export-worker` (2 replicas) for the background export queue. Requests
+      500m CPU / 1Gi memory each. Secrets from the external secrets operator.
+      Ingress host `export.keel.acme-demo.example`.
+
+  - id: gh-pr-603-c1
+    container: gh-platform-infra
+    type: COMMENT
+    title: "Review comment on PR #603 — Yusuf Demir"
+    author: yusuf
+    created: 2026-03-12T11:20:00Z
+    parent: gh-pr-603
+    body: |
+      Ingress looks right. Please drop the hard-coded TLS secret name; external-dns
+      and the ingress class annotation are enough for now and certificates will move
+      to cert-manager later.
+
+  - id: gh-pr-605
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #605: ingress-nginx and external-dns on the keel clusters"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [priya-nair]
+    created: 2026-02-24T10:30:00Z
+    updated: 2026-03-05T11:00:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/605
+    body: |
+      **Merged** 2026-03-05 · Closes KEEL-8
+
+      Installs ingress-nginx (2 replicas, PDB minAvailable 1) and external-dns limited
+      to the `keel.acme-demo.example` zone. Adds weighted CNAME support so public
+      hostnames can split traffic between VMs and the cluster during cutovers.
+
+  - id: gh-pr-607
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #607: Helm chart for flow-engine"
+    author: tobias
+    assignees: [tobias]
+    reviewers: [priya-nair]
+    created: 2026-03-18T13:00:00Z
+    updated: 2026-03-30T16:10:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/607
+    body: |
+      **Merged** 2026-03-30 · Closes KEEL-14
+
+      `charts/flow-engine` with three Deployments: `flow-engine-sync` (4 replicas),
+      `flow-engine-webhooks` (2) and `flow-engine-scheduler` (1). Memory limit 512Mi
+      per pod, copied from the VM's per-process usage. The webhook receiver keeps the
+      `/v1/sync` path.
+
+  - id: gh-pr-609
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #609: Default-deny network policy baseline for keel namespaces"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [priya-nair, dana]
+    created: 2026-03-20T10:00:00Z
+    updated: 2026-03-27T15:00:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/609
+    body: |
+      **Merged** 2026-03-27
+
+      Every keel namespace gets a default-deny ingress and egress NetworkPolicy, plus
+      explicit allows for DNS, the ingress controller and the in-VPC data stores.
+      Internet egress is not allowed by default; services that need it get a
+      per-destination allowlist.
+
+  - id: gh-pr-611
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #611: HPA on queue lag for flow-engine sync workers"
+    author: tobias
+    assignees: [tobias]
+    reviewers: [grace]
+    created: 2026-04-01T10:00:00Z
+    updated: 2026-04-06T13:40:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/611
+    body: |
+      **Merged** 2026-04-06 · Closes KEEL-22
+
+      HorizontalPodAutoscaler for `flow-engine-sync` on the external metric
+      `flow_queue_lag_seconds`, target 120 s, 3 to 16 replicas. Scale-down
+      stabilisation 10 minutes so a burst does not flap the workers.
+
+  - id: gh-pr-614
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #614: Raise flow-engine memory limit to 2Gi and alert on queue lag"
+    author: tobias
+    assignees: [tobias]
+    reviewers: [priya-nair, yusuf]
+    created: 2026-04-09T19:30:00Z
+    updated: 2026-04-10T11:05:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/614
+    relations:
+      - { type: RELATED, to: jira-inc-2040 }
+    body: |
+      **Merged** 2026-04-10 · Fixes INC-2040
+
+      flow-engine sync pods were OOM-killed at the 512Mi limit once large tenants'
+      backfills started after the cutover, so the HPA added pods that also died and
+      the queue backed up.
+
+      - `flow-engine-sync` memory request and limit 512Mi → 2Gi
+      - `flow-engine-webhooks` 512Mi → 1Gi
+      - new alert `FlowQueueLagHigh`: warn at 15 minutes, page at 30 minutes
+      - restart-count alert on any Keel pod above 5 restarts in 10 minutes
+
+  - id: gh-pr-614-c1
+    container: gh-platform-infra
+    type: COMMENT
+    title: "Review comment on PR #614 — Priya Nair"
+    author: priya-nair
+    created: 2026-04-10T09:15:00Z
+    parent: gh-pr-614
+    body: |
+      Approving. 2Gi matches what the sync workers peaked at on the VMs once you count
+      the whole process, not the heap. Let's do the same check for every chart in
+      KEEL-33 rather than wait for the next OOM.
+
+  - id: gh-pr-616
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #616: Page on flow-engine lag per tenant; Keel workload dashboard"
+    author: grace
+    assignees: [grace]
+    reviewers: [priya-nair]
+    created: 2026-04-12T10:00:00Z
+    updated: 2026-04-14T15:20:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/616
+    body: |
+      **Merged** 2026-04-14
+
+      Postmortem action from INC-2040. Adds `flow_queue_lag_seconds` broken down by
+      tenant to the Flow dashboard and a paging rule when any single tenant's lag
+      exceeds 15 minutes for 10 minutes, so one big tenant can't hide behind a healthy
+      average. Thresholds still to be tuned with real traffic.
+
+  - id: gh-pr-618
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #618: cert-manager and ACME issuers for keel ingress"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [priya-nair]
+    created: 2026-04-14T09:30:00Z
+    updated: 2026-04-17T10:00:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/618
+    body: |
+      **Merged** 2026-04-17 · Part of KEEL-35
+
+      Installs cert-manager 1.14 and two ClusterIssuers, `letsencrypt-prod` and
+      `letsencrypt-staging` (for testing charts without hitting rate limits). Ingress
+      objects get certificates from the issuer named in their annotation; existing
+      manually uploaded certificates are left in place until they come up for renewal.
+
+  - id: gh-pr-620
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #620: Egress allowlist for the payments namespace"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [priya-nair, alice]
+    created: 2026-04-15T08:45:00Z
+    updated: 2026-04-16T14:30:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/620
+    relations:
+      - { type: IMPLEMENTS, to: jira-mig-31 }
+    body: |
+      **Merged** 2026-04-16 · Closes KEEL-31
+
+      Adds an egress NetworkPolicy in `payments` allowing only api.stripe.com:443 (via
+      an FQDN policy) and routes the namespace's egress through the NAT gateway whose
+      two addresses are registered with the payments provider. Tested from a debug pod
+      on keel-staging: Stripe reachable, everything else refused.
+
+  - id: gh-pr-622
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #622: Remove the staging issuer from production ingress"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [priya-nair, dana]
+    created: 2026-04-24T09:40:00Z
+    updated: 2026-04-24T15:00:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/622
+    relations:
+      - { type: RELATED, to: jira-inc-2044 }
+    body: |
+      **Merged** 2026-04-24 · Fixes INC-2044
+
+      The svc-export ingress inherited the `letsencrypt-staging` issuer from a chart
+      default, so when its manual certificate came up for renewal on 24 Apr
+      cert-manager issued an untrusted staging certificate and download links failed.
+
+      - production keel ingresses pinned to `letsencrypt-prod`
+      - `letsencrypt-staging` ClusterIssuer removed from keel-prod entirely
+      - CI check rejects any production chart that references another issuer
+
+  - id: gh-pr-622-c1
+    container: gh-platform-infra
+    type: COMMENT
+    title: "Review comment on PR #622 — Dana Okafor"
+    author: dana
+    created: 2026-04-24T13:30:00Z
+    parent: gh-pr-622
+    body: |
+      Approving. The CI check is the part that matters; a chart default nobody reads
+      is how this got in. Please also add the rule to the Helm conventions page.
+
+  - id: gh-pr-625
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #625: Helm chart for svc-invoicing"
+    author: tobias
+    assignees: [tobias]
+    reviewers: [kenji]
+    created: 2026-04-27T10:15:00Z
+    updated: 2026-04-29T16:40:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/625
+    body: |
+      **Open** · For KEEL-45
+
+      `charts/svc-invoicing` with `svc-invoicing-api` (2 replicas) and
+      `svc-invoicing-render` (2 replicas, the PDF renderer). Fonts baked into the
+      image instead of the old host mount. Memory 1.5Gi for the renderer after
+      measuring a 300-line invoice.
+
+  - id: gh-pr-625-c1
+    container: gh-platform-infra
+    type: COMMENT
+    title: "Review comment on PR #625 — Kenji Watanabe"
+    author: kenji
+    created: 2026-04-29T16:40:00Z
+    parent: gh-pr-625
+    body: |
+      Requesting changes: the render pods also need the `INVOICE_TEMPLATE_VERSION`
+      config the VMs set in their environment, otherwise PDFs fall back to the old
+      template. Everything else looks right; happy to pair on it Thursday.
+
+  - id: gh-pr-627
+    container: gh-platform-infra
+    type: PULL_REQUEST
+    title: "PR #627: Spike — dedicated node pool for Globex Corporation (KEEL-40)"
+    author: priya-nair
+    assignees: [priya-nair]
+    reviewers: [dana]
+    created: 2026-04-27T14:00:00Z
+    updated: 2026-04-28T11:30:00Z
+    web_url: https://github.acme-demo.example/platform-infra/pull/627
+    mentions_orgs: [globex]
+    body: |
+      **Draft** · Not for merge; supports the KEEL-40 options page
+
+      Adds an optional `pool-globex` node pool (tainted `tenant=globex:NoSchedule`) to
+      the Terraform module and a values override that schedules a chart's pods there
+      with a matching toleration. Tried on keel-staging with flow-engine: pods land on
+      the pool, nothing else does.
+
+  # --- #proj-keel --------------------------------------------------------------
+
+  - id: slack-keel-0216-1
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Raj Mehta, 2026-02-16 09:05"
+    author: raj
+    created: 2026-02-16T09:05:00Z
+    thread: slack-keel-0216
+    mentions_orgs: [globus]
+    body: |
+      Please welcome Tobias Weber, who joins Keel today through Globus Partners for
+      Helm charts and autoscaling. Priya Nair is your go-to for anything cluster.
+
+  - id: slack-keel-0216-2
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-02-16 09:20"
+    author: tobias
+    created: 2026-02-16T09:20:00Z
+    thread: slack-keel-0216
+    body: |
+      Thanks! Reading the plan today. Is svc-export still first?
+
+  - id: slack-keel-0216-3
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Priya Nair, 2026-02-16 09:31"
+    author: priya-nair
+    created: 2026-02-16T09:31:00Z
+    thread: slack-keel-0216
+    body: |
+      Yes, 24 March. KEEL-12 (its chart) is yours once your access is sorted.
+      Staging kubeconfig is in the onboarding doc.
+
+  - id: slack-keel-0324-1
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-03-24 14:42"
+    author: tobias
+    created: 2026-03-24T14:42:00Z
+    thread: slack-keel-0324
+    body: |
+      svc-export is at 100% on keel-prod as of 14:40. We had ~3 min of 502s at the
+      50% step — readiness probe on the wrong port. Fixed. Retro to follow.
+
+  - id: slack-keel-0324-2
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Priya Nair, 2026-03-24 14:50"
+    author: priya-nair
+    created: 2026-03-24T14:50:00Z
+    thread: slack-keel-0324
+    body: |
+      First one done. VMs stay warm until the 31st. Alice is running her
+      verification exports now.
+
+  - id: slack-keel-0402-1
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-04-02 15:37"
+    author: tobias
+    created: 2026-04-02T15:37:00Z
+    thread: slack-keel-0402
+    body: |
+      flow-engine is fully on Kubernetes (15:35). Webhooks moved last, no errors.
+      HPA on queue lag (KEEL-22) still in review, so sync workers are fixed at 4 for now.
+
+  - id: slack-keel-0402-2
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Grace Liu, 2026-04-02 15:44"
+    author: grace
+    created: 2026-04-02T15:44:00Z
+    thread: slack-keel-0402
+    body: |
+      Dashboard looks clean, lag under a minute. I'll keep an eye on it through the
+      evening sync peak.
+
+  - id: slack-keel-0408-1
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Grace Liu, 2026-04-08 06:25"
+    author: grace
+    created: 2026-04-08T06:25:00Z
+    thread: slack-keel-0408
+    body: |
+      flow-engine-sync pods are restarting every few minutes — OOMKilled at 512Mi.
+      Queue lag is at 2h and climbing. Opening an incident.
+
+  - id: slack-keel-0408-2
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-04-08 06:41"
+    author: tobias
+    created: 2026-04-08T06:41:00Z
+    thread: slack-keel-0408
+    body: |
+      Confirmed. The HPA keeps adding replicas and each new one dies the same way, so
+      more pods isn't helping. Memory spikes when a big tenant's backfill starts.
+      I'll prepare a limit bump.
+
+  - id: slack-keel-0408-3
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Raj Mehta, 2026-04-08 08:10"
+    author: raj
+    created: 2026-04-08T08:10:00Z
+    thread: slack-keel-0408
+    mentions_orgs: [bluebird, globex, contoso]
+    body: |
+      Support says customers are seeing delayed syncs: Bluebird Health reported first,
+      and Globex and Contoso are behind too. Grace is running the incident; let's not
+      roll back to the VMs unless the limit change doesn't hold.
+
+  - id: slack-keel-0408-4
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-04-08 16:50"
+    author: tobias
+    created: 2026-04-08T16:50:00Z
+    thread: slack-keel-0408
+    body: |
+      Interim: bumped limits by hand to 1Gi on prod, restarts stopped, lag falling
+      (peaked at 6h20m). Proper change with alerts in a PR tomorrow.
+
+  - id: slack-keel-0418-1
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Priya Nair, 2026-04-18 08:07"
+    author: priya-nair
+    created: 2026-04-18T08:07:00Z
+    thread: slack-keel-0418
+    body: |
+      svc-billing-worker is on Kubernetes: 12/12 replicas up at 08:05, VM workers at
+      zero since 07:30. Waiting on the 08:00 renewal batch.
+
+  - id: slack-keel-0418-2
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Priya Nair, 2026-04-18 09:35"
+    author: priya-nair
+    created: 2026-04-18T09:35:00Z
+    thread: slack-keel-0418
+    body: |
+      Priya Natarajan checked the 08:00 and 09:00 batches against Stripe: 1,812
+      charges, no duplicates, no retry spike. Calling it done.
+
+  - id: slack-keel-0418-3
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Raj Mehta, 2026-04-18 09:41"
+    author: raj
+    created: 2026-04-18T09:41:00Z
+    thread: slack-keel-0418
+    body: |
+      Great work. Three down, one to go — svc-invoicing on 12 May.
+
+  - id: slack-keel-0428
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Raj Mehta, 2026-04-28 10:20"
+    author: raj
+    created: 2026-04-28T10:20:00Z
+    mentions_orgs: [globex]
+    body: |
+      Reminder: KEEL-40 (dedicated cluster for Globex) needs a recommendation by
+      15 May. Priya Nair has the options page up; Dana leans towards the dedicated
+      node pool. Please add comments there, not here.
+
+  - id: slack-keel-0429
+    container: slack-keel
+    type: MESSAGE
+    title: "#proj-keel — Tobias Weber, 2026-04-29 17:05"
+    author: tobias
+    created: 2026-04-29T17:05:00Z
+    body: |
+      svc-invoicing chart (PR #625) got its first review — one missing env var for
+      the PDF template version. Fixing tomorrow, then it's ready for the 12 May cutover.
+
+  # --- Raj's mail: Keel and the Globus Partners status mails --------------------
+
+  - id: mail-keel-0415
+    container: gmail-raj
+    type: MAIL
+    title: "svc-invoicing cutover: KEEL-45 is yours"
+    from: raj
+    to: [kenji]
+    cc: [marcus, priya-nair]
+    created: 2026-04-15T10:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/keel-0415
+    body: |
+      Hi Kenji,
+
+      As the svc-invoicing owner you're the right person to drive its cutover, so I've
+      assigned KEEL-45 to you. Target is Tuesday 12 May, 07:00–09:00 UTC, after the
+      April invoice run. Tobias is writing the Helm chart and will ask you to review
+      it; Priya Nair will pair with you on the day.
+
+      Two things to sort before then: the PDF fonts need to live in the image, and
+      please land the VAT rule change first so we're not cutting over a service with a
+      change half-reviewed.
+
+      Marcus, flagging so it goes on Payments' plan for May.
+
+      Raj
+
+  - id: mail-globus-status-0227
+    container: gmail-raj
+    type: MAIL
+    title: "Globus Partners — monthly status, February 2026"
+    from: ines
+    to: [raj]
+    created: 2026-02-27T16:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/globus-status-0227
+    mentions_orgs: [globus]
+    body: |
+      Dear Raj,
+
+      Monthly status for our engagement on Project Keel.
+
+      - Tobias Weber started on 16 February as planned; 9 working days this month.
+      - Onboarding complete; access to the repository and staging cluster working.
+      - Current work: Helm chart for svc-export (KEEL-12), first draft in review next week.
+      - No risks or blockers from our side.
+
+      Timesheet for February attached for your approval.
+
+      Kind regards,
+      Inês Duarte
+      Engagement manager, Globus Partners
+
+  - id: mail-globus-status-0331
+    container: gmail-raj
+    type: MAIL
+    title: "Globus Partners — monthly status, March 2026"
+    from: ines
+    to: [raj]
+    created: 2026-03-31T15:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/globus-status-0331
+    mentions_orgs: [globus, globex]
+    body: |
+      Dear Raj,
+
+      March status for Project Keel.
+
+      - 21 working days.
+      - Delivered: Helm chart for svc-export (merged 20 March) and its cutover on
+        24 March; Helm chart for flow-engine (merged 30 March).
+      - Next: flow-engine cutover on 2 April and queue-lag autoscaling.
+
+      Separately, and not part of this engagement: Globex Corporation has engaged us to
+      run their Acme Flow rollout workshops in May. A different Globus team is
+      handling that, so there is no overlap with Tobias's time.
+
+      Timesheet attached.
+
+      Kind regards,
+      Inês Duarte
+      Globus Partners
+
+  - id: mail-globus-status-0429
+    container: gmail-raj
+    type: MAIL
+    title: "Globus Partners — monthly status, April 2026, and extension proposal"
+    from: ines
+    to: [raj]
+    created: 2026-04-29T14:10:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/globus-status-0429
+    mentions_orgs: [globus]
+    body: |
+      Dear Raj,
+
+      April status for Project Keel.
+
+      - 22 working days.
+      - Delivered: queue-lag autoscaling for flow-engine (6 April), the memory fix
+        after the 8 April incident (10 April), resource review in progress (KEEL-33),
+        Helm chart for svc-invoicing in review.
+      - Next: svc-invoicing cutover support on 12 May.
+
+      The current contract ends on 30 June. Given the remaining Keel work and the
+      dedicated-cluster evaluation, we propose extending Tobias Weber's assignment to
+      31 August 2026 on the same terms. Happy to discuss on a call.
+
+      Kind regards,
+      Inês Duarte
+      Engagement manager, Globus Partners
+
+  - id: mail-keel-0430
+    container: gmail-raj
+    type: MAIL
+    title: "Re: Globus Partners — monthly status, April 2026, and extension proposal"
+    from: raj
+    to: [ines]
+    cc: [owen]
+    created: 2026-04-30T09:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/keel-0430
+    mentions_orgs: [globus]
+    relations:
+      - { type: RELATED, to: mail-globus-status-0429 }
+    body: |
+      Hi Inês,
+
+      Thanks for the update. Tobias has been a big part of getting three services
+      across. On the extension: I'd like it, but whether we need him past June depends
+      on the dedicated-cluster evaluation, which we decide by 15 May. Any change to
+      the SOW is Owen's to sign, so I've copied him. We'll come back to you after
+      the 15th.
+
+      Best,
+      Raj
+
+  # ===========================================================================
+  # S2 — Payments: dunning, the VAT rule, Leo's first weeks
+  # ===========================================================================
+
+  - id: cf-eng-service-catalog
+    container: cf-eng
+    type: PAGE
+    title: "Service catalog"
+    author: marcus
+    last_modified_by: raj
+    created: 2026-02-02T10:00:00Z
+    updated: 2026-04-21T11:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/service-catalog
+    body: |
+      Who owns each production service, where it runs and which on-call rota pages for
+      it. Owners approve changes to their service and write its runbook.
+
+      | Service | Owner | Runs on | On-call rota |
+      |---|---|---|---|
+      | svc-billing-worker | Priya Natarajan | Kubernetes (since 18 Apr) | Payments (Marcus Webb) |
+      | svc-invoicing | Kenji Watanabe | VMs (Kubernetes from 12 May) | Payments (Marcus Webb) |
+      | svc-export | Alice Chen | Kubernetes (since 24 Mar) | Payments (Marcus Webb) |
+      | flow-engine (Acme Flow) | Grace Liu | Kubernetes (since 2 Apr) | Platform (Raj Mehta) |
+      | platform-infra (clusters, Terraform, CI) | Priya Nair | — | Platform (Raj Mehta) |
+      | ingress and cert-manager | Yusuf Demir | Kubernetes | Platform (Raj Mehta) |
+      | svc-search | Dana Okafor | VMs | Platform (Raj Mehta) |
+
+      Changes on 21 Apr: billing worker moved to Kubernetes; ingress and cert-manager
+      split out as their own line now that certificates are automated.
+
+      Note "billing" means two services: svc-billing-worker charges renewals,
+      svc-invoicing produces invoices and their PDFs.
+
+  - id: cf-eng-dunning-proposal
+    container: cf-eng
+    type: PAGE
+    title: "Proposal: dunning for failed renewals"
+    author: priya
+    last_modified_by: fatima
+    created: 2026-04-09T13:00:00Z
+    updated: 2026-04-23T16:10:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/dunning-proposal
+    body: |
+      ## Problem
+      When a renewal charge fails after all retries, nothing tells the customer. In Q1,
+      214 workspaces lapsed this way; support found out when users could not log in.
+
+      ## Proposal
+      After a renewal finally fails, the billing worker emits `renewal_failed` and a
+      dunning schedule starts:
+      - day 1, day 4 and day 10: payment-failed emails to workspace owners and billing
+        contacts, each with a link to update the card
+      - day 14: final notice
+      - day 21: workspace suspended (read-only, data kept for 90 days)
+      A successful payment at any point stops the schedule.
+
+      ## Out of scope
+      Changing retry behaviour (PR #482 already did that) and any change to prices.
+
+      ## Plan
+      Events from svc-billing-worker (PAY-88), email copy (PAY-89), suspension
+      (PAY-90). Launch target **19 May 2026**.
+
+      ## Changes
+      23 Apr: dropped the day-7 email after copy review; day 14 is now the final notice.
+
+  - id: jira-pay-88
+    container: jira-pay
+    type: TICKET
+    title: "PAY-88: Dunning email sequence"
+    author: marcus
+    reporter: marcus
+    assignee: fatima
+    created: 2026-04-14T09:00:00Z
+    updated: 2026-04-28T15:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-88
+    body: |
+      **Status:** In progress · **Epic:** Dunning · **Target:** 2026-05-19
+
+      Build the dunning schedule from the proposal: consume `renewal_failed`, send
+      emails on day 1, 4 and 10, final notice on day 14, hand off to suspension on day
+      21. Stop on successful payment.
+
+      Done so far: events (PR #494, merged 22 Apr). Scheduler in PR #496.
+
+  - id: jira-pay-89
+    container: jira-pay
+    type: TICKET
+    title: "PAY-89: Dunning email copy"
+    author: priya
+    reporter: priya
+    assignee: fatima
+    created: 2026-04-15T10:20:00Z
+    updated: 2026-04-24T11:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-89
+    body: |
+      **Status:** In progress
+
+      Four emails: payment failed (day 1), reminder (day 4), second reminder (day 10),
+      final notice (day 14). Plain tone, one button, no threats. Nina Park is reviewing
+      the copy for the product voice; legal only needs to see the final-notice wording.
+
+      Drafts are in the Engineering Drive folder.
+
+  - id: jira-pay-90
+    container: jira-pay
+    type: TICKET
+    title: "PAY-90: Suspend workspaces on day 21 of a failed renewal"
+    author: marcus
+    reporter: marcus
+    assignee: priya
+    created: 2026-04-14T09:10:00Z
+    updated: 2026-04-27T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-90
+    body: |
+      **Status:** To Do · **Target:** 2026-05-19
+
+      On day 21 of the dunning schedule, set the workspace to read-only and show a
+      banner to owners. Data is kept for 90 days. Reactivate immediately when payment
+      succeeds. Needs a feature flag so support can extend a workspace by 7 days.
+
+  - id: jira-pay-92
+    container: jira-pay
+    type: TICKET
+    title: "PAY-92: Alert when billing retries exceed 3× baseline"
+    author: marcus
+    reporter: marcus
+    assignee: priya
+    created: 2026-04-07T16:00:00Z
+    updated: 2026-04-13T14:30:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-92
+    body: |
+      **Status:** Done
+
+      From the 7 Apr Payments sync: page Payments on-call if
+      `billing_retry_attempt_total` runs above 3× its 7-day baseline for 15 minutes.
+      Done in svc-billing-worker PR #491.
+
+  - id: jira-pay-95
+    container: jira-pay
+    type: TICKET
+    title: "PAY-95: Validate the VAT number on every invoice line (FIN-38)"
+    author: ingrid
+    reporter: ingrid
+    assignee: kenji
+    created: 2026-04-23T09:30:00Z
+    updated: 2026-04-29T17:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-95
+    mentions_orgs: [contoso]
+    body: |
+      **Status:** In review · **Finance ticket:** FIN-38
+
+      Contoso's April invoice charged VAT on a line that should have been reverse
+      charge, because svc-invoicing checks the customer's VAT number once per invoice
+      and an add-on line created before the number was saved slipped through. Finance
+      reissued the invoice (FIN-37); this ticket fixes the rule.
+
+      Acceptance: every line of an invoice for an EU business customer with a valid
+      VAT number is reverse charge; lines are re-validated when the invoice is
+      generated, not when the line was created; a test covers an add-on added before
+      the VAT number.
+
+      Code change: svc-invoicing PR #321.
+
+  - id: jira-pay-97
+    container: jira-pay
+    type: TICKET
+    title: "PAY-97: Good first issue — invoice PDF total rounding"
+    author: kenji
+    reporter: kenji
+    assignee: leo
+    created: 2026-04-17T15:00:00Z
+    updated: 2026-04-24T12:10:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-97
+    body: |
+      **Status:** Done · **Label:** good-first-issue
+
+      Invoice PDFs sometimes show a total one cent off the sum of the lines, because
+      each line is rounded before summing. Round once, on the total, using banker's
+      rounding as finance requires. Small, well-tested area: a good way to learn the
+      svc-invoicing build and deploy.
+
+      Fixed by PR #318.
+
+  - id: jira-pay-101
+    container: jira-pay
+    type: TICKET
+    title: "PAY-101: Put the currency code in invoice email subjects"
+    author: kenji
+    reporter: kenji
+    assignee: leo
+    created: 2026-04-27T09:00:00Z
+    updated: 2026-04-29T10:30:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-101
+    body: |
+      **Status:** In review
+
+      Customers billed in more than one currency can't tell invoices apart from the
+      subject line. Change "Your Acme invoice INV-…" to "Your Acme invoice INV-… (EUR
+      1,240.00)". Second ticket for Leo; touches the email templates, not the PDF.
+
+      PR #323.
+
+  - id: jira-pay-103
+    container: jira-pay
+    type: TICKET
+    title: "PAY-103: Don't emit renewal_failed twice when a retried charge fails again"
+    author: alice
+    reporter: alice
+    assignee: fatima
+    created: 2026-04-24T14:00:00Z
+    updated: 2026-04-24T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PAY-103
+    body: |
+      **Status:** To Do
+
+      Spotted while reviewing PR #494: if a renewal's final retry fails after a
+      worker restart, the event can be emitted twice and the dunning schedule would
+      start twice. Use the renewal id as an idempotency key on the event.
+
+  - id: gh-pr-491
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #491: Alert on billing retries above 3× baseline"
+    author: priya
+    assignees: [priya]
+    reviewers: [marcus]
+    created: 2026-04-10T11:00:00Z
+    updated: 2026-04-13T14:20:00Z
+    web_url: https://github.acme-demo.example/svc-billing-worker/pull/491
+    body: |
+      **Merged** 2026-04-13 · Closes PAY-92
+
+      Prometheus rule `BillingRetriesHigh`: fires when
+      `rate(billing_retry_attempt_total[15m])` is above 3× its 7-day average for 15
+      minutes; routes to Payments on-call. Runbook link points at the INC-2031
+      postmortem.
+
+  - id: gh-pr-494
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #494: Emit renewal_failed events for dunning"
+    author: fatima
+    assignees: [fatima]
+    reviewers: [priya, alice]
+    created: 2026-04-16T10:00:00Z
+    updated: 2026-04-22T15:30:00Z
+    web_url: https://github.acme-demo.example/svc-billing-worker/pull/494
+    body: |
+      **Merged** 2026-04-22 · Part of PAY-88
+
+      When a renewal charge fails its last retry, publish `renewal_failed` with
+      workspace id, renewal id, amount, currency and failure code. The dunning
+      scheduler subscribes to it. No change to retry timing.
+
+  - id: gh-pr-494-c1
+    container: gh-svc-billing-worker
+    type: COMMENT
+    title: "Review comment on PR #494 — Priya Natarajan"
+    author: priya
+    created: 2026-04-20T10:45:00Z
+    parent: gh-pr-494
+    body: |
+      Approve. One thing: emit after the final attempt is recorded, not before, or a
+      crash in between gives us an event for a renewal that might still succeed.
+
+  - id: gh-pr-496
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #496: Dunning scheduler — day 1, 4, 10 and 14 jobs"
+    author: fatima
+    assignees: [fatima]
+    reviewers: [priya]
+    created: 2026-04-28T13:00:00Z
+    updated: 2026-04-29T18:00:00Z
+    web_url: https://github.acme-demo.example/svc-billing-worker/pull/496
+    body: |
+      **Open** · Part of PAY-88
+
+      Schedules the dunning emails from `renewal_failed`: day 1, 4 and 10 reminders,
+      day 14 final notice, and a day-21 hand-off event for suspension. Cancels all
+      pending jobs on `renewal_succeeded`. Emails go out at 09:00 in the workspace's
+      time zone.
+
+  - id: gh-pr-315
+    container: gh-svc-invoicing
+    type: PULL_REQUEST
+    title: "PR #315: Render invoice PDFs with the 2026 template"
+    author: kenji
+    assignees: [kenji]
+    reviewers: [priya]
+    created: 2026-03-30T10:00:00Z
+    updated: 2026-04-03T12:00:00Z
+    web_url: https://github.acme-demo.example/svc-invoicing/pull/315
+    body: |
+      **Merged** 2026-04-03
+
+      Switches the PDF renderer to the 2026 invoice template (new logo, line-item
+      table with tax column, payment terms footer). Template version is read from
+      `INVOICE_TEMPLATE_VERSION` so we can roll back without a deploy.
+
+  - id: gh-pr-318
+    container: gh-svc-invoicing
+    type: PULL_REQUEST
+    title: "PR #318: Fix rounding in invoice PDF totals"
+    author: leo
+    assignees: [leo]
+    reviewers: [kenji]
+    created: 2026-04-22T11:00:00Z
+    updated: 2026-04-24T11:50:00Z
+    web_url: https://github.acme-demo.example/svc-invoicing/pull/318
+    body: |
+      **Merged** 2026-04-24 · Closes PAY-97
+
+      Line amounts are no longer rounded before they are summed; the total is rounded
+      once with banker's rounding (ROUND_HALF_EVEN). Adds a test with 3 lines of
+      €10.005 that used to total €30.03 and now totals €30.02.
+
+  - id: gh-pr-318-c1
+    container: gh-svc-invoicing
+    type: COMMENT
+    title: "Review comment on PR #318 — Kenji Watanabe"
+    author: kenji
+    created: 2026-04-23T16:20:00Z
+    parent: gh-pr-318
+    body: |
+      Nice first PR. Please use `Decimal.quantize` rather than `round()` so the
+      rounding mode is explicit, and add the 3 × €10.005 case as a test. Approve
+      once that's in.
+
+  - id: gh-pr-321
+    container: gh-svc-invoicing
+    type: PULL_REQUEST
+    title: "PR #321: Re-validate VAT treatment on every invoice line"
+    author: kenji
+    assignees: [kenji]
+    reviewers: [alice]
+    created: 2026-04-27T15:30:00Z
+    updated: 2026-04-29T17:00:00Z
+    web_url: https://github.acme-demo.example/svc-invoicing/pull/321
+    relations:
+      - { type: IMPLEMENTS, to: jira-pay-95 }
+    body: |
+      **Open** · For PAY-95 / FIN-38
+
+      VAT treatment is decided per line at invoice generation: if the customer is an
+      EU business with a validated VAT number, every line is reverse charge, whenever
+      the line was created. Previously the check ran once and lines added earlier kept
+      their old treatment. Adds tests for an add-on line created before the VAT number
+      was saved.
+
+  - id: gh-pr-321-c1
+    container: gh-svc-invoicing
+    type: COMMENT
+    title: "Review comment on PR #321 — Alice Chen"
+    author: alice
+    created: 2026-04-29T11:10:00Z
+    parent: gh-pr-321
+    body: |
+      Logic looks right. Requesting one more test: a customer whose VAT number fails
+      validation should keep VAT on every line, including add-ons. Also please log
+      the validation result per invoice so finance can audit it.
+
+  - id: gh-pr-323
+    container: gh-svc-invoicing
+    type: PULL_REQUEST
+    title: "PR #323: Currency code in invoice email subjects"
+    author: leo
+    assignees: [leo]
+    reviewers: [kenji, fatima]
+    created: 2026-04-29T09:40:00Z
+    updated: 2026-04-30T10:00:00Z
+    web_url: https://github.acme-demo.example/svc-invoicing/pull/323
+    body: |
+      **Open** · Closes PAY-101
+
+      Invoice email subject becomes "Your Acme invoice INV-2026-0533 (EUR 1,240.00)".
+      Amount formatted with the workspace locale; currency code always ISO 4217.
+
+  - id: cf-eng-payments-onboarding
+    container: cf-eng
+    type: PAGE
+    title: "Payments team onboarding"
+    author: kenji
+    last_modified_by: marcus
+    created: 2026-04-17T14:00:00Z
+    updated: 2026-04-20T08:45:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/payments-onboarding
+    body: |
+      ## Week 1
+      - Laptop, SSO and GitHub access on day 1 (request through the HR desk).
+      - Read: the service catalog, the on-call handbook, the INC-2031 postmortem.
+      - Local setup for svc-invoicing; run the test suite (`make test`, about 6 min).
+      - Your buddy pairs with you on a good-first-issue ticket; aim to merge a PR by
+        Friday.
+
+      ## Week 2
+      - Shadow the Payments standup and the Tuesday sync.
+      - Pick up a second ticket on your own.
+
+      ## Week 4
+      - Join the Payments on-call rota as shadow; primary from week 8.
+
+      ## Who to ask
+      Billing worker: its owner in the service catalog. Invoicing and VAT: Kenji.
+      Exports: Alice. Anything else: Marcus.
+
+  - id: cf-eng-vat-rules
+    container: cf-eng
+    type: PAGE
+    title: "How svc-invoicing decides VAT"
+    author: kenji
+    last_modified_by: kenji
+    created: 2026-04-23T15:00:00Z
+    updated: 2026-04-28T09:30:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/invoicing-vat-rules
+    mentions_orgs: [contoso]
+    body: |
+      ## Today
+      1. Customer outside the EU: no VAT.
+      2. EU consumer, or EU business without a validated VAT number: VAT at the
+         customer's country rate.
+      3. EU business with a VAT number validated against VIES: reverse charge, 0% VAT,
+         with the line "Reverse charge — Article 196, Council Directive 2006/112/EC".
+
+      The VAT number is validated when it is saved and re-checked every 30 days.
+
+      ## Known gap
+      Treatment is stored on each line when the line is created. A line created before
+      the VAT number was saved keeps VAT (Contoso, April). Fix in review: PAY-95 /
+      PR #321 decides treatment per line at invoice generation. Until it merges,
+      finance checks EU add-on invoices by hand.
+
+  - id: drive-eng-payments-sync-0421
+    container: drive-engineering
+    type: FILE
+    title: "Payments team sync — 2026-04-21"
+    owners: [marcus]
+    last_modified_by: marcus
+    created: 2026-04-21T15:30:00Z
+    updated: 2026-04-21T16:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-payments-sync-0421
+    body: |
+      Attendees: Marcus, Priya, Kenji, Fatima, Alice, Leo
+
+      - Welcome Leo (started Monday). Kenji is his buddy; PAY-97 first.
+      - Dunning: events PR #494 approved, merging tomorrow. Copy with Nina for review.
+        Launch still 19 May. Priya takes suspension (PAY-90).
+      - VAT: finance opened FIN-38; Kenji to have a fix up next week.
+      - Keel: billing worker cutover on Saturday went cleanly; Priya verified renewals.
+        svc-invoicing is next, 12 May, Kenji driving.
+      - Alert from PAY-92 has not fired since it shipped.
+
+  - id: drive-eng-dunning-email-copy
+    container: drive-engineering
+    type: FILE
+    title: "Dunning emails — copy drafts"
+    owners: [fatima]
+    last_modified_by: fatima
+    created: 2026-04-16T11:00:00Z
+    updated: 2026-04-24T10:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-dunning-email-copy
+    body: |
+      **Day 1 — "Your Acme payment didn't go through"**
+      We couldn't charge the card on file for your workspace renewal. Update your
+      payment details and we'll try again straight away. [Update payment method]
+
+      **Day 4 — "Reminder: update your payment details"**
+      Your workspace is still active, but your renewal is unpaid.
+
+      **Day 10 — "Your workspace renewal is still unpaid"**
+      If we can't take payment, your workspace becomes read-only on day 21.
+
+      **Day 14 — "Final notice"**
+      This is our last reminder. On {suspension_date} your workspace will become
+      read-only. Your data stays safe for 90 days.
+
+      Review notes (24 Apr): product voice comments applied; day-7 email removed.
+
+  - id: slack-eng-payments-0409-1
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Priya Natarajan, 2026-04-09 13:20"
+    author: priya
+    created: 2026-04-09T13:20:00Z
+    thread: slack-eng-payments-0409
+    body: |
+      Dunning proposal is up in ENG: emails on day 1, 4, 7 and 10 after a renewal
+      finally fails, final notice day 14, suspension day 21. Comments by Tuesday please.
+
+  - id: slack-eng-payments-0409-2
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Fatima Zahra Benali, 2026-04-09 13:48"
+    author: fatima
+    created: 2026-04-09T13:48:00Z
+    thread: slack-eng-payments-0409
+    body: |
+      Happy to build it. Four reminders in ten days feels like a lot — can we drop one?
+
+  - id: slack-eng-payments-0409-3
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-04-09 14:02"
+    author: marcus
+    created: 2026-04-09T14:02:00Z
+    thread: slack-eng-payments-0409
+    body: |
+      Let's let copy review decide. Fatima owns the build; I'll open the tickets.
+      Target 19 May so it's live before the June renewals.
+
+  - id: slack-eng-payments-0420-1
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-04-20 09:00"
+    author: marcus
+    created: 2026-04-20T09:00:00Z
+    thread: slack-eng-payments-0420
+    body: |
+      Please welcome Leo Martins, who joins Payments today! Kenji is Leo's buddy for
+      the first month.
+
+  - id: slack-eng-payments-0420-2
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Kenji Watanabe, 2026-04-20 09:06"
+    author: kenji
+    created: 2026-04-20T09:06:00Z
+    thread: slack-eng-payments-0420
+    body: |
+      Welcome Leo! PAY-97 is waiting for you — small rounding fix in the invoice PDFs.
+      Grab me after standup and we'll get svc-invoicing building.
+
+  - id: slack-eng-payments-0420-3
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Leo Martins, 2026-04-20 09:15"
+    author: leo
+    created: 2026-04-20T09:15:00Z
+    thread: slack-eng-payments-0420
+    body: |
+      Thanks all, excited to be here. See you at standup.
+
+  - id: slack-eng-payments-0424-1
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Leo Martins, 2026-04-24 12:00"
+    author: leo
+    created: 2026-04-24T12:00:00Z
+    thread: slack-eng-payments-0424
+    body: |
+      First PR merged: #318, invoice totals now round once on the total. Thanks
+      Kenji for the review.
+
+  - id: slack-eng-payments-0424-2
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-04-24 12:04"
+    author: marcus
+    created: 2026-04-24T12:04:00Z
+    thread: slack-eng-payments-0424
+    body: |
+      Day 5 and shipped. Nice one, Leo.
+
+  - id: slack-eng-payments-0427
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Kenji Watanabe, 2026-04-27 15:40"
+    author: kenji
+    created: 2026-04-27T15:40:00Z
+    body: |
+      PR #321 is up for the VAT rule (PAY-95, finance's FIN-38). Alice is reviewing.
+      Not merging before Wednesday; finance wants to see the test cases first.
+
+  - id: mail-eng-0420
+    container: gmail-marcus
+    type: MAIL
+    title: "Welcome to Payments, Leo"
+    from: marcus
+    to: [leo]
+    cc: [kenji]
+    created: 2026-04-20T07:45:00Z
+    web_url: https://mail.acme-demo.example/mail/u/marcus/eng-0420
+    body: |
+      Hi Leo,
+
+      Welcome! A few things for your first week:
+
+      - Kenji Watanabe is your buddy. He owns svc-invoicing, which is where you'll
+        start.
+      - Your first ticket is PAY-97, a rounding fix in invoice PDFs.
+      - The onboarding page in the ENG space has the week-by-week plan.
+      - Standup is 09:30 daily; the team sync is Tuesday 15:00.
+
+      We'll have a 1:1 on Thursday to see how it's going.
+
+      Marcus
+
+  - id: mail-eng-0422
+    container: gmail-marcus
+    type: MAIL
+    title: "VAT rule fix for FIN-38"
+    from: marcus
+    to: [ingrid]
+    cc: [kenji]
+    created: 2026-04-22T10:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/marcus/eng-0422
+    mentions_orgs: [contoso]
+    body: |
+      Hi Ingrid,
+
+      Thanks for reissuing the Contoso invoice. On the rule itself: please open a PAY
+      ticket for it so it sits in our backlog, and Kenji will take it. He thinks the
+      fix is small (decide VAT per line when the invoice is generated) and expects a
+      pull request early next week. We'll want you to look at the test cases before it
+      merges.
+
+      Marcus
+
+  - id: mail-eng-0424
+    container: gmail-marcus
+    type: MAIL
+    title: "Dunning email copy — review by 5 May?"
+    from: marcus
+    to: [nina]
+    cc: [fatima, priya]
+    created: 2026-04-24T09:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/marcus/eng-0424
+    body: |
+      Hi Nina,
+
+      Thanks for the first pass on the dunning emails; Fatima has applied your
+      comments and dropped the day-7 email. Could you give the final four a last look
+      by 5 May? Launch is 19 May and legal needs a week with the final notice.
+
+      Thanks,
+      Marcus
+
+  # ===========================================================================
+  # S3 — Platform reliability: incidents and on-call
+  # ===========================================================================
+
+  - id: jira-inc-2036
+    container: jira-inc
+    type: TICKET
+    title: "INC-2036: Acme Sync webhook retries duplicated records"
+    author: dana
+    reporter: sam
+    assignee: grace
+    created: 2026-02-19T10:40:00Z
+    updated: 2026-02-20T15:30:00Z
+    web_url: https://jira.acme-demo.example/browse/INC-2036
+    mentions_orgs: [contoso]
+    body: |
+      **Severity:** SEV-3 · **Status:** Resolved
+
+      ## Impact
+      Contoso saw duplicate contact records created by Acme Sync between 18 Feb 22:00
+      and 19 Feb 11:30 UTC: 3,870 duplicates across two connected CRMs. No data lost.
+
+      ## Cause
+      A partner API timed out after accepting webhook deliveries. Acme Sync retried
+      the delivery, and because webhook handling had no idempotency key, each retry
+      created the record again.
+
+      ## Fix
+      Deduplicate on the partner's event id for 24 hours (sync-engine hotfix, 19 Feb
+      14:05). Duplicates cleaned up with Contoso's admin on 20 Feb. Longer-term
+      dedupe key work in FLOW-304.
+
+  - id: jira-inc-2040
+    container: jira-inc
+    type: TICKET
+    title: "INC-2040: Acme Flow sync delays after flow-engine moved to Kubernetes"
+    author: raj
+    reporter: lucas
+    assignee: grace
+    created: 2026-04-08T06:10:00Z
+    updated: 2026-04-14T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/INC-2040
+    mentions_orgs: [globex, bluebird, contoso]
+    relations:
+      - { type: RELATED, to: jira-mig-27 }
+    body: |
+      **Severity:** SEV-2 · **Status:** Resolved
+
+      ## Impact
+      From 06:10 UTC on 8 April, Acme Flow syncs ran hours behind. Queue lag peaked at
+      6h20m. Customers who reported delays: Bluebird Health (first, 07:30), Contoso
+      (11:00) and Globex (13:15). No data was lost; every queued sync completed.
+
+      ## Cause
+      flow-engine moved to Kubernetes on 2 April with a 512Mi memory limit copied from
+      the VM sizing. When large tenants' nightly backfills started, sync pods were
+      OOM-killed; the autoscaler added pods that died the same way, and the queue
+      backed up.
+
+      ## Resolution
+      - 8 Apr 16:40: limit raised by hand to 1Gi, restarts stopped, lag began to fall.
+      - 10 Apr 11:05: platform-infra PR #614 merged — limits 2Gi, lag alerting.
+      - 10 Apr 14:00: lag under 2 minutes for all tenants; support sent the all-clear.
+
+      Postmortem in the ENG space.
+
+  - id: jira-inc-2042
+    container: jira-inc
+    type: TICKET
+    title: "INC-2042: Grafana unavailable for 35 minutes"
+    author: grace
+    reporter: grace
+    assignee: grace
+    created: 2026-04-21T13:05:00Z
+    updated: 2026-04-21T15:00:00Z
+    web_url: https://jira.acme-demo.example/browse/INC-2042
+    body: |
+      **Severity:** SEV-4 · **Status:** Resolved
+
+      Grafana returned 502s from 12:30 to 13:05 UTC after its database disk filled
+      with dashboard version history. Alerting was not affected (Alertmanager is
+      separate); only dashboards were unavailable. Pruned versions older than 90 days
+      and added a disk alert at 80%.
+
+  - id: jira-inc-2044
+    container: jira-inc
+    type: TICKET
+    title: "INC-2044: Export download links failing with certificate errors"
+    author: yusuf
+    reporter: grace
+    assignee: yusuf
+    created: 2026-04-24T09:12:00Z
+    updated: 2026-04-24T15:10:00Z
+    web_url: https://jira.acme-demo.example/browse/INC-2044
+    relations:
+      - { type: RELATED, to: gh-pr-618 }
+    body: |
+      **Severity:** SEV-3 · **Status:** Resolved
+
+      Export download links failed for 22 minutes, 09:05–09:27 UTC on 24 April.
+      Browsers rejected the certificate on the export host: cert-manager had renewed
+      it from the staging issuer added in PR #618, which is not publicly trusted.
+
+      Mitigation 09:27: certificate reissued from the production issuer by hand.
+      Fix: PR #622 removes the staging issuer from production and adds a CI check.
+      Exports themselves kept running; customers could download again once the link
+      was retried.
+
+  - id: cf-eng-postmortem-inc-2040
+    container: cf-eng
+    type: PAGE
+    title: "Postmortem: INC-2040 Acme Flow sync delays (8–10 April)"
+    author: grace
+    last_modified_by: raj
+    created: 2026-04-13T10:00:00Z
+    updated: 2026-04-14T09:20:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/postmortem-inc-2040
+    mentions_orgs: [globex, bluebird, contoso]
+    relations:
+      - { type: RELATED, to: jira-inc-2040 }
+    body: |
+      ## Summary
+      Six days after flow-engine moved to Kubernetes, its sync pods were OOM-killed at
+      512Mi when large tenants' backfills ran. Syncs fell up to 6h20m behind for
+      Bluebird Health, Contoso and Globex. Fixed on 10 April by raising limits to 2Gi
+      (PR #614).
+
+      ## What went wrong
+      - Memory limits were copied from VM heap usage, not whole-process usage.
+      - The autoscaler scaled on lag, so it added pods that hit the same limit.
+      - No alert on lag; support heard from customers before we noticed.
+
+      ## What went right
+      Support connected three tickets to one cause within the morning; the interim
+      fix took effect within 40 minutes of being applied.
+
+      ## Action items
+      | Action | Owner | Status |
+      |---|---|---|
+      | Per-tenant lag alert that pages | Grace | Done 14 Apr (PR #616) |
+      | HPA on queue lag | Tobias | Already done before the incident (PR #611) |
+      | Customer comms and all-clear | Lucas | Done 10 Apr |
+      | Review limits for every Keel workload | Tobias | KEEL-33 |
+      | Tune lag alert thresholds after two weeks | Grace | PLAT-204 |
+
+  - id: cf-eng-postmortem-inc-2044
+    container: cf-eng
+    type: PAGE
+    title: "Postmortem: INC-2044 export download links (24 April)"
+    author: yusuf
+    last_modified_by: priya-nair
+    created: 2026-04-27T11:00:00Z
+    updated: 2026-04-28T10:15:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/postmortem-inc-2044
+    relations:
+      - { type: RELATED, to: jira-inc-2044 }
+    body: |
+      ## Summary
+      For 22 minutes (09:05–09:27 UTC, 24 April) export download links failed with a
+      certificate error. 1,140 download requests failed; exports themselves were not
+      lost and retried links worked after 09:27.
+
+      ## Timeline
+      - 09:05 cert-manager renews the export host certificate using the staging issuer
+      - 09:08 Grace's synthetic check on download links fires
+      - 09:15 Yusuf identifies the issuer; incident opened
+      - 09:27 certificate reissued from the production issuer by hand
+      - 15:00 PR #622 merged: staging issuer removed from production, CI check added
+
+      ## Why the staging issuer was used
+      PR #618 added both issuers. The svc-export chart's ingress had no issuer
+      annotation and fell back to a default that pointed at staging. The manual
+      certificate kept working until it came up for renewal.
+
+      ## Action items
+      - Remove the staging issuer from production — Yusuf, done (PLAT-228)
+      - Alert 14 days before any ingress certificate expires and on any certificate
+        not from the production issuer — Grace (PLAT-225)
+      - CI check on charts — done in PR #622
+
+  - id: cf-eng-platform-oncall
+    container: cf-eng
+    type: PAGE
+    title: "Platform on-call rota"
+    author: raj
+    last_modified_by: raj
+    created: 2026-01-05T09:00:00Z
+    updated: 2026-04-17T12:00:00Z
+    web_url: https://confluence.acme-demo.example/wiki/spaces/ENG/pages/platform-oncall
+    body: |
+      Platform pages for flow-engine, platform-infra, ingress and cert-manager, and
+      svc-search. Weekly rotation, Monday 09:00 UTC handover. Policy is in the
+      engineering on-call handbook.
+
+      | Week of | Primary | Secondary |
+      |---|---|---|
+      | 6 April | Dana Okafor | Yusuf Demir |
+      | 13 April | Priya Nair | Dana Okafor |
+      | 20 April | Yusuf Demir | Grace Liu |
+      | 27 April | Priya Nair | Tobias Weber (shadow only) |
+      | 4 May | Grace Liu | Yusuf Demir |
+
+      When the secondary is shadowing, escalate to Raj Mehta instead.
+
+      17 Apr: the rota grows from four to five engineers (Grace joins from the week of
+      20 April). Tobias shadows but is never paged alone.
+
+  - id: jira-plat-204
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-204: Tune flow-engine lag alert thresholds"
+    author: raj
+    reporter: raj
+    assignee: grace
+    created: 2026-04-14T10:30:00Z
+    updated: 2026-04-28T12:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-204
+    body: |
+      **Status:** In progress
+
+      The per-tenant lag page from PR #616 fired 9 times in its first two weeks, 6 of
+      them during Monday-morning backfills that cleared on their own. Look at two weeks
+      of data and set thresholds that would have caught INC-2040 within 15 minutes
+      without paging on routine backfills.
+
+  - id: jira-plat-207
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-207: Expand the Platform on-call rota"
+    author: raj
+    reporter: raj
+    assignee: raj
+    created: 2026-03-30T09:00:00Z
+    updated: 2026-04-17T12:05:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-207
+    body: |
+      **Status:** Done
+
+      Four engineers on a weekly primary/secondary rota means everyone is on call
+      every other week. Add Grace to the rota from the week of 20 April, and let
+      Tobias shadow secondary shifts while he is on Keel. Rota page updated 17 Apr.
+
+  - id: jira-plat-211
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-211: Upgrade the Terraform cloud provider to 5.x"
+    author: dana
+    reporter: dana
+    assignee: yusuf
+    created: 2026-03-04T11:00:00Z
+    updated: 2026-03-19T16:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-211
+    body: |
+      **Status:** Done
+
+      Provider 4.x is out of support. Upgrade all workspaces in platform-infra to 5.x,
+      fix the deprecated `ebs_block_device` usage and confirm plans show no changes.
+
+  - id: jira-plat-214
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-214: Rotate CI credentials for platform-infra workflows"
+    author: yusuf
+    reporter: yusuf
+    assignee: yusuf
+    created: 2026-04-12T12:30:00Z
+    updated: 2026-04-12T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-214
+    body: |
+      **Status:** Done
+
+      Rotate the credentials used by platform-infra CI workflows and update the
+      repository secrets. Deploys paused for about 10 minutes while workflows picked
+      up the new values.
+
+  - id: jira-plat-219
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-219: Postgres 15.6 minor upgrade window"
+    author: dana
+    reporter: dana
+    assignee: priya-nair
+    created: 2026-04-22T10:00:00Z
+    updated: 2026-04-22T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-219
+    body: |
+      **Status:** To Do · **Window:** 2026-05-06 06:00–06:30 UTC
+
+      Apply the 15.6 minor release to the primary database cluster. Expect a failover
+      of under 30 seconds. Announce in #platform and #support-escalations the day
+      before.
+
+  - id: jira-plat-222
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-222: Flaky health check on keel-staging ingress"
+    author: grace
+    reporter: grace
+    assignee: yusuf
+    created: 2026-04-02T09:00:00Z
+    updated: 2026-04-07T11:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-222
+    body: |
+      **Status:** Done
+
+      The synthetic check on keel-staging ingress fails about once an hour with a 2s
+      timeout. Cause: one ingress-nginx replica on a spot node being reclaimed.
+      Moved ingress to the on-demand system pool.
+
+  - id: jira-plat-225
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-225: Alert on ingress certificates near expiry or from the wrong issuer"
+    author: priya-nair
+    reporter: priya-nair
+    assignee: grace
+    created: 2026-04-28T10:30:00Z
+    updated: 2026-04-29T09:00:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-225
+    relations:
+      - { type: RELATED, to: jira-inc-2044 }
+    body: |
+      **Status:** In progress
+
+      INC-2044 follow-up. Alert when any ingress certificate is within 14 days of
+      expiry, and immediately when a production certificate's issuer is not the
+      production ACME issuer. Use cert-manager's metrics; add both to the Platform
+      dashboard.
+
+  - id: jira-plat-228
+    container: jira-plat
+    type: TICKET
+    title: "PLAT-228: Remove the staging ClusterIssuer from keel-prod"
+    author: yusuf
+    reporter: yusuf
+    assignee: yusuf
+    created: 2026-04-24T09:35:00Z
+    updated: 2026-04-24T15:05:00Z
+    web_url: https://jira.acme-demo.example/browse/PLAT-228
+    relations:
+      - { type: RELATED, to: jira-inc-2044 }
+    body: |
+      **Status:** Done
+
+      INC-2044 follow-up. Delete the staging issuer from production and pin every
+      production ingress to the production issuer. Done in PR #622.
+
+  - id: slack-platform-0219
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Dana Okafor, 2026-02-19 14:20"
+    author: dana
+    created: 2026-02-19T14:20:00Z
+    mentions_orgs: [contoso]
+    body: |
+      INC-2036 mitigated: Acme Sync now dedupes webhook deliveries on the partner's
+      event id. Contoso's duplicates get cleaned up tomorrow with their admin. Grace
+      has the incident.
+
+  - id: slack-platform-0408-1
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Raj Mehta, 2026-04-08 06:35"
+    author: raj
+    created: 2026-04-08T06:35:00Z
+    thread: slack-platform-0408
+    body: |
+      Declaring INC-2040, SEV-2: Acme Flow syncs falling behind, flow-engine pods
+      OOM-killed. Grace is incident lead, I'm IC. Updates here every 30 minutes.
+
+  - id: slack-platform-0408-2
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Grace Liu, 2026-04-08 09:10"
+    author: grace
+    created: 2026-04-08T09:10:00Z
+    thread: slack-platform-0408
+    body: |
+      Lag is 3h40m and still growing. More replicas doesn't help — each new pod hits
+      512Mi when it picks up a backfill. Tobias is preparing a limit change.
+
+  - id: slack-platform-0408-3
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Dana Okafor, 2026-04-08 09:22"
+    author: dana
+    created: 2026-04-08T09:22:00Z
+    thread: slack-platform-0408
+    body: |
+      Suggest pausing backfills for the largest three tenants until the limit is
+      raised. They can catch up overnight.
+
+  - id: slack-platform-0408-4
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Grace Liu, 2026-04-08 17:15"
+    author: grace
+    created: 2026-04-08T17:15:00Z
+    thread: slack-platform-0408
+    body: |
+      Limits at 1Gi by hand since 16:40, no OOM kills since. Lag peaked at 6h20m and
+      is coming down. Permanent change and alerts tomorrow.
+
+  - id: slack-platform-0412
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Yusuf Demir, 2026-04-12 12:35"
+    author: yusuf
+    created: 2026-04-12T12:35:00Z
+    body: |
+      Rotating CI credentials today, expect a 10-minute deploy pause.
+
+  - id: slack-platform-0417
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Raj Mehta, 2026-04-17 12:10"
+    author: raj
+    created: 2026-04-17T12:10:00Z
+    body: |
+      On-call rota update: Grace joins the Platform rota from Monday, so it's five of
+      us now. Tobias shadows secondary on the week of the 27th. Rota page is updated.
+
+  - id: slack-platform-0424-1
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Grace Liu, 2026-04-24 09:09"
+    author: grace
+    created: 2026-04-24T09:09:00Z
+    thread: slack-platform-0424
+    body: |
+      Synthetic check on export download links is failing — certificate error on the
+      export host. Anyone touch ingress this morning?
+
+  - id: slack-platform-0424-2
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Yusuf Demir, 2026-04-24 09:16"
+    author: yusuf
+    created: 2026-04-24T09:16:00Z
+    thread: slack-platform-0424
+    body: |
+      Found it: cert-manager renewed it from the staging issuer. Opening INC-2044 and
+      reissuing from prod by hand now.
+
+  - id: slack-platform-0424-3
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Yusuf Demir, 2026-04-24 09:29"
+    author: yusuf
+    created: 2026-04-24T09:29:00Z
+    thread: slack-platform-0424
+    body: |
+      Prod certificate back at 09:27, links working. PR to take the staging issuer
+      out of prod coming this morning.
+
+  - id: slack-platform-0424-4
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Priya Nair, 2026-04-24 09:40"
+    author: priya-nair
+    created: 2026-04-24T09:40:00Z
+    thread: slack-platform-0424
+    body: |
+      Thanks Yusuf. I'll review the PR. Let's also alert on any certificate that
+      isn't from the prod issuer — I'll open a ticket for that.
+
+  - id: mail-eng-0408
+    container: gmail-raj
+    type: MAIL
+    title: "INC-2040: Acme Flow sync delays — status for customer updates"
+    from: raj
+    to: [lucas, chioma]
+    cc: [bob, grace]
+    group: support-readers
+    created: 2026-04-08T10:30:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0408
+    mentions_orgs: [bluebird, contoso, globex]
+    body: |
+      Lucas, Chioma,
+
+      So you have one place for customer updates on today's Acme Flow delays:
+
+      - Cause: the Flow sync workers are running out of memory since their move to our
+        new infrastructure last week. Nothing is lost; syncs are queued and will catch
+        up.
+      - Customers we know are affected: Bluebird Health, Contoso and Globex. Please
+        tell me if any other tickets come in.
+      - Grace Liu is leading the fix. We expect a mitigation this afternoon and a
+        permanent fix within two days.
+      - Next update from me by 15:00 UTC.
+
+      Suggested wording for customers: "Some syncs are delayed by several hours. No
+      data has been lost, and delayed syncs will complete automatically."
+
+      Raj
+
+  - id: mail-eng-0410
+    container: gmail-raj
+    type: MAIL
+    title: "INC-2040 resolved — all-clear for Acme Flow customers"
+    from: raj
+    to: [lucas, chioma]
+    cc: [bob, grace]
+    group: support-readers
+    created: 2026-04-10T14:20:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0410
+    mentions_orgs: [bluebird, contoso, globex]
+    relations:
+      - { type: RELATED, to: mail-eng-0408 }
+    body: |
+      Lucas, Chioma,
+
+      The permanent fix for the Acme Flow delays went out at 11:05 UTC today and sync
+      lag has been under 2 minutes for every customer since 14:00. You can send the
+      all-clear to Bluebird Health, Contoso and Globex.
+
+      The postmortem will be in the engineering space next week; one action is a lag
+      alert so we notice before customers do.
+
+      Thanks for connecting the three reports so quickly.
+
+      Raj
+
+  - id: mail-eng-0414
+    container: gmail-raj
+    type: MAIL
+    title: "INC-2040 summary for exec staff"
+    from: raj
+    to: [rafael, owen]
+    cc: [grace]
+    created: 2026-04-14T08:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0414
+    mentions_orgs: [bluebird, contoso, globex]
+    body: |
+      Rafael, Owen,
+
+      Short version of last week's Acme Flow incident ahead of the board meeting.
+
+      - 8 April, 06:10–(fix) 10 April: syncs up to 6h20m behind. SEV-2.
+      - Customers affected: Bluebird Health (in pilot), Contoso and Globex. No data
+        lost.
+      - Cause: memory limits set too low when flow-engine moved to Kubernetes.
+      - Fixed by raising the limits; we now page on lag per customer.
+      - Keel continues: billing worker moves this Saturday, invoicing on 12 May.
+
+      Postmortem (Grace) is in the ENG space.
+
+      Raj
+
+  # ===========================================================================
+  # S4 — SEC-7: the exposed CI token (restricted: security-incident)
+  # ===========================================================================
+
+  - id: jira-sec-7
+    container: jira-sec
+    type: TICKET
+    title: "SEC-7: platform-infra CI deploy token printed in a public build log"
+    author: yusuf
+    reporter: yusuf
+    assignee: priya-nair
+    created: 2026-04-12T11:40:00Z
+    updated: 2026-04-14T16:00:00Z
+    web_url: https://jira.acme-demo.example/browse/SEC-7
+    body: |
+      **Severity:** High · **Status:** Resolved · **Incident commander:** Raj Mehta
+
+      ## What happened
+      At 11:32 UTC on 12 April Yusuf noticed that a CI run triggered by a forked pull
+      request against platform-infra had printed the deploy token in its public build
+      log (a debug step echoed the environment). The log had been public since 09:58.
+
+      ## Exposure
+      The deploy token could push images to the staging registry only. It had no
+      access to production, to keel-prod, or to any customer data.
+
+      ## Response
+      - 11:45 log deleted, workflow disabled
+      - 13:40 token rotated and old token revoked (under 2 hours from discovery)
+      - 13:00–15:00 registry audit: no pushes or pulls from unknown addresses (SEC-10)
+
+      ## Follow-ups
+      SEC-8 mask secrets in CI logs (Yusuf); SEC-9 stop workflows running with
+      secrets on forks (Priya Nair).
+
+  - id: jira-sec-8
+    container: jira-sec
+    type: TICKET
+    title: "SEC-8: Mask secrets in CI logs"
+    author: priya-nair
+    reporter: priya-nair
+    assignee: yusuf
+    created: 2026-04-12T15:00:00Z
+    updated: 2026-04-27T11:00:00Z
+    web_url: https://jira.acme-demo.example/browse/SEC-8
+    body: |
+      **Status:** In progress · **Follow-up of:** SEC-7
+
+      Register every repository secret with the CI masker, remove the debug step that
+      echoed the environment, and add a log scanner that fails the run when a string
+      matching a token pattern is printed. Rolled out to platform-infra; four other
+      repositories to go.
+
+  - id: jira-sec-9
+    container: jira-sec
+    type: TICKET
+    title: "SEC-9: Don't run workflows with secrets on forked pull requests"
+    author: raj
+    reporter: raj
+    assignee: priya-nair
+    created: 2026-04-12T15:05:00Z
+    updated: 2026-04-14T15:30:00Z
+    web_url: https://jira.acme-demo.example/browse/SEC-9
+    body: |
+      **Status:** Done · **Follow-up of:** SEC-7
+
+      Workflows triggered from forks now run without secrets and require a maintainer
+      to approve the run. The staging registry push step runs only on branches in the
+      main repository.
+
+  - id: jira-sec-10
+    container: jira-sec
+    type: TICKET
+    title: "SEC-10: Audit staging registry access during the exposure window"
+    author: raj
+    reporter: raj
+    assignee: yusuf
+    created: 2026-04-12T12:10:00Z
+    updated: 2026-04-13T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/SEC-10
+    body: |
+      **Status:** Done · **Follow-up of:** SEC-7
+
+      Reviewed staging registry access logs from 09:58 to 13:40 UTC on 12 April. Only
+      our CI runners and two engineers' laptops used the deploy token. No unknown
+      addresses, no unexpected image tags.
+
+  - id: slack-sec-incident-0412-1
+    container: slack-sec-incident
+    type: MESSAGE
+    title: "#sec-incident — Yusuf Demir, 2026-04-12 11:36"
+    author: yusuf
+    created: 2026-04-12T11:36:00Z
+    thread: slack-sec-incident-0412
+    body: |
+      Found the platform-infra deploy token in a public build log from a forked pull
+      request. Debug step dumped env. Deleting the log and disabling the workflow now.
+
+  - id: slack-sec-incident-0412-2
+    container: slack-sec-incident
+    type: MESSAGE
+    title: "#sec-incident — Raj Mehta, 2026-04-12 11:44"
+    author: raj
+    created: 2026-04-12T11:44:00Z
+    thread: slack-sec-incident-0412
+    body: |
+      I'm IC. Opening SEC-7. Priya Nair owns the remediation. What can the token do?
+
+  - id: slack-sec-incident-0412-3
+    container: slack-sec-incident
+    type: MESSAGE
+    title: "#sec-incident — Priya Nair, 2026-04-12 11:52"
+    author: priya-nair
+    created: 2026-04-12T11:52:00Z
+    thread: slack-sec-incident-0412
+    body: |
+      Push to the staging registry only. No prod, no cluster credentials, no customer
+      data. Rotating it now; it's wired into six workflows so give me a bit.
+
+  - id: slack-sec-incident-0412-4
+    container: slack-sec-incident
+    type: MESSAGE
+    title: "#sec-incident — Priya Nair, 2026-04-12 13:42"
+    author: priya-nair
+    created: 2026-04-12T13:42:00Z
+    thread: slack-sec-incident-0412
+    body: |
+      Rotated at 13:40, old token revoked. Yusuf is posting a vague notice in #platform
+      about a deploy pause.
+
+  - id: slack-sec-incident-0412-5
+    container: slack-sec-incident
+    type: MESSAGE
+    title: "#sec-incident — Raj Mehta, 2026-04-12 15:10"
+    author: raj
+    created: 2026-04-12T15:10:00Z
+    thread: slack-sec-incident-0412
+    body: |
+      Registry audit clean (SEC-10). Follow-ups SEC-8 and SEC-9 are open. I'll brief
+      Rafael and Owen tomorrow with a written report.
+
+  - id: drive-sec-sec7-report
+    container: drive-security
+    type: FILE
+    title: "SEC-7 incident report — exec briefing"
+    owners: [priya-nair]
+    last_modified_by: raj
+    created: 2026-04-13T09:00:00Z
+    updated: 2026-04-13T16:30:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-sec7-report
+    body: |
+      ## Summary for exec staff
+      On 12 April a CI deploy token for platform-infra was printed in a public build
+      log from a forked pull request. The token could push to the staging registry
+      only. It was rotated within 2 hours of discovery (13:40 UTC). There was no
+      production access and no customer data was exposed. No customer notification
+      is required.
+
+      ## Timeline (UTC)
+      09:58 log published · 11:32 found by Yusuf Demir · 11:45 log removed ·
+      13:40 token rotated · 15:00 registry audit complete, clean
+
+      ## Why it happened
+      A debug step added in March printed the job environment, and workflows ran with
+      secrets on forked pull requests.
+
+      ## Follow-ups
+      | Ticket | Action | Owner | Status |
+      |---|---|---|---|
+      | SEC-8 | Mask secrets in CI logs | Yusuf Demir | In progress |
+      | SEC-9 | No secrets on fork workflows | Priya Nair | Done 14 Apr |
+      | SEC-10 | Registry access audit | Yusuf Demir | Done 13 Apr |
+
+  - id: drive-sec-sec7-timeline
+    container: drive-security
+    type: FILE
+    title: "SEC-7 working timeline"
+    owners: [yusuf]
+    last_modified_by: yusuf
+    created: 2026-04-12T11:50:00Z
+    updated: 2026-04-12T16:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-sec7-timeline
+    body: |
+      09:58 fork PR CI run publishes log with deploy token (job "debug-env")
+      11:32 Yusuf spots the token while reading the log for an unrelated failure
+      11:36 posted in #sec-incident
+      11:44 Raj IC, SEC-7 opened
+      11:45 log deleted; fork workflows disabled
+      12:10 SEC-10 audit started
+      13:40 token rotated in six workflows; old token revoked
+      14:00 deploys confirmed working with the new token
+      15:00 audit clean
+
+  - id: mail-eng-0413
+    container: gmail-raj
+    type: MAIL
+    title: "SEC-7 briefing: CI token exposure on 12 April"
+    from: raj
+    to: [rafael, owen]
+    cc: [priya-nair]
+    group: security-incident
+    created: 2026-04-13T17:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0413
+    body: |
+      Rafael, Owen,
+
+      The written report on SEC-7 is in the Security incidents folder. In short: a
+      deploy token that could push to the staging registry leaked in a public build
+      log for under four hours and was rotated within 2 hours of us finding it. No
+      production access, no customer data, nothing to notify. Two follow-ups remain,
+      one already done.
+
+      Happy to walk through it at exec staff on Monday.
+
+      Raj
+
+  # ===========================================================================
+  # S5 — Acme Flow engineering
+  # ===========================================================================
+
+  - id: jira-flow-301
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-301: Acme Sync — OAuth token refresh fails for HubSpot connections"
+    author: dana
+    reporter: chioma
+    assignee: grace
+    created: 2026-02-03T10:00:00Z
+    updated: 2026-02-10T15:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-301
+    body: |
+      **Status:** Done
+
+      Acme Sync connections to HubSpot stop after 6 hours because the refresh token
+      request sends the client secret in the query string, which HubSpot started
+      rejecting on 1 Feb. Send it in the request body. Seven customers' connections
+      affected; they reconnect automatically once fixed.
+
+  - id: jira-flow-304
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-304: Acme Sync — durable dedupe key for webhook deliveries"
+    author: grace
+    reporter: dana
+    assignee: grace
+    created: 2026-02-20T09:30:00Z
+    updated: 2026-03-05T14:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-304
+    relations:
+      - { type: RELATED, to: jira-inc-2036 }
+    body: |
+      **Status:** Done
+
+      Follow-up from INC-2036. The hotfix dedupes webhook deliveries on the partner's
+      event id in memory for 24 hours, which is lost on restart. Store processed event
+      ids in Redis with a 72-hour TTL so every Acme Sync worker shares them.
+
+  - id: jira-flow-307
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-307: Backpressure for webhook bursts"
+    author: grace
+    reporter: grace
+    assignee: grace
+    created: 2026-03-09T10:00:00Z
+    updated: 2026-03-18T16:30:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-307
+    body: |
+      **Status:** Done
+
+      A partner sending 20,000 webhooks in a minute fills the receiver's memory. Accept
+      deliveries into a bounded queue and answer 429 with Retry-After when it is full,
+      instead of buffering everything. Done in PR #705.
+
+  - id: jira-flow-309
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-309: Rename user-facing strings from Sync to Flow"
+    author: grace
+    reporter: grace
+    assignee: dana
+    created: 2026-02-18T11:00:00Z
+    updated: 2026-02-27T17:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-309
+    body: |
+      **Status:** Done
+
+      The product becomes Acme Flow on 1 March. Replace "Acme Sync" with "Acme Flow"
+      in the admin UI, email templates and error messages. Do **not** change the API
+      path: `/v1/sync` stays until 2027 so customer integrations keep working.
+      412 strings changed.
+
+  - id: jira-flow-312
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-312: Custom fields with dots in their names are dropped by field mapping"
+    author: chioma
+    reporter: chioma
+    assignee: grace
+    created: 2026-04-15T14:30:00Z
+    updated: 2026-04-28T17:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-312
+    mentions_orgs: [globex]
+    body: |
+      **Status:** Done · **Fix version:** flow-engine 2026.04.28
+
+      Reported by Globex: custom fields whose API names contain a dot (for example
+      `region.code`) never arrive in the destination. The field mapper treats the dot
+      as a path separator, looks for a nested `region` object, finds nothing and drops
+      the value silently.
+
+      Steps: create a custom field `region.code` in the source CRM, map it in Acme
+      Flow, run a sync. Expected: value copied. Actual: field empty, no error.
+
+      Fixed by flow-engine PR #713, merged 28 Apr.
+
+  - id: jira-flow-315
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-315: Per-tenant lag on the Acme Flow status page"
+    author: raj
+    reporter: raj
+    assignee: grace
+    created: 2026-04-20T10:00:00Z
+    updated: 2026-04-27T13:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-315
+    body: |
+      **Status:** In progress
+
+      Support had no way to see a single customer's sync lag during INC-2040. Add a
+      per-tenant lag panel to the internal Flow status page, searchable by workspace
+      id, showing the last 24 hours.
+
+  - id: jira-flow-318
+    container: jira-flow
+    type: TICKET
+    title: "FLOW-318: Salesforce 429s during bulk syncs"
+    author: lucas
+    reporter: lucas
+    assignee: yusuf
+    created: 2026-04-27T08:50:00Z
+    updated: 2026-04-29T12:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FLOW-318
+    mentions_orgs: [contoso]
+    body: |
+      **Status:** In progress
+
+      Contoso's nightly bulk sync to Salesforce hits the API limit and retries
+      immediately, which burns more of the limit. Retry Salesforce 429 responses with
+      exponential backoff and respect the limit headers. Fix in PR #716.
+
+  - id: gh-issue-701
+    container: gh-flow-engine
+    type: TICKET
+    title: "Issue #701: Rename the repository sync-engine to flow-engine"
+    author: grace
+    created: 2026-02-12T10:00:00Z
+    updated: 2026-03-02T12:00:00Z
+    web_url: https://github.acme-demo.example/flow-engine/issues/701
+    body: |
+      **Closed by #702**
+
+      The product is renamed Acme Sync → Acme Flow from 1 March (decision 10 Feb).
+      Rename the repository, Python package and service names; keep a redirect from the
+      old repository name and keep the `/v1/sync` API path.
+
+  - id: gh-pr-702
+    container: gh-flow-engine
+    type: PULL_REQUEST
+    title: "PR #702: Rename sync-engine to flow-engine"
+    author: grace
+    assignees: [grace]
+    reviewers: [dana]
+    created: 2026-02-26T15:00:00Z
+    updated: 2026-03-02T11:30:00Z
+    web_url: https://github.acme-demo.example/flow-engine/pull/702
+    relations:
+      - { type: IMPLEMENTS, to: gh-issue-701 }
+    body: |
+      **Merged** 2026-03-02 · Closes #701
+
+      Renames the package `sync_engine` → `flow_engine`, service names, Docker images
+      and metrics prefixes (`sync_*` → `flow_*`, old names kept as aliases for 90 days
+      so dashboards don't break). The repository itself was renamed to acme/flow-engine
+      the same day. The public API path `/v1/sync` is unchanged.
+
+  - id: gh-pr-705
+    container: gh-flow-engine
+    type: PULL_REQUEST
+    title: "PR #705: Backpressure for webhook bursts"
+    author: grace
+    assignees: [grace]
+    reviewers: [dana, yusuf]
+    created: 2026-03-12T10:00:00Z
+    updated: 2026-03-18T16:20:00Z
+    web_url: https://github.acme-demo.example/flow-engine/pull/705
+    body: |
+      **Merged** 2026-03-18 · Closes FLOW-307
+
+      The webhook receiver now accepts into a bounded queue (10,000 deliveries per
+      pod). When full it answers 429 with `Retry-After: 30`. Partners retry, nothing is
+      dropped, and the receiver's memory stays flat under a 20,000-per-minute burst in
+      the load test.
+
+  - id: gh-pr-709
+    container: gh-flow-engine
+    type: PULL_REQUEST
+    title: "PR #709: Export flow_queue_lag_seconds per tenant"
+    author: grace
+    assignees: [grace]
+    reviewers: [priya-nair]
+    created: 2026-03-27T11:00:00Z
+    updated: 2026-04-01T10:00:00Z
+    web_url: https://github.acme-demo.example/flow-engine/pull/709
+    body: |
+      **Merged** 2026-04-01
+
+      Exposes `flow_queue_lag_seconds` (age of the oldest queued sync) overall and per
+      tenant, so the Kubernetes autoscaler can scale on lag and dashboards can show
+      one customer at a time.
+
+  - id: gh-issue-711
+    container: gh-flow-engine
+    type: TICKET
+    title: "Issue #711: Field mapper splits API names on dots"
+    author: grace
+    created: 2026-04-16T09:00:00Z
+    updated: 2026-04-28T15:00:00Z
+    web_url: https://github.acme-demo.example/flow-engine/issues/711
+    relations:
+      - { type: RELATED, to: jira-flow-312 }
+    body: |
+      **Closed by #713**
+
+      `FieldMapper.resolve()` splits every source field name on `.` to support nested
+      JSON paths. Custom field API names may legally contain dots, so `region.code` is
+      looked up as `region` → `code` and silently dropped. Tracked in FLOW-312.
+
+  - id: gh-pr-713
+    container: gh-flow-engine
+    type: PULL_REQUEST
+    title: "PR #713: Treat dotted custom field names as literal keys"
+    author: grace
+    assignees: [grace]
+    reviewers: [yusuf]
+    created: 2026-04-22T14:00:00Z
+    updated: 2026-04-28T15:00:00Z
+    web_url: https://github.acme-demo.example/flow-engine/pull/713
+    relations:
+      - { type: IMPLEMENTS, to: jira-flow-312 }
+      - { type: IMPLEMENTS, to: gh-issue-711 }
+    body: |
+      **Merged** 2026-04-28 · Closes #711, FLOW-312
+
+      The mapper first looks for an exact key match and only then treats dots as a
+      nested path. Mappings can also use bracket syntax (`["region.code"]`) to force a
+      literal key. Fields that resolve to nothing are now logged as a mapping warning
+      instead of being dropped silently.
+
+  - id: gh-pr-713-c1
+    container: gh-flow-engine
+    type: COMMENT
+    title: "Review comment on PR #713 — Yusuf Demir"
+    author: yusuf
+    created: 2026-04-27T16:00:00Z
+    parent: gh-pr-713
+    body: |
+      Approve. Exact-match-first is the right order. Can you add a test where both
+      `region.code` and a nested `region: {code}` exist? Exact key should win.
+
+  - id: gh-pr-716
+    container: gh-flow-engine
+    type: PULL_REQUEST
+    title: "PR #716: Back off on Salesforce 429 responses"
+    author: yusuf
+    assignees: [yusuf]
+    reviewers: [grace]
+    created: 2026-04-29T10:00:00Z
+    updated: 2026-04-30T09:00:00Z
+    web_url: https://github.acme-demo.example/flow-engine/pull/716
+    body: |
+      **Open** · For FLOW-318
+
+      Salesforce connector retries 429s with exponential backoff (base 5 s, cap 5 min)
+      and reads `Sforce-Limit-Info` to slow bulk jobs before the daily limit runs out.
+
+  - id: slack-platform-0302
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Grace Liu, 2026-03-02 12:05"
+    author: grace
+    created: 2026-03-02T12:05:00Z
+    body: |
+      sync-engine is now acme/flow-engine (PR #702). GitHub redirects the old name, but
+      please update your remotes. Metric names moved to flow_* with the sync_* aliases
+      kept for 90 days. The API path is still /v1/sync.
+
+  - id: slack-platform-0428
+    container: slack-platform
+    type: MESSAGE
+    title: "#platform — Grace Liu, 2026-04-28 15:10"
+    author: grace
+    created: 2026-04-28T15:10:00Z
+    body: |
+      PR #713 merged — dotted custom field names now map correctly (FLOW-312).
+      Deploying flow-engine 2026.04.28 tomorrow morning.
+
+  - id: mail-eng-0416
+    container: gmail-raj
+    type: MAIL
+    title: "FLOW-312: dropped custom fields — workaround until the fix"
+    from: raj
+    to: [chioma]
+    cc: [grace]
+    group: support-readers
+    created: 2026-04-16T11:00:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0416
+    mentions_orgs: [globex]
+    body: |
+      Hi Chioma,
+
+      Thanks for the clear report on FLOW-312. Grace has found the cause: the mapper
+      reads a dot in a field's API name as a nested path, so `region.code` is dropped.
+
+      Workaround Globex can use today: in the mapping editor switch to Advanced and
+      write the source field as `["region.code"]` (square brackets and quotes). That
+      forces a literal key lookup. Renaming the field without a dot also works but
+      changes their API.
+
+      A proper fix is expected the week of 27 April.
+
+      Raj
+
+  - id: mail-eng-0429
+    container: gmail-raj
+    type: MAIL
+    title: "Re: FLOW-312: dropped custom fields — fix is live"
+    from: raj
+    to: [chioma]
+    cc: [grace]
+    group: support-readers
+    created: 2026-04-29T10:15:00Z
+    web_url: https://mail.acme-demo.example/mail/u/raj/eng-0429
+    mentions_orgs: [globex]
+    relations:
+      - { type: RELATED, to: mail-eng-0416 }
+    body: |
+      Hi Chioma,
+
+      The fix for FLOW-312 is in production: flow-engine 2026.04.28 went out at 08:30
+      UTC today. Fields with dots in their names now map without the bracket
+      workaround, and any field that can't be resolved shows a warning in the sync log.
+
+      Could you ask Globex to run a sync and confirm `region.code` comes through? Once
+      they do, your case can close.
+
+      Raj
