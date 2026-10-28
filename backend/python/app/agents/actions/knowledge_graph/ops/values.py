@@ -181,7 +181,7 @@ async def execute_find_records_by_value(
         # ordering, not a stored result set, so nothing is held between calls.
         sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
         if not sources:
-            return True, NO_SOURCE_MSG
+            return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
         hits = _ordered(match.hits, sources, wanted_types)
         start = resume if isinstance(resume, int) else bisect.bisect_right([_sort_key(h) for h in hits], resume)
         page, next_cursor, budget_spent = await _readable_page(

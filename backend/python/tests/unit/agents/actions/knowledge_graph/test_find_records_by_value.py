@@ -324,3 +324,10 @@ async def test_a_source_outside_the_conversation_says_so(env: AsyncMock) -> None
 async def test_percent_bounds_written_as_whole_numbers_get_a_hint(env: AsyncMock) -> None:
     ok, body = await values.execute_find_records_by_value(_state(_graph([])), percent_min=15, percent_max=20)
     assert ok and "0.15 for 15%" in body
+
+
+
+async def test_a_turn_with_no_sources_and_none_named_just_matches_nothing(env: AsyncMock) -> None:
+    env.return_value = _context(app_level_app_ids=frozenset())
+    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(3))), kinds=["date"])
+    assert (ok, body) == (True, values.NO_MATCH_MSG)
