@@ -901,6 +901,23 @@ describe('ConfigurationManager Controller', () => {
       expect(scopeFlag.hidden).to.not.equal(true)
     })
 
+    it('should list the knowledge graph arm flags in Labs: tools on, people and companies off', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const tools = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_TOOLS')
+      const people = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES')
+      expect(tools?.defaultEnabled).to.equal(true)
+      expect(people?.defaultEnabled).to.equal(false)
+      expect(tools?.advanced).to.equal(true)
+      expect(people?.advanced).to.equal(true)
+    })
+
     it('should not include hidden flags (e.g. ENABLE_BETA_CONNECTORS)', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -972,6 +989,20 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].featureFlags.ENABLE_USER_CONTEXT).to.equal(true)
+    })
+
+    it('should return the knowledge graph arm flags at their defaults when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].featureFlags
+      expect(flags.KNOWLEDGE_GRAPH_TOOLS).to.equal(true)
+      expect(flags.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES).to.equal(false)
     })
 
     it('should default ENABLE_KH_SCOPE_LISTING to false when the store has no entry', async () => {

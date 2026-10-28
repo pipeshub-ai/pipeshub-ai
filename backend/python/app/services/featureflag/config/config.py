@@ -55,3 +55,9 @@ class CONFIG:
     # Query-side record reads serve the artifact set, falling back to the stored
     # record per record; wins over the shadow flag. Defaults to disabled.
     ENABLE_ARTIFACT_READ = "ENABLE_ARTIFACT_READ"
+    # The knowledge-graph entity tools (search_entities and the tools that take
+    # its ids) and the Entities hint in the agent prompt. Defaults to enabled.
+    KNOWLEDGE_GRAPH_TOOLS = "KNOWLEDGE_GRAPH_TOOLS"
+    # People and companies (and extracted named entities) in those tools; off,
+    # they cover taxonomy, record titles and record groups only. Defaults to disabled.
+    KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES = "KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES"

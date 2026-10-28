@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops import entity_discovery
+from app.agents.agent_loop.knowledge_graph_policy import decide_knowledge_graph_policy
 from app.modules.named_entities import stage
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -118,8 +118,10 @@ class TestCallersFollowTheMode:
         self, monkeypatch: pytest.MonkeyPatch, mode: str, expected: bool,
     ) -> None:
         monkeypatch.setenv(HAM, mode)
-        state = {"config_service": _config_service({"ENABLE_NAMED_ENTITY_EXTRACTION": False})}
-        assert await entity_discovery._named_entities_enabled(state) is expected
+        state = {"config_service": _config_service({
+            "ENABLE_NAMED_ENTITY_EXTRACTION": False, "KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES": True,
+        })}
+        assert (await decide_knowledge_graph_policy(state)).named_entities is expected
 
     async def test_indexing_without_the_mode_still_follows_the_labs_flag(
         self, monkeypatch: pytest.MonkeyPatch,

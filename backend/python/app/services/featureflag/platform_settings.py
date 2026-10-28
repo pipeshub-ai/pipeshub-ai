@@ -14,6 +14,8 @@ from app.services.featureflag.config.config import CONFIG
 from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,23 @@ async def read_platform_feature_flag(
     asks ``get_config`` to raise and returns ``False`` when the saved value
     cannot be read. Without it, a read failure also returns ``default``.
     """
+    flags = await read_platform_feature_flags(
+        {flag_name: default}, config_service, use_cache=use_cache, fail_closed=fail_closed,
+    )
+    return flags[flag_name]
+
+
+async def read_platform_feature_flags(
+    defaults: Mapping[str, bool],
+    config_service: ConfigurationService,
+    *,
+    use_cache: bool = False,
+    fail_closed: bool = False,
+) -> dict[str, bool]:
+    """``read_platform_feature_flag`` for several flags from one read of the
+    settings: ``{flag: value}`` for every key of ``defaults``, each one its
+    default when absent. A read failure answers every default, or every flag
+    False with ``fail_closed``."""
     try:
         if fail_closed:
             settings = await config_service.get_config(
@@ -53,18 +72,19 @@ async def read_platform_feature_flag(
             )
         flags = settings.get("featureFlags") if isinstance(settings, dict) else None
         if not isinstance(flags, dict):
-            return default
+            return dict(defaults)
         # Keys are normalized to upper-case, matching `EtcdProvider`.
         normalized = {str(k).upper(): v for k, v in flags.items()}
-        if str(flag_name).upper() not in normalized:
-            return default
-        return bool(normalized[str(flag_name).upper()])
+        return {
+            name: bool(normalized[str(name).upper()]) if str(name).upper() in normalized else default
+            for name, default in defaults.items()
+        }
     except Exception as e:
-        fallback = False if fail_closed else default
+        fallback = {name: False if fail_closed else default for name, default in defaults.items()}
         logger.error(
-            "Failed to read %s for feature flag %s; using %s: %s",
+            "Failed to read %s for feature flags %s; using %s: %s",
             PLATFORM_SETTINGS_KEY,
-            flag_name,
+            ", ".join(defaults),
             fallback,
             e,
             exc_info=True,
@@ -142,6 +162,37 @@ async def is_named_entity_extraction_enabled(config_service: ConfigurationServic
     if high_accuracy_mode():
         return True
     return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+
+
+class KnowledgeGraphFlags(NamedTuple):
+    """The Labs flags that decide a request's knowledge-graph arm, read once."""
+
+    tools: bool
+    people_and_companies: bool
+    named_entities: bool
+
+
+_KNOWLEDGE_GRAPH_FLAG_DEFAULTS: dict[str, bool] = {
+    CONFIG.KNOWLEDGE_GRAPH_TOOLS: True,
+    CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: False,
+    CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION: False,
+}
+
+
+async def knowledge_graph_flags(config_service: ConfigurationService | None = None) -> KnowledgeGraphFlags:
+    """``KNOWLEDGE_GRAPH_TOOLS`` (default on), ``KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES``
+    (default off) and the named-entity flag as ``is_named_entity_extraction_enabled``
+    answers it, from one live read of the settings. Unreadable settings answer the
+    defaults."""
+    if config_service is None:
+        flags = dict(_KNOWLEDGE_GRAPH_FLAG_DEFAULTS)
+    else:
+        flags = await read_platform_feature_flags(_KNOWLEDGE_GRAPH_FLAG_DEFAULTS, config_service)
+    return KnowledgeGraphFlags(
+        tools=flags[CONFIG.KNOWLEDGE_GRAPH_TOOLS],
+        people_and_companies=flags[CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES],
+        named_entities=high_accuracy_mode() or flags[CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION],
+    )
 
 
 async def is_artifact_write_enabled(config_service: ConfigurationService | None = None) -> bool:

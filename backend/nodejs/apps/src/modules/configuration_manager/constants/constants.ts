@@ -192,6 +192,22 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'KNOWLEDGE_GRAPH_TOOLS',
+    label: 'Knowledge Graph Entity Tools',
+    description:
+      "Let agents look up the knowledge graph's entities (departments, topics, record groups, record titles) and list or search the records connected to one, and tell them how in their instructions. Disable to remove these tools and that guidance; agents still search, browse and read records.",
+    defaultEnabled: true,
+    advanced: true,
+  },
+  {
+    key: 'KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES',
+    label: 'People and Companies in the Knowledge Graph',
+    description:
+      'Let the knowledge graph entity tools also find colleagues and companies (and, with Extract Named Entities on, the organizations, products and places named in documents), and the records connected to them. Disable to limit those tools to departments, topics, record groups and record titles. Needs Knowledge Graph Entity Tools.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
     key: 'ENABLE_ARTIFACT_WRITE',
     label: 'Store Content Revisions as Files',
     description:
