@@ -2109,6 +2109,9 @@ async def start_kafka_consumers(
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
         record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
+        pipeline_runtime.queued_copies.bind_copies_promoted(
+            record_event_handler.request_code_edge_builds_for_copies
+        )
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer

@@ -2121,7 +2121,7 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "fork-2": self._code("fork-2", "repo-b"),
             "doc": {"_key": "doc", "connectorName": "Drive", "indexingStatus": "COMPLETED"},
         })
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_awaited_once_with("org-1", "conn-1", "repo-b")
 
     @pytest.mark.asyncio
@@ -2132,16 +2132,16 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "_key": "twin", "indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": "vr1"})
         gp.update_queued_duplicates_status = AsyncMock(return_value=1)
         handler._reconcile_pending_duplicates = AsyncMock()
-        handler._request_code_edge_builds_for_copies = AsyncMock()
+        handler.request_code_edge_builds_for_copies = AsyncMock()
         await handler._release_queued_copies("twin")
-        handler._request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
+        handler.request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_does_not_raise(self) -> None:
         handler = self._handler({})
         handler.event_processor.graph_provider.get_records_by_virtual_record_id = AsyncMock(
             side_effect=ConnectionError("graph down"))
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_not_awaited()
 
 

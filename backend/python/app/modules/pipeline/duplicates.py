@@ -6,7 +6,8 @@ not exist yet with a status nothing would ever finalise. The record handler rele
 them when the record path ends; with classification as a stage, the record path ends
 first, so the classify stage releases them when it writes the record's final
 ``extractionStatus``. Same steps as the record handler's ``_release_queued_copies``:
-promote, reconcile their taxonomy, clear ``duplicateReconcilePending``.
+promote, reconcile their taxonomy, clear ``duplicateReconcilePending``, and ask
+for the code edge build of the repos the promoted copies complete.
 """
 
 import asyncio
@@ -22,6 +23,8 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 
 SyncVectorMembership = Callable[[str], Awaitable[None]]
+# (record id, virtual record id) of a record whose copies were just promoted.
+CopiesPromoted = Callable[[str, str | None], Awaitable[None]]
 
 _RELEASED_ON = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 RECONCILE_ATTEMPTS = 2
@@ -42,9 +45,15 @@ class QueuedCopies:
         self._sink = sink
         self._logger = logger
         self._sync: SyncVectorMembership | None = None
+        self._on_promoted: CopiesPromoted | None = None
 
     def bind(self, sync_vector_membership: SyncVectorMembership | None) -> None:
         self._sync = sync_vector_membership
+
+    def bind_copies_promoted(self, on_promoted: CopiesPromoted | None) -> None:
+        """Called after a promotion, as the record handler's release does: a promoted
+        copy can be the last file of a code repo, and nothing else asks for its edge build."""
+        self._on_promoted = on_promoted
 
     async def _sync_vector_membership(self, virtual_record_id: str) -> None:
         if self._sync is None:
@@ -71,6 +80,8 @@ class QueuedCopies:
             raise QueuedCopiesNotReleasedError(record_id)
         if promoted > 0 or had_pending:
             await self._reconcile(record_id, virtual_record_id)
+        if promoted > 0 and self._on_promoted is not None:
+            await self._on_promoted(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
             await notify_record_indexed(
                 connector_name=record.get("connectorName"),

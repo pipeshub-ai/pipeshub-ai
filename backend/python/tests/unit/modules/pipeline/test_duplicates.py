@@ -49,3 +49,29 @@ async def test_unbound_membership_sync_leaves_the_reconcile_pending() -> None:
     copies = QueuedCopies(AsyncMock(), None, logging.getLogger("t"))
     with pytest.raises(RuntimeError):
         await copies._sync_vector_membership("vr-1")
+
+
+@pytest.mark.asyncio
+async def test_promoted_copies_ask_for_their_code_edge_build() -> None:
+    """A promoted copy can be its repo's last file; the stage path must ask, as the handler's does."""
+    graph = _graph({"indexingStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=1)
+    copies = QueuedCopies(graph, None, logging.getLogger("t"))
+    on_promoted = AsyncMock()
+    copies.bind_copies_promoted(on_promoted)
+    with patch("app.modules.pipeline.duplicates.DuplicateReconciler") as reconciler, patch(
+        "app.modules.pipeline.duplicates.notify_record_indexed", AsyncMock()
+    ):
+        reconciler.return_value.reconcile = AsyncMock(return_value=True)
+        await copies.release(["rec-1"])
+    on_promoted.assert_awaited_once_with("rec-1", "vr-1")
+
+
+@pytest.mark.asyncio
+async def test_nothing_promoted_asks_for_no_code_edge_build() -> None:
+    graph = _graph({"indexingStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
+    copies = QueuedCopies(graph, None, logging.getLogger("t"))
+    on_promoted = AsyncMock()
+    copies.bind_copies_promoted(on_promoted)
+    with patch("app.modules.pipeline.duplicates.notify_record_indexed", AsyncMock()):
+        await copies.release(["rec-1"])
+    on_promoted.assert_not_awaited()

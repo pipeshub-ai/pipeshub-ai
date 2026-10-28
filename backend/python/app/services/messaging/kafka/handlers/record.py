@@ -484,7 +484,7 @@ class RecordEventHandler(BaseEventService):
                     updated,
                     record_id,
                 )
-                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             else:
                 self.logger.info(
                     "No queued duplicates to update after primary failure for record %s",
@@ -749,7 +749,7 @@ class RecordEventHandler(BaseEventService):
             if promoted > 0 or had_pending:
                 await self._reconcile_pending_duplicates(record_id, virtual_record_id)
             if promoted > 0:
-                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
+                await self.request_code_edge_builds_for_copies(record_id, virtual_record_id)
             if indexing_status == ProgressStatus.COMPLETED.value:
                 # Duplicates just became searchable too. They can live in
                 # a different KB than this record, which only the TTL
@@ -813,7 +813,7 @@ class RecordEventHandler(BaseEventService):
                 exc, "Failed to request a code edge build after record %s", record_id
             )
 
-    async def _request_code_edge_builds_for_copies(
+    async def request_code_edge_builds_for_copies(
         self, record_id: str, virtual_record_id: str | None
     ) -> None:
         """A promoted copy can be the last file of its own repo (a fork, a
