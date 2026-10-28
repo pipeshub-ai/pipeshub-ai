@@ -101,13 +101,14 @@ def _cpu(fn, text: str) -> float:
 @pytest.mark.parametrize("unit", FAMILIES)
 def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) -> None:
     ours = REFERENCE[name][0]
-    small, large = unit * (24_000 // len(unit)), unit * (48_000 // len(unit))
+    small, large = unit * (24_000 // len(unit)), unit * (96_000 // len(unit))
     run = lambda t: list(ours.finditer(t))  # noqa: E731
     # Best of three, so one scheduling hiccup cannot fail the ratio.
     t_small = min(_cpu(run, small) for _ in range(3))
     t_large = min(_cpu(run, large) for _ in range(3))
-    # Under ~20 ms the ratio is noise; above it, linear is 2x and quadratic 4x.
-    assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 2.5, (name, unit, t_small, t_large)
+    # Four times the input: linear is 4x and quadratic 16x. A 2x step left too
+    # little room between them on a busy two-core runner (2.6x measured once).
+    assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 8, (name, unit, t_small, t_large)
 
 
 class _SlowMarkdownParser:
