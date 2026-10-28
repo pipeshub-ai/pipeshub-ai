@@ -213,8 +213,11 @@ class TestReviewFixes:
 
     async def test_a_user_of_another_org_is_never_linked(self) -> None:
         store = _store()
-        store.get_user_by_email.side_effect = lambda email: SimpleNamespace(id="u-x", org_id="org-2")
+        store.get_user_by_email.side_effect = lambda email, **_: SimpleNamespace(id="u-x", org_id="org-2")
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+        # The lookup answered, so the record's edges were replaced: it is the
+        # org check, not a failed lookup, that wrote none.
+        store.delete_edges_from.assert_awaited_once()
         store.batch_create_entity_relations.assert_not_awaited()
 
     async def test_lookups_are_capped_not_only_edges(self, monkeypatch) -> None:
@@ -321,3 +324,18 @@ class TestEmailLookupsStayInTheOrg:
 
         assert store.get_user_by_email.await_args.kwargs["org_id"] == BASE["org_id"]
         assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
+
+
+class TestPlaceholders:
+    async def test_a_placeholder_leaves_the_real_records_people_alone(self) -> None:
+        """A stub saved over the record it stands for names no one, so linking
+        it would delete that record's person edges and write none."""
+        store = _store()
+        stub = TicketRecord(
+            record_type=RecordType.TICKET, assignee_email="ann@acme.com", is_placeholder=True, **BASE,
+        )
+
+        assert await link_record_people(stub, store, logging.getLogger("t")) == 0
+
+        store.delete_edges_from.assert_not_awaited()
+        store.get_user_by_email.assert_not_awaited()
