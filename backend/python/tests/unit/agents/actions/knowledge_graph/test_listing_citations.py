@@ -217,3 +217,14 @@ def test_an_uploaded_files_dates_are_kept() -> None:
     assert "Document Date: 2026-09-01" in facts
     assert "File Last Modified:" in facts
     assert "Record ID" not in facts
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_states_nothing_new_keeps_the_earlier_facts() -> None:
+    # Page 2 of navigate (no header) or a name-only list_files row lists the
+    # record again under the same Citation ID; the dates it was cited for stay.
+    state = _state()
+    graph = _graph(_doc("r1", "Page"))
+    await cite_listed_records(state, graph, "org", {"r1": "Created 2026-10-26"})
+    await cite_listed_records(state, graph, "org", {"r1": ""})
+    assert [r["_listed_facts"] for r in state["tool_records"] if r.get("id") == "r1"] == ["Created 2026-10-26"]
