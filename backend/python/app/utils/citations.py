@@ -657,12 +657,17 @@ def _find_record_by_id(
     return None
 
 
-# `blockType` of a record-page citation, which cites no block: its text is the
+# `blockType` of a record-page citation, which cites no block: its text is
+# what a listing (navigate, lookup_record) stated about the record, the
 # record's summary (`BlockType.RECORD_SUMMARY`), the text the keyword (grep)
 # search matched in the record, or only the record's name. Only matched text
 # is quoted from the record itself.
+RECORD_PAGE_LISTED_FACTS = "listed_facts"
 RECORD_PAGE_MATCHED_TEXT = "matched_text"
 RECORD_PAGE_NAME_ONLY = "record_name"
+
+# On a record a listing made citable: what the listing said about it.
+LISTED_FACTS_KEY = "_listed_facts"
 
 
 def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
@@ -672,7 +677,11 @@ def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
     # says more than its name, which the citation already shows as its title.
     summary = (record.get("semantic_metadata") or {}).get("summary")
     matched = record.get("_match_snippet")
-    if summary:
+    listed = record.get(LISTED_FACTS_KEY)
+    # A listed record is cited for what the listing said, so that comes first.
+    if listed:
+        snippet, kind = listed, RECORD_PAGE_LISTED_FACTS
+    elif summary:
         snippet, kind = summary, BlockType.RECORD_SUMMARY.value
     elif matched:
         snippet, kind = matched, RECORD_PAGE_MATCHED_TEXT

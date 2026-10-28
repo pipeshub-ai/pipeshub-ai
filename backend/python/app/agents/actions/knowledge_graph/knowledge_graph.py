@@ -44,6 +44,7 @@ from app.utils.chat_helpers import (
 )
 
 from .catalog import ConnectorCatalog
+from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
@@ -181,6 +182,14 @@ def _record_ids_in_view(view: NavigationView) -> list[str]:
     if view.current and view.current.is_record and view.current.id:
         ids.append(view.current.id)
     return ids
+
+
+def _listed_facts(view: NavigationView, fetchable: set[str]) -> dict[str, str]:
+    """What the listing states about each record in it the user may open."""
+    facts = {row.id: row_facts(row) for row in (*view.rows, *view.related) if row.id in fetchable}
+    if view.current and view.current.id in fetchable:
+        facts[view.current.id] = context_facts(view.context_block)
+    return facts
 
 
 def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
@@ -569,8 +578,9 @@ class KnowledgeGraph:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
         fetchable = set(_record_ids_in_view(view))
+        cite_refs = await cite_listed_records(state, graph_provider, org_id, _listed_facts(view, fetchable))
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
@@ -718,7 +728,10 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
+        cite_refs = await cite_listed_records(
+            state, graph_provider, org_id, {m.id: context_facts(m.context_block) for m in result.matches},
+        )
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             emitted,
