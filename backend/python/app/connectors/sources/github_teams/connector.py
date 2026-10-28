@@ -22,6 +22,7 @@ to extend ``GitHubTeamsConnector``, overriding only the permission hooks on
 
 from __future__ import annotations
 
+import math
 from logging import Logger
 
 from fastapi.responses import StreamingResponse
@@ -340,15 +341,19 @@ class GitHubTeamsConnector(BaseConnector):
                     "Reconnect this connector with a valid token."
                 )
             if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                # The token is fine: GitHub's hourly limit is spent, or PipesHub is holding back
-                # the reserve it leaves for the account's other tools. "Verify your credentials"
-                # sent admins to rotate a working token.
+                # GitHub's limit is spent, or PipesHub is holding back the reserve it leaves for
+                # the account's other tools (refused before any request, so the token itself was
+                # not checked). "Verify your credentials" sent admins to rotate a working token.
                 wait = response.retry_after_seconds
-                when = f"in about {max(1, round(wait / 60))} min" if wait else "after GitHub's hourly reset"
+                when = (
+                    f"Try again in {math.ceil(wait / 60)} min or later."
+                    if wait
+                    else "GitHub gave no time to wait; try again in a few minutes, and wait longer if it fails again."
+                )
                 raise ConnectorInitError(
                     "GitHub's API rate limit for this token is used up for now "
-                    f"({response.api_message or response.error}). The credentials are fine; "
-                    f"try again {when}."
+                    f"({response.api_message or response.error}), so the credentials could not be checked. "
+                    f"This is not a sign they are wrong. {when}"
                 )
             return False
         except ConnectorInitError:

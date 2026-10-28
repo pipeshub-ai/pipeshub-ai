@@ -208,16 +208,29 @@ class TestConnectionAndAccess:
         message = str(err.value)
         assert "rate limit" in message
         assert "reserve reached" in message
-        assert "credentials are fine" in message
-        assert "in about 4 min" in message
+        assert "could not be checked" in message
+        assert "not a sign they are wrong" in message
+        # 215 s rounds up, never down to a time GitHub would still refuse.
+        assert "Try again in 4 min or later" in message
 
-    async def test_a_spent_rate_limit_without_a_wait_names_the_hourly_reset(self) -> None:
+    async def test_a_wait_is_rounded_up_to_the_next_minute(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("HTTP 429: rate limited", status_code=429)
+        res.api_message = "GitHub core rate limit exhausted"
+        res.retry_after_seconds = 149
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="Try again in 3 min or later"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
+    async def test_a_rate_limit_without_a_wait_does_not_promise_a_time(self) -> None:
+        # A secondary rate limit can come without Retry-After, and is not tied to the hourly reset.
         c = make_mock_connector()
         res = failed_response("HTTP 429: rate limited", status_code=429)
         res.api_message = None
         c.runtime.ds_call = AsyncMock(return_value=res)
 
-        with pytest.raises(ConnectorInitError, match="after GitHub's hourly reset"):
+        with pytest.raises(ConnectorInitError, match="GitHub gave no time to wait"):
             await GitHubTeamsConnector.test_connection_and_access(c)
 
     async def test_exception_returns_false(self) -> None:
