@@ -133,7 +133,11 @@ async function buildThreadContextualQuery(
       if (!normalizedText) {
         return null;
       }
-      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      const speaker = inferThreadMessageSpeaker(
+        message,
+        userLabelsById,
+        botUserId,
+      );
       return `${speaker}: ${normalizedText}`;
     })
   ).then(lines => lines.filter((line): line is string => Boolean(line)));

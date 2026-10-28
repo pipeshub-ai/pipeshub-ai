@@ -53,6 +53,7 @@ export type SlackBlock = Record<string, unknown>;
 export interface SlackMessagePayload {
   subtype?: string;
   bot_id?: string;
+  username?: string;
   user?: string;
   files?: unknown[];
   text?: string;
@@ -1774,8 +1775,13 @@ export async function resolveMentionsInText(
 export function inferThreadMessageSpeaker(
   message: SlackMessagePayload,
   userLabelsById: Map<string, string>,
+  botUserId?: string,
 ): string {
   if (message.bot_id || message.subtype === "bot_message") {
+    // Another app's or a webhook's text is not this assistant's own earlier words.
+    if (botUserId && message.user !== botUserId) {
+      return `Bot (${message.username || message.bot_id || 'unknown'})`;
+    }
     return "Assistant";
   }
   if (message.user) {

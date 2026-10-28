@@ -1598,6 +1598,25 @@ describe('slack-bot/helpers', () => {
     describe('inferThreadMessageSpeaker', () => {
       const labels = new Map([['U1', 'Alice']]);
 
+      it('names another bot or webhook instead of calling it Assistant when the bot id is known', () => {
+        expect(
+          inferThreadMessageSpeaker({ user: 'UOTHER', bot_id: 'B2', ts: '1' } as SlackMessagePayload, labels, 'UBOT'),
+        ).to.equal('Bot (B2)');
+        expect(
+          inferThreadMessageSpeaker(
+            { subtype: 'bot_message', bot_id: 'B9', username: 'Deploy hook', ts: '1' } as SlackMessagePayload,
+            labels,
+            'UBOT',
+          ),
+        ).to.equal('Bot (Deploy hook)');
+      });
+
+      it('still calls this bot Assistant when the bot id is known', () => {
+        expect(
+          inferThreadMessageSpeaker({ user: 'UBOT', bot_id: 'B1', ts: '1' } as SlackMessagePayload, labels, 'UBOT'),
+        ).to.equal('Assistant');
+      });
+
       it('returns "Assistant" for bot messages', () => {
         expect(inferThreadMessageSpeaker({ bot_id: 'B1', ts: '1' } as SlackMessagePayload, labels)).to.equal(
           'Assistant',
