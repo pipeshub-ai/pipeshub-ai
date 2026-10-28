@@ -926,6 +926,9 @@ class TestDriveWorkspaceEntitySync:
             description=(
                 f"{move_name} external_record_group_id → Shared Drive {shared_drive_id}"
             ),
+            # The single sync and graph wait this replaced allowed two windows; a
+            # move has taken six minutes to reach the changes feed.
+            timeout=2 * _SYNC_TIMEOUT_SEC,
         )
 
         after = await connector_assertions.assert_record_exists(

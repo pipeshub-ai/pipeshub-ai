@@ -50,7 +50,10 @@ class _Client:
 
 @pytest.fixture(params=sorted(_MODULES))
 def suite(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    module = _load(request.param)
+    return _scaled(_load(request.param), monkeypatch)
+
+
+def _scaled(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     # Scaled down 100x: a 3s budget, 0.13s of restart, a 0.39s settle floor.
     monkeypatch.setattr(module, "_SYNC_TIMEOUT_SEC", 3.0)
     monkeypatch.setattr(module, "_RESTART_SYNC_PAUSE_SEC", (0.05, 0.08))
@@ -159,3 +162,21 @@ def test_a_budget_shorter_than_one_round_is_refused(suite, monkeypatch) -> None:
     with pytest.raises(ValueError, match="SYNC_TIMEOUT"):
         _run(suite, check)
 
+
+def test_a_per_call_budget_keeps_re_syncing_past_the_default(monkeypatch) -> None:
+    """A move into a shared drive can reach the changes feed after the default
+    budget; the workspace loop takes a longer one for it."""
+    suite = _scaled(_load("workspace"), monkeypatch)
+    timeouts: list[float] = []
+    monkeypatch.setattr(suite, "wait_for_sync_completion", _fake_wait(suite, timeouts))
+    started = time.monotonic()
+    visible_at = suite._SYNC_TIMEOUT_SEC + 0.5
+
+    async def check() -> bool:
+        return time.monotonic() - started >= visible_at
+
+    asyncio.run(suite.sync_until(
+        _Client(), object(), "c1", check,
+        description="the moved file", timeout=2 * suite._SYNC_TIMEOUT_SEC,
+    ))
+    assert suite._SYNC_TIMEOUT_SEC < time.monotonic() - started < 2 * suite._SYNC_TIMEOUT_SEC
