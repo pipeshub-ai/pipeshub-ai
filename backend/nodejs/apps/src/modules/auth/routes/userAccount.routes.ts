@@ -25,7 +25,7 @@ import {
   AuthAppConfigReloader,
 } from '../container/authService.container';
 import { emailCheck } from '../../../libs/utils/zod-formats';
-import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
+import { AuthMethodType } from '../types/auth-method';
 
 const otpGenerationBody = z.object({
   email: z.string().check(emailCheck('Invalid email')),
