@@ -506,11 +506,66 @@ def _coerce_primitive(value: Any, accepted_types: tuple[type, ...]) -> Any:  # n
     return _NO_COERCION
 
 
+def _accepts_null(prop_schema: Any) -> bool:  # noqa: ANN401
+    """Whether a property's resolved schema (`resolve_json_schema_refs`, which turns
+    `["string", "null"]` into `nullable`) lets an explicit null through. A property the
+    schema doesn't describe, or describes without a type, takes any JSON value."""
+    if not isinstance(prop_schema, dict):
+        return True
+    if "const" in prop_schema:
+        return prop_schema["const"] is None
+    enum = prop_schema.get("enum")
+    if isinstance(enum, list):
+        return None in enum
+    if prop_schema.get("nullable") is True or prop_schema.get("type") == "null":
+        return True
+    arms = prop_schema.get("anyOf") or prop_schema.get("oneOf")
+    if isinstance(arms, list) and arms:
+        return any(_accepts_null(arm) for arm in arms)
+    return "type" not in prop_schema
+
+
+def _is_null_text(value: Any) -> bool:  # noqa: ANN401
+    return isinstance(value, str) and value.strip().lower() == "null"
+
+
+def _checked_value(param: ToolParameter, value: Any, *, type_is_authoritative: bool) -> Any:  # noqa: ANN401
+    """`value` as the schema takes it (a stringified number or boolean coerced, an enum
+    member matched loosely), or `ToolValidationError`."""
+    accepted_types = _PYTHON_TYPES.get(param.type) if type_is_authoritative else None
+    if accepted_types:
+        is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
+            ParameterType.INTEGER, ParameterType.FLOAT,
+        )
+        if not isinstance(value, accepted_types) or is_bool_leaking_into_numeric:
+            coerced = (
+                _NO_COERCION if is_bool_leaking_into_numeric
+                else _coerce_primitive(value, accepted_types)
+            )
+            if coerced is _NO_COERCION:
+                raise ToolValidationError(
+                    f"argument '{param.name}' expected type {param.type.value!r}, got {type(value).__name__!r}"
+                )
+            value = coerced
+
+    if param.enum is not None and value not in param.enum:
+        matched = _fuzzy_match_enum(value, param.enum)
+        if matched is None:
+            raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
+        value = matched
+    return value
+
+
 class SchemaShallowValidationMixin:
     """`validate` for a tool whose schema comes from outside PipesHub (an MCP server, an
     OpenAPI spec). The tool supplies `parameters` and `raw_input_schema`."""
 
-    def _properties_with_authoritative_type(self) -> frozenset[str]:
+    def _schema_properties(self) -> dict[str, Any]:
+        properties = (self.raw_input_schema or {}).get("properties")
+        return properties if isinstance(properties, dict) else {}
+
+    @staticmethod
+    def _properties_with_authoritative_type(properties: dict[str, Any]) -> frozenset[str]:
         """Property names whose schema declares exactly ONE concrete JSON
         type — the only ones a local type check can enforce without
         contradicting the server's own contract.
@@ -526,9 +581,6 @@ class SchemaShallowValidationMixin:
         recover. Three such turns and `ToolErrorTracker` blocks the tool for
         the rest of the request.
         """
-        properties = (self.raw_input_schema or {}).get("properties")
-        if not isinstance(properties, dict):
-            return frozenset()
         return frozenset(
             name
             for name, prop in properties.items()
@@ -558,9 +610,19 @@ class SchemaShallowValidationMixin:
         (`ToolExecutor._run`, `executor.py`) instead of an opaque provider
         400 after a network round trip — that's the point of overriding the
         old no-op mixin at all.
+
+        Models often write `null`, or the string `"null"`, for an optional
+        argument they mean to leave unset. `kwargs` goes to the server as is,
+        and in JSON Schema an absent key and a null are different things: a
+        server that checks its own schema refuses `"limit": null` for an
+        integer, and three refusals block the tool. So an optional argument's
+        null is left out unless the schema accepts null (where it can mean
+        "clear this field"), and its `"null"` is left out where the schema
+        would refuse that string.
         """
         params_by_name = {p.name: p for p in self.parameters}
-        typed_properties = self._properties_with_authoritative_type()
+        properties = self._schema_properties()
+        typed_properties = self._properties_with_authoritative_type(properties)
         for param in params_by_name.values():
             if param.name not in kwargs:
                 if param.required:
@@ -570,32 +632,18 @@ class SchemaShallowValidationMixin:
 
             value = kwargs[param.name]
             if value is None:
+                if not param.required and not _accepts_null(properties.get(param.name)):
+                    del kwargs[param.name]
                 continue
 
-            accepted_types = (
-                _PYTHON_TYPES.get(param.type) if param.name in typed_properties else None
-            )
-            if accepted_types:
-                is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
-                    ParameterType.INTEGER, ParameterType.FLOAT,
+            try:
+                kwargs[param.name] = _checked_value(
+                    param, value, type_is_authoritative=param.name in typed_properties,
                 )
-                if not isinstance(value, accepted_types) or is_bool_leaking_into_numeric:
-                    coerced = (
-                        _NO_COERCION if is_bool_leaking_into_numeric
-                        else _coerce_primitive(value, accepted_types)
-                    )
-                    if coerced is _NO_COERCION:
-                        raise ToolValidationError(
-                            f"argument '{param.name}' expected type {param.type.value!r}, got {type(value).__name__!r}"
-                        )
-                    kwargs[param.name] = value = coerced
-
-            if param.enum is not None and value not in param.enum:
-                matched = _fuzzy_match_enum(value, param.enum)
-                if matched is not None:
-                    kwargs[param.name] = matched
-                else:
-                    raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
+            except ToolValidationError:
+                if param.required or not _is_null_text(value):
+                    raise
+                del kwargs[param.name]
 
 
 class PipesHubStructuredToolAdapter(Tool):

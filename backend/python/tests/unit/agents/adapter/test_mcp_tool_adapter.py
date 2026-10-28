@@ -317,7 +317,107 @@ class TestValidate:
             }),
             _FakeSessionManager(),
         )
-        adapter.validate({"query": "x", "limit": None})  # must not raise
+        kwargs = {"query": "x", "limit": None}
+        adapter.validate(kwargs)  # must not raise
+        assert kwargs == {"query": "x"}
+
+
+def _adapter_with(properties: dict[str, Any], required: list[str], manager: _FakeSessionManager | None = None) -> MCPToolAdapter:
+    return MCPToolAdapter(
+        _server(),
+        _tool_info(input_schema={"type": "object", "properties": properties, "required": required}),
+        manager or _FakeSessionManager(),
+    )
+
+
+class TestUnsetOptionalArgumentsAreLeftOut:
+    """Models write `null` (or the string `"null"`) for optional arguments they
+    mean to leave unset. In JSON Schema an absent key and a null differ, so a
+    server that checks its own schema (Metabase's `browse_data`) refused the
+    whole call — `"limit": should be an integer` — and after three refusals
+    `ToolErrorTracker` blocked the tool for the rest of the conversation."""
+
+    BROWSE_DATA = {
+        "query": {"type": "string"},
+        "limit": {"type": "integer"},
+        "database_id": {"type": "integer"},
+        "table_ids": {"type": "array", "items": {"type": "integer"}},
+        "fields": {"type": "object"},
+        "response_format": {"type": "string", "enum": ["concise", "detailed"]},
+    }
+
+    async def test_the_server_never_sees_the_nulls(self) -> None:
+        manager = _FakeSessionManager(result=_call_result(texts=("ok",)))
+        adapter = _adapter_with(self.BROWSE_DATA, ["query"], manager)
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        arguments = {
+            "query": "orders", "limit": None, "database_id": None, "table_ids": None,
+            "fields": None, "response_format": "null",
+        }
+
+        result = await ToolExecutor(registry).call_tool(ToolCall(id="c1", name=adapter.name, arguments=arguments))
+
+        assert result.is_error is False
+        assert manager.calls[0][2] == {"query": "orders"}
+
+    def test_an_omitted_argument_stays_omitted(self) -> None:
+        kwargs = {"query": "orders"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": ["string", "null"]},
+            {"type": "string", "nullable": True},
+            {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            {"oneOf": [{"type": "string"}, {"type": "null"}]},
+            {"enum": ["alice", None]},
+            {"description": "anything"},
+        ],
+    )
+    def test_a_schema_that_accepts_null_still_gets_it(self, schema: dict[str, Any]) -> None:
+        """Here null can mean "clear this field" (unassign), so leaving it out would turn
+        the call into "change nothing"."""
+        kwargs = {"assignee": None}
+        _adapter_with({"assignee": schema}, []).validate(kwargs)
+        assert kwargs == {"assignee": None}
+
+    def test_a_union_without_a_null_arm_drops_it(self) -> None:
+        kwargs = {"fields": None}
+        _adapter_with({"fields": {"anyOf": [{"type": "string"}, {"type": "array"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_null_for_a_required_argument_is_still_sent(self) -> None:
+        """Leaving it out would only swap the server's answer for "missing"."""
+        kwargs = {"query": None}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": None}
+
+    @pytest.mark.parametrize("text", ["null", " NULL "])
+    def test_the_string_null_for_an_optional_enum_is_left_out(self, text: str) -> None:
+        kwargs = {"query": "orders", "response_format": text}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_for_an_optional_integer_is_left_out(self) -> None:
+        kwargs = {"query": "orders", "limit": "null"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_is_kept_where_the_schema_takes_a_string(self) -> None:
+        kwargs = {"query": "null"}
+        _adapter_with(self.BROWSE_DATA, []).validate(kwargs)
+        assert kwargs == {"query": "null"}
+
+    def test_the_string_null_for_a_required_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \['concise', 'detailed'\], got 'null'"):
+            _adapter_with(self.BROWSE_DATA, ["response_format"]).validate({"response_format": "null"})
+
+    def test_any_other_wrong_value_for_an_optional_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            _adapter_with(self.BROWSE_DATA, []).validate({"response_format": "short"})
 
 
 class TestValidateSkipsNonAuthoritativeTypes:
