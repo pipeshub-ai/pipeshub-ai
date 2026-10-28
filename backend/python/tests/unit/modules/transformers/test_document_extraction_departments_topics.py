@@ -56,4 +56,4 @@ def test_the_prompt_asks_for_at_most_two_departments_and_two_to_five_reusable_to
 
 def test_a_listed_name_with_surrounding_spaces_still_matches() -> None:
     metadata = DocumentExtraction.to_semantic_metadata(_classification(["Finance"]), [" Finance "])
-    assert metadata.departments == [" Finance "]
+    assert metadata.departments == ["Finance"]
