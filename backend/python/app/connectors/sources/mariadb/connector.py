@@ -1026,6 +1026,10 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                         and existing.external_revision_id == record.external_revision_id
                     ):
                         await self.data_entities_processor.on_record_content_update(record)
+                    else:
+                        # Written again as it is, which queues nothing: a full sync
+                        # counts the records it writes, and unlinks the rest after.
+                        await self.data_entities_processor.on_new_records([(record, [])])
                     written.add(table.fqn)
                 else:
                     batch.append((record, []))

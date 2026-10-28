@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import Filter, FilterCollection
 from app.connectors.core.sql.profiling import ColumnProfile
 from app.connectors.sources.mariadb.connector import (
@@ -505,6 +506,19 @@ class TestFilters:
         ):
             await world.connector.run_sync()
         assert world.record("a.b") is not None and world.record("other") is None
+
+
+class TestFullSync:
+    async def test_an_unchanged_table_is_written_again_without_being_queued(self, world) -> None:
+        # A full sync unlinks the records it did not write, which takes them out of search.
+        world.catalog.add("orders")
+        await world.sync()
+        world.record("orders").indexing_status = ProgressStatus.COMPLETED.value
+        del world.point.data[SYNC_STATE_KEY]  # what a full sync starts from
+        world.store.writes.clear()
+        await world.sync()
+        assert ("new", "shop.orders") in world.store.writes
+        assert ("update", "shop.orders") not in world.store.writes
 
 
 class TestUpgrade:

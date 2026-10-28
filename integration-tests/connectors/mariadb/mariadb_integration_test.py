@@ -40,6 +40,7 @@ from connectors.mariadb.mariadb_seed import (  # type: ignore[import-not-found]
     KEYED_TABLE,
     KEYLESS_TABLE,
     NEW_TABLE,
+    RECORDS_PER_TABLE,
     SEED_TABLES,
     VIEW,
 )
@@ -166,8 +167,8 @@ class TestMariaDBConnector:
             pipeshub_client, graph_provider, connector_id, [NEW_TABLE]
         )
 
-        assert after_count == before_count + 1, (
-            f"TC-INCR-001: expected exactly one new record for {NEW_TABLE}; "
+        assert after_count == before_count + RECORDS_PER_TABLE, (
+            f"TC-INCR-001: expected the record of {NEW_TABLE} and its column records; "
             f"count went from {before_count} to {after_count}"
         )
         logger.info("TC-INCR-001 passed: before=%d, after=%d", before_count, after_count)
@@ -238,7 +239,7 @@ class TestMariaDBConnector:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-DEL-001: Dropping a table removes its record, and only its record."""
+        """TC-DEL-001: Dropping a table removes its record and its columns', and nothing else."""
         connector_id = mariadb_connector["connector_id"]
 
         mariadb_source.create_table_with_rows(
@@ -256,8 +257,8 @@ class TestMariaDBConnector:
         after_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
-        assert after_count == with_table - 1, (
-            f"TC-DEL-001: expected one record fewer after dropping {DROPPED_TABLE}; "
+        assert after_count == with_table - RECORDS_PER_TABLE, (
+            f"TC-DEL-001: expected {DROPPED_TABLE}'s record and its column records gone; "
             f"count went from {with_table} to {after_count}"
         )
         await graph_provider.assert_record_names_contain(
