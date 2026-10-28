@@ -22,6 +22,11 @@ export interface ServePullPage {
   hasMore: boolean;
   events: WatchEvent[];
   rootPath: string | null;
+  /**
+   * An empty page sent while a full walk is still being built, so the server
+   * does not time out on it. Not a stall: the walk is making progress.
+   */
+  preparing?: boolean;
 }
 
 /** Codes the connector already understands; anything else lands as INTERNAL. */
@@ -54,7 +59,14 @@ export type ServePullResponse = ServePullPage | ServePullFailure;
  * future desktop reject tokens it no longer understands with CURSOR_UNKNOWN.
  */
 export type CursorToken =
-  | { v: 1; mode: 'INCREMENTAL'; afterBatchId: string }
+  | {
+      v: 1;
+      mode: 'INCREMENTAL';
+      /** Last batch served whole; '' when only part of the first batch has been. */
+      afterBatchId: string;
+      /** The batch after afterBatchId, served up to `offset` events so far. */
+      inBatch?: { batchId: string; offset: number };
+    }
   | { v: 1; mode: 'FULL'; afterPath: string };
 
 const CURSOR_VERSION = 1;
@@ -79,9 +91,14 @@ export function decodeCursor(
   const token = parsed as Partial<CursorToken>;
   if (token.v !== CURSOR_VERSION || token.mode !== expectedMode) return null;
   if (token.mode === 'INCREMENTAL') {
-    return typeof token.afterBatchId === 'string' && token.afterBatchId
-      ? { v: 1, mode: 'INCREMENTAL', afterBatchId: token.afterBatchId }
-      : null;
+    if (typeof token.afterBatchId !== 'string') return null;
+    const inBatch = token.inBatch;
+    if (inBatch !== undefined) {
+      if (typeof inBatch?.batchId !== 'string' || !inBatch.batchId) return null;
+      if (!Number.isInteger(inBatch.offset) || inBatch.offset <= 0) return null;
+      return { v: 1, mode: 'INCREMENTAL', afterBatchId: token.afterBatchId, inBatch: { batchId: inBatch.batchId, offset: inBatch.offset } };
+    }
+    return token.afterBatchId ? { v: 1, mode: 'INCREMENTAL', afterBatchId: token.afterBatchId } : null;
   }
   return typeof token.afterPath === 'string'
     ? { v: 1, mode: 'FULL', afterPath: token.afterPath }

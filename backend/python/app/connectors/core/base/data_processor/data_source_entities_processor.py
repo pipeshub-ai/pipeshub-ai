@@ -252,6 +252,23 @@ class PushOutcome:
     published: bool
 
 
+def _edge_source_record_id(edge: dict) -> str | None:
+    """The record an edge starts at, in either provider's shape, or None when it starts elsewhere.
+
+    ArangoDB's ``get_edges_to_node`` answers its own edge documents (``_from``);
+    Neo4j's answers the generic ``from_id``/``from_collection``.
+    """
+    if edge.get("from_id"):
+        if edge.get("from_collection") != CollectionNames.RECORDS.value:
+            return None
+        return str(edge["from_id"])
+    source = str(edge.get("_from", ""))
+    prefix = f"{CollectionNames.RECORDS.value}/"
+    if not source.startswith(prefix):
+        return None
+    return source[len(prefix):] or None
+
+
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
     """Whether a stored record (document or ``Record``) belongs to another org, or to
     another connector when ``connector_id`` is given. A field it lacks proves nothing.
@@ -3565,6 +3582,22 @@ class DataSourceEntitiesProcessor:
                             if child_id:
                                 await tx_store.create_record_relation(
                                     old_record.id, child_id, RecordRelations.PARENT_CHILD.value
+                                )
+                        # Those children reach the user through the duplicate too:
+                        # search walks INHERIT_PERMISSIONS up to the group, so a
+                        # child left pointing at a deleted vertex is found by nobody.
+                        # A failed read raises, rolling the move back, rather than
+                        # quietly cutting them off.
+                        inheriting = await tx_store.get_edges_to_node(
+                            f"{CollectionNames.RECORDS.value}/{duplicate.id}",
+                            CollectionNames.INHERIT_PERMISSIONS.value,
+                            raise_on_error=True,
+                        )
+                        for edge in inheriting:
+                            child_id = _edge_source_record_id(edge)
+                            if child_id and child_id != old_record.id:
+                                await tx_store.create_inherit_permissions_relation_record(
+                                    child_id, old_record.id
                                 )
 
                         # One write: the delete takes the duplicate's own parent edge
