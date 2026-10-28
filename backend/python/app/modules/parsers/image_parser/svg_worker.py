@@ -425,21 +425,24 @@ async def render_async(svg: str) -> str:
     """Rasterise for async callers; see the module docstring."""
     from app.modules.parsers import parse_pool
 
-    if parse_pool.parse_pool_workers() > 0:
-        try:
-            return await parse_pool.submit(
-                render_in_worker,
-                _request(svg, None, None, 1.0, None),
-                label="svg",
-                size=len(svg),
-                timeout=SVG_DEADLINE_SECONDS,
-            )
-        except parse_pool.ParseWorkerError as exc:
-            _logger.warning("An SVG was not rasterised: %s", exc.cause)
-            raise DocumentProcessingError(
-                "SVG rasterising failed or timed out", details={"cause": exc.cause}
-            ) from exc
-    return await asyncio.to_thread(run_bounded, svg)
+    try:
+        # Never in a service thread: render_in_worker caps the address space of
+        # whatever process runs it, and a thread has no deadline.
+        return await parse_pool.submit(
+            render_in_worker,
+            _request(svg, None, None, 1.0, None),
+            label="svg",
+            size=len(svg),
+            timeout=SVG_DEADLINE_SECONDS,
+            in_thread=False,
+        )
+    except parse_pool.ParsePoolUnavailable:
+        return await asyncio.to_thread(run_bounded, svg)
+    except parse_pool.ParseWorkerError as exc:
+        _logger.warning("An SVG was not rasterised: %s", exc.cause)
+        raise DocumentProcessingError(
+            "SVG rasterising failed or timed out", details={"cause": exc.cause}
+        ) from exc
 
 
 def _die_with_parent(parent_pid: int) -> None:

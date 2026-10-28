@@ -83,17 +83,21 @@ def _skip_ws(text: str, pos: int) -> int:
 
 def _iter_reference_usages(text: str) -> Iterator[tuple[int, int, str, str]]:
     """``![alt][ref]`` as ``(start, end, alt, ref)``."""
-    close = _Next(text, r"\]")
+    # One cache per lookup: each sees only rising positions, which is what keeps
+    # _Next linear. A shared one was sent back by every label lookup, so each
+    # later opener rescanned to the same bracket ("![" * n + "][]").
+    alt_close = _Next(text, r"\]")
+    label_close = _Next(text, r"\]")
     i = 0
     while True:
         i = text.find("![", i)
         if i < 0:
             return
-        j = close(i + 2)
+        j = alt_close(i + 2)
         if j < 0:
             return
         if text.startswith("[", j + 1):
-            k = close(j + 2)
+            k = label_close(j + 2)
             if k < 0:
                 return
             if k > j + 2:

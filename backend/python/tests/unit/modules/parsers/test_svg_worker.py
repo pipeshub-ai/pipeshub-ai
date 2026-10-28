@@ -235,3 +235,31 @@ def test_a_renderer_is_killed_by_its_cpu_limit_even_if_the_parent_never_asks() -
         assert not renderer.alive()
     finally:
         pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_is_gone_by_submit_time_never_renders_in_a_service_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pool reports workers, then has none (or closes) by the time the job is
+    submitted. render_in_worker caps the address space of the process that runs it
+    and has no deadline in a thread, so it must not run here; the bounded child does."""
+    monkeypatch.setattr(parse_pool, "parse_pool_workers", lambda: 1)
+    monkeypatch.setattr(parse_pool, "_pool", lambda: None)
+    in_process: list[dict] = []
+    monkeypatch.setattr(svg_worker, "render_in_worker", lambda request: in_process.append(request) or "")
+
+    png = await ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))
+
+    assert in_process == []
+    assert png.startswith("iVBOR")
+
+
+@pytest.mark.asyncio
+async def test_submit_refuses_the_thread_fallback_when_asked() -> None:
+    assert parse_pool.parse_pool_workers() == 0
+    ran: list[int] = []
+    with pytest.raises(parse_pool.ParsePoolUnavailable):
+        await parse_pool.submit(ran.append, 1, label="probe", in_thread=False)
+    assert ran == []
+    assert await parse_pool.submit(len, "abc") == 3

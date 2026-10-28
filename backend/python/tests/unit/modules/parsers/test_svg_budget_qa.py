@@ -13,7 +13,7 @@ import time
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.image_parser import svg_worker
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 
@@ -78,11 +78,17 @@ CASES = {
 }
 
 
+DEADLINE = 2.0
+
+
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_an_svg_under_the_counts_is_still_bounded(name: str) -> None:
+    """These pass the static counts by design; only the renderer's deadline bounds
+    them. The render runs in a child process, so this is wall-clock time: the
+    parent's own CPU time would stay near zero however long the child ran."""
     svg = CASES[name]
     assert len(svg) < 1_000_000
-    start = time.process_time()
+    start = time.monotonic()
     with contextlib.suppress(DocumentProcessingError):
-        ImageParser.svg_base64_to_png_base64(base64.b64encode(svg.encode()).decode())
-    assert time.process_time() - start < 2.0
+        svg_worker.run_bounded(base64.b64encode(svg.encode()).decode(), timeout=DEADLINE)
+    assert time.monotonic() - start < DEADLINE + 1.0

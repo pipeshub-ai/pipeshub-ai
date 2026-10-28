@@ -109,8 +109,9 @@ def test_a_renderer_in_the_middle_of_an_svg_does_not_outlive_its_parent(tmp_path
                     pass  # the renderer is closed when this process exits
             threading.Thread(target=go, daemon=True).start()
             time.sleep(2)
-            import psutil
-            print(psutil.Process().children()[0].pid, flush=True)
+            import glob, os
+            kids = [p for f in glob.glob(f"/proc/{{os.getpid()}}/task/*/children") for p in open(f).read().split()]
+            print(kids[0], flush=True)
             """
         )
     )

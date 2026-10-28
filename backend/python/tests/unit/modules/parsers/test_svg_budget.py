@@ -38,10 +38,11 @@ HOSTILE = {
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
 def test_a_hostile_svg_is_refused_within_a_bounded_time(name: str) -> None:
-    start = time.process_time()
+    # Wall-clock: the render runs in a child, whose CPU the parent's clock misses.
+    start = time.monotonic()
     with pytest.raises(DocumentProcessingError):
         ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
-    assert time.process_time() - start < 2.0
+    assert time.monotonic() - start < 2.0
 
 
 def test_an_oversized_svg_is_refused_before_it_is_parsed() -> None:

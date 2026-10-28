@@ -331,6 +331,21 @@ def test_a_shared_closing_bracket_is_not_rescanned_per_opener() -> None:
     assert t_big < max(t_small, 0.05) * 6.5, (t_big, t_small)
 
 
+# A run of openers that all share one closing tail: every opener's lookups land
+# on the same bracket, so a scanner whose cached lookup jumps back rescans to it
+# once per opener.
+_SHARED_TAILS = ["][]", "][x]", "]", "](", "]( ", "][", '](u "', "]: u"]
+
+
+@pytest.mark.parametrize("tail", _SHARED_TAILS)
+def test_openers_sharing_one_tail_are_scanned_in_linear_time(tail: str) -> None:
+    t_small = cpu(extract_and_replace_images, "![" * 8000 + tail)
+    t_big = cpu(extract_and_replace_images, "![" * 32000 + tail)
+    # Four times the input: linear is 4x, quadratic 16x.
+    assert t_big < max(t_small, 0.02) * 8, (tail, t_small, t_big)
+    assert t_big < 1.0, (tail, t_small, t_big)
+
+
 @pytest.mark.parametrize("parser_class", [SelectolaxHtmlParser, DoclingHtmlParser])
 @pytest.mark.parametrize("unit", ["<img ", "<img a='", "<a b='", "<!--", "<", "<![CDATA[", "<div>"])
 def test_html_extractors_take_linear_time_on_crafted_input(parser_class, unit) -> None:
