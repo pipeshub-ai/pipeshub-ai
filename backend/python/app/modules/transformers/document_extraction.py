@@ -251,6 +251,9 @@ def _images_rejected(exc: BaseException) -> bool:
         and classify_error(message)[0] != "content_filter"
     )
 
+MAX_DEPARTMENTS = 2
+
+
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
     level2: str = Field(description="Level 2 subcategory")
@@ -258,7 +261,10 @@ class SubCategories(BaseModel):
 
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
-        description="The list of departments this document belongs to", max_items=3
+        description=(
+            "The department whose work this document mainly is, first; a second only when the "
+            "document is equally another department's own work. At most 2."
+        )
     )
     category: str = Field(description="Main category this document belongs to")
     subcategories: SubCategories = Field(
@@ -268,7 +274,10 @@ class DocumentClassification(BaseModel):
         description="Natural languages the document is written in"
     )
     topics: list[str] = Field(
-        description="List of key topics/themes extracted from the document"
+        description=(
+            "2 to 5 reusable subjects a reader would look for across documents, lowercase except "
+            "acronyms; never a person, company, document title, date, amount or id"
+        )
     )
     summary: str = Field(
         description=(
@@ -283,6 +292,14 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("departments", mode="after")
+    @classmethod
+    def _at_most_two_departments(cls, values: list[str]) -> list[str]:
+        # Trimmed, not rejected: a third pick failing validation would cost the
+        # whole classification. The list is primary first, so the first two stay.
+        kept = (v.strip() for v in values if isinstance(v, str) and v.strip())
+        return list(dict.fromkeys(kept))[:MAX_DEPARTMENTS]
 
     @field_validator("languages", mode="after")
     @classmethod
