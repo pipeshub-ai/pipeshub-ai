@@ -2,9 +2,10 @@
 
 A record's text carries the people its source shows on the page and no
 others: a pull request its author and reviewers, a Jira issue its reporter
-and assignee, a mail its From/To/Cc headers. A Drive document or Confluence
-page has no author line in its content, so neither does the demo's; who owns
-or wrote it is on the record's fields, for the knowledge graph to answer.
+and assignee, a mail its From/To/Cc headers. A Drive document, Confluence
+page or Zendesk ticket has no author line in its content, so neither does the
+demo's; who owns, wrote or works it is on the record's fields, for the
+knowledge graph to answer.
 
 Shared by the connector and the knowledge-base harness, so a question tuned
 against uploads reads the same words the connector syncs. Imports nothing
@@ -102,6 +103,9 @@ _PEOPLE_LINES: dict[tuple[str, str], Lines] = {
     ("JIRA", "TICKET"): _jira_issue,
     ("JIRA", "COMMENT"): _authored,
     ("SERVICENOW", "TICKET"): _authored,
+    # A Zendesk ticket's content is its description and public comments; who
+    # asked and who works it are fields, not text.
+    ("ZENDESK", "TICKET"): _dated,
     ("SLACK", "MESSAGE"): _authored,
     ("DRIVE", "FILE"): _dated,
     ("CONFLUENCE", "PAGE"): _dated,

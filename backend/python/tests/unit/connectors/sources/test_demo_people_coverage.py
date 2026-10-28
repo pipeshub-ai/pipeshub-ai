@@ -209,6 +209,28 @@ async def test_a_servicenow_record_names_nobody(synced, fx) -> None:
     assert not [link for r in servicenow for link in person_links(r) if link.email or link.source_id]
 
 
+async def test_a_zendesk_ticket_names_its_requester_assignee_and_submitter(synced, fx) -> None:
+    # As zendesk/connector.py fills a ticket: requester -> reporter, assignee, submitter -> creator.
+    _, processor, _ = synced
+    ticket = next(r for r in processor.records if r.external_record_id == "sn-4497")
+    assert ticket.connector_name == Connectors.ZENDESK
+    assert ticket.record_type == RecordType.TICKET
+    assert (ticket.reporter_email, ticket.reporter_source_id) == ("victor.alvarez@globex.example", "victor")
+    assert (ticket.assignee_email, ticket.assignee_source_id) == ("lucas@acme-demo.example", ["lucas"])
+    assert ticket.creator_email == "lucas@acme-demo.example"
+    assert {
+        ("sn-4497", "REPORTED_BY", "victor"), ("sn-4497", "ASSIGNED_TO", "lucas"), ("sn-4497", "CREATED_BY", "lucas"),
+    } <= expected_graph(fx).person_edges
+
+
+def test_a_zendesk_ticket_body_names_nobody_in_its_header(fx) -> None:
+    # Zendesk content is the description and public comments; requester and assignee are fields.
+    rec = next(r for r in fx["records"] if r["id"] == "sn-4497")
+    header = _body(fx, "sn-4497").replace(rec["body"].rstrip(), "")
+    assert "**System:** Zendesk" in header
+    assert "Lucas" not in header and "Victor" not in header
+
+
 async def test_crm_accounts_become_external_organisations_linked_to_their_record_group(synced, fx) -> None:
     _, processor, store = synced
     truth = expected_graph(fx)

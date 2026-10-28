@@ -44,6 +44,7 @@ SYSTEM_TO_CONNECTOR = {
     "SLACK": Connectors.SLACK,
     "DRIVE": Connectors.GOOGLE_DRIVE,
     "SERVICENOW": Connectors.SERVICENOW,
+    "ZENDESK": Connectors.ZENDESK,
     "CONFLUENCE": Connectors.CONFLUENCE,
     "GMAIL": Connectors.GOOGLE_MAIL,
     "SALESFORCE": Connectors.SALESFORCE,
@@ -55,6 +56,7 @@ KIND_TO_GROUP_TYPE = {
     "channel": RecordGroupType.SLACK_CHANNEL,
     "folder": RecordGroupType.DRIVE,
     "desk": RecordGroupType.PROJECT,
+    "group": RecordGroupType.PROJECT,
     "space": RecordGroupType.CONFLUENCE_SPACES,
     "mailbox": RecordGroupType.MAILBOX,
     "account": RecordGroupType.SALESFORCE_ORG,
@@ -119,7 +121,9 @@ def _github_issue(common: dict[str, Any], slots: Slots, people: People, rec: Map
     )
 
 
-def _jira_issue(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any]) -> Record:
+def _jira_issue(
+    common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any], **source_ids: Any,
+) -> Record:
     return TicketRecord(
         record_type=RecordType.TICKET,
         creator_email=people.email(slots["creator"]),
@@ -128,7 +132,16 @@ def _jira_issue(common: dict[str, Any], slots: Slots, people: People, rec: Mappi
         reporter_name=people.name(slots["reporter"]),
         assignee_email=people.email(slots["assignee"]),
         assignee=people.name(slots["assignee"]),
+        **source_ids,
         **common,
+    )
+
+
+def _zendesk_ticket(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any]) -> Record:
+    # Zendesk fills Jira's fields and also names the requester and assignee by its own user id.
+    return _jira_issue(
+        common, slots, people, rec,
+        reporter_source_id=_first(slots["reporter"]), assignee_source_id=list(slots["assignee"]),
     )
 
 
@@ -231,6 +244,7 @@ BUILDERS: dict[tuple[str, str], Builder] = {
     ("JIRA", "TICKET"): _jira_issue,
     ("JIRA", "COMMENT"): _comment,
     ("SERVICENOW", "TICKET"): _servicenow_ticket,
+    ("ZENDESK", "TICKET"): _zendesk_ticket,
     ("SLACK", "MESSAGE"): _message,
     ("DRIVE", "FILE"): _drive_file,
     ("CONFLUENCE", "PAGE"): _confluence_page,

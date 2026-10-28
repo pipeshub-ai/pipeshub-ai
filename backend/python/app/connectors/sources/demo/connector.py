@@ -3,8 +3,8 @@
 The fixture is a small synthetic company. Every record is emitted through the
 normal entity processor with a real record type (pull request, ticket, message,
 file, comment, page, mail, deal, case), the connector name of the system it
-imitates (GitHub, Jira, Slack, Google Drive, ServiceNow, Confluence, Gmail,
-Salesforce, and knowledge-base uploads), relations between records, and
+imitates (GitHub, Jira, Slack, Google Drive, ServiceNow, Zendesk, Confluence,
+Gmail, Salesforce, and knowledge-base uploads), relations between records, and
 per-record group permissions — so search, citations, and permission filtering
 behave exactly as they would for real connectors, without any external service.
 

@@ -21,6 +21,9 @@ Evidence for each row is the real connector's record construction:
   creator unless someone else is named.
 - ServiceNow: ``servicenow/servicenow/connector.py`` syncs knowledge articles
   with no people on them, so a ServiceNow record names nobody.
+- Zendesk ticket: ``zendesk/connector.py`` (requester as ``reporter_email``,
+  assignee as ``assignee_email``, submitter as ``creator_email``); Zendesk
+  always has a requester, the submitter unless someone else is named.
 - Comments: ``CommentRecord.author_source_id``, as the Confluence connectors
   fill it (the only connectors that emit comment records).
 - Slack: ``slack/individual/connector.py`` names a thread's authors in
@@ -114,6 +117,17 @@ def _drive_file(rec: Mapping) -> Slots:
     }
 
 
+# A ticket whose creator, reporter and assignee are all named, as Jira and
+# Zendesk name them; the reporter is the creator unless someone else is named.
+_REPORTED_TICKET = RecordShape(
+    "Ticket", frozenset({"author", "reporter", "assignee"}),
+    lambda r: {"creator": people_in(r, "author"),
+               "reporter": _first(people_in(r, "reporter"), people_in(r, "author")),
+               "assignee": people_in(r, "assignee")},
+    {"creator": CREATED_BY, "reporter": REPORTED_BY, "assignee": ASSIGNED_TO},
+)
+
+
 SYSTEMS: dict[str, SystemSpec] = {
     "GITHUB": SystemSpec("GitHub", frozenset({"repository"}), {
         "PULL_REQUEST": RecordShape(
@@ -129,19 +143,11 @@ SYSTEMS: dict[str, SystemSpec] = {
         ),
         "COMMENT": _COMMENT,
     }),
-    "JIRA": SystemSpec("Jira", frozenset({"project"}), {
-        "TICKET": RecordShape(
-            "Ticket", frozenset({"author", "reporter", "assignee"}),
-            lambda r: {"creator": people_in(r, "author"),
-                       "reporter": _first(people_in(r, "reporter"), people_in(r, "author")),
-                       "assignee": people_in(r, "assignee")},
-            {"creator": CREATED_BY, "reporter": REPORTED_BY, "assignee": ASSIGNED_TO},
-        ),
-        "COMMENT": _COMMENT,
-    }),
+    "JIRA": SystemSpec("Jira", frozenset({"project"}), {"TICKET": _REPORTED_TICKET, "COMMENT": _COMMENT}),
     "SERVICENOW": SystemSpec("ServiceNow", frozenset({"desk"}), {
         "TICKET": RecordShape("Ticket", frozenset({"author"}), lambda r: {}, {}),
     }),
+    "ZENDESK": SystemSpec("Zendesk", frozenset({"group"}), {"TICKET": _REPORTED_TICKET}),
     "SLACK": SystemSpec("Slack", frozenset({"channel"}), {
         "MESSAGE": RecordShape(
             "Chat message", frozenset({"author"}),
