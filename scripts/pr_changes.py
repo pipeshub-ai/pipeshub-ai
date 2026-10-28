@@ -199,7 +199,10 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 # The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_4 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
-    "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "local_fs_sim", "github", "sharepoint"),
+    "connectors-1": (
+        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "postgres", "web", "rss", "local_fs",
+        "local_fs_sim", "github", "sharepoint",
+    ),
     "connectors-2": (
         "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
     ),
@@ -282,11 +285,11 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "azure": ("azure_blob", "azure_files"),
     "azure_blob": ("azure_blob",),
     "azure_files": ("azure_files",),
-    "bookstack": ("bookstack",),
+    "bookstack": ("bookstack", "bookstack_sim"),
     "cifs": ("smb",),
     "demo": ("demo",),
     # external/bookstack imports external/dropbox.
-    "dropbox": ("bookstack",),
+    "dropbox": ("bookstack", "bookstack_sim"),
     "gcs": ("gcs",),
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
@@ -308,6 +311,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # A connector test folder's markers, where they differ from its name.
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
+    "bookstack": ("bookstack", "bookstack_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),
