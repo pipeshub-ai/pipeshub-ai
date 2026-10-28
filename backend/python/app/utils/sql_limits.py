@@ -16,7 +16,8 @@ _TIMEOUT_MARKERS = (
     "cancelled by the client due to a timeout",
 )
 # Redshift reports its statement_timeout like any other cancel, so the note only says it is likely.
-_CANCEL_MARKERS = ("cancelled on user's request",)
+# MariaDB's KILL QUERY (the client's deadline) reads the same way.
+_CANCEL_MARKERS = ("cancelled on user's request", "query execution was interrupted")
 
 
 def cap_rows(rows: list[Any]) -> tuple[list[Any], bool]:

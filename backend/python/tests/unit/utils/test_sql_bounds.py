@@ -56,8 +56,10 @@ def test_a_shorter_warehouse_timeout_is_not_reported_as_ours() -> None:
     assert "ran longer than" not in out and "of 30 second(s)" in out
 
 
-def test_redshift_cancel_is_explained_as_a_likely_timeout() -> None:
-    message = "Query (1234) cancelled on user's request"
+@pytest.mark.parametrize(
+    "message", ["Query (1234) cancelled on user's request", "Query execution was interrupted"]
+)
+def test_a_cancel_is_explained_as_a_likely_timeout(message: str) -> None:
     out = friendly_sql_error(message)
     assert "most likely" in out and f"{SQL_QUERY_TIMEOUT_S}s limit" in out and message in out
 
@@ -209,3 +211,113 @@ async def test_mariadb_capped_dict_query_streams_instead_of_buffering() -> None:
 
     conn.cursor.assert_called_once_with(dictionary=True, buffered=False)
     cursor.fetchmany.assert_awaited_once_with(SQL_MAX_ROWS + 1)
+
+
+# ---- MariaDB client: KILL QUERY deadline (max_statement_time does not stop a CALL) ----
+
+
+def _maria_with(execute, events: list[str]) -> MariaDBClient:
+    cursor = MagicMock()
+    cursor.description = None
+    cursor.rowcount = 0
+    cursor.execute = AsyncMock(side_effect=execute)
+    cursor.close = AsyncMock()
+    conn = MagicMock()
+    conn.connection_id = 42
+    conn.cursor.return_value = cursor
+    conn.commit = AsyncMock(side_effect=lambda: events.append("commit"))
+    conn.rollback = AsyncMock(side_effect=lambda: events.append("rollback"))
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.connection.return_value = ctx
+    client = MariaDBClient(host="h", port=3306, database="d", user="u", password="p")
+    client._pool = pool
+    client._connect_kwargs = AsyncMock(return_value={})
+    return client
+
+
+@pytest.fixture
+def short_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.sources.client.mariadb.mariadb as mariadb_client
+
+    # timeout_s=1 below: the kill is due 0.05 s in.
+    monkeypatch.setattr(mariadb_client, "READ_TIMEOUT_MARGIN_S", -0.95)
+
+
+@pytest.mark.asyncio
+async def test_mariadb_kills_a_call_that_outlives_the_limit(
+    monkeypatch: pytest.MonkeyPatch, short_deadline: None
+) -> None:
+    import asyncio
+
+    import app.sources.client.mariadb.mariadb as mariadb_client
+
+    loop = asyncio.get_running_loop()
+    killed = asyncio.Event()
+    kills: list[int] = []
+
+    def fake_kill(kwargs: dict, thread_id: int) -> None:
+        kills.append(thread_id)
+        loop.call_soon_threadsafe(killed.set)
+
+    async def stuck_procedure(query: str, params: tuple = ()) -> None:
+        await killed.wait()
+        raise RuntimeError("Query execution was interrupted")
+
+    monkeypatch.setattr(mariadb_client, "_kill_query", fake_kill)
+    events: list[str] = []
+    client = _maria_with(stuck_procedure, events)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await client.execute_query("CALL slow()", timeout_s=1)
+
+    assert kills == [42]
+    assert events == ["rollback"]
+
+
+@pytest.mark.asyncio
+async def test_mariadb_does_not_kill_a_statement_that_ends_in_time(
+    monkeypatch: pytest.MonkeyPatch, short_deadline: None
+) -> None:
+    import asyncio
+
+    import app.sources.client.mariadb.mariadb as mariadb_client
+
+    kills: list[int] = []
+    monkeypatch.setattr(mariadb_client, "_kill_query", lambda kwargs, thread_id: kills.append(thread_id))
+    events: list[str] = []
+    client = _maria_with(lambda query, params=(): None, events)
+
+    await client.execute_query("UPDATE t SET x = 1", timeout_s=1)
+    await asyncio.sleep(0.15)
+
+    assert kills == [] and events == ["commit"]
+
+
+@pytest.mark.asyncio
+async def test_mariadb_lets_a_late_kill_land_before_the_connection_moves_on(
+    monkeypatch: pytest.MonkeyPatch, short_deadline: None
+) -> None:
+    # A kill sent after the commit could stop whatever the pooled connection runs next.
+    import asyncio
+    import time
+
+    import app.sources.client.mariadb.mariadb as mariadb_client
+
+    events: list[str] = []
+
+    def slow_kill(kwargs: dict, thread_id: int) -> None:
+        time.sleep(0.2)
+        events.append("kill")
+
+    async def ends_just_after_the_deadline(query: str, params: tuple = ()) -> None:
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(mariadb_client, "_kill_query", slow_kill)
+    client = _maria_with(ends_just_after_the_deadline, events)
+
+    await client.execute_query("CALL quick()", timeout_s=1)
+
+    assert events == ["kill", "commit"]

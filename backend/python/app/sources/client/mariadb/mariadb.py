@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
@@ -273,16 +274,15 @@ class MariaDBClient:
                     if timeout_s:
                         # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
                         # error propagates and the query is not retried without the guard.
-                        # shortcut: MariaDB does not stop stored procedures at max_statement_time, so a
-                        # user-approved CALL has no limit; add a client deadline with KILL QUERY if needed.
                         query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        results = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
-                        # Unread rows of an unbuffered result would block the commit.
-                        await cursor.close()
-                    else:
-                        results = [{"affected_rows": cursor.rowcount}]
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            results = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            # Unread rows of an unbuffered result would block the commit.
+                            await cursor.close()
+                        else:
+                            results = [{"affected_rows": cursor.rowcount}]
                     await conn.commit()
                     return results
                 except Exception:
@@ -330,22 +330,23 @@ class MariaDBClient:
                     cursor = conn.cursor(buffered=not max_rows)
                     if timeout_s:
                         query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        columns = [desc[0] for desc in cursor.description]
-                        rows = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
-                        await cursor.close()
-                        logger.debug(
-                            f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
-                            f"with columns {columns}"
-                        )
-                    else:
-                        columns = []
-                        rows = []
-                        logger.warning(
-                            "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
-                            "- no result set"
-                        )
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            columns = [desc[0] for desc in cursor.description]
+                            rows = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            await cursor.close()
+                            logger.debug(
+                                f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
+                                f"with columns {columns}"
+                            )
+                        else:
+                            columns = []
+                            rows = []
+                            logger.warning(
+                                "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
+                                "- no result set"
+                            )
 
                     await conn.commit()
                     return (columns, rows)
@@ -364,6 +365,37 @@ class MariaDBClient:
         except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise
+
+    @contextlib.asynccontextmanager
+    async def _deadline(self, thread_id: int, timeout_s: float | None) -> AsyncIterator[None]:
+        """Stop the statement running on connection ``thread_id`` with KILL QUERY if it outlives ``timeout_s``.
+
+        max_statement_time does not stop stored procedures (an approved CALL) and is only
+        checked at certain points. The running await is left alone, since a pooled connection
+        abandoned mid-answer hangs; the kill makes it fail with the server's error instead."""
+        if not timeout_s:
+            yield
+            return
+        killing = asyncio.Event()
+
+        async def kill_when_late() -> None:
+            await asyncio.sleep(timeout_s + READ_TIMEOUT_MARGIN_S)
+            killing.set()
+            logger.warning(f"🔧 [MariaDBClient] Statement on connection {thread_id} outlived {timeout_s:g}s; killing it")
+            try:
+                await asyncio.to_thread(_kill_query, await self._connect_kwargs(), thread_id)
+            except Exception as e:
+                logger.error(f"🔧 [MariaDBClient] KILL QUERY {thread_id} failed: {e}")
+
+        killer = asyncio.create_task(kill_when_late())
+        try:
+            yield
+        finally:
+            if killing.is_set():
+                # Let the kill land before the connection runs anything else, or it could stop that.
+                await killer
+            else:
+                killer.cancel()
 
     async def execute_read_only_query(
         self,
@@ -531,6 +563,15 @@ class MariaDBClient:
 
 def _open_and_close(kwargs: dict[str, Any]) -> None:
     mariadb.connect(**kwargs).close()
+
+
+def _kill_query(kwargs: dict[str, Any], thread_id: int) -> None:
+    """KILL QUERY from a connection of its own: the pool may have none free."""
+    conn = mariadb.connect(**kwargs)
+    try:
+        conn.cursor().execute(f"KILL QUERY {int(thread_id)}")
+    finally:
+        conn.close()
 
 
 def _read_only(
