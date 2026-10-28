@@ -180,7 +180,7 @@ class TestWriteBehaviour:
             is_email_hidden=False, **BASE,
         )
         await link_record_people(ticket, store, logging.getLogger("t"))
-        assert store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": BASE["org_id"]}
         hidden = TicketRecord(
             record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["src-ann"], **BASE,
         )
@@ -307,3 +307,17 @@ def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
     record_doc = {**ticket.to_arango_base_record(), "_key": ticket.id}
     again = TicketRecord.from_arango_record(ticket.to_arango_record(), record_doc)
     assert (again.is_email_hidden, again.assignee_source_id, again.reporter_source_id) == (True, ["src-ann"], "src-dan")
+
+
+class TestEmailLookupsStayInTheOrg:
+    """An address is not unique across orgs: unscoped, the lookup could answer
+    with another tenant's user, which is refused, and this org's member
+    would never be read."""
+
+    async def test_the_email_lookup_is_scoped_to_the_records_org(self) -> None:
+        store = _store()
+
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+
+        assert store.get_user_by_email.await_args.kwargs["org_id"] == BASE["org_id"]
+        assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}

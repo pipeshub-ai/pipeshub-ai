@@ -50,8 +50,11 @@ class _DryRunStore:
         self._graph = graph
         self.edges = 0
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
-        return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error)
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
+        scope = {"org_id": org_id} if org_id is not None else {}
+        return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error, **scope)
 
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False

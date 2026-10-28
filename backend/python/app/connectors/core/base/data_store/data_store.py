@@ -206,7 +206,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> Optional[User]:
         pass
 
     @abstractmethod
