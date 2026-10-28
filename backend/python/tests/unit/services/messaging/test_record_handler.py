@@ -5819,11 +5819,17 @@ class TestStageRedrive:
                 "extension": "pptx", "stages": ["classify"], **extra}
 
     @pytest.mark.asyncio
+    async def test_a_records_first_use_redrives_without_forcing(self) -> None:
+        handler, _gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"], force=False)
+
+    @pytest.mark.asyncio
     async def test_named_stages_re_run_without_touching_the_index(self) -> None:
         handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"], force=True)
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
@@ -5832,7 +5838,7 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(["vr1:rev-1:entities@1"])
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"]))
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"], force=True)
         handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
@@ -5864,7 +5870,7 @@ class TestStageRedrive:
         handler, gp, ingress = self._handler(["vr1:?:classify@1"])
         gp.get_document.return_value.pop("contentRev")
         await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
-        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"])
+        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"], force=True)
 
     @pytest.mark.asyncio
     async def test_a_retry_for_the_current_revision_re_runs_its_stage(self) -> None:
@@ -5872,7 +5878,7 @@ class TestStageRedrive:
         await _collect_events(
             handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"], stageRev="rev-1")
         )
-        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"], force=True)
 
     @pytest.mark.asyncio
     async def test_a_failed_retry_never_writes_the_records_statuses(self) -> None:

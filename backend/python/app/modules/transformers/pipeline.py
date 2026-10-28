@@ -8,6 +8,7 @@ from app.modules.transformers.block_container_validator import BlockContainerVal
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import (
+    ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
     ReconciliationContext,
     TransformContext,
@@ -219,4 +220,8 @@ class IndexingPipeline:
     async def _dispatch_stages(self, ctx: TransformContext) -> None:
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this IndexingPipeline")
-        _ = await self.stage_ingress.on_indexed(ctx.record, trigger=ctx.event_type)
+        _ = await self.stage_ingress.on_indexed(
+            ctx.record,
+            trigger=ctx.event_type,
+            defer_classify=bool(ctx.settings.get(ENRICHMENT_DEFERRED)),
+        )

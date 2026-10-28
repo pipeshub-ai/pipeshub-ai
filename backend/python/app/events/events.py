@@ -46,7 +46,7 @@ from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
+from app.modules.transformers.transformer import ENRICHMENT_DEFERRED, ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.docling.client import (
@@ -360,11 +360,13 @@ class EventProcessor:
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
 
-    async def _dispatch_stages(self, record: Record, event_type: str | None) -> None:
+    async def _dispatch_stages(
+        self, record: Record, event_type: str | None, *, defer_classify: bool = False
+    ) -> None:
         """Hand the now-searchable record to the stage runtime."""
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this EventProcessor")
-        _ = await self.stage_ingress.on_indexed(record, trigger=event_type)
+        _ = await self.stage_ingress.on_indexed(record, trigger=event_type, defer_classify=defer_classify)
 
     @staticmethod
     def _scans_for_secrets(record_type: str | None, *, reads_as_code_file: bool) -> bool:
@@ -567,7 +569,9 @@ class EventProcessor:
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: classification runs as a pipeline stage, on its own permits ──
-        await self._dispatch_stages(record, event_type)
+        await self._dispatch_stages(
+            record, event_type, defer_classify=bool(ctx.settings.get(ENRICHMENT_DEFERRED))
+        )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,

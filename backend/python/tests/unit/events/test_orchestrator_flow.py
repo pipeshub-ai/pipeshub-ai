@@ -210,7 +210,7 @@ async def test_full_pipeline_happy_path() -> None:
     extraction_client.classify.assert_not_awaited()
     ep.stage_ingress.on_indexed.assert_awaited_once()
     assert ep.stage_ingress.on_indexed.await_args.args[0].id == "rec-1"
-    assert ep.stage_ingress.on_indexed.await_args.kwargs == {"trigger": "NEW_RECORD"}
+    assert ep.stage_ingress.on_indexed.await_args.kwargs == {"trigger": "NEW_RECORD", "defer_classify": False}
 
 
 @pytest.mark.asyncio

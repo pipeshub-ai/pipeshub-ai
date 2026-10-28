@@ -43,8 +43,15 @@ async def test_the_revision_and_content_facts_describe_the_record() -> None:
     assert (view.rev, view.text_digest, view.text_chars, view.tier) == ("abc", facts.text_digest, 5, ParseTier.LIGHT)
     assert kwargs == {
         "priority": Priority.INTERACTIVE, "trigger": "newRecord", "force": False,
-        "keep_claim_on_publish_failure": True,
+        "keep_claim_on_publish_failure": True, "defer": frozenset(),
     }
+
+
+@pytest.mark.asyncio
+async def test_classification_left_for_first_use_is_not_dispatched() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc"})
+    await ingress.on_indexed(_record(), trigger="newRecord", defer_classify=True)
+    assert coordinator.on_external_done.await_args.kwargs["defer"] == frozenset({"classify"})
 
 
 @pytest.mark.asyncio
@@ -110,6 +117,14 @@ async def test_a_retry_re_runs_stages_for_the_current_revision() -> None:
     coordinator.redrive_revision.assert_awaited_once_with(
         "vr-1", "abc", ["classify"], priority=Priority.INTERACTIVE, force=True
     )
+
+
+@pytest.mark.asyncio
+async def test_a_first_use_redrive_is_not_forced() -> None:
+    ingress, coordinator, _ = _ingress(None)
+    coordinator.redrive_revision = AsyncMock(return_value=[])
+    await ingress.redrive("vr-1", "abc", ["classify"], force=False)
+    assert coordinator.redrive_revision.await_args.kwargs["force"] is False
 
 
 @pytest.mark.asyncio
