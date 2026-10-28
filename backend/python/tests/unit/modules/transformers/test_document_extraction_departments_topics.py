@@ -7,6 +7,7 @@ from app.modules.extraction.prompt_template import prompt_for_document_extractio
 from app.modules.transformers.document_extraction import (
     MAX_DEPARTMENTS,
     DocumentClassification,
+    DocumentExtraction,
     SubCategories,
 )
 
@@ -19,9 +20,21 @@ def _classification(departments: list[str]) -> DocumentClassification:
     )
 
 
-def test_a_third_department_is_trimmed_not_rejected_and_the_main_one_stays_first() -> None:
-    picked = _classification(["Finance", " Sales ", "Finance", "Operations"]).departments
-    assert picked == ["Finance", "Sales"] and MAX_DEPARTMENTS == 2
+_LISTED = ["Finance", "Sales", "Operations", "Legal"]
+
+
+def test_a_third_department_is_cut_not_rejected_and_the_main_one_stays_first() -> None:
+    metadata = DocumentExtraction.to_semantic_metadata(
+        _classification(["Finance", " Sales ", "Finance", "Operations"]), _LISTED,
+    )
+    assert metadata.departments == ["Finance", "Sales"] and MAX_DEPARTMENTS == 2
+
+
+def test_picks_not_on_the_orgs_list_are_dropped_before_the_cut() -> None:
+    metadata = DocumentExtraction.to_semantic_metadata(
+        _classification(["Customer Support", "finance", "Legal"]), _LISTED,
+    )
+    assert metadata.departments == ["Finance", "Legal"]
 
 
 def test_blank_departments_are_dropped() -> None:

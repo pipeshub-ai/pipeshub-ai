@@ -33,7 +33,7 @@ The file name and type are given with the document content. Use the file metadat
 # Analysis Guidelines:
 1. **Departments**:
    - Choose the **one** department whose work this document mainly is, and list it first.
-   - Add a **second** only when the document is equally another department's own work (a contract both Legal and Sales negotiate; an incident both Engineering and Customer Success handle). Do not add a department because the document mentions its subject, or as a fallback. **At most 2.**
+   - Add a **second** only when the document is equally another department's own work (for example a contract both legal and sales negotiate, or an incident both engineering and support handle; use the names in the list). Do not add a department because the document mentions its subject, or as a fallback. **At most 2.**
    - Choose ONLY from the provided list below.
    - Each department MUST **exactly match one** of the values in the list.
    - Any unlisted or paraphrased value is INVALID.
@@ -62,7 +62,7 @@ The file name and type are given with the document content. Use the file metadat
 
 4. **Topics**:
    - A topic is a **reusable subject** a reader would look for across many documents ("payment terms", "access reviews", "data retention", "GDPR", "SLA"): a short noun phrase, lowercase except acronyms.
-   - **Never** a person, company or other organization, document title, date, amount, or ticket, invoice or contract number: those are extracted separately. Standards, regulations, technologies and methods are fine.
+   - **Never** a person, company or other organization, document title, date, amount, or ticket, invoice or contract number: names belong in the summary. Standards, regulations, technologies and methods are fine.
    - Prefer the general term over a phrase only this document uses, and avoid duplicates or near-duplicates.
    - Provide **2 to 5** topics.
 

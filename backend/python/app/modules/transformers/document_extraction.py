@@ -295,11 +295,9 @@ class DocumentClassification(BaseModel):
 
     @field_validator("departments", mode="after")
     @classmethod
-    def _at_most_two_departments(cls, values: list[str]) -> list[str]:
-        # Trimmed, not rejected: a third pick failing validation would cost the
-        # whole classification. The list is primary first, so the first two stay.
+    def _named_departments_once(cls, values: list[str]) -> list[str]:
         kept = (v.strip() for v in values if isinstance(v, str) and v.strip())
-        return list(dict.fromkeys(kept))[:MAX_DEPARTMENTS]
+        return list(dict.fromkeys(kept))
 
     @field_validator("languages", mode="after")
     @classmethod
@@ -589,7 +587,18 @@ class DocumentExtraction(Transformer):
         return DocumentExtraction._fill_prompt("\n".join(f'     - "{dept}"' for dept in departments))
 
     @staticmethod
-    def to_semantic_metadata(classification: DocumentClassification) -> SemanticMetadata:
+    def to_semantic_metadata(
+        classification: DocumentClassification, departments: list[str] | None = None,
+    ) -> SemanticMetadata:
+        """``departments`` is the org's list the prompt offered: picks not on it are
+        dropped before the main-first list is cut to ``MAX_DEPARTMENTS``, so a
+        paraphrased first pick never pushes out a valid one. Cut, not rejected:
+        a third pick failing validation would cost the whole classification."""
+        if departments is not None:
+            canonical = {name.casefold(): name for name in departments}
+            listed = (canonical.get(pick.casefold()) for pick in classification.departments)
+            kept = list(dict.fromkeys(name for name in listed if name))[:MAX_DEPARTMENTS]
+            classification = classification.model_copy(update={"departments": kept})
         return semantic_metadata_from_classification(classification)
 
     @staticmethod
@@ -730,7 +739,7 @@ class DocumentExtraction(Transformer):
             parsed_response = await classify(document)
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")
-            return self.to_semantic_metadata(parsed_response)
+            return self.to_semantic_metadata(parsed_response, departments)
         self.logger.warning(
             "⚠️ Structured extraction failed after all attempts. Falling back to plain LLM summary."
         )
