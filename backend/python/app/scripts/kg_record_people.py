@@ -68,6 +68,12 @@ class _DryRunStore:
         self.edges += len(edges)
 
 
+def _fail_the_page(_exc: Exception) -> bool:
+    """Every failure fails the page: logged and passed over, a record would be
+    counted as linked with its edges missing."""
+    return True
+
+
 async def backfill(
     graph: IGraphDBProvider,
     data_store: GraphDataStore,
@@ -79,25 +85,33 @@ async def backfill(
     page_size: int = PAGE_SIZE,
 ) -> int:
     """Link every person-naming record of ``org_id``; returns the exit code.
-    A failed page is reported and skipped, so a re-run finishes it."""
+    A failed page is reported and skipped, so a re-run finishes it; a failed
+    read of the next page's ids is reported and ends the run, since there is
+    no cursor to carry on from."""
     after: str | None = None
     totals = {"records": 0, "edges": 0, "skipped": 0, "failed_pages": 0}
     while True:
-        ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
+        try:
+            ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
+        except Exception as exc:
+            logger.exception("record-people backfill could not read the page after %s", after)
+            totals["failed_pages"] += 1
+            out.write(json.dumps({"after": after, "error": type(exc).__name__}) + "\n")
+            break
         if not ids:
             break
         after = ids[-1]
         try:
-            records = list((await graph.get_typed_records_batch(ids)).values())
+            records = list((await graph.get_typed_records_batch(ids, raise_on_error=True)).values())
             if apply:
                 async def _write(tx_store: object, page: list = records) -> int:
-                    return sum([await link_record_people(r, tx_store, logger) for r in page])
+                    return sum([await link_record_people(r, tx_store, logger, _fail_the_page) for r in page])
 
                 edges = await data_store.execute_idempotent_in_transaction(_write)
             else:
                 dry = _DryRunStore(graph)
                 for record in records:
-                    await link_record_people(record, dry, logger)
+                    await link_record_people(record, dry, logger, _fail_the_page)
                 edges = dry.edges
         except Exception as exc:  # a page that fails is reported; the rest carry on
             logger.exception("record-people backfill page failed (after=%s)", after)

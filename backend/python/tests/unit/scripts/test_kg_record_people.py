@@ -8,9 +8,11 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import MailRecord, RecordType
-from app.scripts.kg_record_people import LINKED_TYPES, backfill, build_parser
+from app.scripts.kg_record_people import EXIT_PARTIAL, LINKED_TYPES, backfill, build_parser
 
 BASE = {
     "org_id": "org-1", "record_name": "m", "origin": OriginTypes.CONNECTOR.value,
@@ -27,7 +29,7 @@ def _graph(pages: list[list[str]], failing: frozenset[str] = frozenset()) -> Mag
     graph = MagicMock()
     graph.page_record_ids_by_type = AsyncMock(side_effect=[*pages, []])
 
-    async def _records(ids: list[str]) -> dict:
+    async def _records(ids: list[str], *, raise_on_error: bool = False) -> dict:
         if set(ids) & failing:
             raise RuntimeError("down")
         return {i: _mail(i) for i in ids}
@@ -104,3 +106,45 @@ async def test_records_that_could_not_be_read_are_reported() -> None:
     await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
     assert _lines(out)[0]["skipped"] == 1
     assert _lines(out)[-1]["total"]["skipped"] == 1
+
+
+async def test_a_failed_page_id_read_is_reported_and_stops_the_run() -> None:
+    """Without the ids there is no cursor to carry on from."""
+    graph, out = _graph([]), io.StringIO()
+    graph.page_record_ids_by_type = AsyncMock(side_effect=[["m1"], RuntimeError("down")])
+
+    code = await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
+
+    assert code == EXIT_PARTIAL
+    assert _lines(out)[-2] == {"after": "m1", "error": "RuntimeError"}
+    assert _lines(out)[-1]["total"] == {"records": 1, "edges": 2, "skipped": 0, "failed_pages": 1}
+
+
+async def test_a_failed_typed_read_fails_the_page_rather_than_skipping_its_records() -> None:
+    graph, out = _graph([["m1"]]), io.StringIO()
+
+    await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
+
+    assert graph.get_typed_records_batch.await_args.kwargs == {"raise_on_error": True}
+
+
+@pytest.mark.parametrize("apply", [False, True])
+async def test_a_failed_lookup_fails_the_page(apply: bool) -> None:
+    """Logged and passed over, a record would count as linked with its edges missing."""
+    graph, out = _graph([["m1"]]), io.StringIO()
+    graph.get_user_by_email = AsyncMock(side_effect=RuntimeError("down"))
+    data_store = MagicMock()
+    tx_store = MagicMock(
+        get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
+        delete_edges_from=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+    )
+
+    async def _run(fn: object) -> int:
+        return await fn(tx_store)
+
+    data_store.execute_idempotent_in_transaction = AsyncMock(side_effect=_run)
+
+    code = await backfill(graph, data_store, "org-1", apply=apply, logger=logging.getLogger("t"), out=out)
+
+    assert code == EXIT_PARTIAL
+    assert _lines(out)[-1]["total"]["failed_pages"] == 1
