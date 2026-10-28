@@ -1,0 +1,82 @@
+name: Checks this change can affect
+description: >-
+  Lists a pull request's changed files and says, per check, whether any of them
+  can affect it (scripts/pr_changes.py). Any other event runs every check. The
+  calling job must check out scripts/ and .github/actions/ first, and needs
+  pull-requests: read.
+
+outputs:
+  node_unit:
+    description: "'true' when the node_unit check should run"
+    value: ${{ steps.decide.outputs.node_unit }}
+  python_unit:
+    description: "'true' when the python_unit check should run"
+    value: ${{ steps.decide.outputs.python_unit }}
+  redis_cluster:
+    description: "'true' when the redis_cluster check should run"
+    value: ${{ steps.decide.outputs.redis_cluster }}
+  frontend:
+    description: "'true' when the frontend check should run"
+    value: ${{ steps.decide.outputs.frontend }}
+  node_build:
+    description: "'true' when the node_build check should run"
+    value: ${{ steps.decide.outputs.node_build }}
+  codeql_python:
+    description: "'true' when the codeql_python check should run"
+    value: ${{ steps.decide.outputs.codeql_python }}
+  codeql_javascript:
+    description: "'true' when the codeql_javascript check should run"
+    value: ${{ steps.decide.outputs.codeql_javascript }}
+  codeql_actions:
+    description: "'true' when the codeql_actions check should run"
+    value: ${{ steps.decide.outputs.codeql_actions }}
+  matrix_messaging:
+    description: "'true' when the matrix_messaging check should run"
+    value: ${{ steps.decide.outputs.matrix_messaging }}
+  matrix_vector:
+    description: "'true' when the matrix_vector check should run"
+    value: ${{ steps.decide.outputs.matrix_vector }}
+  matrix_kv:
+    description: "'true' when the matrix_kv check should run"
+    value: ${{ steps.decide.outputs.matrix_kv }}
+  matrix_graph:
+    description: "'true' when the matrix_graph check should run"
+    value: ${{ steps.decide.outputs.matrix_graph }}
+  matrix_gitlab:
+    description: "'true' when the matrix_gitlab check should run"
+    value: ${{ steps.decide.outputs.matrix_gitlab }}
+  matrix_storage:
+    description: "'true' when the matrix_storage check should run"
+    value: ${{ steps.decide.outputs.matrix_storage }}
+  e2e_smoke:
+    description: "'true' when the e2e_smoke check should run"
+    value: ${{ steps.decide.outputs.e2e_smoke }}
+  codeql_languages:
+    description: "The languages CodeQL analyses, as codeql.yml's matrix include list (JSON)"
+    value: ${{ steps.decide.outputs.codeql_languages }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide which checks run
+      id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          python3 scripts/pr_changes.py --all
+          exit 0
+        fi
+        listed="$RUNNER_TEMP/pr-changed-files.txt"
+        # A rename lists both names: the old path's checks cover what was removed.
+        if gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$listed"; then
+          python3 scripts/pr_changes.py --files "$listed"
+        else
+          echo "::warning::Could not list this pull request's files, so every check runs."
+          python3 scripts/pr_changes.py --all
+        fi

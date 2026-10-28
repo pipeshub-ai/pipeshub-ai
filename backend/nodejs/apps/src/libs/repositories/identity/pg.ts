@@ -286,7 +286,7 @@ export class PgIdentityPort implements IdentityPort {
       userId,
       orgId,
       `/* pipeshub:identity.credential_touch */ INSERT INTO identity.user_credentials AS c (org_id, user_id, ip_address) VALUES ($1, $2, $3)
-        ON CONFLICT (org_id, user_id) DO UPDATE SET ip_address = excluded.ip_address, updated_at = now() RETURNING ${COLS}`,
+        ON CONFLICT (org_id, user_id) DO UPDATE SET ip_address = COALESCE(excluded.ip_address, c.ip_address), updated_at = now() RETURNING ${COLS}`,
       [ipAddress === undefined ? null : stripNul(ipAddress, 'identity', 'ip')],
     );
   }
