@@ -85,6 +85,39 @@ async def test_a_group_removal_the_processor_reports_as_failed_fails_the_run(con
     connector.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[
         {"externalGroupId": "book/9"}, {"externalGroupId": "book/1"}])
     connector.data_entities_processor.on_record_group_deleted = AsyncMock(return_value=False)
+    connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
 
     assert await connector._remove_groups_not_listed({"book/1"}) is False
     connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("book/9", "bs-paging")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", [AsyncMock(return_value=MagicMock()), AsyncMock(side_effect=RuntimeError("down"))],
+                         ids=["still-stored", "lookup-fails"])
+async def test_a_group_that_could_not_be_removed_fails_the_run(connector, lookup) -> None:
+    connector.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[{"externalGroupId": "book/9"}])
+    connector.data_entities_processor.on_record_group_deleted = AsyncMock(return_value=False)
+    connector.data_entities_processor.get_record_group_by_external_id = lookup
+
+    assert await connector._remove_groups_not_listed(set()) is False
+
+
+@pytest.mark.asyncio
+async def test_a_chapter_already_removed_with_its_book_is_not_a_failure(connector) -> None:
+    connector.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[
+        {"externalGroupId": "book/9"}, {"externalGroupId": "chapter/13"}])
+    gone: set[str] = set()
+
+    async def delete(external_id: str, connector_id: str) -> bool:
+        if external_id in gone:
+            return False
+        gone.update({"book/9", "chapter/13"})
+        return True
+
+    async def lookup(connector_id: str, external_id: str) -> object:
+        return None if external_id in gone else MagicMock()
+
+    connector.data_entities_processor.on_record_group_deleted = AsyncMock(side_effect=delete)
+    connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=lookup)
+
+    assert await connector._remove_groups_not_listed(set()) is True

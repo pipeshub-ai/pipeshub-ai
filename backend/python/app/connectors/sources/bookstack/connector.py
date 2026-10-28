@@ -805,6 +805,8 @@ class BookStackConnector(BaseConnector):
         groups: Dict[str, Tuple[str, int]] = {}
         children_of: Set[Tuple[str, int]] = set()
         pages: Set[int] = set()
+        # Rows from the page listings read below, so a listed page is not looked up again.
+        rows: dict[int, dict] = {}
         for event in events:
             kind = str(event.get("type"))
             ref = entity_ref(event)
@@ -839,14 +841,15 @@ class BookStackConnector(BaseConnector):
                 kind_, _, raw = external_id.partition("/")
                 if raw.isdigit():
                     groups[external_id] = (kind_, int(raw))
-            pages |= await self._pages_owned_by(changed_users)
+            rows.update(await self._pages_owned_by(changed_users))
 
         for ref in groups.values():
             await self._upsert_group(*ref)
         for ref in children_of:
-            pages |= await self._children_of(*ref)
+            rows.update(await self._children_of(*ref))
+        pages |= set(rows)
         for page_id in sorted(pages):
-            await self._upsert_page(page_id)
+            await self._upsert_page(page_id, rows.get(page_id))
 
         unnamed = False
         for kind in ("page_delete", "chapter_delete", "book_delete"):
@@ -867,20 +870,22 @@ class BookStackConnector(BaseConnector):
             if not await self._remove_groups_no_longer_in_bookstack():
                 self._health.fail("removing purged books and chapters")
 
-    async def _pages_owned_by(self, user_ids: Set[int]) -> Set[int]:
-        found: Set[int] = set()
+    async def _pages_owned_by(self, user_ids: set[int]) -> dict[int, dict]:
+        """The listed rows of the pages these users own, by page id."""
+        found: dict[int, dict] = {}
         for user_id in sorted(user_ids):
             listing = await self._list_all_pages({"owned_by": str(user_id)})
             if listing is None:
                 self._health.fail(f"the pages owned by user {user_id}")
                 continue
-            found |= {int(p["id"]) for p in listing if p.get("id")}
+            found.update({int(p["id"]): p for p in listing if p.get("id")})
         return found
 
-    async def _children_of(self, kind: str, item_id: int) -> Set[int]:
-        """The pages under a book or chapter, and the book's chapters brought up to date on the way."""
+    async def _children_of(self, kind: str, item_id: int) -> dict[int, dict]:
+        """The listed rows of the pages under a book or chapter, by page id, and the book's chapters brought up
+        to date on the way."""
         if kind not in ("book", "chapter"):
-            return set()
+            return {}
         if kind == "book":
             chapters = await self._list_all(self.data_source.list_chapters, {"book_id": str(item_id)}, "chapters")
             if chapters is None:
@@ -890,8 +895,8 @@ class BookStackConnector(BaseConnector):
         listing = await self._list_all_pages({f"{kind}_id": str(item_id)})
         if listing is None:
             self._health.fail(f"the pages of {kind} {item_id}")
-            return set()
-        return {int(p["id"]) for p in listing if p.get("id")}
+            return {}
+        return {int(p["id"]): p for p in listing if p.get("id")}
 
     async def _withdraw_users_not_listed(self, users: List[AppUser]) -> None:
         """A user a complete listing no longer has was deleted in BookStack: they lose what the connector gave."""
@@ -1100,11 +1105,23 @@ class BookStackConnector(BaseConnector):
             if not raw.isdigit() or external_id in listed or (kind not in _GROUP_TYPES and kind != _SHELF):
                 continue
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
-            # The processor reports a failed removal as False, not as an exception.
-            if not await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id):
+            # The processor reports a failed removal as False, not as an exception, and also says False for a
+            # group already gone: a chapter goes with its book, which may come first in this loop.
+            if await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id):
+                continue
+            if await self._group_still_stored(external_id):
                 self.logger.warning(f"Could not remove {external_id}; it is tried again next sync")
                 done = False
         return done
+
+    async def _group_still_stored(self, external_id: str) -> bool:
+        """Whether a record group is still stored; True when the lookup fails, so nothing counts as removed."""
+        try:
+            group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id)
+        except Exception as e:
+            self.logger.warning(f"Could not look up {external_id}: {e}")
+            return True
+        return group is not None
 
     async def _remove_groups_no_longer_in_bookstack(self) -> bool:
         listed: Set[str] = set()
@@ -1211,12 +1228,14 @@ class BookStackConnector(BaseConnector):
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return record, access.permissions
 
-    async def _upsert_page(self, page_id: int) -> None:
-        """Bring one page up to date: new, changed, moved, restored, out of scope or gone."""
-        answered, page = await self._fetch_page(page_id)
-        if not answered:
-            self._health.fail(f"page {page_id}")
-            return
+    async def _upsert_page(self, page_id: int, page: dict | None = None) -> None:
+        """Bring one page up to date: new, changed, moved, restored, out of scope or gone. ``page`` is its row from
+        a page listing read this run (the same row a lookup by id returns); without one, the page is looked up."""
+        if page is None:
+            answered, page = await self._fetch_page(page_id)
+            if not answered:
+                self._health.fail(f"page {page_id}")
+                return
         book_ids, book_ids_operator = self._get_book_id_filter()
         date_filters = self._get_date_filters()
         in_scope = page is not None and not page.get("draft") and self._page_passes_filters(
@@ -2182,8 +2201,6 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
 
         return book_ids, book_ids_operator
-
-    @classmethod
 
     @classmethod
     async def create_connector(
