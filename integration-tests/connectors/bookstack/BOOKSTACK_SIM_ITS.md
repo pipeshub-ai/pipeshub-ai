@@ -10,6 +10,10 @@ against the real `bookstack-source` container.
 
 ## Running it
 
+First set up the integration suite as [integration-tests/README.md](../../README.md) describes: its
+[prerequisites](../../README.md#prerequisites) and the PipesHub login, organization, admin account and graph
+database settings in its [environment variables](../../README.md#environment-variables-reference). Then:
+
 ```bash
 cd deployment/docker-compose
 docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.bookstack-sim.yml up -d

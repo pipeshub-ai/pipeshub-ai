@@ -73,10 +73,16 @@ class BookStackDataSource:
     def _json_response(cls, response: HTTPResponse) -> BookStackResponse:
         """BookStack's answer, with its status. BookStack answers every error (401, 403, 404, 422, 429, 5xx)
         with a JSON body; that body is a failure, never data, so no caller can read it as a listing or as
-        permissions. An empty body (204 after a delete) is a success with no data."""
+        permissions. An empty body (204 after a delete) is a success with no data. A proxy in front of BookStack
+        can answer an error with an HTML page: that is still a failure with its status."""
         status = response.status
         raw = response.bytes()
-        data = response.json() if raw and raw.strip() else {}
+        try:
+            data = response.json() if raw and raw.strip() else {}
+        except ValueError:
+            if status < HTTP_ERROR_THRESHOLD:
+                raise
+            return BookStackResponse(success=False, data=None, error=f"HTTP {status}", status_code=status)
         if status >= HTTP_ERROR_THRESHOLD:
             return BookStackResponse(success=False, data=data if isinstance(data, dict) else None,
                                      error=cls._error_message(data, status), status_code=status)

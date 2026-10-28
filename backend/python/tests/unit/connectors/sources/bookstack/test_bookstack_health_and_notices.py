@@ -1,6 +1,7 @@
 """A run's health (``sync_health.py``), its notifications (``notices.py``), and BookStack answers with their status
 (``BookStackDataSource._json_response``)."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -91,3 +92,17 @@ def test_an_empty_204_is_a_success() -> None:
 def test_a_listing_is_a_success_with_its_status() -> None:
     answer = BookStackDataSource._json_response(_http(200, b"{...}", {"data": [], "total": 0}))
     assert answer.success and answer.data == {"data": [], "total": 0} and answer.status_code == 200
+
+
+def test_an_html_error_page_is_a_failure_with_its_status() -> None:
+    response = _http(502, b"<html>Bad Gateway</html>", None)
+    response.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+    answer = BookStackDataSource._json_response(response)
+    assert not answer.success and answer.status_code == 502 and answer.error == "HTTP 502" and answer.data is None
+
+
+def test_a_success_that_is_not_json_is_not_read_as_data() -> None:
+    response = _http(200, b"<html>Login</html>", None)
+    response.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+    with pytest.raises(ValueError):
+        BookStackDataSource._json_response(response)
