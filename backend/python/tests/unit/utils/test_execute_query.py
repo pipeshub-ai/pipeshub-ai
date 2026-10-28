@@ -17,6 +17,8 @@ from app.utils.execute_query import (
     sql_connector_instance_ids,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.utils import execute_query as eq
+from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
 
 # ===========================================================================
@@ -357,7 +359,7 @@ class TestExecutePostgresQuery:
         assert result["rows"] == [(1, "Alice")]
         mock_client.resize_pool.assert_called_once_with(min_pool_size=1, max_pool_size=1)
         mock_client.connect.assert_awaited_once()
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1", timeout_s=120, max_rows=1001)
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -388,7 +390,7 @@ class TestExecutePostgresQuery:
         assert result["ok"] is True
         assert result["columns"] == ["id"]
         assert result["rows"] == [(2,)]
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 2 AS id")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 2 AS id", timeout_s=120, max_rows=1001)
 
     @pytest.mark.asyncio
     async def test_empty_rows(self):
@@ -417,7 +419,7 @@ class TestExecutePostgresQuery:
         assert result["rows"] == []
         mock_client.resize_pool.assert_called_once_with(min_pool_size=1, max_pool_size=1)
         mock_client.connect.assert_awaited_once()
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1 WHERE FALSE")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1 WHERE FALSE", timeout_s=120, max_rows=1001)
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1437,3 +1439,94 @@ def test_functions_that_do_more_than_read_are_blocked(sql: str) -> None:
 @pytest.mark.parametrize("sql", ["SET @x = 1", "USE other_db", "DECLARE x INT"])
 def test_session_statements_are_not_reads(sql: str) -> None:
     assert _is_query_safe(sql)[0] is False
+
+
+
+# ---- bounds: execute_sql_query: what the executors ask for, and what the model is told ----
+
+
+def _patched_client(raw: AsyncMock) -> MagicMock:
+    client = MagicMock()
+    client.resize_pool = MagicMock()
+    client.connect = AsyncMock()
+    client.close = AsyncMock()
+    client.execute_query_raw = raw
+    client.get_connection_info.return_value = {"host": "h", "port": 1, "database": "d", "user": "u"}
+    builder = MagicMock()
+    builder.get_client.return_value = client
+    return builder
+
+
+@pytest.mark.asyncio
+async def test_postgres_executor_asks_for_the_bounds() -> None:
+    raw = AsyncMock(return_value=(["id"], [(1,)]))
+    with patch(
+        "app.sources.client.postgres.postgres.PostgreSQLClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=_patched_client(raw),
+    ):
+        await eq._execute_postgres_query("SELECT 1", MagicMock(), "c")
+    assert raw.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_mariadb_executor_asks_for_the_bounds() -> None:
+    raw = AsyncMock(return_value=(["id"], [(1,)]))
+    builder = _patched_client(raw)
+    builder.get_client.return_value.__aenter__ = AsyncMock(return_value=None)
+    builder.get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    with patch(
+        "app.sources.client.mariadb.mariadb.MariaDBClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=builder,
+    ):
+        await eq._execute_mariadb_query("SELECT 1", MagicMock(), "c")
+    assert raw.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_snowflake_executor_asks_for_the_bounds() -> None:
+    sdk = MagicMock()
+    sdk.execute_query_raw.return_value = (["id"], [(1,)])
+    sdk.__enter__ = MagicMock(return_value=sdk)
+    sdk.__exit__ = MagicMock(return_value=False)
+    config = MagicMock()
+    config.auth.authType.value = "PAT"
+    with patch(
+        "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
+        new_callable=AsyncMock, return_value={},
+    ), patch(
+        "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate", return_value=config
+    ), patch("app.sources.client.snowflake.snowflake.SnowflakeSDKClient", return_value=sdk):
+        await eq._execute_snowflake_query("SELECT 1", MagicMock(), "c")
+    assert sdk.execute_query_raw.call_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_a_cut_result_is_reported_to_the_model() -> None:
+    rows = [(i,) for i in range(SQL_MAX_ROWS + 1)]  # what a bounded fetch hands back
+    with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["id"], "rows": rows})):
+        out = await eq._execute_query_impl("SELECT id FROM t", "PostgreSQL", MagicMock(), "c")
+    assert out["row_count"] == SQL_MAX_ROWS == len(out["raw_rows"])
+    assert out["rows_cut_at"] == SQL_MAX_ROWS
+    assert f"cut at {SQL_MAX_ROWS} rows" in out["markdown_result"]
+
+
+@pytest.mark.asyncio
+async def test_a_complete_result_is_not_marked_cut() -> None:
+    rows = [(i,) for i in range(SQL_MAX_ROWS)]
+    with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["id"], "rows": rows})):
+        out = await eq._execute_query_impl("SELECT id FROM t", "PostgreSQL", MagicMock(), "c")
+    assert "rows_cut_at" not in out and "cut at" not in out["markdown_result"]
+
+
+@pytest.mark.asyncio
+async def test_a_database_timeout_is_a_tool_error() -> None:
+    raw = AsyncMock(side_effect=Exception("canceling statement due to statement timeout"))
+    with patch(
+        "app.sources.client.postgres.postgres.PostgreSQLClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=_patched_client(raw),
+    ):
+        out = await eq._execute_postgres_query("SELECT pg_sleep(999)", MagicMock(), "c")
+    assert out["ok"] is False and f"{SQL_QUERY_TIMEOUT_S}s limit" in out["error"]

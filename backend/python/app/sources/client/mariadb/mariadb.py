@@ -174,11 +174,15 @@ class MariaDBClient:
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
         *,
         read_only: bool = False,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
 
         ``read_only`` runs it in a READ ONLY transaction with a statement timeout, so even a
-        stored function it calls cannot write or hold the server."""
+        stored function it calls cannot write or hold the server. ``timeout_s`` puts the
+        same server-side limit on any statement (``read_only`` implies READ_ONLY_TIMEOUT_S);
+        ``max_rows`` reads at most that many rows of the result."""
         if not self.is_connected():
             await self.connect()
         if self._pool is None:
@@ -191,12 +195,16 @@ class MariaDBClient:
                     cursor = conn.cursor(dictionary=True)
                     if read_only:
                         await cursor.execute("START TRANSACTION READ ONLY")
+                    timeout_s = timeout_s or (READ_ONLY_TIMEOUT_S if read_only else None)
+                    if timeout_s:
                         # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
                         # error propagates and the query is not retried without the guard.
-                        query = f"SET STATEMENT max_statement_time={READ_ONLY_TIMEOUT_S} FOR {query}"
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
                     await cursor.execute(query, params or ())
                     if cursor.description:
-                        results = await cursor.fetchall()
+                        results = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                        # Unread rows of an unbuffered result would block the commit.
+                        await cursor.close()
                     else:
                         results = [{"affected_rows": cursor.rowcount}]
                     await conn.commit()
@@ -223,8 +231,13 @@ class MariaDBClient:
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple:
-        """Execute a SQL query and return raw columns and rows."""
+        """Execute a SQL query and return raw columns and rows.
+
+        ``timeout_s`` and ``max_rows`` bound the statement's time and the rows read (see ``execute_query``)."""
         logger.debug(
             f"🔧 [MariaDBClient.execute_query_raw] Executing query: {query[:200]}..."
         )
@@ -239,10 +252,13 @@ class MariaDBClient:
                 cursor = None
                 try:
                     cursor = conn.cursor()
+                    if timeout_s:
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
                     await cursor.execute(query, params or ())
                     if cursor.description:
                         columns = [desc[0] for desc in cursor.description]
-                        rows = await cursor.fetchall()
+                        rows = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                        await cursor.close()
                         logger.debug(
                             f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
                             f"with columns {columns}"

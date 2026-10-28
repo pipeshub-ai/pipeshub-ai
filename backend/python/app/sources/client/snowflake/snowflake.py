@@ -706,12 +706,17 @@ class SnowflakeSDKClient:
         self,
         query: str,
         params: Optional[Union[Dict[str, Any], List[Any]]] = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple:
         """Execute a SQL query and return raw cursor results.
 
         Args:
             query: SQL query to execute
             params: Optional query parameters
+            timeout_s: Sets the session's STATEMENT_TIMEOUT_IN_SECONDS first
+            max_rows: Read at most this many rows
 
         Returns:
             Tuple of (columns, rows) where columns is list of column names
@@ -727,13 +732,15 @@ class SnowflakeSDKClient:
         try:
             cursor = self._connection.cursor()  # type: ignore
 
+            if timeout_s:
+                cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(timeout_s)}")
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
 
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            rows = cursor.fetchall()
+            rows = cursor.fetchmany(max_rows) if max_rows else cursor.fetchall()
 
             cursor.close()
             return (columns, rows)

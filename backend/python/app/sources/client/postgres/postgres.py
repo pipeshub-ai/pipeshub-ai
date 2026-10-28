@@ -271,11 +271,16 @@ class PostgreSQLClient:
         params: Sequence[Any] | None = None,
         *,
         read_only: bool = True,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """
         Execute a SQL query and return raw columns/rows, read-only unless
         ``read_only=False`` (see ``execute_query``).
         conn.execute doesn't support multi-statement queries.
+
+        ``timeout_s`` sets the server's statement_timeout for this transaction and
+        ``max_rows`` reads at most that many rows through a server-side cursor.
         """
         if not self.is_connected():
             await self.connect()
@@ -288,13 +293,15 @@ class PostgreSQLClient:
                 prepared_params = self._normalize_params(params)
                 # See execute_query: one transaction keeps the pooler on one server.
                 async with conn.transaction(readonly=read_only):
+                    if timeout_s:
+                        await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
                     statement = await conn.prepare(query)
                     attributes = statement.get_attributes()
                     if not attributes:
                         await conn.execute(query, *prepared_params)
                         return ([], [])
 
-                    rows = await statement.fetch(*prepared_params)
+                    rows = await self._fetch(statement, prepared_params, max_rows)
                     columns = [attr.name for attr in attributes]
                     raw_rows = [tuple(row) for row in rows]
                     return (columns, raw_rows)
@@ -306,6 +313,7 @@ class PostgreSQLClient:
         self,
         query: str,
         timeout_s: int,
+        max_rows: int | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Run one row-returning statement in a read-only transaction.
 
@@ -326,8 +334,16 @@ class PostgreSQLClient:
                 attributes = statement.get_attributes()
                 if not attributes:
                     raise ValueError("Only statements that return rows can be run here.")
-                rows = await statement.fetch()
+                rows = await self._fetch(statement, (), max_rows)
                 return [attr.name for attr in attributes], [tuple(row) for row in rows]
+
+    @staticmethod
+    async def _fetch(statement: asyncpg.prepared_stmt.PreparedStatement, params: Sequence[Any], max_rows: int | None) -> list[Any]:
+        """All rows, or at most ``max_rows`` read from a server-side cursor (needs a transaction)."""
+        if max_rows is None:
+            return await statement.fetch(*params)
+        cursor = await statement.cursor(*params)
+        return await cursor.fetch(max_rows)
 
     @staticmethod
     def _normalize_params(

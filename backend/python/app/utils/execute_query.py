@@ -15,6 +15,13 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -406,7 +413,9 @@ async def _execute_postgres_query(
             )
         await client.connect()
         try:
-            columns, rows = await client.execute_query_raw(query_to_execute)
+            columns, rows = await client.execute_query_raw(
+                query_to_execute, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
         finally:
             await client.close()
 
@@ -433,7 +442,7 @@ async def _execute_postgres_query(
         logger.error(f"PostgreSQL query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"PostgreSQL query failed: {str(e)}"
+            "error": f"PostgreSQL query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -509,7 +518,9 @@ async def _execute_snowflake_query(
             }
         
         with sdk_client:
-            columns, rows = sdk_client.execute_query_raw(query)
+            columns, rows = sdk_client.execute_query_raw(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
             return {
                 "ok": True,
                 "columns": columns,
@@ -520,7 +531,7 @@ async def _execute_snowflake_query(
         logger.error(f"Snowflake query execution failed: {e}")
         return {
             "ok": False,
-            "error": f"Snowflake query failed: {str(e)}"
+            "error": f"Snowflake query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -567,7 +578,9 @@ async def _execute_mariadb_query(
         logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
         async with client:
-            columns, rows = await client.execute_query_raw(query)
+            columns, rows = await client.execute_query_raw(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
 
         logger.info(
             f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
@@ -582,7 +595,7 @@ async def _execute_mariadb_query(
         logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"MariaDB query failed: {str(e)}"
+            "error": f"MariaDB query failed: {friendly_sql_error(str(e))}"
         }
 
 async def _execute_query_impl(
@@ -658,7 +671,7 @@ async def _execute_query_impl(
     # Convert results to markdown
     if result.get("ok"):
         columns = result.get("columns", [])
-        rows = result.get("rows", [])
+        rows, rows_cut = cap_rows(result.get("rows", []))
         
         logger.info(f"🔍 [_execute_query_impl] Converting to markdown: {len(columns)} cols, {len(rows)} rows")
         logger.debug(f"🔍 [_execute_query_impl] Columns: {columns}")
@@ -677,6 +690,9 @@ async def _execute_query_impl(
             "raw_columns": columns,
             "raw_rows": rows,
         }
+        if rows_cut:
+            final_result["rows_cut_at"] = SQL_MAX_ROWS
+            final_result["markdown_result"] += f"\n\n_{truncation_note()}_"
         logger.info(f"🔍 [_execute_query_impl] Final result: ok=True, row_count={len(rows)}, column_count={len(columns)}")
         return final_result
     else:
@@ -856,7 +872,7 @@ def create_execute_query_tool(
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{'_first_%d_rows' % SQL_MAX_ROWS if result.get('rows_cut_at') else ''}.csv",
                     source_tool="sql.execute_sql_query",
                 ))
                 register_task(conversation_id, task)

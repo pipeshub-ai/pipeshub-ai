@@ -18,6 +18,14 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    clip_cells,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.connectors.core.constants import IconPaths
 from app.services.artifact_registry.models import artifact_owner_id
@@ -438,20 +446,22 @@ class MariaDB:
             statement, _ = read_only_statement(query)
             query_resp = await self.client.execute_query(
                 query=statement or query, read_only=statement is not None,
+                timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
             )
 
             if not query_resp.success:
                 return self._result(False, {
-                    "error": query_resp.error or "Query execution failed",
+                    "error": friendly_sql_error(query_resp.error or "Query execution failed"),
                     "message": query_resp.message,
                 })
 
-            rows = query_resp.data if isinstance(query_resp.data, list) else []
+            rows, rows_cut = cap_rows(query_resp.data if isinstance(query_resp.data, list) else [])
             DISPLAY_LIMIT = 100
-            displayed_rows = rows[:DISPLAY_LIMIT]
+            displayed_rows = [clip_cells(r) if isinstance(r, dict) else r for r in rows[:DISPLAY_LIMIT]]
             result_payload = {
-                "message": query_resp.message or "Query executed successfully",
+                "message": truncation_note() if rows_cut else query_resp.message or "Query executed successfully",
                 "database": db_name,
+                **({"rows_cut_at": SQL_MAX_ROWS} if rows_cut else {}),
                 "row_count": len(rows),
                 "data": displayed_rows,
                 **({"truncated": True, "displayed_row_count": DISPLAY_LIMIT} if len(rows) > DISPLAY_LIMIT else {}),
@@ -504,7 +514,7 @@ class MariaDB:
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{f'_first_{SQL_MAX_ROWS}_rows' if rows_cut else ''}.csv",
                     source_tool="mariadb.execute_query",
                 ))
                 register_task(conversation_id, task)
