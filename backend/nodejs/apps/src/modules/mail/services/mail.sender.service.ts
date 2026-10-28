@@ -6,6 +6,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
 import { getMailLogRepository } from '../../../libs/repositories/mail-log';
 import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getEmailContent } from '../utils/email-content';
 import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
@@ -217,11 +218,12 @@ export class MailSenderService {
           cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
           emailTemplateType: bodyData.emailTemplateType,
         });
-      // The route is called by a service with only a scoped token, so no org is bound: use the one named on the mail.
+      // The route is called by a service with only a scoped token, so no org is bound: use the one named on the mail, else (a sign-in code
+      // before any user is known) the install's organisation.
       const run =
         getCurrentOrgId() === undefined && bodyData.orgId
           ? forOrg(bodyData.orgId, 'mail.audit', write)
-          : write();
+          : inInstallOrg('mail.audit', write, undefined);
       run.catch(logFailure);
     } catch (persistError) {
       logFailure(persistError);

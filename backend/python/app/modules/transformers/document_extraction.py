@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
@@ -34,7 +35,9 @@ from app.services.llm_gateway.gateway import (
     llm_call_site,
     provider_key,
 )
+from app.services.model_identity.errors import policy_error_from_exception
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
     LLMNotConfiguredError,
     LLMUnavailableError,
@@ -42,6 +45,7 @@ from app.utils.llm import (
 )
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.user_errors import provider_error_code
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -202,6 +206,8 @@ def _downscale_base64_image(
 
         raw = base64.b64decode(b64_data)
         img = Image.open(io.BytesIO(raw))
+        # open() reads only the header; a truncated body would reach the provider.
+        img.load()
         w, h = img.size
 
         if w <= max_dim and h <= max_dim:
@@ -227,6 +233,23 @@ def _downscale_base64_image(
     except Exception as exc:
         logger.warning("Failed to downscale base64 image: %s", exc)
         return None
+
+def _images_rejected(exc: BaseException) -> bool:
+    """Whether the provider refused a request for its images, so the text alone may pass."""
+    code = provider_error_code(exc)
+    # Only text counts toward MAX_TOKENS, so the images are the likely overflow.
+    if code == "request_too_large":
+        return True
+    if code != "invalid_request":
+        return False
+    # Every other 400 lands here too (an unsupported parameter, a gateway's
+    # budget, a content filter); dropping images fixes only one that names them.
+    message = str(exc.__cause__ or exc)
+    return (
+        "image" in message.lower()
+        and policy_error_from_exception(exc) is None
+        and classify_error(message)[0] != "content_filter"
+    )
 
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
@@ -471,9 +494,12 @@ class DocumentExtraction(Transformer):
                         if image_data.startswith(("http://", "https://")):
                             pass  # remote URLs are validated server-side
                         elif image_data.startswith(SUPPORTED_LLM_IMAGE_PREFIXES):
-                            result = _downscale_base64_image(image_data)
+                            # Relabels bytes whose declared type is wrong, which providers reject.
+                            result = to_llm_image_format(image_data, max_long_edge_px=MAX_IMAGE_DIMENSION)
+                            if result is not None:
+                                result = _downscale_base64_image(result)
                             if result is None:
-                                self.logger.warning("⚠️ Skipping image that could not be downscaled")
+                                self.logger.warning("⚠️ Skipping an image that can't be sent to the model (unsupported or corrupt)")
                                 continue
                             image_data = result
                         elif image_data.startswith("data:image/"):
@@ -649,23 +675,42 @@ class DocumentExtraction(Transformer):
             llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
         system = cache.system(instructions, "")
+
+        async def classify(message: list[dict]) -> DocumentClassification | None:
+            try:
+                with llm_call_site("classify"):
+                    return await invoke_with_structured_output_and_reflection(
+                        llm, [*system, HumanMessage(content=message)], DocumentClassification, prompt_cache=cache,
+                        # Recorded under the name the strategy was chosen with, so the next record skips them.
+                        on_cache_rejected=lambda refused: forget_cache_params(llm, model_name, params=refused),
+                        raise_call_errors=True,
+                        raise_unavailable=True,
+                    )
+            except (NonRetryableError, LLMUnavailableError):
+                raise
+            except Exception as e:
+                # The model did not answer. The fallback would resend the whole
+                # document to the same model, doubling every record's cost while
+                # it is down; only a reply that did not fit the schema earns one.
+                # Not None: that reads as nothing to classify, which is final.
+                raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+
         try:
-            with llm_call_site("classify"):
-                parsed_response = await invoke_with_structured_output_and_reflection(
-                    llm, [*system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
-                    # Recorded under the name the strategy was chosen with, so the next record skips them.
-                    on_cache_rejected=lambda refused: forget_cache_params(llm, model_name, params=refused),
-                    raise_call_errors=True,
-                    raise_unavailable=True,
-                )
-        except (NonRetryableError, LLMUnavailableError):
-            raise
-        except Exception as e:
-            # The model did not answer. The fallback would resend the whole
-            # document to the same model, doubling every record's cost while
-            # it is down; only a reply that did not fit the schema earns one.
-            # Not None: that reads as nothing to classify, which is final.
-            raise ExtractionLLMError(f"Document classification call failed: {e}") from e
+            parsed_response = await classify(document)
+        except ExtractionLLMError as e:
+            text_only = [part for part in document if part["type"] != "image_url"]
+            dropped = len(document) - len(text_only)
+            # One image the model cannot read fails the whole request, and every
+            # retry would resend it; the text alone still classifies the record.
+            # Without document text it would classify only the record's name.
+            has_text = any(part["type"] == "text" and part["text"].strip() for part in content)
+            if not dropped or not has_text or not _images_rejected(e):
+                raise
+            self.logger.warning(
+                "⚠️ Model rejected the document with %d image(s); classifying its text alone: %s", dropped, e,
+            )
+            document = text_only
+            parsed_response = await classify(document)
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")
             return self.to_semantic_metadata(parsed_response)

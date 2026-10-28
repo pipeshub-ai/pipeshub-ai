@@ -704,11 +704,15 @@ class IssuesSync:
         )
         block_groups: list[BlockGroup] = [bg_0]
 
-        comment_bgs, comment_remaining = await c.comments.build_issue_comment_blocks(
-            owner, repo_name, issue_number, parent_index=0, record=record, seen_keys=linked,
-        )
-        block_groups.extend(comment_bgs)
-        remaining.extend(comment_remaining)
+        # The issue carries its comment count. About a fifth of issues have none,
+        # and asking for their comments spends a GitHub call to learn that. A
+        # count that is missing or not a number still asks.
+        if getattr(issue, "comments", None) != 0:
+            comment_bgs, comment_remaining = await c.comments.build_issue_comment_blocks(
+                owner, repo_name, issue_number, parent_index=0, record=record, seen_keys=linked,
+            )
+            block_groups.extend(comment_bgs)
+            remaining.extend(comment_remaining)
 
         await self.process_new_records(remaining)
         await c.comments.remove_unlinked_attachments(record, linked)

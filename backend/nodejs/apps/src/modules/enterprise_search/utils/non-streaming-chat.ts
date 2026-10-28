@@ -1,6 +1,6 @@
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../libs/errors/backend-error';
+import { unansweredCallError } from '../../../libs/errors/backend-error';
 import {
   HttpError,
   InternalServerError,
@@ -146,16 +146,15 @@ const rejectionFor = (statusCode: number, failReason: string): HttpError =>
       )
     : new InternalServerError(failReason);
 
-const causeCode = (error: unknown): unknown =>
-  (error as { cause?: { code?: unknown } } | null)?.cause?.code;
-
 /**
  * The error a thrown AI call sends back. A deliberate 4xx keeps its own
- * status and message; anything else carries only the user-facing reason.
+ * status and message; an AI service that never answered is the shared 503
+ * (504 on a timeout); anything else carries only the user-facing reason.
  */
 const clientErrorFor = (error: unknown, failReason: string): HttpError => {
-  if (causeCode(error) === 'ECONNREFUSED') {
-    return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+  const unanswered = unansweredCallError(error, 'chat');
+  if (unanswered) {
+    return unanswered;
   }
   if (error instanceof HttpError && error.statusCode < 500) {
     return error;

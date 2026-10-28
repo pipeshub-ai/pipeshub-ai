@@ -316,9 +316,30 @@ live in `scripts/shard_durations.json`; refresh them from a recent nightly's
 `reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same
 check runs in CI through `python3 -m unittest discover -s scripts`.
 
+**Which shards a pull request runs.** A pull request runs only the shards its
+changed files can affect. `scripts/pr_changes.py` decides, and the `changes`
+job's summary lists each shard with the file that started it:
+
+- A connector's own code (its folder under `backend/python/app/connectors/sources/`,
+  `app/sources/client/` or `app/sources/external/`) runs the shards that hold that
+  connector's markers, plus `core`, which starts every connector.
+- A connector's tests (`connectors/<name>/`) run that connector's shard.
+- Tests that only `core` runs (`security/`, `permissions/`, `cleanup/` and the
+  other folders in `IT_CORE`) and the frontend run `core`.
+- Unit tests, docs, other workflows and the helper unit tests (`unit/`) run no
+  shard and need no approval. When `integration-tests/` changed, the helper unit
+  tests run in the `it-fork` job instead.
+- Anything else, such as the Node API or shared Python code, runs all six.
+
+The `it-all` label runs all six anyway. A push, the schedule and a manual run
+always run every shard. A new connector's marker goes in `CONNECTOR_SHARDS` in
+`scripts/pr_changes.py` as well as in `CONN_SHARD_N`; `python3 -m unittest
+discover -s scripts` fails until the two agree. A new connector code folder runs
+every shard until it is added to `CONNECTOR_CODE_MARKERS`.
+
 **Pull requests and secrets.** `integration-tests.yml` runs on `pull_request`.
-For a branch in this repository, the full suite runs with the connector and model
-secrets once a maintainer approves the `integration-test-dev` environment. A pull
+For a branch in this repository, the shards it picks run with the connector and
+model secrets once a maintainer approves the `integration-test-dev` environment. A pull
 request from a fork never gets those secrets: it runs the `it-fork` job instead,
 which runs only the helper unit tests (`pytest unit/`) on a GitHub-hosted runner.
 To run the full suite on a fork's change, a maintainer reviews the pull request

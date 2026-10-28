@@ -1,6 +1,9 @@
 import { injectable, inject } from 'inversify';
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { forOrg } from '../../../libs/context/orgContext';
+import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
+import { docStore } from '../../../libs/repositories/store-select';
 import {
   OAuthAppService,
   APP_WORKSPACE_MISMATCH_MESSAGE,
@@ -362,46 +365,51 @@ export class OAuthProviderController {
         throw new InvalidClientError('client_id is required');
       }
 
-      let tokenResponse: TokenResponse;
+      const grant = async (): Promise<TokenResponse> => {
+        switch (tokenRequest.grant_type) {
+          case 'authorization_code':
+            return await this.handleAuthorizationCodeGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-      switch (tokenRequest.grant_type) {
-        case 'authorization_code':
-          tokenResponse = await this.handleAuthorizationCodeGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'client_credentials':
+            return await this.handleClientCredentialsGrant(
+              clientId,
+              clientSecret!,
+              tokenRequest,
+            );
 
-        case 'client_credentials':
-          tokenResponse = await this.handleClientCredentialsGrant(
-            clientId,
-            clientSecret!,
-            tokenRequest,
-          );
-          break;
+          case 'refresh_token':
+            return await this.handleRefreshTokenGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-        case 'refresh_token':
-          tokenResponse = await this.handleRefreshTokenGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:device_code':
+            return await this.oauthDeviceService.poll(
+              clientId,
+              clientSecret,
+              tokenRequest.device_code || '',
+            );
 
-        case 'urn:ietf:params:oauth:grant-type:device_code':
-          tokenResponse = await this.oauthDeviceService.poll(
-            clientId,
-            clientSecret,
-            tokenRequest.device_code || '',
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          default:
+            throw new UnsupportedGrantTypeError(
+              `Unsupported grant_type: ${tokenRequest.grant_type}`,
+            );
+        }
+      };
 
-        default:
-          throw new UnsupportedGrantTypeError(
-            `Unsupported grant_type: ${tokenRequest.grant_type}`,
-          );
-      }
+      // The endpoint has no session: on PostgreSQL the grant runs as the org that granted it (the org of the authorization code or the
+      // refresh token). A device poll finds the approving org itself, after the approval is claimed.
+      const tokenResponse = await this.runGrantInOrg(
+        tokenRequest,
+        clientId,
+        grant,
+      );
 
       // Set cache headers as per RFC 6749
       res.setHeader('Cache-Control', 'no-store');
@@ -422,6 +430,31 @@ export class OAuthProviderController {
       const oauthError = this.buildErrorResponse(error as Error);
       res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
     }
+  }
+
+  /** Runs a grant as the org that granted it (PostgreSQL); Mongo needs no org. */
+  private async runGrantInOrg(
+    tokenRequest: {
+      grant_type: string;
+      code?: string;
+      refresh_token?: string;
+    },
+    clientId: string,
+    grant: () => Promise<TokenResponse>,
+  ): Promise<TokenResponse> {
+    if (docStore() !== 'postgres') return grant();
+    const lookup = getIdentityLookup();
+    let orgId: string | null = null;
+    if (tokenRequest.grant_type === 'authorization_code' && tokenRequest.code)
+      orgId = await lookup.resolveCodeOrg(tokenRequest.code, clientId);
+    else if (
+      tokenRequest.grant_type === 'refresh_token' &&
+      tokenRequest.refresh_token
+    )
+      orgId = await lookup.resolveRefreshOrg(tokenRequest.refresh_token);
+    else if (tokenRequest.grant_type === 'client_credentials')
+      orgId = (await lookup.resolveClient(clientId))?.orgId ?? null;
+    return orgId ? forOrg(orgId, 'oauth.token', grant) : grant();
   }
 
   /**

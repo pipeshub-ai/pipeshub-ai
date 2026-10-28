@@ -197,6 +197,9 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const again = await credentials.touchOnRefresh(uid, org, '4.4.4.4');
       expect(again!._id).to.equal(created!._id);
       expect(again!.ipAddress).to.equal('4.4.4.4');
+      // a refresh that carries no address keeps the one on record
+      const bare = await credentials.touchOnRefresh(uid, org, undefined);
+      expect(bare!.ipAddress).to.equal('4.4.4.4');
     });
 
     it('unblock is true for a blocked person and false otherwise', async () => {
@@ -504,6 +507,17 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await groups.get(org, every._id))!.users).to.deep.equal([]);
       await groups.removeFromAll(org, p._id);
       expect(await groups.groupsOfUser(org, p._id)).to.deep.equal([]);
+    });
+
+    it('addToEveryone with liveOnly leaves a removed everyone group alone; without it, the group is written', async () => {
+      const org = await fx.newOrg();
+      const every = await groups.create(org, { name: uniq('every'), type: 'everyone' });
+      await groups.softDelete(org, every._id);
+      const p = await person(org);
+      await groups.addToEveryone(org, p._id, { liveOnly: true });
+      expect((await groups.get(org, every._id))!.users).to.deep.equal([]);
+      await groups.addToEveryone(org, p._id);
+      expect((await groups.get(org, every._id))!.users).to.deep.equal([p._id]);
     });
 
     it('addMemberToGroups reaches deleted groups too; addMembers does not', async () => {

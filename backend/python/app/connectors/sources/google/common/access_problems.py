@@ -120,3 +120,33 @@ def classify_access_problem(
         ):
             return AccessProblem.SIGNED_OUT
     return None
+
+
+def setup_problem_message(problem: AccessProblem | None, *, apis: str, admin_email: str | None = None,
+                          client_id: str | None = None) -> str | None:
+    """What a Workspace admin must change for a service-account setup problem, or None when it is not one.
+
+    `apis` names the Google APIs the connector needs, e.g. "Google Drive API and the Admin SDK API".
+    """
+    if problem is AccessProblem.DELEGATION:
+        client = f" ({client_id})" if client_id else ""
+        return ("Google Workspace refused access for this connector's service account. In the Google "
+                f"Admin console, open Security > API controls > Domain-wide delegation, and authorize the "
+                f"service account's client ID{client} with the scopes listed in the PipesHub setup guide. "
+                "Syncing resumes on the next run.")
+    if problem is AccessProblem.SERVICE_ACCOUNT_KEY:
+        return ("Google rejected this connector's service account key. It may have been deleted or "
+                "disabled in Google Cloud. Create a new key for the service account and upload it in the "
+                "connector's settings.")
+    if problem is AccessProblem.UNREADABLE_KEY:
+        return ("The service account key in this connector's settings is not a valid JSON key file. In "
+                "Google Cloud Console, open IAM & Admin > Service accounts, create a JSON key for the "
+                "service account, and upload that file in the connector's settings.")
+    if problem is AccessProblem.ADMIN_ACCOUNT:
+        who = f" ({admin_email})" if admin_email else ""
+        return (f"The admin email in this connector's settings{who} must be an active Google Workspace "
+                "administrator who can read users and groups. Update it in the connector's settings.")
+    if problem is AccessProblem.API_DISABLED:
+        return (f"The {apis} must be turned on for this connector's Google Cloud project. Turn them on "
+                "in Google Cloud Console under APIs & Services, then sync again.")
+    return None

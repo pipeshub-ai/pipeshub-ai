@@ -171,7 +171,7 @@
   "app/migrations/code_graph_backfill.py": 2,
   "app/migrations/kb_apps_migration.py": 1,
   "app/migrations/web_browser_identity_migration.py": 1,
-  "app/models/entities.py": 24,
+  "app/models/entities.py": 25,
   "app/modules/agents/context/tool_descriptions.py": 1,
   "app/modules/agents/knowledge_scope.py": 1,
   "app/modules/agents/qna/chat_state.py": 1,

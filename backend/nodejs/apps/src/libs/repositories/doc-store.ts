@@ -31,6 +31,21 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 const CONVERSATION_EPOCH = 2;
 const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 1;
+const IDENTITY_EPOCH = 3;
+const OAUTH_EPOCH = 2;
+const INTEGRATIONS_EPOCH = 2;
+const IDENTITY_REPOSITORIES = [
+  'identity',
+  'credential',
+  'user',
+  'group',
+  'org',
+  'org-auth-config',
+  'activity',
+  'picture',
+  'reset-link',
+  'org-metrics-job',
+];
 
 /** The schema a process needs under `DOC_STORE=postgres`: the fence, and the tables of each repository that is not kept on Mongo. */
 export function schemaRequirements(): SchemaRequirements {
@@ -38,16 +53,30 @@ export function schemaRequirements(): SchemaRequirements {
   const onPg = (name: string): boolean => !keep.has(name);
   return {
     platform: { requires: 1, code: 1 },
-    ...(onPg('document')
+    ...(['document', 'project'].some(onPg)
       ? { content: { requires: CONTENT_EPOCH, code: CONTENT_EPOCH } }
       : {}),
-    ...(['notification', 'mail-log', 'outbox'].some(onPg)
+    ...(['notification', 'mail-log', 'outbox', 'connectors-config'].some(onPg)
       ? {
           platform_data: {
             requires: PLATFORM_DATA_EPOCH,
             code: PLATFORM_DATA_EPOCH,
           },
         }
+      : {}),
+    ...(['oauth-app', 'oauth-token', 'identity-lookup', 'delegation'].some(onPg)
+      ? { oauth: { requires: OAUTH_EPOCH, code: OAUTH_EPOCH } }
+      : {}),
+    ...(onPg('slack-thread')
+      ? {
+          integrations: {
+            requires: INTEGRATIONS_EPOCH,
+            code: INTEGRATIONS_EPOCH,
+          },
+        }
+      : {}),
+    ...([...IDENTITY_REPOSITORIES, 'oauth-app'].some(onPg)
+      ? { identity: { requires: IDENTITY_EPOCH, code: IDENTITY_EPOCH } }
       : {}),
     ...(onPg('conversation') || onPg('semantic-search')
       ? {
@@ -58,6 +87,18 @@ export function schemaRequirements(): SchemaRequirements {
         }
       : {}),
   };
+}
+
+/** Repositories that only work together: the lookup before an org is bound reads the tokens and apps the other two write. */
+const OAUTH_REPOSITORIES = ['oauth-app', 'oauth-token', 'identity-lookup'];
+
+/** A split of the OAuth repositories across stores would resolve clients and tokens in one store and issue them in the other. */
+export function assertCoherentSplit(): void {
+  const kept = OAUTH_REPOSITORIES.filter((n) => fallbackList().has(n));
+  if (kept.length !== 0 && kept.length !== OAUTH_REPOSITORIES.length)
+    throw new Error(
+      `DOC_STORE_MONGO_REPOS must keep ${OAUTH_REPOSITORIES.join(', ')} together on Mongo, or none of them`,
+    );
 }
 
 /**
@@ -86,6 +127,7 @@ export async function initDocStore(
   }
   if (docStore() !== 'postgres') return;
   (await import('./all')).assertAllRepositoriesReady();
+  assertCoherentSplit();
   const url = process.env.PG_NODE_URL;
   if (!url) throw new Error('DOC_STORE=postgres needs PG_NODE_URL');
   if (opts.jobs !== false) assertJobsPool(Boolean(process.env.PG_JOBS_URL));

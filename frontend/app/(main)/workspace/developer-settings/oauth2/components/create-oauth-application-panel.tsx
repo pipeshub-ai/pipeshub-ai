@@ -110,6 +110,31 @@ export interface CreateOAuthApplicationPanelProps {
 
 type CreateTab = 'general' | 'scopes' | 'granular';
 
+/**
+ * Ticked when the form opens: the least an MCP client needs to search and
+ * chat, with or without an agent. Search needs semantic:write, not read: the
+ * Python route it forwards to requires write. Scopes the instance does not
+ * offer this user are dropped.
+ */
+export const DEFAULT_SELECTED_SCOPES = [
+  'offline_access',
+  'kb:read',
+  'connector:read',
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+] as const;
+
+function defaultScopeSelection(
+  scopes: Record<string, OAuthScopeItem[]>
+): Set<string> {
+  const offered = new Set(
+    Object.values(scopes).flatMap((items) => items.map((i) => i.name))
+  );
+  return new Set(DEFAULT_SELECTED_SCOPES.filter((name) => offered.has(name)));
+}
+
 export function CreateOAuthApplicationPanel({
   open,
   onOpenChange,
@@ -167,6 +192,19 @@ export function CreateOAuthApplicationPanel({
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(
     () => new Set()
   );
+  // Once per opening: the list reloads when `t` changes (a language switch),
+  // and that must not undo the user's edits.
+  const defaultsAppliedRef = useRef(false);
+
+  const applyLoadedScopes = useCallback(
+    (scopes: Record<string, OAuthScopeItem[]>) => {
+      setScopesByCategory(scopes);
+      if (defaultsAppliedRef.current) return;
+      defaultsAppliedRef.current = true;
+      setSelectedScopes(defaultScopeSelection(scopes));
+    },
+    []
+  );
 
   const [isCreating, setIsCreating] = useState(false);
 
@@ -220,6 +258,7 @@ export function CreateOAuthApplicationPanel({
       setScopesByCategory(null);
       setScopesError(null);
       setSelectedScopes(new Set());
+      defaultsAppliedRef.current = false;
       setIsCreating(false);
       setCreatedCredentials(null);
       setShowClientSecret(false);
@@ -235,7 +274,7 @@ export function CreateOAuthApplicationPanel({
     const loadScopes = async () => {
       try {
         const data = await Oauth2Api.getScopes();
-        if (!cancelled) setScopesByCategory(data.scopes ?? {});
+        if (!cancelled) applyLoadedScopes(data.scopes ?? {});
       } catch {
         if (!cancelled) {
           setScopesError(t('workspace.oauth2.create.scopesLoadError'));
@@ -250,7 +289,7 @@ export function CreateOAuthApplicationPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, t]);
+  }, [open, t, applyLoadedScopes]);
 
   useEffect(() => {
     if (usesAuthorizationCode) return;
@@ -1142,7 +1181,7 @@ export function CreateOAuthApplicationPanel({
                       setScopesError(null);
                       setScopesLoading(true);
                       void Oauth2Api.getScopes()
-                        .then((data) => setScopesByCategory(data.scopes ?? {}))
+                        .then((data) => applyLoadedScopes(data.scopes ?? {}))
                         .catch(() =>
                           setScopesError(t('workspace.oauth2.create.scopesLoadError'))
                         )

@@ -11,6 +11,9 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { AgentMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
+import { setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
+import { setIdentityPort } from '../../../../src/libs/repositories/identity'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('FirstPartyDeviceAppService', () => {
@@ -49,6 +52,25 @@ describe('FirstPartyDeviceAppService', () => {
 
   afterEach(() => {
     sinon.restore()
+    setOAuthAppRepository()
+    setIdentityPort()
+    delete process.env.DOC_STORE
+  })
+
+  // Discovery and the device endpoint have no session, so nothing is bound when this runs.
+  it('runs as the install organisation when nothing is bound (PostgreSQL)', async () => {
+    process.env.DOC_STORE = 'postgres'
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any)
+    let bound: string | undefined
+    setOAuthAppRepository({
+      findByClientId: async () => {
+        bound = getCurrentOrgId()
+        return { _id: 'a', clientId: FIRST_PARTY_DEVICE_CLIENT_ID, allowedScopes: [...AgentMcpScopes] }
+      },
+    } as any)
+
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
+    expect(bound).to.equal('org-1')
   })
 
   it('should return the existing client_id without creating another app', async () => {

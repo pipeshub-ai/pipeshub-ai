@@ -846,6 +846,8 @@ sql_table_record_schema = {
             "schemaName": {"type": ["string", "null"]},
             "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
             "rowCount": {"type": ["number", "null"]},
+            "dbRowCount": {"type": ["number", "null"]},
+            "indexedRowCount": {"type": ["number", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "columnCount": {"type": ["number", "null"]},
             "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
@@ -866,6 +868,46 @@ sql_table_record_schema = {
     "message": "Document does not match the SQL table record schema.",
 }
 
+sql_column_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "fqn": {"type": "string", "minLength": 1},
+            "tableFqn": {"type": "string", "minLength": 1},
+            "dataType": {"type": ["string", "null"]},
+            "nullable": {"type": "boolean", "default": False},
+            "isPrimaryKey": {"type": "boolean", "default": False},
+            "isUnique": {"type": "boolean", "default": False},
+            "isPartOfCompositePrimaryKey": {"type": "boolean", "default": False},
+            "isPartOfCompositeUnique": {"type": "boolean", "default": False},
+            "default": {"type": ["string", "null"]},
+            "ordinalPosition": {"type": ["number", "null"]},
+            "distinctCount": {"type": ["number", "null"]},
+            "nullCount": {"type": ["number", "null"]},
+            "cardinalityRatio": {"type": ["number", "null"]},
+            "confidenceScore": {"type": ["string", "null"]},
+            "topValues": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "topValueFrequencies": {
+                "type": ["array", "null"],
+                "items": {"type": "number"},
+            },
+            "minValue": {"type": ["string", "null"]},
+            "maxValue": {"type": ["string", "null"]},
+            "numericText": {"type": ["boolean", "null"]},
+            "profiledAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "fqn", "tableFqn"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL column record schema.",
+}
+
 sql_view_record_schema = {
     "rule": {
         "type": "object",
@@ -882,6 +924,7 @@ sql_view_record_schema = {
             },
             "isSecure": {"type": "boolean", "default": False},
             "comment": {"type": ["string", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE VIEW statement, or synthetic column-based DDL
         },
         "required": ["name"],
         "additionalProperties": False,

@@ -23,6 +23,7 @@ import {
   sanitizeRootId,
 } from '../context/request-context';
 import { runWithEnvelope, signMessage } from '../context/envelope';
+import { isRetryableStoreError } from '../repositories/errors';
 import { spawnDetached } from '../context/orgContext';
 
 /** Sign (when enabled) only where the topic is known. */
@@ -311,6 +312,8 @@ export abstract class BaseKafkaConsumerConnection
                 messageKey: message.key?.toString(),
                 error: (error as Error).message,
               });
+              // A store that is frozen or away is not a bad message: let KafkaJS see the failure so the offset is not committed.
+              if (isRetryableStoreError(error)) throw error;
             }
           },
         }),

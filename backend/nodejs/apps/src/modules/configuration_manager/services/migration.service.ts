@@ -88,6 +88,8 @@ export class MigrationService {
   }
 
   async adminRoleMigration(): Promise<void> {
+    // The PostgreSQL schema has the role column from the start.
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating admin group membership to user.role');
     try {
       const result = await new AdminRoleMigration(
@@ -111,6 +113,8 @@ export class MigrationService {
   }
 
   async signInMethodsRemovalMigration(): Promise<void> {
+    // A PostgreSQL install never held the removed methods.
+    if (docStore() === 'postgres') return;
     this.logger.info('Removing SAML and OAuth from sign-in policies');
     try {
       const result = await new SignInMethodsRemovalMigration(
@@ -134,11 +138,15 @@ export class MigrationService {
   }
 
   async userGroupNameIndexMigration(): Promise<void> {
+    // PostgreSQL enforces one live group name per organisation with a partial unique index of its own.
+    if (docStore() === 'postgres') return;
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
   }
 
   async delegationLogRetentionMigration(): Promise<void> {
+    // The MongoDB TTL index is the only thing this moves; PostgreSQL events are removed by the TTL sweeper.
+    if (docStore() === 'postgres') return;
     // Changing the retention constant does not move an index that already
     // exists; this does. run() logs its own outcome and never throws.
     await new DelegationLogRetentionMigration(this.logger).run();

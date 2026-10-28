@@ -27,8 +27,9 @@ from .rls_fixture import ORG_A, ORG_B, OrgDb, start_pgbouncer, uow
 
 CORE = BACKEND / "db" / "versions" / "kernel" / "vetted" / "manifest.yaml"
 PLATFORM = BACKEND / "db" / "versions" / "platform" / "vetted" / "manifest.yaml"
+IDENTITY = BACKEND / "db" / "versions" / "identity" / "vetted" / "manifest.yaml"
 FIXTURE = Path(__file__).with_name("vetted_manifest.yaml")
-FNS = vetted.load_all([CORE, PLATFORM, FIXTURE])
+FNS = vetted.load_all([CORE, PLATFORM, IDENTITY, FIXTURE])
 ALL = list(FNS.values())
 IDS = [f.qualified for f in ALL]
 DB_NAME = "t_vetted"

@@ -8156,6 +8156,11 @@ async def _build_and_store_connector(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
             ) from init_error
+        except Exception:
+            # A half-initialised connector can own open clients (e.g. an HTTP session).
+            with contextlib.suppress(Exception):
+                await dispose_connector(connector)
+            raise
 
         if not is_initialized:
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."

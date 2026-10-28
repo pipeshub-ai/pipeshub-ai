@@ -6,7 +6,12 @@ import { retentionCutoff } from '../../modules/notification/utils/notification-a
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const BATCH = 5000;
-const PUBLISHED_OUTBOX_KEEP_MS = 7 * 24 * 3600_000;
+const HOUR_MS = 3600_000;
+const PUBLISHED_OUTBOX_KEEP_MS = 7 * 24 * HOUR_MS;
+const DELEGATION_EVENTS_KEEP_MS = 400 * 24 * HOUR_MS;
+
+// a row stays an hour past its expiry so that a caller can still say "expired" rather than "unknown"
+const expiredAnHourAgo = (now: Date): Date => new Date(now.getTime() - HOUR_MS);
 
 interface Target {
   name: string;
@@ -29,11 +34,41 @@ const TARGETS: Target[] = [
             WHERE ctid IN (SELECT ctid FROM platform.outbox WHERE status = 'published' AND published_at < $1 LIMIT $2)`,
     cutoff: (now) => new Date(now.getTime() - PUBLISHED_OUTBOX_KEEP_MS),
   },
+  {
+    name: 'access_tokens',
+    sql: `/* pipeshub:oauth.ttl_sweep_access_tokens */ DELETE FROM oauth.access_tokens
+            WHERE ctid IN (SELECT ctid FROM oauth.access_tokens WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
+    name: 'refresh_tokens',
+    sql: `/* pipeshub:oauth.ttl_sweep_refresh_tokens */ DELETE FROM oauth.refresh_tokens
+            WHERE ctid IN (SELECT ctid FROM oauth.refresh_tokens WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
+    name: 'authorization_codes',
+    sql: `/* pipeshub:oauth.ttl_sweep_authorization_codes */ DELETE FROM oauth.authorization_codes
+            WHERE ctid IN (SELECT ctid FROM oauth.authorization_codes WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
+    name: 'device_authorizations',
+    sql: `/* pipeshub:oauth.ttl_sweep_device_authorizations */ DELETE FROM oauth.device_authorizations
+            WHERE ctid IN (SELECT ctid FROM oauth.device_authorizations WHERE expires_at < $1 LIMIT $2)`,
+    cutoff: expiredAnHourAgo,
+  },
+  {
+    name: 'delegation_events',
+    sql: `/* pipeshub:oauth.ttl_sweep_delegation_events */ DELETE FROM oauth.delegation_events
+            WHERE ctid IN (SELECT ctid FROM oauth.delegation_events WHERE created_at < $1 LIMIT $2)`,
+    cutoff: (now) => new Date(now.getTime() - DELEGATION_EVENTS_KEEP_MS),
+  },
 ];
 
 /**
- * Removes what the document store no longer shows: notifications past retention and delivered outbox rows (the work Mongo's
- * TTL indexes did). Runs as the jobs role across every org, in batches so no pass holds a long lock.
+ * Removes what the document store no longer shows: notifications past retention, delivered outbox rows, expired OAuth tokens,
+ * codes and device authorizations, and delegation events past their retention (the work Mongo's TTL indexes did). Runs as the jobs role across every org, in batches so no pass holds a long lock.
  */
 export class TtlSweeper {
   private timer: NodeJS.Timeout | null = null;

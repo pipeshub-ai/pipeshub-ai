@@ -94,3 +94,16 @@ async def test_an_event_the_broker_did_not_take_leaves_the_record_for_the_sweep(
 
     assert (outcome.event, outcome.published) == ("newRecord", False)
     proc._mark_queued_after_publish.assert_not_awaited()
+
+
+async def test_a_lock_file_uploaded_to_a_knowledge_base_is_stored_and_published() -> None:
+    """An upload is the user's explicit choice; dropping it would leave the push retrying until its deadline."""
+    store = _store(explicit=True)
+    proc = _processor(store)
+
+    outcome = await proc.on_pushed_record(
+        _record(record_name="~$x.docx"), expected=None, new=PushSet("doc-new", 1), content_changed=True,
+    )
+
+    assert store.batch_upsert_records.await_args.args[0][0].record_name == "~$x.docx"
+    assert (outcome.event, outcome.published) == ("newRecord", True)

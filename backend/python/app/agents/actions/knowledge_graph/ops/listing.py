@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
@@ -48,6 +49,19 @@ _VALID_SORT_ORDERS = {"asc", "desc"}
 _FETCHABLE_NODE_TYPES = frozenset({NodeType.RECORD.value, NodeType.FOLDER.value})
 
 MIN_QUERY_LENGTH = 2
+
+_NO_NAMED_SOURCE_NOTE = (
+    "None of the named sources is available in this conversation; "
+    "these are the sources you can list."
+)
+_NAME_A_SOURCE_NOTE = (
+    "To list records or folders, name one source: call again with "
+    "source_ids=[<node_id of a source below>]."
+)
+_TOO_LARGE_MESSAGE = (
+    "This listing is too large to read at once. Name one source with source_ids, "
+    "open a folder with knowledgegraph__navigate(), or pass a query."
+)
 MAX_QUERY_LENGTH = 500
 
 _NODE_TYPE_LABELS = {
@@ -79,11 +93,17 @@ def _normalize_list(value: Any) -> list[str] | None:
     return None
 
 
+def _next_page_hint(page: int) -> str:
+    return f"(More items follow: call again with page={page + 1}.)"
+
+
 def _render_flat_text(
     response: KnowledgeHubNodesResponse,
     query: str | None,
     shortener: "RecordIdShortener | None" = None,
     cite_refs: "Mapping[str, str] | None" = None,
+    *,
+    page: int = 1,
 ) -> str:
     """Render list_files output in the same flat-text grammar as navigate().
 
@@ -94,6 +114,8 @@ def _render_flat_text(
     """
     cite_refs = cite_refs or {}
     if not response.success:
+        if getattr(response, "errorCode", None) == HTTPStatus.UNPROCESSABLE_ENTITY:
+            return f"Error: {_TOO_LARGE_MESSAGE}"
         error = response.error or "Failed to browse knowledge files"
         return f"Error: {error}"
 
@@ -133,6 +155,9 @@ def _render_flat_text(
     if total and total > len(items):
         remaining = total - len(items)
         lines.append(f"({remaining} more items — increase page or limit to see them)")
+        lines.append("")
+    elif getattr(getattr(response, "pagination", None), "hasNext", False):
+        lines.append(_next_page_hint(page))
         lines.append("")
 
     lines.append(
@@ -174,7 +199,7 @@ async def _page_inside_bounds(
         return read.first, None
     items = read.kept[(page - 1) * limit:page * limit]
     if len(read.kept) > page * limit:
-        hint = f"(More items follow: call again with page={page + 1}.)"
+        hint = _next_page_hint(page)
     elif read.stop is not None:
         hint = (
             f"(Stopped after checking {BOUNDED_BATCH * BOUNDED_MAX_BATCHES} items; more may match. "
@@ -183,6 +208,30 @@ async def _page_inside_bounds(
     else:
         hint = None
     return KnowledgeHubNodesResponse(success=True, items=items), hint
+
+
+def _asks_for_contents(node_types: list[str] | None, record_types: list[str] | None) -> bool:
+    """Whether a call asks for records or folders, which the root never holds."""
+    return bool(_FETCHABLE_NODE_TYPES.intersection(node_types or ()) or record_types)
+
+
+def _wants_flat_listing(
+    query: str | None,
+    matched_source_ids: list[str],
+    *,
+    wants_contents: bool,
+    single_source: bool,
+) -> bool | None:
+    """The service's ``flattened`` flag: None searches, False lists the root
+    (the sources themselves), True lists what is inside the sources.
+
+    Without a query, the contents are listed for a source the call named, or
+    for the only source in scope when the call asks for records or folders;
+    across several sources the root is listed, so a listing never mixes them.
+    """
+    if query:
+        return None
+    return bool(matched_source_ids or (wants_contents and single_source))
 
 
 async def execute_list_files(
@@ -200,8 +249,8 @@ async def execute_list_files(
 ) -> tuple[bool, str]:
     """List or search items in the knowledge graph.
 
-    ``source_ids`` accepts both app-connector IDs and KB-collection IDs;
-    the function partitions them internally.
+    ``source_ids`` accepts both app-connector IDs and KB IDs; a KB is an app,
+    so both filter by connector id.
 
     Returns ``(success, text)`` in the flat-text grammar.
     """
@@ -218,9 +267,11 @@ async def execute_list_files(
             return False, "Graph provider not available."
 
         from app.agents.actions.knowledge_graph.ops.scope import (
+            browsable_app_ids,
             ids_within_scope,
             list_selected_nodes,
             resolve_scope,
+            turn_picked_sources,
         )
         from app.modules.retrieval.selection_scope import resolve_request_scopes
 
@@ -230,12 +281,13 @@ async def execute_list_files(
         if selected is not None:
             return True, selected
 
-        scope = await resolve_scope(state, allow_catalog_fallback=True)
-        if scope.is_empty():
-            return False, "No knowledge sources configured for this agent."
-
-        agent_connector_ids = list(scope.app_ids)
-        kb_ids = set(scope.kb_ids)
+        scope = await resolve_scope(state)
+        agent_source_ids = browsable_app_ids(state, scope)
+        if not agent_source_ids:
+            if turn_picked_sources(state):
+                return True, "This conversation has no sources to list; only attached files."
+            if not state.get("has_knowledge"):
+                return False, "No knowledge sources configured for this agent."
 
         # Input normalization
         query = query.strip() if query else None
@@ -258,12 +310,17 @@ async def execute_list_files(
         if sort_order not in _VALID_SORT_ORDERS:
             sort_order = "desc"
 
-        # KB ids keep a KB-only agent's search scoped (None would search everything).
-        agent_source_ids = list(dict.fromkeys([*agent_connector_ids, *scope.kb_ids]))
-
-        # source_ids may name apps and KBs; narrow to them, never widen.
+        # source_ids may name apps and KBs; narrow to them, never widen. With no
+        # agent sources the user picked nothing, and the service gates by the
+        # user's own access: what they name is checked there.
         allowed = set(agent_source_ids)
-        matched = [sid for sid in source_ids_norm or [] if sid in allowed]
+        matched = [sid for sid in source_ids_norm or [] if not allowed or sid in allowed]
+        note: str | None = None
+        if source_ids_norm and not matched:
+            # Listing the rest under a source the call named would pass it off
+            # as that source's contents.
+            query = None
+            note = _NO_NAMED_SOURCE_NOTE
         use_connector_ids = matched or agent_source_ids
 
         # The agent's sources can be everything the user reads, while a bound
@@ -278,6 +335,8 @@ async def execute_list_files(
             if not bound_user_key:
                 return False, "User not found."
             _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
+            if not use_connector_ids and bounds:
+                use_connector_ids = sorted(bounds[0].connector_ids)
             for bound in bounds:
                 use_connector_ids = [sid for sid in use_connector_ids if sid in bound.connector_ids]
             if not use_connector_ids:
@@ -293,7 +352,15 @@ async def execute_list_files(
                 )
                 if listing is not None:
                     return True, listing
-        use_record_group_ids = [sid for sid in use_connector_ids if sid in kb_ids] or None
+        wants_contents = _asks_for_contents(node_types, record_types)
+        single_source = len(use_connector_ids) == 1 and note is None
+        flattened = _wants_flat_listing(
+            query, matched, wants_contents=wants_contents, single_source=single_source,
+        )
+        if flattened is False and wants_contents:
+            # The root holds only sources: listed by record type it is empty.
+            node_types = record_types = None
+            note = note or _NAME_A_SOURCE_NOTE
 
         service = KnowledgeHubService(
             logger=logger_instance,
@@ -315,11 +382,8 @@ async def execute_list_files(
                 q=query,
                 node_types=node_types,
                 record_types=record_types,
-                connector_ids=use_connector_ids,
-                # An explicit False makes the service list; an omitted flag
-                # plus connector_ids makes it search.
-                flattened=None if query else False,
-                record_group_ids=use_record_group_ids,
+                connector_ids=use_connector_ids or None,
+                flattened=flattened,
             )
 
         hint: str | None = None
@@ -346,8 +410,8 @@ async def execute_list_files(
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = _render_flat_text(response, query, record_id_shortener, cite_refs)
-        return True, f"{text}\n{hint}" if hint else text
+        text = _render_flat_text(response, query, record_id_shortener, cite_refs, page=page)
+        return True, "\n".join(part for part in (note, text, hint) if part)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

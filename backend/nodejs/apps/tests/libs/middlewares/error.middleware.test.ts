@@ -16,6 +16,8 @@ import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
+import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
+import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -446,6 +448,101 @@ describe('ErrorMiddleware', () => {
       handler(error, createMockRequest(), createMockResponse(), createMockNext())
 
       expect(loggerErrorStub.called).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // A call to another PipesHub service that got no answer
+  // -----------------------------------------------------------------------
+  describe('a call to another service that got no answer', () => {
+    // What Node's fetch throws when the connectors or query service is not listening yet.
+    const refused = () =>
+      Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8088'), { code: 'ECONNREFUSED' }) })
+
+    it('answers a refused connection with 503 and the shared message, not 500', () => {
+      const res = createMockResponse()
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(body.error.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
+      expect(body.error.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+      expect(loggerErrorStub.calledOnce).to.be.true
+    })
+
+    it('logs the cause it could not show the reader', () => {
+      const logged = sinon.stub(Logger.prototype, 'error')
+
+      handler(refused(), createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
+
+      const call = logged.getCalls().find((c) => (c.args[0] as string).includes('Could not reach the service'))
+      expect(call, 'cause logged').to.exist
+      expect(call!.args[0]).to.include('GET /api/v1/teams/user/teams')
+      expect(call!.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+    })
+
+    it('answers a host that does not resolve with 503 too', () => {
+      const res = createMockResponse()
+      const error = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+    })
+
+    it("answers axios's request that got no response with 503", () => {
+      const res = createMockResponse()
+      const error = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3000'), { code: 'ECONNREFUSED', request: {} })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+    })
+
+    it('still answers a certificate error with 500: retrying will not fix it', () => {
+      const res = createMockResponse()
+      const error = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('Hostname/IP does not match'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }) })
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+
+    it('answers a timed-out call with 504', () => {
+      const res = createMockResponse()
+
+      handler(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(504)).to.be.true
+    })
+
+    it('still answers an aborted call with 500', () => {
+      const res = createMockResponse()
+
+      handler(new DOMException('This operation was aborted', 'AbortError'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+
+    it('keeps the cause out of the body in development', () => {
+      process.env.NODE_ENV = 'development'
+      const res = createMockResponse()
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.error.metadata).to.equal(undefined)
+      expect(JSON.stringify(body)).to.not.include('ECONNREFUSED')
+    })
+
+    it('does nothing once the response has started', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+
+      handler(refused(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.called).to.be.false
     })
   })
 

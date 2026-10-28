@@ -4,9 +4,15 @@ classify", and a typed error when the model fails — which fails extraction,
 never the already-searchable record."""
 
 import asyncio
+import base64
+import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import openai
 import pytest
+from botocore.exceptions import ClientError
+from google.genai import errors as genai_errors
 
 from app.models.blocks import Block, BlockType, DataFormat, SemanticMetadata
 from app.modules.transformers.document_extraction import (
@@ -197,3 +203,178 @@ async def test_a_provider_outage_is_unavailable_not_a_bad_document() -> None:
     ):
         with pytest.raises(LLMUnavailableError):
             await extraction.classify(_blocks(), "org-1", ["Engineering"])
+
+
+def _png_uri(fmt: str = "PNG", declared: str = "image/png") -> str:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    # Varied pixels, so half the file still holds a full header and the cut lands in the pixel data.
+    Image.frombytes("RGB", (64, 64), bytes(i * 7 % 251 for i in range(64 * 64 * 3))).save(buf, format=fmt)
+    return f"data:{declared};base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+
+def _blocks_with_image() -> list[Block]:
+    return [
+        *_blocks(),
+        Block(index=1, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": _png_uri()}),
+    ]
+
+
+def _multimodal_role() -> AsyncMock:
+    return AsyncMock(return_value=(MagicMock(), {"isMultimodal": True, "contextLength": 8000}))
+
+
+def _openai_error(
+    status: int, error: dict | None = None,
+) -> openai.APIStatusError:
+    response = httpx.Response(status, request=httpx.Request("POST", "http://x"))
+    body = {"error": error or {
+        "message": "The image data you provided does not represent a valid image.",
+        "type": "invalid_request_error", "param": "input", "code": "invalid_value",
+    }}
+    error_type = {400: openai.BadRequestError, 401: openai.AuthenticationError, 404: openai.NotFoundError}[status]
+    # The SDK's own message format, which carries the body.
+    return error_type(f"Error code: {status} - {body}", response=response, body=body)
+
+
+def _bedrock_validation_error() -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": "ValidationException", "Message": "Could not process image"},
+            "ResponseMetadata": {"HTTPStatusCode": 400},
+        },
+        "Converse",
+    )
+
+
+def _image_parts(call: object) -> list[dict]:
+    message = call.args[1][-1]  # type: ignore[attr-defined]
+    return [part for part in message.content if part["type"] == "image_url"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        lambda: _openai_error(400),
+        _bedrock_validation_error,
+        lambda: genai_errors.ClientError(400, {"error": {"message": "Unable to process input image."}}),
+    ],
+    ids=["openai", "bedrock", "gemini"],
+)
+async def test_rejected_images_are_dropped_and_the_text_classified(rejection) -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=[rejection(), _classification()])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        metadata = await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    assert metadata is not None and metadata.categories == ["Security"]
+    first, second = invoke.call_args_list
+    assert len(_image_parts(first)) == 1
+    assert _image_parts(second) == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_after_a_text_only_retry_does_not_resend_images() -> None:
+    extraction = _extraction()
+    fallback = AsyncMock(return_value=SemanticMetadata(summary="s"))
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection",
+        AsyncMock(side_effect=[_openai_error(400), None]),
+    ), patch.object(extraction, "_fallback_summary", fallback):
+        await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    sent = fallback.call_args.args[1]
+    assert sent and all(part["type"] != "image_url" for part in sent)
+
+
+@pytest.mark.asyncio
+async def test_a_text_only_retry_that_also_fails_is_an_extraction_error() -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=[_openai_error(400), _openai_error(400)])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(ExtractionLLMError):
+            await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    assert invoke.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "blocks", "error"),
+    [
+        (_llm_role, _blocks, lambda: _openai_error(400)),
+        (_multimodal_role, _blocks_with_image, lambda: _openai_error(401)),
+        (_multimodal_role, _blocks_with_image, lambda: _openai_error(404)),
+        (_multimodal_role, _blocks_with_image, lambda: RuntimeError("boom")),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "Unsupported parameter: 'response_format' is not supported with this model.",
+                "type": "invalid_request_error", "param": "response_format", "code": "unsupported_parameter",
+            }),
+        ),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "The image was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+                "type": None, "param": "prompt", "code": "content_filter",
+            }),
+        ),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "Budget has been exceeded for this key; image requests are paused.",
+                "type": "budget_exceeded", "param": None, "code": "400",
+            }),
+        ),
+        (_multimodal_role, lambda: _blocks_with_image()[1:], lambda: _openai_error(400)),
+    ],
+    ids=[
+        "no-images", "auth", "model-not-found", "unclassified",
+        "unsupported-parameter", "content-filter", "gateway-budget", "images-only",
+    ],
+)
+async def test_other_failures_are_not_retried_without_images(role, blocks, error) -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=error())
+    with patch(f"{_MODULE}.get_llm_for_role", role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(ExtractionLLMError):
+            await extraction.classify(blocks(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_outage_with_images_is_unavailable_not_retried_without_them() -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=LLMUnavailableError("down"))
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(LLMUnavailableError):
+            await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+
+
+def test_a_truncated_image_is_skipped() -> None:
+    from app.modules.transformers.document_extraction import _downscale_base64_image
+
+    header, payload = _png_uri().split(",", 1)
+    raw = base64.b64decode(payload)
+    truncated = base64.b64encode(raw[: len(raw) // 2]).decode()
+    assert _downscale_base64_image(f"{header},{truncated}") is None
+
+
+def test_an_image_declared_with_the_wrong_type_is_relabelled() -> None:
+    blocks = [
+        Block(
+            index=0, type=BlockType.IMAGE, format=DataFormat.BASE64,
+            data={"uri": _png_uri(fmt="JPEG", declared="image/png")},
+        )
+    ]
+    content = _extraction()._prepare_content(blocks, is_multimodal_llm=True, context_length=8000)
+    assert content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")

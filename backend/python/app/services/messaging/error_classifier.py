@@ -25,6 +25,7 @@ from app.exceptions.indexing_exceptions import (
     ExtractionError,
     IndexingError,
     ProcessingError,
+    RecordDeletedError,
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.utils.api_call import ApiCallError
@@ -191,6 +192,24 @@ def is_source_refusal(exc: BaseException | None) -> bool:
     return isinstance(root, ApiCallError) and bool(root.source_reason)
 
 
+def is_record_deleted(exc: BaseException | None) -> bool:
+    """Whether ``exc`` is the record having been deleted while it was being indexed."""
+    # Explicit causes only: an unrelated error raised while the deletion was
+    # propagating (in a ``finally``) carries it as ``__context__``, and is a fault.
+    seen: set[int] = set()
+    while exc is not None and exc.__cause__ is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        exc = exc.__cause__
+    return isinstance(exc, RecordDeletedError)
+
+
+def is_expected_outcome(exc: BaseException | None) -> bool:
+    """Whether ``exc`` ends a record the way nobody needs to act on (the source
+    refused it, or it was deleted while it was being indexed): logged once below
+    error level by the handler, not as a fault."""
+    return is_source_refusal(exc) or is_record_deleted(exc)
+
+
 def _classify_aiohttp_transport_error(exc: Exception) -> Optional[str]:
     """Return TRANSIENT if exc is an aiohttp transport-layer error.
     
@@ -273,6 +292,7 @@ class MessageErrorClassifier:
         8. ExtractionError = TERMINAL (content extraction failed)
         9. ProcessingError = TERMINAL (generic processing failure)
         10. BlockContainerValidationError = TERMINAL (validation failure)
+        10b. RecordDeletedError = TERMINAL (the record is gone; a retry finds the same)
         11. Timeout/network errors = TRANSIENT (infrastructure issue)
         12. OpenAI API errors = check type (rate limit, connection = TRANSIENT)
         13. aiohttp/httpx transport errors = TRANSIENT
@@ -349,6 +369,11 @@ class MessageErrorClassifier:
                     return MessageErrorType.TERMINAL
         except ImportError:
             pass
+
+        # 0c'. A deletion counts only through explicit causes: a cleanup fault raised
+        # while it propagates carries it as __context__ and must stay retryable.
+        if is_record_deleted(exc):
+            return MessageErrorType.TERMINAL
 
         # 0d. Scan full chain for terminal exception types before HTTP status rules.
         # Processing failures must win over incidental infrastructure errors deeper in the chain.

@@ -51,9 +51,15 @@ outputs:
   e2e_smoke:
     description: "'true' when the e2e_smoke check should run"
     value: ${{ steps.decide.outputs.e2e_smoke }}
+  integration_helpers:
+    description: "'true' when the integration_helpers check should run"
+    value: ${{ steps.decide.outputs.integration_helpers }}
   codeql_languages:
     description: "The languages CodeQL analyses, as codeql.yml's matrix include list (JSON)"
     value: ${{ steps.decide.outputs.codeql_languages }}
+  integration_shards:
+    description: "The integration-tests.yml shards a pull request runs (JSON list)"
+    value: ${{ steps.decide.outputs.integration_shards }}
 
 runs:
   using: composite

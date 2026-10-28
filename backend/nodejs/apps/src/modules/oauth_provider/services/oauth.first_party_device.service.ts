@@ -1,3 +1,4 @@
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
 import { Logger } from '../../../libs/services/logger.service'
@@ -47,6 +48,11 @@ export class FirstPartyDeviceAppService {
    * yet or the agent preset cannot be granted under current MCP_SCOPES.
    */
   async getOrCreate(): Promise<string | null> {
+    // Discovery and the device endpoint arrive with no session: the server itself runs this as the install's organisation.
+    return inInstallOrg('oauth.first_party_device', () => this.ensure(), null);
+  }
+
+  private async ensure(): Promise<string | null> {
     const repo = getOAuthAppRepository()
     const existing = await repo.findByClientId(FIRST_PARTY_DEVICE_CLIENT_ID)
     if (existing) {

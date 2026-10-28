@@ -5110,6 +5110,126 @@ class TestOnNewRecordsFlushBeforePublish:
         assert call_order == ["flush", "publish"]
 
 
+class TestSystemFilesAreNotStored:
+    """Office lock files and OS files are not content: no record, no index event, on every connector."""
+
+    @staticmethod
+    def _proc_and_store() -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        return proc, tx_store
+
+    @staticmethod
+    def _stored_names(tx_store: AsyncMock) -> list[str]:
+        return [r.record_name for c in tx_store.batch_upsert_records.await_args_list for r in c.args[0]]
+
+    @staticmethod
+    def _published_ids(proc: DataSourceEntitiesProcessor) -> list[str]:
+        return [key for c in proc.messaging_producer.send_messages.await_args_list for key, _ in c.args[1]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["~$Report.docx", "Thumbs.db", "THUMBS.DB", "desktop.ini", ".ds_store"])
+    async def test_on_new_records_stores_and_publishes_only_the_real_file(self, name: str) -> None:
+        proc, tx_store = self._proc_and_store()
+        junk = _make_record(external_record_id="ext-junk", record_name=name)
+        real = _make_record(external_record_id="ext-real", record_name="Report.docx")
+
+        await proc.on_new_records([(junk, []), (real, [])])
+
+        assert self._stored_names(tx_store) == ["Report.docx"]
+        assert self._published_ids(proc) == [real.id]
+
+    @pytest.mark.asyncio
+    async def test_bucket_key_is_judged_by_its_leaf_name(self) -> None:
+        """Bucket connectors keep the full key in the external id and the leaf in record_name."""
+        proc, tx_store = self._proc_and_store()
+        lock = _make_record(external_record_id="bucket/a/b/~$x.docx", record_name="~$x.docx")
+
+        await proc.on_new_records([(lock, [])])
+
+        tx_store.batch_upsert_records.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["a~$b.docx", "Thumbs.db.bak", "my desktop.ini notes.txt"])
+    async def test_names_that_only_contain_a_marker_are_stored(self, name: str) -> None:
+        proc, tx_store = self._proc_and_store()
+
+        await proc.on_new_records([(_make_record(record_name=name), [])])
+
+        assert self._stored_names(tx_store) == [name]
+
+    @pytest.mark.asyncio
+    async def test_content_update_of_a_lock_file_writes_and_publishes_nothing(self) -> None:
+        proc, tx_store = self._proc_and_store()
+
+        await proc.on_record_content_update(_make_record(record_name="~$Report.docx"))
+
+        tx_store.batch_upsert_records.assert_not_awaited()
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_record_renamed_onto_a_lock_name_is_still_updated(self) -> None:
+        """Skipping it would leave its old parent and access edges in place."""
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(record_name="Report.docx"))
+
+        await proc.on_record_metadata_update(_make_record(record_name="~$Report.docx"))
+
+        assert "~$Report.docx" in self._stored_names(tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_folder_with_a_lock_name_is_kept(self) -> None:
+        """Folders are FileRecords too; only files are dropped, or a folder's children lose their parent."""
+        proc, tx_store = self._proc_and_store()
+        folder = _make_record(record_name="~$x")
+        folder.is_file = False
+
+        await proc.on_new_records([(folder, [])])
+
+        assert self._stored_names(tx_store) == ["~$x"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_is_not_a_file_is_kept(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        ticket = TicketRecord(
+            org_id="org-1",
+            external_record_id="ext-ticket-1",
+            record_name="~$x",
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+            record_type=RecordType.TICKET,
+            version=1,
+            source_created_at=1000,
+            source_updated_at=2000,
+        )
+
+        await proc.on_new_records([(ticket, [])])
+
+        assert self._stored_names(tx_store) == ["~$x"]
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_of_a_lock_file_writes_nothing(self) -> None:
+        proc, tx_store = self._proc_and_store()
+
+        await proc.on_record_metadata_update(_make_record(record_name="~$Report.docx"))
+
+        tx_store.batch_upsert_records.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_move_fallback_does_not_store_a_lock_file(self) -> None:
+        """A move whose old record is unknown is a plain add, so it goes through the same guard."""
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+
+        await proc.on_records_moved([("old/~$x.docx", _make_record(record_name="~$x.docx"), [])])
+
+        tx_store.batch_upsert_records.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_called()
+
+
 # ===========================================================================
 # on_record_content_update (lines 904-919)
 # ===========================================================================

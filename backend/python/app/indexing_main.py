@@ -2572,8 +2572,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
     try:
-        from app.modules.parsers.parse_pool import shutdown_parse_pool
-        if shutdown_parse_pool():
+        from app.modules.parsers import parse_pool
+        # Cleared first, or the next submit in this process starts a new pool.
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
             logger.info("✅ Parse worker pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")

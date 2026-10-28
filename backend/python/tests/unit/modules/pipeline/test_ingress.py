@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.ingress import StageIngress
@@ -76,9 +77,28 @@ async def test_a_forced_event_forces_the_stages_it_dispatches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_record_is_an_error() -> None:
-    ingress, _, _ = _ingress(None)
-    with pytest.raises(LookupError):
+async def test_a_deleted_record_raises_record_deleted() -> None:
+    ingress, coordinator, graph = _ingress(None)
+    with pytest.raises(RecordDeletedError) as raised:
+        await ingress.on_indexed(_record(), trigger="newRecord")
+    assert raised.value.record_id == "rec-1"
+    assert graph.get_document.await_args.kwargs == {"raise_on_error": True}
+    coordinator.on_external_done.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_trashed_record_raises_record_deleted() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc", "isDeleted": True})
+    with pytest.raises(RecordDeletedError):
+        await ingress.on_indexed(_record(), trigger="newRecord")
+    coordinator.on_external_done.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_graph_is_not_mistaken_for_a_deletion() -> None:
+    ingress, _, graph = _ingress(None)
+    graph.get_document.side_effect = ConnectionError("graph down")
+    with pytest.raises(ConnectionError):
         await ingress.on_indexed(_record(), trigger="newRecord")
 
 

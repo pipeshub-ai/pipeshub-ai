@@ -1,4 +1,5 @@
 import { MongoResetLinkRepository } from './mongo';
+import { PgResetLinkRepository } from './pg';
 import type { ResetLinkRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: ResetLinkRepository | undefined;
 
 export const getResetLinkRepository = (): ResetLinkRepository =>
   (repo ??= pickStore<ResetLinkRepository>('reset-link', {
+    postgres: () => new PgResetLinkRepository(),
     mongo: () => new MongoResetLinkRepository(),
   }));
 

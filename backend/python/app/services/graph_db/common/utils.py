@@ -246,6 +246,20 @@ class PermittedEntityRows(EntityCandidateRows):
         )
 
 
+def within_param(within: list[dict[str, list[str]]] | None) -> list[dict[str, list[str]]] | None:
+    """Scopes for a candidate query's ``within`` bind variable: each
+    ``{"apps", "groups", "records"}`` with every key present and only string
+    ids, or None when there is no limit. An empty list is a limit too; it is
+    kept as one empty scope, so it admits nothing instead of everything."""
+    if within is None:
+        return None
+    scopes = [
+        {key: [str(i) for i in (scope.get(key) or []) if i] for key in ("apps", "groups", "records")}
+        for scope in within
+    ]
+    return scopes or [{"apps": [], "groups": [], "records": []}]
+
+
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
     Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,

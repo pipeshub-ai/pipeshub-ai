@@ -11,6 +11,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     _named_entities_enabled,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
@@ -22,7 +23,11 @@ from app.modules.retrieval.entity_filters import (
     EntityFilterResolver,
     EntityFilterUnavailableError,
 )
-from app.modules.retrieval.entity_permissions import EntityAccessError
+from app.modules.retrieval.entity_permissions import (
+    EntityAccessContext,
+    EntityAccessError,
+    admitted_node_ids,
+)
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -98,6 +103,9 @@ async def execute_find_records_by_value(
             if match.error == TOO_BROAD_MESSAGE:
                 # Too many matches to list: count within the user's readable records,
                 # so "too many" is never decided by records they cannot read.
+                # shortcut: counted over the apps the turn touches, not only the
+                # selection inside them (the readable-record query has no
+                # selection filter); rows are still gated by the limit below.
                 readable = await graph.get_accessible_virtual_record_ids(
                     user_id, org_id, {"apps": sorted(context.app_ids)}, raise_on_error=True,
                 )
@@ -107,14 +115,17 @@ async def execute_find_records_by_value(
         if match.error:
             return False, match.error
         in_scope = [hit for hit in match.hits if hit.connector_id in context.app_ids]
-        rows = await _readable_records(graph, in_scope, user_id, org_id)
+        rows = await _readable_records(graph, context, in_scope, user_id, org_id)
     except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError):
         logger.warning("find_records_by_value failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
     if rows is None:
         return False, TOO_MANY_RECORDS_MSG
     if not rows:
-        return True, json.dumps({"status": "success", "records": [], "message": "No accessible records matched"})
+        return True, json.dumps({
+            "status": "success", "records": [], "message": "No accessible records matched",
+            **({"scopeNote": note} if (note := limited_scope_note(context)) else {}),
+        })
     remember_record_ids(state, [row["recordId"] for row in rows])
     return True, json.dumps({"status": "success", "records": rows})
 
@@ -126,9 +137,15 @@ def _given(low: float | None, high: float | None) -> bool:
 
 
 async def _readable_records(
-    graph: "IGraphDBProvider", hits: list[EntityFilterHit], user_id: str, org_id: str,
+    graph: "IGraphDBProvider",
+    context: EntityAccessContext,
+    hits: list[EntityFilterHit],
+    user_id: str,
+    org_id: str,
 ) -> list[dict[str, str]] | None:
-    """The readable hits, or None once more than ``_MAX_ROWS`` are readable."""
+    """The readable hits inside the turn's limit, or None once more than
+    ``_MAX_ROWS`` are. ``filter_accessible_record_ids`` also drops placeholders
+    and internal records, which the entity gate alone would not."""
     unique = list({hit.record_id: hit for hit in hits}.values())
     rows: list[dict[str, str]] = []
     for start in range(0, len(unique), _CHECK_BATCH):
@@ -136,6 +153,8 @@ async def _readable_records(
         readable = await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
         )
+        if context.row_scopes:
+            readable = set(readable) & await admitted_node_ids(graph, context, readable)
         for hit in batch:
             if hit.record_id not in readable:
                 continue

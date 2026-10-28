@@ -64,6 +64,7 @@ from app.connectors.core.sync.task_manager import (
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
+from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
     knowledge_hub_router,
@@ -865,6 +866,12 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
             await config_service.close()
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
+
+        # After the syncs above were cancelled: an idle close would otherwise outlive the loop.
+        try:
+            await close_shared_fetcher()
+        except Exception as e:
+            logger.warning(f"Error closing the shared headless browser: {e}")
 
         # Last, and the only place the shared pool is ever shut down — connector
         # cleanup() only drains its own lease, since other connectors share this.

@@ -4,7 +4,8 @@
 Each workflow asks this script (through .github/actions/pr-changes) and runs
 only the jobs whose code changed: a Node-only change skips the Python unit
 shards and the Python backend-matrix suites, and a Markdown-only change skips
-the browser smoke test.
+the browser smoke test. The integration suite's shards are picked the same way,
+from which connector or test folder a change touches.
 
 Every event other than a pull request (a push to main, the schedule, a manual
 run, a workflow_call from another workflow) runs everything, so whatever a
@@ -171,6 +172,13 @@ CHECKS["redis_cluster"] = (
     )
 )
 
+# integration-tests.yml's helper unit tests (mocks only). The shards run them
+# first; a pull request that runs no shard runs them in a job of their own.
+CHECKS["integration_helpers"] = (
+    "integration-tests/**",
+    ".github/workflows/integration-tests.yml",
+)
+
 # Checks that run for any change outside DOCS: they exercise the whole product.
 ANY_CODE = ("e2e_smoke",)
 
@@ -182,6 +190,178 @@ CODEQL_LANGUAGES = {
     "codeql_javascript": "javascript-typescript",
     "codeql_python": "python",
 }
+
+
+IT_WORKFLOW = ".github/workflows/integration-tests.yml"
+
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_4 in
+# integration-tests.yml list them (test_pr_changes.py checks the two agree).
+CONNECTOR_SHARDS = {
+    "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "github", "sharepoint"),
+    "connectors-2": (
+        "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
+    ),
+    "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
+    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+}
+# The shards a pull request can run, in the workflow's order. Each one waits for
+# an approval and then takes about three hours, so these rules save the most.
+IT_SHARDS = (*CONNECTOR_SHARDS, "core", "demo")
+_SHARD_OF = {marker: shard for shard, markers in CONNECTOR_SHARDS.items() for marker in markers}
+_SHARD_OF["demo"] = "demo"
+
+# Changes no shard builds, starts or collects. integration-tests/unit runs in the
+# helper job (and first in every shard); sdk_tests and perf have workflows of
+# their own and are outside pytest.ini's testpaths.
+IT_NO_STACK = (
+    f"{PYTHON}/tests/**",
+    "backend/nodejs/apps/tests/**",
+    "frontend/**/*.test.ts",
+    "frontend/**/*.test.tsx",
+    "scripts/test_*.py",
+    "scripts/unit_shards.py",
+    "scripts/unit_shard_durations.json",
+    "integration-tests/unit/**",
+    "integration-tests/sdk_tests/**",
+    "integration-tests/perf/**",
+)
+IT_RUNTIME_TREES = (f"{PYTHON}/app/", f"{PYTHON}/tests/evals/", "backend/nodejs/apps/src/", "frontend/", "integration-tests/")
+# The suite's own README and other Markdown at its top level, which nothing reads.
+IT_SUITE_DOCS = ("integration-tests/*.md",)
+# The demo questions' model list, which integration-tests/connectors/demo imports.
+IT_DEMO = (f"{PYTHON}/tests/evals/**",)
+# Test folders whose tests only the core shard runs and that no other folder
+# imports (test_pr_changes.py checks both), the nightly-only folders core still
+# collects (a file that fails to import fails every shard, and core shows it),
+# and the frontend, whose end-to-end tests run on core.
+# response-validation/helper is not in it: the connector suites' graph validators
+# import its schema checks.
+IT_CORE = tuple(
+    f"integration-tests/{folder}/**"
+    for folder in (
+        "cleanup", "examples", "mcp_package", "parsers", "permissions", "response-validation", "security",
+        "resilience", "storage", "ai_agents", "named_entities",
+    )
+) + ("frontend/**",)
+
+# Connector code: a folder under one of these is that connector's.
+CONNECTOR_ROOTS = (
+    f"{PYTHON}/app/connectors/sources",
+    f"{PYTHON}/app/sources/client",
+    f"{PYTHON}/app/sources/external",
+)
+# The markers whose tests exercise each connector folder's code, under any of
+# the roots. A change there runs those markers' shards and core, which starts
+# every connector and holds the agent tests that call the clients. A folder
+# that is not listed, such as one shared by many connectors (http, utils,
+# microsoft) or imported by product code outside the connectors (atlassian,
+# local_fs, notion, web), runs every shard. An empty tuple is a connector with no
+# integration suite, so core alone. test_pr_changes.py checks this list against
+# the imports: a listed folder may be imported only from its own markers'
+# folders, the agents' actions and tools, and the connector registry.
+CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
+    **{
+        name: ()
+        for name in (
+            "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
+            "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
+            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "servicenow", "trello", "workday",
+            "zoom",
+        )
+    },
+    "azure": ("azure_blob", "azure_files"),
+    "azure_blob": ("azure_blob",),
+    "azure_files": ("azure_files",),
+    "bookstack": ("bookstack",),
+    "cifs": ("smb",),
+    "demo": ("demo",),
+    # external/bookstack imports external/dropbox.
+    "dropbox": ("bookstack",),
+    "gcs": ("gcs",),
+    "google_cloud_storage": ("gcs",),
+    "github": ("github", "github_teams"),
+    "github_teams": ("github", "github_teams"),
+    "gitlab": ("gitlab",),
+    "gitlab_personal": ("gitlab",),
+    "google": ("google_drive_workspace", "google_drive_individual", "gmail_workspace", "gmail_individual"),
+    "linear": ("linear",),
+    "minio": ("minio",),
+    "s3": ("s3", "minio"),
+    "network_share": ("smb",),
+    "nextcloud": ("nextcloud",),
+    "rss": ("rss",),
+    "smb": ("smb",),
+    "zammad": ("zammad",),
+    "zendesk": ("zendesk",),
+}
+CONNECTOR_TESTS = "integration-tests/connectors"
+# A connector test folder's markers, where they differ from its name.
+# test_pr_changes.py checks that every test file in a folder carries one of them.
+CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
+    "github_personal": ("github",),
+    "gmail": ("gmail_workspace", "gmail_individual"),
+    "sharepoint": ("sharepoint", "sharepoint_sim"),
+    # Marked cifs, which no shard selects; core still collects the files.
+    "cifs": (),
+}
+# Shards whose suites import a connector test folder's helpers, beyond the
+# folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
+# Teams' (which uses Jira's block parser), Gmail on Google Drive's sync helpers,
+# and the cleanup tests on core create MinIO, Postgres and S3 connectors.
+# test_pr_changes.py follows the suite's imports and fails when this misses one.
+CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
+    "github_teams": ("connectors-1",),
+    "google_drive_workspace": ("connectors-2",),
+    "jira": ("connectors-1", "connectors-3"),
+    "minio": ("core",),
+    "postgres": ("core",),
+    "s3": ("connectors-1", "core"),
+}
+
+_CONNECTOR_CODE = re.compile("(?:" + "|".join(map(re.escape, CONNECTOR_ROOTS)) + r")/([^/]+)/")
+_CONNECTOR_TEST = re.compile(re.escape(CONNECTOR_TESTS) + r"/([^/]+)/")
+
+
+def _shards_of(markers: Iterable[str]) -> set[str]:
+    return {_SHARD_OF[marker] for marker in markers}
+
+
+def _integration_shards_for(path: str) -> set[str]:
+    # Markdown in these trees can be what the code or the tests read (the skill
+    # loader's files, the parser fixtures), so it follows its folder's rule.
+    if matches(path, DOCS) and (not path.startswith(IT_RUNTIME_TREES) or matches(path, IT_SUITE_DOCS)):
+        return set()
+    if matches(path, IT_DEMO):
+        return {"demo"}
+    if matches(path, IT_NO_STACK) or (path.startswith(".github/workflows/") and path != IT_WORKFLOW):
+        return set()
+    if code := _CONNECTOR_CODE.match(path):
+        markers = CONNECTOR_CODE_MARKERS.get(code.group(1))
+        return set(IT_SHARDS) if markers is None else {"core"} | _shards_of(markers)
+    if test := _CONNECTOR_TEST.match(path):
+        name = test.group(1)
+        markers = CONNECTOR_TEST_MARKERS.get(name, (name,) if name in _SHARD_OF else None)
+        if markers is None:
+            return set(IT_SHARDS)
+        return (_shards_of(markers) or {"core"}) | set(CONNECTOR_TESTS_ALSO_RUN.get(name, ()))
+    if matches(path, IT_CORE) and not path.startswith("integration-tests/response-validation/helper/"):
+        return {"core"}
+    return set(IT_SHARDS)
+
+
+def integration_shards(paths: list[str]) -> dict[str, str]:
+    """Each integration shard a pull request runs, with the first changed file that made it run."""
+    paths = [p.strip() for p in paths if p.strip()]
+    if not paths or len(paths) >= FILES_API_LIMIT:
+        return {shard: "run everything" for shard in IT_SHARDS}
+    for path in paths:
+        if matches(path, EVERYTHING):
+            return {shard: f"{path} changed" for shard in IT_SHARDS}
+    reasons: dict[str, str] = {}
+    for path in paths:
+        for shard in _integration_shards_for(path):
+            reasons.setdefault(shard, path)
+    return {shard: reasons[shard] for shard in IT_SHARDS if shard in reasons}
 
 
 def _pattern(glob: str) -> re.Pattern[str]:
@@ -270,18 +450,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.all:
         reasons = everything()
+        shards = {shard: "run everything" for shard in IT_SHARDS}
     else:
         with open(args.files, encoding="utf-8") as handle:
-            reasons = decide(handle.read().splitlines())
+            paths = handle.read().splitlines()
+        reasons = decide(paths)
+        shards = integration_shards(paths)
 
     outputs = "".join(f"{name}={'true' if name in reasons else 'false'}\n" for name in NAMES)
     outputs += f"codeql_languages={codeql_matrix(reasons)}\n"
+    outputs += "integration_shards=[" + ",".join(f'"{shard}"' for shard in shards) + "]\n"
     sys.stdout.write(outputs)
     _append("GITHUB_OUTPUT", outputs)
     lines = ["| Check | Runs | Because |", "|---|---|---|"]
     for name in NAMES:
         why = reasons.get(name)
         lines.append(f"| {name} | {'yes' if why else 'no'} | {why or 'nothing it covers changed'} |")
+    for shard in IT_SHARDS:
+        why = shards.get(shard)
+        lines.append(f"| integration {shard} | {'yes' if why else 'no'} | {why or 'nothing it covers changed'} |")
     _append("GITHUB_STEP_SUMMARY", "### Checks this pull request runs\n\n" + "\n".join(lines) + "\n")
     return 0
 

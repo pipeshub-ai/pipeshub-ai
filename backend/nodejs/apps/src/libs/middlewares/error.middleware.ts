@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
 import { BaseError } from '../errors/base.error';
+import { unansweredCallError } from '../errors/backend-error';
 import {
   BadRequestError,
   HttpError,
@@ -110,8 +111,13 @@ export class ErrorMiddleware {
       }
 
       try {
+        // A call to another PipesHub service that got no answer is a 503
+        // (504 on a timeout) wherever it was thrown, not an unknown 500.
         const mapped =
-          error instanceof BaseError ? error : bodyParserError(error);
+          error instanceof BaseError
+            ? error
+            : (bodyParserError(error) ??
+              unansweredCallError(error, `${req.method} ${req.path}`));
         if (mapped) {
           this.handleBaseError(mapped, req, res);
         } else {

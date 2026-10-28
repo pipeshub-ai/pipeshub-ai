@@ -1,3 +1,4 @@
+import { forOrg } from '../../../libs/context/orgContext';
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors'
@@ -179,7 +180,10 @@ export class OAuthDcrService {
     if (!orgId) {
       throw new BadRequestError('Instance is not initialized')
     }
-    const oldestUserId = await getUserRepository().getOldestId(orgId)
+    // No session here: the server itself reads the install's organisation.
+    const oldestUserId = await forOrg(orgId, 'oauth.dcr', () =>
+      getUserRepository().getOldestId(orgId),
+    )
     if (!oldestUserId) {
       throw new BadRequestError('Instance has no users')
     }

@@ -128,6 +128,29 @@ env:
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
 
 jobs:
+  # Which shards a pull request runs, from the files it changes
+  # (scripts/pr_changes.py): a change to one connector runs that connector's
+  # shard and core, a change to unit tests or docs runs none. Every other event
+  # gets every shard. The it-all label runs every shard on a pull request too.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      integration_shards: ${{ steps.changes.outputs.integration_shards }}
+      integration_helpers: ${{ steps.changes.outputs.integration_helpers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   # Which parts the run tests on besides the graph databases (always both).
   # Nightly runs rotate through the supported choices by weekday; pull requests
   # use the default; a manual run uses what it asked for (scripts/nightly_setup.py).
@@ -154,12 +177,15 @@ jobs:
 
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})
-    needs: setup
-    # Secrets only for code from this repository; forks run it-fork below.
+    needs: [setup, changes]
+    # Secrets only for code from this repository; forks run it-fork below. A pull
+    # request whose changes no shard tests runs none, and asks for no approval.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       !contains(github.event.pull_request.labels.*.name, 'skip-it'))
+       !contains(github.event.pull_request.labels.*.name, 'skip-it') &&
+       (needs.changes.outputs.integration_shards != '[]' ||
+        contains(github.event.pull_request.labels.*.name, 'it-all')))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
 
@@ -188,10 +214,12 @@ jobs:
         # against a real model. Each test costs model calls, so it runs on the
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
+        # A pull request runs only the shards its changes can affect (the
+        # changes job above); it-all runs all six.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]') || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -1436,13 +1464,19 @@ jobs:
 
   # A fork's pull request: no secrets, no environment, a GitHub-hosted runner.
   # The full stack needs the self-hosted runner and model credentials, so this
-  # runs the helper unit tests, which use mocks only.
+  # runs the helper unit tests, which use mocks only. A pull request from this
+  # repository that runs no shard but changes integration-tests runs them here
+  # too, since the shards are where they run otherwise.
   it-fork:
-    name: Integration helper tests (fork, no secrets)
+    name: Integration helper tests (no stack, no secrets)
+    needs: changes
     if: >-
       github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name != github.repository &&
-      !contains(github.event.pull_request.labels.*.name, 'skip-it')
+      !contains(github.event.pull_request.labels.*.name, 'skip-it') &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+       (needs.changes.outputs.integration_shards == '[]' &&
+        needs.changes.outputs.integration_helpers == 'true' &&
+        !contains(github.event.pull_request.labels.*.name, 'it-all')))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

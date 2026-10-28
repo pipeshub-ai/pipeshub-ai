@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from app.agents.actions.knowledge_graph.ops.entity_discovery import _named_entities_enabled
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
+    limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import (
@@ -129,7 +130,9 @@ async def execute_find_records_by_entity(
             return True, _empty_window_message(raw_id, resolved_type, page.next_cursor)
         # After a page of results, "none found" reads as "this entity is empty"
         # and contradicts what the caller was just shown.
-        return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
+        if cursor:
+            return True, NO_FURTHER_RECORDS_MSG
+        return True, " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(

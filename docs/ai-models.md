@@ -120,6 +120,14 @@ if built:
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
 
+## Local embedding model memory
+
+The bundled embedding server (`app/embedding_main.py`) holds a local model in memory only while something uses it.
+
+- **Startup.** It reads the saved embedding settings and warms the default local model only when the default entry (else the first) uses a local provider (`default`, `huggingFace`, `sentenceTransformers`), or when no embedding model is saved. With a hosted provider, or when the settings cannot be read, it skips the warm-up and loads the model on the first request that needs it (the first request pays the load, a few seconds for the default model).
+- **Idle unload.** A model unused for `EMBEDDING_SERVER_MODEL_IDLE_SECONDS` (default 900; `0` keeps it loaded) is dropped, then `gc` and `malloc_trim` hand the memory back. A request in flight keeps its model; the next request reloads it. `/health` reports `healthy` whenever the server is up; `loaded_models` lists what is resident.
+- **One copy per model.** The cache is keyed by model name alone, so `trust_remote_code` never loads the same weights twice. Requests that set it are still refused with 403 unless `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true`.
+
 ## Query instruction (BGE, experimental, off by default)
 
 Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchanged. Ranking evidence is mixed (dense gains, hybrid neutral, one slice regressed), so it stays opt-in. When on, BGE v1/v1.5 English embedding models (`bge-small|base|large[-en][-v1.5]`, local or hosted, by the configured model id) expect `Represent this sentence for searching relevant passages: ` in front of search *queries*. `app/utils/query_instruction.py` (`instruct_query`) adds it on the dense query embedding in chunk search (`retrieval_service.py`), entity search and the skill index. Passages and chunks are embedded as-is at index time, so stored vectors are unchanged, and the sparse (BM25) query is never prefixed. bge-m3 and the zh models are left alone, as is every non-BGE model. New query-embedding paths should call `instruct_query`.

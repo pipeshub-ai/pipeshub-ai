@@ -21,6 +21,7 @@ import pytest
 from PIL import Image
 
 from app.config.constants.arangodb import Connectors
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.models.entities import MimeTypes, OriginTypes, Record, RecordType
 from app.modules.parsers.image_parser import image_parser as image_parser_module
@@ -483,9 +484,10 @@ class TestParsingSeesShrunkImages:
         processor.parsers["html"] = html_parser
         page = f'<p>Photos</p><img src="{_jpeg(4000, 3000)}">'
 
-        [_ async for _ in processor.process_html_document(
-            "page.html", "rec-1", 1, "web", "org-1", page.encode(), "vr-1",
-        )]
+        with pytest.raises(RecordDeletedError):
+            [_ async for _ in processor.process_html_document(
+                "page.html", "rec-1", 1, "web", "org-1", page.encode(), "vr-1",
+            )]
 
         [text] = seen
         assert len(text) < len(page) / 2
@@ -500,7 +502,8 @@ class TestParsingSeesShrunkImages:
         processor.parsers["md"] = md_parser
         document = "# Photos\n\n![photo](" + _jpeg(4000, 3000) + ")\n"
 
-        [_ async for _ in processor.process_md_document("doc.md", "rec-1", document.encode(), "vr-1")]
+        with pytest.raises(RecordDeletedError):
+            [_ async for _ in processor.process_md_document("doc.md", "rec-1", document.encode(), "vr-1")]
 
         [text] = seen
         assert len(text) < len(document) / 2

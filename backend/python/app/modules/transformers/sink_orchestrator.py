@@ -8,7 +8,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.exceptions.indexing_exceptions import IndexingError
+from app.exceptions.indexing_exceptions import IndexingError, RecordDeletedError
 from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
@@ -52,7 +52,10 @@ from app.services.featureflag.platform_settings import (
     artifact_settings,
     is_artifact_write_enabled,
 )
-from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.graph_db.common.record_visibility import (
+    indexed_copy_fields,
+    is_live_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.telemetry.modules.record_storage_metrics import record_artifact_write
@@ -233,11 +236,10 @@ class SinkOrchestrator(Transformer):
         record_id = record.id
         with stage("graph.read"):
             record_doc = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
-        if record_doc is None:
-            self.logger.error(f"❌ Record {record_id} not found in database")
-            raise Exception(f"Record {record_id} not found in database")
+        if record_doc is None or not is_live_record(record_doc):
+            raise RecordDeletedError(record_id)
 
         if not skip_blob:
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None

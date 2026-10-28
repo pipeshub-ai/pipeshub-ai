@@ -82,7 +82,7 @@ class Harness:
 
         tx_store = AsyncMock()
         tx_store.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id, external_id: copy.deepcopy(self.stored.get(external_id))
+            side_effect=lambda connector_id, external_id, **_: copy.deepcopy(self.stored.get(external_id))
         )
         tx_store.get_record_by_key = AsyncMock(return_value=None)
         tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)

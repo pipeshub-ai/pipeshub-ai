@@ -1,8 +1,8 @@
 import { injectable, inject } from 'inversify';
 import jwt, { Algorithm, Secret } from 'jsonwebtoken';
-import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
+import { forOrg } from '../../../libs/context/orgContext';
 import {
   getOAuthTokenRepository,
   type AccessTokenDto,
@@ -37,6 +37,7 @@ import {
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { stripTokenDisplayPrefix } from '../constants/constants';
 import { parseScopeString } from './scope.validator.service';
+import { hashOpaqueToken } from '../../../libs/repositories/oauth-token/token-hash';
 
 /**
  * A grant is covered only when it asks for something and every requested
@@ -834,7 +835,10 @@ export class OAuthTokenService {
     ) {
       return;
     }
-    await getOAuthTokenRepository().touchAccessLastUsed(token._id, new Date());
+    const touch = (): Promise<void> =>
+      getOAuthTokenRepository().touchAccessLastUsed(token._id, new Date());
+    // this runs after authentication, outside a request's org: PostgreSQL needs the token's
+    await (token.orgId ? forOrg(token.orgId, 'oauth.touch', touch) : touch());
   }
 
   /**
@@ -852,6 +856,6 @@ export class OAuthTokenService {
    * Hash token for storage
    */
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
+    return hashOpaqueToken(token);
   }
 }

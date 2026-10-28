@@ -97,6 +97,7 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
@@ -573,11 +574,18 @@ export class UserController {
 
       const tokenOrgId = req.tokenPayload?.orgId;
 
-      const users = await getUserRepository().listLiveByEmail(
-        tokenEmail.toLowerCase(),
-        USER_LOOKUP_FIELDS.split(' ') as Array<keyof UserDto>,
-        tokenOrgId || undefined,
-      );
+      const lookup = (): ReturnType<
+        ReturnType<typeof getUserRepository>['listLiveByEmail']
+      > =>
+        getUserRepository().listLiveByEmail(
+          tokenEmail.toLowerCase(),
+          USER_LOOKUP_FIELDS.split(' ') as Array<keyof UserDto>,
+          tokenOrgId || undefined,
+        );
+      // a token that names no organisation looks the address up in the install's
+      const users = tokenOrgId
+        ? await lookup()
+        : await inInstallOrg('address-lookup', lookup, []);
 
       res.json(users);
       return;

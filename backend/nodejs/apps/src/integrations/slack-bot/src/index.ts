@@ -5,6 +5,8 @@ applyStoreUmbrella(); // PIPESHUB_STORE=postgres fills in the per-store settings
 
 import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
+import { initDocStore } from '../../../libs/repositories/doc-store';
+import { usesMongo } from '../../../libs/repositories/store-select';
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
 import { marked } from "marked";
@@ -1524,10 +1526,14 @@ app.event("app_mention", async ({ event, client, context }) => {
   await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
   await getPreparedRedisProvider();
 
-  await connect();
+  // No MongoDB connection (or legacy-index cleanup) when the document store is PostgreSQL.
+  if (usesMongo()) await connect();
+  // Same document-store wiring as the API: a no-op on Mongo, the PostgreSQL runtime under DOC_STORE=postgres.
+  // the bot runs no dispatcher or sweeper, so it needs no jobs login
+  await initDocStore(process.env.APP_VERSION ?? 'dev', { jobs: false });
 
   // Drop legacy threadId + botId index if it exists
-  await dropLegacyThreadBotIndex();
+  if (usesMongo()) await dropLegacyThreadBotIndex();
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");

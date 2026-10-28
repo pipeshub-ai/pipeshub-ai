@@ -3,7 +3,7 @@ import contextlib
 import logging
 import re
 import threading
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, TypeVar
@@ -27,6 +27,7 @@ from app.connectors.sources.web.browser_supervisor import (
     BrowserUnavailableError,
 )
 from app.connectors.sources.web.fetch_strategy import PIPESHUB_USER_AGENT
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.models import ResourceSnapshot
 from app.services.resource_governor.probe import ResourceProbe, build_probe
 from app.utils.env_config import env_int
@@ -690,6 +691,7 @@ for (const p of __panels) {
 _shared_instance: Crawl4AIFetcher | None = None
 _ref_count: int = 0
 _shared_lock: asyncio.Lock | None = None
+_idle_close: asyncio.Task[None] | None = None
 
 
 def _get_shared_lock() -> asyncio.Lock:
@@ -720,9 +722,9 @@ async def get_shared_fetcher(*, browser_like: bool = True) -> Crawl4AIFetcher:
     WEB_BROWSER_MAX_PAGES (or the older CRAWL4AI_CONCURRENCY) overrides that. WEB_BROWSER_MIN_FREE_MB
     (default 300) is the free memory a new tab waits for. CRAWL4AI_RECYCLE_AFTER_PAGES (default 1000,
     0 to disable) is how many pages a browser serves before it is relaunched. Each caller must pair
-    this with a call to release_shared_fetcher() when done.
+    this with a call to release_shared_fetcher() when done; ``shared_fetcher()`` does both.
     """
-    global _shared_instance, _ref_count
+    global _shared_instance, _ref_count, _idle_close  # noqa: PLW0603 - one browser per process by design
     async with _get_shared_lock():
         created = _shared_instance is None
         if created:
@@ -733,24 +735,76 @@ async def get_shared_fetcher(*, browser_like: bool = True) -> Crawl4AIFetcher:
             )
         try:
             await _shared_instance.start(browser_like=browser_like)
-        except Exception:
+        except BaseException:
+            # Cancelled too (a render's timeout): a browser nobody holds must not be left without its idle close.
             if created:
                 instance, _shared_instance = _shared_instance, None
                 await instance.close()
             raise
+        # Only now: a failed start on an idle browser leaves its pending close in place.
+        if _idle_close is not None:
+            _idle_close.cancel()
+            _idle_close = None
         _ref_count += 1
         return _shared_instance
 
 
 async def release_shared_fetcher() -> None:
-    """Decrement the shared fetcher ref count; close when the last caller releases."""
-    global _shared_instance, _ref_count
+    """Decrement the shared fetcher ref count; the last release closes the browser once it has
+    sat unused for WEB_BROWSER_IDLE_CLOSE_SECONDS (default 60, 0 closes at once)."""
+    global _shared_instance, _ref_count, _idle_close  # noqa: PLW0603 - one browser per process by design
     async with _get_shared_lock():
         if _ref_count <= 0:
             return
         _ref_count -= 1
-        if _ref_count == 0 and _shared_instance is not None:
-            try:
-                await _shared_instance.close()
-            finally:
-                _shared_instance = None
+        if _ref_count or _shared_instance is None:
+            return
+        grace = max(0, env_int("WEB_BROWSER_IDLE_CLOSE_SECONDS", 60))
+        if grace:
+            _idle_close = spawn_detached(_close_when_idle(_shared_instance, grace), name="close-idle-browser")
+            return
+        instance, _shared_instance = _shared_instance, None
+    await instance.close()
+
+
+async def _close_when_idle(instance: Crawl4AIFetcher, grace: int) -> None:
+    global _shared_instance, _idle_close  # noqa: PLW0603 - one browser per process by design
+    await asyncio.sleep(grace)
+    async with _get_shared_lock():
+        if _ref_count or _shared_instance is not instance:
+            return
+        # Past this point a new get_shared_fetcher starts a fresh browser instead of cancelling this close.
+        _shared_instance = None
+        _idle_close = None
+    try:
+        await instance.close()
+    except Exception as e:
+        logger.warning("Closing the idle headless browser failed: %s", e)
+
+
+async def close_shared_fetcher() -> None:
+    """Close the shared browser now, whoever still holds it; for process shutdown.
+
+    Fetches still in flight, such as a chat render, fail. An idle close already inside
+    ``close()`` is not awaited; it finishes on its own.
+    """
+    global _shared_instance, _ref_count, _idle_close  # noqa: PLW0603 - one browser per process by design
+    async with _get_shared_lock():
+        if _idle_close is not None:
+            _idle_close.cancel()
+            _idle_close = None
+        instance, _shared_instance = _shared_instance, None
+        _ref_count = 0
+    if instance is not None:
+        await instance.close()
+
+
+@contextlib.asynccontextmanager
+async def shared_fetcher(*, browser_like: bool = True) -> AsyncIterator[Crawl4AIFetcher]:
+    """The shared fetcher, held for the block."""
+    fetcher = await get_shared_fetcher(browser_like=browser_like)
+    try:
+        yield fetcher
+    finally:
+        # Shielded: the release waits for the lock, held across a browser start, and a second cancel must not skip it.
+        await asyncio.shield(release_shared_fetcher())

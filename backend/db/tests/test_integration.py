@@ -67,11 +67,11 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 
 
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables) and the document store's branches
-DOCSTORE_BRANCHES = ("content", "conversation", "platform_data")
+DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES)
-HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (2, 0), "conversation": (2, 0), "platform_data": (1, 0)}
+HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (2, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (2, 0), "platform_data": (1, 0)}
 # the branches depend on early kernel and platform revisions, so the heads are the kernel's last revision and each branch's last
-REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0002", "conversation_0002", "platform_data_0001"}
+REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0002", "conversation_0002", "identity_0003", "integrations_0002", "oauth_0002", "platform_data_0001"}
 
 
 def test_fresh_install(db):
@@ -136,7 +136,7 @@ def test_bare_database_as_superuser(bare_db):
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 14
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 15
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 

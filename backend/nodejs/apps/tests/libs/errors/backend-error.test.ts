@@ -4,6 +4,7 @@ import {
   handleBackendError,
   KB_BEING_DELETED_MESSAGE,
   SERVICE_UNAVAILABLE_MESSAGE,
+  unansweredCallError,
 } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
@@ -355,5 +356,94 @@ describe('handleBackendError', () => {
         expect(warn.called).to.be.false
       })
     }
+  })
+})
+
+describe('unansweredCallError', () => {
+  const withCode = (code: string) =>
+    Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) })
+
+  beforeEach(() => {
+    sinon.stub(Logger.prototype, 'error')
+  })
+
+  afterEach(() => {
+    sinon.restore()
+  })
+
+  for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'EPIPE']) {
+    it(`is a 503 with the shared message when fetch failed with ${code}`, () => {
+      const result = unansweredCallError(withCode(code), 'Search')
+      expect(result).to.be.instanceOf(ServiceUnavailableError)
+      expect(result!.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+    })
+  }
+
+  it("is a 503 for axios's request that got no response", () => {
+    const result = unansweredCallError({ code: 'ECONNREFUSED', request: {} }, 'Get user')
+    expect(result).to.be.instanceOf(ServiceUnavailableError)
+  })
+
+  it("is a 503 for axios's network failure and a broken pipe", () => {
+    expect(unansweredCallError({ code: 'ERR_NETWORK', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError({ code: 'EPIPE', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+  })
+
+  for (const code of ['ECONNABORTED', 'ETIMEDOUT']) {
+    it(`is a 504 for axios's own timeout (${code})`, () => {
+      expect(unansweredCallError({ code, request: {} }, 'Get user')).to.be.instanceOf(GatewayTimeoutError)
+    })
+  }
+
+  it('is null for an axios timeout code on a call the service answered', () => {
+    expect(unansweredCallError({ code: 'ECONNABORTED', request: {}, response: { status: 502 } }, 'Get user')).to.equal(null)
+  })
+
+  it('stays a 503 when fetch timed out connecting (ETIMEDOUT as the cause)', () => {
+    expect(unansweredCallError(withCode('ETIMEDOUT'), 'Search')).to.be.instanceOf(ServiceUnavailableError)
+  })
+
+  it('is null for an axios request that failed on a certificate', () => {
+    expect(unansweredCallError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', request: {} }, 'Get user')).to.equal(null)
+    expect(unansweredCallError({ code: 'CERT_HAS_EXPIRED', request: {} }, 'Get user')).to.equal(null)
+  })
+
+  it('is a 504 for a timed-out call', () => {
+    const result = unansweredCallError(new DOMException('timed out', 'TimeoutError'), 'Search')
+    expect(result).to.be.instanceOf(GatewayTimeoutError)
+  })
+
+  it('is null for a call the service answered, whatever its words', () => {
+    expect(unansweredCallError({ statusCode: 502, message: 'fetch failed' }, 'Search')).to.equal(null)
+    expect(unansweredCallError({ response: { status: 500 }, request: {} }, 'Search')).to.equal(null)
+  })
+
+  it('is null for a request without response that carries a validation detail', () => {
+    expect(unansweredCallError({ request: {}, detail: 'name is required' }, 'Create')).to.equal(null)
+  })
+
+  it('is null for a fetch that failed for a reason retrying will not fix', () => {
+    expect(unansweredCallError(withCode('ERR_TLS_CERT_ALTNAME_INVALID'), 'Search')).to.equal(null)
+    expect(unansweredCallError(withCode('UND_ERR_REQ_CONTENT_LENGTH_MISMATCH'), 'Search')).to.equal(null)
+  })
+
+  it('is null for anything that is not a failed call', () => {
+    expect(unansweredCallError(new Error('boom'), 'Search')).to.equal(null)
+    expect(unansweredCallError(new DOMException('aborted', 'AbortError'), 'Search')).to.equal(null)
+    expect(unansweredCallError(null, 'Search')).to.equal(null)
+    expect(unansweredCallError('fetch failed', 'Search')).to.equal(null)
+  })
+
+  it('logs the cause code', () => {
+    unansweredCallError(withCode('ECONNREFUSED'), 'Get user teams')
+    const logged = (Logger.prototype.error as sinon.SinonStub).firstCall
+    expect(logged.args[0]).to.equal('Could not reach the service during Get user teams')
+    expect(logged.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+  })
+
+  it('gives handleBackendError the same answer', () => {
+    expect(handleBackendError(withCode('ECONNREFUSED'), 'Search')).to.be.instanceOf(ServiceUnavailableError)
+    expect(handleBackendError({ code: 'ECONNREFUSED', request: {} }, 'Search')).to.be.instanceOf(ServiceUnavailableError)
+    expect(handleBackendError(new DOMException('timed out', 'TimeoutError'), 'Search')).to.be.instanceOf(GatewayTimeoutError)
   })
 })

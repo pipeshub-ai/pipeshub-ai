@@ -222,6 +222,7 @@ How `on_new_records` decides between insert and update:
 - An unchanged record that is already indexed (`COMPLETED`) is not re-queued, so re-sending unchanged records in a full sync is cheap. An unchanged record not yet indexed is re-published as `newRecord`; `on_new_records` never sends `updateRecord`.
 - A missing `weburl` or source timestamp is carried over from the stored record.
 - Records that are `AUTO_INDEX_OFF`, internal or placeholders are stored but not sent for indexing.
+- A file not yet stored (`FileRecord` with `is_file`) named as an Office lock file (`~$...`) or an operating system file (`Thumbs.db`, `desktop.ini`, `.DS_Store`, any case) is neither stored nor sent for indexing (`connectors/core/base/data_processor/system_files.py`). This holds for every write method, not only `on_new_records`. A record already stored under that external id is still updated, and a Knowledge Base upload is always stored.
 
 ## Sync points
 

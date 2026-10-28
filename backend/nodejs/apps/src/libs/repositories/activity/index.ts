@@ -1,4 +1,5 @@
 import { MongoActivityRepository } from './mongo';
+import { PgActivityRepository } from './pg';
 import type { ActivityRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: ActivityRepository | undefined;
 
 export const getActivityRepository = (): ActivityRepository =>
   (repo ??= pickStore<ActivityRepository>('activity', {
+    postgres: () => new PgActivityRepository(),
     mongo: () => new MongoActivityRepository(),
   }));
 

@@ -5,6 +5,7 @@ import nodemailer from 'nodemailer';
 import { MailSenderService } from '../../../../src/modules/mail/services/mail.sender.service';
 import { MailModel } from '../../../../src/modules/mail/schema/mailInfo.schema';
 import { setMailLogRepository } from '../../../../src/libs/repositories/mail-log';
+import { setIdentityPort } from '../../../../src/libs/repositories/identity';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 
 describe('MailSenderService', () => {
@@ -41,6 +42,8 @@ describe('MailSenderService', () => {
 
   afterEach(() => {
     setMailLogRepository();
+    setIdentityPort();
+    delete process.env.DOC_STORE;
     sinon.restore();
   });
 
@@ -241,6 +244,27 @@ describe('MailSenderService', () => {
     await written;
 
     expect(boundDuringRecord).to.equal('507f1f77bcf86cd799439012');
+  });
+
+  it('writes the audit entry in the install organisation when the mail names none (PostgreSQL)', async () => {
+    // A sign-in code is sent before any user is known, so there is neither a bound org nor one on the mail.
+    process.env.DOC_STORE = 'postgres';
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any);
+    let boundDuringRecord: string | undefined;
+    const written = new Promise<void>((resolve) =>
+      setMailLogRepository({
+        record: async () => {
+          boundDuringRecord = getCurrentOrgId();
+          resolve();
+        },
+      } as any),
+    );
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    await sender.send(body, smtp);
+    await written;
+
+    expect(boundDuringRecord).to.equal('org-1');
   });
 
   it('fails fast after repeated connection failures, then probes again after the cooldown', async () => {

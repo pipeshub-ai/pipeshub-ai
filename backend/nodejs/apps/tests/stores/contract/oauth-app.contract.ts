@@ -159,6 +159,26 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       expect((await repo.findOwned(org, me, app._id))?.name).to.equal('Renamed');
     });
 
+    it('updateOwned over a knowledge limit that changed refuses with a conflict, or skips the save with ignoreStale', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const app = await repo.create(mk(org, me));
+      const limit = { apps: ['a1'], recordGroups: [], records: [] };
+      await repo.updateOwned(org, me, app._id, { name: 'First', knowledgeLimit: limit });
+      const stale = { overKnowledgeLimit: { apps: ['other'], recordGroups: [], records: [] } };
+      let failure: Error | undefined;
+      try {
+        await repo.updateOwned(org, me, app._id, { name: 'Lost' }, stale);
+      } catch (e) {
+        failure = e as Error;
+      }
+      expect(failure?.message).to.match(/changed while you were editing/);
+      await repo.updateOwned(org, me, app._id, { name: 'Skipped' }, { ...stale, ignoreStale: true });
+      expect((await repo.findOwned(org, me, app._id))?.name).to.equal('First');
+      await repo.updateOwned(org, me, app._id, { name: 'Saved' }, { overKnowledgeLimit: limit });
+      expect((await repo.findOwned(org, me, app._id))?.name).to.equal('Saved');
+    });
+
     it('updateOwned clears a field given undefined, and the key is absent afterwards', async () => {
       const org = fx.newId();
       const me = fx.newId();

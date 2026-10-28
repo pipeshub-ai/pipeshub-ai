@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from aiokafka import TopicPartition
 
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -1191,6 +1192,22 @@ class TestProcessMessageWrapper:
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+
+    @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self, consumer) -> None:
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.logger = MagicMock()
+
+        async def handler(parsed) -> AsyncGenerator[PipelineEvent, None]:
+            raise RecordDeletedError("r1")
+            yield
+
+        consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+        assert not any("process_message_wrapper" in str(c.args[0]) for c in consumer.logger.error.call_args_list)
+        assert any("ended as expected" in str(c.args[0]) for c in consumer.logger.info.call_args_list)
 
     @pytest.mark.asyncio
     async def test_shutdown_during_parsing_slot_wait_does_not_increment_retry(

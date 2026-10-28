@@ -1,5 +1,5 @@
 /**
- * What only PostgreSQL has to prove for the document and mail log stores: row policies,
+ * What only PostgreSQL has to prove for the document, project, connectors-config, Slack thread and mail log stores: row policies,
  * the idempotency key under a race, the single winner of an upload lease, path ranges, the connector tag kept in step, member
  * order and versions under concurrency, and where a mail log row lands among the month partitions.
  */
@@ -9,7 +9,12 @@ import {
   orgContextStorage,
 } from '../../src/libs/context/orgContext';
 import { InternalServerError } from '../../src/libs/errors/http.errors';
+import { PgConnectorsConfigRepository } from '../../src/libs/repositories/connectors-config/pg';
 import { PgDocumentRepository } from '../../src/libs/repositories/document/pg';
+import { PgProjectRepository } from '../../src/libs/repositories/project/pg';
+import { PgSlackThreadRepository } from '../../src/libs/repositories/slack-thread/pg';
+import { setIdentityPort } from '../../src/libs/repositories/identity';
+import { PgIdentityPort } from '../../src/libs/repositories/identity/pg';
 import { PgMailLogRepository } from '../../src/libs/repositories/mail-log/pg';
 import { PgUnitOfWork, kernelTx } from '../../src/libs/repositories/pg';
 import { StorageVendor } from '../../src/modules/storage/types/storage.service.types';
@@ -40,6 +45,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     this.timeout(240_000);
     let stack: PgStack;
     const docs = new PgDocumentRepository();
+    const projects = new PgProjectRepository();
+    const connectors = new PgConnectorsConfigRepository();
+    const slack = new PgSlackThreadRepository();
+    const INSTALL_ORG = newId();
     const mail = new PgMailLogRepository();
 
     before(async () => {
@@ -47,8 +56,18 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         pool: 4,
         clientPool: 24,
       });
+      // the install's organisation: the one a call with none in context runs as
+      await stack.admin((c) =>
+        c.query(
+          `INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at)
+           VALUES ($1, 'example.com', 'a@example.com', 'business', now(), now())`,
+          [INSTALL_ORG],
+        ),
+      );
+      setIdentityPort(new PgIdentityPort());
     });
     after(async () => {
+      setIdentityPort();
       await stack?.stop();
     });
 
@@ -425,6 +444,257 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             seen.push(d._id);
         });
         expect(seen).to.deep.equal([...ids].sort());
+      });
+    });
+
+    describe('projects', () => {
+      it('ten people added at once: all ten members, ten distinct positions, __v moved by ten', async () => {
+        const org = newId(),
+          owner = newId();
+        const p = await inOrg(org, () =>
+          projects.create(org, owner, { name: 'crowd', tools: [] }),
+        );
+        const people = Array.from({ length: 10 }, () => newId());
+        await Promise.all(
+          people.map((id) =>
+            inOrg(org, () =>
+              projects.upsertMembers(
+                p._id,
+                [{ principalId: id, principalType: 'user', role: 'viewer' }],
+                owner,
+              ),
+            ),
+          ),
+        );
+        const got = await inOrg(org, () => projects.getLive(p._id));
+        expect(got?.members.map((m) => m.principalId).sort()).to.deep.equal(
+          [...people].sort(),
+        );
+        expect(got?.__v).to.equal(10);
+        const pos = await asOrg<{ pos: number }>(
+          org,
+          '/* pipeshub:test.pos */ SELECT pos FROM content.project_members WHERE project_id = $1',
+          [p._id],
+        );
+        expect(new Set(pos.map((r) => r.pos)).size).to.equal(10);
+      });
+
+      it('__v moves when a member is added or removed, not when a role changes; members keep the order they were added in', async () => {
+        const org = newId(),
+          owner = newId(),
+          u1 = newId(),
+          u2 = newId(),
+          t1 = newId();
+        await inOrg(org, async () => {
+          const p = await projects.create(org, owner, { name: 'v', tools: [] });
+          expect(p.__v).to.equal(0);
+          await projects.upsertMembers(
+            p._id,
+            [
+              { principalId: u1, principalType: 'user', role: 'viewer' },
+              { principalId: t1, principalType: 'team', role: 'viewer' },
+            ],
+            owner,
+          );
+          const after = await projects.upsertMembers(
+            p._id,
+            [{ principalId: u2, principalType: 'user', role: 'editor' }],
+            owner,
+          );
+          expect(after?.members.map((m) => m.principalId)).to.deep.equal([
+            u1,
+            t1,
+            u2,
+          ]);
+          expect(after?.__v).to.equal(2);
+          expect(
+            (
+              await projects.upsertMembers(
+                p._id,
+                [{ principalId: u1, principalType: 'user', role: 'editor' }],
+                owner,
+              )
+            )?.__v,
+          ).to.equal(2);
+          expect(
+            (await projects.removeMember(p._id, u1, 'user'))?.__v,
+          ).to.equal(3);
+          expect(
+            (await projects.removeMember(p._id, u1, 'user'))?.__v,
+          ).to.equal(3);
+          expect(
+            (await projects.getLive(p._id))?.members.map((m) => m.principalId),
+          ).to.deep.equal([t1, u2]);
+        });
+      });
+
+      it('lists pinned first, then newest activity, then id; the search treats % and _ as text; the total ignores the page', async () => {
+        const org = newId(),
+          me = newId();
+        await inOrg(org, async () => {
+          const names = ['a_b', 'axb', '100%', '100 percent'];
+          const made = [];
+          for (const name of names) {
+            made.push(await projects.create(org, me, { name, tools: [] }));
+            await new Promise((r) => setTimeout(r, 3));
+          }
+          await projects.setPinned(made[0]!._id, me, true, false);
+          const q = {
+            scope: 'mine' as const,
+            includeArchived: false,
+            teamIds: [],
+            skip: 0,
+            limit: 50,
+          };
+          expect(
+            (await projects.list(org, me, q)).rows.map((r) => r.name),
+          ).to.deep.equal(['a_b', '100 percent', '100%', 'axb']);
+          expect(
+            (await projects.list(org, me, { ...q, search: 'a_b' })).rows.map(
+              (r) => r.name,
+            ),
+          ).to.deep.equal(['a_b']);
+          expect(
+            (await projects.list(org, me, { ...q, search: '100%' })).rows.map(
+              (r) => r.name,
+            ),
+          ).to.deep.equal(['100%']);
+          const page = await projects.list(org, me, {
+            ...q,
+            skip: 3,
+            limit: 2,
+          });
+          expect(page.rows.map((r) => r.name)).to.deep.equal(['axb']);
+          expect(page.total).to.equal(4);
+        });
+      });
+
+      it('a legacy project-wide pin counts as the owner\'s pin only', async () => {
+        const org = newId(),
+          owner = newId(),
+          member = newId();
+        await inOrg(org, async () => {
+          const old = await projects.create(org, owner, { name: 'Old', tools: [] });
+          await new Promise((r) => setTimeout(r, 3));
+          await projects.create(org, owner, { name: 'New', tools: [] });
+          await projects.upsertMembers(
+            old._id,
+            [{ principalId: member, principalType: 'user', role: 'viewer' }],
+            owner,
+          );
+          await stack.admin((c) =>
+            c.query(
+              'UPDATE content.projects SET is_pinned = true, last_activity_at = now() - interval \'1 day\' WHERE id = $1',
+              [old._id],
+            ),
+          );
+          const q = {
+            scope: 'all' as const,
+            includeArchived: false,
+            teamIds: [],
+            skip: 0,
+            limit: 10,
+          };
+          const names = async (who: string) =>
+            (await projects.list(org, who, q)).rows.map((r) => r.name);
+          expect(await names(owner)).to.deep.equal(['Old', 'New']);
+          expect(await names(member)).to.deep.equal(['Old']);
+          // The owner unpinning clears it; a viewer's unpin leaves it.
+          await projects.setPinned(old._id, member, false, false);
+          expect((await projects.getLive(old._id))?.isPinned).to.equal(true);
+          await projects.setPinned(old._id, owner, false, true);
+          expect(await names(owner)).to.deep.equal(['New', 'Old']);
+        });
+      });
+
+      it('a team the caller belongs to shares a project; a team of someone else does not', async () => {
+        const org = newId(),
+          owner = newId(),
+          me = newId(),
+          mine = newId(),
+          theirs = newId();
+        await inOrg(org, async () => {
+          const p = await projects.create(org, owner, {
+            name: 'team',
+            tools: [],
+          });
+          await projects.upsertMembers(
+            p._id,
+            [{ principalId: mine, principalType: 'team', role: 'viewer' }],
+            owner,
+          );
+          const q = {
+            scope: 'shared' as const,
+            includeArchived: false,
+            skip: 0,
+            limit: 5,
+          };
+          expect(
+            (await projects.list(org, me, { ...q, teamIds: [mine] })).total,
+          ).to.equal(1);
+          expect(
+            (await projects.list(org, me, { ...q, teamIds: [theirs] })).total,
+          ).to.equal(0);
+          expect(
+            (await projects.list(org, me, { ...q, teamIds: [] })).total,
+          ).to.equal(0);
+        });
+      });
+    });
+
+    describe('connectors config and Slack threads', () => {
+      it('two creates of one connector leave one row and both answer with it', async () => {
+        const org = newId(),
+          u = newId();
+        const both = await Promise.all(
+          [1, 2].map(() =>
+            inOrg(org, () => connectors.createEnabled(org, 'Drive', u)),
+          ),
+        );
+        expect(both[0]?._id).to.equal(both[1]?._id);
+        expect(await count(org, 'platform.connectors_config')).to.equal(1);
+      });
+
+      it('a thread is found and saved as the install organisation with no organisation in context, and in the organisation that is', async () => {
+        const row = { threadId: 'T1', botId: 'B1', email: 'a@x.io' };
+        await outsideAnyOrg(() =>
+          slack.saveConversationId({ ...row, conversationId: 'c1' }),
+        );
+        expect(
+          await stack.admin(
+            async (c) =>
+              (
+                await c.query(
+                  'SELECT org_id FROM integrations.slack_threads WHERE thread_id = $1',
+                  ['T1'],
+                )
+              ).rows[0]?.org_id,
+          ),
+        ).to.equal(INSTALL_ORG);
+        expect(
+          await outsideAnyOrg(() =>
+            slack.getConversationId('T1', 'B1', 'a@x.io'),
+          ),
+        ).to.equal('c1');
+        expect(
+          await outsideAnyOrg(() =>
+            slack.getConversationId('T1', 'B1', 'other@x.io'),
+          ),
+        ).to.equal(null);
+        // another organisation sees none of it
+        expect(
+          await inOrg(newId(), () =>
+            slack.getConversationId('T1', 'B1', 'a@x.io'),
+          ),
+        ).to.equal(null);
+        await inOrg(INSTALL_ORG, () =>
+          slack.saveConversationId({ ...row, conversationId: 'c2' }),
+        );
+        expect(
+          await outsideAnyOrg(() =>
+            slack.getConversationId('T1', 'B1', 'a@x.io'),
+          ),
+        ).to.equal('c2');
       });
     });
 

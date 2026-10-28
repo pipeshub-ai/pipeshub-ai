@@ -205,7 +205,7 @@ class TestAzureBlobConnectorInit:
     @patch("app.connectors.sources.azure_blob.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_init_personal_scope_with_creator(self, mock_filters, mock_ds_cls, mock_build, azure_blob_connector):
         azure_blob_connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"azureBlobConnectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -368,7 +368,7 @@ def mock_config_service():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc123;EndpointSuffix=core.windows.net"
+            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=YWJjMTIz;EndpointSuffix=core.windows.net"
         },
         "scope": "TEAM",
         "created_by": "user-1",
@@ -1390,7 +1390,7 @@ def mock_config():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc123;EndpointSuffix=core.windows.net"
+            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=YWJjMTIz;EndpointSuffix=core.windows.net"
         },
         "scope": "TEAM",
         "created_by": "user-1",
@@ -1646,7 +1646,7 @@ class TestInit:
         mock_client.get_account_name.return_value = "teststorage"
         mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=key;EndpointSuffix=core.windows.net"},
+            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=a2V5;EndpointSuffix=core.windows.net"},
             "scope": "TEAM",
             "created_by": "user-1",
         })
@@ -1661,7 +1661,7 @@ class TestInit:
         mock_client.get_account_name.return_value = "acc"
         mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=k;EndpointSuffix=core.windows.net"},
+            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=aw==;EndpointSuffix=core.windows.net"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -1677,7 +1677,7 @@ class TestInit:
         mock_client.get_account_name.side_effect = Exception("parse error")
         mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=k;EndpointSuffix=core.windows.net"},
+            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=aw==;EndpointSuffix=core.windows.net"},
             "scope": "TEAM",
         })
         assert await connector.init() is True
@@ -1688,7 +1688,7 @@ class TestInit:
     async def test_client_build_failure(self, mock_client_cls, connector):
         mock_client_cls.build_from_services = AsyncMock(side_effect=Exception("connection refused"))
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=k;EndpointSuffix=core.windows.net"},
+            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=aw==;EndpointSuffix=core.windows.net"},
             "scope": "TEAM",
         })
         assert await connector.init() is False
@@ -1711,7 +1711,7 @@ class TestInit:
         bad_provider.transaction = _fail_tx
         connector.data_store_provider = bad_provider
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=k;EndpointSuffix=core.windows.net"},
+            "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=aw==;EndpointSuffix=core.windows.net"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })

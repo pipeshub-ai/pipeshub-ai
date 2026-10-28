@@ -547,7 +547,7 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
 
     it('decideDevice approves for a user in an org, or denies without setting either', async () => {
       const user = fx.newId();
-      const org = fx.newId();
+      const org = ORG; // the install's organisation: a device belongs to the organisation it was started in
       const yes = device();
       const no = device();
       await tokens.createDevice(yes);

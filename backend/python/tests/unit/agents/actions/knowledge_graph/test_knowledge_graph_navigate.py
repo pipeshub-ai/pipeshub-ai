@@ -988,8 +988,170 @@ class TestNavigateAgentScoping:
             tool = KnowledgeGraph(state=state)
             await tool.navigate()
 
-        # Scoping connector IDs should be passed (for root browse)
-        assert "connector_ids" in captured or "record_group_ids" in captured
+        assert captured["connector_ids"] == ["conn-jira", "conn-confluence"]
+        assert captured["record_group_ids"] is None
+
+    @staticmethod
+    async def _navigate_filters(state: dict, node_id: str | None = None, node_info: dict | None = None) -> dict:
+        """The filters navigate hands the listing service for ``node_id``."""
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=node_info)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(items=[], total=0)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id=node_id)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_knowledge_base_is_a_connector_filter(self) -> None:
+        """A KB is an app: its records carry its id as connectorId. Sent as a
+        record group, the connector filter of the other apps hid every child."""
+        state = _make_state(
+            agent_knowledge=[
+                {"connectorId": "conn-jira", "type": "JIRA"},
+                {"connectorId": "kb-a", "type": "KB"},
+            ],
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] == ["conn-jira", "kb-a"]
+        assert captured["record_group_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_kb_only_agent_stays_inside_its_kb(self) -> None:
+        """Opening another app filters by the agent's KB, so the service
+        returns none of that app's children; no catalog-wide fallback."""
+        state = _make_state(
+            agent_knowledge=[{"connectorId": "kb-a", "type": "KB"}],
+            available_connectors=[{"id": "conn-other", "name": "Other", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="conn-other", node_info={"nodeType": "app", "name": "Other"},
+        )
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_kb_is_not_a_connector_filter(self) -> None:
+        """A chat-mode turn puts its attachments' virtual record ids in kb;
+        they are not apps, so they never become a connector filter."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["kb-a", "vrid-1"],
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_picked_opens_a_kb_by_the_users_access(self) -> None:
+        """The connector catalog leaves knowledge bases out: used as the filter
+        of a default chat, it hid every child of the KB opened."""
+        state = _make_state(
+            agent_knowledge=[],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="kb-a", node_info={"nodeType": "app", "name": "Contracts"},
+        )
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_default_chat_with_only_an_attachment_browses_the_users_access(self) -> None:
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"]},
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state)
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_strict_attachment_only_turn_names_nothing_outside_it(self) -> None:
+        """A project turn with only attachments has no source to browse: what
+        the listing returns is re-checked against the turn and dropped."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"], "strictScope": True},
+            attachment_record_ids=["vrid-1"],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.check_access = AsyncMock(
+            side_effect=lambda *_a, node_ids=(), **_k: AccessCheck(
+                node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(),
+            ),
+        )
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(
+                items=[_make_node_item("jira-1", "Outside ticket")], total=1,
+            )
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            output = await KnowledgeGraph(state=state).navigate()
+
+        assert captured["connector_ids"] == ["conn-jira"]
+        assert "jira-1" not in str(output) and "Outside ticket" not in str(output)
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_alone_does_not_limit_what_navigate_may_name(self) -> None:
+        """Chat mode puts an attachment's id in kb; read as a picked app, it
+        refused every knowledge base the user opened."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            turn_picked_sources,
+        )
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["vrid-1"]}, attachment_record_ids=["vrid-1"], has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock()
+        assert await ids_within_scope(state, gp, "user-key-1", "org-1", ["kb-a", "rec-1"]) == {"kb-a", "rec-1"}
+        gp.check_access.assert_not_awaited()
+        assert turn_picked_sources(state) is False
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_next_to_a_picked_kb_limits_to_the_kb(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["kb-a", "vrid-1"]}, attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset(), node_ids_in_scope=frozenset()))
+        with patch(
+            "app.modules.retrieval.selection_scope.resolve_request_scopes", AsyncMock(return_value=(None, [])),
+        ):
+            await ids_within_scope(state, gp, "user-key-1", "org-1", ["rec-1"])
+        scopes = gp.check_access.await_args.kwargs["scopes"]
+        assert [scope.app_ids for scope in scopes] == [frozenset({"kb-a"})]
 
 
 class TestNavigateDepthSingleQuery:

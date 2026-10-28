@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.agents.actions.knowledge_graph.ops.entity_filters as entity_filters
 import app.modules.retrieval.selection_scope as selection_scope
 from app.agents.actions.knowledge_graph.ops.fetch import _ids_outside_scope
 from app.agents.actions.knowledge_graph.ops.scope import (
@@ -17,13 +18,13 @@ from app.agents.actions.knowledge_graph.ops.scope import (
     SELECTION_BROWSE_HINT,
     SELECTION_OUTSIDE_MESSAGE,
     _selection_cursor,
-    apps_usable_whole,
     derive_scope,
     ids_within_scope,
     list_selected_nodes,
     search_scope,
     selection_browse_refusal,
 )
+from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 if TYPE_CHECKING:
@@ -282,23 +283,50 @@ BOUNDED = {
 }
 
 
-class TestToolsThatWorkOnAWholeApp:
-    """The entity tools run per app: never on an app a bound limits to some nodes."""
+class TestEntityToolsWorkInsideTheLimit:
+    """The entity tools reach every app the turn touches and carry the turn's
+    limit down, instead of dropping an app a selection or bound covers in part."""
 
-    def test_an_app_a_bound_limits_is_left_out(self) -> None:
+    @pytest.fixture
+    def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        seen: dict = {}
+
+        async def fake_context(state: dict, graph: object, **kwargs: object) -> MagicMock:
+            seen.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(entity_filters, "get_entity_access_context", fake_context)
+        return seen
+
+    @staticmethod
+    def _state(filters: dict) -> dict:
+        return {"filters": filters, "graph_provider": MagicMock(), "org_id": "org", "user_id": "u"}
+
+    async def test_a_record_group_selection_keeps_the_app_it_touches(self, captured: dict) -> None:
+        filters = {"apps": [], "kb": [], "recordGroups": ["g"], "selectionApps": ["jira"], "strictScope": True}
+        await entity_filters.load_entity_access_context(self._state(filters))
+        # Before the fix this was [], which a strict turn reads as "reach nothing".
+        assert captured["source_ids"] == ["jira"]
+        assert captured["strict"] is True
+        assert captured["filters"] == filters
+
+    async def test_an_app_a_bound_covers_in_part_is_kept_and_the_bound_carried(self, captured: dict) -> None:
         filters = {**BOUNDED, "apps": ["whole-app", "beta"]}
-        assert apps_usable_whole({"filters": filters}, ["beta", "whole-app"]) == ["whole-app"]
+        await entity_filters.load_entity_access_context(self._state(filters))
+        assert captured["source_ids"] == ["whole-app", "beta"]
+        assert captured["filters"]["allowedRecords"] == ["beta-root"]
 
-    def test_an_app_must_be_whole_in_every_bound(self) -> None:
-        filters = {**BOUNDED, "apps": ["whole-app", "beta"], "projectApps": ["beta"], "projectRecords": []}
-        assert apps_usable_whole({"filters": filters}, ["beta", "whole-app"]) == []
+    async def test_without_a_selection_or_a_bound_the_picked_apps_are_the_sources(self, captured: dict) -> None:
+        await entity_filters.load_entity_access_context(self._state({"apps": ["a"], "kb": ["k"]}))
+        assert captured["source_ids"] == ["a", "k"]
 
-    def test_an_app_a_selection_only_touches_is_left_out(self) -> None:
-        state = {"filters": {"apps": ["a"], "kb": ["k"], "records": ["r"], "selectionApps": ["b"]}}
-        assert apps_usable_whole(state, ["a", "k", "b"]) == ["a", "k"]
-
-    def test_without_a_selection_or_a_bound_every_app_is_kept(self) -> None:
-        assert apps_usable_whole({"filters": {"apps": ["a"], "kb": ["k"]}}, ["a", "k", "x"]) == ["a", "k", "x"]
+    async def test_a_limit_too_large_to_resolve_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            entity_filters, "get_entity_access_context",
+            AsyncMock(side_effect=selection_scope.SelectionTooLargeError()),
+        )
+        with pytest.raises(EntityAccessError):
+            await entity_filters.load_entity_access_context(self._state({"recordGroups": ["g"]}))
 
 
 class TestReachingARecordByNameOrId:

@@ -1,4 +1,5 @@
 import { MongoIdentityPort } from './mongo';
+import { PgIdentityPort } from './pg';
 import type { IdentityPort } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: IdentityPort | undefined;
 
 export const getIdentityPort = (): IdentityPort =>
   (repo ??= pickStore<IdentityPort>('identity', {
+    postgres: () => new PgIdentityPort(),
     mongo: () => new MongoIdentityPort(),
   }));
 

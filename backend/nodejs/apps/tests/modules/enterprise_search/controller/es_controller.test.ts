@@ -78,6 +78,7 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { installSessionDocRegistry, registerSessionDoc } from '../utils/doc-backed-repo'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 
 /** A query stub that `await` resolves to `doc`, for `ChatSession.findOne` in the error-message tests. */
 const resolvingTo = (doc: unknown) =>
@@ -3223,7 +3224,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when AI service returns ECONNREFUSED', async () => {
+    it('answers 503 when the AI service is not listening, without the raw cause', async () => {
       const handler = search(createMockAppConfig())
 
       const connError = new Error('fetch failed')
@@ -3240,6 +3241,11 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(503)
+      expect(err.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+      // Metadata reaches the client in development, so the raw error must not ride along in it.
+      expect(err.metadata).to.equal(undefined)
     })
 
     it('should call next when AI service returns non-200 status', async () => {
@@ -5203,6 +5209,7 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(500)
     })
   })
 
@@ -9284,7 +9291,9 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.equal(CHAT_ERROR_MESSAGES.unavailable)
+      // Node's fetch reports a service that is not listening as a bare "fetch failed".
+      expect(err.statusCode).to.equal(503)
+      expect(err.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
     })
 
     it('should handle error response with data.reason fallback', async () => {

@@ -84,7 +84,7 @@ class Graph:
         self.provider.update_node_fields_if_match = AsyncMock(side_effect=self._cas)
         self.race_lost = False
 
-    async def _get(self, key: str, collection: str) -> dict[str, Any] | None:
+    async def _get(self, key: str, collection: str, **_: object) -> dict[str, Any] | None:
         if collection == MAPPING:
             return None if self.mapping is None else dict(self.mapping)
         return dict(self.record_doc)
@@ -324,7 +324,7 @@ def _ticket_graph(ticket_doc: dict[str, Any] | None, **record_doc: Any) -> Graph
     graph = _graph(**{"recordType": RecordType.TICKET.value, **record_doc})
     plain = graph.provider.get_document.side_effect
 
-    async def get(key: str, collection: str) -> dict[str, Any] | None:
+    async def get(key: str, collection: str, **_: object) -> dict[str, Any] | None:
         if collection == CollectionNames.TICKETS.value:
             return None if ticket_doc is None else dict(ticket_doc)
         return await plain(key, collection)
@@ -389,7 +389,7 @@ class TestTicketProperties:
         if failure == "raises":
             plain = graph.provider.get_document.side_effect
 
-            async def get(key: str, collection: str) -> dict[str, Any] | None:
+            async def get(key: str, collection: str, **_: object) -> dict[str, Any] | None:
                 if collection == CollectionNames.TICKETS.value:
                     raise ConnectionError("graph down")
                 return await plain(key, collection)

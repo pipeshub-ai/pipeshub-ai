@@ -9,6 +9,7 @@ import {
   WRONG_SIGN_IN_CODE,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -67,7 +68,7 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       userId: 'u1',
       orgId: 'o1',
       hashedPassword: 'hashed',
-      wrongCredentialCount: 4,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
       isBlocked: false,
       save: sinon.stub().resolves(),
     } as any);
@@ -78,7 +79,7 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       userId: 'u1',
       orgId: 'o1',
       hashedPassword: 'hashed',
-      wrongCredentialCount: 5,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
       isBlocked: false,
       save: sinon.stub().resolves(),
     };
@@ -97,7 +98,7 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       orgId: 'o1',
       otpValidity: Date.now() + 60_000,
       hashedOTP,
-      wrongCredentialCount: 4,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
       isBlocked: false,
       save: sinon.stub().resolves(),
     } as any);
@@ -106,7 +107,7 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       userId: 'u1',
       orgId: 'o1',
       hashedOTP,
-      wrongCredentialCount: 5,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
       isBlocked: false,
       save: sinon.stub().resolves(),
     };

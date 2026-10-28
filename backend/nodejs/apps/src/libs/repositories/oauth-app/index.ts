@@ -1,4 +1,5 @@
 import { MongoOAuthAppRepository } from './mongo';
+import { PgOAuthAppRepository } from './pg';
 import type { OAuthAppRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: OAuthAppRepository | undefined;
 
 export const getOAuthAppRepository = (): OAuthAppRepository =>
   (repo ??= pickStore<OAuthAppRepository>('oauth-app', {
+    postgres: () => new PgOAuthAppRepository(),
     mongo: () => new MongoOAuthAppRepository(),
   }));
 

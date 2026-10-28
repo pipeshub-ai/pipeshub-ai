@@ -78,6 +78,8 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
+    is_record_deleted,
     is_source_refusal,
 )
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -2168,7 +2170,7 @@ class RecordEventHandler(BaseEventService):
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
-            if not is_source_refusal(e):  # a refusal is logged once, below or by the consumer
+            if not is_expected_outcome(e):  # logged once, below or by the consumer
                 self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
@@ -2216,6 +2218,11 @@ class RecordEventHandler(BaseEventService):
                     self.logger.info(
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
+                    )
+                elif is_record_deleted(last_exception):
+                    # Nothing to mark FAILED and no failure to hand its queued duplicates.
+                    self.logger.info(
+                        f"Record {record_id} was deleted while it was being indexed; nothing to do"
                     )
                 elif is_final and await self._enrichment_still_cut_short(
                     record_id, unreadable=resuming_enrichment,

@@ -472,6 +472,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
     try:
+        from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher
+        await close_shared_fetcher()
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared headless browser: {e}")
+
+    try:
         from app.modules.transformers.blob_storage import (
             close_shared_redis,
             close_shared_session,

@@ -67,6 +67,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
@@ -2119,7 +2120,8 @@ class EventProcessor:
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer
-            self.logger.error(f"❌ Error in event processor: {repr(e)}")
+            if not is_expected_outcome(e):  # the record handler logs it once
+                self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
             if forced_record_id is not None and self.stage_ingress is not None:
