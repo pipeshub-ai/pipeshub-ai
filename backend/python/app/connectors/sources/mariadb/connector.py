@@ -9,12 +9,14 @@ import json
 import os
 import re
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any
 
 from aiolimiter import AsyncLimiter
-from pydantic import BaseModel
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -24,17 +26,25 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
-from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectionCheckResult,
+)
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.sql_stream_errors import (
     to_sql_response_error,
     to_sql_stream_error,
 )
 from app.connectors.core.base.error.stream_errors import connector_not_ready
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.constants import IconPaths
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -43,7 +53,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -57,11 +66,42 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     load_connector_filters,
 )
-from app.connectors.core.base.sync_point.sync_point import (
-    SyncDataPointType,
-    SyncPoint,
+from app.connectors.core.sql.catalog_diff import CatalogDiff, diff_catalog
+from app.connectors.core.sql.column_records import (
+    build_column_records,
+    load_typed_columns,
 )
+from app.connectors.core.sql.permissions import database_permissions
+from app.connectors.core.sql.profiling import looks_personal
+from app.connectors.core.sql.record_moves import Moves
+from app.connectors.core.sql.sync_lifecycle import (
+    LOOKUP_ATTEMPTS,
+    SqlSyncLifecycleMixin,
+    restructured_fqns,
+)
+from app.connectors.core.sql.sync_outcome import SyncOutcome
 from app.connectors.sources.mariadb.apps import MariaDBApp
+from app.connectors.sources.mariadb.catalog_state import (
+    MariaDBTableState,
+    checkpoint_moves,
+    rename_keys,
+)
+from app.connectors.sources.mariadb.columns import (
+    ColumnFacts,
+    column_fqn,
+    decode_rows,
+    json_default,
+    sample_order,
+)
+from app.connectors.sources.mariadb.connection_check import (
+    check_connection as check_mariadb_connection,
+)
+from app.connectors.sources.mariadb.tables import (
+    split_table_fqn,
+    structure_hash,
+    table_fqn,
+    table_revision,
+)
 from app.models.entities import (
     AppUser,
     ProgressStatus,
@@ -70,47 +110,65 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SQLColumnRecord,
     SQLTableRecord,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.mariadb.mariadb import MariaDBConfig
 from app.sources.external.mariadb.mariadb_ import (
-    MariaDBDataSource,
     ColumnInfo,
-    CheckConstraintInfo,
     DDLResult,
     ForeignKeyInfo,
+    MariaDBDataSource,
     PrimaryKeyInfo,
     TableDetail,
     TableListEntry,
     TableStatsEntry,
 )
+from app.sources.external.mariadb.profiling import (
+    MariaDBProfiler,
+    ProfilingBudget,
+    TableProfile,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
 
 _AUTO_INCREMENT_OPTION = re.compile(r"\s+AUTO_INCREMENT=\d+")
 
 
-class MariaDBTableState(BaseModel):
-    column_hash: str = ""
-    n_live_tup: int = 0
-    last_updated: Optional[str] = None
-    auto_increment: int = 0
+# Bumped when what is saved changes meaning: a state of another version is no
+# state, and the next sync is a full one.
+# 3: tables saved before it have no column records, and their revisions no
+#    max-rows part.
+SYNC_STATE_VERSION = 3
+SYNC_STATE_KEY = "mariadb_tables_state"
+MAX_PROFILE_ATTEMPTS = 3
+MAX_TABLE_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_COLUMN_VALUES_STREAMED = 1000
+
+
+def _bit_value(value: object, record: Record) -> object:
+    """A BIT column's values arrive as bytes; they are numbers."""
+    if isinstance(value, (bytes, bytearray)) and str(getattr(record, "data_type", "") or "").lower().startswith("bit"):
+        return int.from_bytes(value, "big")
+    return value
 
 
 @dataclass
 class MariaDBTable:
     name: str
     database_name: str
-    row_count: Optional[int] = None
-    columns: List[ColumnInfo] = None
-    foreign_keys: List[ForeignKeyInfo] = None
-    primary_keys: List[str] = None
+    row_count: int | None = None
+    columns: list[ColumnInfo] = None
+    foreign_keys: list[ForeignKeyInfo] = None
+    primary_keys: list[str] = None
+    stats: TableStatsEntry | None = None
+    # Distinct estimates of indexed columns; kept apart from columns so a stats
+    # refresh never moves the structure hash.
+    cardinality: dict[str, int] = None
     
     def __post_init__(self):
         if self.columns is None:
@@ -119,27 +177,37 @@ class MariaDBTable:
             self.foreign_keys = []
         if self.primary_keys is None:
             self.primary_keys = []
+        if self.cardinality is None:
+            self.cardinality = {}
     
     @property
     def fqn(self) -> str:
-        return f"{self.database_name}.{self.name}"
+        return table_fqn(self.database_name, self.name)
+
+    def revision(self, max_rows: int) -> str:
+        """``structure:content:max_rows``; the row limit decides what the indexed text holds."""
+        return table_revision(structure_hash(self.columns, self.primary_keys, self.foreign_keys), self.stats, max_rows)
 
 
 @dataclass
 class SyncStats:
     tables_new: int = 0
+    tables_renamed: int = 0
+    tables_removed: int = 0
     errors: int = 0
-    
-    def to_dict(self) -> Dict[str, int]:
+
+    def to_dict(self) -> dict[str, int]:
         return {
             'tables_new': self.tables_new,
+            'tables_renamed': self.tables_renamed,
+            'tables_removed': self.tables_removed,
             'errors': self.errors,
         }
-    
+
     def log_summary(self, logger) -> None:
         logger.info(
             f"📊 Sync Stats: "
-            f"Tables(new={self.tables_new}) | "
+            f"Tables(new={self.tables_new}, renamed={self.tables_renamed}, removed={self.tables_removed}) | "
             f"Errors={self.errors}"
         )
 
@@ -148,7 +216,7 @@ class SyncStats:
     .in_group("MariaDB")\
     .with_description("Sync databases and tables from MariaDB")\
     .with_categories(["Database"])\
-    .with_scopes([ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
@@ -202,6 +270,17 @@ class SyncStats:
                 is_secret=True,
                 required=True
             ),
+            AuthField(
+                name="sslCa",
+                display_name="CA Certificate",
+                placeholder="-----BEGIN CERTIFICATE-----",
+                description="PEM CA bundle that signed the server's certificate. Turns on TLS "
+                            "with certificate and hostname checks; leave empty for no TLS.",
+                field_type="TEXTAREA",
+                max_length=20000,
+                min_length=0,
+                required=False,
+            ),
         ]),
     ])\
     .configure(lambda builder: builder
@@ -244,7 +323,7 @@ class SyncStats:
         .with_agent_support(False)
     )\
     .build_decorator()
-class MariaDBConnector(BaseConnector):
+class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
 
     def __init__(
         self,
@@ -254,7 +333,7 @@ class MariaDBConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str = ConnectorScope.TEAM.value,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
     ) -> None:
         super().__init__(
             MariaDBApp(connector_id),
@@ -268,19 +347,29 @@ class MariaDBConnector(BaseConnector):
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.MARIADB
-        self.data_source: Optional[MariaDBDataSource] = None
-        self.database_name: Optional[str] = None
+        self.data_source: MariaDBDataSource | None = None
+        self.database_name: str | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(25, 1)
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
+        # The base class keeps scope and created_by; they must survive this init.
+        self.connector_scope: str | None = scope
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
-        self._record_id_cache: Dict[str, str] = {}
         self.sync_stats: SyncStats = SyncStats()
+        # What the last sync changed, for whatever runs after it.
+        self.sync_outcome: SyncOutcome = SyncOutcome()
+        self._written_tables: set[str] = set()
+        self.profiler: MariaDBProfiler | None = None
+        self._profiling_budget = ProfilingBudget()
+        # Tables whose column records were written with a profile this sync.
+        self._profiled: set[str] = set()
+        # Whether the stored column records may hold values, and when they were
+        # saved (from the sync point).
+        self._stored_values_allowed: bool | None = None
+        self._stored_sync_time: int | None = None
         self._frontend_url: str = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
-        self._table_filter_cache: List[FilterOption] = []
-        self._filter_cache_rebuild_event: Optional[asyncio.Event] = None
+        self._table_filter_cache: list[FilterOption] = []
+        self._filter_cache_rebuild_event: asyncio.Event | None = None
         # Initialize sync point for incremental sync
         org_id = self.data_entities_processor.org_id
         self.tables_sync_point = SyncPoint(
@@ -290,7 +379,7 @@ class MariaDBConnector(BaseConnector):
             data_store_provider=data_store_provider
         )
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for MariaDB connector."""
         return [
             AppUser(
@@ -374,11 +463,13 @@ class MariaDBConnector(BaseConnector):
                 database=database,
                 user=user,
                 password=password,
+                ssl_ca_pem=auth_config.get("sslCa") or None,
             )
             client = mariadb_config.create_client()
             await client.connect()
 
             self.data_source = MariaDBDataSource(client)
+            self.profiler = MariaDBProfiler(client)
 
             self.logger.info("MariaDB connector initialized successfully")
             return True
@@ -388,8 +479,16 @@ class MariaDBConnector(BaseConnector):
             return False
 
     async def run_sync(self) -> None:
+        """Bring the graph in step with the database."""
         try:
             self.logger.info("📦 [Sync] Starting MariaDB sync...")
+            # Before anything that can raise: a failed sync must not report the
+            # previous one's changes.
+            self.sync_stats = SyncStats()
+            self.sync_outcome = SyncOutcome()
+            self._profiling_budget = ProfilingBudget()
+            self._profiled = set()
+            self._written_tables = set()
 
             if not self.data_source:
                 raise ConnectionError("MariaDB connector not initialized")
@@ -397,68 +496,215 @@ class MariaDBConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "mariadb", self.connector_id, self.logger
             )
-
-            self.sync_stats = SyncStats()
-
-            sync_point_key = "mariadb_tables_state"
-            stored_state = await self.tables_sync_point.read_sync_point(sync_point_key)
-
-            if stored_state and stored_state.get("table_states"):
-                self.logger.info("📦 [Sync] Found existing sync state, running incremental sync...")
-                await self.run_incremental_sync()
-            else:
-                self.logger.info("📦 [Sync] No existing sync state, running full sync...")
-                await self._run_full_sync_internal()
-
+            try:
+                await self._sync_catalog()
+            finally:
+                # Also after a failure: the tables written before it still changed.
+                await self._resolve_restructured()
+                await self._announce_renames()
             self.sync_stats.log_summary(self.logger)
+            self.logger.info(
+                f"📦 [Sync] {len(self.sync_outcome.restructured)} table(s) new or restructured, "
+                f"{len(self.sync_outcome.removed)} record(s) removed"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
 
-    def _get_filter_values(self) -> Tuple[Optional[List[str]], str]:
+    async def run_incremental_sync(self) -> None:
+        """Every sync compares the catalog with the saved state; there is one path."""
+        await self.run_sync()
+
+    async def _sync_catalog(self) -> None:
+        """List and read the tables, follow renames, write what changed, remove what is gone, save the state."""
+        await self._create_app_users()
+        if not self.database_name:
+            raise ValueError("Database name must be configured for MariaDB connector")
+        await self._ensure_database_record_groups([self.database_name])
+
+        stored = await self._load_state()
+        old = stored or {}
+        listed = await self._listed_tables()
+        tables, unread = await self._load_tables(listed)
+        by_fqn = {t.fqn: t for t in tables}
+        current = self._current_states(tables, await self._table_ids())
+
+        await self._finish_interrupted_moves(old)
+        keyed_old, keyed_current = rename_keys(old, current)
+        diff = diff_catalog(keyed_old, keyed_current, unreadable=unread & old.keys())
+        # Paired by shape only: maybe a lookalike, so described again even when
+        # its write waits for a later sync (the stored shape is dropped).
+        shape_paired = {
+            old_fqn for old_fqn in diff.renamed
+            if keyed_old[old_fqn].key is not None and keyed_old[old_fqn].key[0] == "fingerprint"
+        }
+        self.logger.info(
+            f"📊 Changes: new={len(diff.added)}, changed={len(diff.changed)}, renamed={len(diff.renamed)}, "
+            f"gone={len(diff.missing)}, replaced={len(diff.replaced)}, unread={len(unread)}"
+        )
+
+        replaced = await self._remove_by_external_ids(diff.replaced)
+
+        async def checkpoint(moving: dict[str, str], record_ids: dict[str, str]) -> bool:
+            # Only the moves are new: the values setting and sync time stay the
+            # last sync's, so a sync cut off after this still sees a switch.
+            return await self._save_state(
+                checkpoint_moves(old, moving, record_ids, shape_paired=shape_paired), checkpoint=True,
+            )
+
+        moved, moves = await self._move_renamed_tables(
+            diff.renamed, blocked=set(diff.replaced) - replaced, checkpoint=checkpoint,
+        )
+        self.sync_stats.tables_renamed += len(moved)
+        # A rename that waits keeps both names: the new one is not written, and
+        # a new table under the old one would take over the record that did not move.
+        held = {
+            name for old_fqn, new in diff.renamed.items() if old_fqn not in moved for name in (old_fqn, new)
+        }
+        await self._follow_renames(diff, moved, moves)
+        self.sync_outcome.restructured_tables |= restructured_fqns(diff, current) - held
+
+        changed = (set(diff.added) | set(diff.changed)) - held
+        relinked = {
+            t.fqn for t in tables
+            if t.fqn not in changed and t.fqn not in held
+            and any(target in diff.added for target in self._fk_targets(t))
+        }
+        written = await self._write_tables([by_fqn[fqn] for fqn in sorted(changed | relinked)])
+        self._written_tables = written
+        self.sync_stats.tables_new += len(written & set(diff.added))
+
+        # Unchanged tables whose column records are behind: not profiled, or
+        # holding values that are no longer allowed (or not those now allowed).
+        values_switched = self._stored_values_allowed is not None and (
+            self._stored_values_allowed != self._values_allowed()
+        )
+        behind = [
+            by_fqn[fqn] for fqn in diff.unchanged
+            if fqn not in relinked and (values_switched or not old[fqn].profiled)
+        ]
+        vanished: set[str] = set()
+        if behind:
+            self.logger.info(f"Rewriting the column records of {len(behind)} unchanged tables")
+            vanished = await self._rewrite_columns(behind)
+
+        retry: set[str] = set()
+        if stored is None:
+            # One the sweep could not remove gets an empty state: missing next sync, and removed then.
+            retry = await self._sweep_records(RecordType.SQL_TABLE, set(listed))
+            kept: set[str] = set()
+        elif unread - old.keys():
+            # A table that could not be read under a new name may be one of the
+            # missing ones, renamed: nothing is removed until it reads.
+            self.logger.info(f"{len(unread - old.keys())} new table(s) unread; removing no missing table this sync")
+            kept = set(diff.missing)
+        else:
+            kept = set(diff.missing) - await self._remove_by_external_ids(diff.missing)
+        self.sync_stats.tables_removed += len(diff.missing) - len(kept)
+        kept |= set(diff.replaced) - replaced
+
+        states = self._next_state(
+            diff, old, current, by_fqn, moves,
+            rewritten={t.fqn for t in behind} - vanished, vanished=vanished, kept=kept | unread,
+            values_switched=values_switched, shape_paired=shape_paired,
+        )
+        states.update({fqn: MariaDBTableState() for fqn in retry if fqn not in states})
+        if not await self._save_state(states):
+            # The graph matches the last saved state, so the next sync compares
+            # with it; failing this one shows the error.
+            raise RuntimeError("Could not save the MariaDB sync state")
+        self.logger.info("✅ [Sync] MariaDB sync completed")
+
+    async def _table_ids(self) -> dict[str, int]:
+        """InnoDB table ids by name; none when they cannot be read."""
+        try:
+            return await self.data_source.read_table_ids(self.database_name)
+        except Exception as e:
+            self.logger.info(
+                f"InnoDB table ids not readable ({e}); renames are followed by table shape only. "
+                "Grant PROCESS to follow renames that also change the table."
+            )
+            return {}
+
+    def _current_states(self, tables: list["MariaDBTable"], ids: dict[str, int]) -> dict[str, MariaDBTableState]:
+        def id_of(fqn: str) -> int | None:
+            try:
+                database, name = split_table_fqn(fqn)
+            except ValueError:
+                return None
+            return ids.get(name) if database == self.database_name else None
+
+        return {
+            t.fqn: MariaDBTableState.of(t, max_rows=self._max_rows(), table_id=ids.get(t.name), id_of=id_of)
+            for t in tables
+        }
+
+    @staticmethod
+    def _fk_targets(table: "MariaDBTable") -> set[str]:
+        return {
+            table_fqn(fk.foreign_database or table.database_name, fk.foreign_table_name)
+            for fk in table.foreign_keys if fk.foreign_table_name
+        }
+
+    def _next_state(
+        self,
+        diff: CatalogDiff,
+        old: dict[str, MariaDBTableState],
+        current: dict[str, MariaDBTableState],
+        by_fqn: dict[str, "MariaDBTable"],
+        moves: Moves,
+        *,
+        rewritten: set[str],
+        vanished: set[str],
+        kept: set[str],
+        values_switched: bool,
+        shape_paired: set[str] = frozenset(),
+    ) -> dict[str, MariaDBTableState]:
+        """The table states the next sync compares against.
+
+        A table written this sync (or its columns) is saved as read; one that
+        was not keeps what was stored, so the next sync sees the same change;
+        a new one that was not written is left out, so it is new again. A
+        moved table not yet written keeps its stored state under the new name.
+        """
+        def carried(state: MariaDBTableState) -> MariaDBTableState:
+            # Not rewritten this sync: if values were switched, its columns are behind.
+            return state.model_copy(update={"profiled": False}) if values_switched else state
+
+        states = {fqn: carried(old[fqn]) for fqn in kept if fqn in old}
+        renamed_to = {diff.renamed[old_fqn]: old_fqn for old_fqn in moves}
+        unchanged = set(diff.unchanged)
+        for fqn, state in current.items():
+            change = diff.changed.get(fqn)
+            previous = (change.previous_fqn if change else None) or fqn
+            before = old.get(previous)
+            if fqn in vanished:
+                continue
+            if fqn in self._written_tables or fqn in rewritten:
+                states[fqn] = self._with_profile(state, by_fqn[fqn], before)
+            elif fqn in renamed_to:
+                origin = renamed_to[fqn]
+                states[fqn] = carried(old[origin]).model_copy(update={
+                    "renamed_from": origin, "moved_record_id": moves[origin][0].id or "",
+                    **({"shape": ""} if origin in shape_paired else {}),
+                })
+            elif fqn in unchanged and before is not None:
+                # Its identity as read now; its revision is the stored one.
+                states[fqn] = carried(state.model_copy(update={
+                    "profiled": before.profiled, "profile_failures": before.profile_failures,
+                }))
+            elif before is not None and previous not in renamed_to.values():
+                states.setdefault(previous, carried(before))
+        return states
+
+    def _get_filter_values(self) -> tuple[list[str] | None, str]:
         table_filter = self.sync_filters.get("tables")
         if not table_filter or not table_filter.value:
             return None, MultiselectOperator.IN.value
         return table_filter.value, table_filter.operator_value
 
-    async def _run_full_sync_internal(self) -> None:
-        try:
-            self.logger.info("📦 [Full Sync] Starting full sync...")
-            self._record_id_cache.clear()
-
-            await self._create_app_users()
-
-            selected_tables, filter_op = self._get_filter_values()
-
-            if not self.database_name:
-                raise ValueError("Database name must be configured for MariaDB connector")
-
-            await self._ensure_database_record_groups([self.database_name])
-
-            tables = await self._fetch_tables(self.database_name)
-            if selected_tables:
-                if filter_op == MultiselectOperator.NOT_IN.value:
-                    tables = [t for t in tables if t.fqn not in selected_tables]
-                else:
-                    tables = [t for t in tables if t.fqn in selected_tables]
-
-            await self._sync_tables(self.database_name, tables)
-            self.sync_stats.tables_new += len(tables)
-
-            undeleted = await self._remove_stale_tables({t.fqn for t in tables})
-
-            # A stale table whose delete failed stays in the state, so incremental
-            # sync finds it missing and retries the delete.
-            await self._save_tables_sync_state("mariadb_tables_state", undeleted)
-
-            self.logger.info("✅ [Full Sync] MariaDB full sync completed")
-        except Exception as e:
-            self.sync_stats.errors += 1
-            self.logger.error(f"❌ [Full Sync] Error: {e}", exc_info=True)
-            raise
-
-    async def _ensure_database_record_groups(self, databases: List[str]) -> None:
+    async def _ensure_database_record_groups(self, databases: list[str]) -> None:
         """Create a record group for each database being synced."""
         permissions = await self._get_permissions()
         groups = []
@@ -476,65 +722,338 @@ class MariaDBConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(groups)
             self.logger.info(f"Ensured {len(groups)} database record groups exist")
 
-    async def _fetch_tables(self, database: str) -> List[MariaDBTable]:
-        response = await self.data_source.list_tables(database=database)
+    async def _listed_tables(self) -> dict[str, TableStatsEntry]:
+        """The configured database's base tables the sync filters keep, with their stats.
+
+        Raises when the catalog cannot be read: an empty answer would read as
+        every table dropped.
+        """
+        if not self.database_name:
+            raise ValueError("Database name must be configured for MariaDB connector")
+        response = await self.data_source.get_table_stats([self.database_name])
         if not response.success:
-            # An empty list here would read as "no tables": stale removal would
-            # delete every record, and the saved state would hide them from
-            # incremental sync.
             raise ConnectionError(f"Failed to list MariaDB tables: {response.error}")
-        
+        selected, filter_op = self._get_filter_values()
+        excluding = filter_op == MultiselectOperator.NOT_IN.value
+        listed: dict[str, TableStatsEntry] = {}
+        for raw in response.data or []:
+            stat = TableStatsEntry.model_validate(raw)
+            if not stat.table_name:
+                continue
+            database = stat.database_name or self.database_name
+            fqn = table_fqn(database, stat.table_name)
+            # A filter saved before ids were quote-aware names "a.b" plainly.
+            chosen = fqn in selected or f"{database}.{stat.table_name}" in selected if selected else False
+            if selected and chosen == excluding:
+                continue
+            listed[fqn] = stat
+        return listed
+
+    async def _load_tables(self, listed: dict[str, TableStatsEntry]) -> tuple[list[MariaDBTable], set[str]]:
+        """The listed tables with their columns, keys and FKs, from one catalog read; and those unread.
+
+        A failed read fails the sync: with renames followed, an
+        unread catalog could make a renamed table's old name look gone. A
+        listed table the catalog read does not show (renamed or dropped in
+        between) is unread: neither written nor removed, its state kept.
+        """
+        if not listed:
+            return [], set()
+        try:
+            catalog = await self.data_source.read_catalog(self.database_name)
+        except Exception as e:
+            raise ConnectionError(f"Could not read the catalog of {self.database_name}: {e}") from e
         tables = []
-        for item in response.data:
-            entry = TableListEntry.model_validate(item)
-            
-            table_info_response = await self.data_source.get_table_info(entry.name, database)
-            columns: List[ColumnInfo] = []
-            if table_info_response.success:
-                detail = TableDetail.model_validate(table_info_response.data)
-                columns = detail.columns
-            
-            fks_response = await self.data_source.get_foreign_keys(entry.name, database)
-            foreign_keys: List[ForeignKeyInfo] = []
-            if fks_response.success:
-                foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data]
-            
-            pks_response = await self.data_source.get_primary_keys(entry.name, database)
-            primary_keys: List[str] = []
-            if pks_response.success:
-                primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data]
-            
+        unread: set[str] = set()
+        for fqn, stat in listed.items():
+            entry = catalog.get(stat.table_name)
+            if entry is None or not entry.columns:
+                unread.add(fqn)
+                continue
             tables.append(MariaDBTable(
-                name=entry.name,
-                database_name=database,
-                columns=columns,
-                foreign_keys=foreign_keys,
-                primary_keys=primary_keys,
+                name=stat.table_name,
+                database_name=stat.database_name or self.database_name,
+                row_count=stat.n_live_tup,
+                columns=entry.columns,
+                foreign_keys=entry.foreign_keys,
+                primary_keys=entry.primary_keys,
+                stats=stat,
+                cardinality=entry.cardinality,
             ))
-        return tables
+        return tables, unread
 
-    async def _get_permissions(self) -> List[Permission]:
-        return [Permission(
-            type=PermissionType.OWNER,
-            entity_type=EntityType.ORG,
-        )]
+    def _max_rows(self, sync_filters: FilterCollection | None = None) -> int:
+        filters = sync_filters or self.sync_filters
+        value = filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000) if filters else 1000
+        return max(1, min(int(value or 1000), MAX_ROWS_PER_TABLE_LIMIT))
 
-    def _max_rows_per_table(self, sync_filters: FilterCollection) -> int:
-        return min(
-            int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
-            MAX_ROWS_PER_TABLE_LIMIT,
+    def _values_allowed(self) -> bool:
+        """Top values and extremes are row data: stored only while table indexing is on."""
+        return not self.indexing_filters or self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value)
+
+    async def _get_permissions(self) -> list[Permission]:
+        return await database_permissions(self)
+
+    async def _build_record(self, table: MariaDBTable) -> tuple[SQLTableRecord, Record | None]:
+        """The table's record, keeping the stored record's id and created time; and the stored record, if any.
+
+        The revision is ``structure:content:max_rows``. The content part is a
+        hash of what indexing receives, so a table whose catalog markers moved
+        with no change to its rows (InnoDB empties ``UPDATE_TIME`` on a restart)
+        keeps its revision and is not indexed again. When the rows cannot be
+        read, the catalog marker stands in.
+        """
+        fqn = table.fqn
+        existing = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=fqn,
         )
+        record_id = existing.id if existing and existing.id else str(uuid.uuid4())
+        max_rows = self._max_rows()
+        revision = table.revision(max_rows)
+        fingerprint = await self._table_fingerprint(table, max_rows)
+        if fingerprint:
+            revision = f"{revision.partition(':')[0]}:{fingerprint}:{max_rows}"
+        changed = existing is None or existing.external_revision_id != revision
+        now = get_epoch_timestamp_in_ms()
+        record = SQLTableRecord(
+            id=record_id,
+            record_name=table.name,
+            record_type=RecordType.SQL_TABLE,
+            record_group_type=RecordGroupType.SQL_DATABASE.value,
+            external_record_group_id=table.database_name,
+            external_record_id=fqn,
+            external_revision_id=revision,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.SQL_TABLE.value,
+            weburl=f"{self._frontend_url}/record/{record_id}" if self._frontend_url else "",
+            source_created_at=(existing.source_created_at if existing else None) or now,
+            source_updated_at=now if changed else (existing.source_updated_at or now),
+            database_name=table.database_name,
+            fqn=fqn,
+            row_count=table.row_count,
+            # The processor bumps it when the revision changes.
+            version=0 if existing else 1,
+            inherit_permissions=True,
+        )
+        for fk in table.foreign_keys:
+            if not fk.foreign_table_name:
+                continue
+            target_fqn = table_fqn(fk.foreign_database or table.database_name, fk.foreign_table_name)
+            record.related_external_records.append(
+                RelatedExternalRecord(
+                    external_record_id=target_fqn,
+                    record_type=RecordType.SQL_TABLE,
+                    record_name=fk.foreign_table_name,
+                    relation_type=RecordRelations.FOREIGN_KEY,
+                    source_column=fk.column_name,
+                    target_column=fk.foreign_column_name,
+                    child_table_name=fqn,
+                    parent_table_name=target_fqn,
+                    constraint_name=fk.constraint_name,
+                )
+            )
+        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        return record, existing
+
+    async def _table_fingerprint(self, table: MariaDBTable, max_rows: int) -> str | None:
+        """Hash of the content indexing would receive for this table, or None if unreadable."""
+        try:
+            database, name = split_table_fqn(table.fqn)
+            content = await self._read_table_content(database, name, max_rows=max_rows, row_estimate=table.row_count)
+        except Exception as e:
+            self.logger.warning(f"Could not read {table.fqn} to check it for changes, so it will be indexed again: {e}")
+            return None
+        # information_schema returns foreign keys in no fixed order.
+        content["foreign_keys"] = sorted(
+            content["foreign_keys"], key=lambda fk: json.dumps(fk, sort_keys=True, default=str)
+        )
+        # SHOW CREATE TABLE carries the next AUTO_INCREMENT value, which moves on
+        # every insert, even one past the row limit that never reaches the index.
+        content["ddl"] = _AUTO_INCREMENT_OPTION.sub("", content["ddl"] or "")
+        serialized = json.dumps(content, sort_keys=True, default=json_default)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    async def _stored_columns(self, table_fqn: str, *, typed: bool) -> dict[str, Record]:
+        """The table's stored column records; ``typed`` loads their stats and profiles too.
+
+        Raises when they cannot all be loaded so: the table is not written this
+        sync and is tried again, rather than writing its columns back without
+        their stats. A table whose profile is taken next time needs no load.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_records_by_parent(
+                self.connector_id, table_fqn, RecordType.SQL_COLUMN.value,
+            )
+        by_fqn = {child.external_record_id: child for child in existing}
+        if not typed or not by_fqn:
+            return by_fqn
+        return await load_typed_columns(self.data_entities_processor, by_fqn)
+
+    async def _column_records(
+        self, table_record: Record, table: MariaDBTable, *, existed: bool,
+    ) -> tuple[list[SQLColumnRecord], list[str]]:
+        """The table's column records with their profile, and the
+        ids of stored ones for columns it no longer has.
+
+        A profile not taken (budget spent, scan failed) keeps the stored stats
+        and profiles, and the table is not counted as profiled: its column
+        records are rewritten next sync.
+        """
+        profile, keep_stored = await self._profile(table)
+        stored = await self._stored_columns(table.fqn, typed=keep_stored) if existed else {}
+        records = build_column_records(
+            table_record,
+            [ColumnFacts.of(column) for column in table.columns],
+            column_fqn=column_fqn,
+            stats_by_name=profile.stats,
+            profiles=profile.profiles,
+            stored=stored,
+            keep_stored=keep_stored,
+            values_allowed=self._values_allowed(),
+        )
+        if not keep_stored:
+            self._profiled.add(table.fqn)
+        current = {r.external_record_id for r in records}
+        dropped = [r.id for fqn, r in stored.items() if fqn not in current and r.id]
+        return records, dropped
+
+    async def _profile(self, table: MariaDBTable) -> tuple[TableProfile, bool]:
+        """The table's profile, and whether its stored one is kept instead."""
+        if not table.columns:
+            self._profiled.add(table.fqn)
+            return TableProfile(), False
+        if not self.profiler or self._profiling_budget.exhausted:
+            return TableProfile(), True
+        self._profiling_budget.start()
+        try:
+            profile = await self.profiler.profile_table(
+                table.database_name, table.name, table.columns,
+                row_estimate=table.row_count, cardinality=table.cardinality,
+                with_values=self._values_allowed(),
+            )
+        except Exception as e:
+            self._profiling_budget.record_failure(e)
+            self.sync_stats.errors += 1
+            self.logger.warning(f"Could not profile {table.fqn}; keeping its stored profile: {e}")
+            return TableProfile(), True
+        self._profiling_budget.record_success()
+        return profile, False
+
+    async def _rewrite_columns(self, tables: list[MariaDBTable]) -> set[str]:
+        """Write the column records of tables whose record stays as it is.
+
+        For a table whose profile was not taken, or every table when the
+        values allowed in column records changed: the table is not re-indexed.
+        Returns the tables with no record any more: they are written as new
+        next sync.
+        """
+        missing: set[str] = set()
+        for table in tables:
+            try:
+                record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=table.fqn,
+                )
+                if record is None:
+                    missing.add(table.fqn)
+                    continue
+                columns, dropped = await self._column_records(record, table, existed=True)
+                if columns:
+                    await self.data_entities_processor.on_new_records([(c, []) for c in columns])
+                if dropped:
+                    await self._remove_records(dropped, table_record_id=record.id)
+            except Exception as e:
+                self._profiled.discard(table.fqn)
+                self.sync_stats.errors += 1
+                self.logger.error(f"Error writing the columns of {table.fqn}: {e}", exc_info=True)
+        return missing
+
+    def _with_profile(
+        self, state: MariaDBTableState, table: MariaDBTable, previous: MariaDBTableState | None = None,
+    ) -> MariaDBTableState:
+        """The table's state after this sync wrote it (or its columns).
+
+        A failed profile counts against the same revision; at the cap the
+        table counts as profiled, so it is not rescanned until it changes.
+        """
+        if table.fqn in self._profiled:
+            return state.model_copy(update={"profiled": True, "profile_failures": 0})
+        failures = 1 + (previous.profile_failures if previous and previous.revision == state.revision else 0)
+        return state.model_copy(update={
+            "profiled": failures >= MAX_PROFILE_ATTEMPTS, "profile_failures": failures,
+        })
+
+    async def _write_batch(self, batch: list[tuple[Record, list[Permission]]]) -> set[str]:
+        """Write new records; a failed batch is counted, and its tables are new again next sync."""
+        try:
+            await self.data_entities_processor.on_new_records(batch)
+        except Exception as e:
+            self.sync_stats.errors += 1
+            self.logger.error(f"Could not write {len(batch)} new records: {e}", exc_info=True)
+            return set()
+        return {record.external_record_id for record, _ in batch if record.record_type == RecordType.SQL_TABLE}
+
+    async def _write_tables(self, tables: list[MariaDBTable]) -> set[str]:
+        """Write the tables' records and their column records; returns the tables written.
+
+        A new table goes in a batch with its columns right after it; a changed
+        one is updated, then its columns written and its dropped columns
+        removed. A table whose columns could not be written is not written:
+        its saved state stays, so the next sync tries again.
+        """
+        written: set[str] = set()
+        batch: list[tuple[Record, list[Permission]]] = []
+        for table in tables:
+            try:
+                record, existing = await self._build_record(table)
+                existed = existing is not None
+                columns, dropped = await self._column_records(record, table, existed=existed)
+                if existed:
+                    # Columns first: the update publishes the table for indexing,
+                    # and a column failure after it would publish it again next sync.
+                    if columns:
+                        await self.data_entities_processor.on_new_records([(c, []) for c in columns])
+                    if dropped:
+                        await self._remove_records(dropped, table_record_id=record.id)
+                    # The catalog flags a change on a restart alone; the content says
+                    # whether there is anything to embed.
+                    if not (
+                        existing.indexing_status == ProgressStatus.COMPLETED.value
+                        and existing.external_revision_id == record.external_revision_id
+                    ):
+                        await self.data_entities_processor.on_record_content_update(record)
+                    else:
+                        # Written again as it is, which queues nothing: a full sync
+                        # counts the records it writes, and unlinks the rest after.
+                        await self.data_entities_processor.on_new_records([(record, [])])
+                    written.add(table.fqn)
+                else:
+                    batch.append((record, []))
+                    batch.extend((c, []) for c in columns)
+            except Exception as e:
+                self._profiled.discard(table.fqn)
+                self.sync_stats.errors += 1
+                self.logger.error(f"Error writing table {table.fqn}: {e}", exc_info=True)
+                continue
+            if len(batch) >= self.batch_size:
+                written |= await self._write_batch(batch)
+                batch = []
+            await asyncio.sleep(0)
+        if batch:
+            written |= await self._write_batch(batch)
+        self.logger.info(f"Wrote {len(written)} tables")
+        return written
 
     async def _read_table_content(
-        self,
-        database: str,
-        table: str,
-        sync_filters: Optional[FilterCollection] = None,
-    ) -> Dict[str, Any]:
-        """The table as indexing receives it: columns, rows, keys and DDL.
+        self, database: str, table: str, *, max_rows: int | None = None, row_estimate: int | None,
+    ) -> dict[str, Any]:
+        """The table as indexing receives it: columns, rows, keys and DDL. Raises a
+        stream error when any part cannot be read.
 
-        Raises a stream error when any part cannot be read. ``sync_filters``
-        defaults to freshly loaded ones, read only once the table is known to exist.
+        Without ``max_rows`` the connector's filters are loaded, once the table
+        is known to exist.
         """
         table_info_response = await self.data_source.get_table_info(table, database)
         if not table_info_response.success:
@@ -543,7 +1062,7 @@ class MariaDBConnector(BaseConnector):
                 table_info_response.error, connector=self.display_name
             )
         detail = TableDetail.model_validate(table_info_response.data)
-        columns: List[ColumnInfo] = detail.columns
+        columns: list[ColumnInfo] = detail.columns
         self.logger.debug(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
 
         # These queries only fail on a driver error — a table with no
@@ -565,23 +1084,24 @@ class MariaDBConnector(BaseConnector):
             raise to_sql_response_error(
                 pks_response.error, connector=self.display_name
             )
-        primary_keys: List[str] = [
+        primary_keys: list[str] = [
             PrimaryKeyInfo.model_validate(pk).column_name
             for pk in (pks_response.data or [])
         ]
 
-        if sync_filters is None:
+        if max_rows is None:
             sync_filters, _ = await load_connector_filters(
                 self.config_service, "mariadb", self.connector_id, self.logger
             )
-        max_rows = self._max_rows_per_table(sync_filters)
+            max_rows = self._max_rows(sync_filters)
         try:
-            # Without a primary key the rows come back in storage order, which is
-            # stable while the table is unchanged; sorting by every column would
-            # cost a full sort, and a different order only means one extra reindex.
             rows = await self.data_source.fetch_table_rows(
-                database, table, limit=max_rows, order_by=primary_keys
+                database, table, limit=max_rows,
+                order_by=sample_order(columns, primary_keys, row_estimate),
+                byte_columns=[c.name for c in columns if c.name],
+                max_bytes=MAX_TABLE_DOCUMENT_BYTES,
             )
+            rows = decode_rows(rows, columns)
         except Exception as e:
             self.logger.error(f"❌ Failed to read rows for {database}.{table}: {e}")
             raise to_sql_stream_error(e, connector=self.display_name) from e
@@ -605,188 +1125,31 @@ class MariaDBConnector(BaseConnector):
             "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
         }
 
-    async def _table_fingerprint(self, database: str, table: str) -> Optional[str]:
-        """Hash of the content indexing would receive for this table, or None if unreadable.
-
-        MariaDB's UPDATE_TIME is NULL or reset after a restart for InnoDB, and
-        TABLE_ROWS is an estimate, so neither can prove a table is unchanged.
-        """
-        try:
-            content = await self._read_table_content(database, table, self.sync_filters)
-        except Exception as e:
-            self.logger.warning(
-                f"Could not read {database}.{table} to check it for changes, so it will be indexed again: {e}"
-            )
-            return None
-        # information_schema returns foreign keys in no fixed order.
-        content["foreign_keys"] = sorted(
-            content["foreign_keys"], key=lambda fk: json.dumps(fk, sort_keys=True, default=str)
-        )
-        # SHOW CREATE TABLE carries the next AUTO_INCREMENT value, which moves on
-        # every insert, even one past the row limit that never reaches the index.
-        content["ddl"] = _AUTO_INCREMENT_OPTION.sub("", content["ddl"] or "")
-        serialized = json.dumps(content, sort_keys=True, default=str)
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-    async def _build_table_record(
-        self,
-        database_name: str,
-        table: MariaDBTable,
-    ) -> Tuple[SQLTableRecord, Optional[Record]]:
-        """Build the record for a table, with the stored record it replaces, if any."""
-        fqn = f"{database_name}.{table.name}"
-        existing = await self.data_entities_processor.get_record_by_external_id(
-            connector_id=self.connector_id,
-            external_record_id=fqn,
-        )
-
-        current_time = get_epoch_timestamp_in_ms()
-        # A fingerprint that matches the stored revision lets the save keep an
-        # indexed record COMPLETED instead of embedding it again. Without one,
-        # the timestamp never matches, so the table is indexed again.
-        revision = await self._table_fingerprint(database_name, table.name) or str(current_time)
-        changed = existing is None or existing.external_revision_id != revision
-        record_id = existing.id if existing else str(uuid.uuid4())
-
-        record = SQLTableRecord(
-            id=record_id,
-            record_name=table.name,
-            record_type=RecordType.SQL_TABLE,
-            record_group_type=RecordGroupType.SQL_DATABASE.value,
-            external_record_group_id=database_name,
-            external_record_id=fqn,
-            external_revision_id=revision,
-            origin=OriginTypes.CONNECTOR.value,
-            connector_name=self.connector_name,
-            connector_id=self.connector_id,
-            mime_type=MimeTypes.SQL_TABLE.value,
-            weburl=f"{self._frontend_url}/record/{record_id}" if self._frontend_url else "",
-            source_created_at=existing.source_created_at if existing else current_time,
-            source_updated_at=current_time if changed else existing.source_updated_at,
-            row_count=table.row_count,
-            # 0 on an existing record lets the save bump the stored version only
-            # when the revision changed.
-            version=0 if existing else 1,
-            inherit_permissions=True,
-        )
-
-        for fk in table.foreign_keys:
-            if not fk.foreign_table_name:
-                continue
-            target_database = fk.foreign_database or database_name
-            target_fqn = f"{target_database}.{fk.foreign_table_name}"
-            record.related_external_records.append(
-                RelatedExternalRecord(
-                    external_record_id=target_fqn,
-                    record_type=RecordType.SQL_TABLE,
-                    record_name=fk.foreign_table_name,
-                    relation_type=RecordRelations.FOREIGN_KEY,
-                    source_column=fk.column_name,
-                    target_column=fk.foreign_column_name,
-                    child_table_name=fqn,
-                    parent_table_name=target_fqn,
-                    constraint_name=fk.constraint_name,
-                )
-            )
-
-        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
-            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-        return record, existing
-
-    async def _process_tables_generator(
-        self,
-        database_name: str,
-        tables: List[MariaDBTable],
-    ) -> AsyncGenerator[Tuple[Record, List[Permission]], None]:
-        
-        for table in tables:
-            try:
-                record, _ = await self._build_table_record(database_name, table)
-                self._record_id_cache[record.external_record_id] = record.id
-                yield (record, [])
-                await asyncio.sleep(0)
-                
-            except Exception as e:
-                self.logger.error(f"Error processing table {table.name}: {e}", exc_info=True)
-                continue
-
-    async def _sync_tables(self, database_name: str, tables: List[MariaDBTable]) -> None:
-        if not tables:
-            return
-        
-        batch: List[Tuple[Record, List[Permission]]] = []
-        total_synced = 0
-
-        async for record, perms in self._process_tables_generator(database_name, tables):
-            batch.append((record, perms))
-            total_synced += 1
-
-            if len(batch) >= self.batch_size:
-                self.logger.debug(f"Processing batch of {len(batch)} tables")
-                await self.data_entities_processor.on_new_records(batch)
-                batch = []
-
-        if batch:
-            await self.data_entities_processor.on_new_records(batch)
-            
-        self.logger.info(f"Synced {total_synced} tables in {database_name}")
-
-    async def _sync_updated_tables(self, database_name: str, tables: List[MariaDBTable]) -> None:
-        """Sync tables whose content or schema has changed."""
-        if not tables:
-            return
-        
-        self.logger.info(f"Processing {len(tables)} updated tables in {database_name}")
-        
-        for table in tables:
-            try:
-                fqn = f"{database_name}.{table.name}"
-                updated_record, existing_record = await self._build_table_record(database_name, table)
-
-                if not existing_record:
-                    self.logger.warning(f"No existing record found for updated table {fqn}, skipping")
-                    continue
-
-                # The table stats flag a change on a restart or a row-estimate
-                # drift alone; the content says whether there is anything to embed.
-                if (
-                    existing_record.indexing_status == ProgressStatus.COMPLETED.value
-                    and existing_record.external_revision_id == updated_record.external_revision_id
-                ):
-                    self.logger.debug(f"Table {fqn} content is unchanged, not indexing it again")
-                    continue
-
-                await self.data_entities_processor.on_record_content_update(updated_record)
-                self.logger.debug(f"Published content update for table: {fqn}")
-                
-            except Exception as e:
-                self.logger.error(f"Error syncing updated table {table.name}: {e}", exc_info=True)
-                continue
-        
-        self.logger.info(f"Completed syncing {len(tables)} updated tables in {database_name}")
- 
     async def stream_record(
         self,
         record: Record,
-        user_id: Optional[str] = None,
-        convertTo: Optional[str] = None
+        user_id: str | None = None,
+        convertTo: str | None = None
     ) -> StreamingResponse:
         try:
             if not self.data_source:
                 raise connector_not_ready(self.display_name)
 
             if record.record_type == RecordType.SQL_TABLE:
-                # Matches how the rest of this file splits a database-qualified
-                # name: everything after the first dot is the table.
-                parts = record.external_record_id.split(".", 1)
-                if len(parts) != 2:
-                    raise HTTPException(status_code=500, detail="Invalid table FQN")
-                database, table = parts[0], parts[1]
+                try:
+                    database, table = split_table_fqn(record.external_record_id)
+                except ValueError:
+                    # An id written before ids were quote-aware: database.table, split at the first dot.
+                    database, _, table = record.external_record_id.partition(".")
+                    if not table:
+                        raise HTTPException(status_code=500, detail="Invalid table FQN") from None
 
-                data = await self._read_table_content(database, table)
+                row_count = getattr(record, "row_count", None)
+                data = await self._read_table_content(
+                    database, table, row_estimate=row_count if isinstance(row_count, int) else None,
+                )
 
-                json_bytes = json.dumps(data, default=str).encode("utf-8")
+                json_bytes = json.dumps(data, default=json_default).encode("utf-8")
 
                 async def json_iterator():
                     yield json_bytes
@@ -795,11 +1158,81 @@ class MariaDBConnector(BaseConnector):
                     json_iterator(), filename=f"{table}.json", mime_type=MimeTypes.SQL_TABLE.value
                 )
 
+            if record.record_type == RecordType.SQL_COLUMN:
+                return await self._stream_column(record)
+
             raise HTTPException(status_code=400, detail="Unsupported record type")
 
         except Exception as e:
             self.logger.error(f"Error streaming record: {e}", exc_info=True)
             raise
+
+    async def _stream_column(self, record: Record) -> StreamingResponse:
+        """A column's definition, its stored profile, and its live value counts."""
+        table_id = getattr(record, "table_fqn", None) or record.parent_external_record_id or ""
+        try:
+            database, table = split_table_fqn(table_id)
+        except ValueError:
+            raise HTTPException(status_code=500, detail="Invalid table FQN") from None
+        column = record.record_name
+        # The counts group the whole table, past the rows a table stream is
+        # capped to, so a column that looks personal gets none, as it gets no
+        # top values in its profile.
+        withheld = looks_personal(column)
+        value_counts: list[dict[str, Any]] = []
+        if not withheld:
+            try:
+                # One past the limit, to tell a cut-off list from one that fits exactly.
+                value_counts = await self.data_source.column_value_counts(
+                    database, table, column, MAX_COLUMN_VALUES_STREAMED + 1,
+                )
+            except Exception as e:
+                self.logger.error(f"❌ Failed to read values of {table_id}.{column}: {e}")
+                raise to_sql_stream_error(e, connector=self.display_name) from e
+        top_values = getattr(record, "top_values", None) or []
+        frequencies = getattr(record, "top_value_frequencies", None) or []
+        data = {
+            "column_name": column,
+            "table_name": table,
+            "database_name": database,
+            "data_type": getattr(record, "data_type", None),
+            "nullable": getattr(record, "nullable", None),
+            "is_primary_key": getattr(record, "is_primary_key", None),
+            "is_unique": getattr(record, "is_unique", None),
+            "default": getattr(record, "default", None),
+            "ordinal_position": getattr(record, "ordinal_position", None),
+            "profile": {
+                "distinct_count": getattr(record, "distinct_count", None),
+                "null_count": getattr(record, "null_count", None),
+                "cardinality_ratio": getattr(record, "cardinality_ratio", None),
+                "min_value": getattr(record, "min_value", None),
+                "max_value": getattr(record, "max_value", None),
+                "numeric_text": getattr(record, "numeric_text", None),
+                "profiled_at": getattr(record, "profiled_at", None),
+                "top_values": [
+                    {"value": value, "frequency": frequency} for value, frequency in zip(top_values, frequencies)
+                ],
+            },
+            "value_counts": [
+                {"value": _bit_value(row.get("value"), record), "count": row.get("count")}
+                for row in value_counts[:MAX_COLUMN_VALUES_STREAMED]
+            ],
+            "value_counts_truncated": len(value_counts) > MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_withheld": withheld,
+            "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
+        }
+        json_bytes = json.dumps(data, default=json_default).encode("utf-8")
+
+        async def json_iterator() -> AsyncGenerator[bytes, None]:
+            yield json_bytes
+
+        return create_stream_record_response(
+            json_iterator(), filename=f"{column}.json", mime_type=MimeTypes.SQL_COLUMN.value
+        )
+
+    @classmethod
+    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
+        return await check_mariadb_connection(auth_config, logger)
 
     async def test_connection_and_access(self) -> bool:
         if not self.data_source:
@@ -825,7 +1258,6 @@ class MariaDBConnector(BaseConnector):
                     await client.close()
                 self.data_source = None
 
-            self._record_id_cache.clear()
             self.database_name = None
 
             self.logger.info("MariaDB connector cleanup completed")
@@ -833,16 +1265,16 @@ class MariaDBConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during MariaDB connector cleanup: {e}", exc_info=True)
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         return None
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError(
             "MariaDB does not support webhook notifications. "
             "Use scheduled sync for change tracking."
         )
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         try:
             if not records:
                 self.logger.info("No records to reindex")
@@ -861,320 +1293,45 @@ class MariaDBConnector(BaseConnector):
             self.logger.error(f"Error during MariaDB reindex: {e}", exc_info=True)
             raise
 
-    async def run_incremental_sync(self) -> None:
+    async def _load_state(self) -> dict[str, MariaDBTableState] | None:
+        """The saved table states, or None when there is none of this version (a full sync follows).
+
+        Keys are never parsed: an id saved by an earlier version that does not
+        parse is still compared, found unlisted, and its record removed.
         """
-        Run incremental sync for MariaDB.
+        self._stored_values_allowed = self._stored_sync_time = None
+        stored = await self.tables_sync_point.read_sync_point(SYNC_STATE_KEY)
+        if not stored or stored.get("state_version") != SYNC_STATE_VERSION:
+            return None
+        self._stored_values_allowed = stored.get("values_allowed")
+        self._stored_sync_time = stored.get("last_sync_time")
+        raw = json.loads(stored.get("table_states") or "{}")
+        return {fqn: MariaDBTableState.model_validate(state) for fqn, state in raw.items()}
 
-        Compares current table states (row count, column hash, last_updated)
-        with previously stored states to detect changes.
-        
-        Note: MariaDB does not have cumulative DML counters like PostgreSQL.
-        We rely on TABLE_ROWS estimates and UPDATE_TIME from information_schema.TABLES.
-        UPDATE_TIME may be NULL for InnoDB tables unless innodb_file_per_table=ON.
+    async def _save_state(self, states: dict[str, MariaDBTableState], *, checkpoint: bool = False) -> bool:
+        """Save the table states; returns whether they were saved (tried a few times).
+
+        A checkpoint keeps the last sync's values setting and time: what it
+        says about the column records has not changed yet.
         """
-        self.logger.info("📦 [Incremental Sync] Starting MariaDB incremental sync...")
-
-        if not self.data_source:
-            raise ConnectionError("MariaDB connector not initialized")
-
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "mariadb", self.connector_id, self.logger
-        )
-
-        try:
-            sync_point_key = "mariadb_tables_state"
-            stored_state = await self.tables_sync_point.read_sync_point(sync_point_key)
-            
-            if not stored_state or not stored_state.get("table_states"):
-                self.logger.info("No previous sync state found, running full sync")
-                await self._run_full_sync_internal()
-                await self._save_tables_sync_state(sync_point_key)
-                return
-
-            raw_states: Dict[str, Any] = json.loads(
-                stored_state.get("table_states", "{}")
-            )
-            stored_table_states: Dict[str, MariaDBTableState] = {
-                fqn: MariaDBTableState.model_validate(state)
-                for fqn, state in raw_states.items()
-            }
-            
-            selected_tables, filter_op = self._get_filter_values()
-            current_stats = await self._get_current_table_states(selected_tables, filter_op)
-            
-            new_tables: List[str] = []
-            changed_tables: List[str] = []
-            deleted_tables: List[str] = []
-            
-            current_fqns = set(current_stats.keys())
-            stored_fqns = set(stored_table_states.keys())
-            
-            new_tables = list(current_fqns - stored_fqns)
-            deleted_tables = list(stored_fqns - current_fqns)
-            
-            for fqn in current_fqns & stored_fqns:
-                current = current_stats[fqn]
-                stored = stored_table_states[fqn]
-                
-                if self._has_table_changed(current, stored):
-                    changed_tables.append(fqn)
-            
-            self.logger.info(
-                f"📊 Change detection: new={len(new_tables)}, "
-                f"changed={len(changed_tables)}, deleted={len(deleted_tables)}"
-            )
-            if new_tables:
-                await self._sync_new_tables(new_tables)
-            if changed_tables:
-                await self._sync_changed_tables(changed_tables) 
-            undeleted: Dict[str, MariaDBTableState] = {}
-            if deleted_tables:
-                undeleted = await self._handle_deleted_tables(deleted_tables)
-            
-            await self._save_tables_sync_state(sync_point_key, undeleted)
-            
-            self.logger.info("✅ [Incremental Sync] MariaDB incremental sync completed")
-
-        except Exception as e:
-            self.logger.error(f"❌ [Incremental Sync] Error: {e}", exc_info=True)
-            raise
-
-    async def _get_current_table_states(
-        self,
-        selected_tables: Optional[List[str]],
-        filter_op: str = MultiselectOperator.IN.value,
-    ) -> Dict[str, MariaDBTableState]:
-        """Fetch current table states from MariaDB for comparison.
-
-        Uses TABLE_ROWS and UPDATE_TIME from information_schema.TABLES along with
-        column hash for change detection.
-        """
-        table_states: Dict[str, MariaDBTableState] = {}
-
-        # An empty result here reads as "every table was dropped": incremental
-        # sync would delete every record, and a saved state would hide them all.
-        if not self.database_name:
-            raise ValueError("Database name must be configured for MariaDB connector")
-
-        databases_to_check = [self.database_name]
-
-        stats_response = await self.data_source.get_table_stats(databases_to_check)
-        if not stats_response.success:
-            raise ConnectionError(f"Failed to read MariaDB table stats: {stats_response.error}")
-
-        exclude = filter_op == MultiselectOperator.NOT_IN.value
-        stats_by_fqn: Dict[str, TableStatsEntry] = {}
-        for stat_dict in stats_response.data:
-            stat = TableStatsEntry.model_validate(stat_dict)
-            fqn = f"{stat.database_name}.{stat.table_name}"
-            if selected_tables:
-                is_in = fqn in selected_tables
-                if (exclude and is_in) or (not exclude and not is_in):
-                    continue
-            stats_by_fqn[fqn] = stat
-        
-        for fqn, stat in stats_by_fqn.items():
-            database_name, table_name = fqn.split(".", 1)
-            column_hash = await self._compute_column_hash(database_name, table_name)
-            
-            table_states[fqn] = MariaDBTableState(
-                column_hash=column_hash,
-                n_live_tup=stat.n_live_tup or 0,
-                last_updated=str(stat.last_updated) if stat.last_updated else None,
-                auto_increment=stat.auto_increment or 0,
-            )
-        
-        return table_states
-
-    async def _compute_column_hash(self, database: str, table: str) -> str:
-        """Compute MD5 hash of column definitions for schema change detection."""
-        table_info_response = await self.data_source.get_table_info(table, database)
-        if not table_info_response.success:
-            return ""
-        
-        detail = TableDetail.model_validate(table_info_response.data)
-        columns_dicts = [col.model_dump() for col in detail.columns]
-        column_str = json.dumps(columns_dicts, sort_keys=True, default=str)
-        return hashlib.md5(column_str.encode()).hexdigest()
-
-    def _has_table_changed(
-        self,
-        current: MariaDBTableState,
-        stored: MariaDBTableState
-    ) -> bool:
-        """Check if table has changed by comparing metadata.
-        
-        - Column hash for schema changes
-        - UPDATE_TIME for modification time changes (may be NULL for InnoDB)
-        - TABLE_ROWS estimate for row count changes
-        - AUTO_INCREMENT for insert detection
-        """
-        if current.column_hash != stored.column_hash:
-            return True
-
-        if current.last_updated and not stored.last_updated:
-            return True
-        
-        if stored.last_updated and not current.last_updated:
-            return True
-
-        if current.last_updated and stored.last_updated and current.last_updated != stored.last_updated:
-            return True
-        
-        if current.auto_increment != stored.auto_increment:
-            return True
-
-        if current.n_live_tup != stored.n_live_tup:
-            return True
-        
-        return False
-
-    async def _sync_new_tables(self, table_fqns: List[str]) -> None:
-        """Sync newly discovered tables.
-        
-        Also ensures parent database RecordGroups exist for any new databases
-        that weren't present during the initial full sync.
-        """
-        self.logger.info(f"Syncing {len(table_fqns)} new tables")
-
-        # Ensure parent database record groups exist for all new tables
-        new_databases = set()
-        for fqn in table_fqns:
-            database_name = fqn.split(".", 1)[0]
-            new_databases.add(database_name)
-        
-        if new_databases:
-            await self._ensure_database_record_groups(list(new_databases))
-
-        for fqn in table_fqns:
-            database_name, table_name = fqn.split(".", 1)
-            
-            table_info_response = await self.data_source.get_table_info(table_name, database_name)
-            columns: List[ColumnInfo] = []
-            if table_info_response.success:
-                detail = TableDetail.model_validate(table_info_response.data)
-                columns = detail.columns
-            
-            fks_response = await self.data_source.get_foreign_keys(table_name, database_name)
-            foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data] if fks_response.success else []
-            
-            pks_response = await self.data_source.get_primary_keys(table_name, database_name)
-            primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data] if pks_response.success else []
-            
-            table = MariaDBTable(
-                name=table_name,
-                database_name=database_name,
-                columns=columns,
-                foreign_keys=foreign_keys,
-                primary_keys=primary_keys,
-            )
-            
-            await self._sync_tables(database_name, [table])
-            self.sync_stats.tables_new += 1
-
-    async def _sync_changed_tables(self, table_fqns: List[str]) -> None:
-        """Sync changed tables."""
-        self.logger.info(f"Syncing {len(table_fqns)} changed tables")
-        
-        for fqn in table_fqns:
-            database_name, table_name = fqn.split(".", 1)
-            
-            table_info_response = await self.data_source.get_table_info(table_name, database_name)
-            columns: List[ColumnInfo] = []
-            if table_info_response.success:
-                detail = TableDetail.model_validate(table_info_response.data)
-                columns = detail.columns
-            
-            fks_response = await self.data_source.get_foreign_keys(table_name, database_name)
-            foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data] if fks_response.success else []
-            
-            pks_response = await self.data_source.get_primary_keys(table_name, database_name)
-            primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data] if pks_response.success else []
-            
-            table = MariaDBTable(
-                name=table_name,
-                database_name=database_name,
-                columns=columns,
-                foreign_keys=foreign_keys,
-                primary_keys=primary_keys,
-            )
-            
-            await self._sync_updated_tables(database_name, [table])
-
-    async def _handle_deleted_tables(self, table_fqns: List[str]) -> Dict[str, MariaDBTableState]:
-        """Delete records of tables that no longer exist or are filtered out.
-
-        Returns a placeholder state for each table whose delete failed.
-        """
-        self.logger.info(f"Handling {len(table_fqns)} deleted tables")
-        undeleted: Dict[str, MariaDBTableState] = {}
-        
-        for fqn in table_fqns:
-            try:
-                record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=fqn
-                )
-                if record and record.id:
-                    await self.data_entities_processor.on_record_deleted(record.id)
-                    self.logger.debug(f"Deleted record for table: {fqn}")
-            except Exception as e:
-                self.sync_stats.errors += 1
-                self.logger.warning(f"Failed to delete record for {fqn}: {e}")
-                undeleted[fqn] = MariaDBTableState()
-        return undeleted
-
-    async def _remove_stale_tables(self, listed_fqns: set[str]) -> Dict[str, MariaDBTableState]:
-        """Delete records of tables that were dropped or are now filtered out.
-
-        Returns a placeholder state for each table whose delete failed.
-        """
-        records = await self.data_entities_processor.get_records_by_record_type(
-            self.connector_id, RecordType.SQL_TABLE
-        )
-        stale = [r for r in records if r.external_record_id not in listed_fqns]
-        undeleted: Dict[str, MariaDBTableState] = {}
-        if not stale:
-            return undeleted
-
-        self.logger.info(f"Removing {len(stale)} tables that are no longer synced")
-        for record in stale:
-            try:
-                await self.data_entities_processor.on_record_deleted(record.id)
-            except Exception as e:
-                self.sync_stats.errors += 1
-                self.logger.warning(f"Failed to delete record for {record.external_record_id}: {e}")
-                undeleted[record.external_record_id] = MariaDBTableState()
-        return undeleted
-
-    async def _save_tables_sync_state(
-        self,
-        sync_point_key: str,
-        undeleted: Optional[Dict[str, MariaDBTableState]] = None,
-    ) -> None:
-        """Save current table states for next incremental sync comparison.
-
-        ``undeleted`` are gone or filtered-out tables whose record could not be
-        deleted. They are kept so the next incremental sync, not finding them
-        in the stats, tries the delete again.
-        """
-        selected_tables, filter_op = self._get_filter_values()
-        current_states = {
-            **(undeleted or {}),
-            **await self._get_current_table_states(selected_tables, filter_op),
+        value = {
+            "state_version": SYNC_STATE_VERSION,
+            "values_allowed": self._stored_values_allowed if checkpoint else self._values_allowed(),
+            "last_sync_time": self._stored_sync_time if checkpoint else get_epoch_timestamp_in_ms(),
+            "table_states": json.dumps({fqn: state.model_dump() for fqn, state in states.items()}),
         }
-        count = len(current_states)
-        serialized_states = json.dumps(
-            {fqn: state.model_dump() for fqn, state in current_states.items()}
-        )
-        await self.tables_sync_point.update_sync_point(
-            sync_point_key,
-            {
-                "last_sync_time": get_epoch_timestamp_in_ms(),
-                "table_states": serialized_states,
-            }
-        )
-        self.logger.debug(f"Saved sync state for {count} tables")
+        for attempt in range(1, LOOKUP_ATTEMPTS + 1):
+            try:
+                await self.tables_sync_point.update_sync_point(SYNC_STATE_KEY, value)
+                self.logger.debug(f"Saved sync state for {len(states)} tables")
+                return True
+            except Exception as e:
+                if attempt == LOOKUP_ATTEMPTS:
+                    self.sync_stats.errors += 1
+                    self.logger.error(f"Could not save the sync state: {e}")
+                    return False
+                await asyncio.sleep(attempt)
+        return False
 
     async def _populate_filter_cache(self) -> None:
         """
@@ -1193,7 +1350,7 @@ class MariaDBConnector(BaseConnector):
             if not self.database_name:
                 raise RuntimeError("MariaDB database is not configured")
 
-            table_cache: List[FilterOption] = []
+            table_cache: list[FilterOption] = []
 
             tables_resp = await self.data_source.list_tables(database=self.database_name)
             if not tables_resp.success:
@@ -1203,7 +1360,7 @@ class MariaDBConnector(BaseConnector):
                 table_entry = TableListEntry.model_validate(table_dict)
                 if not table_entry.name:
                     continue
-                fqn = f"{self.database_name}.{table_entry.name}"
+                fqn = table_fqn(self.database_name, table_entry.name)
                 table_cache.append(FilterOption(id=fqn, label=fqn))
 
             # Atomic swap so readers never see a partially-built cache
@@ -1219,8 +1376,8 @@ class MariaDBConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None,
+        search: str | None = None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
         try:
             page  = max(1, page)

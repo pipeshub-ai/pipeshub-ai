@@ -1359,6 +1359,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        # COMPOSITE: SqlColumn tableFqn + orgId
+        # Pattern: a table's column records, or many tables' at once
+        indexes.append(
+            "CREATE INDEX sql_column_table_fqn IF NOT EXISTS "
+            "FOR (n:SqlColumn) ON (n.tableFqn, n.orgId)"
+        )
+
         # ==================== BLOCK INDEXES (code knowledge graph) ====================
         # Blocks are the largest label by far (100k+ on a mid-size repo) and only
         # carried the id uniqueness constraint, so every code-graph query was a

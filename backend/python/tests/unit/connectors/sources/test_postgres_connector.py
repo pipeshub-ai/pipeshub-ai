@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection, FilterOption
+from app.connectors.core.sql.column_records import column_revision as _column_revision
 from app.connectors.sources.postgres.catalog_diff import TableChange, diff_catalog
 from app.connectors.sources.postgres.connector import (
     MAX_COLUMN_VALUES_STREAMED,
@@ -31,7 +32,6 @@ from app.connectors.sources.postgres.connector import (
     SyncOutcome,
     SyncStats,
     _column_hash,
-    _column_revision,
     _table_revision,
     split_table_fqn,
     table_fqn,
@@ -4912,7 +4912,7 @@ class TestFailedProfilingKeepsStoredValues:
         _, failing, table = await self._stored_and_failing()
         failing.data_entities_processor.get_typed_records_by_ids = read
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises((LookupError, RuntimeError)):
             await failing._sync_table_columns(_table_record(), table)
 
         failing.data_entities_processor.on_new_records.assert_not_awaited()

@@ -620,7 +620,7 @@ class TestProcessDocDocumentDelegation:
         proc, _, gp, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_doc_to_docx.return_value = b"docx-content"
+        mock_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx-content")
         proc.parsers["doc"] = mock_parser
 
         async def mock_docx(*args, **kwargs):
@@ -641,7 +641,7 @@ class TestProcessDocDocumentDelegation:
             )
 
         assert len(events) == 2
-        mock_parser.convert_doc_to_docx.assert_called_once()
+        mock_parser.convert_doc_to_docx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -902,7 +902,7 @@ class TestProcessXlsDocumentDelegation:
         proc, _, gp, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_xls_to_xlsx.return_value = b"xlsx-content"
+        mock_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx-content")
         proc.parsers["xls"] = mock_parser
 
         async def mock_excel(*args, **kwargs):
@@ -1217,7 +1217,7 @@ class TestProcessPptDocument:
         proc, _, _, _ = _make_processor()
 
         mock_parser = MagicMock()
-        mock_parser.convert_ppt_to_pptx.return_value = b"pptx-content"
+        mock_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx-content")
         proc.parsers["ppt"] = mock_parser
 
         async def mock_pptx(*args, **kwargs):
@@ -1238,7 +1238,7 @@ class TestProcessPptDocument:
             )
 
         assert len(events) == 2
-        mock_parser.convert_ppt_to_pptx.assert_called_once()
+        mock_parser.convert_ppt_to_pptx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1668,7 +1668,7 @@ class TestProcessDocDocument:
         from app.config.constants.arangodb import ExtensionTypes
 
         mock_parser = MagicMock()
-        mock_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        mock_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc.parsers[ExtensionTypes.DOC.value] = mock_parser
 
         async def mock_docx(*args, **kwargs):
@@ -1680,7 +1680,7 @@ class TestProcessDocDocument:
             "test.doc", "rec-1", 1, "upload", "org-1", b"doc_binary", "vr-1"
         ))
         assert events[0].event == "parsing_complete"
-        mock_parser.convert_doc_to_docx.assert_called_once()
+        mock_parser.convert_doc_to_docx_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -2137,7 +2137,7 @@ class TestProcessXlsDocument:
         proc, _, gp, config = _make_processor()
 
         mock_xls_parser = MagicMock()
-        mock_xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        mock_xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc.parsers[ExtensionTypes.XLS.value] = mock_xls_parser
 
         async def mock_excel(*args, **kwargs):
@@ -2150,7 +2150,7 @@ class TestProcessXlsDocument:
             "test.xls", "rec-1", 1, "upload", "org-1", b"xls_binary", "vr-1"
         ))
         assert events[0].event == "parsing_complete"
-        mock_xls_parser.convert_xls_to_xlsx.assert_called_once()
+        mock_xls_parser.convert_xls_to_xlsx_async.assert_awaited_once()
 
 
 # ===========================================================================

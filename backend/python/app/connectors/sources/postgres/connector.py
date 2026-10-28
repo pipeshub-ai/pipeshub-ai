@@ -13,7 +13,7 @@ import ssl
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from logging import Logger
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -74,6 +74,17 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sql.column_records import (
+    build_column_records,
+    load_typed_columns,
+)
+from app.connectors.core.sql.permissions import database_permissions
+from app.connectors.core.sql.qualified_names import (
+    join_qualified_name,
+    split_qualified_name,
+)
+from app.connectors.core.sql.record_moves import hold_renames, rename_updates
+from app.connectors.core.sql.sync_outcome import SyncOutcome
 from app.connectors.sources.postgres.apps import PostgreSQLApp
 from app.connectors.sources.postgres.catalog_diff import (
     PostgresTableState,
@@ -92,7 +103,7 @@ from app.models.entities import (
     SQLTableRecord,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.postgres.postgres import PostgreSQLConfig, PostgreSQLResponse
 from app.sources.external.postgres.postgres_ import (
     ColumnInfo,
@@ -257,49 +268,17 @@ def _is_ssl_only_server_refusal(error: BaseException, sslmode: str) -> bool:
 
 
 def table_fqn(schema_name: str, table_name: str) -> str:
-    """A table's id, ``schema.table``.
-
-    A part containing a dot, or starting with a double quote, is written
-    quoted, so schema ``a.b`` with table ``c`` and schema ``a`` with table
-    ``b.c`` get different ids. Every other name is written as is.
-    """
-    return f"{_fqn_part(schema_name)}.{_fqn_part(table_name)}"
-
-
-def _fqn_part(name: str) -> str:
-    if "." in name or name.startswith('"'):
-        return '"' + name.replace('"', '""') + '"'
-    return name
+    """A table's id, ``schema.table``; see ``join_qualified_name`` for quoting."""
+    return join_qualified_name((schema_name, table_name))
 
 
 def split_table_fqn(fqn: str) -> tuple[str, str]:
     """Inverse of ``table_fqn``. Raises ValueError for anything it didn't write."""
-    schema_name, rest = _read_fqn_part(fqn)
-    if not rest.startswith("."):
-        raise ValueError(f"Not a table id: {fqn!r}")
-    table_name, rest = _read_fqn_part(rest[1:])
-    if rest:
-        raise ValueError(f"Not a table id: {fqn!r}")
+    try:
+        schema_name, table_name = split_qualified_name(fqn, 2)
+    except ValueError:
+        raise ValueError(f"Not a table id: {fqn!r}") from None
     return schema_name, table_name
-
-
-def _read_fqn_part(text: str) -> tuple[str, str]:
-    """Read one part off the front of ``text``; returns it and what follows."""
-    if not text.startswith('"'):
-        dot = text.find(".")
-        return (text, "") if dot == -1 else (text[:dot], text[dot:])
-    chars: list[str] = []
-    i = 1
-    while i < len(text):
-        if text[i] == '"':
-            if text[i + 1:i + 2] == '"':
-                chars.append('"')
-                i += 2
-                continue
-            return "".join(chars), text[i + 1:]
-        chars.append(text[i])
-        i += 1
-    raise ValueError(f"Unterminated quoted name in {text!r}")
 
 
 @dataclass
@@ -371,47 +350,6 @@ def _table_shape(columns: list[tuple[int, dict]], constraint_shape: str) -> str:
     return hashlib.md5(key.encode()).hexdigest()
 
 
-def _column_revision(
-    table_revision: str | None,
-    stats: dict[str, Any],
-    profile: ColumnProfile | None,
-) -> str | None:
-    """The table's revision, extended by the column's stats and profile.
-
-    A stored record is rewritten only when its revision changes, so without
-    this a profile that moved while the rows did not would never be saved:
-    on a full sync, or after an ANALYZE, which incremental sync re-profiles.
-    profiled_at is left out: it changes on every sync.
-    """
-    facts = {key: stats.get(key) for key in ("distinct_count", "null_count", "cardinality_ratio")}
-    if profile is not None:
-        facts.update(profile.model_dump(exclude={"profiled_at"}))
-    if not any(value is not None for value in facts.values()):
-        return table_revision
-    digest = hashlib.md5(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
-    return f"{table_revision}:{digest}"
-
-
-def _stored_stats_and_profile(record: Record) -> tuple[dict[str, Any], ColumnProfile | None]:
-    """A saved column record's stats and value profile, as a fresh profile run would give them."""
-    stats = {
-        "distinct_count": getattr(record, "distinct_count", None),
-        "null_count": getattr(record, "null_count", None),
-        "cardinality_ratio": getattr(record, "cardinality_ratio", None),
-    }
-    profile = None
-    if getattr(record, "profiled_at", None) is not None:
-        profile = ColumnProfile(
-            top_values=getattr(record, "top_values", None),
-            top_value_frequencies=getattr(record, "top_value_frequencies", None),
-            min_value=getattr(record, "min_value", None),
-            max_value=getattr(record, "max_value", None),
-            numeric_text=getattr(record, "numeric_text", None),
-            profiled_at=record.profiled_at,
-        )
-    return stats, profile
-
-
 def _json_default(value: Any) -> Any:
     """Serialize the row values asyncpg returns that json cannot."""
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -451,28 +389,6 @@ def _decode_json_columns(rows: list[dict[str, Any]], columns: list[ColumnInfo]) 
                     pass
         decoded.append(row)
     return decoded
-
-
-@dataclass
-class SyncOutcome:
-    """What one sync changed, for whatever runs after the sync."""
-
-    # Record ids of tables that are new, or whose name, columns or keys
-    # changed: what was extracted about them no longer describes them.
-    restructured: set[str] = field(default_factory=set)
-    # Their table ids, collected while records are built: a table saved after
-    # one that references it takes over the stand-in that table created, and
-    # with it the stand-in's record id, so ids are only known once saved.
-    restructured_tables: set[str] = field(default_factory=set)
-    # Record ids of every table and column the sync removed.
-    removed: set[str] = field(default_factory=set)
-    # Record ids of tables whose relations may be out of date though nothing
-    # else about them changed: one pointed at something removed, or only
-    # names changed.
-    relations_only: set[str] = field(default_factory=set)
-    # Record ids of tables renamed, or with columns renamed: what was derived
-    # from them is renamed in place.
-    renamed: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -1177,27 +1093,7 @@ class PostgreSQLConnector(BaseConnector):
         return min(db_row_count, max_rows)
 
     async def _get_permissions(self) -> list[Permission]:
-        """Who reaches the database, and through it every schema, table and column.
-
-        Team scope: the whole organisation. Personal scope: the creator only;
-        with no creator to name, nobody rather than everybody.
-        """
-        if self.scope == ConnectorScope.TEAM.value:
-            return [Permission(type=PermissionType.OWNER, entity_type=EntityType.ORG)]
-        if not self.creator_email:
-            await self._load_creator_email()
-        if self.creator_email:
-            return [Permission(
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER,
-                email=self.creator_email,
-                external_id=self.created_by,
-            )]
-        self.logger.warning(
-            "Personal PostgreSQL connector %s has no creator email; its database is shared with no one",
-            self.connector_id,
-        )
-        return []
+        return await database_permissions(self)
 
     async def _build_table_record(
         self,
@@ -1317,78 +1213,29 @@ class PostgreSQLConnector(BaseConnector):
         ``stored`` maps column FQN to the saved record; when this sync's
         profiling failed, the saved stats and profile are kept.
         """
-        table_fqn = table_record.external_record_id
-        seen: set[str] = set()
-        column_records: list[SQLColumnRecord] = []
-
         stats_by_name: dict[str, dict[str, Any]] = {}
         if table.column_stats:
             _total_rows, stats_list = table.column_stats
-            stats_by_name = {
-                str(s.get("name")): s
-                for s in stats_list
-                if s.get("name")
-            }
+            stats_by_name = {str(s.get("name")): s for s in stats_list if s.get("name")}
+        return build_column_records(
+            table_record,
+            table.columns,
+            column_fqn=self._column_fqn,
+            stats_by_name=stats_by_name,
+            profiles=table.column_profiles,
+            stored=stored,
+            keep_stored=table.profiling_failed,
+            values_allowed=not self.indexing_filters or self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value),
+        )
 
-        for position, col in enumerate(table.columns):
-            name = (col.name or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            col_fqn = self._column_fqn(table_fqn, name)
-            col_stats = stats_by_name.get(name, {})
-            profile = (table.column_profiles or {}).get(name)
-            previous = (stored or {}).get(col_fqn) if table.profiling_failed else None
-            if previous is not None:
-                col_stats, profile = _stored_stats_and_profile(previous)
-            column_records.append(
-                SQLColumnRecord(
-                    id=str(uuid.uuid4()),
-                    record_name=name,
-                    record_type=RecordType.SQL_COLUMN,
-                    record_group_type=table_record.record_group_type,
-                    external_record_group_id=table_record.external_record_group_id,
-                    external_record_id=col_fqn,
-                    external_revision_id=_column_revision(
-                        table_record.external_revision_id, col_stats, profile
-                    ),
-                    parent_external_record_id=table_fqn,
-                    parent_record_type=RecordType.SQL_TABLE,
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    mime_type=MimeTypes.SQL_COLUMN.value,
-                    weburl="",
-                    source_created_at=table_record.source_created_at,
-                    source_updated_at=table_record.source_updated_at,
-                    version=table_record.version,
-                    inherit_permissions=True,
-                    is_dependent_node=True,
-                    parent_node_id=table_record.id,
-                    is_internal=True,
-                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
-                    fqn=col_fqn,
-                    table_fqn=table_fqn,
-                    data_type=col.data_type,
-                    nullable=bool(col.nullable),
-                    is_primary_key=bool(col.is_primary_key),
-                    is_unique=bool(col.is_unique),
-                    is_part_of_composite_primary_key=bool(col.is_part_of_composite_primary_key),
-                    is_part_of_composite_unique=bool(col.is_part_of_composite_unique),
-                    default=col.default,
-                    ordinal_position=position,
-                    distinct_count=col_stats.get("distinct_count"),
-                    null_count=col_stats.get("null_count"),
-                    cardinality_ratio=col_stats.get("cardinality_ratio"),
-                    top_values=profile.top_values if profile else None,
-                    top_value_frequencies=profile.top_value_frequencies if profile else None,
-                    min_value=profile.min_value if profile else None,
-                    max_value=profile.max_value if profile else None,
-                    numeric_text=profile.numeric_text if profile else None,
-                    profiled_at=profile.profiled_at if profile else None,
-                )
-            )
-        return column_records
+    async def _typed_columns(self, stored: dict[str, Record]) -> dict[str, Record]:
+        """Stored column records with their stats and profiles, to keep when profiling failed.
+
+        A parent lookup gives base records, which carry neither. Raises when
+        they cannot be loaded: the table's sync fails and is tried again,
+        rather than writing its columns back without their profiles.
+        """
+        return await load_typed_columns(self.data_entities_processor, stored)
 
     async def _stored_columns(self, table_fqn: str) -> dict[str, Record]:
         async with self.data_store_provider.transaction() as tx_store:
@@ -1396,20 +1243,6 @@ class PostgreSQLConnector(BaseConnector):
                 self.connector_id, table_fqn, RecordType.SQL_COLUMN.value,
             )
         return {child.external_record_id: child for child in existing}
-
-    async def _with_profiles(self, stored: dict[str, Record]) -> dict[str, Record]:
-        """Saved column records as ``SQLColumnRecord``s, which carry the stats and
-        profile the plain records lack.
-
-        Raises when any of them cannot be read so: a plain record in its place
-        would write the column back with no profile.
-        """
-        ids = [record.id for record in stored.values() if record.id]
-        typed = await self.data_entities_processor.get_typed_records_by_ids(ids, raise_on_error=True)
-        missing = [record_id for record_id in ids if record_id not in typed]
-        if missing:
-            raise RuntimeError(f"Could not read the stored profiles of {len(missing)} column record(s)")
-        return {fqn: typed.get(record.id, record) for fqn, record in stored.items()}
 
     async def _remove_records(self, record_ids: list[str], *, table_record_id: str | None = None) -> None:
         """Delete table or column records with everything built from them.
@@ -1500,7 +1333,7 @@ class PostgreSQLConnector(BaseConnector):
                 unmoved.add(new_fqn)
                 self.logger.error(f"Error renaming table {old_fqn} to {new_fqn}: {e}", exc_info=True)
 
-        self._hold_renames(renamed, moves, unmoved, blocked)
+        hold_renames(renamed, moves, unmoved, blocked)
         for old_fqn in sorted(moves):
             new_fqn = renamed[old_fqn]
             if new_fqn in moves:
@@ -1512,20 +1345,9 @@ class PostgreSQLConnector(BaseConnector):
                 unmoved.add(new_fqn)
                 moves.pop(old_fqn)
                 self.logger.error(f"Error freeing {new_fqn} for table {old_fqn}: {e}", exc_info=True)
-        self._hold_renames(renamed, moves, unmoved, blocked)
+        hold_renames(renamed, moves, unmoved, blocked)
 
-        updates: list[dict[str, Any]] = []
-        for old_fqn, (table, columns) in moves.items():
-            new_fqn = renamed[old_fqn]
-            updates.append({"id": table.id, "externalRecordId": new_fqn})
-            updates.extend(
-                {
-                    "id": column.id,
-                    "externalRecordId": self._column_fqn(new_fqn, column.record_name),
-                    "externalParentId": new_fqn,
-                }
-                for column in columns if column.id
-            )
+        updates = rename_updates(moves, renamed, self._column_fqn)
         if updates:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
@@ -1546,16 +1368,7 @@ class PostgreSQLConnector(BaseConnector):
         blocked: set[str],
     ) -> None:
         """Hold back every rename into a name that will not be free."""
-        held = True
-        while held:
-            held = False
-            for old_fqn, new_fqn in renamed.items():
-                if new_fqn in unmoved:
-                    continue
-                if new_fqn in blocked or (new_fqn in renamed and renamed[new_fqn] in unmoved):
-                    unmoved.add(new_fqn)
-                    moves.pop(old_fqn, None)
-                    held = True
+        hold_renames(renamed, moves, unmoved, blocked)
 
     async def _remove_occupant(self, fqn: str, table: Record) -> None:
         """Remove what is stored under a name a renamed table moves into.
@@ -1651,7 +1464,7 @@ class PostgreSQLConnector(BaseConnector):
 
         stored = {child.external_record_id: child for child in existing}
         if table.profiling_failed:
-            stored = await self._with_profiles(stored)
+            stored = await self._typed_columns(stored)
         col_records = self._build_column_records(table_record, table, stored)
         if col_records:
             await self.data_entities_processor.on_new_records(
@@ -1669,7 +1482,7 @@ class PostgreSQLConnector(BaseConnector):
                 record, _ = await self._build_table_record(schema_name, table)
                 yield (record, [])
                 stored = (
-                    await self._with_profiles(await self._stored_columns(record.external_record_id))
+                    await self._typed_columns(await self._stored_columns(record.external_record_id))
                     if table.profiling_failed else None
                 )
                 for col_record in self._build_column_records(record, table, stored):

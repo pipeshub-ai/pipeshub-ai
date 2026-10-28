@@ -682,7 +682,7 @@ class Processor:
         )
         # Convert DOC to DOCX and delegate
         parser = self.parsers[ExtensionTypes.DOC.value]
-        doc_result = parser.convert_doc_to_docx(doc_binary)
+        doc_result = await parser.convert_doc_to_docx_async(doc_binary)
         async for event in self.process_docx_document(
             recordName, recordId, version, source, orgId, doc_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
@@ -1395,7 +1395,7 @@ class Processor:
         try:
             # Convert XLS to XLSX binary
             xls_parser = self.parsers[ExtensionTypes.XLS.value]
-            xlsx_binary = xls_parser.convert_xls_to_xlsx(xls_binary)
+            xlsx_binary = await xls_parser.convert_xls_to_xlsx_async(xls_binary)
 
             # Process the converted XLSX using the Excel parser
             async for event in self.process_excel_document(
@@ -2205,7 +2205,7 @@ class Processor:
             f"🚀 Starting PPT document processing for record: {recordName}"
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
-        ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
+        ppt_result = await parser.convert_ppt_to_pptx_async(ppt_binary)
         async for event in self.process_pptx_document(
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id, event_type, prev_virtual_record_id
         ):

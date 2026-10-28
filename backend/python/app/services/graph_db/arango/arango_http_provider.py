@@ -1499,6 +1499,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["orgId", "email"],
             unique=True,
         )
+
+        # COMPOSITE: tableFqn + orgId on SQL column records
+        # Pattern: a table's column records, or many tables' at once
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.SQL_COLUMNS.value,
+            ["tableFqn", "orgId"],
+        )
         from app.modules.named_entities.graph_ops import ensure_named_entity_indexes
 
         await ensure_named_entity_indexes(self.http_client)

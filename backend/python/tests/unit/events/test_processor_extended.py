@@ -1213,7 +1213,7 @@ class TestProcessPptDocument:
     async def test_ppt_delegates_to_pptx(self):
         """PPT is converted to PPTX and delegated."""
         ppt_parser = MagicMock()
-        ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx_data")
+        ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx_data")
         proc = _make_processor(parsers={"ppt": ppt_parser})
 
         async def _fake_pptx(*args, **kwargs):
@@ -1228,7 +1228,7 @@ class TestProcessPptDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"ppt_data")
+        ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"ppt_data")
 
 
 # ===================================================================
@@ -1241,7 +1241,7 @@ class TestProcessXlsDocument:
     async def test_xls_delegates_to_excel(self):
         """XLS is converted to XLSX and delegated to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx_data")
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_data")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -1256,7 +1256,7 @@ class TestProcessXlsDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"xls_data")
+        xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"xls_data")
 
 
 # ===================================================================
@@ -1269,7 +1269,7 @@ class TestProcessDocDocument:
     async def test_doc_delegates_to_docx(self):
         """DOC is converted to DOCX and delegated to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx = MagicMock(return_value=b"docx_data")
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_data")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         async def _fake_docx(*args, **kwargs):
@@ -1284,7 +1284,7 @@ class TestProcessDocDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        doc_parser.convert_doc_to_docx.assert_called_once_with(b"doc_data")
+        doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"doc_data")
 
 
 # ===================================================================
