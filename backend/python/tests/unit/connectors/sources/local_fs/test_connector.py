@@ -15,7 +15,7 @@ import sys
 import time
 import types
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2412,7 +2412,7 @@ class TestRunSync:
 
     async def test_desktop_error_notifies_in_plain_words(
         self, folder_connector: LocalFsConnector, tmp_path: Path
-    ):
+    ) -> None:
         self._prepare(folder_connector, tmp_path, {"last_sync_time": 1})
         folder_connector.notify = AsyncMock()
         folder_connector._pull_with_retry = AsyncMock(
@@ -2433,7 +2433,7 @@ class TestRunSync:
 
     async def test_desktop_error_detail_stays_out_of_the_notification(
         self, folder_connector: LocalFsConnector, tmp_path: Path
-    ):
+    ) -> None:
         # The detail changes every run (run ids, URLs), which defeats the repeat
         # suppression; it belongs in the log.
         self._prepare(folder_connector, tmp_path, {"last_sync_time": 1})
@@ -2455,7 +2455,7 @@ class TestRunSync:
 
     async def test_the_same_failure_notifies_with_the_same_words(
         self, folder_connector: LocalFsConnector, tmp_path: Path
-    ):
+    ) -> None:
         self._prepare(folder_connector, tmp_path, {"last_sync_time": 1})
         folder_connector.notify = AsyncMock()
         messages = []
@@ -4314,7 +4314,9 @@ class TestEventsLeavingScope:
         operator=MultiselectOperator.IN, value=["pdf"],
     )])
 
-    async def _apply(self, folder_connector, tmp_path: Path, events, sync_filters=None):
+    async def _apply(
+        self, folder_connector, tmp_path: Path, events, sync_filters=None
+    ) -> tuple[Any, list[str]]:
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
         )
@@ -4336,37 +4338,39 @@ class TestEventsLeavingScope:
         return stats, retired
 
     @staticmethod
-    def _event(event_type: str, path: str, old_path: str | None = None, sha256: str | None = "ab" * 32):
+    def _event(
+        event_type: str, path: str, old_path: str | None = None, sha256: str | None = "ab" * 32
+    ) -> LocalFsFileEvent:
         return LocalFsFileEvent(type=event_type, path=path, oldPath=old_path, timestamp=1000, size=4,
                                 isDirectory=False, sha256=sha256)
 
-    async def test_rename_to_an_excluded_extension_retires_the_old_record(self, folder_connector, tmp_path):
+    async def test_rename_to_an_excluded_extension_retires_the_old_record(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("RENAMED", "q1.txt", "q1.pdf")], self.PDF_ONLY,
         )
         assert folder_connector._external_record_id_for_rel_path("q1.pdf") in retired
         folder_connector.data_entities_processor.on_records_moved.assert_not_awaited()
 
-    async def test_edit_that_fails_a_filter_retires_the_record(self, folder_connector, tmp_path):
+    async def test_edit_that_fails_a_filter_retires_the_record(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("MODIFIED", "notes.txt")], self.PDF_ONLY,
         )
         assert retired == [folder_connector._external_record_id_for_rel_path("notes.txt")]
 
-    async def test_a_file_without_a_hash_is_not_retired(self, folder_connector, tmp_path):
+    async def test_a_file_without_a_hash_is_not_retired(self, folder_connector, tmp_path) -> None:
         stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
         )
         assert stats.skipped == 1
         assert retired == []
 
-    async def test_a_move_without_a_hash_retires_only_the_path_it_left(self, folder_connector, tmp_path):
+    async def test_a_move_without_a_hash_retires_only_the_path_it_left(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("MOVED", "b/x.pdf", "a/x.pdf", sha256=None)],
         )
         assert retired == [folder_connector._external_record_id_for_rel_path("a/x.pdf")]
 
-    async def test_an_event_in_scope_retires_nothing(self, folder_connector, tmp_path):
+    async def test_an_event_in_scope_retires_nothing(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
             folder_connector, tmp_path, [self._event("RENAMED", "q2.pdf", "q1.pdf")], self.PDF_ONLY,
         )
@@ -4375,16 +4379,16 @@ class TestEventsLeavingScope:
 
 
 class TestWindowsAbsolutePaths:
-    def test_drive_letter_paths_are_refused(self):
+    def test_drive_letter_paths_are_refused(self) -> None:
         for bad in ("C:\\Windows\\x.txt", "c:/x.txt", "D:"):
             assert LocalFsConnector._normalize_event_rel_path(bad) is None, bad
 
-    def test_colons_inside_a_name_are_fine(self):
+    def test_colons_inside_a_name_are_fine(self) -> None:
         assert LocalFsConnector._normalize_event_rel_path("notes/10:30 call.txt") == "notes/10:30 call.txt"
 
 
 class TestPreparingPages:
-    async def test_preparing_pages_do_not_count_as_a_stall(self, folder_connector, tmp_path):
+    async def test_preparing_pages_do_not_count_as_a_stall(self, folder_connector, tmp_path) -> None:
         """A desktop still walking a big folder answers empty pages marked preparing; twenty-one of them
         must not end the run as STALLED."""
         folder_connector.config_service.get_config = AsyncMock(return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}})

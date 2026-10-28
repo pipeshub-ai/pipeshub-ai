@@ -318,6 +318,8 @@ CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),
+    # local_fs_sim is held out of every shard, so core collects (and deselects) its files.
+    "local_fs": ("core",),
 }
 
 _CONNECTOR_CODE = re.compile("(?:" + "|".join(map(re.escape, CONNECTOR_ROOTS)) + r")/([^/]+)/")

@@ -7868,7 +7868,7 @@ class TestOnRecordsMovedDuplicateGuard:
         new_record = _make_code_record(record_id="fresh-uuid")
         proc = self._setup(tx_store, old_record, interloper)
 
-        async def edges_to(node_id, collection, **_kwargs):
+        async def edges_to(node_id, collection, **_kwargs) -> list[dict[str, str]]:
             if collection == CollectionNames.INHERIT_PERMISSIONS.value and node_id.endswith("/rec-duplicate"):
                 return [
                     # ArangoDB's shape: its own edge documents.

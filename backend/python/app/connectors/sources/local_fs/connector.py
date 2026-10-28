@@ -170,7 +170,7 @@ ALL_CLEANUP_FAILED = (
 
 # What a desktop failure means to the person who owns the folder, by the code
 # the desktop or the relay reported. Anything unlisted gets the general answer.
-_SYNC_STOP_REASONS: Dict[str, str] = {
+_SYNC_STOP_REASONS: dict[str, str] = {
     "DESKTOP_TIMEOUT": (
         "the desktop app did not answer in time. Check that it is open, signed "
         "in and not busy, then sync again."
