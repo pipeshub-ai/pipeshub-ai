@@ -210,10 +210,13 @@ class TestPauseOnMembership:
         blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
         key, report = await _sweep(graph, blob, verdict).run_page(None)
+        stray_key, strays = await _sweep(graph, blob, verdict).run_strays(None)
 
-        assert report.paused and key is None and blob.purged == [] and blob.listed_with == []
+        assert report.paused and key is None and strays.paused and stray_key is None
+        assert blob.purged == [] and blob.listed_with == []
         _, resumed = await _sweep(graph, blob, OK).run_page(None)
-        assert not resumed.paused and set(blob.purged) == {"d-old", "d-stray"}
+        _, resumed_strays = await _sweep(graph, blob, OK).run_strays(None)
+        assert not resumed.paused and not resumed_strays.paused and set(blob.purged) == {"d-old", "d-stray"}
 
 
 class TestStrayPass:
@@ -229,7 +232,7 @@ class TestStrayPass:
             {"_id": "d-meta", "documentName": "metadata_v1", "retiredAt": None},
         ]
 
-        _, report = await _sweep(graph, blob).run_page(None)
+        _, report = await _sweep(graph, blob).run_strays(None)
 
         assert blob.purged == ["d-stray"] and report.strays_purged == 1
         assert blob.listed_with == [STRAY_GRACE_SECONDS]
@@ -242,7 +245,7 @@ class TestStrayPass:
         graph.add("v1")
         blob.listing = [{"_id": "d-young", "documentName": "record_v1"}]
 
-        _, report = await _sweep(graph, blob).run_page(None)
+        _, report = await _sweep(graph, blob).run_strays(None)
 
         assert blob.purged == [] and report.strays_purged == 0
 
@@ -252,7 +255,7 @@ class TestStrayPass:
         graph.add("v1", lastSwitchAt=NOW - GR // 2)
         blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
-        await _sweep(graph, blob).run_page(None)
+        await _sweep(graph, blob).run_strays(None)
 
         assert blob.purged == [] and blob.listed_with == []
 
@@ -262,7 +265,7 @@ class TestStrayPass:
         graph.add("v1", documentId=None, switchDoc=None)
         blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
-        await _sweep(graph, blob).run_page(None)
+        await _sweep(graph, blob).run_strays(None)
 
         assert blob.purged == []
 
@@ -282,7 +285,7 @@ class TestStrayPass:
 
         graph.get_document = switching  # type: ignore[method-assign]
 
-        await _sweep(graph, blob).run_page(None)
+        await _sweep(graph, blob).run_strays(None)
 
         assert blob.purged == []
 
@@ -293,6 +296,58 @@ class TestStrayPass:
             graph.add(f"v{i}")
         blob.listing = []
 
-        await _sweep(graph, blob, strays_per_tick=2).run_page(None)
+        await _sweep(graph, blob, strays_per_tick=2).run_strays(None)
 
         assert len(blob.listed_with) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_cursor_reaches_every_mapping_once_per_cycle_then_starts_over(self) -> None:
+        """Control: driven from the retirement pages, only the first strays_per_tick mappings of each page
+        were ever listed, and the same ones were listed again on every tick."""
+        graph, blob = FakeGraph(), FakeBlob()
+        for i in range(5):
+            graph.add(f"v{i}")
+        listed: list[str] = []
+
+        async def listing(org_id: str, vrid: str, *, older_than_seconds: int | None = None) -> list[dict[str, Any]]:
+            listed.append(vrid)
+            return []
+
+        blob.list_record_documents = listing  # type: ignore[method-assign]
+        sweep = _sweep(graph, blob, strays_per_tick=2)
+
+        key, _ = await sweep.run_strays(None)
+        assert key == "v1"
+        key, _ = await sweep.run_strays(key)
+        assert key == "v3"
+        key, _ = await sweep.run_strays(key)
+        assert key is None
+        await sweep.run_strays(key)
+
+        assert listed == ["v0", "v1", "v2", "v3", "v4", "v0", "v1"]
+
+    @pytest.mark.asyncio
+    async def test_the_retirement_pages_list_no_documents(self) -> None:
+        graph, blob = FakeGraph(), FakeBlob()
+        graph.add("v1")
+        blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
+
+        await _sweep(graph, blob).run_page(None)
+
+        assert blob.listed_with == [] and blob.purged == []
+
+    @pytest.mark.asyncio
+    async def test_a_pause_keeps_the_cursor_on_the_mapping_not_yet_examined(self) -> None:
+        graph, blob = FakeGraph(), FakeBlob()
+        for i in range(3):
+            graph.add(f"v{i}")
+        verdicts = iter([OK, MembershipVerdict(False, (), "stale")])
+
+        async def membership() -> MembershipVerdict:
+            return next(verdicts)
+
+        sweep = StoredRecordRetention(graph, blob, logging.getLogger("t"), membership=membership, now_ms=lambda: NOW)  # type: ignore[arg-type]
+
+        key, report = await sweep.run_strays(None)
+
+        assert report.paused and key == "v0" and len(blob.listed_with) == 1

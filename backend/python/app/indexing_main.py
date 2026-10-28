@@ -972,6 +972,7 @@ async def _sweep_retired_revisions(
 
 
 _stored_retention_cursor: str | None = None
+_stored_stray_cursor: str | None = None
 
 
 async def _sweep_stored_records(
@@ -986,7 +987,7 @@ async def _sweep_stored_records(
     Runs whether the flags are on or off, and regardless of revision retention. Pauses while the
     membership result is stale or lists a member that does not follow the stored-write protocol.
     """
-    global _stored_retention_cursor  # noqa: PLW0603 - the cursor is per process by design
+    global _stored_retention_cursor, _stored_stray_cursor  # noqa: PLW0603 - the cursors are per process by design
 
     from app.modules.artifacts.stored_retention import (
         StoredRecordRetention,
@@ -1022,6 +1023,12 @@ async def _sweep_stored_records(
         _stored_retention_cursor = next_key
         if next_key is None:
             break
+    if not total.paused and not total.interrupted and lease_held():
+        try:
+            _stored_stray_cursor, strays = await sweep.run_strays(_stored_stray_cursor, still_leader=lease_held)
+            total.add(strays)
+        except Exception as exc:
+            logger.warning("Stored-record stray pass skipped this tick: %s: %s", type(exc).__name__, exc)
     if total.paused:
         logger.warning(
             "Stored-record retention paused: an indexing member does not follow the stored-write protocol, "

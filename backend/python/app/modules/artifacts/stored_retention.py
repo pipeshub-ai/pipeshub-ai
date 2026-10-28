@@ -13,7 +13,8 @@ recovery leader, finishes the job:
   (``held_no_fence``). The purged entries leave the list by a compare-and-set on ``switchSeq`` that
   does not bump it, so a sweep never makes a writer retry. A mapping that is itself a fingerprint of
   an older writer (``documentId != switchDoc`` or ``updatedAt != switchUpdatedAt``) is skipped.
-* **Stray pass.** At most ``STRAYS_PER_TICK`` mappings per tick: ``record_<vrid>`` documents older than
+* **Stray pass.** At most ``STRAYS_PER_TICK`` mappings per tick, walked by a cursor of its own so every
+  mapping is reached in turn and none is listed twice in one cycle: ``record_<vrid>`` documents older than
   G by the database's clock (the storage service filters on its numeric ``createdAt``) that are
   neither the mapped document nor in ``retired`` are purged, after re-reading the mapping. Mappings
   switched within GR are left alone (the quiet period), and a mapping with no document is left to
@@ -104,27 +105,16 @@ class StoredRecordRetention:
         if not pointers:
             return None, report
         report.scanned = len(pointers)
-        strays_left = self.strays_per_tick
         for pointer in pointers:
-            if still_leader is not None and not still_leader():
-                report.interrupted = True
+            if await self._halted(report, still_leader):
                 return after_key, report
-            # Before every batch: a member that joined meanwhile pauses the rest.
-            verdict = await self._membership()
-            if not verdict.ok:
-                report.paused = True
-                record_retention("stored_record", "paused_membership")
-                return after_key, report
-            vrid = str(pointer.get("virtualRecordId") or "")
-            org_id = pointer.get("orgId")
-            if not vrid or not org_id:
+            target = self._target(pointer)
+            if target is None:
                 continue
+            vrid, org_id = target
             try:
                 if retired_list(pointer):
-                    await self._retire_entries(vrid, str(org_id), report)
-                if strays_left > 0 and pointer.get("documentId"):
-                    strays_left -= 1
-                    await self._collect_strays(vrid, str(org_id), report)
+                    await self._retire_entries(vrid, org_id, report)
             except Exception as exc:
                 report.failed += 1
                 record_retention("stored_record", "failed")
@@ -134,6 +124,55 @@ class StoredRecordRetention:
                 )
         next_key = str(pointers[-1]["virtualRecordId"]) if len(pointers) >= self.page_size else None
         return next_key, report
+
+    async def run_strays(
+        self, after_key: str | None, *, still_leader: Callable[[], bool] | None = None,
+    ) -> tuple[str | None, StoredRetentionReport]:
+        """The stray pass over up to ``strays_per_tick`` mappings after ``after_key``; returns the key to
+        continue from (None at the end, so the next call starts over)."""
+        report = StoredRetentionReport()
+        pointers = await self.graph.get_switch_pointers(after_key, self.strays_per_tick)
+        if not pointers:
+            return None, report
+        for pointer in pointers:
+            if await self._halted(report, still_leader):
+                return after_key, report
+            target = self._target(pointer)
+            if target is None:
+                continue
+            vrid, org_id = target
+            after_key = vrid
+            if not pointer.get("documentId"):
+                continue
+            try:
+                await self._collect_strays(vrid, org_id, report)
+            except Exception as exc:
+                report.failed += 1
+                record_retention("stored_record", "failed")
+                self.logger.warning(
+                    "Stored-record stray pass: %s not finished; next cycle retries: %s: %s",
+                    vrid, type(exc).__name__, exc,
+                )
+        next_key = str(pointers[-1]["virtualRecordId"]) if len(pointers) >= self.strays_per_tick else None
+        return next_key, report
+
+    async def _halted(self, report: StoredRetentionReport, still_leader: Callable[[], bool] | None) -> bool:
+        if still_leader is not None and not still_leader():
+            report.interrupted = True
+            return True
+        # Before every batch: a member that joined meanwhile pauses the rest.
+        verdict = await self._membership()
+        if not verdict.ok:
+            report.paused = True
+            record_retention("stored_record", "paused_membership")
+            return True
+        return False
+
+    @staticmethod
+    def _target(pointer: dict[str, Any]) -> tuple[str, str] | None:
+        vrid = str(pointer.get("virtualRecordId") or "")
+        org_id = pointer.get("orgId")
+        return (vrid, str(org_id)) if vrid and org_id else None
 
     @staticmethod
     def _is_fingerprint(mapping: dict[str, Any]) -> bool:

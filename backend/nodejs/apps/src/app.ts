@@ -32,7 +32,7 @@ import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { isApiPath } from './libs/utils/api-path.utils';
+import { accessLogLevel } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -579,14 +579,31 @@ export class Application {
       ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
       'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
       '":user-agent"';
+    // Evaluated after the response: a mounted router has rewritten req.path
+    // to its own mount-relative path by then, originalUrl keeps the full one.
+    const levelOf = (
+      req: { originalUrl: string },
+      res: { statusCode: number },
+    ): ReturnType<typeof accessLogLevel> =>
+      accessLogLevel(req.originalUrl.split('?')[0] ?? '', res.statusCode);
     this.app.use(
       morgan(combinedRedacted, {
         stream: {
-          write: (message: string) => this.logger.info(message.trim()),
+          write: (message: string) => {
+            this.logger.info(message.trim());
+          },
         },
-        // Evaluated after the response: a mounted router has rewritten req.path
-        // to its own mount-relative path by then, originalUrl keeps the full one.
-        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
+        skip: (req, res) => levelOf(req, res) !== 'info',
+      }),
+    );
+    this.app.use(
+      morgan(combinedRedacted, {
+        stream: {
+          write: (message: string) => {
+            this.logger.debug(message.trim());
+          },
+        },
+        skip: (req, res) => levelOf(req, res) !== 'debug',
       }),
     );
 
