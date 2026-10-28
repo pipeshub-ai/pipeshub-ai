@@ -6,6 +6,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, EntityRelations, OriginTypes
 from app.connectors.core.base.data_processor import record_people
 from app.connectors.core.base.data_processor.record_people import (
@@ -339,3 +341,17 @@ class TestPlaceholders:
 
         store.delete_edges_from.assert_not_awaited()
         store.get_user_by_email.assert_not_awaited()
+
+
+class TestABugIsNotAFailedLookup:
+    """A store called with arguments it does not take raises TypeError. Read
+    as a failed lookup, the record kept its old edges and the call was never
+    seen to be wrong, in production or in a test whose stub did not match."""
+
+    @pytest.mark.parametrize("error", [TypeError("unexpected keyword argument 'org_id'"), AttributeError("x")])
+    @pytest.mark.parametrize("failing", ["get_user_by_email", "delete_edges_from", "batch_create_entity_relations"])
+    async def test_a_programming_error_is_raised(self, failing: str, error: Exception) -> None:
+        store = _store()
+        getattr(store, failing).side_effect = error
+        with pytest.raises(type(error)):
+            await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))

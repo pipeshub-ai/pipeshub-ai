@@ -431,6 +431,11 @@ class MockTransactionStore:
 
     # -- users ---
 
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None:
+        return None  # this store keeps no userAppRelation edges
+
     async def get_user_by_email(
         self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> User | None:
