@@ -51,7 +51,7 @@ _WS = re.compile(r"\s*")
 _NON_WS = re.compile(r"\S+")
 _IMG_OPEN = re.compile(r"<img(?=[\s/>])", re.IGNORECASE)
 # Right after the tag name a "/" separates too: <img/src="...">.
-_TAG_FIRST_SEPARATOR = re.compile(r"\s+|/")
+_TAG_FIRST_SEPARATOR = re.compile(r"\s+|/|")
 # CommonMark's grammar for an attribute name and an unquoted value, so an <img>
 # is rewritten exactly when markdown-it would treat it as a tag.
 _TAG_ATTR_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")

@@ -39,14 +39,16 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
 _CSS_VAR_OPEN = re.compile(r'var\(\s*--[\w-]+\s*(,)?')
 _MAX_PARALLEL_IMAGE_FETCHES = 4
-# An SVG is rasterised in this process, with no time limit of its own, and its
-# author is whoever wrote the document. So the work is bounded up front: the
-# decoded size, the element count and depth, what ``<use>`` expands to, and the
-# size of the PNG it will draw.
+# An SVG's author is whoever wrote the document, and cairosvg has no time limit
+# of its own. So it is rasterised in a worker process with a deadline and a
+# memory cap (``svg_worker``), and this budget is a cheap filter in front of it:
+# the decoded size, the element count and depth, what references expand to, and
+# the size of the PNG it will draw.
 _MAX_SVG_BYTES = 5 * 1024 * 1024
 _MAX_SVG_ELEMENTS = 50_000
 _MAX_SVG_DEPTH = 100
-_MAX_SVG_EXPANDED_ELEMENTS = 500_000
+_MAX_SVG_EXPANDED_ELEMENTS = 200_000
+_MAX_SVG_REFERENCES = 20_000
 _MAX_SVG_OUTPUT_PIXELS = 32_000_000
 _logger = logging.getLogger(__name__)
 
@@ -55,12 +57,32 @@ def _local_name(tag: object) -> str:
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
-def check_svg_budget(svg_str: str) -> None:
-    """Refuse an SVG whose rasterising could take unbounded time or memory.
+_CSS_URL_REF = re.compile(r"url\(\s*['\"]?\s*#([^'\")\s]+)")
 
-    Entities are refused outright (``defusedxml``), so no expansion bomb can be
-    built; ``<use>`` chains are counted by what they expand to, since each
-    reference draws its target again.
+
+def _svg_references(node: object) -> list[str]:
+    """Ids this element draws again: ``href``/``xlink:href`` and any ``url(#id)``."""
+    refs: list[str] = []
+    for name, value in node.attrib.items():  # type: ignore[attr-defined]
+        if _local_name(name) == "href":
+            target = value.strip()
+            if target.startswith("#"):
+                refs.append(target[1:].strip())
+        elif "url(" in value:
+            refs.extend(_CSS_URL_REF.findall(value))
+    if _local_name(node.tag) == "style" and node.text:  # type: ignore[attr-defined]
+        refs.extend(_CSS_URL_REF.findall(node.text))  # type: ignore[attr-defined]
+    return refs
+
+
+def check_svg_budget(svg_str: str) -> None:
+    """Refuse an SVG that is too big, or draws too much, to rasterise.
+
+    A cheap pre-filter in front of the worker process that bounds time and
+    memory: entities are refused (``defusedxml``), and every reference
+    (``<use>``, ``url(#id)`` in fill, mask, marker, clip-path, filter...) is
+    counted as drawing its target again. Anything that is not well-formed XML
+    is refused, as cairosvg could not read it either.
     """
     from defusedxml import ElementTree as safe_et
     from defusedxml.common import DefusedXmlException
@@ -71,12 +93,12 @@ def check_svg_budget(svg_str: str) -> None:
         root = safe_et.fromstring(svg_str.encode("utf-8"))
     except DefusedXmlException as e:
         raise DocumentProcessingError("SVG uses entities or DTDs", details={"error": str(e)}) from e
-    except Exception:
-        # Not well-formed XML: cairosvg reports that itself, cheaply.
-        return
+    except Exception as e:
+        raise DocumentProcessingError("SVG is not well-formed", details={"error": str(e)}) from e
 
     ids: dict[str, object] = {}
     count = 0
+    references = 0
     stack = [(root, 1)]
     while stack:
         node, depth = stack.pop()
@@ -85,7 +107,10 @@ def check_svg_budget(svg_str: str) -> None:
             raise DocumentProcessingError("SVG is too complex to rasterise", details={"elements": count})
         node_id = node.get("id")
         if node_id:
-            ids.setdefault(node_id, node)
+            ids.setdefault(node_id.strip(), node)
+        references += len(_svg_references(node))
+        if references > _MAX_SVG_REFERENCES:
+            raise DocumentProcessingError("SVG has too many references", details={"references": references})
         stack.extend((child, depth + 1) for child in node)
 
     memo: dict[int, int] = {}
@@ -96,12 +121,12 @@ def check_svg_budget(svg_str: str) -> None:
             return memo[key]
         if key in active:
             raise DocumentProcessingError("SVG references itself")
-        total = 1 + sum(expanded(c, active | {key}) for c in node)  # type: ignore[attr-defined]
-        if _local_name(node.tag) == "use":  # type: ignore[attr-defined]
-            href = node.get("href") or node.get("{http://www.w3.org/1999/xlink}href") or ""  # type: ignore[attr-defined]
-            target = ids.get(href[1:]) if href.startswith("#") else None
+        inner = active | {key}
+        total = 1 + sum(expanded(c, inner) for c in node)  # type: ignore[attr-defined]
+        for ref in _svg_references(node):
+            target = ids.get(ref)
             if target is not None:
-                total += expanded(target, active | {key})
+                total += expanded(target, inner)
         if total > _MAX_SVG_EXPANDED_ELEMENTS:
             raise DocumentProcessingError("SVG expands to too much to rasterise", details={"elements": total})
         memo[key] = total
@@ -237,9 +262,7 @@ class ImageParser:
                 # Skip SVG images - check the MIME type in the data URL
                 if url.startswith('data:image/svg+xml'):
                     log.debug("Data URL is SVG; converting SVG base64 to PNG base64")
-                    return "data:image/png;base64," + await asyncio.to_thread(
-                        ImageParser.svg_base64_to_png_base64, url
-                    )
+                    return "data:image/png;base64," + await ImageParser.svg_base64_to_png_base64_async(url)
 
                 log.debug("URL is already base64 encoded")
                 return url
@@ -288,9 +311,7 @@ class ImageParser:
             base64_encoded = base64.b64encode(content).decode('utf-8')
             if 'svg' in extension:
                 log.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
-                return "data:image/png;base64," + await asyncio.to_thread(
-                    ImageParser.svg_base64_to_png_base64, base64_encoded
-                )
+                return "data:image/png;base64," + await ImageParser.svg_base64_to_png_base64_async(base64_encoded)
 
             log.debug(f"Converted URL to base64 for {extension}: {redact_url(url)}")
             return f"data:image/{extension};base64,{base64_encoded}"
@@ -539,6 +560,34 @@ class ImageParser:
         scale: float = 1.0,
         background_color: str | None = None
     ) -> str:
+        """Convert an SVG (base64, with or without data URI prefix) to PNG base64.
+
+        Runs in a child process with a wall-clock deadline and a memory cap
+        (``svg_worker.run_bounded``), since the SVG comes from a document.
+        Raises ``DocumentProcessingError`` when it is refused, overruns or fails.
+        """
+        from app.modules.parsers.image_parser import svg_worker
+
+        return svg_worker.run_bounded(
+            svg_base64, output_width, output_height, scale, background_color
+        )
+
+    @staticmethod
+    async def svg_base64_to_png_base64_async(svg_base64: str) -> str:
+        """``svg_base64_to_png_base64`` for async callers: a parse-pool worker when
+        the service has one, otherwise a child process of its own."""
+        from app.modules.parsers.image_parser import svg_worker
+
+        return await svg_worker.render_async(svg_base64)
+
+    @staticmethod
+    def _svg_to_png_in_process(
+        svg_base64: str,
+        output_width: int | None = None,
+        output_height: int | None = None,
+        scale: float = 1.0,
+        background_color: str | None = None
+    ) -> str:
         """
         Convert SVG base64 string to PNG base64 string.
 
@@ -572,7 +621,8 @@ class ImageParser:
                     details={"content_preview": svg_str[:100]},
                 )
 
-            check_svg_budget(svg_str)
+            if len(svg_str) > _MAX_SVG_BYTES:
+                raise DocumentProcessingError("SVG is too large to rasterise", details={"bytes": len(svg_str)})
 
             # Extract dimensions from SVG if not provided
             final_width = output_width
@@ -602,6 +652,8 @@ class ImageParser:
 
             # Sanitize SVG content to fix unbound namespace prefixes and other XML issues
             sanitized_svg_data = ImageParser._sanitize_svg_content(svg_str)
+            # The budget is applied to what cairosvg will read, the repaired text.
+            check_svg_budget(sanitized_svg_data.decode("utf-8"))
 
             # Convert SVG to PNG using cairosvg
             # cairosvg requires explicit dimensions when SVG doesn't have them

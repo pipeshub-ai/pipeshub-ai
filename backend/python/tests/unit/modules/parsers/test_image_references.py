@@ -379,3 +379,23 @@ def test_a_bare_self_closing_img_is_still_reported_as_before() -> None:
 def test_one_line_ending_is_allowed_around_the_destination() -> None:
     assert urls("![a](\nhttp://h/x.png\n)") == ["http://h/x.png"]
     assert urls('![a](http://h/x.png\n"t")') == ["http://h/x.png"]
+
+
+def test_a_bare_img_tag_matches_the_previous_output() -> None:
+    for text in ("<img>", "<IMG>", "<p><img></p>", "text <img> more", "<img>\n"):
+        assert extract_and_replace_images(text) == legacy_extract_and_replace_images(text), text
+
+
+def test_the_scanner_never_raises() -> None:
+    rng = random.Random(20261028)
+    ascii_chars = [chr(c) for c in range(128)]
+    pieces = ["<img", "<IMG", "![", "](", "]", "[", ")", "(", "'", '"', "<", ">", "/", "=", "\n", " ", "src=", "a"]
+    for i in range(100_000):
+        if i % 2:
+            # `<img` followed by every ASCII character, then some noise
+            text = "x" + "<img" + ascii_chars[i // 2 % 128] + "".join(
+                rng.choice(pieces) for _ in range(rng.randint(0, 6))
+            )
+        else:
+            text = "".join(rng.choice(pieces + ascii_chars) for _ in range(rng.randint(0, 24)))
+        extract_and_replace_images(text)
