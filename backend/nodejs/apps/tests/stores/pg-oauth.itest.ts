@@ -5,6 +5,8 @@
  *   PG_TEST_BINS=… PG_TEST_PGBOUNCER=… PG_TEST_MIGRATE_PYTHON=… npm run test:pg-stores
  */
 import 'reflect-metadata';
+import { expect } from 'chai';
+import { createHash } from 'crypto';
 import { PgOAuthAppRepository } from '../../src/libs/repositories/oauth-app/pg';
 import { PgOAuthTokenRepository } from '../../src/libs/repositories/oauth-token/pg';
 import { PgIdentityLookup } from '../../src/libs/repositories/identity-lookup/pg';
@@ -234,6 +236,36 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
                 [id, at],
               ) },
           ),
+      });
+    });
+
+    describe('the org of a refresh grant (PostgreSQL only: MongoDB needs no org)', () => {
+      const raw = new PgOAuthTokenRepository();
+      const tokens = scoped(raw, ledger);
+      const lookup: IdentityLookup = scoped(new PgIdentityLookup(), ledger);
+      const issue = async (token: string, expiresAt: Date) => {
+        const orgId = newId();
+        const rt = await tokens.issueRefresh({
+          tokenHash: createHash('sha256').update(token).digest('hex'),
+          clientId: 'c',
+          userId: newId(),
+          orgId,
+          scopes: ['a'],
+          expiresAt,
+        });
+        return { orgId, rt };
+      };
+
+      it('names the org of a live, a rotated (replayed) and an expired token, and none for an unknown one', async () => {
+        const live = await issue('live-refresh-token', new Date(Date.now() + 3600_000));
+        expect(await lookup.resolveRefreshOrg('live-refresh-token')).to.equal(live.orgId);
+        // a replay: the grant must run as the org that issued the token to be refused there
+        expect(await tokens.rotateRefresh(live.rt._id)).to.equal(true);
+        expect(await lookup.resolveRefresh(createHash('sha256').update('live-refresh-token').digest('hex'))).to.equal(null);
+        expect(await lookup.resolveRefreshOrg('live-refresh-token')).to.equal(live.orgId);
+        const old = await issue('old-refresh-token', new Date(Date.now() - 1000));
+        expect(await lookup.resolveRefreshOrg('old-refresh-token')).to.equal(old.orgId);
+        expect(await lookup.resolveRefreshOrg('no-such-token')).to.equal(null);
       });
     });
   });

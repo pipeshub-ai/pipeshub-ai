@@ -108,9 +108,15 @@ export class PgIdentityLookup implements IdentityLookup {
   /** The raw token is hashed first: a real refresh token is a signed token of about 500 characters, the stored key is its 64-character hash. */
   async resolveRefreshOrg(refreshToken: string): Promise<string | null> {
     const hash = sha(refreshToken);
-    return hash === null
-      ? null
-      : ((await this.resolveRefresh(hash))?.orgId ?? null);
+    if (hash === null) return null;
+    // a revoked or expired row counts: a replayed token must run its grant as the org that issued it, to be refused there
+    return inKeyUnit<string | null>(installOrg, false, null, async (k) => {
+      const { rows } = await k.query(
+        '/* pipeshub:oauth.resolve_refresh_org */ SELECT 1 FROM oauth.refresh_tokens WHERE org_id = $1 AND token_hash = $2 LIMIT 1',
+        [k.orgId, hash],
+      );
+      return rows.length > 0 ? k.orgId : null;
+    });
   }
 
   async resolveClient(clientId: string): Promise<ResolvedClient | null> {

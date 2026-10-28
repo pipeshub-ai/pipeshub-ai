@@ -261,9 +261,11 @@ export class PgOAuthAppRepository implements OAuthAppRepository {
       );
       if (rows[0]) return appDto(rows[0]);
       if (stale === '') return null;
+      // a fresh parameter list: `lock` already holds the values of the lock query
+      const reread = new Params();
       const now = await k.query<AppRow>(
-        `/* pipeshub:oauth.app_get_owned */ SELECT ${COLS} FROM oauth.apps WHERE ${owned(lock, k.orgId, user)} AND id = ${lock.add(id)}`,
-        lock.values,
+        `/* pipeshub:oauth.app_get_owned */ SELECT ${COLS} FROM oauth.apps WHERE ${owned(reread, k.orgId, user)} AND id = ${reread.add(id)}`,
+        reread.values,
       );
       if (opts?.ignoreStale && now.rows[0]) return appDto(now.rows[0]);
       throw new ConflictError(

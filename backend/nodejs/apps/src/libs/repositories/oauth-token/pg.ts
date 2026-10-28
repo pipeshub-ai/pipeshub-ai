@@ -4,11 +4,11 @@
  * the install's organisation (pg-org.ts). Codes are stored as their SHA-256.
  */
 import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth.types';
-import { createHash } from 'crypto';
 import { currentOrgContext } from '../../context/orgContext';
 import { InternalServerError } from '../../errors/http.errors';
 import { UniqueConstraintError } from '../errors';
 import { stripNul } from '../nul';
+import { hashOpaqueToken } from './token-hash';
 import {
   assertOrg,
   inUnit,
@@ -38,7 +38,6 @@ import {
   type RefreshTokenDto,
 } from './types';
 
-const sha = (v: string): string => createHash('sha256').update(v).digest('hex');
 /** A value in the position of an id: undefined when it cannot be one (such a value matches nothing). */
 const id24 = (v: unknown): string | undefined =>
   typeof v === 'string' ? oidOf(v) : undefined;
@@ -671,7 +670,7 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
         [
           k.orgId,
           newObjectId(),
-          sha(i.code),
+          hashOpaqueToken(i.code),
           i.codeChallenge ?? null,
           i.codeChallengeMethod ?? null,
           i.clientId,
@@ -698,7 +697,7 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
       async (k) => {
         const { rows } = await k.query<CodeRow>(
           `/* pipeshub:oauth.code_find */ SELECT ${CODE} FROM oauth.authorization_codes WHERE org_id = $1 AND code_hash = $2 AND client_id = $3`,
-          [k.orgId, sha(code), clientId],
+          [k.orgId, hashOpaqueToken(code), clientId],
         );
         return rows[0] ? codeDto(rows[0], code) : null;
       },
@@ -716,7 +715,7 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
         const r = await k.query(
           `/* pipeshub:oauth.code_consume */ UPDATE oauth.authorization_codes SET is_used = true, used_at = $4, updated_at = $4
            WHERE org_id = $1 AND code_hash = $2 AND client_id = $3 AND NOT is_used AND expires_at > $4`,
-          [k.orgId, sha(code), clientId, now],
+          [k.orgId, hashOpaqueToken(code), clientId, now],
         );
         return r.rowCount === 1;
       },
@@ -732,7 +731,7 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
       async (k) => {
         await k.query(
           `/* pipeshub:oauth.code_flag_replayed */ UPDATE oauth.authorization_codes SET replayed_at = $4, updated_at = $4 WHERE org_id = $1 AND code_hash = $2 AND client_id = $3`,
-          [k.orgId, sha(code), clientId, new Date()],
+          [k.orgId, hashOpaqueToken(code), clientId, new Date()],
         );
       },
     );
