@@ -36,13 +36,18 @@ PAGES = 23
 
 
 class _Image(str):
-    """A page image whose lifetime can be watched."""
+    """A page image whose lifetime can be watched (a live counter, no gc needed)."""
+
+    probe: _Probe
+
+    def __del__(self) -> None:
+        self.probe.alive -= 1
 
 
 class _Probe:
     def __init__(self) -> None:
         self.live: weakref.WeakSet[_Image] = weakref.WeakSet()
-        self.peak = 0
+        self.alive = 0
         self.peak_seen_by_llm = 0
 
     def sample(self) -> int:
@@ -62,12 +67,14 @@ def _strategy(probe: _Probe, *, fail_on: int | None = None) -> VLMOCRStrategy:
         out = {}
         for n in page_numbers:
             image = _Image(f"data:image/png;base64,page{n}" + "x" * 1000)
+            image.probe = probe
+            probe.alive += 1
             probe.live.add(image)
             out[n] = image
         return out
 
     async def call_llm(image_base64: str, page_number: int) -> str:
-        probe.peak_seen_by_llm = max(probe.peak_seen_by_llm, probe.sample())
+        probe.peak_seen_by_llm = max(probe.peak_seen_by_llm, probe.alive)
         await asyncio.sleep(0)
         if page_number == fail_on:
             raise vlm_ocr_strategy.LLMUnavailableError("down")

@@ -1,9 +1,10 @@
-"""QA additions for the VLM OCR page window: cancellation, batch edge sizes, batch order."""
+"""QA additions for the VLM OCR page window: cancellation, edge sizes, window bound, no idle slots."""
 from __future__ import annotations
 
 import asyncio
 import gc
 import logging
+import time
 import weakref
 from unittest.mock import MagicMock
 
@@ -96,18 +97,34 @@ class TestBatchShapes:
         gc.collect()
         assert len(live) == 0
 
-    async def test_next_batch_is_rendered_only_after_the_previous_one_is_done(self) -> None:
-        strategy, _live, events, _calls = _strategy(pages=9, batch=3)
+    async def test_images_alive_never_exceed_the_window_at_any_model_call(self) -> None:
+        strategy, live, _events, _calls = _strategy(pages=60, batch=8, concurrency=5)
+        peak = 0
 
         async def call_llm(image_base64: str, page_number: int) -> str:
-            await asyncio.sleep(0)
-            events.append(("llm", page_number))
+            nonlocal peak
+            peak = max(peak, len(live))  # WeakSet len: refcounting drops images at once
+            await asyncio.sleep(0.001 * (page_number % 4))
             return "x"
 
         strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
         await strategy._preprocess_document()
 
-        for batch_start in (4, 7):  # first page of batches 2 and 3
-            render_at = events.index(("render", batch_start))
-            earlier_llm = [e for e in events[:render_at] if e[0] == "llm"]
-            assert len(earlier_llm) == batch_start - 1
+        assert 5 <= peak <= 8
+
+    async def test_a_slow_page_does_not_hold_up_the_other_slots(self) -> None:
+        """Three slow pages in a 24-page document, window 8, 4 slots: a per-batch
+        barrier would cost a slow page per batch (~0.9 s); rolling costs about one."""
+        strategy, _live, _events, _calls = _strategy(pages=24, batch=8, concurrency=4)
+        slow = 0.3
+
+        async def call_llm(image_base64: str, page_number: int) -> str:
+            await asyncio.sleep(slow if page_number in (1, 9, 17) else 0.01)
+            return "x"
+
+        strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
+        started = time.monotonic()
+        await strategy._preprocess_document()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < slow * 2

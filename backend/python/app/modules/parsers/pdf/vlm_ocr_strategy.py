@@ -273,15 +273,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
     async def _preload_page_images(self, page_numbers: Optional[list[int]] = None) -> None:
         """Rasterise pages in batches to avoid OOM in the process-pool worker.
 
-        With *page_numbers* only those pages are rendered and they replace whatever
-        was held, so the caller keeps at most one batch of images alive. Without it
-        every page is rendered and kept (the original behaviour).
+        With *page_numbers* only those pages are rendered and added to
+        ``_page_images``; without it every page is rendered and kept.
         """
         total = len(self.doc.pages)
         wanted = page_numbers if page_numbers is not None else list(range(1, total + 1))
-        batch_size = self.PAGE_RENDER_BATCH_SIZE
-        if page_numbers is not None:
-            self._page_images = {}
+        batch_size = max(1, self.PAGE_RENDER_BATCH_SIZE)
 
         for start in range(0, len(wanted), batch_size):
             batch = wanted[start : start + batch_size]
@@ -464,33 +461,56 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                             }
                 raise AssertionError("unreachable: the last attempt returns")
 
-        # Render and OCR one batch at a time so only PAGE_RENDER_BATCH_SIZE page images
-        # are alive at once; the next batch is rendered after the previous one's
-        # LLM calls have finished and its images were dropped.
-        pages_results: list[dict[str, Any]] = []
-        batch_size = max(1, self.PAGE_RENDER_BATCH_SIZE)
-        try:
-            for start in range(0, len(pages), batch_size):
-                numbers = list(range(start + 1, min(start + batch_size, len(pages)) + 1))
+        # Rolling window: at most `window` rendered page images are alive at once
+        # (PAGE_RENDER_BATCH_SIZE). A producer renders pages in order as window slots
+        # free up; CONCURRENCY_LIMIT workers take pages as soon as they are rendered, so
+        # a slow page never holds up the others. A slot is freed when the page's image is
+        # dropped (its call succeeded or it was given up).
+        window = max(1, self.PAGE_RENDER_BATCH_SIZE)
+        render_chunk = max(1, window // 4)
+        slots = asyncio.Semaphore(window)
+        ready: asyncio.Queue[Optional[int]] = asyncio.Queue()
+        n_workers = max(1, min(self.CONCURRENCY_LIMIT, len(pages)))
+        results: dict[int, dict[str, Any]] = {}
+
+        async def produce() -> None:
+            next_page = 1
+            total = len(pages)
+            while next_page <= total:
+                want = min(render_chunk, total - next_page + 1)
+                for _ in range(want):
+                    await slots.acquire()
+                numbers = list(range(next_page, next_page + want))
+                next_page += want
                 await self._preload_page_images(numbers)
-                tasks = [
-                    asyncio.create_task(process_page_with_retry(pages[n - 1], n))
-                    for n in numbers
-                ]
+                for number in numbers:
+                    ready.put_nowait(number)
+            for _ in range(n_workers):
+                ready.put_nowait(None)
+
+        async def work() -> None:
+            while (number := await ready.get()) is not None:
                 try:
-                    pages_results.extend(await asyncio.gather(*tasks))
-                except Exception:
-                    self.logger.error("❌ Cancelling all remaining tasks due to failure")
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    raise
+                    results[number] = await process_page_with_retry(pages[number - 1], number)
                 finally:
-                    del tasks
-                    self._page_images = {}
+                    self._page_images.pop(number, None)
+                    slots.release()
+
+        tasks = [asyncio.create_task(produce())]
+        tasks += [asyncio.create_task(work()) for _ in range(n_workers)]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            self.logger.error("❌ Cancelling all remaining tasks due to failure")
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         finally:
+            del tasks
             self._page_images = {}
+        pages_results = [results[n] for n in range(1, len(pages) + 1)]
 
         if pages and len(unreadable) == len(pages):
             # Every page failing alike (no rendered images, output always truncated) is
