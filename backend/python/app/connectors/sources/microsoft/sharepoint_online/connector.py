@@ -2625,7 +2625,7 @@ class SharePointConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=f"{self.display_name}: {title}",
             message=message,
             recipient_user_ids=[self.created_by],
         )

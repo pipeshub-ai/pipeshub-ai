@@ -3781,11 +3781,12 @@ class TestInitSetupErrors:
     ) -> None:
         notify = AsyncMock()
         with patch.object(SharePointConnector, "notify", notify):
-            error, _ = await self._init_with_sharepoint_token_error(cause)
+            error, connector = await self._init_with_sharepoint_token_error(cause)
 
         assert error.__cause__ is cause
         notify.assert_awaited_once()
-        assert notify.await_args.kwargs["title"] == title
+        # The creator may own several SharePoint connectors: the title names which one failed.
+        assert notify.await_args.kwargs["title"] == f"{connector.display_name}: {title}"
         assert notify.await_args.kwargs["recipient_user_ids"] == ["test-user-id"]
 
     @pytest.mark.asyncio
@@ -3812,12 +3813,12 @@ class TestInitSetupErrors:
     ) -> None:
         notify = AsyncMock()
         with patch.object(SharePointConnector, "notify", notify):
-            error, _ = await self._init_with(_SECRET_AUTH, cause)
+            error, connector = await self._init_with(_SECRET_AUTH, cause)
 
         assert type(error) is raised
         notify.assert_awaited_once()
         notice = notify.await_args.kwargs
-        assert notice["title"] == title
+        assert notice["title"] == f"{connector.display_name}: {title}"
         assert says in notice["message"]
         assert "host URL" not in notice["message"]
         assert notice["recipient_user_ids"] == ["test-user-id"]
