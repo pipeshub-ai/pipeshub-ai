@@ -18,13 +18,10 @@ import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
-from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
 
-from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -36,7 +33,6 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -84,26 +80,35 @@ from app.sources.external.odoo.odoo import (
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from logging import Logger
 
-def _m2o_id(value: Any) -> Optional[int]:
+    from fastapi.responses import StreamingResponse
+
+    from app.config.configuration_service import ConfigurationService
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
+
+
+def _m2o_id(value: object) -> int | None:
     """Odoo many2one fields come back as [id, "Display Name"] or False."""
     if isinstance(value, (list, tuple)) and value:
         return int(value[0])
     return None
 
 
-def _m2o_name(value: Any) -> Optional[str]:
+def _m2o_name(value: object) -> str | None:
     if isinstance(value, (list, tuple)) and len(value) > 1:
         return str(value[1])
     return None
 
 
-def _str_or_none(value: Any) -> Optional[str]:
+def _str_or_none(value: object) -> str | None:
     """Odoo returns False (not None) for empty char/date fields over XML-RPC."""
     return value if isinstance(value, str) else None
 
 
-def _parse_odoo_datetime(value: Any) -> Optional[int]:
+def _parse_odoo_datetime(value: object) -> int | None:
     """Odoo datetime fields are naive UTC strings: "2024-01-15 10:30:00"."""
     if not isinstance(value, str):
         return None
@@ -211,14 +216,14 @@ class OdooConnector(BaseConnector):
 
         self._create_sync_points()
 
-        self.client: Optional[OdooClient] = None
-        self.data_source: Optional[OdooDataSource] = None
+        self.client: OdooClient | None = None
+        self.data_source: OdooDataSource | None = None
         self.base_url = ""
         self.batch_size = 100
-        self._user_email_by_id: Dict[int, str] = {}
-        self._user_email_by_partner_id: Dict[int, str] = {}
+        self._user_email_by_id: dict[int, str] = {}
+        self._user_email_by_partner_id: dict[int, str] = {}
 
-        self._stage_is_won: Dict[int, bool] = {}
+        self._stage_is_won: dict[int, bool] = {}
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -323,7 +328,7 @@ class OdooConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         await self._run_sync(full_sync=False)
 
-    async def _run_sync(self, full_sync: bool) -> None:
+    async def _run_sync(self, *, full_sync: bool) -> None:
         try:
             label = "full" if full_sync else "incremental"
             self.logger.info(f"Starting Odoo {label} sync.")
@@ -366,7 +371,7 @@ class OdooConnector(BaseConnector):
 
         users = await self.data_source.list_users(include_inactive=True)
 
-        app_users: List[AppUser] = []
+        app_users: list[AppUser] = []
         self._user_email_by_id = {}
         self._user_email_by_partner_id = {}
         for user in users:
@@ -426,7 +431,7 @@ class OdooConnector(BaseConnector):
         teams = await self.data_source.list_teams()
         org_id = self.data_entities_processor.org_id
 
-        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
         for team in teams:
             members = [
                 AppUser(
@@ -459,7 +464,7 @@ class OdooConnector(BaseConnector):
 
     # -- Leads -------------------------------------------------------------
 
-    def _get_lead_type_filter(self) -> Optional[List[str]]:
+    def _get_lead_type_filter(self) -> list[str] | None:
         """Returns the selected lead types, or None if all types should sync.
         Both ["lead", "opportunity"] selected is the same as no filter."""
         values = self.sync_filters.get_value("lead_type")
@@ -471,7 +476,7 @@ class OdooConnector(BaseConnector):
             return None
         return types
 
-    def _get_modified_since_filter(self) -> Optional[str]:
+    def _get_modified_since_filter(self) -> str | None:
         """Configured 'modified' filter as an Odoo naive-UTC string (lower bound)."""
         f = self.sync_filters.get("modified")
         if f is None or f.is_empty():
@@ -482,7 +487,7 @@ class OdooConnector(BaseConnector):
         # Convert ISO 8601 ("T" separator) → Odoo write_date format (" " separator)
         return start_iso.replace("T", " ")
 
-    async def _sync_leads(self, full_sync: bool = False) -> None:
+    async def _sync_leads(self, *, full_sync: bool = False) -> None:
         if not self.data_source:
             return
 
@@ -497,9 +502,9 @@ class OdooConnector(BaseConnector):
             last_write_date = cursor_write_date or configured_since
 
         allowed_types = self._get_lead_type_filter()
-        type_passes: List[Optional[str]] = allowed_types if allowed_types else [None]
+        type_passes: list[str | None] = allowed_types if allowed_types else [None]
 
-        batch_records: List[Tuple[DealRecord, List[Permission]]] = []
+        batch_records: list[tuple[DealRecord, list[Permission]]] = []
         total_deals = 0
         total_people = 0
 
@@ -564,11 +569,11 @@ class OdooConnector(BaseConnector):
             f"and {total_people} unconverted leads (Person nodes)."
         )
 
-    async def _upsert_lead_people(self, leads: List[CrmLead]) -> int:
+    async def _upsert_lead_people(self, leads: list[CrmLead]) -> int:
         """A prospect is a Person, not a document; the LEAD edge holds its
         qualification data (company, stage, source)."""
-        people: List[Person] = []
-        edges: List[Dict[str, Any]] = []
+        people: list[Person] = []
+        edges: list[dict[str, Any]] = []
         org_id = self.data_entities_processor.org_id
 
         for lead in leads:
@@ -603,7 +608,7 @@ class OdooConnector(BaseConnector):
             await tx_store.batch_create_edges(edges, collection=CollectionNames.LEAD.value)
         return len(people)
 
-    def _build_lead_person(self, lead: CrmLead) -> Optional[Person]:
+    def _build_lead_person(self, lead: CrmLead) -> Person | None:
         """Person nodes are keyed by email, so a lead without one can't be
         deduplicated — skipped, same rule the Salesforce connector applies."""
         email = _str_or_none(lead.email_from)
@@ -623,14 +628,14 @@ class OdooConnector(BaseConnector):
         )
 
     async def _fetch_followers_by_lead(
-        self, lead_ids: List[int]
-    ) -> Dict[int, List[int]]:
+        self, lead_ids: list[int]
+    ) -> dict[int, list[int]]:
         """One batched mail.followers call per page instead of one per
         lead — group the resulting (res_id, partner_id) rows by lead."""
         if not self.data_source or not lead_ids:
             return {}
         followers = await self.data_source.list_followers("crm.lead", lead_ids)
-        by_lead: Dict[int, List[int]] = defaultdict(list)
+        by_lead: dict[int, list[int]] = defaultdict(list)
         for follower in followers:
             if follower.res_id is None:
                 continue
@@ -640,14 +645,14 @@ class OdooConnector(BaseConnector):
         return by_lead
 
     async def _fetch_company_group_by_lead(
-        self, leads: List[CrmLead]
-    ) -> Dict[int, str]:
+        self, leads: list[CrmLead]
+    ) -> dict[int, str]:
         """Lead -> the record group of its customer company. partner_id may be an
         individual, so that partner's parent company wins. One read per page."""
         if not self.data_source:
             return {}
 
-        partner_id_by_lead: Dict[int, int] = {}
+        partner_id_by_lead: dict[int, int] = {}
         for lead in leads:
             partner_id = _m2o_id(lead.partner_id)
             if partner_id is not None:
@@ -658,8 +663,8 @@ class OdooConnector(BaseConnector):
         partners = await self.data_source.read_partners(
             sorted(set(partner_id_by_lead.values()))
         )
-        group_by_partner: Dict[int, str] = {}
-        parent_by_partner: Dict[int, int] = {}
+        group_by_partner: dict[int, str] = {}
+        parent_by_partner: dict[int, int] = {}
         for partner in partners:
             if partner.is_company:
                 group_by_partner[partner.id] = self._company_external_group_id(partner.id)
@@ -687,7 +692,7 @@ class OdooConnector(BaseConnector):
 
     # -- Partners (res.partner) --------------------------------------------
 
-    async def _sync_partners(self, full_sync: bool = False) -> None:
+    async def _sync_partners(self, *, full_sync: bool = False) -> None:
         """Companies become RecordGroups (the container leads file under),
         individuals become Person nodes. Own cursor, independent of leads."""
         if not self.data_source:
@@ -733,8 +738,8 @@ class OdooConnector(BaseConnector):
             if not partners:
                 break
 
-            company_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-            people: List[Person] = []
+            company_groups: list[tuple[RecordGroup, list[Permission]]] = []
+            people: list[Person] = []
             for partner in partners:
                 if partner.is_company:
                     company_groups.append((self._build_company_group(partner), []))
@@ -775,7 +780,7 @@ class OdooConnector(BaseConnector):
             source_updated_at=_parse_odoo_datetime(partner.write_date),
         )
 
-    def _build_person(self, partner: Partner) -> Optional[Person]:
+    def _build_person(self, partner: Partner) -> Person | None:
         """Person nodes are keyed by email, so a contact without one can't be
         deduplicated — skipped, same rule the Salesforce connector applies."""
         email = _str_or_none(partner.email)
@@ -796,7 +801,7 @@ class OdooConnector(BaseConnector):
 
     # -- Attachments (ir.attachment) ---------------------------------------
 
-    async def _sync_attachments(self, full_sync: bool = False) -> None:
+    async def _sync_attachments(self, *, full_sync: bool = False) -> None:
         """Lead attachments as FileRecords in one shared "Odoo Files" group, each
         pointing back at its lead and inheriting that lead's permissions."""
         if not self.data_source:
@@ -828,7 +833,7 @@ class OdooConnector(BaseConnector):
             )
         ])
 
-        batch_records: List[Tuple[Record, List[Permission]]] = []
+        batch_records: list[tuple[Record, list[Permission]]] = []
         offset = 0
         total = 0
 
@@ -883,8 +888,8 @@ class OdooConnector(BaseConnector):
         self.logger.info(f"Finished syncing {total} Odoo attachments.")
 
     async def _fetch_lead_permissions(
-        self, lead_ids: List[int]
-    ) -> Dict[int, List[Permission]]:
+        self, lead_ids: list[int]
+    ) -> dict[int, list[Permission]]:
         """Parent-lead permissions, so an attachment is visible to exactly whoever
         can see its lead. Opportunities only — membership in the returned map
         is how the caller knows a parent is a real record."""
@@ -905,7 +910,7 @@ class OdooConnector(BaseConnector):
 
     async def _process_attachment(
         self, attachment: Attachment
-    ) -> Tuple[FileRecord, bool]:
+    ) -> tuple[FileRecord, bool]:
         external_id = f"ir.attachment/{attachment.id}"
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -951,7 +956,7 @@ class OdooConnector(BaseConnector):
         )
         return record, is_new
 
-    def _creator_owner_permission(self) -> Optional[Permission]:
+    def _creator_owner_permission(self) -> Permission | None:
         """Fallback OWNER grant so a record never ends up with zero permissions.
         Must key off creator_email, not created_by — EntityType.USER
         resolution matches by email only."""
@@ -965,9 +970,9 @@ class OdooConnector(BaseConnector):
         )
 
     def _build_lead_permissions(
-        self, owner_id: Optional[int], follower_partner_ids: List[int]
-    ) -> List[Permission]:
-        permissions: List[Permission] = []
+        self, owner_id: int | None, follower_partner_ids: list[int]
+    ) -> list[Permission]:
+        permissions: list[Permission] = []
         seen_emails: set[str] = set()
 
         if owner_id is not None:
@@ -1007,9 +1012,9 @@ class OdooConnector(BaseConnector):
     async def _process_lead(
         self,
         lead: CrmLead,
-        follower_partner_ids: Optional[List[int]] = None,
-        company_group_id: Optional[str] = None,
-    ) -> Tuple[DealRecord, List[Permission], bool]:
+        follower_partner_ids: list[int] | None = None,
+        company_group_id: str | None = None,
+    ) -> tuple[DealRecord, list[Permission], bool]:
         external_id = f"crm.lead/{lead.id}"
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -1065,7 +1070,7 @@ class OdooConnector(BaseConnector):
 
     # -- Record access -------------------------------------------------------
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Odoo has no signed-download-URL concept — link straight into the
         backend form view. Dispatches on external_record_id prefix."""
         parts = record.external_record_id.split("/")
@@ -1114,7 +1119,7 @@ class OdooConnector(BaseConnector):
         else:
             messages = messages_result
 
-        lines: List[str] = [
+        lines: list[str] = [
             f"Name: {lead.name}",
             f"Type: {lead.type}",
             f"Stage: {_m2o_name(lead.stage_id) or ''}",
@@ -1250,7 +1255,7 @@ class OdooConnector(BaseConnector):
             fallback_filename=f"record_{record.id}",
         )
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Placeholder — Odoo has no native webhooks without a Studio automation."""
         self.logger.info("Odoo webhook received.")
         task = asyncio.create_task(self._sync_from_webhook())
@@ -1269,7 +1274,7 @@ class OdooConnector(BaseConnector):
             except Exception:
                 self.logger.error("Webhook-triggered Odoo sync failed", exc_info=True)
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         try:
             if not records:
                 self.logger.info("No records to reindex")
@@ -1283,8 +1288,8 @@ class OdooConnector(BaseConnector):
             # Also refresh stage map so is_won stays accurate on reindex.
             await self._sync_stages()
 
-            updated_records: List[Tuple[Record, List[Permission]]] = []
-            non_updated_records: List[Record] = []
+            updated_records: list[tuple[Record, list[Permission]]] = []
+            non_updated_records: list[Record] = []
 
             for record in records:
                 try:
@@ -1365,8 +1370,8 @@ class OdooConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None,
+        search: str | None = None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
         """No dynamic (API-fetched) filter options declared for Odoo yet —
         lead_type is a static list."""

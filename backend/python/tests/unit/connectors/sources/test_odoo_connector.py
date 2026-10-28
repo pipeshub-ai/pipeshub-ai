@@ -1,7 +1,7 @@
 """Tests for app.connectors.sources.odoo.connector (CRM scope only)."""
 
 import logging
-from typing import Any, Optional
+from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,13 +25,12 @@ from app.sources.external.odoo.odoo import (
     ResUser,
 )
 
-
 # ===========================================================================
 # Helpers
 # ===========================================================================
 
 
-def _make_mock_deps():
+def _make_mock_deps() -> tuple[logging.Logger, MagicMock, MagicMock, MagicMock]:
     logger = logging.getLogger("test.odoo")
 
     dep = MagicMock()
@@ -68,7 +67,7 @@ def _make_connector(created_by: str = "creator-user-id") -> OdooConnector:
     return connector
 
 
-def _mock_transaction(connector: OdooConnector, existing_record: Optional[Any] = None) -> MagicMock:
+def _mock_transaction(connector: OdooConnector, existing_record: object = None) -> MagicMock:
     """Wire data_store_provider.transaction() to a fake async context manager
     returning a tx_store whose get_record_by_external_id resolves to
     existing_record (None for "new record")."""
@@ -84,7 +83,7 @@ def _mock_transaction(connector: OdooConnector, existing_record: Optional[Any] =
     return tx_store
 
 
-def _lead(**overrides: Any) -> CrmLead:
+def _lead(**overrides: object) -> CrmLead:
     """An *opportunity* by default — that's the only crm.lead kind that
     becomes a record. Pass type="lead" for the unconverted-prospect path."""
     defaults: dict[str, Any] = {
@@ -101,7 +100,7 @@ def _lead(**overrides: Any) -> CrmLead:
     return CrmLead.model_validate(defaults)
 
 
-def _partner(**overrides: Any) -> Partner:
+def _partner(**overrides: object) -> Partner:
     defaults: dict[str, Any] = {
         "id": 42,
         "name": "Acme Contact",
@@ -112,7 +111,7 @@ def _partner(**overrides: Any) -> Partner:
     return Partner.model_validate(defaults)
 
 
-def _attachment(**overrides: Any) -> Attachment:
+def _attachment(**overrides: object) -> Attachment:
     defaults: dict[str, Any] = {
         "id": 9,
         "name": "proposal.pdf",
@@ -134,39 +133,39 @@ def _attachment(**overrides: Any) -> Attachment:
 
 
 class TestHelperFunctions:
-    def test_m2o_id_from_pair(self):
+    def test_m2o_id_from_pair(self) -> None:
         assert _m2o_id([5, "Team"]) == 5
 
-    def test_m2o_id_from_false(self):
+    def test_m2o_id_from_false(self) -> None:
         assert _m2o_id(False) is None
 
-    def test_m2o_id_from_none(self):
+    def test_m2o_id_from_none(self) -> None:
         assert _m2o_id(None) is None
 
-    def test_m2o_name_from_pair(self):
+    def test_m2o_name_from_pair(self) -> None:
         assert _m2o_name([5, "Team"]) == "Team"
 
-    def test_m2o_name_from_false(self):
+    def test_m2o_name_from_false(self) -> None:
         assert _m2o_name(False) is None
 
-    def test_str_or_none_with_string(self):
+    def test_str_or_none_with_string(self) -> None:
         assert _str_or_none("hello") == "hello"
 
-    def test_str_or_none_with_false(self):
+    def test_str_or_none_with_false(self) -> None:
         """Odoo returns False (not None) for empty char/date fields over XML-RPC."""
         assert _str_or_none(False) is None
 
-    def test_parse_odoo_datetime_valid(self):
+    def test_parse_odoo_datetime_valid(self) -> None:
         ms = _parse_odoo_datetime("2024-01-15 10:30:00")
         assert isinstance(ms, int) and ms > 0
 
-    def test_parse_odoo_datetime_invalid(self):
+    def test_parse_odoo_datetime_invalid(self) -> None:
         assert _parse_odoo_datetime("not-a-date") is None
 
-    def test_parse_odoo_datetime_non_string(self):
+    def test_parse_odoo_datetime_non_string(self) -> None:
         assert _parse_odoo_datetime(False) is None
 
-    def test_odoo_now_format(self):
+    def test_odoo_now_format(self) -> None:
         value = _odoo_now()
         # "YYYY-MM-DD HH:MM:SS" — must parse back with the same format used
         # for write_date comparisons in the sync cursor.
@@ -180,17 +179,17 @@ class TestHelperFunctions:
 
 
 class TestGetLeadTypeFilter:
-    def test_no_filter_returns_none(self):
+    def test_no_filter_returns_none(self) -> None:
         c = _make_connector()
         c.sync_filters = FilterCollection(filters=[])
         assert c._get_lead_type_filter() is None
 
-    def test_single_type_selected(self):
+    def test_single_type_selected(self) -> None:
         c = _make_connector()
         c.sync_filters = MagicMock(get_value=MagicMock(return_value=["lead"]))
         assert c._get_lead_type_filter() == ["lead"]
 
-    def test_both_types_selected_treated_as_no_filter(self):
+    def test_both_types_selected_treated_as_no_filter(self) -> None:
         """Avoids two separate Odoo API calls when the filter is a no-op."""
         c = _make_connector()
         c.sync_filters = MagicMock(get_value=MagicMock(return_value=["lead", "opportunity"]))
@@ -198,19 +197,19 @@ class TestGetLeadTypeFilter:
 
 
 class TestGetModifiedSinceFilter:
-    def test_no_filter_configured(self):
+    def test_no_filter_configured(self) -> None:
         c = _make_connector()
         c.sync_filters = MagicMock(get=MagicMock(return_value=None))
         assert c._get_modified_since_filter() is None
 
-    def test_empty_filter(self):
+    def test_empty_filter(self) -> None:
         c = _make_connector()
         f = MagicMock()
         f.is_empty.return_value = True
         c.sync_filters = MagicMock(get=MagicMock(return_value=f))
         assert c._get_modified_since_filter() is None
 
-    def test_converts_iso_to_odoo_format(self):
+    def test_converts_iso_to_odoo_format(self) -> None:
         c = _make_connector()
         f = MagicMock()
         f.is_empty.return_value = False
@@ -225,12 +224,12 @@ class TestGetModifiedSinceFilter:
 
 
 class TestCreatorOwnerPermission:
-    def test_no_creator_email_returns_none(self):
+    def test_no_creator_email_returns_none(self) -> None:
         c = _make_connector()
         c.creator_email = None
         assert c._creator_owner_permission() is None
 
-    def test_with_creator_email(self):
+    def test_with_creator_email(self) -> None:
         c = _make_connector(created_by="user-123")
         c.creator_email = "creator@example.com"
         perm = c._creator_owner_permission()
@@ -242,7 +241,7 @@ class TestCreatorOwnerPermission:
 
 
 class TestBuildLeadPermissions:
-    def test_owner_only(self):
+    def test_owner_only(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com"}
         perms = c._build_lead_permissions(owner_id=7, follower_partner_ids=[])
@@ -250,7 +249,7 @@ class TestBuildLeadPermissions:
         assert perms[0].email == "alice@example.com"
         assert perms[0].type == PermissionType.OWNER
 
-    def test_owner_plus_followers(self):
+    def test_owner_plus_followers(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com"}
         c._user_email_by_partner_id = {50: "bob@example.com"}
@@ -260,14 +259,14 @@ class TestBuildLeadPermissions:
         assert PermissionType.OWNER in by_type
         assert PermissionType.READ in by_type
 
-    def test_follower_matching_owner_email_not_duplicated(self):
+    def test_follower_matching_owner_email_not_duplicated(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com"}
         c._user_email_by_partner_id = {50: "alice@example.com"}
         perms = c._build_lead_permissions(owner_id=7, follower_partner_ids=[50])
         assert len(perms) == 1
 
-    def test_unresolvable_owner_and_no_followers_uses_fallback(self):
+    def test_unresolvable_owner_and_no_followers_uses_fallback(self) -> None:
         """Owner id present but not a known internal user, no followers —
         must not end up with zero permissions."""
         c = _make_connector()
@@ -278,13 +277,13 @@ class TestBuildLeadPermissions:
         assert perms[0].email == "creator@example.com"
         assert perms[0].type == PermissionType.OWNER
 
-    def test_no_owner_no_followers_no_creator_email_yields_empty(self):
+    def test_no_owner_no_followers_no_creator_email_yields_empty(self) -> None:
         c = _make_connector()
         c.creator_email = None
         perms = c._build_lead_permissions(owner_id=None, follower_partner_ids=[])
         assert perms == []
 
-    def test_unresolvable_follower_partner_id_skipped(self):
+    def test_unresolvable_follower_partner_id_skipped(self) -> None:
         c = _make_connector()
         c.creator_email = "creator@example.com"
         c._user_email_by_id = {7: "alice@example.com"}
@@ -300,7 +299,7 @@ class TestBuildLeadPermissions:
 
 class TestProcessLead:
     @pytest.mark.asyncio
-    async def test_new_lead_is_filed_under_its_company_group(self):
+    async def test_new_lead_is_filed_under_its_company_group(self) -> None:
         """Leads group under the customer company, the way Salesforce groups
         an Opportunity under its Account — teams are user groups now."""
         c = _make_connector()
@@ -320,7 +319,7 @@ class TestProcessLead:
         assert len(permissions) == 1
 
     @pytest.mark.asyncio
-    async def test_lead_without_company_falls_back_to_unassigned_group(self):
+    async def test_lead_without_company_falls_back_to_unassigned_group(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._stage_is_won = {}
@@ -330,7 +329,7 @@ class TestProcessLead:
         assert record.external_record_group_id == c._UNASSIGNED_DEAL_EXTERNAL_GROUP_ID
 
     @pytest.mark.asyncio
-    async def test_team_is_not_used_as_a_record_group(self):
+    async def test_team_is_not_used_as_a_record_group(self) -> None:
         """Regression guard: a lead's team must never become its container."""
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
@@ -341,7 +340,7 @@ class TestProcessLead:
         assert "crm.team" not in (record.external_record_group_id or "")
 
     @pytest.mark.asyncio
-    async def test_is_won_resolved_from_stage_map(self):
+    async def test_is_won_resolved_from_stage_map(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._stage_is_won = {1: True}
@@ -351,7 +350,7 @@ class TestProcessLead:
         assert record.is_won is True
 
     @pytest.mark.asyncio
-    async def test_unknown_stage_defaults_is_won_false(self):
+    async def test_unknown_stage_defaults_is_won_false(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._stage_is_won = {}
@@ -361,7 +360,7 @@ class TestProcessLead:
         assert record.is_won is False
 
     @pytest.mark.asyncio
-    async def test_existing_lead_reuses_id_and_bumps_version(self):
+    async def test_existing_lead_reuses_id_and_bumps_version(self) -> None:
         c = _make_connector()
         existing = MagicMock(id="existing-record-id", version=2)
         _mock_transaction(c, existing_record=existing)
@@ -374,7 +373,7 @@ class TestProcessLead:
         assert record.version == 3
 
     @pytest.mark.asyncio
-    async def test_mime_type_is_plain_text(self):
+    async def test_mime_type_is_plain_text(self) -> None:
         """The indexing pipeline gates on mimeType before calling
         stream_record(); it must match what stream_record() actually
         streams, or every lead silently drops as unsupported."""
@@ -387,7 +386,7 @@ class TestProcessLead:
         assert record.mime_type == "text/plain"
 
     @pytest.mark.asyncio
-    async def test_followers_become_reader_permissions(self):
+    async def test_followers_become_reader_permissions(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._user_email_by_id = {7: "alice@example.com"}
@@ -409,7 +408,7 @@ class TestProcessLead:
 
 class TestSyncUsers:
     @pytest.mark.asyncio
-    async def test_non_email_login_is_not_used_as_an_email(self):
+    async def test_non_email_login_is_not_used_as_an_email(self) -> None:
         """Odoo's default admin login is a bare "admin". Permissions resolve by
         email, so accepting it would grant to nobody and hide the record."""
         c = _make_connector()
@@ -428,7 +427,7 @@ class TestSyncUsers:
 
 
 class TestBuildLeadPerson:
-    def test_unconverted_lead_becomes_person(self):
+    def test_unconverted_lead_becomes_person(self) -> None:
         c = _make_connector()
 
         person = c._build_lead_person(
@@ -440,12 +439,12 @@ class TestBuildLeadPerson:
         assert person.first_name == "Jane"
         assert person.last_name == "Doe"
 
-    def test_lead_without_email_is_skipped(self):
+    def test_lead_without_email_is_skipped(self) -> None:
         c = _make_connector()
 
         assert c._build_lead_person(_lead(type="lead", email_from=False)) is None
 
-    def test_lead_person_shares_id_with_same_email_contact(self):
+    def test_lead_person_shares_id_with_same_email_contact(self) -> None:
         """A prospect who is also a contact must collapse to one Person."""
         c = _make_connector()
 
@@ -456,7 +455,7 @@ class TestBuildLeadPerson:
 
 
 class TestSyncLeadsSplitsByType:
-    def _prep(self, c, leads):
+    def _prep(self, c, leads) -> MagicMock:
         c.record_sync_point = MagicMock()
         c.record_sync_point.read_sync_point = AsyncMock(return_value={})
         c.record_sync_point.update_sync_point = AsyncMock()
@@ -467,7 +466,7 @@ class TestSyncLeadsSplitsByType:
         return _mock_transaction(c, existing_record=None)
 
     @pytest.mark.asyncio
-    async def test_opportunity_becomes_record_lead_becomes_person(self):
+    async def test_opportunity_becomes_record_lead_becomes_person(self) -> None:
         c = _make_connector()
         c._stage_is_won = {}
         tx_store = self._prep(
@@ -491,7 +490,7 @@ class TestSyncLeadsSplitsByType:
         assert [p.email for p in people] == ["prospect@acme.com"]
 
     @pytest.mark.asyncio
-    async def test_unconverted_lead_gets_lead_edge(self):
+    async def test_unconverted_lead_gets_lead_edge(self) -> None:
         c = _make_connector()
         c._stage_is_won = {}
         tx_store = self._prep(
@@ -516,7 +515,7 @@ class TestSyncLeadsSplitsByType:
         assert edges[0]["externalId"] == "crm.lead/2"
 
     @pytest.mark.asyncio
-    async def test_leads_only_page_creates_no_records(self):
+    async def test_leads_only_page_creates_no_records(self) -> None:
         c = _make_connector()
         c._stage_is_won = {}
         self._prep(c, [_lead(id=2, type="lead", email_from="p@acme.com")])
@@ -532,7 +531,7 @@ class TestSyncLeadsSplitsByType:
 
 
 class TestBuildPerson:
-    def test_individual_becomes_person_keyed_by_email(self):
+    def test_individual_becomes_person_keyed_by_email(self) -> None:
         c = _make_connector()
 
         person = c._build_person(_partner(name="Jane Doe", email="Jane@Acme.com"))
@@ -542,7 +541,7 @@ class TestBuildPerson:
         assert person.first_name == "Jane"
         assert person.last_name == "Doe"
 
-    def test_same_email_yields_same_deterministic_id(self):
+    def test_same_email_yields_same_deterministic_id(self) -> None:
         """One Person per email, so re-syncs upsert instead of duplicating."""
         c = _make_connector()
 
@@ -551,12 +550,12 @@ class TestBuildPerson:
 
         assert first.id == second.id
 
-    def test_contact_without_email_is_skipped(self):
+    def test_contact_without_email_is_skipped(self) -> None:
         c = _make_connector()
 
         assert c._build_person(_partner(email=False)) is None
 
-    def test_single_word_name_has_no_last_name(self):
+    def test_single_word_name_has_no_last_name(self) -> None:
         c = _make_connector()
 
         person = c._build_person(_partner(name="Cher", email="cher@acme.com"))
@@ -566,7 +565,7 @@ class TestBuildPerson:
 
 
 class TestBuildCompanyGroup:
-    def test_company_becomes_record_group(self):
+    def test_company_becomes_record_group(self) -> None:
         c = _make_connector()
 
         group = c._build_company_group(_partner(id=99, name="Acme Corp", is_company=True))
@@ -577,7 +576,7 @@ class TestBuildCompanyGroup:
 
 class TestSyncPartners:
     @pytest.mark.asyncio
-    async def _run(self, c, partners):
+    async def _run(self, c, partners) -> MagicMock:
         c.contact_sync_point = MagicMock()
         c.contact_sync_point.read_sync_point = AsyncMock(return_value={})
         c.contact_sync_point.update_sync_point = AsyncMock()
@@ -586,7 +585,7 @@ class TestSyncPartners:
         return _mock_transaction(c, existing_record=None)
 
     @pytest.mark.asyncio
-    async def test_splits_companies_and_individuals(self):
+    async def test_splits_companies_and_individuals(self) -> None:
         c = _make_connector()
         tx_store = await self._run(
             c,
@@ -611,7 +610,7 @@ class TestSyncPartners:
         assert [p.email for p in people] == ["jane@acme.com"]
 
     @pytest.mark.asyncio
-    async def test_contacts_are_not_created_as_records(self):
+    async def test_contacts_are_not_created_as_records(self) -> None:
         """Regression guard for the review: contacts must be Person nodes."""
         c = _make_connector()
         await self._run(c, [_partner(id=42, email="jane@acme.com")])
@@ -621,7 +620,7 @@ class TestSyncPartners:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unassigned_group_always_ensured(self):
+    async def test_unassigned_group_always_ensured(self) -> None:
         c = _make_connector()
         await self._run(c, [])
 
@@ -639,7 +638,7 @@ class TestSyncPartners:
 
 class TestSyncTeams:
     @pytest.mark.asyncio
-    async def test_team_becomes_user_group_with_members(self):
+    async def test_team_becomes_user_group_with_members(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com", 8: "bob@example.com"}
         team = MagicMock(id=3, member_ids=[7, 8])
@@ -655,7 +654,7 @@ class TestSyncTeams:
         assert {m.email for m in members} == {"alice@example.com", "bob@example.com"}
 
     @pytest.mark.asyncio
-    async def test_teams_are_not_record_groups(self):
+    async def test_teams_are_not_record_groups(self) -> None:
         """The review's core point: crm.team is a UserGroup, not a RecordGroup."""
         c = _make_connector()
         team = MagicMock(id=3, member_ids=[])
@@ -667,7 +666,7 @@ class TestSyncTeams:
         c.data_entities_processor.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unresolvable_member_is_skipped(self):
+    async def test_unresolvable_member_is_skipped(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com"}
         team = MagicMock(id=3, member_ids=[7, 999])
@@ -687,7 +686,7 @@ class TestSyncTeams:
 
 class TestProcessAttachment:
     @pytest.mark.asyncio
-    async def test_attachment_becomes_file_record(self):
+    async def test_attachment_becomes_file_record(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
 
@@ -703,7 +702,7 @@ class TestProcessAttachment:
         assert record.md5_hash == "abc123"
 
     @pytest.mark.asyncio
-    async def test_links_back_to_parent_lead(self):
+    async def test_links_back_to_parent_lead(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
 
@@ -713,7 +712,7 @@ class TestProcessAttachment:
         assert record.parent_record_type == RecordType.DEAL
 
     @pytest.mark.asyncio
-    async def test_name_without_extension(self):
+    async def test_name_without_extension(self) -> None:
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
 
@@ -722,7 +721,7 @@ class TestProcessAttachment:
         assert record.extension is None
 
     @pytest.mark.asyncio
-    async def test_existing_attachment_reuses_id_and_bumps_version(self):
+    async def test_existing_attachment_reuses_id_and_bumps_version(self) -> None:
         c = _make_connector()
         existing = MagicMock(id="existing-file-id", version=4)
         _mock_transaction(c, existing_record=existing)
@@ -736,7 +735,7 @@ class TestProcessAttachment:
 
 class TestFetchLeadPermissions:
     @pytest.mark.asyncio
-    async def test_attachment_inherits_parent_lead_permissions(self):
+    async def test_attachment_inherits_parent_lead_permissions(self) -> None:
         c = _make_connector()
         c._user_email_by_id = {7: "alice@example.com"}
         c._user_email_by_partner_id = {50: "bob@example.com"}
@@ -750,7 +749,7 @@ class TestFetchLeadPermissions:
         assert {p.email for p in result[1]} == {"alice@example.com", "bob@example.com"}
 
     @pytest.mark.asyncio
-    async def test_unconverted_lead_parent_is_excluded(self):
+    async def test_unconverted_lead_parent_is_excluded(self) -> None:
         """A file on an unconverted lead has no parent record to belong to."""
         c = _make_connector()
         c.data_source.read_leads = AsyncMock(return_value=[_lead(id=2, type="lead")])
@@ -761,7 +760,7 @@ class TestFetchLeadPermissions:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_empty_ids_skips_calls(self):
+    async def test_empty_ids_skips_calls(self) -> None:
         c = _make_connector()
         c.data_source.read_leads = AsyncMock()
 
@@ -771,7 +770,7 @@ class TestFetchLeadPermissions:
 
 class TestSyncAttachments:
     @pytest.mark.asyncio
-    async def test_file_on_unconverted_lead_is_not_synced(self):
+    async def test_file_on_unconverted_lead_is_not_synced(self) -> None:
         c = _make_connector()
         c.attachment_sync_point = MagicMock()
         c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
@@ -790,7 +789,7 @@ class TestSyncAttachments:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_file_on_opportunity_is_synced(self):
+    async def test_file_on_opportunity_is_synced(self) -> None:
         c = _make_connector()
         c.attachment_sync_point = MagicMock()
         c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
@@ -816,7 +815,7 @@ class TestSyncAttachments:
 
 class TestFetchCompanyGroupByLead:
     @pytest.mark.asyncio
-    async def test_company_partner_maps_to_its_own_group(self):
+    async def test_company_partner_maps_to_its_own_group(self) -> None:
         c = _make_connector()
         c.data_source.read_partners = AsyncMock(
             return_value=[_partner(id=99, is_company=True)]
@@ -827,7 +826,7 @@ class TestFetchCompanyGroupByLead:
         assert result == {1: "res.partner/99"}
 
     @pytest.mark.asyncio
-    async def test_individual_partner_maps_to_parent_company(self):
+    async def test_individual_partner_maps_to_parent_company(self) -> None:
         c = _make_connector()
         # Two reads: the lead's partner, then that partner's parent.
         c.data_source.read_partners = AsyncMock(
@@ -842,7 +841,7 @@ class TestFetchCompanyGroupByLead:
         assert result == {1: "res.partner/99"}
 
     @pytest.mark.asyncio
-    async def test_individual_parent_is_not_used_as_a_company_group(self):
+    async def test_individual_parent_is_not_used_as_a_company_group(self) -> None:
         """Odoo allows contact->contact parents, but only companies get groups."""
         c = _make_connector()
         c.data_source.read_partners = AsyncMock(
@@ -857,7 +856,7 @@ class TestFetchCompanyGroupByLead:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_individual_without_company_is_unmapped(self):
+    async def test_individual_without_company_is_unmapped(self) -> None:
         c = _make_connector()
         c.data_source.read_partners = AsyncMock(
             return_value=[_partner(id=42, is_company=False, parent_id=False)]
@@ -868,7 +867,7 @@ class TestFetchCompanyGroupByLead:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_lead_without_partner_skips_lookup(self):
+    async def test_lead_without_partner_skips_lookup(self) -> None:
         c = _make_connector()
         c.data_source.read_partners = AsyncMock()
 
@@ -885,14 +884,14 @@ class TestFetchCompanyGroupByLead:
 
 class TestRunSyncFullVsIncremental:
     @pytest.mark.asyncio
-    async def test_run_sync_uses_full_sync_true(self):
+    async def test_run_sync_uses_full_sync_true(self) -> None:
         c = _make_connector()
         c._run_sync = AsyncMock()
         await c.run_sync()
         c._run_sync.assert_awaited_once_with(full_sync=True)
 
     @pytest.mark.asyncio
-    async def test_run_incremental_sync_uses_full_sync_false(self):
+    async def test_run_incremental_sync_uses_full_sync_false(self) -> None:
         c = _make_connector()
         c._run_sync = AsyncMock()
         await c.run_incremental_sync()
@@ -901,7 +900,7 @@ class TestRunSyncFullVsIncremental:
 
 class TestSyncLeadsCursorBypass:
     @pytest.mark.asyncio
-    async def test_full_sync_ignores_stored_cursor(self):
+    async def test_full_sync_ignores_stored_cursor(self) -> None:
         c = _make_connector()
         c.record_sync_point = MagicMock()
         c.record_sync_point.read_sync_point = AsyncMock(
@@ -918,7 +917,7 @@ class TestSyncLeadsCursorBypass:
         assert kwargs["updated_since"] is None
 
     @pytest.mark.asyncio
-    async def test_incremental_sync_uses_stored_cursor(self):
+    async def test_incremental_sync_uses_stored_cursor(self) -> None:
         c = _make_connector()
         c.record_sync_point = MagicMock()
         c.record_sync_point.read_sync_point = AsyncMock(
@@ -935,7 +934,7 @@ class TestSyncLeadsCursorBypass:
         assert kwargs["updated_since"] == "2024-06-01 00:00:00"
 
     @pytest.mark.asyncio
-    async def test_configured_filter_floor_wins_over_older_cursor(self):
+    async def test_configured_filter_floor_wins_over_older_cursor(self) -> None:
         c = _make_connector()
         c.record_sync_point = MagicMock()
         c.record_sync_point.read_sync_point = AsyncMock(
@@ -960,14 +959,14 @@ class TestSyncLeadsCursorBypass:
 
 class TestGetSignedUrl:
     @pytest.mark.asyncio
-    async def test_lead_url(self):
+    async def test_lead_url(self) -> None:
         c = _make_connector()
         record = MagicMock(external_record_id="crm.lead/5")
         url = await c.get_signed_url(record)
         assert url == "https://mycompany.odoo.com/web#id=5&model=crm.lead&view_type=form"
 
     @pytest.mark.asyncio
-    async def test_attachment_url_points_at_download_endpoint(self):
+    async def test_attachment_url_points_at_download_endpoint(self) -> None:
         c = _make_connector()
         record = MagicMock(external_record_id="ir.attachment/9")
         url = await c.get_signed_url(record)
@@ -981,7 +980,7 @@ class TestGetSignedUrl:
 
 class TestStreamRecordDispatch:
     @pytest.mark.asyncio
-    async def test_dispatches_to_stream_lead(self):
+    async def test_dispatches_to_stream_lead(self) -> None:
         c = _make_connector()
         record = MagicMock(external_record_id="crm.lead/1")
         c._stream_lead = AsyncMock(return_value="lead-response")
@@ -994,7 +993,7 @@ class TestStreamRecordDispatch:
         c._stream_attachment.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dispatches_to_stream_attachment(self):
+    async def test_dispatches_to_stream_attachment(self) -> None:
         c = _make_connector()
         record = MagicMock(external_record_id="ir.attachment/9")
         c._stream_lead = AsyncMock(return_value="lead-response")
@@ -1007,7 +1006,7 @@ class TestStreamRecordDispatch:
         c._stream_lead.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stream_attachment_decodes_base64_content(self):
+    async def test_stream_attachment_decodes_base64_content(self) -> None:
         import base64
 
         c = _make_connector()
@@ -1031,7 +1030,7 @@ class TestStreamRecordDispatch:
         assert body == b"PDF-BYTES"
 
     @pytest.mark.asyncio
-    async def test_oversized_attachment_is_refused_before_fetching(self):
+    async def test_oversized_attachment_is_refused_before_fetching(self) -> None:
         from fastapi import HTTPException
 
         c = _make_connector()
@@ -1051,7 +1050,7 @@ class TestStreamRecordDispatch:
         c.data_source.get_attachment_content.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_raises_when_not_initialized(self):
+    async def test_raises_when_not_initialized(self) -> None:
         from fastapi import HTTPException
 
         c = _make_connector()
@@ -1066,7 +1065,7 @@ class TestStreamRecordDispatch:
 
 class TestStreamLeadContent:
     @pytest.mark.asyncio
-    async def test_stream_lead_includes_core_fields(self):
+    async def test_stream_lead_includes_core_fields(self) -> None:
         c = _make_connector()
         c.data_source.get_lead = AsyncMock(return_value=_lead(name="Big Deal"))
         c.data_source.list_activities = AsyncMock(return_value=[])
@@ -1082,7 +1081,7 @@ class TestStreamLeadContent:
         assert "Name: Big Deal" in body
 
     @pytest.mark.asyncio
-    async def test_stream_lead_not_found_raises_404(self):
+    async def test_stream_lead_not_found_raises_404(self) -> None:
         from fastapi import HTTPException
 
         c = _make_connector()
@@ -1100,7 +1099,7 @@ class TestStreamLeadContent:
 
 class TestReindexRecords:
     @pytest.mark.asyncio
-    async def test_changed_lead_gets_reprocessed(self):
+    async def test_changed_lead_gets_reprocessed(self) -> None:
         c = _make_connector()
         c._sync_users = AsyncMock()
         c._sync_stages = AsyncMock()
@@ -1119,7 +1118,7 @@ class TestReindexRecords:
         c.data_entities_processor.reindex_existing_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unchanged_lead_goes_to_reindex_existing(self):
+    async def test_unchanged_lead_goes_to_reindex_existing(self) -> None:
         c = _make_connector()
         c._sync_users = AsyncMock()
         c._sync_stages = AsyncMock()
@@ -1138,7 +1137,7 @@ class TestReindexRecords:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_changed_attachment_dispatches_to_process_attachment(self):
+    async def test_changed_attachment_dispatches_to_process_attachment(self) -> None:
         c = _make_connector()
         c._sync_users = AsyncMock()
         c._sync_stages = AsyncMock()
@@ -1162,7 +1161,7 @@ class TestReindexRecords:
         assert sent_record.record_type == RecordType.FILE
 
     @pytest.mark.asyncio
-    async def test_reindexed_lead_keeps_its_company_group(self):
+    async def test_reindexed_lead_keeps_its_company_group(self) -> None:
         """Without the company lookup, reindex would silently re-file every
         lead under "Unassigned"."""
         c = _make_connector()
@@ -1188,7 +1187,7 @@ class TestReindexRecords:
         assert sent_record.external_record_group_id == "res.partner/99"
 
     @pytest.mark.asyncio
-    async def test_empty_records_is_noop(self):
+    async def test_empty_records_is_noop(self) -> None:
         c = _make_connector()
         await c.reindex_records([])
         c.data_entities_processor.on_new_records.assert_not_called()
@@ -1202,7 +1201,7 @@ class TestReindexRecords:
 
 class TestFetchFollowersByLead:
     @pytest.mark.asyncio
-    async def test_groups_followers_by_lead_id(self):
+    async def test_groups_followers_by_lead_id(self) -> None:
         c = _make_connector()
         c.data_source.list_followers = AsyncMock(
             return_value=[
@@ -1218,7 +1217,7 @@ class TestFetchFollowersByLead:
         assert result[20] == [102]
 
     @pytest.mark.asyncio
-    async def test_empty_lead_ids_skips_call(self):
+    async def test_empty_lead_ids_skips_call(self) -> None:
         c = _make_connector()
         c.data_source.list_followers = AsyncMock()
 
@@ -1235,7 +1234,7 @@ class TestFetchFollowersByLead:
 
 class TestInitCreatorEmailResolution:
     @pytest.mark.asyncio
-    async def test_resolves_creator_email_via_user_id_for_team_scope(self, monkeypatch):
+    async def test_resolves_creator_email_via_user_id_for_team_scope(self, monkeypatch) -> None:
         c = _make_connector(created_by="user-123")
 
         fake_client = MagicMock()
@@ -1245,7 +1244,7 @@ class TestInitCreatorEmailResolution:
         fake_builder = MagicMock()
         fake_builder.get_client = MagicMock(return_value=fake_client)
 
-        async def fake_build_from_services(*_args, **_kwargs):
+        async def fake_build_from_services(*_args, **_kwargs) -> MagicMock:
             return fake_builder
 
         monkeypatch.setattr(
@@ -1263,7 +1262,7 @@ class TestInitCreatorEmailResolution:
         c.data_entities_processor.get_user_by_user_id.assert_awaited_once_with("user-123")
 
     @pytest.mark.asyncio
-    async def test_no_creator_user_found_leaves_creator_email_none(self, monkeypatch):
+    async def test_no_creator_user_found_leaves_creator_email_none(self, monkeypatch) -> None:
         c = _make_connector(created_by="user-123")
 
         fake_client = MagicMock()
@@ -1273,7 +1272,7 @@ class TestInitCreatorEmailResolution:
         fake_builder = MagicMock()
         fake_builder.get_client = MagicMock(return_value=fake_client)
 
-        async def fake_build_from_services(*_args, **_kwargs):
+        async def fake_build_from_services(*_args, **_kwargs) -> MagicMock:
             return fake_builder
 
         monkeypatch.setattr(
@@ -1302,7 +1301,7 @@ async def _drain(response) -> str:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    async def test_builds_connector_with_initialized_processor(self, monkeypatch):
+    async def test_builds_connector_with_initialized_processor(self, monkeypatch) -> None:
         processor = MagicMock()
         processor.org_id = "org-1"
         processor.initialize = AsyncMock()
@@ -1326,10 +1325,10 @@ class TestCreateConnector:
 
 class TestInitFailure:
     @pytest.mark.asyncio
-    async def test_builder_failure_returns_false(self, monkeypatch):
+    async def test_builder_failure_returns_false(self, monkeypatch) -> None:
         c = _make_connector()
 
-        async def boom(*_args, **_kwargs):
+        async def boom(*_args, **_kwargs) -> Never:
             raise ConnectionError("bad credentials")
 
         monkeypatch.setattr(
@@ -1340,7 +1339,7 @@ class TestInitFailure:
         assert await c.init() is False
 
     @pytest.mark.asyncio
-    async def test_creator_email_already_resolved_skips_user_lookup(self, monkeypatch):
+    async def test_creator_email_already_resolved_skips_user_lookup(self, monkeypatch) -> None:
         c = _make_connector(created_by="user-123")
 
         fake_client = MagicMock()
@@ -1349,7 +1348,7 @@ class TestInitFailure:
         fake_builder = MagicMock()
         fake_builder.get_client = MagicMock(return_value=fake_client)
 
-        async def fake_build_from_services(*_args, **_kwargs):
+        async def fake_build_from_services(*_args, **_kwargs) -> MagicMock:
             return fake_builder
 
         monkeypatch.setattr(
@@ -1368,19 +1367,19 @@ class TestInitFailure:
 
 class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
-    async def test_uninitialized_data_source_returns_false(self):
+    async def test_uninitialized_data_source_returns_false(self) -> None:
         c = _make_connector()
         c.data_source = None
         assert await c.test_connection_and_access() is False
 
     @pytest.mark.asyncio
-    async def test_successful_probe(self):
+    async def test_successful_probe(self) -> None:
         c = _make_connector()
         c.data_source.count_leads = AsyncMock(return_value=3)
         assert await c.test_connection_and_access() is True
 
     @pytest.mark.asyncio
-    async def test_probe_failure_returns_false(self):
+    async def test_probe_failure_returns_false(self) -> None:
         c = _make_connector()
         c.data_source.count_leads = AsyncMock(side_effect=RuntimeError("nope"))
         assert await c.test_connection_and_access() is False
@@ -1388,7 +1387,7 @@ class TestTestConnectionAndAccess:
 
 class TestCleanup:
     @pytest.mark.asyncio
-    async def test_closes_client_and_clears_state(self):
+    async def test_closes_client_and_clears_state(self) -> None:
         c = _make_connector()
         c.client = MagicMock(close=AsyncMock())
         client = c.client
@@ -1399,7 +1398,7 @@ class TestCleanup:
         assert c.client is None and c.data_source is None
 
     @pytest.mark.asyncio
-    async def test_cleanup_without_client_is_noop(self):
+    async def test_cleanup_without_client_is_noop(self) -> None:
         c = _make_connector()
         c.client = None
         await c.cleanup()
@@ -1422,7 +1421,7 @@ class TestRunSyncOrchestration:
         c._sync_attachments = AsyncMock()
 
     @pytest.mark.asyncio
-    async def test_full_sync_runs_every_stage(self, monkeypatch):
+    async def test_full_sync_runs_every_stage(self, monkeypatch) -> None:
         c = _make_connector()
         self._stub_stages(c)
         monkeypatch.setattr(
@@ -1440,7 +1439,7 @@ class TestRunSyncOrchestration:
         c._sync_attachments.assert_awaited_once_with(full_sync=True)
 
     @pytest.mark.asyncio
-    async def test_stage_failure_propagates(self, monkeypatch):
+    async def test_stage_failure_propagates(self, monkeypatch) -> None:
         c = _make_connector()
         self._stub_stages(c)
         c._sync_leads = AsyncMock(side_effect=RuntimeError("odoo down"))
@@ -1462,7 +1461,7 @@ class TestSyncWithoutDataSource:
         ["_sync_users", "_sync_teams", "_sync_stages", "_sync_partners",
          "_sync_leads", "_sync_attachments"],
     )
-    async def test_no_data_source_is_a_noop(self, method):
+    async def test_no_data_source_is_a_noop(self, method) -> None:
         c = _make_connector()
         c.data_source = None
         await getattr(c, method)()
@@ -1471,7 +1470,7 @@ class TestSyncWithoutDataSource:
 
 class TestSyncStages:
     @pytest.mark.asyncio
-    async def test_builds_is_won_map(self):
+    async def test_builds_is_won_map(self) -> None:
         from app.sources.external.odoo.odoo import CrmStage
 
         c = _make_connector()
@@ -1489,7 +1488,7 @@ class TestSyncStages:
 
 class TestSyncUsersPartnerMapping:
     @pytest.mark.asyncio
-    async def test_partner_id_maps_to_email_for_follower_lookup(self):
+    async def test_partner_id_maps_to_email_for_follower_lookup(self) -> None:
         c = _make_connector()
         c.data_source.list_users = AsyncMock(
             return_value=[
@@ -1507,7 +1506,7 @@ class TestSyncUsersPartnerMapping:
 
 class TestSyncTeamsEmpty:
     @pytest.mark.asyncio
-    async def test_no_teams_skips_processor_call(self):
+    async def test_no_teams_skips_processor_call(self) -> None:
         c = _make_connector()
         c.data_source.list_teams = AsyncMock(return_value=[])
 
@@ -1517,7 +1516,7 @@ class TestSyncTeamsEmpty:
 
 
 class TestModifiedSinceFilterWithoutStart:
-    def test_filter_without_start_datetime_is_ignored(self):
+    def test_filter_without_start_datetime_is_ignored(self) -> None:
         c = _make_connector()
         f = MagicMock()
         f.is_empty = MagicMock(return_value=False)
@@ -1530,7 +1529,7 @@ class TestModifiedSinceFilterWithoutStart:
 
 class TestUpsertLeadPeopleEdgeCases:
     @pytest.mark.asyncio
-    async def test_leads_without_email_yield_no_people(self):
+    async def test_leads_without_email_yield_no_people(self) -> None:
         c = _make_connector()
         _mock_transaction(c)
 
@@ -1540,7 +1539,7 @@ class TestUpsertLeadPeopleEdgeCases:
 
 class TestFetchFollowersMalformedRows:
     @pytest.mark.asyncio
-    async def test_rows_without_res_id_or_partner_are_dropped(self):
+    async def test_rows_without_res_id_or_partner_are_dropped(self) -> None:
         c = _make_connector()
         c.data_source.list_followers = AsyncMock(
             return_value=[
@@ -1560,7 +1559,7 @@ class TestFetchFollowersMalformedRows:
 
 class TestSyncPartnersPaging:
     @pytest.mark.asyncio
-    async def test_pages_until_short_page_and_skips_emailless_contacts(self):
+    async def test_pages_until_short_page_and_skips_emailless_contacts(self) -> None:
         c = _make_connector()
         c.batch_size = 1
         c.contact_sync_point = MagicMock()
@@ -1581,7 +1580,7 @@ class TestSyncPartnersPaging:
         tx_store.batch_upsert_people.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_configured_floor_wins_over_older_contact_cursor(self):
+    async def test_configured_floor_wins_over_older_contact_cursor(self) -> None:
         c = _make_connector()
         c.contact_sync_point = MagicMock()
         c.contact_sync_point.read_sync_point = AsyncMock(
@@ -1604,7 +1603,7 @@ class TestSyncAttachmentsBatching:
         c.attachment_sync_point.update_sync_point = AsyncMock()
 
     @pytest.mark.asyncio
-    async def test_full_batch_is_flushed_and_missing_permissions_fall_back(self):
+    async def test_full_batch_is_flushed_and_missing_permissions_fall_back(self) -> None:
         c = _make_connector()
         c.batch_size = 1
         c.creator_email = "creator@example.com"
@@ -1623,7 +1622,7 @@ class TestSyncAttachmentsBatching:
         assert [p.email for p in permissions] == ["creator@example.com"]
 
     @pytest.mark.asyncio
-    async def test_existing_attachment_takes_the_update_path(self):
+    async def test_existing_attachment_takes_the_update_path(self) -> None:
         c = _make_connector()
         self._prepare(c)
         _mock_transaction(c, existing_record=MagicMock(id="rec-1", version=2))
@@ -1637,7 +1636,7 @@ class TestSyncAttachmentsBatching:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_configured_floor_wins_over_older_attachment_cursor(self):
+    async def test_configured_floor_wins_over_older_attachment_cursor(self) -> None:
         c = _make_connector()
         c.attachment_sync_point = MagicMock()
         c.attachment_sync_point.read_sync_point = AsyncMock(
@@ -1660,7 +1659,7 @@ class TestSyncAttachmentsBatching:
 
 class TestStreamLeadFullBody:
     @pytest.mark.asyncio
-    async def test_every_optional_section_is_rendered(self):
+    async def test_every_optional_section_is_rendered(self) -> None:
         from app.sources.external.odoo.odoo import MailActivity, MailMessage
 
         c = _make_connector()
@@ -1734,7 +1733,7 @@ class TestStreamLeadFullBody:
         assert "[] Activity" in body
 
     @pytest.mark.asyncio
-    async def test_enrichment_failures_do_not_block_the_body(self):
+    async def test_enrichment_failures_do_not_block_the_body(self) -> None:
         c = _make_connector()
         c.data_source.get_lead = AsyncMock(return_value=_lead(name="Big Deal"))
         c.data_source.list_activities = AsyncMock(side_effect=RuntimeError("activities down"))
@@ -1750,7 +1749,7 @@ class TestStreamLeadFullBody:
 
 class TestStreamAttachmentMissingContent:
     @pytest.mark.asyncio
-    async def test_attachment_without_content_raises_404(self):
+    async def test_attachment_without_content_raises_404(self) -> None:
         from fastapi import HTTPException
 
         c = _make_connector()
@@ -1772,7 +1771,7 @@ class TestStreamAttachmentMissingContent:
 
 class TestWebhookNotification:
     @pytest.mark.asyncio
-    async def test_notification_triggers_an_incremental_sync(self):
+    async def test_notification_triggers_an_incremental_sync(self) -> None:
         c = _make_connector()
         c.run_incremental_sync = AsyncMock()
 
@@ -1784,7 +1783,7 @@ class TestWebhookNotification:
         assert not c._background_tasks
 
     @pytest.mark.asyncio
-    async def test_sync_failure_is_swallowed(self):
+    async def test_sync_failure_is_swallowed(self) -> None:
         c = _make_connector()
         c.run_incremental_sync = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -1805,7 +1804,7 @@ class TestReindexEdgeCases:
         return c
 
     @pytest.mark.asyncio
-    async def test_uninitialized_data_source_raises(self):
+    async def test_uninitialized_data_source_raises(self) -> None:
         c = self._connector()
         c.data_source = None
 
@@ -1813,7 +1812,7 @@ class TestReindexEdgeCases:
             await c.reindex_records([MagicMock(external_record_id="crm.lead/1")])
 
     @pytest.mark.asyncio
-    async def test_deleted_attachment_is_skipped(self):
+    async def test_deleted_attachment_is_skipped(self) -> None:
         c = self._connector()
         c.data_source.get_attachment = AsyncMock(return_value=None)
 
@@ -1823,7 +1822,7 @@ class TestReindexEdgeCases:
         c.data_entities_processor.reindex_existing_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unchanged_attachment_is_reindexed_in_place(self):
+    async def test_unchanged_attachment_is_reindexed_in_place(self) -> None:
         c = self._connector()
         c.data_source.get_attachment = AsyncMock(
             return_value=_attachment(write_date="2024-02-01 00:00:00")
@@ -1838,7 +1837,7 @@ class TestReindexEdgeCases:
         c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])
 
     @pytest.mark.asyncio
-    async def test_changed_attachment_keeps_inherited_lead_permissions(self):
+    async def test_changed_attachment_keeps_inherited_lead_permissions(self) -> None:
         from app.models.permission import Permission
 
         c = self._connector()
@@ -1862,7 +1861,7 @@ class TestReindexEdgeCases:
         assert [p.email for p in updated[0][1]] == ["alice@example.com"]
 
     @pytest.mark.asyncio
-    async def test_changed_attachment_without_permissions_or_creator_stays_empty(self):
+    async def test_changed_attachment_without_permissions_or_creator_stays_empty(self) -> None:
         c = self._connector()
         c.creator_email = None
         c.data_source.get_attachment = AsyncMock(
@@ -1881,7 +1880,7 @@ class TestReindexEdgeCases:
         assert updated[0][1] == []
 
     @pytest.mark.asyncio
-    async def test_deleted_lead_is_skipped(self):
+    async def test_deleted_lead_is_skipped(self) -> None:
         c = self._connector()
         c.data_source.get_lead = AsyncMock(return_value=None)
 
@@ -1890,7 +1889,7 @@ class TestReindexEdgeCases:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_one_bad_record_does_not_abort_the_rest(self):
+    async def test_one_bad_record_does_not_abort_the_rest(self) -> None:
         c = self._connector()
         c.data_source.get_lead = AsyncMock(return_value=None)
         bad = MagicMock(external_record_id="crm.lead/not-an-int", id="r-bad")
@@ -1900,7 +1899,7 @@ class TestReindexEdgeCases:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_user_refresh_failure_propagates(self):
+    async def test_user_refresh_failure_propagates(self) -> None:
         c = self._connector()
         c._sync_users = AsyncMock(side_effect=RuntimeError("odoo down"))
 
@@ -1910,7 +1909,7 @@ class TestReindexEdgeCases:
 
 class TestGetFilterOptions:
     @pytest.mark.asyncio
-    async def test_no_dynamic_filters_declared(self):
+    async def test_no_dynamic_filters_declared(self) -> None:
         c = _make_connector()
         with pytest.raises(ValueError, match="Unsupported filter key"):
             await c.get_filter_options("lead_type")
@@ -1918,7 +1917,7 @@ class TestGetFilterOptions:
 
 class TestFetchCompanyGroupWithoutDataSource:
     @pytest.mark.asyncio
-    async def test_returns_empty_map(self):
+    async def test_returns_empty_map(self) -> None:
         c = _make_connector()
         c.data_source = None
         assert await c._fetch_company_group_by_lead([_lead()]) == {}
@@ -1926,7 +1925,7 @@ class TestFetchCompanyGroupWithoutDataSource:
 
 class TestSyncAttachmentsInheritedPermissions:
     @pytest.mark.asyncio
-    async def test_lead_permissions_are_used_as_is(self):
+    async def test_lead_permissions_are_used_as_is(self) -> None:
         from app.models.permission import Permission
 
         c = _make_connector()

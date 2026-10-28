@@ -27,19 +27,19 @@ from app.sources.external.odoo.odoo import (
 
 
 @pytest.fixture
-def client():
+def client() -> MagicMock:
     c = MagicMock()
     c.execute_kw = AsyncMock()
     return c
 
 
 @pytest.fixture
-def data_source(client):
+def data_source(client) -> OdooDataSource:
     return OdooDataSource(client)
 
 
 class TestListLeads:
-    async def test_default_call_shape(self, data_source, client):
+    async def test_default_call_shape(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads()
         client.execute_kw.assert_awaited_once_with(
@@ -54,7 +54,7 @@ class TestListLeads:
             },
         )
 
-    async def test_filters_by_type_and_updated_since(self, data_source, client):
+    async def test_filters_by_type_and_updated_since(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads(lead_type="opportunity", updated_since="2026-01-01 00:00:00")
         args = client.execute_kw.await_args.args
@@ -62,14 +62,14 @@ class TestListLeads:
         assert ["type", "=", "opportunity"] in domain
         assert ["write_date", ">=", "2026-01-01 00:00:00"] in domain
 
-    async def test_pagination_forwarded(self, data_source, client):
+    async def test_pagination_forwarded(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads(limit=25, offset=50)
         kwargs = client.execute_kw.await_args.args[3]
         assert kwargs["limit"] == 25
         assert kwargs["offset"] == 50
 
-    async def test_parses_rows_into_crm_lead(self, data_source, client):
+    async def test_parses_rows_into_crm_lead(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {
                 "id": 1,
@@ -98,25 +98,25 @@ class TestListLeads:
         assert lead.user_id is False
         assert lead.tag_ids == [7, 8]
 
-    async def test_custom_fields_forwarded(self, data_source, client):
+    async def test_custom_fields_forwarded(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads(fields=["id", "name"])
         kwargs = client.execute_kw.await_args.args[3]
         assert kwargs["fields"] == ["id", "name"]
 
-    async def test_include_archived_sets_active_test_context(self, data_source, client):
+    async def test_include_archived_sets_active_test_context(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads(include_archived=True)
         kwargs = client.execute_kw.await_args.args[3]
         assert kwargs["context"] == {"active_test": False}
 
-    async def test_default_excludes_archived_context(self, data_source, client):
+    async def test_default_excludes_archived_context(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_leads()
         kwargs = client.execute_kw.await_args.args[3]
         assert "context" not in kwargs
 
-    async def test_parses_expanded_field_set(self, data_source, client):
+    async def test_parses_expanded_field_set(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {
                 "id": 1,
@@ -149,7 +149,7 @@ class TestListLeads:
 
 
 class TestGetLead:
-    async def test_found_returns_crm_lead(self, data_source, client):
+    async def test_found_returns_crm_lead(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 42, "name": "Solo Lead"}]
         lead = await data_source.get_lead(42)
         assert isinstance(lead, CrmLead)
@@ -158,14 +158,14 @@ class TestGetLead:
         model, method, args, kwargs = client.execute_kw.await_args.args
         assert (model, method, args) == ("crm.lead", "read", [[42]])
 
-    async def test_not_found_returns_none(self, data_source, client):
+    async def test_not_found_returns_none(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         lead = await data_source.get_lead(999)
         assert lead is None
 
 
 class TestCountLeads:
-    async def test_read_leads_bulk_by_ids(self, data_source, client):
+    async def test_read_leads_bulk_by_ids(self, data_source, client) -> None:
         """Used to resolve attachment permissions from their parent leads."""
         client.execute_kw.return_value = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
         leads = await data_source.read_leads([1, 2])
@@ -173,11 +173,11 @@ class TestCountLeads:
         model, method, args = client.execute_kw.await_args.args[:3]
         assert (model, method, args) == ("crm.lead", "read", [[1, 2]])
 
-    async def test_read_leads_empty_skips_call(self, data_source, client):
+    async def test_read_leads_empty_skips_call(self, data_source, client) -> None:
         assert await data_source.read_leads([]) == []
         client.execute_kw.assert_not_awaited()
 
-    async def test_count_passes_domain_through(self, data_source, client):
+    async def test_count_passes_domain_through(self, data_source, client) -> None:
         client.execute_kw.return_value = 17
         count = await data_source.count_leads(lead_type="lead")
         assert count == 17
@@ -186,7 +186,7 @@ class TestCountLeads:
         assert method == "search_count"
         assert args == [[["type", "=", "lead"]]]
 
-    async def test_no_filters_uses_empty_domain(self, data_source, client):
+    async def test_no_filters_uses_empty_domain(self, data_source, client) -> None:
         client.execute_kw.return_value = 5
         await data_source.count_leads()
         args = client.execute_kw.await_args.args[2]
@@ -194,7 +194,7 @@ class TestCountLeads:
 
 
 class TestLookupLists:
-    async def test_list_stages(self, data_source, client):
+    async def test_list_stages(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 1, "name": "New", "sequence": 1, "is_won": False},
             {"id": 4, "name": "Won", "sequence": 4, "is_won": True},
@@ -205,12 +205,12 @@ class TestLookupLists:
         model, method, args, kwargs = client.execute_kw.await_args.args
         assert (model, method) == ("crm.stage", "search_read")
 
-    async def test_list_teams(self, data_source, client):
+    async def test_list_teams(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Sales"}]
         teams = await data_source.list_teams()
         assert teams == [CrmTeam(id=1, name="Sales")]
 
-    async def test_list_teams_fetches_members(self, data_source, client):
+    async def test_list_teams_fetches_members(self, data_source, client) -> None:
         """Members are what turn a crm.team into an AppUserGroup."""
         client.execute_kw.return_value = [
             {"id": 1, "name": "Sales", "member_ids": [7, 8]}
@@ -219,36 +219,36 @@ class TestLookupLists:
         assert teams[0].member_ids == [7, 8]
         assert "member_ids" in client.execute_kw.await_args.args[3]["fields"]
 
-    async def test_list_tags(self, data_source, client):
+    async def test_list_tags(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Hot", "color": 2}]
         tags = await data_source.list_tags()
         assert tags == [CrmTag(id=1, name="Hot", color=2)]
 
-    async def test_list_lost_reasons(self, data_source, client):
+    async def test_list_lost_reasons(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Too expensive"}]
         reasons = await data_source.list_lost_reasons()
         assert reasons == [CrmLostReason(id=1, name="Too expensive")]
         model, method, args, kwargs = client.execute_kw.await_args.args
         assert (model, method) == ("crm.lost.reason", "search_read")
 
-    async def test_list_utm_sources(self, data_source, client):
+    async def test_list_utm_sources(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Website"}]
         sources = await data_source.list_utm_sources()
         assert sources == [UtmSource(id=1, name="Website")]
 
-    async def test_list_utm_mediums(self, data_source, client):
+    async def test_list_utm_mediums(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Email"}]
         mediums = await data_source.list_utm_mediums()
         assert mediums == [UtmMedium(id=1, name="Email")]
 
-    async def test_list_utm_campaigns(self, data_source, client):
+    async def test_list_utm_campaigns(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Spring Promo"}]
         campaigns = await data_source.list_utm_campaigns()
         assert campaigns == [UtmCampaign(id=1, name="Spring Promo")]
 
 
 class TestActivities:
-    async def test_list_activities_for_a_lead(self, data_source, client):
+    async def test_list_activities_for_a_lead(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 1, "res_id": 42, "res_model": "crm.lead", "summary": "Call back",
              "date_deadline": "2026-02-01", "state": "planned"}
@@ -261,13 +261,13 @@ class TestActivities:
         assert ["res_model", "=", "crm.lead"] in domain
         assert ["res_id", "=", 42] in domain
 
-    async def test_list_activities_without_res_id_scopes_by_model_only(self, data_source, client):
+    async def test_list_activities_without_res_id_scopes_by_model_only(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_activities(res_model="crm.lead")
         domain = client.execute_kw.await_args.args[2][0]
         assert domain == [["res_model", "=", "crm.lead"]]
 
-    async def test_create_activity_minimal(self, data_source, client):
+    async def test_create_activity_minimal(self, data_source, client) -> None:
         client.execute_kw.return_value = 7
         activity_id = await data_source.create_activity("crm.lead", 42, activity_type_id=1)
         assert activity_id == 7
@@ -277,7 +277,7 @@ class TestActivities:
             [{"res_model": "crm.lead", "res_id": 42, "activity_type_id": 1}],
         )
 
-    async def test_create_activity_with_optional_fields(self, data_source, client):
+    async def test_create_activity_with_optional_fields(self, data_source, client) -> None:
         client.execute_kw.return_value = 8
         await data_source.create_activity(
             "crm.lead", 42, activity_type_id=1,
@@ -292,7 +292,7 @@ class TestActivities:
 
 
 class TestMessages:
-    async def test_list_messages_for_a_lead(self, data_source, client):
+    async def test_list_messages_for_a_lead(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 1, "res_id": 42, "model": "crm.lead", "body": "<p>Note</p>"}
         ]
@@ -303,7 +303,7 @@ class TestMessages:
         assert ["model", "=", "crm.lead"] in domain
         assert ["res_id", "=", 42] in domain
 
-    async def test_add_note_posts_via_message_post(self, data_source, client):
+    async def test_add_note_posts_via_message_post(self, data_source, client) -> None:
         client.execute_kw.return_value = 99
         message_id = await data_source.add_note("crm.lead", 42, "Called, left voicemail")
         assert message_id == 99
@@ -313,7 +313,7 @@ class TestMessages:
 
 
 class TestPartners:
-    async def test_list_partners_default(self, data_source, client):
+    async def test_list_partners_default(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 1, "name": "Acme"}]
         partners = await data_source.list_partners()
         assert len(partners) == 1
@@ -322,29 +322,29 @@ class TestPartners:
         assert args == [[]]
         assert kwargs["limit"] == 100
 
-    async def test_list_partners_filters_by_updated_since(self, data_source, client):
+    async def test_list_partners_filters_by_updated_since(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_partners(updated_since="2026-01-01 00:00:00")
         domain = client.execute_kw.await_args.args[2][0]
         assert ["write_date", ">=", "2026-01-01 00:00:00"] in domain
 
-    async def test_get_partner_found(self, data_source, client):
+    async def test_get_partner_found(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 5, "name": "Bob"}]
         partner = await data_source.get_partner(5)
         assert partner == Partner.model_validate({"id": 5, "name": "Bob"})
 
-    async def test_get_partner_not_found(self, data_source, client):
+    async def test_get_partner_not_found(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         assert await data_source.get_partner(999) is None
 
-    async def test_count_partners(self, data_source, client):
+    async def test_count_partners(self, data_source, client) -> None:
         client.execute_kw.return_value = 3
         count = await data_source.count_partners()
         assert count == 3
         model, method, args = client.execute_kw.await_args.args
         assert (model, method, args) == ("res.partner", "search_count", [[]])
 
-    async def test_read_partners_bulk_by_ids(self, data_source, client):
+    async def test_read_partners_bulk_by_ids(self, data_source, client) -> None:
         """One read for a page of lead partner_ids, not one call per lead."""
         client.execute_kw.return_value = [
             {"id": 5, "name": "Acme", "is_company": True},
@@ -355,13 +355,13 @@ class TestPartners:
         model, method, args = client.execute_kw.await_args.args[:3]
         assert (model, method, args) == ("res.partner", "read", [[5, 6]])
 
-    async def test_read_partners_empty_skips_call(self, data_source, client):
+    async def test_read_partners_empty_skips_call(self, data_source, client) -> None:
         assert await data_source.read_partners([]) == []
         client.execute_kw.assert_not_awaited()
 
 
 class TestUsers:
-    async def test_list_users_default(self, data_source, client):
+    async def test_list_users_default(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 2, "name": "Anup Pradhan", "email": "anup@ruki.test", "login": "anup@ruki.test", "active": True}
         ]
@@ -372,7 +372,7 @@ class TestUsers:
         assert (model, method, args) == ("res.users", "search_read", [[]])
         assert "context" not in kwargs
 
-    async def test_list_users_include_inactive_sets_context(self, data_source, client):
+    async def test_list_users_include_inactive_sets_context(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_users(include_inactive=True)
         kwargs = client.execute_kw.await_args.args[3]
@@ -380,7 +380,7 @@ class TestUsers:
 
 
 class TestFollowers:
-    async def test_list_followers_bulk_by_res_ids(self, data_source, client):
+    async def test_list_followers_bulk_by_res_ids(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 1, "res_id": 42, "partner_id": [7, "Anup Pradhan"]},
             {"id": 2, "res_id": 43, "partner_id": [9, "External Contact"]},
@@ -393,14 +393,14 @@ class TestFollowers:
         assert ["res_model", "=", "crm.lead"] in domain
         assert ["res_id", "in", [42, 43]] in domain
 
-    async def test_list_followers_empty_ids_skips_call(self, data_source, client):
+    async def test_list_followers_empty_ids_skips_call(self, data_source, client) -> None:
         followers = await data_source.list_followers("crm.lead", [])
         assert followers == []
         client.execute_kw.assert_not_awaited()
 
 
 class TestAttachments:
-    async def test_list_attachments_for_a_lead(self, data_source, client):
+    async def test_list_attachments_for_a_lead(self, data_source, client) -> None:
         client.execute_kw.return_value = [
             {"id": 1, "name": "quote.pdf", "res_id": 42, "res_model": "crm.lead"}
         ]
@@ -413,23 +413,23 @@ class TestAttachments:
         fields = client.execute_kw.await_args.args[3]["fields"]
         assert "datas" not in fields
 
-    async def test_list_attachments_filters_by_updated_since(self, data_source, client):
+    async def test_list_attachments_filters_by_updated_since(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         await data_source.list_attachments(updated_since="2026-01-01 00:00:00")
         domain = client.execute_kw.await_args.args[2][0]
         assert ["write_date", ">=", "2026-01-01 00:00:00"] in domain
 
-    async def test_get_attachment_found(self, data_source, client):
+    async def test_get_attachment_found(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"id": 9, "name": "quote.pdf"}]
         attachment = await data_source.get_attachment(9)
         assert isinstance(attachment, Attachment)
         assert attachment.id == 9
 
-    async def test_get_attachment_not_found_returns_none(self, data_source, client):
+    async def test_get_attachment_not_found_returns_none(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         assert await data_source.get_attachment(999) is None
 
-    async def test_get_attachment_content_found(self, data_source, client):
+    async def test_get_attachment_content_found(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"datas": "base64stufff=="}]
         content = await data_source.get_attachment_content(1)
         assert content == "base64stufff=="
@@ -437,15 +437,15 @@ class TestAttachments:
             "ir.attachment", "read", [[1]], {"fields": ["datas"]}
         )
 
-    async def test_get_attachment_content_missing_returns_none(self, data_source, client):
+    async def test_get_attachment_content_missing_returns_none(self, data_source, client) -> None:
         client.execute_kw.return_value = [{"datas": False}]
         assert await data_source.get_attachment_content(1) is None
 
-    async def test_get_attachment_content_not_found_returns_none(self, data_source, client):
+    async def test_get_attachment_content_not_found_returns_none(self, data_source, client) -> None:
         client.execute_kw.return_value = []
         assert await data_source.get_attachment_content(999) is None
 
 
 class TestGetClient:
-    def test_returns_underlying_client(self, data_source, client):
+    def test_returns_underlying_client(self, data_source, client) -> None:
         assert data_source.get_client() is client

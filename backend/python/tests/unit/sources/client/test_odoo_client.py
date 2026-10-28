@@ -15,25 +15,24 @@ from app.sources.client.odoo.odoo import (
     OdooConnectorConfig,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log():
+def log() -> logging.Logger:
     lg = logging.getLogger("test_odoo_client")
     lg.setLevel(logging.CRITICAL)
     return lg
 
 
 @pytest.fixture
-def cs():
+def cs() -> AsyncMock:
     return AsyncMock()
 
 
-def _make_server_proxy_pair(*, uid=42, execute_kw_return=None):
+def _make_server_proxy_pair(*, uid=42, execute_kw_return=None) -> tuple[MagicMock, MagicMock]:
     """Build the (common, models) ServerProxy mock pair connect()/execute_kw() see."""
     common = MagicMock()
     common.authenticate.return_value = uid
@@ -51,7 +50,7 @@ SERVER_PROXY = "app.sources.client.odoo.odoo.xmlrpc.client.ServerProxy"
 
 
 class TestOdooClientInit:
-    def test_stores_config_no_io(self):
+    def test_stores_config_no_io(self) -> None:
         with patch(SERVER_PROXY) as proxy:
             client = OdooClient(url="https://x.odoo.com/", db="d", username="u", api_key="k")
             proxy.assert_not_called()
@@ -70,7 +69,7 @@ class TestOdooClientInit:
 
 class TestOdooClientConnection:
     @pytest.mark.asyncio
-    async def test_connect_success_caches_uid(self):
+    async def test_connect_success_caches_uid(self) -> None:
         common, models = _make_server_proxy_pair(uid=7)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -80,7 +79,7 @@ class TestOdooClientConnection:
         common.authenticate.assert_called_once_with("d", "u", "k", {})
 
     @pytest.mark.asyncio
-    async def test_connect_idempotent_only_authenticates_once(self):
+    async def test_connect_idempotent_only_authenticates_once(self) -> None:
         common, models = _make_server_proxy_pair(uid=7)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -89,7 +88,7 @@ class TestOdooClientConnection:
         common.authenticate.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_connect_rejected_credentials_raises(self):
+    async def test_connect_rejected_credentials_raises(self) -> None:
         common, models = _make_server_proxy_pair(uid=0)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="bad")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -98,7 +97,7 @@ class TestOdooClientConnection:
         assert not client.is_connected()
 
     @pytest.mark.asyncio
-    async def test_connect_protocol_error_wrapped(self):
+    async def test_connect_protocol_error_wrapped(self) -> None:
         common = MagicMock()
         common.authenticate.side_effect = xmlrpc.client.ProtocolError("url", 502, "Bad Gateway", {})
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
@@ -107,7 +106,7 @@ class TestOdooClientConnection:
                 await client.connect()
 
     @pytest.mark.asyncio
-    async def test_connect_os_error_wrapped(self):
+    async def test_connect_os_error_wrapped(self) -> None:
         common = MagicMock()
         common.authenticate.side_effect = OSError("network unreachable")
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
@@ -123,7 +122,7 @@ class TestOdooClientConnection:
 
 class TestOdooClientExecuteKw:
     @pytest.mark.asyncio
-    async def test_execute_kw_after_connect(self):
+    async def test_execute_kw_after_connect(self) -> None:
         common, models = _make_server_proxy_pair(uid=42, execute_kw_return=[{"id": 1, "name": "Acme"}])
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -135,7 +134,7 @@ class TestOdooClientExecuteKw:
         )
 
     @pytest.mark.asyncio
-    async def test_execute_kw_auto_connects_if_needed(self):
+    async def test_execute_kw_auto_connects_if_needed(self) -> None:
         common, models = _make_server_proxy_pair(uid=42, execute_kw_return=3)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         assert not client.is_connected()
@@ -145,7 +144,7 @@ class TestOdooClientExecuteKw:
         assert client.is_connected()
 
     @pytest.mark.asyncio
-    async def test_execute_kw_default_args(self):
+    async def test_execute_kw_default_args(self) -> None:
         common, models = _make_server_proxy_pair(uid=42)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -154,7 +153,7 @@ class TestOdooClientExecuteKw:
         models.execute_kw.assert_called_once_with("d", 42, "k", "res.partner", "search_count", [], {})
 
     @pytest.mark.asyncio
-    async def test_execute_kw_fault_wrapped(self):
+    async def test_execute_kw_fault_wrapped(self) -> None:
         common, models = _make_server_proxy_pair(uid=42)
         models.execute_kw.side_effect = xmlrpc.client.Fault(1, "boom")
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
@@ -171,7 +170,7 @@ class TestOdooClientExecuteKw:
 
 class TestOdooClientMisc:
     @pytest.mark.asyncio
-    async def test_close_resets_state(self):
+    async def test_close_resets_state(self) -> None:
         common, models = _make_server_proxy_pair(uid=42)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -180,14 +179,14 @@ class TestOdooClientMisc:
         await client.close()
         assert not client.is_connected()
 
-    def test_get_connection_info_excludes_api_key(self):
+    def test_get_connection_info_excludes_api_key(self) -> None:
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="super-secret")
         info = client.get_connection_info()
         assert info == {"url": "https://x.odoo.com", "db": "d", "username": "u"}
         assert "super-secret" not in info.values()
 
     @pytest.mark.asyncio
-    async def test_async_context_manager(self):
+    async def test_async_context_manager(self) -> None:
         common, models = _make_server_proxy_pair(uid=42)
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         with patch(SERVER_PROXY, side_effect=[common, models]):
@@ -203,27 +202,27 @@ class TestOdooClientMisc:
 
 
 class TestOdooConfig:
-    def test_create_client(self):
+    def test_create_client(self) -> None:
         cfg = OdooConfig(url="https://x.odoo.com", db="d", username="u", apiKey="k")
         client = cfg.create_client()
         assert isinstance(client, OdooClient)
         assert client.db == "d"
         assert client.api_key == "k"
 
-    def test_missing_required_field_raises(self):
+    def test_missing_required_field_raises(self) -> None:
         with pytest.raises(ValidationError):
             OdooConfig(db="d", username="u", apiKey="k")  # missing url
 
 
 class TestAuthConfig:
-    def test_accepts_connector_field_names(self):
+    def test_accepts_connector_field_names(self) -> None:
         auth = AuthConfig.model_validate(
             {"baseUrl": "https://x.odoo.com", "db": "d", "username": "u", "apiKey": "k"}
         )
         assert auth.url == "https://x.odoo.com"
         assert auth.api_key == "k"
 
-    def test_accepts_password_alias_for_api_key(self):
+    def test_accepts_password_alias_for_api_key(self) -> None:
         auth = AuthConfig.model_validate(
             {"url": "https://x.odoo.com", "db": "d", "username": "u", "password": "k"}
         )
@@ -231,7 +230,7 @@ class TestAuthConfig:
 
 
 class TestOdooConnectorConfig:
-    def test_default_timeout(self):
+    def test_default_timeout(self) -> None:
         cfg = OdooConnectorConfig.model_validate(
             {"auth": {"baseUrl": "https://x.odoo.com", "db": "d", "username": "u", "apiKey": "k"}}
         )
@@ -244,19 +243,19 @@ class TestOdooConnectorConfig:
 
 
 class TestOdooClientBuilder:
-    def test_init_and_get_client(self):
+    def test_init_and_get_client(self) -> None:
         mock_client = MagicMock(spec=OdooClient)
         builder = OdooClientBuilder(mock_client)
         assert builder.get_client() is mock_client
 
-    def test_build_with_config(self):
+    def test_build_with_config(self) -> None:
         cfg = OdooConfig(url="https://x.odoo.com", db="d", username="u", apiKey="k")
         builder = OdooClientBuilder.build_with_config(cfg)
         assert isinstance(builder, OdooClientBuilder)
         assert isinstance(builder.get_client(), OdooClient)
 
     @pytest.mark.asyncio
-    async def test_build_from_services_success(self, log, cs):
+    async def test_build_from_services_success(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={
             "auth": {"baseUrl": "https://x.odoo.com", "db": "d", "username": "u", "apiKey": "k"},
             "timeout": 20,
@@ -268,25 +267,25 @@ class TestOdooClientBuilder:
         assert client.timeout == 20
 
     @pytest.mark.asyncio
-    async def test_build_from_services_no_config_raises(self, log, cs):
+    async def test_build_from_services_no_config_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="Failed to get Odoo"):
             await OdooClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_not_dict_raises(self, log, cs):
+    async def test_build_from_services_not_dict_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value="nope")
         with pytest.raises(ValueError):
             await OdooClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_validation_error(self, log, cs):
+    async def test_build_from_services_validation_error(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={"auth": {"db": "d"}})  # missing url/username/apiKey
         with pytest.raises(ValueError, match="Invalid Odoo"):
             await OdooClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_generic_exception_reraises(self, log, cs):
+    async def test_build_from_services_generic_exception_reraises(self, log, cs) -> None:
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         with pytest.raises(ValueError, match="Failed to get Odoo"):
             await OdooClientBuilder.build_from_services(log, cs, "inst-1")
@@ -294,19 +293,19 @@ class TestOdooClientBuilder:
 
 class TestGetConnectorConfig:
     @pytest.mark.asyncio
-    async def test_returns_dict(self, log, cs):
+    async def test_returns_dict(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={"auth": {}})
         result = await OdooClientBuilder._get_connector_config(log, cs, "inst-1")
         assert result == {"auth": {}}
 
     @pytest.mark.asyncio
-    async def test_empty_raises(self, log, cs):
+    async def test_empty_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="Failed to get Odoo"):
             await OdooClientBuilder._get_connector_config(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_instance_id_in_message(self, log, cs):
+    async def test_instance_id_in_message(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError) as exc_info:
             await OdooClientBuilder._get_connector_config(log, cs, "inst-abc")
@@ -319,20 +318,20 @@ class TestGetConnectorConfig:
 
 
 class TestTimeoutTransports:
-    def test_http_url_gets_plain_transport(self):
+    def test_http_url_gets_plain_transport(self) -> None:
         from app.sources.client.odoo.odoo import _make_transport, _TimeoutTransport
 
         transport = _make_transport("http://x.odoo.com", 30)
         assert type(transport) is _TimeoutTransport
 
-    def test_https_url_gets_safe_transport(self):
+    def test_https_url_gets_safe_transport(self) -> None:
         from app.sources.client.odoo.odoo import _make_transport, _TimeoutSafeTransport
 
         transport = _make_transport("https://x.odoo.com", 30)
         assert type(transport) is _TimeoutSafeTransport
 
     @pytest.mark.parametrize("scheme", ["http", "https"])
-    def test_connection_carries_the_timeout(self, scheme):
+    def test_connection_carries_the_timeout(self, scheme) -> None:
         from app.sources.client.odoo.odoo import _make_transport
 
         transport = _make_transport(f"{scheme}://x.odoo.com", 17)
@@ -344,7 +343,7 @@ class TestTimeoutTransports:
 
 class TestExecuteKwWithoutModels:
     @pytest.mark.asyncio
-    async def test_authenticated_uid_without_models_proxy_raises(self):
+    async def test_authenticated_uid_without_models_proxy_raises(self) -> None:
         client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
         client._uid = 42  # connected, but the object proxy never got built
         client._models = None

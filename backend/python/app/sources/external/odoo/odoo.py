@@ -6,11 +6,12 @@ as methods here. Errors propagate; there's no success/error envelope.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from app.sources.client.odoo.odoo import OdooClient
+if TYPE_CHECKING:
+    from app.sources.client.odoo.odoo import OdooClient
 
 logger = logging.getLogger(__name__)
 

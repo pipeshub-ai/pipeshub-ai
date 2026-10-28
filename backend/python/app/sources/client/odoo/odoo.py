@@ -8,12 +8,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import xmlrpc.client
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
-from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+
+if TYPE_CHECKING:
+    import http.client
+    from types import TracebackType
+
+    from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +33,7 @@ class _TimeoutTransport(xmlrpc.client.Transport):
         super().__init__()
         self._timeout = timeout
 
-    def make_connection(self, host: Any) -> Any:
+    def make_connection(self, host: str | tuple[str, dict[str, str]]) -> http.client.HTTPConnection:
         conn = super().make_connection(host)
         conn.timeout = self._timeout
         return conn
@@ -41,7 +46,7 @@ class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
         super().__init__()
         self._timeout = timeout
 
-    def make_connection(self, host: Any) -> Any:
+    def make_connection(self, host: str | tuple[str, dict[str, str]]) -> http.client.HTTPConnection:
         conn = super().make_connection(host)
         conn.timeout = self._timeout
         return conn
@@ -136,7 +141,7 @@ class OdooClient:
         method: str,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
-    ) -> Any:
+    ) -> Any:  # noqa: ANN401 - XML-RPC returns whatever the Odoo method returns
         """The one raw primitive every DataSource operation is built on."""
         if not self.is_connected():
             await self.connect()
@@ -169,7 +174,12 @@ class OdooClient:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         await self.close()
 
 
