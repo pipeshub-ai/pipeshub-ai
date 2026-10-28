@@ -100,10 +100,33 @@ EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 480) * 1024 * 1024
 _CELL_DICT_BYTES = 1106
 _BLOCK_BYTES = 2100
 _GROUP_BYTES = 4000
-_ROW_DICT_BASE_BYTES = 64
+# A row dict (64) plus the processed-row dict that holds it (3 keys, 184) and its slot in the rows list.
+_ROW_DICT_BASE_BYTES = 256
 _ROW_DICT_CELL_BYTES = 48
+# Fixed per-object overhead, measured with tracemalloc over 20 000 objects (CPython 3.12): a table's
+# dict of 8 keys with its headers list, data list and range tuple (about 520 B with no rows), a row
+# list (56 B + 8 B a cell, rounded up by append), a processed table (dict of 4 keys, location dict,
+# rows list: about 550-780 B). Rounded up with margin. Without them a sheet of many small tables
+# held 1.12x (tracemalloc) to 1.31x (RSS) what it was charged.
+_TABLE_BYTES = 1024
+_TABLE_ROW_LIST_BYTES = 80
+_TABLE_LIST_SLOT_BYTES = 8
+_PROCESSED_TABLE_BYTES = 1024
 # Memory held per byte of text: the string, its copy in the block, and the serialised form.
 _TEXT_WEIGHT = 2
+# A cell value put into an LLM prompt is cut to this many characters. Prompt builders copy their
+# input several times (repr, f-string, json, message formatting), so an uncut value of hundreds of MB
+# would cost several times the output budget before anything is charged. The header and summary
+# prompts only need the shape of a value; the row-text prompt keeps long prose in full.
+_PROMPT_SAMPLE_CHARS = 2000
+_PROMPT_ROW_VALUE_CHARS = 20000
+
+
+def _cut_for_prompt(value: Any, limit: int) -> Any:
+    """``value`` with a string cut to ``limit`` characters (a slice copies only the kept part)."""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "...[cut]"
+    return value
 
 
 class _OutputBudget:
@@ -137,6 +160,10 @@ class _OutputBudget:
 
     def release_cells(self, count: int) -> None:
         self.release(count * _CELL_DICT_BYTES)
+
+    def table_row_bytes(self, columns: int) -> int:
+        """What the list that holds one table row's cells costs (its cells are charged apart)."""
+        return _TABLE_ROW_LIST_BYTES + _TABLE_LIST_SLOT_BYTES * columns
 
 
 def _too_large(detail: str = "") -> ParseError:
@@ -998,8 +1025,10 @@ class ExcelParser:
                         f"Limiting indexed rows to first {EXCEL_MAX_TABLE_ROWS_TO_INDEX}."
                     )
 
+                self._output.charge(_TABLE_BYTES + _TABLE_LIST_SLOT_BYTES * column_count)
                 table_data = []
                 for row_idx in range(data_start_row, processed_end_row + 1):
+                    self._output.charge(self._output.table_row_bytes(column_count))
                     row_data = []
                     for col_idx, col in enumerate(range(start_col, max_col + 1)):
                         cell = sheet.cell(row=row_idx, column=col)
@@ -1021,7 +1050,11 @@ class ExcelParser:
 
             # Find all tables in the sheet while skipping previously claimed ranges.
             row = 1
+            populated_rows: set[int] | None = getattr(non_empty_positions, "rows", None)
             while row <= effective_max_row:
+                if populated_rows is not None and row not in populated_rows:
+                    row += 1  # no position of an empty row can start a table
+                    continue
                 col = 1
                 while col <= effective_max_col:
                     visited_range = get_visited_range(row, col)
@@ -1236,7 +1269,9 @@ class ExcelParser:
             # Build dynamic row text based on actual available rows
             rows_text_lines = []
             for i, row in enumerate(first_rows[:4], start=1):  # Show up to 4 rows
-                row_str = [str(v) if v is not None else "" for v in row]
+                row_str = [
+                    str(_cut_for_prompt(v, _PROMPT_SAMPLE_CHARS)) if v is not None else "" for v in row
+                ]
                 rows_text_lines.append(f"Row {i}: {row_str}")
 
             rows_text = "\n".join(rows_text_lines)
@@ -1310,7 +1345,9 @@ class ExcelParser:
             # Format sample data for display
             formatted_samples = []
             for _idx, row, _empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
-                formatted_row = [str(v) if v is not None else "" for v in row]
+                formatted_row = [
+                    str(_cut_for_prompt(v, _PROMPT_SAMPLE_CHARS)) if v is not None else "" for v in row
+                ]
                 formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
@@ -1485,10 +1522,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             # Prepare sample data
             sample_data = [
                 {
-                    cell["header"]: (
+                    _cut_for_prompt(cell["header"], _PROMPT_SAMPLE_CHARS): (
                         cell["value"].isoformat()
                         if isinstance(cell["value"], (datetime, time))
-                        else cell["value"]
+                        else _cut_for_prompt(cell["value"], _PROMPT_SAMPLE_CHARS)
                     )
                     for cell in row
                 }
@@ -1497,7 +1534,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
+                headers=[_cut_for_prompt(h, _PROMPT_SAMPLE_CHARS) for h in table["headers"]], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
             response = await self._call_llm(messages)
             # Gemini and similar return content as a list of blocks, not a string.
@@ -1534,14 +1571,19 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get natural language text from LLM with count validation
             # Use CSV prompt which includes explicit row count validation
+            prompt_rows = [
+                {
+                    k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
+                    for k, v in row.items()
+                }
+                for row in rows_data
+            ]
             messages = row_text_prompt_for_csv.format_messages(
                 table_summary=table_summary,
-                numbered_rows_data=format_rows_with_index(rows_data),
+                numbered_rows_data=format_rows_with_index(prompt_rows),
                 row_count=len(rows_data)
             )
-
-            # Default to simple text representations of rows
-            descriptions = [generate_simple_row_text(row) for row in rows_data]
+            del prompt_rows
 
             # Use centralized utility with reflection and count validation
             parsed_response = await invoke_with_row_descriptions_and_reflection(
@@ -1553,6 +1595,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
             else:
                 self.logger.warning(f"LLM failed to generate descriptions, using fallback for {len(rows_data)} rows")
+                # simple text representations of rows, built only when the LLM gave none
+                descriptions = [generate_simple_row_text(row) for row in rows_data]
 
             return descriptions
         except Exception as e:
@@ -1587,6 +1631,12 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         tables = await self.get_tables_in_sheet(sheet_name, llm)
         # the tables' cell dicts live until this sheet is processed; only the row dicts and texts go on
         table_cells = sum(len(row) for table in tables for row in table["data"])
+        table_structures = sum(
+            _TABLE_BYTES
+            + _TABLE_LIST_SLOT_BYTES * len(table["headers"])
+            + sum(self._output.table_row_bytes(len(row)) for row in table["data"])
+            for table in tables
+        )
 
         # Process each table
         processed_tables = []
@@ -1623,16 +1673,25 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                 async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
                     async with _sem:
-                        return await self.get_rows_text(batch, _ts)
+                        texts = await self.get_rows_text(batch, _ts)
+                    # charged as the batch arrives, before the other batches' texts are gathered
+                    self._output.charge_text(*texts)
+                    return texts
 
                 # Create throttled tasks for all batches
                 batch_tasks = []
                 for start_idx, batch in batches:
-                    task = limited_get_rows_text(batch)
+                    task = asyncio.ensure_future(limited_get_rows_text(batch))
                     batch_tasks.append((start_idx, batch, task))
 
-                # Wait for all batches to complete (max 10 running concurrently)
-                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                # Wait for all batches to complete (max 10 running concurrently). A refusal by the
+                # output budget (or any failure) stops the batches still running.
+                try:
+                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                except BaseException:
+                    for _, _, task in batch_tasks:
+                        task.cancel()
+                    raise
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 
                 # Combine results with their metadata and process
@@ -1641,7 +1700,6 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                     # Add processed rows to results
                     for row, row_text in zip(batch, row_texts):
-                        self._output.charge_text(row_text)
                         if row:
                             self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                             processed_rows.append(
@@ -1669,6 +1727,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         )
 
             self._output.charge_text(table_summary, *table["headers"])
+            self._output.charge(_PROCESSED_TABLE_BYTES)
             processed_tables.append(
                 {
                     "headers": table["headers"],
@@ -1685,6 +1744,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.info(f"Completed processing table {table_idx} with {len(processed_rows)} rows")
 
         self._output.release_cells(table_cells)
+        self._output.release(table_structures)
         self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
         return {"sheet_name": sheet_name, "tables": processed_tables}
 

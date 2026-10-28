@@ -242,13 +242,21 @@ class _ValuePositions:
         values = sheet.values
         max_row = max_col = 0
         count = 0
+        rows: set[int] = set()
+        last_row = 0
         for key, value in zip(sheet.keys, values, strict=True):
             if value is not None:
                 count += 1
                 row, col = key >> _COLUMN_BITS, key & _COLUMN_MASK
+                if row != last_row:  # keys are sorted, so a row's cells are together
+                    rows.add(row)
+                    last_row = row
                 max_row = max(max_row, row)
                 max_col = max(max_col, col)
         self.count = count
+        # Rows that hold a value: lets the table scan step over empty rows instead of probing every
+        # position of the bounding box (a stray cell far from the data would cost rows x columns).
+        self.rows = rows
         self.max_row = max_row
         self.max_col = max_col
 
