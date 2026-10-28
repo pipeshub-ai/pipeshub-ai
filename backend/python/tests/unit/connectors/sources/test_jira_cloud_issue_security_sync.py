@@ -1194,6 +1194,33 @@ class TestEpicsReadAgainNextSync:
         assert saved[-1] == ["2001"]
 
     @pytest.mark.asyncio
+    async def test_epics_wait_in_the_checkpoint_before_the_cursor_passes_their_stories(self) -> None:
+        """A later page that fails must not lose them: the cursor has already passed the stories."""
+        c = _connector()
+        record, _, _ = await _build(c, _issue(None), _present())
+        point = {"issue_placement": ISSUE_PLACEMENT, "security_levels": json.dumps(_present().level_fingerprints()),
+                 "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
+        c._load_issue_security = AsyncMock(return_value=_present())
+        c._process_new_records = AsyncMock()
+
+        async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
+                        leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
+            if parent_ids:
+                return
+            c._parents_to_retry.add("2001")
+            yield [(record, [], True)], True, 1_700_000_100_000
+            raise JiraReadError(503, "unavailable")
+
+        c._fetch_issues_batched = fetch
+        with pytest.raises(JiraReadError):
+            await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert point["last_issue_updated"] == 1_700_000_100_000
+        assert json.loads(point["subtask_parents"]) == ["2001"]
+
+    @pytest.mark.asyncio
     async def test_nothing_is_saved_when_every_epic_was_read(self) -> None:
         c, _, _, _ = await self._sync(stored_levels=_present().level_fingerprints())
         assert not any("subtask_parents" in call.args[1]

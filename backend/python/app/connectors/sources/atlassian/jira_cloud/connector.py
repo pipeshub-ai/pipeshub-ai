@@ -4219,6 +4219,8 @@ class JiraConnector(BaseConnector):
                 # Before the cursor passes these parents, which would not bring them back.
                 unsettled_parents = await self._settle_subtasks(
                     project_key, project_id, jira_users, stats, parents, unsettled_parents)
+            # Likewise before the cursor passes the stories of an epic that could not be read.
+            unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
 
             # Update checkpoint AFTER successful processing
             if last_issue_updated_in_batch:
@@ -4283,8 +4285,7 @@ class JiraConnector(BaseConnector):
                 f"Could not read {len(self._parents_to_retry)} epic(s) of {project_key}; "
                 "their stories are placed again next sync"
             )
-            unsettled_parents = list(dict.fromkeys([*unsettled_parents, *sorted(self._parents_to_retry)]))
-            await self._update_project_sync_checkpoint(project_key, subtask_parents=json.dumps(unsettled_parents))
+            unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -4415,6 +4416,15 @@ class JiraConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key, security_levels=json.dumps(levels, sort_keys=True)
             )
+
+    async def _save_parents_to_retry(self, project_key: str, unsettled: list[str]) -> list[str]:
+        """Add the epics whose level could not be read to the parents saved in the checkpoint."""
+        new = [parent_id for parent_id in sorted(self._parents_to_retry) if parent_id not in unsettled]
+        if not new:
+            return unsettled
+        unsettled = [*unsettled, *new]
+        await self._update_project_sync_checkpoint(project_key, subtask_parents=json.dumps(unsettled))
+        return unsettled
 
     async def _settle_subtasks(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
