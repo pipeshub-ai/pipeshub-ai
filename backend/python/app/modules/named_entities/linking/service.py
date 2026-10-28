@@ -61,6 +61,9 @@ class LinkResult:
     more_longer_names: bool = False
     """Beside an exact match, more readable names start with it than one check
     can tell apart, so none of them was considered."""
+    left_out: list[Candidate] = field(default_factory=list)
+    """Longer names beside an exact match that the check did not include; not
+    known to be someone else, unlike ``rejected``."""
     namesakes: list[Candidate] = field(default_factory=list)
     """Readable people whose full name starts with a first name asked on its own:
     each may be the one meant, so none is chosen and none is "not the same"."""
@@ -173,12 +176,17 @@ class EntityLinker:
                 )
                 continue
             picked = [offered[index] for index in chosen]
-            rejected = [*(c for c in offered if c not in picked), *refused]
+            passed_over = [c for c in offered if c not in picked]
+            # Beside an exact match the check only adds; a longer name it left out may still be the same.
+            left_out = [c for c in passed_over if settled and c.source is CandidateSource.PREFIX]
+            rejected = [*(c for c in passed_over if c not in left_out), *refused]
             if settled:
                 status = LinkStatus.CHECKED if picked else LinkStatus.MATCHED
             else:
                 status = LinkStatus.CHECKED if picked else LinkStatus.NOT_FOUND
-            results[position] = LinkResult(mention, status, accepted=[*settled, *picked], rejected=rejected)
+            results[position] = LinkResult(
+                mention, status, accepted=[*settled, *picked], rejected=rejected, left_out=left_out,
+            )
 
         for position, shared in namesakes.items():
             result = results[position]

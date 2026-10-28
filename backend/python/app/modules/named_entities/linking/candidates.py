@@ -130,10 +130,10 @@ class CandidateFinder:
             asyncio.gather(*(self._dense_for(mention) for mention in mentions)),
         )
         extended = [row for row in by_prefix if (str(row.get("kind")), str(row.get("key"))) in prefixes]
-        near = [[] for _ in mentions]
+        near: list[list[dict[str, Any]]] = [[] for _ in mentions]
         for row in by_prefix:
             for index in fuzzy.get((str(row.get("kind")), str(row.get("key"))), ()):
-                if row.get("id") not in exact_ids and _near_spelling(mentions[index], row):
+                if index not in exact_ids.get(str(row.get("id")), ()) and _near_spelling(mentions[index], row):
                     near[index].append(row)
         # Only rows that can become candidates are access-checked.
         rows = {row["id"]: row for row in [*by_ids, *extended, *(r for hits in near for r in hits)] if row.get("id")}
@@ -211,7 +211,8 @@ def _fuzzy_first_word_key(kind: EntityKind, key: str) -> str | None:
         return None
     head, _, name = key.rpartition(":")
     first, _, rest = name.partition(" ")
-    if not rest or len(rest.replace(" ", "")) < FUZZY_MIN_TAIL_CHARS:
+    # A short first word is an initial or a title ("j.", "dr."), not the name to compare after.
+    if len(first) < PREFIX_MIN_CHARS or not rest or len(rest.replace(" ", "")) < FUZZY_MIN_TAIL_CHARS:
         return None
     return f"{head}:{first}"
 

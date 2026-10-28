@@ -1275,11 +1275,11 @@ class KnowledgeGraph:
             "Do not use it for topics, ideas or document titles (use search or search_entities), or "
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
-            "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. For what a person is assigned, reported, created or "
-            "leads, use knowledgegraph__find_records_by_person. Only records indexed while named-entity extraction was on "
-            "are linked to names, so confirm a name that is not found with search before saying it "
-            "is absent."
+            "People are found by their name as written (a near spelling of the surname too), or by a "
+            "first name that starts a full one; a surname alone is not looked up. For what a person is "
+            "assigned, reported, created or leads, use knowledgegraph__find_records_by_person. Only "
+            "records indexed while named-entity extraction was on are linked to names, so confirm a "
+            "name that is not found with search before saying it is absent."
         ),
         parameters=[
             ToolParameter(
