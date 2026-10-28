@@ -604,9 +604,35 @@ class TestCreateLoggerUsesProvider:
         provider = _FakeProvider(formatter=custom)
         logger = self._logger(monkeypatch, "t_provider_fmt", provider)
         try:
-            assert _console_handlers(logger)[0].formatter is custom
+            # A plain provider formatter is installed behind the redacting wrapper.
+            assert _console_handlers(logger)[0].formatter.inner is custom
             # The provider is offered the text formatter it would otherwise get.
             assert type(provider.defaults_seen[0]).__name__ == "ColoredFormatter"
+        finally:
+            logger.handlers.clear()
+
+    def test_default_provider_keeps_the_redacting_console_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = _FakeProvider(files=False)
+        logger = self._logger(monkeypatch, "t_provider_default_fmt", provider)
+        try:
+            assert _console_handlers(logger)[0].formatter is provider.defaults_seen[0]
+        finally:
+            logger.handlers.clear()
+
+    def test_console_redacts_through_a_plain_provider_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = _FakeProvider(files=False, formatter=logging.Formatter("%(message)s"))
+        logger = self._logger(monkeypatch, "t_provider_redacts", provider)
+        try:
+            record = logging.LogRecord(
+                "x", logging.INFO, __file__, 1, "login password=hunter2", None, None
+            )
+            line = _console_handlers(logger)[0].format(record)
+            assert "hunter2" not in line
+            assert "[REDACTED]" in line
         finally:
             logger.handlers.clear()
 
@@ -701,12 +727,37 @@ class TestRootHandlersUseProvider:
 
     def test_default_provider_keeps_root_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
         handler, original = self._run(monkeypatch, _FakeProvider(files=False), "t_root_default")
-        assert handler.formatter is original
+        assert handler.formatter.inner is original
+
+    def test_default_provider_keeps_a_redacting_root_formatter_as_is(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import app.utils.logger as logger_module
+
+        handler = logging.StreamHandler()
+        redacting = logger_module.RedactingFormatter("%(message)s")
+        handler.setFormatter(redacting)
+        monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+        logger_module._route_root_handlers(_FakeProvider(files=False))
+        assert handler.formatter is redacting
 
     def test_provider_formatter_reaches_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
         custom = logging.Formatter("%(levelname)s")
         handler, _ = self._run(monkeypatch, _FakeProvider(files=False, formatter=custom), "t_root_custom")
-        assert handler.formatter is custom
+        assert handler.formatter.inner is custom
+
+    def test_root_redacts_through_a_plain_provider_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler, _ = self._run(
+            monkeypatch,
+            _FakeProvider(files=False, formatter=logging.Formatter("%(message)s")),
+            "t_root_redacts",
+        )
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "Authorization: Bearer abc.def.ghi", None, None
+        )
+        assert "abc.def.ghi" not in handler.format(record)
 
     def test_handler_without_formatter_keeps_logging_default(
         self, monkeypatch: pytest.MonkeyPatch

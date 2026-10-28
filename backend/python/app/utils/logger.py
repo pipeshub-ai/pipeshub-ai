@@ -251,6 +251,17 @@ logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
 
 
+def _provider_formatter(
+    provider: StructuredLoggingProvider, default: logging.Formatter
+) -> logging.Formatter:
+    """The provider's console formatter, still redacting: a provider that returns
+    a plain formatter must not drop the redaction ``install_log_redaction`` set up."""
+    formatter = provider.console_formatter(default)
+    if getattr(formatter, "_pipeshub_redacting", False):
+        return formatter
+    return _RedactingWrapper(formatter)
+
+
 def _route_root_handlers(provider: StructuredLoggingProvider) -> None:
     """Give the root handlers (third-party libraries log through them) the same
     console formatter as the service loggers. Runs from create_logger, not at
@@ -260,7 +271,7 @@ def _route_root_handlers(provider: StructuredLoggingProvider) -> None:
         if getattr(handler, "_pipeshub_provider_routed", False):
             continue
         handler.setFormatter(
-            provider.console_formatter(handler.formatter or logging.Formatter())
+            _provider_formatter(provider, handler.formatter or logging.Formatter())
         )
         handler._pipeshub_provider_routed = True  # type: ignore[attr-defined]
 
@@ -296,7 +307,7 @@ def create_logger(service_name: str) -> logging.Logger:
 
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(
-            provider.console_formatter(ColoredFormatter(log_format))
+            _provider_formatter(provider, ColoredFormatter(log_format))
         )
         logger.addHandler(console_handler)
         logger.propagate = False

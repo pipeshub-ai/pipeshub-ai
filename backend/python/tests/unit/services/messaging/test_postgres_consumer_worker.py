@@ -78,3 +78,30 @@ def test_the_factory_hands_the_worker_to_indexing_consumers_only() -> None:
     simple = MessagingFactory.create_consumer(LOG, CFG, broker_type=MessageBrokerType.POSTGRES, worker=worker)
     assert idx._worker is worker  # type: ignore[attr-defined]
     assert simple._worker is None  # type: ignore[attr-defined]
+
+
+async def test_the_handler_logs_under_the_message_request_id_and_org() -> None:
+    import json
+
+    from app.services.messaging.postgres.queue import Delivery
+    from app.utils.request_context import get_context
+
+    seen: list[tuple[str, str | None]] = []
+
+    async def handler(_msg) -> bool:
+        ctx = get_context()
+        seen.append((ctx.root_id, ctx.org_id))
+        return True
+
+    consumer = PgMessagingConsumer(LOG, CFG)
+    consumer.message_handler = handler
+    value = json.dumps(
+        {"eventType": "e", "payload": {}, "requestId": "req-1", "orgId": "org-1"}
+    )
+    ok, _, _, _ = await consumer._process(
+        Delivery(topic="t", message_id=1, attempts=1, value=value, key=None), final=False
+    )
+
+    assert ok
+    assert seen == [("req-1", "org-1")]
+    assert get_context() is None
