@@ -12,10 +12,10 @@
  * as that account: the unit of work runs with its organisation and user.
  */
 /**
- * Sign-in attempts allowed before the person is locked. The PostgreSQL function that counts attempts holds the same
- * number (it takes no limit argument, so a caller cannot probe a count), and its store refuses any other value.
+ * Wrong sign-in attempts (passwords and sign-in codes together) allowed before the person is locked. Both stores take
+ * this as the limit when they reserve an attempt.
  */
-export const MAX_WRONG_CREDENTIAL_ATTEMPTS = 5;
+export const MAX_WRONG_CREDENTIAL_ATTEMPTS = 10;
 
 export interface CredentialDto {
   /** The credential's id (PostgreSQL: the account's id, a person has one). */

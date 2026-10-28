@@ -32,6 +32,7 @@ import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
 import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 
 type ClaimedCredentials = Awaited<ReturnType<typeof UserCredentials.findOneAndUpdate>>;
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
@@ -558,7 +559,7 @@ describe('UserAccountController', () => {
           orgId: 'o1',
           isDeleted: false,
           isBlocked: { $ne: true },
-          wrongCredentialCount: { $lt: 5 },
+          wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
         },
         { $inc: { wrongCredentialCount: 1 } },
         { returnDocument: 'after' },
@@ -1846,12 +1847,12 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP (additional)', () => {
-    it('should block account, set cooldown expiry and send mail after 5 wrong OTPs', async () => {
+    it('should block account, set cooldown expiry and send mail after the last allowed wrong OTP', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedOTP,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
@@ -2204,13 +2205,13 @@ describe('UserAccountController', () => {
       expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
-    it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
+    it('should block account after the last allowed wrong password, set cooldown expiry and send mail', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedPassword,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
@@ -2221,7 +2222,7 @@ describe('UserAccountController', () => {
         .onFirstCall().resolves({
           hashedPassword,
           isBlocked: false,
-          wrongCredentialCount: 4,
+          wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
           save: sinon.stub().resolves(),
         } as any)
         .onSecondCall().resolves(updatedCredential);

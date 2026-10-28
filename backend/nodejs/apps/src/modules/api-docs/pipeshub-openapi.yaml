@@ -2413,7 +2413,7 @@ components:
         **Common Error Codes:**
 
         - `INVALID_CREDENTIALS` - Wrong password or OTP
-        - `ACCOUNT_BLOCKED` - Account locked after 5 failed attempts
+        - `ACCOUNT_BLOCKED` - Account locked after 10 failed attempts
         - `SESSION_EXPIRED` - Session token has expired
         - `OTP_EXPIRED` - OTP code has expired (10 min validity)
         - `USER_NOT_FOUND` - Email not registered

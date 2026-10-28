@@ -7,9 +7,8 @@ use what it carries exactly as a person clicking the link or typing the code
 would.
 
 The lockout tests live here too: the password and code counters are shared, so
-checking that needs a sign-in code, and a lock sends a warning email. Five wrong
-attempts lock an account; that is the product decision (the test list's ten is
-being corrected).
+checking that needs a sign-in code, and a lock sends a warning email. Ten wrong
+attempts lock an account.
 
 Each class uses a throwaway account. Classes that need sign-in codes turn the
 code method on for the org alongside passwords, and put the org's sign-in policy
@@ -45,7 +44,7 @@ SECOND_PASSWORD = "SecondReset789!"
 RESET_SUBJECT = "Reset your password"
 SIGN_IN_CODE_SUBJECT = "OTP for Login"
 LOCK_WARNING_SUBJECT = "Suspicious Login Attempt"
-LOCKOUT_THRESHOLD = 5
+LOCKOUT_THRESHOLD = 10
 # Longest link lifetime the expired-link test will wait out.
 MAX_LINK_WAIT_SECONDS = 120
 ANY_USER_ROUTE = "/api/v1/knowledgeBase"
@@ -364,9 +363,9 @@ def _wrong_code(account: UserAccountClient, email: str, real_code: str, attempt:
 
 
 class TestLockoutThreshold:
-    """Test list: wrong passwords lock the account; the threshold is five."""
+    """Test list: wrong passwords lock the account; the threshold is ten."""
 
-    def test_the_fifth_wrong_password_locks_and_the_fourth_does_not(
+    def test_the_tenth_wrong_password_locks_and_the_ninth_does_not(
         self, mail_user: SecondUser, user_account_client: UserAccountClient
     ) -> None:
         email = mail_user.email
@@ -415,9 +414,9 @@ class TestLockoutCountersShared:
 
 @pytest.mark.usefixtures("otp_allowed")
 class TestLockoutBySignInCodesAlone:
-    """Test list: wrong sign-in codes alone lock the account; the threshold is five."""
+    """Test list: wrong sign-in codes alone lock the account; the threshold is ten."""
 
-    def test_five_wrong_codes_lock_the_account_until_an_admin_unblocks_it(
+    def test_ten_wrong_codes_lock_the_account_until_an_admin_unblocks_it(
         self,
         mail_user: SecondUser,
         user_account_client: UserAccountClient,
@@ -427,7 +426,7 @@ class TestLockoutBySignInCodesAlone:
         first_code = _request_code(user_account_client, email)
         for attempt in range(1, LOCKOUT_THRESHOLD):
             _wrong_code(user_account_client, email, first_code, attempt)
-        # A locked account is sent no code. A code arriving now shows the fourth
+        # A locked account is sent no code. A code arriving now shows the ninth
         # wrong one did not lock it, without the counter reset a sign-in causes.
         code = _request_code(user_account_client, email)
 
