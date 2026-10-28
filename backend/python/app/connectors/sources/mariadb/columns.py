@@ -68,11 +68,16 @@ def decode_rows(rows: list[dict[str, Any]], columns: list[ColumnInfo]) -> list[d
     return decoded
 
 
+# A sample is ordered by every column only while this cheap to sort.
+ORDERED_READ_MAX_ROWS = 1_000_000
+
+
 def sample_order(columns: list[ColumnInfo], primary_keys: list[str], row_estimate: int | None) -> list[str] | None:
     """The columns a sample is ordered by, so it is the same rows from one read to the next.
 
     The primary key; else a single-column unique key that cannot be NULL; else
-    every column while the table is small enough to sort; else none.
+    every column while the table is known to be small enough to sort; else
+    none. An estimate of 0 is unknown: InnoDB can report it for a full table.
     """
     if primary_keys:
         return list(primary_keys)
@@ -80,6 +85,6 @@ def sample_order(columns: list[ColumnInfo], primary_keys: list[str], row_estimat
         if column.is_unique and not column.nullable and column.name:
             return [column.name]
     names = [c.name for c in columns if c.name]
-    if names and row_estimate is not None and row_estimate <= 1_000_000:
+    if names and row_estimate and row_estimate <= ORDERED_READ_MAX_ROWS:
         return names
     return None

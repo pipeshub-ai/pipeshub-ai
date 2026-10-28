@@ -53,3 +53,4 @@ class TestSampleOrder:
         assert sample_order(columns, [], 10) == ["a", "b"]
         assert sample_order(columns, [], 5_000_000) is None
         assert sample_order(columns, [], None) is None
+        assert sample_order(columns, [], 0) is None  # InnoDB reports 0 for a table it has not counted

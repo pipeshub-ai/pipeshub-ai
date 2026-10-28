@@ -816,7 +816,26 @@ class TestRenames:
         record_id = world.record("orders").id
         assert record_id in world.outcome.renamed and record_id in world.outcome.relations_only
 
-    async def test_a_rebuild_under_the_same_name_is_data_only(self, world) -> None:
+    async def test_a_failed_lookup_of_a_renamed_table_does_not_stop_the_others(self, world) -> None:
+        for name in ("a", "b"):
+            world.catalog.add(name, columns=("id", ("status", "varchar(20)")))
+        await world.sync()
+        for name in ("a", "b"):
+            world.catalog.add(name, columns=("id", ("state", "varchar(20)")))
+        processor = world.connector.data_entities_processor
+        lookup = processor.get_record_by_external_id
+
+        async def failing(connector_id, external_record_id, raise_on_error=False) -> object:
+            if external_record_id == "shop.a":
+                raise RuntimeError("graph unavailable")
+            return await lookup(connector_id, external_record_id, raise_on_error=raise_on_error)
+
+        processor.get_record_by_external_id = failing
+        await world.sync()
+        assert "shop.a" in world.outcome.restructured_tables
+        assert world.record("b").id in world.outcome.renamed
+
+
         world.catalog.add("orders", columns=("id", ("status", "varchar(20)")))
         await world.sync()
         record_id = world.record("orders").id

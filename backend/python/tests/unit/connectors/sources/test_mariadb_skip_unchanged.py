@@ -204,9 +204,10 @@ class Harness:
 
     async def _delete(self, record_ids: list[str], connector_id: str, **_kw: Any) -> list[str]:  # noqa: ANN401
         removed = []
+        # A table takes its columns with it.
+        tables = {r.external_record_id for r in self.stored.values() if r.id in record_ids}
         for fqn, r in list(self.stored.items()):
-            if r.id in record_ids or (r.parent_external_record_id and r.parent_external_record_id.endswith(
-                    tuple(f".{t}" for t in record_ids))):
+            if r.id in record_ids or r.parent_external_record_id in tables:
                 del self.stored[fqn]
                 removed.append(r.id)
         return removed
@@ -381,6 +382,7 @@ class TestDroppedTables:
         assert await h.sync() == []
         assert dropped_id in h.processor.on_sql_records_deleted.await_args.args[0]
         assert f"{DB}.customers" not in h.stored
+        assert not any(r.parent_external_record_id == f"{DB}.customers" for r in h.stored.values())
 
 
 class TestTableFingerprint:

@@ -56,6 +56,14 @@ class TestState:
         after = state(table("orders", fks=[("id", "clients")]), id_of=ids.get)
         assert before.shape == after.shape and before.fingerprint != after.fingerprint
 
+    def test_a_column_with_keys_to_an_id_a_name_and_itself_has_a_shape(self) -> None:
+        t = table("orders", fks=[("id", "customers"), ("id", "orders")])
+        t.foreign_keys.append(ForeignKeyInfo(constraint_name="fk_x", column_name="id", foreign_database="other",
+                                             foreign_table_name="t", foreign_column_name="id"))
+        t.foreign_keys.append(ForeignKeyInfo(constraint_name="fk_gone", column_name="gone", foreign_database="shop",
+                                             foreign_table_name="customers", foreign_column_name="id"))
+        assert state(t, id_of={"shop.customers": 7}.get).shape
+
     def test_a_phase_7_revision_is_read_back(self) -> None:
         legacy = MariaDBTableState(revision="abc123:2026-01-01T10:00:00|5:1000")
         assert (legacy.structure, legacy.rows_marker) == ("abc123", "2026-01-01T10:00:00|5:1000")

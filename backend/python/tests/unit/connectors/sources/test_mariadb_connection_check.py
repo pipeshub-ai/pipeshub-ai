@@ -19,7 +19,7 @@ from app.sources.client.mariadb.mariadb import QueryTimeoutError
 from app.utils.url_fetcher import HostCheckError
 
 _LOGGER = logging.getLogger("test.mariadb.check")
-AUTH = {"host": "db.example.com", "port": "3306", "database": "shop", "username": "reader", "password": "pw"}
+AUTH = {"host": "db.example.com", "port": "3306", "database": "shop", "username": "reader", "password": "s3cret-pw"}
 
 
 class DriverError(Exception):
@@ -50,8 +50,8 @@ def factory(*, connect=None, query=None) -> tuple:
 class TestCheck:
     async def test_success_reads_one_row_read_only_and_closes(self) -> None:
         client, make = factory()
-        client.connect.assert_not_called()  # no pool: it hides connect errors behind retries
         result = await check_connection(AUTH, _LOGGER, client_factory=make)
+        client.connect.assert_not_called()  # no pool: it hides connect errors behind retries
         assert result.success and result.message == 'Connected to database "shop" as reader@% (MariaDB 11.4.2-MariaDB).'
         assert client.execute_read_only_query.await_args.args[0] == CHECK_STATEMENT
         client.close.assert_awaited_once()
@@ -113,4 +113,4 @@ class TestMessages:
 
     def test_the_password_never_appears(self) -> None:
         message = describe_connection_error(DriverError(1045, "Access denied"), config_from_auth(AUTH))
-        assert "pw" not in message.split()
+        assert "s3cret-pw" not in message

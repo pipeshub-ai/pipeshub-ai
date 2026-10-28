@@ -100,11 +100,12 @@ class MariaDBTableState(BaseModel):
             shape=_digest([
                 [(by_name[c.name], c.column_type or c.data_type, c.nullable, c.is_primary_key, c.is_unique,
                   c.is_part_of_composite_primary_key, c.is_part_of_composite_unique) for c in columns],
-                sorted(
+                # A column can carry several keys, to an id (int) or a name (str): sort by text.
+                sorted((
                     (by_name.get(fk.column_name), SELF if target(fk) == own_fqn else (id_of(target(fk)) or target(fk)),
                      fk.foreign_column_name)
                     for fk in table.foreign_keys
-                ),
+                ), key=repr),
                 [by_name.get(name) for name in table.primary_keys],
             ]),
             # A table whose columns could not be seen looks like every other such table.

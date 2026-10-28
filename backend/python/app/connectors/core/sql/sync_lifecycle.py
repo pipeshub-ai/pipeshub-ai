@@ -336,9 +336,16 @@ class SqlSyncLifecycleMixin:
             if not (previous or change.column_renames or change.rename_pending):
                 continue
             if record is None:
-                record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id, external_record_id=fqn,
-                )
+                try:
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=fqn, raise_on_error=True,
+                    )
+                except Exception as e:
+                    # Not told of the rename: reported as restructured instead, and the next tables still follow.
+                    self.sync_stats.errors += 1
+                    self.logger.warning(f"Could not look up the record of renamed table {fqn}: {e}")
+                    self.sync_outcome.restructured_tables.add(fqn)
+                    continue
             if record is None or not record.id:
                 continue
             await self._on_table_renamed(record.id)

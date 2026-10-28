@@ -148,8 +148,6 @@ SYNC_STATE_KEY = "mariadb_tables_state"
 MAX_PROFILE_ATTEMPTS = 3
 MAX_TABLE_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_COLUMN_VALUES_STREAMED = 1000
-# A sample is ordered by every column only while this cheap to sort.
-ORDERED_READ_MAX_ROWS = 1_000_000
 
 
 def _bit_value(value: object, record: Record) -> object:
