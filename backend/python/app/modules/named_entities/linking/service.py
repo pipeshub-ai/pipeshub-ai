@@ -12,10 +12,11 @@ whichever record first created the node.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.linking.candidates import (
     Candidate,
     CandidateFinder,
@@ -43,7 +44,8 @@ class LinkStatus(str, Enum):
     """Candidates exist but could not be checked; none was used."""
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
-    """Too many readable entities start with the name to tell apart."""
+    """Too many readable entities start with the name to tell apart, or it is a
+    first name several readable people share (``namesakes``)."""
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,9 @@ class LinkResult:
     more_longer_names: bool = False
     """Beside an exact match, more readable names start with it than one check
     can tell apart, so none of them was considered."""
+    namesakes: list[Candidate] = field(default_factory=list)
+    """Readable people whose full name starts with a first name asked on its own:
+    each may be the one meant, so none is chosen and none is "not the same"."""
 
 
 @dataclass(frozen=True)
@@ -105,17 +110,22 @@ class EntityLinker:
         # (position, mention, offered, refused, settled): ``settled`` is an exact
         # match kept whatever the check says; the check only adds to it.
         to_check: list[tuple[int, Mention, list[Candidate], list[Candidate], list[Candidate]]] = []
+        namesakes: dict[int, list[Candidate]] = {}
         for entry in found.per_mention:
             mention = entry.mention
+            shared = _namesakes(mention, entry.candidates, names)
+            if shared:
+                namesakes[len(results)] = shared
+            pool = [c for c in entry.candidates if c not in shared]
             exact = [
-                c for c in entry.candidates
+                c for c in pool
                 if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
             ]
             if exact:
                 # A first name stored on its own ("Sam") must not hide the full
                 # names it starts ("Sam Lee"): those go to the check.
                 longer = [
-                    c for c in entry.candidates
+                    c for c in pool
                     if c.source is CandidateSource.PREFIX and mention.hinted(c.kind) and c not in exact
                 ]
                 offered = [c for c in longer if offerable(mention.name, names.get(c.entity_id, c.name))]
@@ -128,11 +138,11 @@ class EntityLinker:
                     ))
             elif entry.ambiguous:
                 results.append(LinkResult(mention, LinkStatus.AMBIGUOUS))
-            elif not entry.candidates:
+            elif not pool:
                 results.append(LinkResult(mention, LinkStatus.NOT_FOUND))
             else:
-                offered = [c for c in entry.candidates if offerable(mention.name, names.get(c.entity_id, c.name))]
-                refused = [c for c in entry.candidates if c not in offered]
+                offered = [c for c in pool if offerable(mention.name, names.get(c.entity_id, c.name))]
+                refused = [c for c in pool if c not in offered]
                 if not offered:
                     results.append(LinkResult(mention, LinkStatus.NOT_FOUND, rejected=refused))
                 else:
@@ -146,7 +156,7 @@ class EntityLinker:
                     mention=mention.name,
                     kind_hint=mention.kind_hint.value if mention.kind_hint else None,
                     candidates=[
-                        OfferedCandidate(names.get(c.entity_id, c.name), c.kind or "entity", _records(c))
+                        OfferedCandidate(names.get(c.entity_id, c.name), c.kind or "entity", record_count_label(c))
                         for c in offered
                     ],
                 )
@@ -170,6 +180,11 @@ class EntityLinker:
                 status = LinkStatus.CHECKED if picked else LinkStatus.NOT_FOUND
             results[position] = LinkResult(mention, status, accepted=[*settled, *picked], rejected=rejected)
 
+        for position, shared in namesakes.items():
+            result = results[position]
+            if result is not None:
+                status = LinkStatus.AMBIGUOUS if result.status is LinkStatus.NOT_FOUND else result.status
+                results[position] = replace(result, status=status, namesakes=shared)
         return Linking(
             results=[result for result in results if result is not None],
             timed_out=found.timed_out,
@@ -178,7 +193,21 @@ class EntityLinker:
         )
 
 
-def _records(candidate: Candidate) -> str:
+def _namesakes(mention: Mention, candidates: list[Candidate], names: dict[str, str]) -> list[Candidate]:
+    """The readable people whose full name starts with a first name asked on its
+    own, when there are two or more: the name alone cannot tell them apart."""
+    if not any(kind is EntityKind.PERSON and len(key.rpartition(":")[2].split()) == 1 for kind, key in mention.keys):
+        return []
+    people = [
+        c for c in candidates
+        if c.source is CandidateSource.PREFIX and c.kind == EntityKind.PERSON.value and mention.hinted(c.kind)
+        and offerable(mention.name, names.get(c.entity_id, c.name))
+    ]
+    return people if len(people) >= 2 else []
+
+
+def record_count_label(candidate: Candidate) -> str:
+    """How many readable records mention it, as shown ("1 record", "3+ records")."""
     count = len(candidate.records)
     if candidate.more_records:
         return f"{count}+ records"

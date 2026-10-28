@@ -38,6 +38,7 @@ from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.linking.candidates import (
     MAX_CANDIDATES,
     CandidateFinder,
+    CandidateSource,
 )
 from app.modules.named_entities.linking.mentions import parse_mentions
 from app.modules.named_entities.linking.records import (
@@ -45,7 +46,11 @@ from app.modules.named_entities.linking.records import (
     NEARBY_BLOCKS,
     readable_records,
 )
-from app.modules.named_entities.linking.service import EntityLinker, LinkStatus
+from app.modules.named_entities.linking.service import (
+    EntityLinker,
+    LinkStatus,
+    record_count_label,
+)
 from app.modules.named_entities.linking.verifier import LlmMentionVerifier
 from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
@@ -80,6 +85,10 @@ NO_NAMES_MSG = (
 TOO_SLOW_MSG = "The entity lookup took too long — try again with fewer names."
 # Records indexed before extraction was turned on have no entities until they
 # are indexed again, so a miss here is not evidence of absence.
+COUNT_NOTE = (
+    "counts are records linked to these entities; a record that spells a name differently may not be "
+    "linked, so a count is a minimum."
+)
 COVERAGE_NOTE = (
     "Only records indexed while named-entity extraction was on are linked to names, so a name "
     "not found here may still be written in older records; search the text before concluding "
@@ -235,7 +244,9 @@ def render_preamble(
     if scope.note:
         lines.append(f"Note: {scope.note.strip()}")
     lines.extend(f"Note: {note}" for note in notes)
-    if any(not result.accepted for result in linking.results) or not scope.virtual_record_ids:
+    if any(result.accepted for result in linking.results):
+        lines.append(f"Note: {COUNT_NOTE}")
+    if any(not result.accepted and not result.namesakes for result in linking.results) or not scope.virtual_record_ids:
         lines.append(f"Note: {COVERAGE_NOTE}")
     return "\n".join(lines) + "\n\n"
 
@@ -247,8 +258,21 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
         how = "exact match" if result.status is LinkStatus.MATCHED else "checked"
         entities = ", ".join(_entity(c, names) for c in result.accepted)
         line = f"- {asked}: {entities}; {how}; mentioned in {count} readable record{'' if count == '1' else 's'}."
-        if result.rejected:
-            line += f" Not the same: {_entities(result.rejected, names)}."
+        if result.namesakes:
+            line += (
+                f" Several people are named \"{_trunc(mention.name)}\": {_counted(result.namesakes, names)}. "
+                f"The name alone may mean any of them: say which one is meant, or call again with the full name."
+            )
+        # Beside an exact match, a longer name the check left out is not known to be someone else.
+        longer = [c for c in result.rejected if c.source is CandidateSource.PREFIX]
+        others = [c for c in result.rejected if c not in longer]
+        if longer:
+            line += (
+                f" Other names that start with it, not included: {_entities(longer, names)}; "
+                "call again with the full name to include one."
+            )
+        if others:
+            line += f" Not the same: {_entities(others, names)}."
         if result.unchecked:
             line += (
                 f" Longer names that may be the same could not be checked and were not used: "
@@ -258,12 +282,20 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
             line += " Many more readable names start with it; call again with the full name to include one."
         return line
     if result.status is LinkStatus.AMBIGUOUS:
+        if result.namesakes:
+            return (
+                f"- {asked}: several readable people have this first name: {_counted(result.namesakes, names)}. "
+                "Call again with the full name of the one you mean."
+            )
         return f"- {asked}: too many readable entities start with this name; give the full name."
     if result.status is LinkStatus.UNVERIFIED:
-        return (
+        line = (
             f"- {asked}: possible matches could not be checked and were not used: "
             f"{_entities(result.unchecked, names)}. Call again with the exact name of the one you mean."
         )
+        if result.namesakes:
+            line += f" Several readable people also have this first name: {_counted(result.namesakes, names)}."
+        return line
     line = f"- {asked}: no readable entity by this name."
     if result.rejected:
         line += f" Not the same: {_entities(result.rejected, names)}."
@@ -276,6 +308,12 @@ def _entity(candidate: Candidate, names: dict[str, str]) -> str:
 
 def _entities(candidates: list[Candidate], names: dict[str, str]) -> str:
     return ", ".join(_entity(c, names) for c in candidates)
+
+
+def _counted(candidates: list[Candidate], names: dict[str, str]) -> str:
+    return ", ".join(
+        f"{_trunc(names.get(c.entity_id, c.name))} ({c.kind or 'entity'}, {record_count_label(c)})" for c in candidates
+    )
 
 
 def _together_line(scope: RecordScope, shortener: RecordIdShortener | None) -> str:

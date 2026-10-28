@@ -36,7 +36,7 @@ INSTRUCTIONS = (
     "For each name, the entities listed under it were found in the documents. Choose those that are "
     "the same real-world thing the name refers to in this question: the same person, organization, "
     "product, event or place, possibly written differently (case, a legal suffix, an abbreviation, a "
-    "fuller or shorter form of the same name). Do not choose an entity that only shares a word with "
+    "fuller or shorter form of the same name, a misspelling). Do not choose an entity that only shares a word with "
     "the name, a different organization or product with a similar name, something broader or "
     "narrower, or a different number or version. Choose none when no entity is the same thing."
 )

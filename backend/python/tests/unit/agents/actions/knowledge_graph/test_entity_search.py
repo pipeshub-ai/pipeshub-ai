@@ -500,3 +500,45 @@ class TestPermissions:
         assert searches == []
         assert "rec-msa" not in (state.get("known_record_ids") or set())
         assert not state.get(RETRIEVED_BY_KEY)
+
+
+def _person(entity_id: str, name: str, source: CandidateSource = CandidateSource.PREFIX, records: int = 2) -> Candidate:
+    return Candidate(entity_id, "person", name, source, tuple({"_key": f"r{i}"} for i in range(records)), False)
+
+
+def _render(*results: LinkResult, scope: RecordScope | None = None) -> str:
+    names = {c.entity_id: c.name for r in results for c in [*r.accepted, *r.rejected, *r.unchecked, *r.namesakes]}
+    linking = Linking(results=list(results), timed_out=False, verifier_called=False, names=names)
+    scope = scope or RecordScope(per_name=[NameRecords("Lucas", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
+    return entity_search.render_preamble(linking, scope, match_all=False, notes=[])
+
+
+def test_a_first_name_lists_the_people_who_share_it_and_never_says_not_the_same() -> None:
+    (mention,) = parse_mentions([{"name": "Lucas", "kind": "person"}]).mentions
+    people = [_person("e1", "Lucas Adeyemi", records=12), _person("e2", "Lucas Bergstrom", records=1)]
+    text = _render(LinkResult(mention, LinkStatus.MATCHED, accepted=[_person("e0", "Lucas", CandidateSource.EXACT)], namesakes=people))
+    assert 'Several people are named "Lucas": Lucas Adeyemi (person, 12 records), Lucas Bergstrom (person, 1 record).' in text
+    assert "say which one is meant" in text and "Not the same" not in text
+
+
+def test_namesakes_without_an_exact_node_ask_for_the_full_name_without_the_coverage_note() -> None:
+    (mention,) = parse_mentions([{"name": "Lucas", "kind": "person"}]).mentions
+    people = [_person("e1", "Lucas Adeyemi"), _person("e2", "Lucas Nakamura")]
+    text = _render(LinkResult(mention, LinkStatus.AMBIGUOUS, namesakes=people))
+    assert '- "Lucas" (person): several readable people have this first name: Lucas Adeyemi (person, 2 records)' in text
+    assert entity_search.COVERAGE_NOTE not in text and entity_search.COUNT_NOTE not in text
+
+
+def test_a_longer_name_the_check_left_out_beside_an_exact_match_is_not_called_someone_else() -> None:
+    (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
+    text = _render(LinkResult(
+        mention, LinkStatus.MATCHED, accepted=[_person("e0", "Sam", CandidateSource.EXACT)],
+        rejected=[_person("e1", "Sam Lee"), _person("e2", "Sam Lee Partners", CandidateSource.DENSE)],
+    ))
+    assert "Other names that start with it, not included: Sam Lee (person); call again with the full name" in text
+    assert "Not the same: Sam Lee Partners (person)." in text
+
+
+def test_a_printed_count_is_marked_as_a_minimum() -> None:
+    text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]))
+    assert f"Note: {entity_search.COUNT_NOTE}" in text
