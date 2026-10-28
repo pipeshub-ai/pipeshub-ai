@@ -48,7 +48,7 @@ def test_xdist_group_added_at_collection_keeps_tests_on_one_worker(tmp_path: Pat
     run = subprocess.run(
         [
             sys.executable, "-m", "pytest",
-            "-p", "xdist", "-p", "no:cacheprovider",
+            "-p", "xdist", "-p", "no:cacheprovider", "--color=no",
             "-n", "2", "--dist", "loadgroup", "-v",
             "-c", str(tmp_path / "pytest.ini"), "--rootdir", str(tmp_path),
             str(tmp_path),
