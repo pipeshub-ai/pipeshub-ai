@@ -180,7 +180,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(
             side_effect=IndexingError("xls fail", record_id="r1")
         )
         proc.parsers = {ExtensionTypes.XLS.value: xls_parser}

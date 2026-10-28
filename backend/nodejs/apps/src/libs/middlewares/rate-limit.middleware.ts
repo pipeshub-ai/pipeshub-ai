@@ -1,4 +1,4 @@
-import { createSecretKey, KeyObject } from 'node:crypto';
+import { createHash, createSecretKey, KeyObject } from 'node:crypto';
 import { Request, Response, RequestHandler } from 'express';
 import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
@@ -161,6 +161,8 @@ export interface KeyedRateLimiterOptions {
   maxRequestsPerMinute: number;
   message: string;
   countOnlyFailures?: boolean;
+  // Narrows an anonymous caller's per-IP bucket, e.g. to the account it names.
+  anonymousSubKey?: (req: Request) => string | undefined;
 }
 
 /**
@@ -178,6 +180,7 @@ export function createKeyedRateLimiter(
     maxRequestsPerMinute,
     message,
     countOnlyFailures = false,
+    anonymousSubKey,
   } = options;
 
   const keyFor = (req: Request): string => {
@@ -185,7 +188,9 @@ export function createKeyedRateLimiter(
     if (authenticatedUserReq.user?.userId) {
       return `${prefix}:user:${authenticatedUserReq.user.userId}`;
     }
-    return `${prefix}:ip:${getClientIpKey(req)}`;
+    const ipKey = `${prefix}:ip:${getClientIpKey(req)}`;
+    const subKey = anonymousSubKey?.(req);
+    return subKey === undefined ? ipKey : `${ipKey}:${subKey}`;
   };
 
   const config: Partial<Options> = {
@@ -250,11 +255,44 @@ export function createSkillsImportRateLimiter(
   });
 }
 
+// Per-IP auth buckets admit this many times the per-account auth limit, so
+// several people signing in from one office or VPN address are not throttled.
+const AUTH_PER_IP_MULTIPLIER = 6;
+
+/**
+ * The account a sign-in request targets. After /initAuth the session's email
+ * is authoritative (the controller ignores body.email then), so it wins; a
+ * client could otherwise rotate body.email to get a fresh bucket. Hashed so
+ * addresses stay out of the 429 log line and an oversized value cannot bloat
+ * the store.
+ */
+function signInAccountKey(req: Request): string | undefined {
+  const sessionEmail = (req as { sessionInfo?: { email?: unknown } })
+    .sessionInfo?.email;
+  const body = req.body as { email?: unknown; username?: unknown } | undefined;
+  const account = [sessionEmail, body?.email, body?.username].find(
+    (value): value is string =>
+      typeof value === 'string' && value.trim() !== '',
+  );
+  if (account === undefined) {
+    return undefined;
+  }
+  const digest = createHash('sha256')
+    .update(account.trim().toLowerCase())
+    .digest('base64url');
+  return `acct:${digest.slice(0, 22)}`;
+}
+
 /**
  * Login/OTP/password endpoints. The global limiter is sized for general API
- * traffic and is too loose to stop password spraying or OTP/email bombing.
- * The limit is per replica (in-process store), so N pods admit up to
- * N × maxRequestsPerMinute per client until a shared store is wired.
+ * traffic and is too loose to stop password guessing or OTP/email bombing.
+ * Counted per signed-in user, else per client IP and the account the request
+ * names, so people sharing one address do not use up each other's attempts.
+ * Pair it with createAuthIpRateLimiter on anonymous routes: on its own it
+ * would let one address try every account. Mount it after any middleware
+ * that sets req.user or req.sessionInfo, or it falls back to the shared
+ * per-IP key. The limit is per replica (in-process store), so N pods admit
+ * up to N × maxRequestsPerMinute until a shared store is wired.
  */
 export function createAuthRateLimiter(
   logger: Logger,
@@ -264,14 +302,31 @@ export function createAuthRateLimiter(
     prefix: 'auth',
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
+    anonymousSubKey: signInAccountKey,
+  });
+}
+
+/**
+ * Per-IP backstop for the anonymous auth routes, at a multiple of the
+ * per-account limit: it caps one address spraying passwords or OTP/reset
+ * emails across many accounts.
+ */
+export function createAuthIpRateLimiter(
+  logger: Logger,
+  maxAuthRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'auth-ip',
+    maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
+    message: 'Too many authentication requests. Please try again later.',
   });
 }
 
 /**
  * /initAuth only. The sign-in page calls it on every load, before anyone types
- * a password, and it checks no credential, so it gets its own bucket: page
- * loads must not use up the attempts createAuthRateLimiter allows. Still
- * limited, at six times that rate, because every call stores a sign-in session.
+ * a password, and it checks no credential, so it gets its own per-IP bucket:
+ * page loads must not use up the attempts createAuthRateLimiter allows. Still
+ * limited because every call stores a sign-in session.
  */
 export function createInitAuthRateLimiter(
   logger: Logger,
@@ -279,7 +334,7 @@ export function createInitAuthRateLimiter(
 ): RequestHandler {
   return createKeyedRateLimiter(logger, {
     prefix: 'auth-init',
-    maxRequestsPerMinute: maxAuthRequestsPerMinute * 6,
+    maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
     message: 'Too many sign-in requests. Please try again later.',
   });
 }

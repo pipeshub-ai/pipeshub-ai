@@ -1,4 +1,4 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -14,6 +14,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import {
+  createAuthIpRateLimiter,
   createAuthRateLimiter,
   createInitAuthRateLimiter,
 } from '../../../libs/middlewares/rate-limit.middleware';
@@ -24,6 +25,7 @@ import {
   AuthAppConfigReloader,
 } from '../container/authService.container';
 import { emailCheck } from '../../../libs/utils/zod-formats';
+import { AuthMethodType } from '../types/auth-method';
 
 const otpGenerationBody = z.object({
   email: z.string().check(emailCheck('Invalid email')),
@@ -60,11 +62,41 @@ export function createUserAccountRouter(container: Container) {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const logger = container.get<Logger>('Logger');
   const { maxAuthRequestsPerMinute } = container.get<AppConfig>('AppConfig');
-  // One per-IP bucket shared by all credential/OTP/email routes below.
+  // Shared by all credential/OTP/email routes below: one bucket per account
+  // (or signed-in user), plus a looser per-IP backstop on anonymous routes.
   const authRateLimiter = createAuthRateLimiter(
     logger,
     maxAuthRequestsPerMinute,
   );
+  const authIpRateLimiter = createAuthIpRateLimiter(
+    logger,
+    maxAuthRequestsPerMinute,
+  );
+  // A provider sign-in (Google, Microsoft, OAuth) carries a token the
+  // provider verifies, so there is nothing to guess, and it usually names no
+  // email: the account limiter would put everyone on one IP in one bucket.
+  // Those count against the per-IP backstop only; every other method,
+  // including an unknown one, is counted per account.
+  const providerVerifiedMethods = new Set<string>([
+    AuthMethodType.GOOGLE,
+    AuthMethodType.MICROSOFT,
+    AuthMethodType.AZURE_AD,
+    AuthMethodType.OAUTH,
+    AuthMethodType.GITHUB,
+  ]);
+  const authenticateRateLimiter = (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    const method: unknown = (req.body as { method?: unknown } | undefined)
+      ?.method;
+    if (typeof method === 'string' && providerVerifiedMethods.has(method)) {
+      next();
+      return;
+    }
+    void authRateLimiter(req, res, next);
+  };
 
   router.post(
     '/initAuth',
@@ -112,8 +144,9 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/authenticate',
-    authRateLimiter,
+    authIpRateLimiter,
     authSessionMiddleware,
+    authenticateRateLimiter,
     ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -129,6 +162,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/login/otp/generate',
+    authIpRateLimiter,
     authRateLimiter,
     ValidationMiddleware.validate(otpGenerationValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
@@ -168,8 +202,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/setup/email',
-    authRateLimiter,
     userValidator,
+    authRateLimiter,
     ValidationMiddleware.validate(z.object({ body: z.object({}).optional() })),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -185,8 +219,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/reset',
-    authRateLimiter,
     userValidator,
+    authRateLimiter,
     ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -254,6 +288,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/forgot',
+    authIpRateLimiter,
     authRateLimiter,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {

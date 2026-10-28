@@ -21,6 +21,8 @@ import httpx
 from aiolimiter import AsyncLimiter
 from azure.core.exceptions import (
     ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
 )
 from azure.identity import CredentialUnavailableError
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
@@ -130,7 +132,10 @@ from app.connectors.sources.microsoft.common.sharepoint_permission_scope import 
     ListPermissionScope,
     drive_item_unique_id,
 )
-from app.connectors.sources.microsoft.common.sign_in_errors import known_sign_in_problem
+from app.connectors.sources.microsoft.common.sign_in_errors import (
+    describe_sign_in_error,
+    known_sign_in_problem,
+)
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
     get_sharepoint_auth_notification,
@@ -903,6 +908,7 @@ class SharePointConnector(BaseConnector):
         except Exception as token_error:
             sanitized_error = sanitize_azure_error(token_error)
             self.logger.error(f"❌ Failed to initialize credential: {sanitized_error}")
+            await self._notify_token_failure(*self._token_failure_notice(token_error, for_sharepoint=False))
             # Clean up temp certificate file if it was created
             if self.temp_cert_file:
                 try:
@@ -2570,33 +2576,47 @@ class SharePointConnector(BaseConnector):
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
-        if raise_errors:
-            return (await self.credential.get_token(f"{resource}/.default")).token
         try:
-            token = await self.credential.get_token(f"{resource}/.default")
-            return token.token
-        except CredentialUnavailableError as credential_error:
-            self.logger.error(
-                f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
+            return (await self.credential.get_token(f"{resource}/.default")).token
+        except Exception as error:
+            self.logger.error(f"❌ Failed to get a SharePoint token for {resource}: {sanitize_azure_error(error)}")
+            await self._notify_token_failure(*self._token_failure_notice(error, for_sharepoint=True))
+            if raise_errors:
+                raise
+            return None
+
+    @staticmethod
+    def _token_failure_notice(error: Exception, *, for_sharepoint: bool) -> tuple[str, str]:
+        """The title and message of the notice telling the connector's creator a token request failed.
+
+        ``for_sharepoint`` says the token was for the SharePoint host rather than Microsoft Graph, so only
+        then can the SharePoint host URL be to blame.
+        """
+        if isinstance(error, (ServiceRequestError, ServiceResponseError)):
+            return (
+                "SharePoint could not reach Microsoft",
+                "Unable to reach Microsoft to get an access token. This is usually a temporary network problem, "
+                "not a problem with the connector's settings. If it keeps happening, check that the PipesHub "
+                "server can reach login.microsoftonline.com.",
             )
-            await self._notify_token_failure(
+        if isinstance(error, CredentialUnavailableError):
+            return (
                 "SharePoint authentication failed",
                 "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
-            return None
-        except ClientAuthenticationError as auth_error:
-            title, message = get_sharepoint_auth_notification(auth_error)
-            self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self._notify_token_failure(title, message)
-            return None
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self._notify_token_failure(
-                "SharePoint authentication Failed",
-                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                "and connector authentication credentials.",
+        if not for_sharepoint:
+            return (
+                "SharePoint authentication failed",
+                describe_sign_in_error(error) or "Unable to acquire a Microsoft Graph access token. Please verify "
+                "the connector authentication credentials.",
             )
-            return None
+        if isinstance(error, ClientAuthenticationError):
+            return get_sharepoint_auth_notification(error)
+        return (
+            "SharePoint authentication Failed",
+            "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+            "and connector authentication credentials.",
+        )
 
     async def _notify_token_failure(self, title: str, message: str) -> None:
         if self._token_failure_notified:
@@ -2605,7 +2625,7 @@ class SharePointConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=f"{self.display_name}: {title}",
             message=message,
             recipient_user_ids=[self.created_by],
         )

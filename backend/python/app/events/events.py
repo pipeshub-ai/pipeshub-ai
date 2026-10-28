@@ -33,6 +33,7 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     IndexingError,
     ProcessingError,
+    RecordDeletedError,
 )
 from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
@@ -474,7 +475,7 @@ class EventProcessor:
             raise_on_error=True,
         )
         if record_doc is None:
-            raise RuntimeError(f"Record {record_id} not found after parsing")
+            raise RecordDeletedError(record_id)
 
         await self.update_record_fields(
             record_doc,
@@ -1333,7 +1334,9 @@ class EventProcessor:
                 # Legitimately reachable: a record can be deleted between an
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message rather than retry it.
-                self.logger.error("❌ Record %s not found", record_id)
+                # WARNING, as the record handler's own read: None cannot tell a
+                # deletion from an id that never existed (a producer bug).
+                self.logger.warning("Record %s not found; dropping its event", record_id)
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),

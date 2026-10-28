@@ -32,7 +32,12 @@ from app.modules.retrieval.selection_scope import (
     row_limit_key,
 )
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
-from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.common.utils import (
+    PERSON_EDGES_FROM_USER,
+    PERSON_EDGES_TO_USER,
+    PERSON_ENTITY_TYPE,
+    PermittedEntityRows,
+)
 from app.services.graph_db.taxonomy import taxonomy_links
 
 if TYPE_CHECKING:
@@ -839,6 +844,52 @@ async def list_accessible_entity_records(
     provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
+    return await _list_ref_records(
+        graph_provider, context, {"id": entity_id, "type": entity_type},
+        record_types=record_types, limit=limit, cursor=cursor, max_scan=max_scan,
+    )
+
+
+async def list_accessible_person_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    *,
+    user_ids: list[str],
+    edge_types: Iterable[str],
+    record_types: list[str] | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> EntityRecordPage:
+    """Records linked to a person (one or more User nodes of one email) by
+    ``edge_types`` that the user can access, paged and decided exactly as
+    :func:`list_accessible_entity_records`. Edge types outside the
+    person allow-list are dropped."""
+    wanted = set(edge_types)
+    out_types = [t for t in PERSON_EDGES_TO_USER if t in wanted]
+    in_types = [t for t in PERSON_EDGES_FROM_USER if t in wanted]
+    ids = list(dict.fromkeys(i for i in user_ids if i))
+    if not ids or not (out_types or in_types):
+        raise ValueError("A person listing needs a user and at least one relation")
+    ref = {
+        "id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids,
+        "outTypes": out_types, "inTypes": in_types,
+    }
+    return await _list_ref_records(
+        graph_provider, context, ref, record_types=record_types, limit=limit, cursor=cursor,
+    )
+
+
+async def _list_ref_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    ref: dict[str, Any],
+    *,
+    record_types: list[str] | None,
+    limit: int,
+    cursor: str | None,
+    max_scan: int = MAX_SCAN_PER_CALL,
+) -> EntityRecordPage:
+    entity_id, entity_type = ref["id"], ref["type"]
     offset = _parse_cursor(cursor)
     limit = max(1, limit)
     connector_ids = context.connector_scope(entity_type, entity_id)
@@ -864,7 +915,7 @@ async def list_accessible_entity_records(
         fetch = _fetch_permitted(
             graph_provider,
             context,
-            [{"id": entity_id, "type": entity_type, "connectorIds": connector_ids}],
+            [{**ref, "connectorIds": connector_ids}],
             record_types=record_types,
             limit_per_entity=limit - len(records),
             offset=offset,
@@ -919,6 +970,7 @@ __all__ = [
     "EntityRecordPage",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
+    "PERSON_ENTITY_TYPE",
     "RECORD_GROUP_ENTITY_TYPE",
     "SEARCHABLE_ENTITY_TYPES",
     "SEARCH_SCOPE_MAX_ENTITIES",
@@ -928,5 +980,6 @@ __all__ = [
     "admitted_node_ids",
     "get_entity_access_context",
     "list_accessible_entity_records",
+    "list_accessible_person_records",
     "search_entities_for_user",
 ]

@@ -43,6 +43,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.graphql.response import GraphQLResponse
+from app.sources.client.linear.graphql_op import LinearGraphQLOperations
 
 
 # ===========================================================================
@@ -448,11 +449,20 @@ class TestFetchTeams:
             (EntityType.GROUP, "t-sec", PermissionType.READ),
         ]
 
+    def test_team_queries_keep_members_small(self) -> None:
+        teams = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
+        team_list = LinearGraphQLOperations.get_operation_with_fragments("query", "teamList")
+        assert "members(first: 10)" in teams
+        assert "...TeamFields" in team_list
+        assert "members" not in team_list
+
     @pytest.mark.asyncio
-    async def test_members_beyond_the_first_hundred_are_fetched(self) -> None:
+    async def test_members_beyond_the_first_ten_are_fetched(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.organization_url_key = "test-org"
+        emails = [f"m{i}@x.com" for i in range(25)]
+        inline, rest = emails[:10], emails[10:]
 
         ds = MagicMock()
         ds.teams = AsyncMock(return_value=_mock_gql_response({
@@ -461,8 +471,8 @@ class TestFetchTeams:
                     "id": "t-big", "name": "Everyone", "key": "ALL",
                     "description": "", "private": True, "parent": None,
                     "members": {
-                        "nodes": [{"email": "a@x.com"}],
-                        "pageInfo": {"hasNextPage": True, "endCursor": "m-100"},
+                        "nodes": [{"email": e} for e in inline],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "m-10"},
                     },
                 }],
                 "pageInfo": {"hasNextPage": False},
@@ -471,24 +481,54 @@ class TestFetchTeams:
 
         async def execute_operation(operation, variables) -> GraphQLResponse:
             assert operation == "teamMembers"
-            if variables["after"] == "m-100":
-                nodes, info = [{"email": "b@x.com"}], {"hasNextPage": True, "endCursor": "m-200"}
+            if variables["after"] == "m-10":
+                nodes, info = rest[:10], {"hasNextPage": True, "endCursor": "m-20"}
             else:
-                nodes, info = [{"email": "C@x.com"}], {"hasNextPage": False, "endCursor": None}
-            return _mock_gql_response({"team": {"members": {"nodes": nodes, "pageInfo": info}}})
+                nodes, info = rest[10:], {"hasNextPage": False, "endCursor": None}
+            members = {"nodes": [{"email": e} for e in nodes], "pageInfo": info}
+            return _mock_gql_response({"team": {"members": members}})
 
         ds.execute_operation = AsyncMock(side_effect=execute_operation)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        user_map = {e: _make_app_user(e) for e in ("a@x.com", "b@x.com", "c@x.com")}
-        ugs, _ = await connector._fetch_teams(user_email_map=user_map)
+        ugs, _ = await connector._fetch_teams(user_email_map={e: _make_app_user(e) for e in emails})
 
         assert [c.args for c in ds.execute_operation.await_args_list] == [
-            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-100"}),
-            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-200"}),
+            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-10"}),
+            ("teamMembers", {"id": "t-big", "first": 100, "after": "m-20"}),
         ]
         _, members = ugs[0]
-        assert [m.email for m in members] == ["a@x.com", "b@x.com", "c@x.com"]
+        assert [m.email for m in members] == emails
+
+    @pytest.mark.asyncio
+    async def test_team_with_ten_members_needs_no_member_request(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        emails = [f"m{i}@x.com" for i in range(10)]
+
+        ds = MagicMock()
+        ds.teams = AsyncMock(return_value=_mock_gql_response({
+            "teams": {
+                "nodes": [{
+                    "id": "t-small", "name": "Small", "key": "SML",
+                    "description": "", "private": True, "parent": None,
+                    "members": {
+                        "nodes": [{"email": e} for e in emails],
+                        "pageInfo": {"hasNextPage": False, "endCursor": "m-10"},
+                    },
+                }],
+                "pageInfo": {"hasNextPage": False},
+            }
+        }))
+        ds.execute_operation = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        ugs, _ = await connector._fetch_teams(user_email_map={e: _make_app_user(e) for e in emails})
+
+        ds.execute_operation.assert_not_awaited()
+        _, members = ugs[0]
+        assert [m.email for m in members] == emails
 
     @pytest.mark.asyncio
     async def test_unreadable_member_page_fails_the_team_listing(self) -> None:

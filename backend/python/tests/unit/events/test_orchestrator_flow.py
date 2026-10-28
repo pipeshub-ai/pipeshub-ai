@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -23,6 +24,11 @@ from app.models.blocks import (
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.messaging.config import (
     IndexingEvent,
+)
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+    is_expected_outcome,
 )
 from app.services.parsing.interface import ParseResult, ParserProvider
 
@@ -805,3 +811,34 @@ async def test_an_emptied_code_file_loses_its_old_blocks() -> None:
 
     processor._drop_code_blocks.assert_awaited_once_with("rec-1")
     assert IndexingEvent.INDEXING_COMPLETE in [e.event for e in events]
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_record_deleted_during_parsing_ends_as_an_expected_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The record is gone when the service path re-reads it after parsing: that is
+    a deletion (terminal, logged below error), not a RuntimeError that is retried."""
+    parsing_client, sink_orchestrator = _service_parsing_client(), _indexing_sink()
+    ep = _make_event_processor(
+        parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=sink_orchestrator
+    )
+    record = ep.graph_provider.get_document.return_value
+
+    async def deleted_once_parsed(*_args: object, raise_on_error: bool = False, **_kwargs: object) -> dict | None:
+        if not parsing_client.parse.await_count:
+            return record
+        assert raise_on_error, "None is a deletion only from a read that propagates graph errors"
+        return None
+
+    ep.graph_provider.get_document.side_effect = deleted_once_parsed
+
+    with caplog.at_level(logging.INFO), pytest.raises(RecordDeletedError) as raised:
+        _ = [event async for event in ep.on_event(_make_event_data())]
+
+    assert raised.value.record_id == "rec-1"
+    assert is_expected_outcome(raised.value)
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
+    sink_orchestrator.index.assert_not_awaited()
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
