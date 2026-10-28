@@ -169,7 +169,9 @@ async def link_record_people(
     of logged.
     """
     propagate = must_propagate or (lambda _exc: False)
-    if not isinstance(record, LINKED_RECORD_TYPES):
+    # A stub saved over the record it stands for names no one; linking it
+    # would delete that record's person edges.
+    if record.is_placeholder or not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     users_by_identity: dict[tuple[str, str], User | None] = {}
     seen: set[tuple[str, str]] = set()
