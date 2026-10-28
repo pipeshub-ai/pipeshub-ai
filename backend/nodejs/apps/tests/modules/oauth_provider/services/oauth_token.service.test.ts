@@ -1422,7 +1422,7 @@ describe('OAuthTokenService - branch coverage', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidGrantError)
       }
-      expect(findOne.calledOnce).to.be.true
+      expect(findOne.called).to.be.false
     })
 
     it('should throw InvalidTokenError when stored refresh token not found', async () => {
@@ -1431,9 +1431,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthRefreshToken, 'findOne')
-        .onFirstCall().resolves({} as any) // verifyRefreshToken check
-        .onSecondCall().resolves(null) // refreshTokens check
+      sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
 
       try {
         await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
@@ -1492,6 +1490,53 @@ describe('OAuthTokenService - branch coverage', () => {
         createdBy: new Types.ObjectId(),
       }) as any
 
+      it('revokes the live grant when an already-rotated refresh token is presented again', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
+      })
+
+      it('does not family-revoke when the refresh token was revoked by the user', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidTokenError)
+        expect((error as Error).message).to.equal('Refresh token has been revoked')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
       it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
         const stored = storedRefreshToken('client-a')
         sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
@@ -1527,8 +1572,7 @@ describe('OAuthTokenService - branch coverage', () => {
         }
         sinon.stub(OAuthRefreshToken, 'findOne')
           .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
-          .onThirdCall().resolves(replayed as any)
+          .onSecondCall().resolves(replayed as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 1 } as any)
@@ -1562,6 +1606,7 @@ describe('OAuthTokenService - branch coverage', () => {
         const [filter, update] = rotate.firstCall.args as any[]
         expect(filter).to.deep.equal({ _id: stored._id, isRevoked: false })
         expect(update.$set.isRevoked).to.equal(true)
+        expect(update.$set.revokedReason).to.equal('rotated')
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
       })

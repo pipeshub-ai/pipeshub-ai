@@ -203,6 +203,7 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       const again = await tokens.findRefreshByHash(h);
       expect(again?.isRevoked).to.equal(true);
       expect(again?.revokedAt).to.be.instanceOf(Date);
+      expect(again?.revokedReason).to.equal('rotated');
       expect(await tokens.findRefreshByHash(sha('nope'))).to.equal(null);
     });
   });

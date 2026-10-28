@@ -22,7 +22,7 @@ import { ProjectService } from '../../../../src/modules/projects/services/projec
 import { ProjectKnowledgeBaseService } from '../../../../src/modules/projects/services/project-kb.service'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { BadRequestError, ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 
 const VALID_OID = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 const VALID_OID2 = 'bbbbbbbbbbbbbbbbbbbbbbbb'
@@ -382,6 +382,29 @@ describe('project.controller', () => {
       expect(updateStub.called).to.be.false
       expect(next.calledOnceWith(error)).to.be.true
       expect(res.status.called).to.be.false
+    })
+
+    it('does not revoke org visibility on an archived project', async () => {
+      stubNoTeamMemberships()
+      const current = makeProjectDoc({
+        visibility: 'org',
+        linkedKnowledgeBaseId: 'kb-1',
+        isArchived: true,
+      })
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'owner', project: current })
+      const updateStub = sinon.stub(ProjectService, 'update')
+      const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokeOrgVisibility').resolves()
+
+      const req = createMockRequest({ params: { projectId: PROJECT_ID }, body: { visibility: 'private' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateProject(createMockAppConfig())(req, res, next)
+
+      expect(revokeStub.called).to.be.false
+      expect(updateStub.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(ConflictError)
     })
 
     it('refuses a non-owner visibility change before touching the knowledge base', async () => {

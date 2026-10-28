@@ -7,6 +7,7 @@ import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
   OAuthDeviceCodeStatus,
+  REFRESH_ROTATED,
   REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
   type AuthorizationCodeDto,
@@ -76,7 +77,13 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
   async rotateRefresh(id: string): Promise<boolean> {
     const result = await OAuthRefreshToken.updateOne(
       { _id: oid(id), isRevoked: false },
-      { $set: { isRevoked: true, revokedAt: new Date() } },
+      {
+        $set: {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokedReason: REFRESH_ROTATED,
+        },
+      },
     );
     return result.modifiedCount === 1;
   }

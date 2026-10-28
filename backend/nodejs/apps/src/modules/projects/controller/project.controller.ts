@@ -140,6 +140,9 @@ export const updateProject =
             'Only the project owner can change sharing settings',
           );
         }
+        // update() refuses archived projects. Check first so a failed save
+        // cannot leave the org grant already gone.
+        ProjectService.assertNotArchived(current);
         if (current.linkedKnowledgeBaseId && current.visibility === 'org') {
           await ProjectKnowledgeBaseService.revokeOrgVisibility(
             appConfig,

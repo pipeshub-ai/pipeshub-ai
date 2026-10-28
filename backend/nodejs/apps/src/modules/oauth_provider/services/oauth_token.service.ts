@@ -5,8 +5,10 @@ import { Logger } from '../../../libs/services/logger.service';
 import { forOrg } from '../../../libs/context/orgContext';
 import {
   getOAuthTokenRepository,
+  REFRESH_ROTATED,
   REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
+  type RefreshTokenDto,
 } from '../../../libs/repositories/oauth-token';
 import {
   getOAuthAppRepository,
@@ -377,9 +379,10 @@ export class OAuthTokenService {
   }
 
   /**
-   * Verify refresh token
+   * Signature, type and expiry only. Refresh reuse must still see a rotated
+   * row: identity lookup skips revoked tokens.
    */
-  async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
+  private readRefreshPayload(token: string): OAuthTokenPayload {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
@@ -387,13 +390,6 @@ export class OAuthTokenService {
 
       if (!payload.isRefreshToken) {
         throw new InvalidTokenError('Invalid token type');
-      }
-
-      const tokenHash = this.hashToken(token);
-      const storedToken = await getIdentityLookup().resolveRefresh(tokenHash);
-
-      if (!storedToken) {
-        throw new InvalidTokenError('Refresh token has been revoked');
       }
 
       return payload;
@@ -409,6 +405,22 @@ export class OAuthTokenService {
   }
 
   /**
+   * Verify refresh token
+   */
+  async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
+    const payload = this.readRefreshPayload(token);
+    const storedToken = await getIdentityLookup().resolveRefresh(
+      this.hashToken(token),
+    );
+
+    if (!storedToken) {
+      throw new InvalidTokenError('Refresh token has been revoked');
+    }
+
+    return payload;
+  }
+
+  /**
    * Refresh tokens - rotates refresh token for security
    */
   async refreshTokens(
@@ -416,20 +428,32 @@ export class OAuthTokenService {
     refreshToken: string,
     requestedScopes?: string[],
   ): Promise<GeneratedTokens> {
-    const payload = await this.verifyRefreshToken(refreshToken);
+    const payload = this.readRefreshPayload(refreshToken);
 
     // Ends refresh tokens that an app got for another workspace before the check existed.
     if (!isAppUsableInOrg(app, payload.orgId)) {
       throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
     }
 
-    // Get stored refresh token
+    // Includes revoked rows: a token already rotated must still family-revoke.
     const tokenHash = this.hashToken(refreshToken);
     const storedToken =
       await getOAuthTokenRepository().findRefreshByHash(tokenHash);
 
     if (!storedToken) {
       throw new InvalidTokenError('Refresh token not found');
+    }
+
+    if (this.isRotatedRefreshReplay(storedToken)) {
+      await this.rejectRefreshReplay(
+        app.clientId,
+        storedToken.userId,
+        storedToken._id,
+      );
+    }
+
+    if (storedToken.isRevoked) {
+      throw new InvalidTokenError('Refresh token has been revoked');
     }
 
     if (storedToken.clientId !== app.clientId) {
@@ -515,6 +539,15 @@ export class OAuthTokenService {
     });
 
     return newTokens;
+  }
+
+  /** Rotation (or a reuse flag) — not a user revoke, which must not kill a later grant. */
+  private isRotatedRefreshReplay(token: RefreshTokenDto): boolean {
+    return (
+      token.isRevoked &&
+      (token.revokedReason === REFRESH_ROTATED ||
+        token.revokedReason === REFRESH_REUSE_DETECTED)
+    );
   }
 
   /**
