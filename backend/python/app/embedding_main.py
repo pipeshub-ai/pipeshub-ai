@@ -37,6 +37,7 @@ from app.config.constants.ai_models import (
 )
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
 from app.utils.logger import create_logger, install_log_redaction
@@ -869,7 +870,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     reaper: asyncio.Task | None = None
     if MODEL_IDLE_SECONDS > 0:
-        reaper = asyncio.create_task(model_manager.run_idle_reaper())
+        reaper = spawn_detached(model_manager.run_idle_reaper(), name="embedding-idle-reaper")
 
     if config_service is not None:
         try:
