@@ -278,7 +278,11 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
             )
         if result.more_longer_names:
             line += " Many more readable names start with it; call again with the full name to include one."
-        return line
+        # The passages below are a ranked sample; the listing names every readable record.
+        return line + " Every record: " + "; ".join(
+            f'knowledgegraph__find_records_by_entity(entity_id="{c.entity_id}", entity_type="named_entity")'
+            for c in result.accepted
+        ) + "."
     if result.status is LinkStatus.AMBIGUOUS:
         if result.namesakes:
             line = (

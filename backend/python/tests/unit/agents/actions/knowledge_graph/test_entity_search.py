@@ -555,3 +555,9 @@ def test_a_namesake_only_answer_neither_says_absent_nor_ends_with_nothing_found(
     assert entity_search.COVERAGE_NOTE not in text and entity_search.COUNT_NOTE in text
     assert "Not the same: Lucas Arts (person)." in text
     assert "full name of the person meant" in entity_search._nothing_to_search(linking, match_all=False)
+
+
+
+def test_a_resolved_name_gives_the_call_that_lists_every_record() -> None:
+    text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e-acme", "Acme")]))
+    assert 'Every record: knowledgegraph__find_records_by_entity(entity_id="e-acme", entity_type="named_entity").' in text

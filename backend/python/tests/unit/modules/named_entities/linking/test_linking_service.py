@@ -263,3 +263,11 @@ async def test_namesakes_ride_along_an_unverified_result() -> None:
     linking = await _link([([*people, arts], False)], None, mentions=_mentions({"name": "Lucas"}))
     (result,) = linking.results
     assert result.status is LinkStatus.UNVERIFIED and result.namesakes == people and result.unchecked == [arts]
+
+
+
+@pytest.mark.asyncio
+async def test_an_equally_frequent_spelling_goes_to_the_fuller_name() -> None:
+    graph = _Graph({("e1", "r1"): ["Miguel Gallagher", "Miguel"]})
+    names = await readable_names(graph, "org", [_c("e1", "Miguel", "person", CandidateSource.PREFIX)])
+    assert names == {"e1": "Miguel Gallagher"}
