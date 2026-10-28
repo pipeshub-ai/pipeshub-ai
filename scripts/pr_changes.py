@@ -106,6 +106,8 @@ CHECKS: dict[str, tuple[str, ...]] = {
 STORAGE_NODE = (
     "backend/nodejs/apps/src/modules/storage/**",
     "backend/nodejs/apps/src/libs/middlewares/**",
+    # The storage server reads and writes its documents through these.
+    "backend/nodejs/apps/src/libs/repositories/**",
     "backend/nodejs/apps/src/libs/utils/**",
     "backend/nodejs/apps/src/libs/keyValueStore/**",
     "backend/nodejs/apps/src/libs/services/authtoken.service.ts",
