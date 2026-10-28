@@ -46,8 +46,27 @@ const READ_ONLY = {
 
 const TIMEOUT_MS = 60_000;
 
-// The code graph is new; hosts show this to the model and the user.
-const EXPERIMENTAL = '[Experimental] ';
+/**
+ * Appended to the server's instructions for a caller with indexed code. The
+ * package's own instructions are about documents only, so without this an
+ * agent working in a checkout reads PipesHub as unrelated to its code.
+ */
+export const CODE_GRAPH_INSTRUCTIONS = `
+
+## Code repositories
+
+This caller has indexed code repositories. For a question about code in one
+of them (where a feature or behaviour is implemented, what calls what, how A
+reaches B, what a change breaks) use the \`pipeshub_code_*\` tools rather
+than \`pipeshub_search\` or reading files one by one:
+
+1. \`pipeshub_code_repos\` lists the repositories; pass one as \`repo\`.
+2. Find the code: \`pipeshub_code_semantic_search\` when you know what it
+   does but not its name, \`pipeshub_code_search\` for a name or a string.
+3. Follow it: \`pipeshub_code_neighbours\` (callers, callees),
+   \`pipeshub_code_path\` (A to B), \`pipeshub_code_impact\` (what a change
+   breaks), \`pipeshub_code_outline\` and \`pipeshub_code_read\` to read.
+`;
 
 const repo = z
   .string()
@@ -91,8 +110,8 @@ const edgeTypes = z
 const COVERAGE =
   'Cross-file CALLS/IMPORTS edges are resolved through imports for Python, JavaScript, ' +
   'TypeScript and Java; other languages get calls matched by name. ' +
-  'a `coverage` field says when an answer may be incomplete, so confirm with ' +
-  'pipeshub_search before relying on an empty result.';
+  'A `coverage` field says when an answer may be incomplete, so confirm with ' +
+  'pipeshub_code_search (`mode: "text"`) before relying on an empty result.';
 
 async function call(
   deps: CodeGraphToolDeps,
@@ -227,7 +246,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_repos',
     {
       description:
-        EXPERIMENTAL +
         'List the indexed code repositories you can read. Every other ' +
         'pipeshub_code_* tool takes one of these names as `repo`.',
       annotations: READ_ONLY,
@@ -239,7 +257,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_symbols',
     {
       description:
-        EXPERIMENTAL +
         'What a directory or file in an indexed repo holds. `select` a directory ' +
         '(lists its children), a file (the symbols it defines, with line ranges) ' +
         'or a glob (`src/**`). Results are ranked by how connected each symbol is.',
@@ -277,7 +294,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_neighbours',
     {
       description:
-        EXPERIMENTAL +
         'Callers, callees, imports and inheritance of a file or symbol: what ' +
         'reaches it (`direction: "inbound"`) and what it reaches (`"outbound"`). Each row ' +
         `has repo, file_path, line range and qualified name. ${COVERAGE}`,
@@ -315,7 +331,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_read',
     {
       description:
-        EXPERIMENTAL +
         'Read indexed source: one symbol (`qualified_name`), a line range ' +
         '(`lines: "380-420"`), or a whole file (bounded by `max_lines`; the result ' +
         'says where it stopped). Reads the indexed copy, which can lag the repo.',
@@ -341,7 +356,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_path',
     {
       description:
-        EXPERIMENTAL +
         'How symbol A reaches symbol B in one repo, hop by hop with a sentence ' +
         'per hop. If only B reaches A, that path comes back with `reversed: true`. ' +
         `Edges across languages or over HTTP are not in the graph. ${COVERAGE}`,
@@ -380,7 +394,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_search',
     {
       description:
-        EXPERIMENTAL +
         'Find code without knowing its file. `mode: "identifier"` (default) lists every ' +
         'definition with that name. `mode: "text"` or `"regex"` finds lines in file bodies ' +
         '(a string, a call site, a config key); these need `path` and read at most 100 files.',
@@ -417,7 +430,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_semantic_search',
     {
       description:
-        EXPERIMENTAL +
         'Find the code behind a feature, a behaviour or something on screen when you do not ' +
         "know its names: 'the popup that shows docs when hovering a word', 'where unsaved " +
         "files are restored after a restart'. Ranks symbols by meaning, so near-synonyms " +
@@ -448,7 +460,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_outline',
     {
       description:
-        EXPERIMENTAL +
         "A file's classes, functions and methods with signatures, decorators, first doc " +
         'line and line ranges — no bodies. Read before pipeshub_code_read to pick what to read.',
       inputSchema: {
@@ -466,7 +477,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_impact',
     {
       description:
-        EXPERIMENTAL +
         'What changing a symbol can break: everything that calls, imports or builds on it, ' +
         `followed backwards up to \`depth\` hops, grouped by file. ${COVERAGE}`,
       inputSchema: {
@@ -492,7 +502,6 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_entry_points',
     {
       description:
-        EXPERIMENTAL +
         'Where control enters a repo: functions nothing in it calls (routes, CLIs, jobs, ' +
         `hooks), conventional names and files first. ${COVERAGE}`,
       inputSchema: {

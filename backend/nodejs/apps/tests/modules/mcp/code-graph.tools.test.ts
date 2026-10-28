@@ -45,7 +45,6 @@ describe('MCP code-graph tools', () => {
     for (const { config } of tools.values()) {
       expect(config.annotations.readOnlyHint).to.equal(true)
       expect(config.annotations.destructiveHint).to.equal(false)
-      expect(config.description).to.match(/^\[Experimental\] /)
     }
   })
 

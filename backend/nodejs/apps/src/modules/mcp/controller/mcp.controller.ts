@@ -22,6 +22,7 @@ import {
 } from '../../oauth_provider/constants/constants';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
+  CODE_GRAPH_INSTRUCTIONS,
   CODE_GRAPH_TOOL_NAMES,
   callerHasCodeRepos,
   registerCodeGraphTools,
@@ -108,14 +109,17 @@ function mcpToolCallProps(
   };
 }
 
-/** Whether this request can reach a code tool: a listing or a call to one.
- *  Anything else skips the repo check the code tools would cost. */
+/** Whether this request can reach a code tool: initialize (whose instructions
+ *  name the code tools), a listing, or a call to one. Anything else skips the
+ *  repo check the code tools would cost. */
 function reachesCodeTools(body: unknown): boolean {
   if (Array.isArray(body)) return body.some(reachesCodeTools);
   const message = body as
     | { method?: unknown; params?: { name?: unknown } }
     | undefined;
-  if (message?.method === 'tools/list') return true;
+  if (message?.method === 'tools/list' || message?.method === 'initialize') {
+    return true;
+  }
   return (
     message?.method === 'tools/call' &&
     (CODE_GRAPH_TOOL_NAMES as readonly unknown[]).includes(message.params?.name)
@@ -215,6 +219,10 @@ export const handleMCPRequest =
         // The package's McpServer is typed against its own zod 4; comparing that
         // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
         registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
+        // shortcut: the SDK has no setter for instructions and @pipeshub-ai/mcp
+        // builds them; move this there once it takes extra sections.
+        const server = mcpServer.server as unknown as { _instructions?: string };
+        server._instructions = (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 
       await mcpServer.connect(transport);
