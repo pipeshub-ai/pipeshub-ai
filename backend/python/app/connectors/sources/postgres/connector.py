@@ -78,7 +78,6 @@ from app.connectors.core.sql.column_records import (
     build_column_records,
     load_typed_columns,
 )
-from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.sql.permissions import database_permissions
 from app.connectors.core.sql.qualified_names import (
     join_qualified_name,
