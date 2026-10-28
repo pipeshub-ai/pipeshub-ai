@@ -519,3 +519,13 @@ async def test_a_caller_may_list_more_matches_than_the_default_page_up_to_the_sc
     assert listed["truncated"] is False and len(listed["hits"]) == 6000
     capped = await graph.records_for("org", None, query, limit=10**9)
     assert capped["truncated"] is False
+
+
+async def test_a_named_filter_reaches_related_kinds_but_kinds_alone_stay_exact() -> None:
+    graph = _Records({"hits": [], "truncated": False})
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"], "name": "halcyon"})
+    named = graph.args[1]
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"]})
+    alone = graph.args[1]
+    assert set(named.kinds) == {"product", "organization"} and named.name_prefix == "halcyon"
+    assert alone.kinds == ["product"]

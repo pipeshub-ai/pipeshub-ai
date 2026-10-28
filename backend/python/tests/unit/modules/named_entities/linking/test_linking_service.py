@@ -271,3 +271,25 @@ async def test_an_equally_frequent_spelling_goes_to_the_fuller_name() -> None:
     graph = _Graph({("e1", "r1"): ["Miguel Gallagher", "Miguel"]})
     names = await readable_names(graph, "org", [_c("e1", "Miguel", "person", CandidateSource.PREFIX)])
     assert names == {"e1": "Miguel Gallagher"}
+
+
+async def test_an_exact_node_of_a_related_kind_is_checked_not_taken() -> None:
+    product = _c("e1", "Halcyon Ledger", "organization", CandidateSource.EXACT)
+    verifier = _Verifier({0: [0]})
+    linking = await _link([([product], False)], verifier, mentions=_mentions({"name": "Halcyon Ledger", "kind": "product"}))
+    (result,) = linking.results
+    assert result.status is LinkStatus.CHECKED and result.accepted == [product]
+    ((_, items),) = verifier.calls
+    assert [(c.name, c.kind) for c in items[0].candidates] == [("Halcyon Ledger", "organization")]
+
+
+@pytest.mark.asyncio
+async def test_beside_an_exact_product_the_same_name_as_an_organization_goes_to_the_check() -> None:
+    product = _c("e1", "Mosaic", "product", CandidateSource.EXACT)
+    company = _c("e2", "Mosaic", "organization", CandidateSource.EXACT)
+    verifier = _Verifier({0: []})
+    linking = await _link([([product, company], False)], verifier, mentions=_mentions({"name": "Mosaic Co", "kind": "product"}))
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [product]
+    ((_, items),) = verifier.calls
+    assert [c.kind for c in items[0].candidates] == ["organization"]

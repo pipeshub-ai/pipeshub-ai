@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.kinds import EntityKind, kind_family
 from app.modules.named_entities.graph_ops import NamedEntityQuery
 
 _LOW = -1e308
@@ -163,6 +163,10 @@ def entity_query_from(raw: dict[str, Any]) -> NamedEntityQuery | None:
         quantity_min, quantity_max = _LOW, _HIGH
     percent_min, percent_max = _bound(_number(percent.get("min"), "percent.min"), _number(percent.get("max"), "percent.max"))
     name = str(name or "").strip()
+    if name:
+        # A name is looked up under every kind the extractor may have filed it under;
+        # kinds alone ("records mentioning a product") stay exact, or they would widen to every company.
+        kinds = list(dict.fromkeys(k.value for kind in kinds for k in kind_family(EntityKind(kind))))
     if not any([kinds, name, date_start is not None, amount_min is not None, quantity_min is not None, percent_min is not None]):
         return None
     return NamedEntityQuery(

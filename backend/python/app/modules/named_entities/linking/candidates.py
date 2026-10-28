@@ -164,10 +164,14 @@ class CandidateFinder:
             for index in prefixes.get((str(row.get("kind")), str(row.get("key"))), ()):
                 prefix_hits[index].append(row)
         for index, hits in enumerate(prefix_hits):
-            if len(hits) > MAX_CANDIDATES:
+            # Only the asked kind can make a name ambiguous; rows of a related kind
+            # fill what is left of the cap.
+            asked = [r for r in hits if mentions[index].settles(str(r.get("kind")))]
+            if len(asked) > MAX_CANDIDATES:
                 per_mention[index].ambiguous = True
                 continue
-            for row in sorted(hits, key=lambda r: str(r.get("normKey"))):
+            related = [r for r in hits if r not in asked]
+            for row in [*sorted(asked, key=_norm_key), *sorted(related, key=_norm_key)]:
                 _add(index, row, CandidateSource.PREFIX)
         for index, hits in enumerate(near):
             for row in sorted(hits, key=lambda r: str(r.get("normKey"))):
@@ -231,3 +235,7 @@ def _near_spelling(mention: Mention, row: dict[str, Any]) -> bool:
         if SequenceMatcher(None, asked_rest, stored_rest).ratio() >= FUZZY_MIN_RATIO:
             return True
     return False
+
+
+def _norm_key(row: dict[str, Any]) -> str:
+    return str(row.get("normKey"))
