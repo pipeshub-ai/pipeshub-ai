@@ -1301,14 +1301,9 @@ async def _drain(response) -> str:
 
 class TestCreateConnector:
     @pytest.mark.asyncio
-    async def test_builds_connector_with_initialized_processor(self, monkeypatch) -> None:
+    async def test_uses_the_processor_the_factory_passes(self) -> None:
         processor = MagicMock()
         processor.org_id = "org-1"
-        processor.initialize = AsyncMock()
-        monkeypatch.setattr(
-            "app.connectors.sources.odoo.connector.DataSourceEntitiesProcessor",
-            MagicMock(return_value=processor),
-        )
 
         connector = await OdooConnector.create_connector(
             logger=logging.getLogger("test.odoo"),
@@ -1317,10 +1312,11 @@ class TestCreateConnector:
             connector_id="conn-odoo-1",
             scope="TEAM",
             created_by="creator-user-id",
+            data_entities_processor=processor,
         )
 
         assert isinstance(connector, OdooConnector)
-        processor.initialize.assert_awaited_once()
+        assert connector.data_entities_processor is processor
 
 
 class TestInitFailure:

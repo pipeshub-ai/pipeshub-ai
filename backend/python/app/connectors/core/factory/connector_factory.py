@@ -99,7 +99,6 @@ from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.smb.connector import SmbConnector
-from app.connectors.sources.mariadb.connector import MariaDBConnector
 from app.connectors.sources.odoo.connector import OdooConnector
 
 

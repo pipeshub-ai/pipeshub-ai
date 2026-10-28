@@ -30,9 +30,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -58,6 +55,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.odoo.apps import OdooApp
+from app.core.org_context import spawn_in_request
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -87,6 +85,9 @@ if TYPE_CHECKING:
     from fastapi.responses import StreamingResponse
 
     from app.config.configuration_service import ConfigurationService
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
 
 
@@ -260,12 +261,9 @@ class OdooConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        **kwargs: object,
     ) -> "BaseConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return OdooConnector(
             logger,
             data_entities_processor,
@@ -1258,7 +1256,7 @@ class OdooConnector(BaseConnector):
     def handle_webhook_notification(self, notification: dict) -> None:
         """Placeholder — Odoo has no native webhooks without a Studio automation."""
         self.logger.info("Odoo webhook received.")
-        task = asyncio.create_task(self._sync_from_webhook())
+        task = spawn_in_request(self._sync_from_webhook())
         # The loop only holds a weak reference; without this the task can be
         # collected mid-flight and its exception lost.
         self._background_tasks.add(task)
