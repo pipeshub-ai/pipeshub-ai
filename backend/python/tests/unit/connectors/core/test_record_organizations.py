@@ -75,7 +75,7 @@ async def test_a_rejected_write_does_not_fail_the_record() -> None:
 
 
 @pytest.mark.parametrize("failing", [
-    "get_record_group_organization", "delete_edges_between_collections", "batch_create_entity_relations",
+    "get_record_group_organization", "delete_record_entity_relations", "batch_create_entity_relations",
 ])
 async def test_a_failure_the_caller_must_see_is_raised(failing: str) -> None:
     """A conflict the caller retries, or a failure that ended its transaction,

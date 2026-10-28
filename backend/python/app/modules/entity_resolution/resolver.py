@@ -414,20 +414,15 @@ class EntityResolver:
         found: dict[tuple[str, str], dict[str, Any]] = {}
         for collection, normalized_names in by_collection.items():
             wanted = set(normalized_names)
-            if collection == ORGANIZATION.collection:
-                rows = await self._graph_lookup(
-                    "exact",
-                    lambda wanted=wanted: self.graph_provider.find_organizations(org_id, sorted(wanted)),
-                    stats,
-                )
-            else:
-                rows = await self._graph_lookup(
-                    "exact",
-                    lambda collection=collection, wanted=wanted: self.graph_provider.find_taxonomy_nodes(
-                        collection, org_id, sorted(wanted),
-                    ),
-                    stats,
-                )
+            rows = await self._graph_lookup(
+                "exact",
+                lambda collection=collection, wanted=wanted: (
+                    self.graph_provider.find_organizations(org_id, sorted(wanted))
+                    if collection == ORGANIZATION.collection
+                    else self.graph_provider.find_taxonomy_nodes(collection, org_id, sorted(wanted))
+                ),
+                stats,
+            )
             nodes: list[tuple[dict[str, Any], str | None, list[str]]] = []
             for row in rows or []:
                 key = row.get("id") or row.get("_key")
@@ -885,8 +880,8 @@ class EntityResolver:
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
-        metadata.own_labels = True
         metadata.organizations = by_slot.get(ORGANIZATION.slot, [])
+        metadata.own_labels = True
 
 
 __all__ = ["LLM_ROLE", "EntityResolver"]

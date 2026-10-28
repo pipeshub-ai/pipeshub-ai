@@ -43,8 +43,9 @@ async def test_a_name_finds_the_account_by_its_key(make_resolver, ctx_factory, m
     _, resolution = await _resolve(make_resolver, ctx_factory, meta)
     (entity,) = resolution.entries.values()
     assert (entity.key, entity.decision, entity.is_new) == ("acc-globex", "exact", False)
-    # The record links to the account under its own name.
-    assert meta.organizations == ["Globex Corporation"]
+    # The record keeps its own spelling and is linked to the account by its key.
+    assert meta.organizations == ["GLOBEX corp"]
+    assert resolution.get(entity.kind.collection, "GLOBEX corp") is entity
 
 
 async def test_the_tenant_and_the_source_app_are_not_organisations_of_the_record(

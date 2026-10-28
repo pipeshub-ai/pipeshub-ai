@@ -349,7 +349,7 @@ def semantic_metadata_from_classification(classification: DocumentClassification
         departments=names(classification.departments),
         languages=names(classification.languages),
         topics=names(classification.topics),
-        organizations=list(classification.organizations),
+        organizations=list(getattr(classification, "organizations", None) or []),
         summary=classification.summary,
         categories=[category] if category else [],
         sub_category_level_1=optional_name(classification.subcategories.level1),
@@ -465,6 +465,7 @@ def find_code_summary_block(blocks: list[Block]) -> Optional[Block]:
         ):
             return block
     return None
+
 
 class DocumentExtraction(Transformer):
     def __init__(

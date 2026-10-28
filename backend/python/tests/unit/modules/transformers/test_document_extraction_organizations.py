@@ -16,7 +16,7 @@ from app.modules.transformers.document_extraction import (
     DocumentClassification,
     DocumentExtraction,
     SubCategories,
-    semantic_metadata_from,
+    semantic_metadata_from_classification,
 )
 
 
@@ -43,7 +43,7 @@ def test_organizations_are_cleaned_and_capped_not_rejected() -> None:
 
 
 def test_both_classify_paths_carry_organizations_into_semantic_metadata() -> None:
-    meta = semantic_metadata_from(_classification(organizations=["Acme Corp"]))
+    meta = semantic_metadata_from_classification(_classification(organizations=["Acme Corp"]))
     assert meta.organizations == ["Acme Corp"]
     assert (meta.categories, meta.sub_category_level_1, meta.topics) == (["Legal"], "Contract", ["Renewal"])
 
@@ -52,7 +52,7 @@ def test_an_object_without_organizations_maps_to_none() -> None:
     classification = MagicMock(spec=["departments", "languages", "topics", "summary", "category", "subcategories"])
     classification.configure_mock(departments=[], languages=[], topics=[], summary="s", category="c",
                                   subcategories=SimpleNamespace(level1="", level2="", level3=""))
-    assert semantic_metadata_from(classification).organizations == []
+    assert semantic_metadata_from_classification(classification).organizations == []
 
 
 def test_the_prompt_asks_for_organizations_and_says_what_is_not_one() -> None:
