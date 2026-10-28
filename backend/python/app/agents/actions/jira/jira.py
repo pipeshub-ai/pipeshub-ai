@@ -1270,9 +1270,11 @@ class Jira:
         response_data: dict[str, Any],
         field_schema: dict[str, dict[str, str]]
     ) -> dict[str, Any]:
-        """Normalize custom fields in a response containing issues.
+        """Rename custom fields in a response containing issues to their readable names.
 
-        Only normalizes fields that have values (not None) to avoid adding back removed fields.
+        Each custom field appears once, under its normalized name (the customfield_ id is
+        dropped). Only fields with values (not None) are touched. If the name is empty,
+        already taken, or a system field's key or alias, the id is kept so no value is lost.
 
         Args:
             response_data: Response data (may contain "issues" list or single issue)
@@ -1286,24 +1288,32 @@ class Jira:
 
         normalized = dict(response_data)
 
-        # Handle list of issues (from search_issues, get_issues)
+        # Handle list of issues (from search_issues, get_issues) or a single issue
         if "issues" in normalized and isinstance(normalized["issues"], list):
-            for issue in normalized["issues"]:
-                if "fields" in issue and isinstance(issue["fields"], dict):
-                    fields = issue["fields"]
-                    # Only normalize customfield_* fields that exist and are not None
-                    for field_id, field_info in field_schema.items():
-                        if field_id in fields and fields[field_id] is not None:
-                            normalized_name = field_info["normalized"]
-                            fields[normalized_name] = fields[field_id]
+            issues = normalized["issues"]
+        else:
+            issues = [normalized]
 
-        # Handle single issue (from get_issue)
-        elif "fields" in normalized and isinstance(normalized["fields"], dict):
-            fields = normalized["fields"]
+        # A custom field may not take a system field's key or alias (Jira allows a custom
+        # field named "Issue Type" or "Description"); get_issue also writes "description" back.
+        reserved = {"description"}
+        for field_id, field_info in field_schema.items():
+            if not field_id.startswith("customfield_"):
+                reserved.update((field_id, field_info["normalized"]))
+
+        for issue in issues:
+            fields = issue.get("fields") if isinstance(issue, dict) else None
+            if not isinstance(fields, dict):
+                continue
             for field_id, field_info in field_schema.items():
                 if field_id in fields and fields[field_id] is not None:
-                    normalized_name = field_info["normalized"]
-                    fields[normalized_name] = fields[field_id]
+                    name = field_info["normalized"]
+                    if not field_id.startswith("customfield_"):
+                        fields[name] = fields[field_id]
+                    elif name and name not in reserved and name not in fields:
+                        # Rename, don't copy: one key per custom field saves LLM tokens.
+                        # Writers get ids from get_create_issue_fields, not from this output.
+                        fields[name] = fields.pop(field_id)
 
         return normalized
 
