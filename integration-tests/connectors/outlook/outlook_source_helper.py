@@ -653,8 +653,7 @@ class OutlookSourceHelper:
         The unfiltered GET /groups list the connector pages lags a
         ``groupTypes/any(...)`` filtered list by a minute or more in both
         directions: a new group shows in the filtered list first, a deleted one
-        leaves it first. Waiting on the filtered list let a sync run before the
-        connector could see the change.
+        leaves it first. Only this list tells a test what the next sync will see.
         """
         found: list[Group] = []
         next_url: str | None = None
