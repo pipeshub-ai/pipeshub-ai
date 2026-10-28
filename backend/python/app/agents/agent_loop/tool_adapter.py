@@ -517,19 +517,35 @@ def _accepts_null(prop_schema: Any) -> bool:  # noqa: ANN401
     enum = prop_schema.get("enum")
     if isinstance(enum, list):
         return None in enum
+    # Checked before `allOf`: `nullable` beside `allOf: [$ref]` is how OpenAPI 3.0 writes a
+    # nullable reference.
     if prop_schema.get("nullable") is True or prop_schema.get("type") == "null":
         return True
+    all_of = prop_schema.get("allOf")
+    if isinstance(all_of, list) and not all(_accepts_null(arm) for arm in all_of):
+        return False
     arms = prop_schema.get("anyOf") or prop_schema.get("oneOf")
     if isinstance(arms, list) and arms:
         return any(_accepts_null(arm) for arm in arms)
     return "type" not in prop_schema
 
 
+def _is_multi_type_union(prop_schema: Any) -> bool:  # noqa: ANN401
+    """Whether a property is a union of two or more non-null schemas. `parameters` keeps only
+    the first arm (`_unwrap_any_of`), so an enum it carries is not the whole contract."""
+    arms = (prop_schema.get("anyOf") or prop_schema.get("oneOf")) if isinstance(prop_schema, dict) else None
+    if not isinstance(arms, list):
+        return False
+    return sum(1 for arm in arms if not (isinstance(arm, dict) and arm.get("type") == "null")) > 1
+
+
 def _is_null_text(value: Any) -> bool:  # noqa: ANN401
     return isinstance(value, str) and value.strip().lower() == "null"
 
 
-def _checked_value(param: ToolParameter, value: Any, *, type_is_authoritative: bool) -> Any:  # noqa: ANN401
+def _checked_value(
+    param: ToolParameter, value: Any, *, type_is_authoritative: bool, enum_is_authoritative: bool,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
     """`value` as the schema takes it (a stringified number or boolean coerced, an enum
     member matched loosely), or `ToolValidationError`."""
     accepted_types = _PYTHON_TYPES.get(param.type) if type_is_authoritative else None
@@ -548,7 +564,7 @@ def _checked_value(param: ToolParameter, value: Any, *, type_is_authoritative: b
                 )
             value = coerced
 
-    if param.enum is not None and value not in param.enum:
+    if enum_is_authoritative and param.enum is not None and value not in param.enum:
         matched = _fuzzy_match_enum(value, param.enum)
         if matched is None:
             raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
@@ -594,7 +610,8 @@ class SchemaShallowValidationMixin:
         """Shallow validation against the tool's own schema — an MCP server's or an
         OpenAPI spec's (via
         `parameters`, sourced from the same `raw_input_schema` above):
-        required keys present, enum membership, and — only for a property
+        required keys present, enum membership (unless the enum belongs to
+        one arm of a multi-type union), and — only for a property
         that declares a single concrete type (see
         `_properties_with_authoritative_type`) — a loose primitive-type
         check that coerces the common case of an LLM stringifying a number
@@ -638,7 +655,9 @@ class SchemaShallowValidationMixin:
 
             try:
                 kwargs[param.name] = _checked_value(
-                    param, value, type_is_authoritative=param.name in typed_properties,
+                    param, value,
+                    type_is_authoritative=param.name in typed_properties,
+                    enum_is_authoritative=not _is_multi_type_union(properties.get(param.name)),
                 )
             except ToolValidationError:
                 if param.required or not _is_null_text(value):

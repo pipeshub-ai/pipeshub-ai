@@ -375,6 +375,8 @@ class TestUnsetOptionalArgumentsAreLeftOut:
             {"oneOf": [{"type": "string"}, {"type": "null"}]},
             {"enum": ["alice", None]},
             {"description": "anything"},
+            # OpenAPI 3.0's way to write a nullable reference.
+            {"nullable": True, "allOf": [{"type": "object"}]},
         ],
     )
     def test_a_schema_that_accepts_null_still_gets_it(self, schema: dict[str, Any]) -> None:
@@ -388,6 +390,22 @@ class TestUnsetOptionalArgumentsAreLeftOut:
         kwargs = {"fields": None}
         _adapter_with({"fields": {"anyOf": [{"type": "string"}, {"type": "array"}]}}, []).validate(kwargs)
         assert kwargs == {}
+
+    def test_an_all_of_that_refuses_null_drops_it(self) -> None:
+        """No top-level `type`, but every `allOf` arm must hold, and this one refuses null."""
+        kwargs = {"limit": None}
+        _adapter_with({"limit": {"allOf": [{"type": "integer"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_the_string_null_for_an_enum_holding_null_is_left_out(self) -> None:
+        """The fuzzy enum match used to call `.lower()` on the null member and crash."""
+        kwargs = {"assignee": "null"}
+        _adapter_with({"assignee": {"enum": ["alice", None]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_a_wrong_value_for_a_numeric_enum_is_a_validation_error(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \[1, 2\], got 'three'"):
+            _adapter_with({"level": {"enum": [1, 2]}}, []).validate({"level": "three"})
 
     def test_null_for_a_required_argument_is_still_sent(self) -> None:
         """Leaving it out would only swap the server's answer for "missing"."""
@@ -488,6 +506,26 @@ class TestValidateSkipsNonAuthoritativeTypes:
         adapter.validate({"assignee": None})  # must not raise
         with pytest.raises(ToolValidationError, match="expected type 'string'"):
             adapter.validate({"assignee": {"id": 1}})
+
+    def test_a_union_is_not_held_to_its_first_arms_enum(self) -> None:
+        """`parameters` copies the enum of the first arm only; the integer arm takes any
+        integer, and the server decides about a string."""
+        adapter = _adapter_with(
+            {"order": {"anyOf": [{"type": "string", "enum": ["asc", "desc"]}, {"type": "integer"}]}}, [],
+        )
+        for value in (5, "null"):
+            kwargs = {"order": value}
+            adapter.validate(kwargs)
+            assert kwargs == {"order": value}
+
+    def test_a_nullable_enum_is_still_enforced(self) -> None:
+        """One non-null arm is the whole contract, so its enum still applies."""
+        adapter = _adapter_with({"status": {"anyOf": [{"type": "string", "enum": ["open", "closed"]}, {"type": "null"}]}}, [])
+        kwargs = {"status": "Open"}
+        adapter.validate(kwargs)
+        assert kwargs == {"status": "open"}
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            adapter.validate({"status": "archived"})
 
     def test_enum_is_enforced_even_on_an_untyped_property(self) -> None:
         """Skipping the TYPE check must not skip the enum check — an `enum`
