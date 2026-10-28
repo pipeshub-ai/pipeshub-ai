@@ -21,3 +21,15 @@ def test_a_blank_line_inside_the_parentheses_is_not_an_inline_image(md: str) -> 
     # embedded.
     _, images = extract_and_replace_images(md)
     assert [i["url"] for i in images] == []
+
+
+@pytest.mark.parametrize(
+    "md",
+    ["<img>", "<IMG>", "text <img> more", "<p><img></p>", "<img>\n", "<img><img>", "<img>src=x"],
+)
+def test_a_bare_img_tag_does_not_raise(md: str) -> None:
+    # `<img>` (no attributes) is the most common bare tag; the scanner must
+    # handle it as it did before the slash-separator change.
+    modified, images = extract_and_replace_images(md)
+    assert isinstance(modified, str)
+    assert all(i["url"] == "" for i in images)
