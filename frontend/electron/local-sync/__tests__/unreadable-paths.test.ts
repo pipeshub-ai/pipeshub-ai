@@ -82,6 +82,27 @@ test('a folder that is really gone is still reported deleted', async () => {
   fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('a file edited while unreadable keeps no hash, so the edit is reported', () => {
+  const known = { inode: 7, size: 4, mtimeMs: 1000, isDirectory: false, sha256: 'ab'.repeat(32) };
+  const unreadable = emptyUnreadable();
+  unreadable.files.add('x.txt');
+  const edited = carryForwardUnreadable(
+    new Map([['x.txt', { ...known, mtimeMs: 2000, sha256: undefined }]]), unreadable, { 'x.txt': known });
+  assert.equal(edited.get('x.txt')?.sha256, undefined);
+  const untouched = carryForwardUnreadable(
+    new Map([['x.txt', { ...known, sha256: undefined }]]), unreadable, { 'x.txt': known });
+  assert.equal(untouched.get('x.txt')?.sha256, known.sha256);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-unreadable-'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-unreadable-state-'));
+  const store = new WatcherStateStore({ baseDir: base, syncRoot: root, connectorInstanceId: 'c-1' });
+  store.applyScan(new Map([['x.txt', known]]));
+  const events = store.reconcile(edited);
+  assert.deepEqual(events.map((e) => [e.type, e.path, Boolean(e.sha256)]), [['MODIFIED', 'x.txt', false]]);
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
 test('a file first reported without a hash is reported again once it can be read', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-unreadable-'));
   await fsp.writeFile(path.join(root, 'x.txt'), 'x');

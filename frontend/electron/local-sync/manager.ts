@@ -692,12 +692,12 @@ export class LocalSyncManager {
       const batch = batches[i];
       const from = i === startIndex ? startOffset : 0;
       const rest = (await this.resolveBatchEvents(connectorId, batch, meta.rootPath)).slice(from);
-      const restBytes = rest.reduce((n, e) => n + eventBytes(e), 0);
       // Whole batches while they fit. A batch is split only when it alone is
       // bigger than a page (a folder move, a reconcile after the app was
       // closed): served whole it would never reach Node.
       if (rest.length > 0 && events.length > 0
-        && (events.length + rest.length > maxEvents || bytes + restBytes > MAX_PAGE_EVENT_BYTES)) {
+        && (events.length + rest.length > maxEvents
+          || bytes + rest.reduce((n, e) => n + eventBytes(e), 0) > MAX_PAGE_EVENT_BYTES)) {
         break;
       }
       let taken = 0;

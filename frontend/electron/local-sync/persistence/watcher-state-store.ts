@@ -249,7 +249,12 @@ export function carryForwardUnreadable(
   for (const relPath of unreadable.files) {
     const current = scan.get(relPath);
     const known = previous[relPath];
-    if (current && !current.isDirectory && current.sha256 === undefined && known?.sha256) {
+    // Only while size and mtime still match: a file edited while unreadable
+    // must keep no hash, or reconcile sees no change and the edit is never sent.
+    if (
+      current && !current.isDirectory && current.sha256 === undefined && known?.sha256
+      && known.size === current.size && known.mtimeMs === current.mtimeMs
+    ) {
       scan.set(relPath, { ...current, sha256: known.sha256 });
     }
   }
