@@ -31,6 +31,7 @@ _EXPECTED_TOOL_PATHS = {
     "/tools/knowledgegraph/search_entities",
     "/tools/knowledgegraph/find_records_by_entity",
     "/tools/knowledgegraph/find_records_by_value",
+    "/tools/knowledgegraph/find_records_by_person",
     # Declared on the class; the toolset withholds it unless the deployment
     # offers it (``KnowledgeGraph.tools_for_request``).
     "/tools/knowledgegraph/search_by_entities",
@@ -44,6 +45,7 @@ _BOUND_PARAM_DEFAULTS = {
     "list_files": {"limit": 20},
     "search_entities": {"top_k": 10},
     "find_records_by_entity": {"limit": 20},
+    "find_records_by_person": {"limit": 20},
 }
 
 

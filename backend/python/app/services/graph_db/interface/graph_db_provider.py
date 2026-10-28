@@ -8075,6 +8075,25 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Users of ``org_id`` a person query names, active or not (stubs and
+        guests included). ``query`` is matched case-insensitively, spaces
+        collapsed: users whose email, full name or first + last name equals it;
+        when none does, users whose full name, a word of it, or email local
+        part starts with it (only for 3+ characters). Every user sharing the
+        email of a match is returned too, so one person's several nodes come
+        back together. No permission check: org members' names and emails are
+        visible to members.
+
+        Returns:
+            Up to ``limit`` ``{"id", "fullName", "email"}``, ordered by name.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_taxonomy_entity_membership(
         self,
         refs: list[dict[str, Any]],
