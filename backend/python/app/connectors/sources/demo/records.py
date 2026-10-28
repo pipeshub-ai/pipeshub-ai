@@ -122,7 +122,7 @@ def _github_issue(common: dict[str, Any], slots: Slots, people: People, rec: Map
 
 
 def _jira_issue(
-    common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any], **source_ids: Any,
+    common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any], **source_ids: str | list[str] | None,
 ) -> Record:
     return TicketRecord(
         record_type=RecordType.TICKET,
