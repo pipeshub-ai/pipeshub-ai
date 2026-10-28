@@ -319,7 +319,7 @@ class TestExecuteQuery:
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=stopped))
         ok, payload = await tool.execute_query(query="SELECT * FROM public.customers")
         assert ok is False
-        assert f"{SQL_QUERY_TIMEOUT_S}s limit" in json.loads(payload)["error"]
+        assert f"up to {SQL_QUERY_TIMEOUT_S}s" in json.loads(payload)["error"]
 
     async def test_display_is_capped_at_100_rows(self, make_tool) -> None:
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(150)))

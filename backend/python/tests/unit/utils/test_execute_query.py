@@ -1529,4 +1529,4 @@ async def test_a_database_timeout_is_a_tool_error() -> None:
         return_value=_patched_client(raw),
     ):
         out = await eq._execute_postgres_query("SELECT pg_sleep(999)", MagicMock(), "c")
-    assert out["ok"] is False and f"{SQL_QUERY_TIMEOUT_S}s limit" in out["error"]
+    assert out["ok"] is False and f"up to {SQL_QUERY_TIMEOUT_S}s" in out["error"]

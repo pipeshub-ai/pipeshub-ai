@@ -387,7 +387,7 @@ class MariaDBClient:
             except Exception as e:
                 logger.error(f"🔧 [MariaDBClient] KILL QUERY {thread_id} failed: {e}")
 
-        killer = asyncio.create_task(kill_when_late())
+        killer = spawn_in_request(kill_when_late())
         try:
             yield
         finally:

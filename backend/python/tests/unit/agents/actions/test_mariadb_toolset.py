@@ -92,6 +92,7 @@ class _FakeCursor:
 class _FakeConnection:
     def __init__(self, pool: "_FakePool") -> None:
         self._pool = pool
+        self.connection_id = 7
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
 
@@ -358,7 +359,7 @@ class TestExecuteQuery:
         tool, _ = make_tool(_Catalog(SHOP, on_query=stopped))
         ok, payload = await tool.execute_query(query="SELECT * FROM customers")
         assert ok is False
-        assert f"{SQL_QUERY_TIMEOUT_S}s limit" in json.loads(payload)["error"]
+        assert f"up to {SQL_QUERY_TIMEOUT_S}s" in json.loads(payload)["error"]
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
