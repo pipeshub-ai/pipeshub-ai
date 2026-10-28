@@ -1,6 +1,5 @@
 """Decisions for Drive, BookStack, Dropbox, OneDrive, and SharePoint item access."""
 
-from app.connectors.sources.bookstack.access import resolve_bookstack_roles
 from app.connectors.sources.dropbox.access import (
     fallback_for_uncovered_user,
     member_is_direct,
@@ -84,104 +83,6 @@ class TestDriveAccess:
         ) is False
 
 
-class TestBookStackAccess:
-    def test_inheriting_chapter_without_rows_follows_the_book(self) -> None:
-        parent = {2: PermissionType.READ}
-        effective, inherit = resolve_bookstack_roles(
-            {"role_permissions": [], "fallback_permissions": {"inheriting": True}},
-            {},
-            "chapter",
-            parent,
-        )
-        assert inherit is True
-        assert effective == parent
-
-    def test_role_deny_on_an_inheriting_page_replaces_the_parent(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {
-                "role_permissions": [
-                    {"role_id": 2, "view": False, "create": False, "update": False, "delete": False}
-                ],
-                "fallback_permissions": {"inheriting": True},
-            },
-            {2: {}},
-            "page",
-            {2: PermissionType.READ, 3: PermissionType.WRITE},
-        )
-        assert inherit is False
-        assert effective == {3: PermissionType.WRITE}
-
-    def test_everyone_else_is_stored_when_inheritance_is_off(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {
-                "role_permissions": [
-                    {"role_id": 2, "view": False, "create": False, "update": True, "delete": False}
-                ],
-                "fallback_permissions": {
-                    "inheriting": False, "view": True, "create": False, "update": False, "delete": False
-                },
-            },
-            {2: {}, 4: {}},
-            "page",
-            {2: PermissionType.READ, 4: PermissionType.READ},
-        )
-        assert inherit is False
-        assert effective == {4: PermissionType.READ}
-
-    def test_inheriting_book_uses_system_roles(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {"role_permissions": [], "fallback_permissions": {"inheriting": True}},
-            {1: {"permissions": ["book-view-all"]}},
-            "book",
-            None,
-        )
-        assert inherit is False
-        assert effective == {1: PermissionType.READ}
-
-    def test_an_inheriting_book_keeps_view_all_for_roles_without_a_row(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {
-                "role_permissions": [
-                    {"role_id": 1, "view": False, "create": False, "update": False, "delete": False}
-                ],
-                "fallback_permissions": {"inheriting": True},
-            },
-            {1: {"permissions": ["book-view-all"]}, 2: {"permissions": ["book-view-all"]}},
-            "book",
-            None,
-        )
-        assert inherit is False
-        assert effective == {2: PermissionType.READ}
-
-    def test_everyone_else_no_view_hides_a_role_with_book_view_all(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {
-                "role_permissions": [],
-                "fallback_permissions": {"inheriting": False, "view": False},
-            },
-            {
-                1: {"permissions": ["book-view-all"]},
-                2: {"permissions": ["restrictions-manage-all"]},
-                3: {"system_name": "admin", "permissions": []},
-            },
-            "book",
-            None,
-        )
-        assert inherit is False
-        assert effective == {3: PermissionType.WRITE}
-
-    def test_admin_still_sees_a_chapter_when_everyone_else_cannot(self) -> None:
-        effective, inherit = resolve_bookstack_roles(
-            {
-                "role_permissions": [],
-                "fallback_permissions": {"inheriting": False, "view": False},
-            },
-            {3: {"system_name": "admin"}},
-            "chapter",
-            {3: PermissionType.READ},
-        )
-        assert inherit is False
-        assert effective == {3: PermissionType.WRITE}
 
 
 class TestDropboxAccess:

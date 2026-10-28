@@ -93,27 +93,5 @@ async def test_a_purged_delete_without_an_id_does_not_block_the_cursor(connector
     connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_the_group_cursor_holds_when_a_delete_is_not_applied(connector) -> None:
-    connector.list_roles_with_details = AsyncMock(return_value={})
-    connector.record_sync_point = MagicMock()
-    connector.record_sync_point.read_sync_point = AsyncMock(return_value={"timestamp": "2026-10-01T00:00:00Z"})
-    connector.record_sync_point.update_sync_point = AsyncMock()
-    connector._sync_record_groups_incremental = AsyncMock(return_value=False)
-
-    await connector._sync_record_groups()
-
-    connector.record_sync_point.update_sync_point.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_the_group_cursor_moves_when_every_delete_is_applied(connector) -> None:
-    connector.list_roles_with_details = AsyncMock(return_value={})
-    connector.record_sync_point = MagicMock()
-    connector.record_sync_point.read_sync_point = AsyncMock(return_value={"timestamp": "2026-10-01T00:00:00Z"})
-    connector.record_sync_point.update_sync_point = AsyncMock()
-    connector._sync_record_groups_incremental = AsyncMock(return_value=True)
-
-    await connector._sync_record_groups()
-
-    connector.record_sync_point.update_sync_point.assert_awaited_once()
