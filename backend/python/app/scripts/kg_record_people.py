@@ -170,7 +170,7 @@ async def backfill(
 async def _link(record: Record, store: object, logger: Logger) -> int:
     return (
         await link_record_people(record, store, logger, _fail_the_page)
-        + await link_record_organization(record, store, logger)
+        + await link_record_organization(record, store, logger, _fail_the_page)
     )
 
 

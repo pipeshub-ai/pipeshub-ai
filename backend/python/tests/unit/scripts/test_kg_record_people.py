@@ -220,3 +220,17 @@ async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
     out = io.StringIO()
     assert await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=out) == 1
     assert _lines(out)[0] == {"stamp_accounts": "failed", "error": "RuntimeError"}
+
+
+async def test_a_failed_account_lookup_fails_the_page() -> None:
+    from app.models.entities import DealRecord
+
+    graph, out = _graph([["d1"]]), io.StringIO()
+    deal = DealRecord(id="d1", external_record_id="d1", record_group_id="rg-1", **{**BASE, "record_type": RecordType.DEAL})
+    graph.get_typed_records_batch = AsyncMock(return_value={"d1": deal})
+    graph.get_record_group_organization = AsyncMock(side_effect=RuntimeError("down"))
+
+    code = await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
+
+    assert code == EXIT_PARTIAL
+    assert _lines(out)[-1]["total"]["failed_pages"] == 1
