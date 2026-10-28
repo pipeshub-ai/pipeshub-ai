@@ -24,7 +24,7 @@ info:
 
     **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters.
 
-    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
+    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse or whose top level is not an object or an array (a bare string, number, `true`, `false` or `null`), or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
     **Request size.** On every route with a request validator, the body, query and path values are measured before the schema runs. An array over 10,000 items (`<path> can have at most 10000 items.`), an object over 10,000 keys (`<path> can have at most 10000 fields.`), more than 100,000 array items and object keys in the whole request (`The request holds too many items in total (the limit is 100000); the limit is reached at <path>.`) or nesting deeper than 64 levels (`<path> is nested more than 64 levels deep.`) is refused with `400 VALIDATION_ERROR` (detail code `TOO_BIG`, or `TOO_DEEP` for nesting; the path reads like `body.items`). The deployment can change the first three limits with `VALIDATION_MAX_ARRAY_LENGTH`, `VALIDATION_MAX_OBJECT_KEYS` and `VALIDATION_MAX_TOTAL_ITEMS`.
 
@@ -44135,14 +44135,6 @@ paths:
             SSE stream established. The body is a sequence of
             `text/event-stream` frames using the event vocabulary described
             on the schema below.
-
-            The conversation is looked up only after the stream is open, so
-            a conversation that does not exist, is deleted, belongs to
-            another user or is an agent conversation is not answered `404`:
-            the stream is `200` and carries a `CUSTOM` `conversation_created`
-            frame echoing the path's `conversationId`, then a single
-            `RUN_ERROR` with `message: "Conversation not found"` and
-            `code: "internal_error"`.
           content:
             text/event-stream:
               schema:
@@ -44166,6 +44158,15 @@ paths:
           description: |
             Forbidden — the caller's token does not include the
             `conversation:chat` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or is an agent
+            conversation (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -49668,12 +49669,7 @@ paths:
               $ref: '#/components/schemas/AgentAddMessageStreamRequest'
       responses:
         '200':
-          description: |
-            SSE stream (text/event-stream). The stream opens before the
-            conversation is looked up, so a conversation that does not exist,
-            belongs to another user or to another agent also answers 200: the
-            stream carries one `RUN_ERROR` frame with `code: internal_error`
-            and ends. There is no 404.
+          description: SSE stream (text/event-stream).
           content:
             text/event-stream:
               schema:
@@ -49697,6 +49693,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The access token lacks the `agent:execute` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or belongs to another
+            agent, including an `agentKey` that names no agent
+            (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -51865,14 +51871,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
@@ -52241,14 +52240,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/active:
     get:
       tags:
@@ -53722,14 +53714,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: |
             The sync event could not be published to the message broker, so
@@ -54459,14 +54444,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -64076,14 +64054,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /oauth/{connectorType}/{configId}:
     get:
       tags:
@@ -64281,14 +64252,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - OAuth Configuration
