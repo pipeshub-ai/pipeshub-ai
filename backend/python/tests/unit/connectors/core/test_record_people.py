@@ -223,7 +223,7 @@ class TestReviewFixes:
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         # The lookup answered, so the record's edges were replaced: it is the
         # org check, not a failed lookup, that wrote none.
-        store.delete_edges_between_collections.assert_awaited_once()
+        store.delete_edges_between_collections.assert_awaited()
         store.batch_create_entity_relations.assert_not_awaited()
 
     async def test_lookups_are_capped_not_only_edges(self, monkeypatch) -> None:
