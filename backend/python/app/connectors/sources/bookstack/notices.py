@@ -9,9 +9,12 @@ codes, ids or addresses. Repeats of the same notice are held back by ``BaseConne
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
-from app.connectors.sources.bookstack.sync_health import BookStackSyncHealth
 from app.services.notification.types import NotificationSeverity, NotificationType
+
+if TYPE_CHECKING:
+    from app.connectors.sources.bookstack.sync_health import BookStackSyncHealth
 
 Notify = Callable[..., Awaitable[None]]
 

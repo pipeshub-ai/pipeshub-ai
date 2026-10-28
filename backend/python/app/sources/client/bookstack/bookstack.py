@@ -39,7 +39,7 @@ class BookStackRESTClientViaToken(HTTPClient):
     """
 
     def __init__(
-        self, base_url: str, token_id: str, token_secret: str, resilience: Optional[ResiliencePolicy] = None
+        self, base_url: str, token_id: str, token_secret: str, resilience: ResiliencePolicy | None = None
     ) -> None:
         # Combine token_id and token_secret into BookStack's format
         token = f"{token_id}:{token_secret}"
@@ -73,7 +73,7 @@ class BookStackTokenConfig(BaseModel):
     token_secret: str
     ssl: bool = True
 
-    def create_client(self, resilience: Optional[ResiliencePolicy] = None) -> BookStackRESTClientViaToken:
+    def create_client(self, resilience: ResiliencePolicy | None = None) -> BookStackRESTClientViaToken:
         """Create a BookStack client; ``resilience`` retries 429 and 5xx answers under the connector's policy."""
         return BookStackRESTClientViaToken(self.base_url, self.token_id, self.token_secret, resilience)
 
@@ -99,7 +99,7 @@ class BookStackClient(IClient):
 
     @classmethod
     def build_with_config(
-        cls, config: BookStackTokenConfig, resilience: Optional[ResiliencePolicy] = None
+        cls, config: BookStackTokenConfig, resilience: ResiliencePolicy | None = None
     ) -> "BookStackClient":
         """Build BookStackClient with configuration
         Args:
@@ -112,7 +112,7 @@ class BookStackClient(IClient):
 
     @classmethod
     async def build_and_validate(
-        cls, config: BookStackTokenConfig, resilience: Optional[ResiliencePolicy] = None
+        cls, config: BookStackTokenConfig, resilience: ResiliencePolicy | None = None
     ) -> "BookStackClient":
         """
         Builds the BookStackClient and validates credentials by making a test API call.

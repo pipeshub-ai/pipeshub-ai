@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.connectors.sources.bookstack.audit_log import AuditLogReader, entity_ref, named_id, restored_ref
+from app.connectors.sources.bookstack.audit_log import (
+    AuditLogReader,
+    entity_ref,
+    named_id,
+    restored_ref,
+)
 from app.sources.client.bookstack.bookstack import BookStackResponse
 
 

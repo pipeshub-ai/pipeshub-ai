@@ -1,27 +1,19 @@
 """Full coverage tests for BookStack connector."""
 
-import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.connectors.sources.bookstack.connector import BookStackConnector, ReadOutcome
 from app.models.entities import (
     AppRole,
     AppUser,
-    FileRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 @pytest.fixture()

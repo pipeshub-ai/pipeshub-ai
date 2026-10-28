@@ -349,11 +349,11 @@ class BookStackConnector(BaseConnector):
         # This run's health, the role details and user emails access is worked out from, the content
         # permission rows read so far, and the items whose grants depend on today's role memberships.
         self._health = BookStackSyncHealth()
-        self._roles_details: Dict[int, Dict] = {}
-        self._user_emails: Dict[int, str] = {}
-        self._rows_cache: Dict[str, Optional[ItemRows]] = {}
-        self._dependent_pages: Set[int] = set()
-        self._dependent_groups: Set[str] = set()
+        self._roles_details: dict[int, dict] = {}
+        self._user_emails: dict[int, str] = {}
+        self._rows_cache: dict[str, ItemRows | None] = {}
+        self._dependent_pages: set[int] = set()
+        self._dependent_groups: set[str] = set()
 
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""

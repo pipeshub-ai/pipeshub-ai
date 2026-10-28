@@ -22,7 +22,7 @@ VIEW = ["book-view-all", "chapter-view-all", "page-view-all"]
 def roles(**members: list[int]) -> dict[int, dict]:
     defs = {
         ADMIN: {"display_name": "Admin", "system_name": "admin", "permissions": []},
-        EDITOR: {"display_name": "Editor", "permissions": VIEW + ["page-update-all"]},
+        EDITOR: {"display_name": "Editor", "permissions": [*VIEW, "page-update-all"]},
         VIEWER: {"display_name": "Viewer", "permissions": VIEW},
         READERS: {"display_name": "Readers", "permissions": VIEW},
         # May view books and chapters, but only its own pages.

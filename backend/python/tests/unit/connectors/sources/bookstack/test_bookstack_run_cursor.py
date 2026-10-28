@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.bookstack.connector import _ACCESS_MODEL, _CURSOR_KEY, BookStackConnector, ReadOutcome
+from app.connectors.sources.bookstack.connector import (
+    _ACCESS_MODEL,
+    _CURSOR_KEY,
+    BookStackConnector,
+    ReadOutcome,
+)
 from app.connectors.sources.bookstack.sync_health import BookStackSyncIncompleteError
 from app.models.entities import AppUser
 from app.sources.client.bookstack.bookstack import BookStackResponse
@@ -93,7 +98,7 @@ async def test_a_failed_run_keeps_the_cursor_and_does_not_report_success(connect
     connector.data_source.list_audit_log = AsyncMock(side_effect=[listing(events(43), 43),
                                                                   listing(events(41, 42, 43))])
 
-    async def apply(events, users):
+    async def apply(events: list[dict], users: list[AppUser]) -> None:
         connector._health.fail("page 42")
     connector._apply_events = AsyncMock(side_effect=apply)
     with pytest.raises(BookStackSyncIncompleteError):

@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.sources.bookstack.notices import BookStackNotices
-from app.connectors.sources.bookstack.sync_health import BookStackSyncHealth, BookStackSyncIncompleteError
+from app.connectors.sources.bookstack.sync_health import (
+    BookStackSyncHealth,
+    BookStackSyncIncompleteError,
+)
 from app.services.notification.types import NotificationType
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 

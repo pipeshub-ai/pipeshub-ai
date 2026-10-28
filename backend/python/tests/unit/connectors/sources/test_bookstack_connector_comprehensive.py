@@ -8,18 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.connectors.sources.bookstack.connector import BookStackConnector
-from app.models.entities import (
-    AppRole,
-    AppUser,
-    FileRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 # ---------------------------------------------------------------------------
