@@ -15,6 +15,8 @@ _TIMEOUT_MARKERS = (
     "statement reached its statement or warehouse timeout",
     "cancelled by the client due to a timeout",
 )
+# Redshift reports its statement_timeout like any other cancel, so the note only says it is likely.
+_CANCEL_MARKERS = ("cancelled on user's request",)
 
 
 def cap_rows(rows: list[Any]) -> tuple[list[Any], bool]:
@@ -32,12 +34,15 @@ def clip_cells(row: dict[str, Any]) -> dict[str, Any]:
 
 def friendly_sql_error(message: str) -> str:
     """The database's timeout errors say what happened in engine terms; say it plainly."""
-    if any(m in message.lower() for m in _TIMEOUT_MARKERS):
-        return (
-            f"The query ran longer than the {SQL_QUERY_TIMEOUT_S}s limit and was stopped. "
-            f"Add a selective WHERE, aggregate, or select fewer columns. ({message})"
-        )
-    return message
+    lowered = message.lower()
+    # A warehouse or account limit can be shorter than ours, so the duration is not asserted.
+    if any(m in lowered for m in _TIMEOUT_MARKERS):
+        cause = f"The query hit a time limit and was stopped (agent queries may run up to {SQL_QUERY_TIMEOUT_S}s)."
+    elif any(m in lowered for m in _CANCEL_MARKERS):
+        cause = f"The query was cancelled, most likely because it ran past the {SQL_QUERY_TIMEOUT_S}s limit."
+    else:
+        return message
+    return f"{cause} Add a selective WHERE, aggregate, or select fewer columns. ({message})"
 
 
 def truncation_note(max_rows: int = SQL_MAX_ROWS) -> str:

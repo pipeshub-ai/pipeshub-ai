@@ -273,6 +273,8 @@ class MariaDBClient:
                     if timeout_s:
                         # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
                         # error propagates and the query is not retried without the guard.
+                        # shortcut: MariaDB does not stop stored procedures at max_statement_time, so a
+                        # user-approved CALL has no limit; add a client deadline with KILL QUERY if needed.
                         query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
                     await cursor.execute(query, params or ())
                     if cursor.description:

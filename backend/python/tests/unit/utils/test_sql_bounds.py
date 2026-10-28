@@ -48,7 +48,18 @@ def test_clip_cells_shortens_text_only() -> None:
 )
 def test_timeout_errors_are_explained(message: str) -> None:
     out = friendly_sql_error(message)
-    assert f"{SQL_QUERY_TIMEOUT_S}s limit" in out and message in out
+    assert "hit a time limit" in out and message in out
+
+
+def test_a_shorter_warehouse_timeout_is_not_reported_as_ours() -> None:
+    out = friendly_sql_error("Statement reached its statement or warehouse timeout of 30 second(s) and was canceled.")
+    assert "ran longer than" not in out and "of 30 second(s)" in out
+
+
+def test_redshift_cancel_is_explained_as_a_likely_timeout() -> None:
+    message = "Query (1234) cancelled on user's request"
+    out = friendly_sql_error(message)
+    assert "most likely" in out and f"{SQL_QUERY_TIMEOUT_S}s limit" in out and message in out
 
 
 def test_other_errors_pass_through() -> None:
@@ -125,9 +136,21 @@ def test_snowflake_times_out_this_call_only_and_reads_at_most_the_cap() -> None:
     _, rows = client.execute_query_raw("SELECT id FROM t", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
     assert len(rows) == SQL_MAX_ROWS + 1
     cursor.fetchmany.assert_called_once_with(SQL_MAX_ROWS + 1)
-    # Without its own timeout the call would be cancelled at the connection's 60 s network_timeout,
-    # and an ALTER SESSION would keep the limit for every later query on this connection.
-    cursor.execute.assert_called_once_with("SELECT id FROM t", timeout=SQL_QUERY_TIMEOUT_S)
+    # Snowflake enforces it for this statement; an ALTER SESSION would stay for every later query,
+    # and connector 5.x ignores execute(timeout=...).
+    cursor.execute.assert_called_once_with(
+        "SELECT id FROM t", _statement_params={"STATEMENT_TIMEOUT_IN_SECONDS": str(SQL_QUERY_TIMEOUT_S)}
+    )
+
+
+def test_snowflake_client_waits_past_the_server_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Connector 4.x cancels at network_timeout and 5.x turns it into query_timeout; 60 s cut 60-120 s queries.
+    import app.sources.client.snowflake.snowflake as sf
+
+    connector = MagicMock()
+    monkeypatch.setattr(sf, "snowflake_connector", connector)
+    SnowflakeSDKClient(account_identifier="acct", user="u", password="p").connect()
+    assert connector.connect.call_args.kwargs["network_timeout"] > SQL_QUERY_TIMEOUT_S
 
 
 # ---- MariaDB client: SET STATEMENT FOR + fetchmany, cursor closed before commit ----

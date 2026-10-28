@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
+from app.utils.sql_limits import SQL_QUERY_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -607,7 +608,9 @@ class SnowflakeSDKClient:
             connect_params: Dict[str, Any] = {
                 "account": self.account_identifier,
                 "login_timeout": self.timeout,
-                "network_timeout": self.timeout,
+                # Connector 4.x cancels any query at network_timeout, and 5.x maps it to a
+                # connection-wide query_timeout: keep it past the server's limit for agent queries.
+                "network_timeout": max(self.timeout, SQL_QUERY_TIMEOUT_S + 10),
             }
 
             # Add optional parameters
@@ -715,7 +718,7 @@ class SnowflakeSDKClient:
         Args:
             query: SQL query to execute
             params: Optional query parameters
-            timeout_s: Cancel the query after this many seconds
+            timeout_s: STATEMENT_TIMEOUT_IN_SECONDS for this statement only
             max_rows: Read at most this many rows
 
         Returns:
@@ -732,12 +735,12 @@ class SnowflakeSDKClient:
         try:
             cursor = self._connection.cursor()  # type: ignore
 
-            # A per-call timeout cancels the query on the server and replaces the connection's
-            # network_timeout; ALTER SESSION would outlive this call.
+            # A statement parameter: Snowflake enforces it, and unlike ALTER SESSION it ends with this query.
+            options = {"_statement_params": {"STATEMENT_TIMEOUT_IN_SECONDS": str(int(timeout_s))}} if timeout_s else {}
             if params:
-                cursor.execute(query, params, timeout=timeout_s)
+                cursor.execute(query, params, **options)
             else:
-                cursor.execute(query, timeout=timeout_s)
+                cursor.execute(query, **options)
 
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
             rows = cursor.fetchmany(max_rows) if max_rows else cursor.fetchall()
