@@ -198,6 +198,7 @@ class TestIndexingCompletionSite:
     async def test_fires_when_a_record_becomes_searchable(self) -> None:
         orchestrator = SinkOrchestrator.__new__(SinkOrchestrator)
         orchestrator.logger = MagicMock()
+        orchestrator.config_service = None
         orchestrator.graph_provider = MagicMock()
         orchestrator.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
