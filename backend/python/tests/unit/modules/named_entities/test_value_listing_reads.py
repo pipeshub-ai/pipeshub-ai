@@ -31,7 +31,8 @@ def test_record_hits_carry_the_type_and_the_modification_time_on_both_backends()
     assert "recordType: r.recordType" in RECORD_HITS_AQL
     assert "sortTs: r.sourceLastModifiedTimestamp || r.updatedAtTimestamp || 0" in RECORD_HITS_AQL
     assert "r.recordType AS recordType" in RECORD_HITS_CYPHER
-    assert "coalesce(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) AS sortTs" in RECORD_HITS_CYPHER
+    # A zero modification time falls through to the update time on both backends.
+    assert "CASE WHEN coalesce(r.sourceLastModifiedTimestamp, 0) <> 0" in RECORD_HITS_CYPHER
 
 
 @pytest.mark.asyncio
@@ -51,14 +52,20 @@ async def test_values_are_read_for_the_page_with_the_value_constraint(dialect: s
 
 
 @pytest.mark.asyncio
-async def test_each_value_constraint_is_read_and_a_records_names_are_merged_sorted_and_capped() -> None:
-    execute = _Recorder([{"recordId": "r1", "names": ["b", "a"]}])
+async def test_each_value_constraint_is_read_and_a_records_names_keep_their_order_once_and_capped() -> None:
+    execute = _Recorder([{"recordId": "r1", "names": ["USD 900", "USD 50"]}])
     query = NamedEntityQuery(amount_min=1, amount_max=2, percent_min=0.1, percent_max=0.2)
 
     found = await NamedEntityGraph(execute, "neo4j").values_in_records("org", query, ["r1"], 1)
 
     assert len(execute.calls) == 2
-    assert found == {"r1": ["a"]}
+    assert found == {"r1": ["USD 900"]}
+
+
+def test_values_are_ordered_largest_first_and_never_null_on_both_backends() -> None:
+    assert "SORT value.size DESC" in VALUES_IN_RECORDS_AQL and "v.name != null" in VALUES_IN_RECORDS_AQL
+    assert "ORDER BY coalesce(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC" in VALUES_IN_RECORDS_CYPHER
+    assert "v.name IS NOT NULL" in VALUES_IN_RECORDS_CYPHER
 
 
 @pytest.mark.asyncio

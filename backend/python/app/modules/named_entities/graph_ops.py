@@ -287,26 +287,33 @@ RECORD_HITS_CYPHER = f"""
 MATCH (r:{_RECORD_LABEL})
 WHERE r.id IN $recordIds AND r.orgId = $orgId AND coalesce(r.isDeleted, false) = false
 RETURN r.id AS recordId, r.virtualRecordId AS virtualRecordId, r.connectorId AS connectorId,
-       r.recordType AS recordType, coalesce(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) AS sortTs
+       r.recordType AS recordType,
+       CASE WHEN coalesce(r.sourceLastModifiedTimestamp, 0) <> 0 THEN r.sourceLastModifiedTimestamp
+            ELSE coalesce(r.updatedAtTimestamp, 0) END AS sortTs
 """
 
 # The values of already-checked records that satisfy one value constraint, to
-# show why a record matched; a record's first few by name are enough for that.
+# show why a record matched: a record's largest few (latest, for dates).
 VALUES_IN_RECORDS_AQL = f"""
 FOR v IN {_VALUES}
-  FILTER v.recordId IN @recordIds AND v.orgId == @orgId
+  FILTER v.recordId IN @recordIds AND v.orgId == @orgId AND v.name != null
 {_VALUE_FILTERS_AQL}
-  COLLECT recordId = v.recordId INTO named = v.name
-  RETURN {{ recordId: recordId, names: SLICE(SORTED_UNIQUE(named), 0, @perRecord) }}
+  COLLECT recordId = v.recordId INTO named = {{
+    name: v.name, size: NOT_NULL(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0)
+  }}
+  RETURN {{
+    recordId: recordId,
+    names: (FOR value IN named SORT value.size DESC, value.name LIMIT @perRecord RETURN value.name)
+  }}
 """
 
 VALUES_IN_RECORDS_CYPHER = f"""
 MATCH (v:{_VALUE_LABEL})
-WHERE v.recordId IN $recordIds AND v.orgId = $orgId
+WHERE v.recordId IN $recordIds AND v.orgId = $orgId AND v.name IS NOT NULL
 WITH v
 {_VALUE_FILTERS_CYPHER}
-WITH v ORDER BY v.name
-WITH v.recordId AS recordId, collect(DISTINCT v.name) AS named
+WITH v ORDER BY coalesce(v.amountFloat, v.siValue, v.numericValue, v.startMs, 0) DESC, v.name
+WITH v.recordId AS recordId, collect(v.name) AS named
 RETURN recordId, named[0..$perRecord] AS names
 """
 
@@ -827,7 +834,7 @@ class NamedEntityGraph:
     async def values_in_records(
         self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int,
     ) -> dict[str, list[str]]:
-        """Each record's value names (up to ``per_record``, by name) that satisfy
+        """Each record's value names (up to ``per_record``, largest first) that satisfy
         one of the query's value constraints; entity-node constraints are skipped."""
         if query is None or not record_ids:
             return {}
@@ -844,7 +851,7 @@ class NamedEntityGraph:
                 for row in _unwrap(await self._execute(statement, binds)):
                     names = found.setdefault(str(row["recordId"]), [])
                     names.extend(n for n in row.get("names") or [] if n and n not in names)
-        return {record_id: sorted(names)[:per_record] for record_id, names in found.items()}
+        return {record_id: names[:per_record] for record_id, names in found.items()}
 
     async def add_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str], now: int

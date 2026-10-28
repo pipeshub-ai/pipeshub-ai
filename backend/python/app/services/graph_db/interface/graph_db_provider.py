@@ -8368,7 +8368,7 @@ class IGraphDBProvider(ABC):
     ) -> dict[str, list[str]]:
         """For ``record_ids`` (records the caller already resolved), the names of
         their values that satisfy ``query``'s value constraints, up to
-        ``per_record`` each, by name. Entity-node constraints are ignored."""
+        ``per_record`` each, largest first. Entity-node constraints are ignored."""
         raise NotImplementedError
 
     @abstractmethod

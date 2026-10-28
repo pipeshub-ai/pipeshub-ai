@@ -801,7 +801,7 @@ def _decode_cursor_json(raw: str) -> int | None:
     return None
 
 
-def _parse_cursor(cursor: str | None) -> int:
+def parse_cursor(cursor: str | None) -> int:
     """Offset from a cursor string.
 
     Accepts the plain integer this module emits, and also the base64/JSON
@@ -890,7 +890,7 @@ async def _list_ref_records(
     max_scan: int = MAX_SCAN_PER_CALL,
 ) -> EntityRecordPage:
     entity_id, entity_type = ref["id"], ref["type"]
-    offset = _parse_cursor(cursor)
+    offset = parse_cursor(cursor)
     limit = max(1, limit)
     connector_ids = context.connector_scope(entity_type, entity_id)
     if not connector_ids:

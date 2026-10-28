@@ -297,7 +297,7 @@ async def test_more_readable_records_than_a_page_are_paged_not_refused(tool_env)
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["organization"])
 
     assert ok and _listed(body) == [f"r{i:03}" for i in range(20)]
-    assert 'cursor="20"' in body
+    assert 'cursor="0:r019"' in body
     assert graph.filter_accessible_record_ids.await_count == 1
 
 

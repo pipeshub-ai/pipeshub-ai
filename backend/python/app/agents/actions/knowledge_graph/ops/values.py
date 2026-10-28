@@ -1,8 +1,9 @@
-"""Find accessible records that mention a typed named-entity value, most
-recently modified first, paged by cursor, each with the values that matched."""
+"""Find accessible records that mention a typed named-entity value, newest
+first, paged by cursor, each with the values that matched."""
 
 from __future__ import annotations
 
+import bisect
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
 )
 from app.agents.actions.knowledge_graph.views import _read_hint
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.models.entities import RecordType
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
@@ -32,8 +34,8 @@ from app.modules.retrieval.entity_filters import (
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
-    _parse_cursor,
     admitted_node_ids,
+    parse_cursor,
 )
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import (
@@ -54,6 +56,8 @@ _MAX_READ_HINT_IDS = 8
 _VALUES_PER_RECORD = 10
 # Hits checked per permission query; a page stops at the first readable hit past it.
 _CHECK_BATCH = 1000
+# Hits one page may check before it hands back a cursor to continue from.
+_MAX_SCAN = 5 * _CHECK_BATCH
 # Matches listed to check for permission when the first lookup is too broad.
 # Only a filter matching more falls back to counting within everything the user
 # can read, which loads that whole set.
@@ -65,6 +69,7 @@ TOO_MANY_RECORDS_MSG = (
 NO_MATCH_MSG = "No accessible records matched."
 NO_FURTHER_RECORDS_MSG = "No further readable records match - the previous page was the last."
 _RECORD_TYPES_HINT = " To keep only some records, pass record_types=[...] (FILE, MAIL, TICKET, ...) or use search."
+_RECORD_TYPES = frozenset(record_type.value for record_type in RecordType)
 
 
 async def execute_find_records_by_value(
@@ -112,11 +117,17 @@ async def execute_find_records_by_value(
     if not raw:
         return False, "Pass a kind, name, date, amount, quantity, or percentage."
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()]
+    unknown_types = sorted(set(wanted_types) - _RECORD_TYPES)
+    if unknown_types:
+        return False, (
+            f"Unknown record type: {', '.join(unknown_types)}. Record types are: {', '.join(sorted(_RECORD_TYPES))}; "
+            "to find a kind of document (an invoice, a contract), search for it instead."
+        )
     if wanted_types:
         given["record_types"] = wanted_types
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
     try:
-        offset = _parse_cursor(cursor)
+        resume = _parse_resume(cursor)
     except ValueError as exc:
         return False, str(exc)
     org_id = state.get("org_id") or ""
@@ -151,18 +162,26 @@ async def execute_find_records_by_value(
         if match.error:
             hint = _RECORD_TYPES_HINT if match.error.startswith(UNKNOWN_KIND_PREFIX) else ""
             return False, match.error + hint
+        # Every page matches the filter again: the cursor is a place in the
+        # ordering, not a stored result set, so nothing is held between calls.
         hits = _ordered(match.hits, context, wanted_types)
-        page, next_offset = await _readable_page(graph, context, hits, user_id, org_id, offset, bounded_limit)
+        start = resume if isinstance(resume, int) else bisect.bisect_right([_sort_key(h) for h in hits], resume)
+        page, next_cursor, budget_spent = await _readable_page(
+            graph, context, hits, user_id, org_id, start, bounded_limit,
+        )
         records = await _details(graph, org_id, page)
-        values = await graph.get_named_entity_values_in_records(
-            org_id, entity_query_from(raw), [r["_key"] for r in records], _VALUES_PER_RECORD,
-        ) if records else {}
     except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError):
         logger.warning("find_records_by_value failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
+    values = await _matched_values(graph, org_id, raw, records)
 
     if not records:
-        if offset:
+        if next_cursor is not None:
+            return True, (
+                "No readable records in this part of the matches yet; more remain unchecked. "
+                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}"
+            )
+        if cursor:
             return True, NO_FURTHER_RECORDS_MSG
         return True, " ".join(filter(None, (NO_MATCH_MSG, limited_scope_note(context))))
 
@@ -171,15 +190,16 @@ async def execute_find_records_by_value(
     note_retrieved_by(state, "entity", graph_record_refs(records))
     shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
-    lines = [f"Records matching {_args(given)}, most recently modified first ({len(records)} shown):"]
+    lines = [f"Records matching {_args(given)}, newest first ({len(records)} shown):"]
     for record in records:
         line = record_line(record, context, shortener, frontend_url)
         matched = values.get(record["_key"])
         lines.append(f"{line} | matched: {'; '.join(matched)}" if matched else line)
     lines.append("")
-    if next_offset is not None:
-        lines.append(f"More records match: {_continue_call(given, bounded_limit, next_offset)}")
-    elif offset:
+    if next_cursor is not None:
+        more = "More records may match" if budget_spent else "More records match"
+        lines.append(f"{more}: {_continue_call(given, bounded_limit, next_cursor)}")
+    elif cursor:
         lines.append("That was the last page.")
     else:
         lines.append(f"That is all {len(records)}.")
@@ -212,7 +232,25 @@ def _ordered(
         for hit in hits
         if hit.connector_id in context.app_ids and (not record_types or hit.record_type.upper() in record_types)
     }
-    return sorted(unique.values(), key=lambda hit: (-hit.sort_ts, hit.record_id))
+    return sorted(unique.values(), key=_sort_key)
+
+
+def _sort_key(hit: EntityFilterHit) -> tuple[int, str]:
+    return -hit.sort_ts, hit.record_id
+
+
+def _cursor_of(hit: EntityFilterHit) -> str:
+    return f"{hit.sort_ts}:{hit.record_id}"
+
+
+def _parse_resume(cursor: str | None) -> tuple[int, str] | int:
+    """Where a page starts: after the ``"<sortTs>:<recordId>"`` this tool prints,
+    so records changed between pages neither repeat nor get skipped by a shifted
+    position; or a plain position, as other listings print one."""
+    head, sep, record_id = (cursor or "").strip().partition(":")
+    if sep and record_id and head.lstrip("-").isdigit():
+        return -int(head), record_id
+    return parse_cursor(cursor)
 
 
 async def _readable_page(
@@ -221,28 +259,33 @@ async def _readable_page(
     hits: list[EntityFilterHit],
     user_id: str,
     org_id: str,
-    offset: int,
+    start: int,
     limit: int,
-) -> tuple[list[EntityFilterHit], int | None]:
-    """Up to ``limit`` readable hits from position ``offset``, and the position of
-    the next readable one (``None`` when there is none). Only the window walked is
-    checked, so a later page never re-checks earlier ones. ``filter_accessible_record_ids``
-    also drops placeholders and internal records, which the entity gate alone would not."""
+) -> tuple[list[EntityFilterHit], str | None, bool]:
+    """Up to ``limit`` readable hits from position ``start``; the cursor to continue
+    after them (``None`` when no readable hit is left); and whether the page
+    stopped at ``_MAX_SCAN`` checked hits rather than at a readable one. Only the
+    window walked is checked, so a later page never re-checks earlier ones.
+    ``filter_accessible_record_ids`` also drops placeholders and internal records,
+    which the entity gate alone would not."""
     page: list[EntityFilterHit] = []
-    for start in range(offset, len(hits), _CHECK_BATCH):
-        batch = hits[start:start + _CHECK_BATCH]
-        readable = await graph.filter_accessible_record_ids(
+    for offset in range(start, len(hits), _CHECK_BATCH):
+        batch = hits[offset:offset + _CHECK_BATCH]
+        readable = set(await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
-        )
+        ))
         if context.row_scopes:
-            readable = set(readable) & await admitted_node_ids(graph, context, readable)
-        for position, hit in enumerate(batch, start):
+            readable &= await admitted_node_ids(graph, context, readable)
+        for hit in batch:
             if hit.record_id not in readable:
                 continue
             if len(page) == limit:
-                return page, position
+                return page, _cursor_of(page[-1]), False
             page.append(hit)
-    return page, None
+        checked = offset + len(batch) - start
+        if checked >= _MAX_SCAN and offset + len(batch) < len(hits):
+            return page, _cursor_of(batch[-1]), True
+    return page, None, False
 
 
 async def _details(graph: "IGraphDBProvider", org_id: str, page: list[EntityFilterHit]) -> list[dict[str, Any]]:
@@ -255,6 +298,22 @@ async def _details(graph: "IGraphDBProvider", org_id: str, page: list[EntityFilt
         raise EntityAccessError("record details lookup failed")
     by_id = {str(row.get("_key") or row.get("id")): row for row in rows}
     return [{**by_id[hit.record_id], "_key": hit.record_id} for hit in page if hit.record_id in by_id]
+
+
+async def _matched_values(
+    graph: "IGraphDBProvider", org_id: str, raw: dict[str, Any], records: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """The values each listed record matched on; only shown, so a failed lookup
+    lists the records without them rather than failing the page."""
+    if not records:
+        return {}
+    try:
+        return await graph.get_named_entity_values_in_records(
+            org_id, entity_query_from(raw), [r["_key"] for r in records], _VALUES_PER_RECORD,
+        )
+    except Exception:
+        logger.warning("find_records_by_value: matched values lookup failed", exc_info=True)
+        return {}
 
 
 def _args(given: dict[str, Any]) -> str:
@@ -271,9 +330,9 @@ def _literal(value: object) -> str:
     return str(value)
 
 
-def _continue_call(given: dict[str, Any], limit: int, offset: int) -> str:
+def _continue_call(given: dict[str, Any], limit: int, cursor: str) -> str:
     args = [_args(given)]
     if limit != _DEFAULT_LIMIT:
         args.append(f"limit={limit}")
-    args.append(f'cursor="{offset}"')
+    args.append(f'cursor="{cursor}"')
     return f"knowledgegraph__find_records_by_value({', '.join(args)})"

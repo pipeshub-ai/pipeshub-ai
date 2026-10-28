@@ -69,7 +69,7 @@ def _listed(body: str) -> list[str]:
 
 
 def _cursor(body: str) -> str | None:
-    found = re.search(r'cursor="(\d+)"', body)
+    found = re.search(r'cursor="([^"]+)"', body)
     return found.group(1) if found else None
 
 
@@ -88,7 +88,7 @@ async def test_pages_run_to_the_end_without_repeats_or_gaps(env: AsyncMock) -> N
         cursor = _cursor(body)
     assert seen == [f"r{i:03}" for i in range(45)]
     assert cursor is None and "That was the last page." in bodies[-1]
-    assert 'knowledgegraph__find_records_by_value(amount_min=50000, currency="USD", cursor="20")' in bodies[0]
+    assert 'knowledgegraph__find_records_by_value(amount_min=50000, currency="USD", cursor="9981:r019")' in bodies[0]
 
     ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=50_000, currency="USD", cursor="45")
     assert (ok, body) == (True, values.NO_FURTHER_RECORDS_MSG)
@@ -98,7 +98,7 @@ async def test_a_complete_first_page_says_that_is_all(env: AsyncMock) -> None:
     ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(3))), kinds=["date"])
     assert ok and _listed(body) == ["r000", "r001", "r002"]
     assert "That is all 3." in body and "cursor=" not in body
-    assert body.startswith('Records matching kinds=["date"], most recently modified first (3 shown):')
+    assert body.startswith('Records matching kinds=["date"], newest first (3 shown):')
 
 
 async def test_most_recently_modified_comes_first_and_ties_fall_back_to_the_id(env: AsyncMock) -> None:
@@ -119,7 +119,7 @@ async def test_the_cursor_is_a_position_and_later_pages_check_only_their_own_win
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor="2400")
 
     assert ok and _listed(body) == [f"r{i:03}" for i in range(2400, 2440, 2)]
-    assert _cursor(body) == "2440"
+    assert _cursor(body) == "7562:r2438"
     checked = graph.filter_accessible_record_ids.await_args_list[0].args[0]
     assert checked[0] == "r2400" and len(graph.filter_accessible_record_ids.await_args_list) == 1
 
@@ -218,7 +218,7 @@ async def test_inside_a_selection_paging_still_applies_the_selection_gate(env: A
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], limit=5)
 
     assert ok and _listed(body) == ["r000", "r003", "r006", "r009", "r012"]
-    assert _cursor(body) == "15"
+    assert _cursor(body) == "9988:r012"
 
 
 async def test_listed_records_are_remembered_by_name_and_cited(env: AsyncMock) -> None:
@@ -235,3 +235,66 @@ async def test_record_ids_are_shortened_when_the_turn_shortens_them(env: AsyncMo
     monkeypatch.setattr(values, "get_record_id_shortener_if_enabled", lambda state: _Short())
     ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), kinds=["date"])
     assert ok and _listed(body) == ["sr000"]
+
+
+async def test_a_record_changed_between_pages_neither_repeats_nor_hides_the_rest(env: AsyncMock) -> None:
+    rows = _rows(30)
+    graph = _graph(rows)
+    ok, first = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
+    # Before page 2: a new record matches as the newest, and r025 is modified.
+    rows[25] = {**rows[25], "sortTs": 99_999}
+    graph = _graph([{"recordId": "new", "recordType": "FILE", "sortTs": 100_000}, *rows])
+
+    ok, second = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor=_cursor(first))
+
+    assert ok and _listed(second) == [f"r{i:03}" for i in range(20, 30) if i != 25]
+    assert not set(_listed(first)) & set(_listed(second))
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 6])
+async def test_paging_across_small_batches_lists_every_readable_record_once(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch, limit: int,
+) -> None:
+    monkeypatch.setattr(values, "_CHECK_BATCH", 3)
+    readable = {"r000", "r002", "r003", "r005", "r008", "r009"}
+    graph = _graph(_rows(10), readable)
+    seen: list[str] = []
+    cursor = None
+    for _ in range(12):
+        ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], limit=limit, cursor=cursor)
+        assert ok
+        seen.extend(_listed(body))
+        cursor = _cursor(body)
+        if cursor is None:
+            break
+    assert seen == sorted(readable)
+
+
+async def test_a_page_stops_at_the_scan_budget_and_hands_back_a_cursor(
+    env: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(values, "_CHECK_BATCH", 10)
+    monkeypatch.setattr(values, "_MAX_SCAN", 20)
+    graph = _graph(_rows(100), readable={"r050"})
+
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
+
+    assert ok and _listed(body) == [] and "more remain unchecked" in body
+    assert _cursor(body) == "9981:r019" and graph.filter_accessible_record_ids.await_count == 2
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor="9981:r019")
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor=_cursor(body))
+    assert _listed(body) == ["r050"]
+
+
+async def test_a_failed_values_lookup_still_lists_the_records(env: AsyncMock) -> None:
+    graph = _graph(_rows(2))
+    graph.get_named_entity_values_in_records = AsyncMock(side_effect=RuntimeError("db down"))
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=1, currency="USD")
+    assert ok and _listed(body) == ["r000", "r001"] and "matched" not in body
+
+
+async def test_an_unknown_record_type_lists_the_valid_ones(env: AsyncMock) -> None:
+    graph = _graph(_rows(2))
+    ok, message = await values.execute_find_records_by_value(_state(graph), kinds=["date"], record_types=["invoice"])
+    assert not ok and message.startswith("Unknown record type: INVOICE.") and "FILE" in message
+    graph.get_records_for_named_entities.assert_not_called()

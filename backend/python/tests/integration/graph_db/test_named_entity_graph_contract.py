@@ -406,6 +406,21 @@ async def test_records_a_caller_cannot_read_change_neither_hits_nor_too_broad(gr
     assert nothing_readable == {"hits": [], "truncated": False}
 
 
+async def test_a_zero_modification_time_sorts_by_the_update_time_on_both_backends(graph) -> None:
+    provider, org_id, _ = graph
+    (record,) = await _records(provider, org_id, 1)
+    await provider.batch_upsert_nodes([{
+        "id": record, "orgId": org_id, "recordName": "Doc 0", "externalRecordId": record, "recordType": "MAIL",
+        "origin": "CONNECTOR", "connectorId": f"{org_id}-conn", "virtualRecordId": f"v-{record}",
+        "sourceLastModifiedTimestamp": 0, "updatedAtTimestamp": 5,
+    }], RECORDS)
+    await _writer(provider).write(org_id, record, [_amount(org_id, "1250")])
+
+    found = await provider.get_records_for_named_entities(org_id, None, NamedEntityQuery(amount_min=1000, amount_max=2000))
+
+    assert [(h["recordType"], h["sortTs"]) for h in found["hits"]] == [("MAIL", 5)]
+
+
 async def test_values_in_records_name_only_the_matching_values_of_the_given_records(graph) -> None:
     provider, org_id, _ = graph
     first, second, other = await _records(provider, org_id, 3)
