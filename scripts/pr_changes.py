@@ -226,12 +226,16 @@ IT_NO_STACK = (
     "integration-tests/perf/**",
 )
 IT_RUNTIME_TREES = (f"{PYTHON}/app/", f"{PYTHON}/tests/evals/", "backend/nodejs/apps/src/", "frontend/", "integration-tests/")
+# The suite's own README and other Markdown at its top level, which nothing reads.
+IT_SUITE_DOCS = ("integration-tests/*.md",)
 # The demo questions' model list, which integration-tests/connectors/demo imports.
 IT_DEMO = (f"{PYTHON}/tests/evals/**",)
 # Test folders whose tests only the core shard runs and that no other folder
 # imports (test_pr_changes.py checks both), the nightly-only folders core still
 # collects (a file that fails to import fails every shard, and core shows it),
 # and the frontend, whose end-to-end tests run on core.
+# response-validation/helper is not in it: the connector suites' graph validators
+# import its schema checks.
 IT_CORE = tuple(
     f"integration-tests/{folder}/**"
     for folder in (
@@ -325,7 +329,7 @@ def _shards_of(markers: Iterable[str]) -> set[str]:
 def _integration_shards_for(path: str) -> set[str]:
     # Markdown in these trees can be what the code or the tests read (the skill
     # loader's files, the parser fixtures), so it follows its folder's rule.
-    if matches(path, DOCS) and not path.startswith(IT_RUNTIME_TREES):
+    if matches(path, DOCS) and (not path.startswith(IT_RUNTIME_TREES) or matches(path, IT_SUITE_DOCS)):
         return set()
     if matches(path, IT_DEMO):
         return {"demo"}
@@ -340,7 +344,7 @@ def _integration_shards_for(path: str) -> set[str]:
         if markers is None:
             return set(IT_SHARDS)
         return (_shards_of(markers) or {"core"}) | set(CONNECTOR_TESTS_ALSO_RUN.get(name, ()))
-    if matches(path, IT_CORE):
+    if matches(path, IT_CORE) and not path.startswith("integration-tests/response-validation/helper/"):
         return {"core"}
     return set(IT_SHARDS)
 

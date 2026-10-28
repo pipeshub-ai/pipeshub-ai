@@ -317,6 +317,12 @@ class TestIntegrationShards(unittest.TestCase):
         self.assertEqual(shards("integration-tests/connectors/zendesk/README.md"), {"connectors-2"})
         self.assertEqual(shards("backend/python/app/agents/skills/x/SKILL.md"), ALL_SHARDS)
         self.assertEqual(shards("docs/indexing-service.md", "changelog/1.0.0.md"), set())
+        self.assertEqual(shards("integration-tests/README.md"), set())
+
+    def test_the_response_validation_helper_runs_the_connector_suites_that_validate_with_it(self) -> None:
+        # validation/graph_entity_validator.py puts it on sys.path and imports response_validator.
+        self.assertTrue({"connectors-2", "connectors-3", "connectors-4"} <= shards("integration-tests/response-validation/helper/response_validator.py"))
+        self.assertEqual(shards("integration-tests/response-validation/auth/integration_test_userAccount.py"), {"core"})
 
     def test_core_only_tests_and_the_frontend_run_core(self) -> None:
         for path in (
@@ -461,7 +467,11 @@ class TestTheShardRulesMatchTheRepository(unittest.TestCase):
 
 
 # conftest.py puts these folders on sys.path, so their modules import by bare name.
+# Many test files add other folders at runtime, so a name these leave unresolved
+# is matched against every file of that name (see resolve below).
 _BARE_IMPORT_FOLDERS = ("helper", "sample-data")
+# Top-level names the suite imports from installed packages, never from its own files.
+_THIRD_PARTY = set(sys.stdlib_module_names) | {"pytest", "app", "tests", "pipeshub_client", "httpx", "requests", "yaml"}
 _TEST_FILE = re.compile(r"(?:integration_test_.*|test_.*|.*_test)\.py\Z")
 _EXECUTING: dict[Path, set[str]] = {}
 
@@ -487,6 +497,15 @@ def _shards_executing_each_file() -> dict[Path, set[str]]:
             if path.relative_to(IT).parts[0] in _BARE_IMPORT_FOLDERS and len(parts) > 1:
                 modules[".".join(parts[1:])] = path
 
+    # Each dotted suffix of every module name, so `import response_validator`
+    # finds response-validation/helper/response_validator.py however that folder
+    # reached sys.path. A suffix several files share links to all of them.
+    by_suffix: dict[str, set[Path]] = {}
+    for name, path in modules.items():
+        parts = name.split(".")
+        for i in range(len(parts)):
+            by_suffix.setdefault(".".join(parts[i:]), set()).add(path)
+
     def resolve(path: Path) -> set[Path]:
         package = ".".join(part.replace("-", "_") for part in path.relative_to(IT).parent.parts)
         found = set()
@@ -494,6 +513,9 @@ def _shards_executing_each_file() -> dict[Path, set[str]]:
             while module:
                 if module in modules:
                     found.add(modules[module])
+                    break
+                if module in by_suffix and module.split(".")[0] not in _THIRD_PARTY:
+                    found |= by_suffix[module]
                     break
                 module = module.rpartition(".")[0]
         return found
