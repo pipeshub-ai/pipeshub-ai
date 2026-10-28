@@ -26,10 +26,11 @@ def _cpu(text: str) -> float:
 
 @pytest.mark.parametrize("unit", ["<![CDATA[", '<img alt="', "![a]("])
 def test_segment_splitting_is_linear_in_the_input(unit: str) -> None:
-    small, large = unit * (24_000 // len(unit)), unit * (48_000 // len(unit))
+    small, large = unit * (24_000 // len(unit)), unit * (96_000 // len(unit))
     t_small = min(_cpu(small) for _ in range(3))
     t_large = min(_cpu(large) for _ in range(3))
-    assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 2.5, (unit, t_small, t_large)
+    # Four times the input: linear is 4x, quadratic 16x (a 2x step measured 2.65x in CI).
+    assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 8, (unit, t_small, t_large)
 
 
 @pytest.mark.parametrize("path", ["events/processor.py", "modules/parsers/blocks/blocks_parser.py"])
