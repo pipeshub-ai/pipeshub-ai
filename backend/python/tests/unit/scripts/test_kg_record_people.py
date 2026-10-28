@@ -204,6 +204,7 @@ async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
         get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
         delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
+        delete_record_entity_relations=AsyncMock(return_value=0),
     )
     data_store = MagicMock()
 
