@@ -639,7 +639,7 @@ class TestLaneStreamAdoption:
 
     async def test_a_lane_subset_adopts_only_leftover_lanes(
         self, logger, config, monkeypatch
-    ):
+    ) -> None:
         monkeypatch.setenv("MESSAGE_BROKER", "redis")
         monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "8")
         monkeypatch.setenv("INDEXING_CONSUME_LANES", "6-7")
