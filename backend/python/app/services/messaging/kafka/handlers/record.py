@@ -833,12 +833,20 @@ class RecordEventHandler(BaseEventService):
                     scope = edge_build_trigger.publishable_scope(copy)
                     if scope is not None:
                         scopes.add(scope)
-            for scope in scopes:
-                await self._ask_for_code_edge_build(*scope)
         except Exception as exc:
             await self._edge_request_failed(
                 exc, "Failed to request code edge builds for the copies of record %s", record_id
             )
+            return
+        # One repo's failed request must not keep the others from being marked.
+        for scope in scopes:
+            try:
+                await self._ask_for_code_edge_build(*scope)
+            except Exception as exc:
+                await self._edge_request_failed(
+                    exc, "Failed to request a code edge build for record group %s, a copy of record %s",
+                    scope[2], record_id,
+                )
 
     async def _edge_request_failed(self, exc: Exception, message: str, *args: object) -> None:
         """The first failure since the last success is logged with its traceback,

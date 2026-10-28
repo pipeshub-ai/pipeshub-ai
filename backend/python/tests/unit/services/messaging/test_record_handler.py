@@ -2144,6 +2144,18 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
         await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_one_failed_request_does_not_skip_the_other_repos(self) -> None:
+        handler = self._handler({
+            "twin": self._code("twin", "repo-a"),
+            "fork-1": self._code("fork-1", "repo-b"),
+            "fork-2": self._code("fork-2", "repo-c"),
+        })
+        handler._ask_for_code_edge_build = AsyncMock(side_effect=[ConnectionError("broker down"), None])
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
+        asked = {c.args[2] for c in handler._ask_for_code_edge_build.await_args_list}
+        assert asked == {"repo-b", "repo-c"}
+
 
 class TestReleasingQueuedCopies:
     """The copies are QUEUED with their messages acknowledged, so their twin's
