@@ -51,7 +51,7 @@ _WS = re.compile(r"\s*")
 _NON_WS = re.compile(r"\S+")
 _IMG_OPEN = re.compile(r"<img(?=[\s/>])", re.IGNORECASE)
 # Right after the tag name a "/" separates too: <img/src="...">.
-_TAG_FIRST_SEPARATOR = re.compile(r"\s*/?\s*")
+_TAG_FIRST_SEPARATOR = re.compile(r"\s+|/")
 # CommonMark's grammar for an attribute name and an unquoted value, so an <img>
 # is rewritten exactly when markdown-it would treat it as a tag.
 _TAG_ATTR_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
@@ -66,6 +66,15 @@ def is_inline_raster_image(src: str) -> bool:
     """Whether ``src`` is a ``data:`` URI holding a raster image (not SVG)."""
     head = src[:16].lower()
     return head.startswith("data:image/") and not head.startswith("data:image/svg")
+
+
+# Inside the parentheses of an inline image, whitespace may include one line
+# ending but not a blank line, which ends the paragraph.
+_PAD = re.compile(r"[^\S\n]*(?:\n[^\S\n]*)?")
+
+
+def _skip_pad(text: str, pos: int) -> int:
+    return _PAD.match(text, pos).end()  # type: ignore[union-attr]
 
 
 def _skip_ws(text: str, pos: int) -> int:
@@ -112,7 +121,7 @@ class _InlineImageScanner:
     def _tail(self, dest_end: int) -> int:
         """End of the ``)`` closing the parentheses after a destination, or -1."""
         text = self._text
-        w = _skip_ws(text, dest_end)
+        w = _skip_pad(text, dest_end)
         if text.startswith(")", w):
             return w + 1
         # A title needs whitespace before it.
@@ -121,13 +130,13 @@ class _InlineImageScanner:
         c = self._title_end[text[w]](w + 1)
         if c < 0 or (text[w] == "(" and text[c] != ")"):
             return -1
-        w = _skip_ws(text, c + 1)
+        w = _skip_pad(text, c + 1)
         return w + 1 if text.startswith(")", w) else -1
 
     def _destination(self, p: int) -> tuple[str, int, bool] | None:
         text = self._text
-        padded = _skip_ws(text, p) > p
-        p = _skip_ws(text, p)
+        padded = _skip_pad(text, p) > p
+        p = _skip_pad(text, p)
         if text.startswith("<", p):
             q = self._angle_end(p + 1)
             if q >= 0 and text[q] == ">":
@@ -368,6 +377,8 @@ def extract_and_replace_images(
             if len(tags) != 1 or tags[0].name != "img" or fragment.get_text():
                 continue
             img_tag = tags[0]
+            if source[start + 4 : start + 6] not in ("/>", "") and source[start + 4] == "/" and not img_tag.get("src"):
+                continue  # <img/...> is only a tag worth rewriting when it has a src
             new_alt = f"Image_{image_counter}"
             images.append({
                 "original_text": str(img_tag),

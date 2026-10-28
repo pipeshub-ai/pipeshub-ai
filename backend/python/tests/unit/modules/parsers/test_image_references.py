@@ -362,3 +362,20 @@ def test_unclosed_tags_do_not_hide_later_images() -> None:
 def test_output_is_valid_for_an_html_parser_after_rewriting() -> None:
     out, _ = extract_and_replace_images('<img/src="http://x/p.png" alt="a>b">')
     assert BeautifulSoup(out, "html.parser").find("img")["alt"] == "Image_1"
+
+
+@pytest.mark.parametrize("tag", ["<img /\r\n>", "<img /:>", "<img \t/ >", "<img/:>", "<img / src=x>"])
+def test_a_slash_that_markdown_it_does_not_read_as_a_tag_reports_nothing(tag: str) -> None:
+    out, images = extract_and_replace_images(tag)
+    assert [i for i in images if not i["url"]] == []
+    assert not any(i["image_type"] == "html" and not i["url"] for i in images)
+
+
+def test_a_bare_self_closing_img_is_still_reported_as_before() -> None:
+    for tag in ("<img/>", "<img />"):
+        assert extract_and_replace_images(tag) == legacy_extract_and_replace_images(tag)
+
+
+def test_one_line_ending_is_allowed_around_the_destination() -> None:
+    assert urls("![a](\nhttp://h/x.png\n)") == ["http://h/x.png"]
+    assert urls('![a](http://h/x.png\n"t")') == ["http://h/x.png"]
