@@ -31,24 +31,34 @@ class _JiraIssues:
         return SimpleNamespace(status=200, json=lambda: body)
 
 
-async def _ticket(fields: dict[str, Any]) -> Any:
+async def _ticket(fields: dict[str, Any]) -> tuple[Any, frozenset[str]]:
     base = {"summary": "s", "project": {"id": "10000"}, "issuetype": {"name": "Task", "hierarchyLevel": 0}}
-    return await JiraExpected.ticket_record(
+    return await JiraExpected.ticket_record_and_unsettled(
         "QE-1", connector_id="c", datasource=_JiraIssues({**base, **fields}),
         site_base_url="https://example.atlassian.net",
     )
 
 
 @pytest.mark.asyncio
-async def test_a_jira_issue_without_a_security_level_is_open_to_its_project_only() -> None:
-    assert (await _ticket({"security": None})).access_rule == AccessRule.STRICT
-    assert (await _ticket({})).access_rule == AccessRule.STRICT
+async def test_a_jira_issue_with_a_null_security_level_is_open_to_its_project_only() -> None:
+    ticket, unsettled = await _ticket({"security": None})
+    assert ticket.access_rule == AccessRule.STRICT
+    assert "access_rule" not in unsettled
 
 
 @pytest.mark.asyncio
 async def test_a_jira_issue_with_a_security_level_is_restricted() -> None:
-    ticket = await _ticket({"security": {"id": "10100", "name": "Staff"}})
+    ticket, unsettled = await _ticket({"security": {"id": "10100", "name": "Staff"}})
     assert ticket.access_rule == AccessRule.RESTRICTED
+    assert "access_rule" not in unsettled
+
+
+@pytest.mark.asyncio
+async def test_a_jira_issue_without_the_security_field_leaves_its_rule_uncompared() -> None:
+    """A missing field is not a null level: the connector closes the issue when it
+    knows of a security scheme and opens it to the project when there is none."""
+    _ticket_record, unsettled = await _ticket({})
+    assert "access_rule" in unsettled
 
 
 class _LinearIssues:
@@ -113,3 +123,12 @@ def test_other_links_compare_exactly() -> None:
     assert not _field_values_equal("weburl", "https://example.com/a?ouid=1", "https://example.com/a")
     assert not _field_values_equal(
         "weburl", "https://linear.app/org/issue/ENG-1/title#comment-1", "https://linear.app/org/issue/ENG-1/title")
+
+
+def test_a_google_file_link_keeps_its_encoding_and_fragment() -> None:
+    sheet = "https://docs.google.com/spreadsheets/d/1hTeU/edit?q=a%20b&ouid=1#gid=0"
+    assert _field_values_equal("weburl", sheet, sheet.replace("&ouid=1", ""))
+    assert not _field_values_equal("weburl", sheet, sheet.replace("a%20b", "a+b"))
+    assert not _field_values_equal("weburl", sheet, sheet.replace("#gid=0", "#gid=1"))
+    assert _field_values_equal(
+        "weburl", "https://docs.google.com/document/d/1/edit?ouid=1", "https://docs.google.com/document/d/1/edit")

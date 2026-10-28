@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit
 
 from pydantic import BaseModel
 
@@ -106,14 +106,22 @@ _GOOGLE_FILE_HOSTS: Final[frozenset[str]] = frozenset({"docs.google.com", "drive
 
 def _comparable_weburl(url: object) -> object:
     """``url`` without Google's ``ouid``, which Drive adds to an Office file's webViewLink
-    on some reads of the same file and not on others."""
-    if not isinstance(url, str):
+    on some reads of the same file and not on others.
+
+    Only the raw ``ouid`` pairs are cut, so every other byte still has to match:
+    decoding the query would make ``%20`` equal ``+``.
+    """
+    if not isinstance(url, str) or urlsplit(url).hostname not in _GOOGLE_FILE_HOSTS:
         return url
-    parts = urlsplit(url)
-    if parts.hostname not in _GOOGLE_FILE_HOSTS:
+    head, mark, rest = url.partition("?")
+    if not mark:
         return url
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "ouid"]
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    query, hash_mark, fragment = rest.partition("#")
+    pairs = query.split("&")
+    kept = [pair for pair in pairs if unquote_plus(pair.partition("=")[0]) != "ouid"]
+    if len(kept) == len(pairs):
+        return url
+    return f"{head}{'?' if kept else ''}{'&'.join(kept)}{hash_mark}{fragment}"
 
 
 def _field_values_equal(key: str, expected: object, actual: object) -> bool:

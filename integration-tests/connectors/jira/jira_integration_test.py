@@ -449,13 +449,14 @@ class TestJiraConnector:
                 # Assert the delta by external id (parallel-safe), not a global count delta.
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
                 assert actual is not None, f"typed TICKET record missing for external id {new_id}"
-                expected = await JiraExpected.ticket_record(
+                expected, unsettled = await JiraExpected.ticket_record_and_unsettled(
                     new_key, connector_id=connector_id, datasource=jira_datasource,
                     site_base_url=base_url or None,
                 )
                 await assert_graph_entity_with_edges(
                     expected, actual, entity="ticket_record",
                     connector_id=connector_id, graph_provider=graph_provider,
+                    skip_compare=unsettled,
                 )
                 await graph_provider.assert_record_paths_or_names_contain(connector_id, [title])
                 logger.info("TC-INCR-001 passed: %s synced", new_key)
@@ -759,8 +760,11 @@ class TestJiraValidation:
         target_id = jira_connector["reference_issue_id"]
         base_url = connector_base_url()
 
+        unsettled: frozenset[str] = frozenset()
+
         async def _live_and_graph() -> tuple[Any, Any]:
-            live = await JiraExpected.ticket_record(
+            nonlocal unsettled
+            live, unsettled = await JiraExpected.ticket_record_and_unsettled(
                 target_key, connector_id=connector_id, datasource=jira_datasource,
                 site_base_url=base_url or None,
             )
@@ -786,6 +790,7 @@ class TestJiraValidation:
         await assert_graph_entity_with_edges(
             expected, actual, entity="ticket_record",
             connector_id=connector_id, graph_provider=graph_provider,
+            skip_compare=unsettled,
         )
         logger.info("TC-JIRA-004 passed: %s", target_key)
 
