@@ -152,7 +152,7 @@ def person_links(record: Record) -> list[PersonLink]:
     return []
 
 
-def _is_bug(exc: Exception) -> bool:
+def is_programming_error(exc: Exception) -> bool:
     """A store called with arguments it does not take, or missing a method:
     never an unanswered read, so it is raised rather than skipped."""
     return isinstance(exc, (TypeError, AttributeError))
@@ -205,7 +205,7 @@ async def link_record_people(
                     else await store.get_user_by_source_id(identity[1], record.connector_id, raise_on_error=True)
                 )
             except Exception as exc:  # see the docstring: the existing edges stay
-                if propagate(exc) or _is_bug(exc):
+                if propagate(exc) or is_programming_error(exc):
                     raise
                 failed += 1
                 users_by_identity[identity] = None
@@ -240,7 +240,7 @@ async def link_record_people(
             CollectionNames.ENTITY_RELATIONS.value, CollectionNames.USERS.value,
         )
     except Exception as exc:  # stale edges are rewritten below
-        if propagate(exc) or _is_bug(exc):
+        if propagate(exc) or is_programming_error(exc):
             raise
         logger.warning("Could not clear person edges of record %s: %s", record.id, exc)
     established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
@@ -251,7 +251,7 @@ async def link_record_people(
         try:
             await store.batch_create_entity_relations(added)
         except Exception as exc:  # see _NEW_EDGE_TYPES
-            if propagate(exc) or _is_bug(exc):
+            if propagate(exc) or is_programming_error(exc):
                 raise
             logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
             return len(established)

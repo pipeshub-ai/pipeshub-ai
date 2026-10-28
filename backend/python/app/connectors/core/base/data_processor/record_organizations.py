@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
+from app.connectors.core.base.data_processor.record_people import is_programming_error
 from app.models.entities import RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -56,7 +57,7 @@ async def link_record_organization(
     try:
         organization_id = await store.get_record_group_organization(record.record_group_id, record.org_id)
     except Exception as exc:
-        if propagate(exc):
+        if propagate(exc) or is_programming_error(exc):
             raise
         logger.warning("Account lookup failed for record %s: %s", record.id, exc)
         return 0
@@ -68,7 +69,7 @@ async def link_record_organization(
             CollectionNames.ENTITY_RELATIONS.value, CollectionNames.ORGS.value,
         )
     except Exception as exc:  # the edge below replaces a stale one anyway
-        if propagate(exc):
+        if propagate(exc) or is_programming_error(exc):
             raise
         logger.warning("Could not clear account edges of record %s: %s", record.id, exc)
     if not organization_id:
@@ -86,7 +87,7 @@ async def link_record_organization(
     try:
         await store.batch_create_entity_relations([edge])
     except Exception as exc:
-        if propagate(exc):
+        if propagate(exc) or is_programming_error(exc):
             raise
         logger.warning("Record %s: account edge not written: %s", record.id, exc)
         return 0

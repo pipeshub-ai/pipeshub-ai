@@ -85,3 +85,15 @@ async def test_a_failure_the_caller_must_see_is_raised(failing: str) -> None:
     getattr(store, failing).side_effect = RuntimeError("deadlock")
     with pytest.raises(RuntimeError, match="deadlock"):
         await link_record_organization(_deal(), store, logging.getLogger("t"), lambda exc: True)
+
+
+@pytest.mark.parametrize("error", [TypeError("unexpected keyword argument"), AttributeError("x")])
+@pytest.mark.parametrize("failing", [
+    "get_record_group_organization", "delete_edges_between_collections", "batch_create_entity_relations",
+])
+async def test_a_programming_error_is_raised_not_logged(failing: str, error: Exception) -> None:
+    """A store call that does not fit is a bug, not an account the graph did not answer for."""
+    store = _store()
+    getattr(store, failing).side_effect = error
+    with pytest.raises(type(error)):
+        await link_record_organization(_deal(), store, logging.getLogger("t"))

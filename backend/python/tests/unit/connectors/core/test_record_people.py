@@ -353,7 +353,7 @@ class TestABugIsNotAFailedLookup:
     seen to be wrong, in production or in a test whose stub did not match."""
 
     @pytest.mark.parametrize("error", [TypeError("unexpected keyword argument 'org_id'"), AttributeError("x")])
-    @pytest.mark.parametrize("failing", ["get_user_by_email", "delete_edges_from", "batch_create_entity_relations"])
+    @pytest.mark.parametrize("failing", ["get_user_by_email", "delete_edges_between_collections", "batch_create_entity_relations"])
     async def test_a_programming_error_is_raised(self, failing: str, error: Exception) -> None:
         store = _store()
         getattr(store, failing).side_effect = error
