@@ -258,7 +258,7 @@ class CodeEdgeBuildRunner:
         if settled and not result.facts_missing:
             # Kept while the watermark stays: the next build covers the same
             # changes again and needs the names to find the same callers.
-            await deleted_files.forget(self._graph_provider, deleted.keys)
+            await deleted_files.forget(self._graph_provider, deleted.keys, self._log)
         code_graph_metrics.record_build(
             "ready", result, "incremental" if touched_record_ids is not None else "full")
         self._log.info(

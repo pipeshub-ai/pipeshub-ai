@@ -169,7 +169,7 @@ async def run(args: argparse.Namespace) -> int:
                 full=touched is None, result=result,
             )
             if settled and not result.facts_missing:
-                await deleted_files.forget(provider, deleted.keys)
+                await deleted_files.forget(provider, deleted.keys, logger)
         return 0
     finally:
         if renewal is not None:

@@ -58,8 +58,19 @@ async def test_remember_keeps_one_sync_point_per_deletion() -> None:
     pending = await deleted_files.pending(store, ORG_ID, GROUP_ID)
     assert pending.names == {"helper"} and len(pending.keys) == 2
 
-    await deleted_files.forget(store, pending.keys)
+    await deleted_files.forget(store, pending.keys, MagicMock())
     assert not await deleted_files.was_remembered(store, ORG_ID, "rec-util")
+
+
+async def test_forget_keeps_going_when_a_removal_fails() -> None:
+    provider = MagicMock()
+    provider.remove_sync_point = AsyncMock(side_effect=[RuntimeError("store down"), None])
+    log = MagicMock()
+
+    await deleted_files.forget(provider, ["k1", "k2"], log)
+
+    assert [c.args[0] for c in provider.remove_sync_point.await_args_list] == ["k1", "k2"]
+    log.warning.assert_called_once()
 
 
 async def test_remember_skips_records_that_are_not_code_files() -> None:

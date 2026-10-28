@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
-from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.code_graph.edge_build_trigger import is_code_record, record_scope
 from app.modules.code_graph.module_refs import module_refs_of_path
 
 if TYPE_CHECKING:
@@ -84,10 +84,10 @@ async def remember(graph_provider: IGraphDBProvider | None,
         if not is_code_record(record):
             continue
         record_id = record.get("_key") or record.get("id")
-        org_id, connector_id = record.get("orgId"), record.get("connectorId")
-        record_group_id = record.get("recordGroupId")
-        if not all(isinstance(v, str) and v for v in (record_id, org_id, connector_id, record_group_id)):
+        scope = record_scope(record)
+        if scope is None or not (isinstance(record_id, str) and record_id):
             continue
+        org_id, connector_id, record_group_id = scope
         try:
             names = await defined_names(graph_provider, org_id, record_id)
             await graph_provider.upsert_sync_point(
@@ -151,7 +151,15 @@ async def pending(graph_provider: IGraphDBProvider, org_id: str, record_group_id
     return DeletedFiles(keys, names)
 
 
-async def forget(graph_provider: IGraphDBProvider, keys: Iterable[str]) -> None:
-    """Remove the sync points a settled build served; one written since stays."""
+async def forget(graph_provider: IGraphDBProvider, keys: Iterable[str], log: Logger) -> None:
+    """Remove the sync points a settled build served; one written since stays.
+
+    Never raises: the build already settled, and a sync point left behind only
+    makes a later build re-resolve the same callers again.
+    """
     for key in keys:
-        await graph_provider.remove_sync_point(key, CollectionNames.SYNC_POINTS.value)
+        try:
+            await graph_provider.remove_sync_point(key, CollectionNames.SYNC_POINTS.value)
+        except Exception:
+            log.warning("Could not remove deleted code file sync point %s; a later build "
+                        "serves it again", key, exc_info=True)
