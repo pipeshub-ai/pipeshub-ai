@@ -1,4 +1,5 @@
-import { DocumentModel } from '../schema/document.schema';
+import { getDocumentRepository } from '../../../libs/repositories/document';
+import { isValidId } from '../../../libs/repositories/ids';
 import { NextFunction, Response } from 'express';
 import {
   BadRequestError,
@@ -6,7 +7,6 @@ import {
   NotFoundError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
-import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
@@ -62,24 +62,10 @@ export async function writeToStorage(
 }
 
 // Interface for document storage info response
+// A plain row. Writes go through the document repository, never the row.
 export interface DocumentInfoResponse {
-  document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
+  document: Document;
 }
-
-/**
- * Read-only callers can ask for a plain object instead of a hydrated model.
- *
- * Mongoose hydration -- schema defaults, casting, getters, change tracking --
- * measured ~20% of gateway CPU under load, and the download path reads a
- * handful of fields and never saves. Opt-in rather than default because other
- * callers of getDocumentInfo do mutate and save the document.
- */
-// `Document` here is the plain data interface from storage.service.types.
-// NOT DocumentModel: that is declared `extends IDocument, MongooseDocument`, so
-// it carries save()/markModified()/etc and a lean object typed as it would
-// still compile against the hydrated-only API -- exactly the runtime crash the
-// lean path is meant to make impossible.
-export type LeanDocumentInfoResponse = { document: Document };
 
 export function encodeRFC5987(str: string): string {
   return encodeURIComponent(str)
@@ -91,32 +77,20 @@ export function encodeRFC5987(str: string): string {
 
 async function getDocumentInfoFromDb(
   documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+  orgId: string,
+  lean: boolean,
+): Promise<DocumentInfoResponse | undefined> {
   try {
     // Validate documentId is a valid ObjectId
-    if (!mongoose.isValidObjectId(documentId)) {
+    if (!isValidId(documentId)) {
       throw new NotFoundError('Invalid document ID');
     }
 
-    // Fetch the document from MongoDB
-    const query = DocumentModel.findOne({
-      _id: documentId,
+    const document = await getDocumentRepository().getLive(
       orgId,
-      isDeleted: false,
-    });
-    const document = lean ? await query.lean<Document>().exec() : await query;
+      documentId,
+      lean,
+    );
 
     if (!document) {
       // Callers probe for documents that may be gone (deduplicated content
@@ -143,34 +117,25 @@ async function getDocumentInfoFromDb(
   }
 }
 
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
+/**
+ * `lean` is for read-only callers: building the full model (schema defaults,
+ * casting, change tracking) measured ~20% of gateway CPU under load, and the
+ * download path reads a handful of fields and never writes. Callers that
+ * compute a write from the row (counters, version lists) need the defaults.
+ */
 export async function getDocumentInfo(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
   lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+): Promise<DocumentInfoResponse | undefined> {
   try {
-    const orgId = extractOrgId(req);
+    const orgId = requireId(extractOrgId(req), 'organization');
     const documentId = req.params.documentId;
 
-    const orgID = toObjectId(orgId, 'organization');
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
-    // Branch rather than pass the boolean through: the overloads are what stop
-    // a lean object being handed to a caller expecting a hydrated document.
-    const documentInfo = lean
-      ? await getDocumentInfoFromDb(documentId, orgID, true)
-      : await getDocumentInfoFromDb(documentId, orgID, false);
+    const documentInfo = await getDocumentInfoFromDb(documentId, orgId, lean);
     if (!documentInfo) {
       throw new NotFoundError('Document not found');
     }
@@ -442,17 +407,17 @@ export async function createPlaceholderDocument(
       documentName,
       documentPath: fullDocumentPath,
       alternateDocumentName,
-      orgId: toObjectId(orgId, 'organization'),
+      orgId: requireId(orgId, 'organization'),
       isVersionedFile: isVersionedFile,
       permissions: permissions,
-      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
+      initiatorUserId: userId ? requireId(userId, 'user') : null,
       customMetadata,
       sizeInBytes: size,
       storageVendor: storageVendor ?? StorageVendor.S3,
       extension: normalizeExtension(extension),
     };
 
-    const savedDocument = await DocumentModel.create(documentInfo);
+    const savedDocument = await getDocumentRepository().create(documentInfo);
     return { document: savedDocument };
   } catch (error) {
     next(error);
@@ -606,21 +571,21 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
 }
 
 /**
- * The org and user ids come from the caller's token. A malformed one makes
- * `new ObjectId` throw a BSONError, which reaches the client as a 500.
- * isValidObjectId is not enough: it passes a number, which ObjectId turns into
- * a made-up timestamp id that matches nothing.
+ * The org and user ids come from the caller's token. A malformed one would
+ * otherwise reach the store as a driver error and the client as a 500.
+ * A bare number is refused too: the store's id parser turns it into a
+ * made-up timestamp id that matches nothing.
  */
-export function toObjectId(
-  id: unknown,
-  kind: 'organization' | 'user',
-): mongoose.Types.ObjectId {
-  if (typeof id !== 'string' || !mongoose.isObjectIdOrHexString(id)) {
+export const isHexId = (id: unknown): id is string =>
+  typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+
+export function requireId(id: unknown, kind: 'organization' | 'user'): string {
+  if (!isHexId(id)) {
     throw new BadRequestError(
       `The ${kind} id in the storage token isn't valid. Issue the token with the 24-character id of an existing ${kind}, then try again.`,
     );
   }
-  return new mongoose.Types.ObjectId(id);
+  return id;
 }
 
 export function extractOrgId(

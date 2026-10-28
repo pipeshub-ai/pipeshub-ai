@@ -1,12 +1,9 @@
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-import { Org } from '../schema/org.schema';
-import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { createUnitOfWork } from '../../../libs/repositories/doc-store';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { OrgLogos } from '../schema/orgLogo.schema';
 import {
   detectRasterImageFormat,
   readImageUpload,
@@ -15,11 +12,6 @@ import {
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import { getBrandConfig } from '../../../libs/branding';
-import {
-  AuthMethodType,
-  OrgAuthConfig,
-} from '../../auth/schema/orgAuthConfiguration.schema';
-import { UserCredentials } from '../../auth/schema/userCredentials.schema';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
 import {
@@ -98,20 +90,24 @@ export class OrgController {
       }
 
       const svgString = svgBuffer.toString('utf-8');
-      
+
       // Limit string length to prevent ReDoS - only check first portion if too long
       const maxCheckLength = 1000000; // 1MB in characters for validation
-      const checkString = svgString.length > maxCheckLength 
-        ? svgString.substring(0, maxCheckLength) 
-        : svgString;
-      
+      const checkString =
+        svgString.length > maxCheckLength
+          ? svgString.substring(0, maxCheckLength)
+          : svgString;
+
       // Use limited quantifiers [^>]{0,10000} to prevent ReDoS attacks
       // Check for dangerous patterns - throw error if found
-      
+
       // Check for script tags (opening, closing, or incomplete)
       const scriptTagPattern = /<[\s]*script[^>]{0,10000}>/gi;
       const scriptClosingPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
-      if (scriptTagPattern.test(checkString) || scriptClosingPattern.test(checkString)) {
+      if (
+        scriptTagPattern.test(checkString) ||
+        scriptClosingPattern.test(checkString)
+      ) {
         throw new BadRequestError(
           'SVG file contains script tags which are not allowed for security reasons',
         );
@@ -166,7 +162,7 @@ export class OrgController {
   }
 
   async checkOrgExistence(res: Response): Promise<void> {
-    const count = await Org.countDocuments();
+    const count = await getOrgRepository().count();
 
     res.status(200).json({ exists: count != 0 });
   }
@@ -177,7 +173,6 @@ export class OrgController {
       throw new NotFoundError('Container not found');
     }
 
-    let session: mongoose.ClientSession | null = null;
     try {
       const { contactEmail, adminFullName, password, sendEmail } = req.body as {
         contactEmail: string;
@@ -192,7 +187,7 @@ export class OrgController {
         );
       }
 
-      const count = await Org.countDocuments();
+      const count = await getOrgRepository().count();
       if (count > 0) {
         throw new BadRequestError('There is already an organization');
       }
@@ -203,123 +198,63 @@ export class OrgController {
         );
       }
 
+      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+      // Either the organisation and the events that announce it both land, or
+      // neither does (on a replica set). An organisation that exists without
+      // those events is invisible to the permission graph. Without a replica
+      // set the events are still recorded durably and delivered with retries;
+      // only the atomicity is unavailable.
       const source = signupSource(
         req.body as { ref?: unknown; referrerDomain?: unknown },
       );
-      const org = new Org({
-        ...req.body,
-        domain,
-        onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
-        signupChannel: source.channel,
-        signupReferrerDomain: source.referrerDomain,
-      });
-
-      const adminUser = new Users({
-        fullName: adminFullName,
-        email: contactEmail,
-        orgId: org._id,
-        role: 'admin',
-      });
-
-      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-
-      const adminUserCredentials = new UserCredentials({
-        userId: adminUser._id,
-        orgId: org._id,
-        isDeleted: false,
-        hashedPassword,
-        ipAddress: req.ip,
-      });
-
-      const allUsersGroup = new UserGroups({
-        type: 'everyone',
-        name: 'everyone',
-        orgId: org._id,
-        users: [adminUser._id],
-      });
-
-      const standardUsersGroup = new UserGroups({
-        type: 'standard',
-        name: 'standard',
-        orgId: org._id,
-        users: [],
-      });
-
-      if (!org._id) {
-        throw new NotFoundError('Org Id not found');
-      }
-      if (!adminUser._id) {
-        throw new NotFoundError('Admin User Id not found');
-      }
-
-      const orgAuthConfig = new OrgAuthConfig({
-        orgId: org._id,
-        authSteps: [
+      const ids = getOrgRepository().allocateIds();
+      const { org, adminUserId } = await createUnitOfWork(
+        this.config.rsAvailable === 'true',
+      ).run(async (tx) => {
+        const created = await getOrgRepository().createWithAdmin(
           {
-            order: 1,
-            allowedMethods: [{ type: AuthMethodType.PASSWORD }],
+            ids,
+            org: {
+              ...req.body,
+              domain,
+              onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+              signupChannel: source.channel,
+              signupReferrerDomain: source.referrerDomain,
+            },
+            admin: { fullName: adminFullName, email: contactEmail },
+            passwordHash: hashedPassword,
+            ipAddress: req.ip,
           },
-        ],
+          tx,
+        );
+        const orgCreatedEvent: Event = {
+          eventType: EventType.OrgCreatedEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: created.org._id,
+            accountType: created.org.accountType,
+            registeredName: created.org.registeredName,
+          } as OrgAddedEvent,
+        };
+        const adminUserEvent: Event = {
+          eventType: EventType.NewUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: created.org._id,
+            userId: created.adminUserId,
+            fullName: adminFullName,
+            email: created.adminEmail,
+            syncAction: 'none',
+          } as UserAddedEvent,
+        };
+        await this.eventService.publishEvent(orgCreatedEvent, tx);
+        await this.eventService.publishEvent(adminUserEvent, tx);
+        return created;
       });
-
-      // Built before the save so the transactional branch can store them with
-      // the same commit. An organisation that exists without the events that
-      // announce it is invisible to the permission graph, which is the pair
-      // this transaction is here to keep together.
-      const orgCreatedEvent: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id.toString(),
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      const adminUserEvent: Event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id.toString(),
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-
-      const rsAvailable = this.config.rsAvailable === 'true';
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-
-        session.startTransaction();
-        await orgAuthConfig.save({ session });
-        await allUsersGroup.save({ session });
-        await standardUsersGroup.save({ session });
-        await adminUser.save({ session });
-        await adminUserCredentials.save({ session });
-        await org.save({ session });
-        // Inside the transaction: either the organisation and the events that
-        // describe it both land, or neither does.
-        await this.eventService.publishEvent(orgCreatedEvent, session);
-        await this.eventService.publishEvent(adminUserEvent, session);
-        await session.commitTransaction();
-      } else {
-        await orgAuthConfig.save();
-        await allUsersGroup.save();
-        await standardUsersGroup.save();
-        await adminUser.save();
-        await adminUserCredentials.save();
-        await org.save();
-        // No replica set, so no transaction to join. The events are still
-        // recorded durably and delivered with retries; only the atomicity is
-        // unavailable here.
-        await this.eventService.publishEvent(orgCreatedEvent);
-        await this.eventService.publishEvent(adminUserEvent);
-      }
-
       recordEvent(ORG_CREATED_EVENT, {
-        orgId: (org._id as mongoose.Types.ObjectId).toString(),
-        userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
+        orgId: org._id,
+        userId: adminUserId,
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
@@ -337,7 +272,7 @@ export class OrgController {
               contactEmail,
               this.config.scopedJwtSecret,
             ),
-            orgId: org._id.toString(),
+            orgId: org._id,
           },
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
@@ -357,12 +292,10 @@ export class OrgController {
       }
       this.logger.error('Creating the organisation failed', { error });
       throw markClientSafe(
-        new InternalServerError(serverFailureMessage('create the organisation')),
+        new InternalServerError(
+          serverFailureMessage('create the organisation'),
+        ),
       );
-    } finally {
-      if (session) {
-        session.endSession();
-      }
     }
   }
 
@@ -374,7 +307,7 @@ export class OrgController {
     const orgId = req.user?.orgId;
     this.logger.debug(orgId);
     try {
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -448,7 +381,7 @@ export class OrgController {
 
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -469,16 +402,17 @@ export class OrgController {
       }
 
       // Perform the update
-      const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        returnDocument: 'after',
-      });
+      const updatedOrg = await getOrgRepository().update(
+        orgId as string,
+        updateData,
+      );
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -503,22 +437,24 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
 
       // Soft delete: set isDeleted to true
-      org.isDeleted = true;
-      await org.save();
+      const deleted = await getOrgRepository().softDelete(orgId as string);
+      if (!deleted) {
+        throw new NotFoundError('Organisation not found');
+      }
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -527,7 +463,7 @@ export class OrgController {
 
       res.status(200).json({
         message: 'Organization marked as deleted successfully',
-        data: org,
+        data: deleted,
       });
       return;
     } catch (error) {
@@ -585,13 +521,7 @@ export class OrgController {
       }
 
       const base64Logo = processedBuffer.toString('base64');
-      await OrgLogos.findOneAndUpdate(
-        {
-          orgId,
-        },
-        { orgId, logo: base64Logo, mimeType },
-        { returnDocument: 'after', upsert: true },
-      );
+      await getOrgRepository().setLogo(orgId as string, base64Logo, mimeType);
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
@@ -613,7 +543,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const orgLogo = await OrgLogos.findOne({ orgId }).lean().exec();
+      const orgLogo = await getOrgRepository().getLogo(orgId as string);
 
       if (!orgLogo || !orgLogo.logo) {
         res.status(204).end();
@@ -645,15 +575,10 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const orgLogo = await OrgLogos.findOne({ orgId }).exec();
+      const orgLogo = await getOrgRepository().removeLogo(orgId as string);
       if (!orgLogo) {
         throw new NotFoundError('Organisation logo not found');
       }
-
-      orgLogo.logo = null;
-      orgLogo.mimeType = null;
-
-      await orgLogo.save();
 
       res.status(200).send(orgLogo);
       return;
@@ -670,9 +595,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false })
-        .select('onBoardingStatus')
-        .lean();
+      const org = await getOrgRepository().getOnboardingStatus(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -703,15 +626,14 @@ export class OrgController {
         );
       }
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false });
+      const org = await getOrgRepository().setOnboardingStatus(
+        orgId as string,
+        status,
+      );
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
-
-      // Update the onboarding status
-      org.onBoardingStatus = status;
-      await org.save();
 
       res.status(200).json({
         message: 'Onboarding status updated successfully',

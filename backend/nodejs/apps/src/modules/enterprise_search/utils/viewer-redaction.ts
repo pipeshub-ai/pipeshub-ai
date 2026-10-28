@@ -14,7 +14,7 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
 import type { AppConfig } from '../../tokens_manager/config/config';
-import Citation from '../schema/citation.schema';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
@@ -33,6 +33,9 @@ export interface Readable {
   ids: Set<string>;
   urls: Set<string>;
 }
+
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
 
 /**
  * Record ids and record addresses the viewer may read,
@@ -86,8 +89,14 @@ export const readableRecordIds = async (
           `record access returned ${String(response.statusCode)}`,
         );
       }
-      for (const id of response.data?.accessible ?? []) readable.ids.add(id);
-      for (const u of response.data?.accessibleUrls ?? []) readable.urls.add(u);
+      const accessible: unknown = response.data?.accessible ?? [];
+      const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      // Only lists of strings: a string is read per character, String(['id']) is 'id'.
+      if (!isStringList(accessible) || !isStringList(accessibleUrls)) {
+        throw new Error('record access returned a malformed body');
+      }
+      for (const id of accessible) readable.ids.add(id);
+      for (const u of accessibleUrls) readable.urls.add(u);
     }
     return readable;
   } catch (error: unknown) {
@@ -104,8 +113,8 @@ interface CitedDoc {
   metadata?: { recordId?: string };
 }
 interface CitationEntry {
-  citationId?: CitedDoc | null;
-  citationData?: CitedDoc | null;
+  citationId?: CitedDoc | string | null;
+  citationData?: CitedDoc | string | null;
 }
 interface AttachmentEntry {
   recordId?: string;
@@ -178,6 +187,7 @@ const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
 const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
   const d = c?.citationData ?? c?.citationId;
   if (!d) return undefined;
+  if (typeof d === 'string') return d;
   if (d.metadata) return d;
   const id: { toString: () => string } = d._id ?? d;
   return id.toString();
@@ -206,13 +216,15 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   }
   const recordOfCitation = new Map<string, string>();
   if (bare.size > 0) {
-    const docs: CitedDoc[] = await Citation.find({ _id: { $in: [...bare] } })
-      .select('metadata.recordId')
-      .lean();
+    const docs = await getConversationRepository().getCitations(
+      [...bare],
+      viewer.orgId,
+    );
     for (const d of docs) {
-      const recordId = d.metadata?.recordId;
+      const recordId = (d.metadata as { recordId?: string } | undefined)
+        ?.recordId;
       if (d._id && recordId !== undefined && recordId !== '')
-        recordOfCitation.set(d._id.toString(), recordId);
+        recordOfCitation.set(d._id, recordId);
     }
   }
   const recordIdOf = (c: CitationEntry | null): string | undefined => {

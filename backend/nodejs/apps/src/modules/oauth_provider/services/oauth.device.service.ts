@@ -1,6 +1,5 @@
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import {
   DeviceGrantError,
@@ -10,19 +9,24 @@ import {
 } from '../../../libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../libs/errors/http.errors'
 import {
-  OAuthDeviceCode,
+  getOAuthTokenRepository,
   OAuthDeviceCodeStatus,
-} from '../schema/oauth.device_code.schema'
-import { OAuthGrantType } from '../schema/oauth.app.schema'
+} from '../../../libs/repositories/oauth-token'
+import { OAuthGrantType, type OAuthAppDto } from '../../../libs/repositories/oauth-app'
+import type { DeviceCodeDto } from '../../../libs/repositories/oauth-token';
+
+type ClaimedApproval = DeviceCodeDto & { userId: string; orgId: string };
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
-} from '../schema/knowledge_limit.schema';
-import { OAuthAppService } from './oauth.app.service'
+} from '../types/knowledge_limit';
+import {
+  OAuthAppService,
+} from './oauth.app.service';
 import { OAuthTokenService } from './oauth_token.service'
 import { ScopeValidatorService } from './scope.validator.service'
-import { Users } from '../../user_management/schema/users.schema'
-import { Org } from '../../user_management/schema/org.schema'
+import { getUserRepository } from '../../../libs/repositories/user'
+import { getOrgRepository } from '../../../libs/repositories/org'
 import { TokenResponse, ConsentData } from '../types/oauth.types'
 import { FirstPartyDeviceAppService } from './oauth.first_party_device.service'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
@@ -86,16 +90,15 @@ export class OAuthDeviceService {
     )
 
     const deviceCode = crypto.randomBytes(DEVICE_CODE_BYTES).toString('hex')
-    const userCode = this.generateUserCode()
     const expiresAt = new Date(Date.now() + DEVICE_TTL_SECONDS * 1000)
 
-    await OAuthDeviceCode.create({
+    const userCode = this.generateUserCode()
+    await getOAuthTokenRepository().createDevice({
       deviceCodeHash: this.hashDeviceCode(deviceCode),
       userCode,
       clientId,
       scopes: granted,
       knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
-      status: OAuthDeviceCodeStatus.PENDING,
       interval: POLL_INTERVAL_SECONDS,
       expiresAt,
     })
@@ -146,8 +149,9 @@ export class OAuthDeviceService {
   ): Promise<void> {
     const record = await this.findPendingByUserCode(userCodeRaw)
     if (consent !== 'granted') {
-      record.status = OAuthDeviceCodeStatus.DENIED
-      await record.save()
+      await getOAuthTokenRepository().decideDevice(record._id, {
+        status: OAuthDeviceCodeStatus.DENIED,
+      })
       this.logger.info('Device authorization denied', {
         clientId: record.clientId,
         userId,
@@ -162,10 +166,11 @@ export class OAuthDeviceService {
         "The application's permissions changed after this login started. Start it again.",
       );
     }
-    record.status = OAuthDeviceCodeStatus.APPROVED
-    record.userId = new Types.ObjectId(userId)
-    record.orgId = new Types.ObjectId(orgId)
-    await record.save()
+    await getOAuthTokenRepository().decideDevice(record._id, {
+      status: OAuthDeviceCodeStatus.APPROVED,
+      userId,
+      orgId,
+    })
     this.logger.info('Device authorization approved', {
       clientId: record.clientId,
       userId,
@@ -195,10 +200,9 @@ export class OAuthDeviceService {
       await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
     }
 
-    const record = await OAuthDeviceCode.findOne({
-      deviceCodeHash: { $eq: this.hashDeviceCode(deviceCode) },
-      clientId: { $eq: app.clientId },
-    })
+    const tokenRepo = getOAuthTokenRepository()
+    const deviceCodeHash = this.hashDeviceCode(deviceCode)
+    const record = await tokenRepo.findDeviceByHash(deviceCodeHash, app.clientId)
     if (!record || record.expiresAt.getTime() <= Date.now()) {
       throw new DeviceGrantError('expired_token', 'device_code has expired')
     }
@@ -218,8 +222,7 @@ export class OAuthDeviceService {
           'polling too frequently',
         )
       }
-      record.lastPolledAt = new Date(now)
-      await record.save()
+      await tokenRepo.recordDevicePoll(record._id, new Date(now))
       throw new DeviceGrantError(
         'authorization_pending',
         'authorization is still pending',
@@ -230,41 +233,35 @@ export class OAuthDeviceService {
       throw new InvalidGrantError('device_code is not approved')
     }
 
+
     // Claim before minting so two concurrent polls cannot both issue tokens.
-    const claimed = await OAuthDeviceCode.findOneAndDelete({
-      _id: record._id,
-      status: OAuthDeviceCodeStatus.APPROVED,
-      expiresAt: { $gt: new Date() },
-    })
+    const claimed = await tokenRepo.claimApprovedDevice(record._id)
     if (!claimed || !claimed.userId || !claimed.orgId) {
       throw new InvalidGrantError('device_code has already been used')
     }
 
+    return this.issueForApproval(app, claimed as ClaimedApproval);
+  }
+
+  private async issueForApproval(
+    app: OAuthAppDto,
+    claimed: ClaimedApproval,
+  ): Promise<TokenResponse> {
     if (!isKnowledgeLimitWithin(claimed.knowledgeLimit, app.knowledgeLimit)) {
       throw new InvalidGrantError(
         "The application's permissions changed after you allowed it. Sign in again.",
       );
     }
 
-    const userId = claimed.userId.toString()
-    const orgId = claimed.orgId.toString()
+    const userId = claimed.userId
+    const orgId = claimed.orgId
+
 
     // The user approved earlier; they or their org may have been deleted since.
-    const user = await Users.findOne({
-      _id: claimed.userId,
-      orgId: claimed.orgId,
-      isDeleted: false,
-    })
-      .select('fullName')
-      .lean()
-      .exec()
-    const org = await Org.findOne({
-      _id: claimed.orgId,
-      isDeleted: false,
-    })
-      .select('accountType')
-      .lean()
-      .exec()
+    const user = await getUserRepository().getLiveFields(orgId, userId, [
+      'fullName',
+    ])
+    const org = await getOrgRepository().getAccountType(orgId)
     if (!user || !org) {
       throw new DeviceGrantError(
         'access_denied',
@@ -306,7 +303,7 @@ export class OAuthDeviceService {
     if (!userCode) {
       throw new BadRequestError('user_code is required')
     }
-    const record = await OAuthDeviceCode.findOne({ userCode })
+    const record = await getOAuthTokenRepository().findDeviceByUserCode(userCode)
     if (!record) {
       throw new NotFoundError('Unknown user_code')
     }

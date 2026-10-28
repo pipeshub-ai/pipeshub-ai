@@ -1,7 +1,6 @@
 import { injectable, inject } from 'inversify';
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { Types } from 'mongoose';
 import { OAuthTokenService } from '../services/oauth_token.service';
 import { ScopeValidatorService } from '../services/scope.validator.service';
 import {
@@ -11,7 +10,7 @@ import {
   JWK,
 } from '../types/oauth.types';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 import {
   OAuthRequest,
   buildWwwAuthenticateHeader,
@@ -59,7 +58,7 @@ export class OIDCProviderController {
     const userId = oauth!.payload.userId;
 
     // Get user info
-    const user = await Users.findById(userId);
+    const user = await getUserRepository().getAnyById(userId);
     if (!user) {
       res.setHeader(
         'WWW-Authenticate',
@@ -73,7 +72,7 @@ export class OIDCProviderController {
     }
 
     const userInfo: Record<string, unknown> = {
-      user_id: (user._id as Types.ObjectId).toString(),
+      user_id: user._id,
     };
 
     // Add claims based on scopes

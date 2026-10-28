@@ -107,6 +107,45 @@ export function formatChatMode(chatMode?: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+interface ToolActivityPart {
+  type?: string;
+  toolName?: string;
+  status?: string;
+  parts?: ToolActivityPart[];
+}
+
+export type AnswerSearchSource = 'internal' | 'web' | 'internal_and_web';
+
+// Tool names come as `<toolset>.<tool>` or `<toolset>_<tool>`; these are the
+// toolsets the Internal search / Web search toggles turn on and off.
+const INTERNAL_SEARCH_TOOL = /^(retrieval|knowledgehub|knowledge_hub|knowledgegraph|knowledge_graph)([._]|$)/i;
+const WEB_SEARCH_TOOL = /(^|[._])(web_search|fetch_url)$/i;
+// A call refused by policy, still waiting on approval, or that failed fed nothing into the answer.
+const UNUSED_TOOL_STATUSES = new Set(['blocked', 'awaiting_approval', 'failed']);
+
+/**
+ * Which search an assistant answer actually used, read from its tool calls.
+ * Null when it used neither (or the message carries no activity).
+ */
+export function answerSearchSource(parts?: ToolActivityPart[] | null): AnswerSearchSource | null {
+  let internal = false;
+  let web = false;
+  const visit = (list: ToolActivityPart[] | undefined) => {
+    for (const part of list ?? []) {
+      if (part.type === 'tool_call' && part.toolName && !UNUSED_TOOL_STATUSES.has(part.status ?? '')) {
+        if (INTERNAL_SEARCH_TOOL.test(part.toolName)) internal = true;
+        else if (WEB_SEARCH_TOOL.test(part.toolName)) web = true;
+      }
+      if (part.parts?.length) visit(part.parts);
+    }
+  };
+  visit(parts ?? undefined);
+  if (internal && web) return 'internal_and_web';
+  if (internal) return 'internal';
+  if (web) return 'web';
+  return null;
+}
+
 /**
  * Format a Unix timestamp (ms) as a relative time string.
  * e.g. "Just now", "3 minutes ago", "2 hours ago", "5 days ago", "3 Nov 2025"

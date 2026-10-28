@@ -308,6 +308,31 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
     )
 
 
+def source_user_account(client: PipeshubClient, email: str, name: str) -> SecondUser:
+    """A logged-in PipesHub account with a source user's email: connector permissions are keyed by it.
+
+    Kept, not deleted, by its callers: an email whose account was deleted cannot be added to the org again.
+    """
+    resp = requests.post(
+        f"{client.base_url}/api/v1/users",
+        headers=client._headers(),
+        json={"fullName": name, "email": email},
+        timeout=client.timeout_seconds,
+    )
+    created = resp.json() if resp.status_code < 400 else {}
+    if resp.status_code >= 400:
+        logger.info("createUser %s answered %s; looking for an existing account", email, resp.status_code)
+    graph_user = _wait_for_graph_user(client, email)
+    user_id = str(created.get("_id") or created.get("id") or graph_user.get("userId") or "")
+    graph_id = str(graph_user.get("id") or "")
+    if not user_id or not graph_id:
+        raise RuntimeError(f"no usable PipesHub account for {email}: created={created} graph={graph_user}")
+    _seed_password(client.org_id, user_id)
+    token = log_in(client.base_url, email, client.timeout_seconds)
+    return SecondUser(user_id=user_id, graph_id=graph_id, email=email, token=token,
+                      base_url=client.base_url, timeout=client.timeout_seconds)
+
+
 def _credential_filter(org_id: str, user_id: str) -> dict[str, str]:
     return {"userId": str(user_id), "orgId": str(org_id)}
 

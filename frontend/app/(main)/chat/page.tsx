@@ -853,14 +853,22 @@ function ChatContent() {
   useEffect(() => {
     if (!projectId) { setProjectDetail(null); return; }
     let cancelled = false;
-    ProjectApi.get(projectId).then((p) => {
+    // The page shows the one error; the client's own toast made it two.
+    ProjectApi.get(projectId, { suppressErrorToast: true }).then((p) => {
       if (!cancelled) setProjectDetail(p);
-    }).catch(() => {
-      if (!cancelled) setProjectDetail(null);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setProjectDetail(null);
       toast.error(t('chat.projects.workspace.failedToLoad'));
+      // A project the user can't open left them a working composer inside a
+      // nameless project. Fall back to a plain chat (keeping an open thread).
+      const status = isProcessedError(error) ? error.statusCode : undefined;
+      if (status === 403 || status === 404) {
+        router.replace(buildChatHref({ conversationId }));
+      }
     });
     return () => { cancelled = true; };
-  }, [projectId, projectsVersion, t]);
+  }, [projectId, projectsVersion, t, router, conversationId]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;
@@ -1102,11 +1110,12 @@ function ChatContent() {
     activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
-  // Search mode: show results view when in search mode with results/in-progress search
+  // Search mode: show the results view once a query is submitted, so empty and failed
+  // searches show their state instead of falling back to the welcome screen.
   const mode = useChatStore((s) => s.settings.mode);
-  const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
+  const hasSearchQuery = useChatStore((s) => s.searchQuery !== '');
   const isSearching = useChatStore((s) => s.isSearching);
-  const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
+  const showSearchView = mode === 'search' && (hasSearchQuery || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
   // Desktop only: on phones and tablets the two columns leave the document too narrow.

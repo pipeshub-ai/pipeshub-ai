@@ -41,7 +41,7 @@ describe('userExists Middleware', () => {
 
     sinon.stub(Org, 'findOne').resolves(mockOrg as any);
     sinon.stub(Users, 'findOne').returns({
-      exec: sinon.stub().resolves(mockUser),
+      lean: () => ({ exec: sinon.stub().resolves(mockUser) }),
     } as any);
 
     await userExists(req, res, next);
@@ -66,7 +66,7 @@ describe('userExists Middleware', () => {
     const mockOrg = { _id: '507f1f77bcf86cd799439012', isDeleted: false };
     sinon.stub(Org, 'findOne').resolves(mockOrg as any);
     sinon.stub(Users, 'findOne').returns({
-      exec: sinon.stub().resolves(null),
+      lean: () => ({ exec: sinon.stub().resolves(null) }),
     } as any);
 
     await userExists(req, res, next);
@@ -133,7 +133,7 @@ describe('userExists Middleware', () => {
 
     sinon.stub(Org, 'findOne').resolves(mockOrg as any);
     sinon.stub(Users, 'findOne').returns({
-      exec: sinon.stub().resolves(foundUser),
+      lean: () => ({ exec: sinon.stub().resolves(foundUser) }),
     } as any);
 
     await userExists(req, res, next);
@@ -158,7 +158,7 @@ describe('userExists Middleware', () => {
 
     sinon.stub(Org, 'findOne').resolves(mockOrg as any);
     sinon.stub(Users, 'findOne').returns({
-      exec: sinon.stub().resolves(foundUser),
+      lean: () => ({ exec: sinon.stub().resolves(foundUser) }),
     } as any);
 
     await userExists(req, res, next);

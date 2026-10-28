@@ -16,6 +16,7 @@
     "test:coverage-check": "cross-env TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 89 --functions 90 --branches 80 --statements 89 --reporter=text --reporter=html --reporter=json-summary mocha --parallel --jobs 4",
     "test:pg": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 120000 tests/libs/db/*.itest.ts",
     "test:pg-services": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 tests/libs/services/pg-*.itest.ts",
+    "test:pg-stores": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000 tests/stores/pg-*.itest.ts",
     "test:notification": "cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'notification/(routes|service/notification\\.consumer)' --timeout 15000",
     "slack": "nodemon src/integrations/slack-bot/src/index.ts"
   },
@@ -68,7 +69,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1156.0",
     "@azure/storage-blob": "^12.34.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@pipeshub-ai/mcp": "4.5.0",
+    "@pipeshub-ai/mcp": "4.8.0",
     "@qdrant/js-client-rest": "^1.20.0",
     "@slack/bolt": "^5.1.0",
     "arangojs": "^10.6.0",

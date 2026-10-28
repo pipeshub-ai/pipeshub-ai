@@ -12,14 +12,15 @@ import { CrawlingSchedulerService } from '../../crawling_manager/services/crawli
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
+import { docStore } from '../../../libs/repositories/store-select';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
-import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
@@ -144,6 +145,8 @@ export class MigrationService {
   }
 
   async chatKbFiltersMigration(): Promise<void> {
+    // These read legacy MongoDB collections that a PostgreSQL install never had.
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating chat KB filters');
     try {
       const result = await new ChatKbFiltersMigration(
@@ -169,6 +172,7 @@ export class MigrationService {
   }
 
   async chatSessionsMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating legacy conversations into chatSessions');
     try {
       const configuredBatchSize = Number.parseInt(
@@ -201,6 +205,7 @@ export class MigrationService {
   }
 
   async documentOrgIdMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating document orgId backfill');
     try {
       const result = await new DocumentOrgIdBackfillMigration(
@@ -234,7 +239,7 @@ export class MigrationService {
       // immediately rather than trying to reach the (possibly still booting)
       // Python connector service — this makes cold-start faster and avoids
       // unnecessary retry noise in the logs.
-      const orgCount = await Org.countDocuments();
+      const orgCount = await getOrgRepository().count();
       if (orgCount === 0) {
         this.logger.info(
           'No organisation found — fresh setup detected. ' +

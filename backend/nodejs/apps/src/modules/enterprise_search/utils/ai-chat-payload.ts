@@ -1,4 +1,4 @@
-import { IProjectDocument } from '../../projects/types/project.interfaces';
+import { ProjectDto } from '../../projects/types/project.interfaces';
 import { applyProjectScope } from './project-context';
 
 export const parseChatMode = (
@@ -98,15 +98,14 @@ export const assignKeywordSearchBudgetToPayload = (
 
 /** Which AI-backend chat a turn is for: the assistant, or one saved agent. */
 export type ChatTarget =
-  | { kind: 'assistant' }
-  | { kind: 'agent'; agentKey: string };
+  { kind: 'assistant' } | { kind: 'agent'; agentKey: string };
 
 export interface AiChatTurnContext {
   conversationId?: string;
   previousConversations: unknown[];
   /** Set on the turn that creates the conversation; follow-ups drop `recordIds`. */
   isNewConversation: boolean;
-  project?: IProjectDocument;
+  project?: ProjectDto;
 }
 
 export interface AiChatRequest {

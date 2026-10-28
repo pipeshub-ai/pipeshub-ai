@@ -12,11 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import BlocksContainer, SemanticMetadata
-from app.modules.artifacts.sidecars import (
-    CLASSIFICATION,
-    ArtifactSidecars,
-    classification_payload,
-)
+from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -27,6 +23,7 @@ from app.modules.pipeline.stages.record_io import (
     RecordStageIO,
     with_classification,
 )
+from app.modules.transformers.stored_write import SidecarWrite
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.indexing_timing import stage
 from app.utils.llm import indexing_model_identity, load_ai_models
@@ -117,7 +114,7 @@ class GraphClassifyIO(RecordStageIO):
             # Before the classification goes back: once the stored record has it, the job counts
             # as done, so a summary point that failed after that would stay missing.
             before=lambda: self._restore_summary_point(owner, metadata),
-            written=lambda: self._write_sidecar(job, metadata),
+            sidecar=self._sidecar(job),
         )
 
     async def _restore_summary_point(self, record_id: str, metadata: SemanticMetadata) -> None:
@@ -130,14 +127,26 @@ class GraphClassifyIO(RecordStageIO):
         ctx.record.semantic_metadata = metadata
         await self._sink.write_summary_point(ctx)
 
-    async def _write_sidecar(self, job: StageJob, metadata: SemanticMetadata) -> None:
-        # Under the lease, right after the stored record: the revision's sidecar never says
-        # something its stored record does not.
-        if self._sidecars is not None:
-            _ = await self._sidecars.write(
-                job.org_id, job.virtual_record_id, job.rev, CLASSIFICATION, job.stage_version,
-                classification_payload(metadata),
+    def _sidecar(self, job: StageJob) -> SidecarWrite | None:
+        """How the classification is filed beside the revision's set when the write is copy-on-write.
+
+        The sidecar is written before the mapping switches to the stored record that has the same
+        classification, at a path named by that write: it never says something the stored record does
+        not, and it is invisible to a reader until the switch names it.
+        """
+        sidecars = self._sidecars
+        if sidecars is None:
+            return None
+
+        async def write(path: str, stored_run: str | None, semantic_metadata: dict[str, Any]) -> bool:
+            # What the stored record now holds, without the entities stage's section.
+            payload = {k: v for k, v in semantic_metadata.items() if k != NAMED_ENTITIES_SECTION}
+            return await sidecars.write_at(
+                job.org_id, job.virtual_record_id, job.rev, path,
+                classification_envelope(stored_run, path, payload),
             )
+
+        return SidecarWrite(job.stage_version, write)
 
     async def save(self, job: StageJob, record_ids: list[str], metadata: SemanticMetadata) -> None:
         # Content-level outputs are shared by every record on the revision; edges are per record.
@@ -155,7 +164,7 @@ class GraphClassifyIO(RecordStageIO):
             job,
             owner,
             lambda current: with_classification(current, classification),
-            written=lambda: self._write_sidecar(job, metadata),
+            sidecar=self._sidecar(job),
             then=lambda: self._sink.write_enrichment(ctx),
         )
         for record_id in record_ids[1:]:

@@ -8,7 +8,9 @@ implicit `this` and typed receivers. guava: a package copied into two source tre
 import pytest
 
 from app.config.constants.arangodb import RecordRelations
+from app.modules.code_graph.edge_builder import build_code_graph_edges
 
+from .conftest import GROUP_ID, ORG_ID
 from .test_import_binding import _build, _package, _targets
 
 CALLS = RecordRelations.CALLS.value
@@ -197,6 +199,61 @@ async def test_a_call_on_a_union_alias_reaches_every_member(graph, index_file) -
     assert members <= _targets(graph, CALLS, "src/expr.ts")
 
 
+async def test_a_call_on_an_inline_union_reaches_every_member(graph, index_file) -> None:
+    await index_file("a", "src/a.ts",
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function f(e: A | B | undefined) { e!.go(); }\n", "typescript")
+    await _build(graph)
+    assert {"src/a.ts::method:A.go", "src/a.ts::method:B.go"} <= _targets(graph, CALLS, "src/a.ts")
+
+
+async def test_a_call_in_a_local_closure_is_also_the_enclosing_methods(graph, index_file) -> None:
+    # vscode: `const map = (r) => ... this.toRuntime(r)` inside `SessionStorageIdentity._record`.
+    await index_file("a", "src/a.ts",
+                     b"export class Id {\n  toRuntime(r: string): string { return r; }\n"
+                     b"  record(v: string): string {\n"
+                     b"    const map = (r: string) => this.toRuntime(r);\n"
+                     b"    const run = () => map(v);\n    return run();\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert ("method:Id.record", "method:Id.toRuntime") in callers
+    assert ("function:Id.record.map", "method:Id.toRuntime") in callers
+    # `run` calling its sibling `map` is not `record` calling it a second way.
+    assert ("function:Id.record.run", "function:Id.record.map") in callers
+    assert {t for f, t in callers if f == "method:Id.record"} == {
+        "method:Id.toRuntime", "function:Id.record.run"}
+
+
+async def test_a_generic_read_returns_the_type_argument(graph, index_file) -> None:
+    # vscode: `this.model.read(reader)` on a field typed `IObservable<Model | undefined>`.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(reader: unknown): T;\n}\n"
+                     b"export class Ghost {\n  render(): string { return ''; }\n}\n"
+                     b"export class Model {\n  readonly primary: IObservable<Ghost | undefined>;\n}\n"
+                     b"export class Part {\n  constructor(readonly model: IObservable<Model>) {}\n"
+                     b"  show(reader: unknown) {\n"
+                     b"    const g = this.model.read(reader)?.primary.read(reader);\n"
+                     b"    return g?.render();\n  }\n}\n", "typescript")
+    await _build(graph)
+    assert "src/o.ts::method:Ghost.render" in _targets(graph, CALLS, "src/o.ts")
+
+
+async def test_a_generic_read_uses_its_own_functions_type_argument(graph, index_file) -> None:
+    # Two functions in one file name `v` with different type arguments.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(): T;\n}\n"
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function first(v: IObservable<A>) {\n  v.read().go();\n}\n"
+                     b"export function second(v: IObservable<B>) {\n  v.read().go();\n}\n", "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert {t for f, t in callers if f == "function:first" and t.endswith(".go")} == {"method:A.go"}
+    assert {t for f, t in callers if f == "function:second" and t.endswith(".go")} == {"method:B.go"}
+
+
 async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
     # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
     await index_file("event", "src/event.ts",
@@ -247,3 +304,50 @@ async def test_typescript_receivers_typed_per_function_by_loops_and_instanceof(g
     assert {"src/types.ts::method:Openable.open", "src/types.ts::method:Plain.read",
             "src/types.ts::method:Snippet.move", "src/types.ts::method:Snippet.go",
             "src/types.ts::method:Variable.resolve"} <= calls
+
+
+async def test_a_call_through_a_function_typed_property_is_tagged(graph, index_file) -> None:
+    # vscode: `this.options.showHistoryHint()` on `showHistoryHint?: () => boolean`.
+    await index_file("a", "src/a.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n  run(): void;\n}\n"
+                     b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+                     b"  static make = ((n: number) => n) as (n: number) => number;\n"
+                     b"  pick() {\n    this.opts.onPick?.(1);\n    this.opts.run();\n    Box.make(1);\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["method:Opts.run"] != "callback-property"
+    # A field holding an arrow function is a definition, not a slot.
+    assert resolution["field:Box.make"] != "callback-property"
+
+
+async def test_an_incremental_build_tags_calls_into_an_unchanged_file(graph, index_file) -> None:
+    # The caller changes; the file defining the field and the slot does not, so
+    # its type table is not among the re-resolved files' facts.
+    await index_file("rec-def", "src/def.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n}\n"
+                     b"export class Kit {\n  static make = (n: number) => n;\n}\n", "typescript")
+    caller = (b"import { Opts, Kit } from './def';\n"
+              b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+              b"  pick() {\n    this.opts.onPick?.(1);\n    Kit.make(1);\n  }\n}\n")
+    await index_file("rec-use", "src/use.ts", caller, "typescript")
+    await _build(graph)
+    await index_file("rec-use", "src/use.ts", caller + b"// edited\n", "typescript")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-use"}, facts_source=graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["field:Kit.make"] != "callback-property"
+
+
+async def test_a_javascript_field_holding_a_function_is_not_tagged(graph, index_file) -> None:
+    await index_file("a", "src/a.js",
+                     b"export class Box {\n  static make = (n) => n;\n  pick() {\n    return Box.make(1);\n  }\n}\n",
+                     "javascript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Box.make"] != "callback-property"

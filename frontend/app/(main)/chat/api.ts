@@ -2,6 +2,7 @@ import { apiClient, streamSSERequest } from '@/lib/api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
   Conversation,
   ConversationMessage,
@@ -128,6 +129,10 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
+    // Dropping these made every row look project-less: Move to project
+    // pre-selected "No project" and "Remove from project" never showed.
+    ...(conv.projectId ? { projectId: conv.projectId } : {}),
+    ...(conv.projectVisibility ? { projectVisibility: conv.projectVisibility } : {}),
     sharedBy: conv.sharedBy,
     agentKey: conv.agentKey,
   };
@@ -140,6 +145,8 @@ export interface FetchConversationsOptions {
   source: ConversationSource;
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
+  /** Leave out chats that belong to a project; they are listed under their project instead. */
+  excludeProjectChats?: boolean;
   signal?: AbortSignal;
 }
 
@@ -238,6 +245,9 @@ export const ChatApi = {
     };
     if (search) {
       params.search = search;
+    }
+    if (options.excludeProjectChats) {
+      params.projectId = PROJECT_ID_UNASSIGNED;
     }
 
     const { data } = await apiClient.get<ConversationsListResponse>(
@@ -781,7 +791,11 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
+  async listCollectionsForChat(params?: {
+    cursor?: string | null;
+    limit?: number;
+    origins?: 'COLLECTION' | 'CONNECTOR';
+  }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
@@ -790,6 +804,8 @@ export const ChatApi = {
           // Only a cursor the server issued is ever sent back; one it did not
           // issue is a 400.
           ...(params?.cursor ? { cursor: params.cursor } : {}),
+          // Root apps of one origin only; flattened=false keeps it a root listing, not a tree search.
+          ...(params?.origins ? { nodeTypes: 'app', origins: params.origins, flattened: false } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',

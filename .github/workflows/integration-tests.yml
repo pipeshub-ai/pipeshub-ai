@@ -236,6 +236,9 @@ jobs:
       # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
       # whose checked-out code must never see a real signing secret.
       SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
+      # Signs user sessions; compose seeds the stack with it and the security
+      # suite signs an expired session token with it. Test-only.
+      JWT_SECRET: pipeshub-integration-jwt-secret-test-only
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
@@ -246,6 +249,10 @@ jobs:
       # The demo's Build Pack questions cost about four times the golden
       # questions' model calls, so they run nightly and on a demo dispatch only.
       DEMO_PACK_QUESTIONS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'demo')) && '1' || '' }}
+      # Both integration stacks shorten the trash purge (SOFT_DELETE_PURGE_* in
+      # their compose files), so the purge test runs instead of skipping. It
+      # waits out the purge's 240 s minimum age plus a few ticks.
+      PIPESHUB_IT_TRASH_PURGE_TIMEOUT_SEC: '480'
       ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}

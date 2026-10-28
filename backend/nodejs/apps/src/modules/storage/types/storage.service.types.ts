@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 /**
  * Enum representing different storage vendors.
  */
@@ -37,6 +35,16 @@ export interface StorageServiceResponse<T> {
  */
 export interface Document {
   /**
+   * The row id. Absent on a document that has not been created yet.
+   */
+  _id: string;
+
+  /**
+   * Row revision, as stored.
+   */
+  __v?: number;
+
+  /**
    * The name of the document.
    */
   documentName: string;
@@ -59,7 +67,7 @@ export interface Document {
   /**
    * Organization Id
    */
-  orgId: mongoose.Types.ObjectId;
+  orgId: string;
   /**
    * Mutation count
    */
@@ -72,6 +80,10 @@ export interface Document {
    * Digest of the request the key was first used for.
    */
   idempotencyFingerprint?: string;
+  /**
+   * Set once a newer stored write replaced this document; in-place buffer writes are refused.
+   */
+  retiredAt?: number | null;
   /**
    * The keyed upload attempt that owns this unfinished document, and until when.
    */
@@ -89,7 +101,7 @@ export interface Document {
   /**
    * The ID of the user who created or initiated the document.
    */
-  initiatorUserId: mongoose.Types.ObjectId | null;
+  initiatorUserId: string | null;
 
   /**
    * The size of the document in bytes.
@@ -139,7 +151,7 @@ export interface Document {
   /**
    * ID of the user who deleted the document.
    */
-  deletedByUserId?: mongoose.Schema.Types.ObjectId;
+  deletedByUserId?: string;
 
   /**
    * Indicates whether the document is deleted.
@@ -220,7 +232,7 @@ export interface DocumentVersion {
   currentVersion?: number;
   createdAt?: number;
   mutationCount?: number;
-  initiatedByUserId?: mongoose.Schema.Types.ObjectId;
+  initiatedByUserId?: string;
   size?: number;
 }
 
@@ -229,7 +241,7 @@ export interface DocumentVersion {
  */
 export interface CustomMetadata {
   key: string;
-  value: mongoose.Schema.Types.Mixed;
+  value: unknown;
 }
 
 /**

@@ -5148,6 +5148,49 @@ class TestTeamQueriesExcludeInactiveUsers:
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
 
+
+class TestTeamsForAnOrgAdministrator:
+    @pytest.mark.asyncio
+    async def test_one_team_grants_every_flag_to_an_admin(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_team_with_users("t1", "org1", "uk1", is_org_admin=True)
+        call = neo4j_provider.client.execute_query.call_args
+        assert call.kwargs["parameters"]["is_org_admin"] is True
+        assert "canEdit: CASE WHEN $is_org_admin OR" in call.args[0]
+        assert "team.id <> ('all_' + team.orgId)" in call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_an_admin_lists_every_team_in_the_org(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total_count": 1}], []])
+        await neo4j_provider.get_user_teams("uk1", search="dev", org_id="org1", is_org_admin=True)
+        count_call, list_call = neo4j_provider.client.execute_query.call_args_list
+        for call in (count_call, list_call):
+            assert "{orgId: $org_id}" in call.args[0]
+            assert call.kwargs["parameters"]["org_id"] == "org1"
+        assert list_call.kwargs["parameters"]["is_org_admin"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_member_lists_their_own_teams(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total_count": 0}], []])
+        await neo4j_provider.get_user_teams("uk1", org_id="org1")
+        count_call, list_call = neo4j_provider.client.execute_query.call_args_list
+        assert "$org_id" not in list_call.args[0]
+        assert list_call.kwargs["parameters"]["is_org_admin"] is False
+
+    @pytest.mark.asyncio
+    async def test_find_team_by_name_is_trimmed_and_case_blind(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"result": {"id": "t2", "name": "QA"}}])
+        found = await neo4j_provider.find_team_by_name("org1", "  qA ", exclude_team_id="t1")
+        assert found == {"id": "t2", "name": "QA"}
+        call = neo4j_provider.client.execute_query.call_args
+        assert call.kwargs["parameters"] == {"org_id": "org1", "name": "qa", "exclude_team_id": "t1"}
+        assert "toLower(trim(toString(team.name))) = $name" in call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_find_team_by_name_no_match(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        assert await neo4j_provider.find_team_by_name("org1", "x") is None
+
 class TestExternalCollaboratorBrowse:
     """What an external collaborator is shown in a connector: the records shared with
     them directly, whose container they cannot see. The listing places such a node

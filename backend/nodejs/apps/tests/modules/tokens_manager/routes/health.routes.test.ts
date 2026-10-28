@@ -54,6 +54,7 @@ describe('tokens_manager/routes/health.routes', () => {
     mockAuthMiddleware = { authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()) }
 
     container = {
+      isBound: sinon.stub().returns(true),
       get: sinon.stub().callsFake((key: string) => {
         if (key === 'AuthMiddleware') return mockAuthMiddleware
         if (key === 'RedisService') return mockRedis
@@ -109,6 +110,32 @@ describe('tokens_manager/routes/health.routes', () => {
   })
 
   describe('GET / - health check', () => {
+    it('reports PostgreSQL in place of MongoDB when the document store is PostgreSQL', async () => {
+      container.isBound.callsFake((key: string) => key !== 'MongoService')
+      router = createHealthRouter(container, cmContainer)
+      const boot = require('../../../../src/libs/db/boot')
+      const uow = require('../../../../src/libs/db/uow')
+      const epoch = sinon.stub(boot, 'readStoreEpoch').resolves(1)
+      sinon.stub(uow, 'pgRuntime').returns({})
+      sinon.stub(require('axios'), 'get').resolves({ status: 200, data: { status: 'healthy' } })
+
+      const res = mockRes()
+      await findHandler('/', 'get')({}, res, sinon.stub())
+      let body = res.json.firstCall.args[0]
+      expect(body.services).to.not.have.property('mongodb')
+      expect(body.serviceNames).to.not.have.property('mongodb')
+      expect(body.services.postgres).to.equal('healthy')
+      expect(body.serviceNames.postgres).to.equal('PostgreSQL')
+      expect(body.status).to.equal('healthy')
+
+      epoch.rejects(new Error('down'))
+      const res2 = mockRes()
+      await findHandler('/', 'get')({}, res2, sinon.stub())
+      body = res2.json.firstCall.args[0]
+      expect(body.services.postgres).to.equal('unhealthy')
+      expect(body.status).to.equal('unhealthy')
+    })
+
     it('should return healthy status when all services are healthy', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()

@@ -57,6 +57,17 @@ export class NotFoundError extends HttpError {
   }
 }
 
+/** A buffer write to a document that a newer stored write has replaced (404, so callers that treat a missing document upload a replacement). */
+export class DocumentRetiredError extends BaseError {
+  constructor(
+    message = 'Document has been replaced and takes no in-place writes',
+  ) {
+    super('DOCUMENT_RETIRED', message, HTTP_STATUS.NOT_FOUND, {
+      logLevel: 'warn',
+    });
+  }
+}
+
 export class ConflictError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('CONFLICT', message, HTTP_STATUS.CONFLICT, metadata);
@@ -114,6 +125,17 @@ export class UnprocessableEntityError extends HttpError {
       'UNPROCESSABLE_ENTITY',
       message,
       HTTP_STATUS.UNPROCESSABLE_ENTITY,
+      metadata,
+    );
+  }
+}
+
+export class UnsupportedMediaTypeError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super(
+      'UNSUPPORTED_MEDIA_TYPE',
+      message,
+      HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE,
       metadata,
     );
   }

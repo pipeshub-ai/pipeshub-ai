@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
+import { readableRecordIds } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
 import { addComputedFields } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
@@ -159,6 +160,7 @@ const stubAccess = (readable: string[] | null) => {
 
 const stubConversation = (messages: unknown[]) => {
   sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+  sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
     chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
@@ -252,9 +254,62 @@ describe('shared chats: per-viewer citations', () => {
     expect(message.referenceData[1].name).to.equal(SECRET)
   })
 
+  it('a non-200 reply from the access check redacts everything, even if it lists records', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
+      return this.uri.endsWith('/chat/records/access')
+        ? ({ statusCode: 503, data: { accessible: ['rec-no', 'att-no'], accessibleUrls: ['https://x/rec-no'] } } as any)
+        : ({ statusCode: 200, data: {} } as any)
+    })
+    stubConversation([{ ...answer(), referenceData: [{ name: SECRET, id: 'v-1', webUrl: 'https://x/rec-no' }] }])
+    const message = await fetchConversation(VIEWER)
+    expect(message.citations).to.deep.equal([{ redacted: true, reason: 'no_access' }, { redacted: true, reason: 'no_access' }])
+    expect(message.attachments).to.deep.equal([])
+    expect(JSON.stringify(message)).to.not.contain(SECRET)
+  })
+
+  it('a malformed access reply (accessible is a string) admits nothing', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: 'r', accessibleUrls: ['https://x/r'] } } as any)
+    const readable = await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ['r'], ['https://x/r'])
+    expect(readable.ids.size).to.equal(0)
+    expect(readable.urls.size).to.equal(0)
+  })
+
+  it('an access reply whose list holds a non-string entry admits nothing', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: [['rec-no'], 'rec-ok'], accessibleUrls: [] } } as any)
+    const readable = await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ['rec-no', 'rec-ok'])
+    expect(readable.ids.size).to.equal(0)
+  })
+
+  it('access checks are batched at 500 ids per call and ids are checked once', async () => {
+    const asked = stubAccess([])
+    const ids = Array.from({ length: 1203 }, (_, i) => `r${i % 1100}`)
+    await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ids)
+    expect(asked.map((a) => a.length)).to.deep.equal([500, 500, 100])
+    expect(new Set(asked.flat()).size).to.equal(1100)
+  })
+
+  it('a citation whose document was deleted is a placeholder, not passed through', async () => {
+    stubAccess(['rec-ok'])
+    stubConversation([{ messageType: 'bot_response', content: 'x', citations: [{ citationId: null, excerpt: SECRET }] }])
+    const message = await fetchConversation(VIEWER)
+    expect(message.citations).to.deep.equal([{ redacted: true, reason: 'no_access' }])
+  })
+
+  it('the owner is recognised when the chat stores its initiator as an ObjectId', async () => {
+    const asked = stubAccess([])
+    stubConversation([answer()])
+    ;(ChatSession.findOne as sinon.SinonStub).returns(
+      chain({ _id: SESSION, title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+    )
+    const message = await fetchConversation(OWNER)
+    expect(message.citations[1].citationData.content).to.equal(SECRET)
+    expect(asked).to.have.length(0)
+  })
+
   it('an agent conversation opened by a project member or shared user is redacted too', async () => {
     stubAccess(['rec-ok', 'att-ok', R_OK])
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
@@ -451,7 +506,7 @@ describe('shared chats: per-viewer citations', () => {
     const r = res()
     await getSearchById(appConfig)(req(VIEWER, { params: { searchId: SESSION } }), r, sinon.stub())
 
-    expect(r.json.firstCall.args[0][0]).to.equal(search)
+    expect(r.json.firstCall.args[0][0]).to.deep.equal(search) // a copy: the repository hands out plain rows
     expect(asked).to.have.length(0)
   })
 })

@@ -1,19 +1,19 @@
-"""Deleting a knowledge base that is being pushed to, on real Neo4j and ArangoDB (P3-08, 8a').
+"""Deleting a knowledge base that is being pushed to, on real Neo4j and ArangoDB.
 
 Runs against the integration graph stores like the other graph ITs (backend-matrix discovers it by this
 environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD; it skips when the variable
 is unset and the store is down, and fails when the variable is set and the store is not). Storage and the
 broker are recording fakes; the push service, the processor, the KB service and the graph provider are real.
 
-PUSH_IT_SEEDS="a,b" (default 0) and PUSH_IT_RUNS_PER_SEED (default 3; the gate runs 20) scale the race tests.
+PUSH_IT_SEEDS="a,b" (default 0) and PUSH_IT_RUNS_PER_SEED (default 3) scale the race tests.
 
-- T41   push update vs trash, interleaved before the claim, after it, before the commit and after it;
-- T42   push create vs KB delete, committing before the marker, after it, in the record batches, after the KB went;
-- T42u  an update push held open across the marker and the cascade;
-- T42e  a delete that failed, then pushes (before and after the cascade started), and the create-only fallback;
-- T42f  the finisher completes a delete the owner can no longer retry;
-- T42g  two deleters at once (the finisher and an owner retry, and two owner retries);
-- T42r  KB rename while pushes are open.
+- push update vs trash, interleaved before the claim, after it, before the commit and after it;
+- push create vs KB delete, committing before the marker, after it, in the record batches, after the KB went;
+- an update push held open across the marker and the cascade;
+- a delete that failed, then pushes (before and after the cascade started), and the create-only fallback;
+- the finisher completes a delete the owner can no longer retry;
+- two deleters at once (the finisher and an owner retry, and two owner retries);
+- KB rename while pushes are open.
 """
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ def wrap(obj: object, name: str, before: Callable[..., Awaitable[None]] | None =
     return lambda: setattr(obj, name, real)
 
 
-# ---- T41: push update vs trash ----------------------------------------------------------------------------
+# ---- push update vs trash ----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("point", ["before_claim", "after_claim", "before_commit", "after_commit"])
 @pytest.mark.parametrize("seed,run", CASES)
@@ -207,7 +207,7 @@ async def test_push_vs_trash(env, point, seed, run) -> None:
     assert C.content_rev(env.storage.docs[doc]) == C.parse_revision_id(after["externalRevisionId"])[2]
 
 
-# ---- T42: push create vs KB delete --------------------------------------------------------------------------
+# ---- push create vs KB delete --------------------------------------------------------------------------
 
 POINTS = ["a_before_marker", "b_after_marker", "c_record_batches", "d_after_kb_node"]
 
@@ -278,7 +278,7 @@ async def test_push_vs_kb_delete_with_the_marker_off_lets_the_create_in(env, del
     assert seen["push"] == ("ok", 201, "created"), seen
 
 
-# ---- T42 window: the push passed the pre-commit read, then the whole delete ran ----------------------------------
+# ---- create window: the push passed the pre-commit read, then the whole delete ran ----------------------------------
 
 @pytest.mark.parametrize(
     "fallback",
@@ -352,7 +352,7 @@ async def test_the_pre_commit_read_stops_a_create_before_it_publishes(env, delet
         assert len(published) == 1, "negative control: only the post-commit fallback caught it, after the announcement"
 
 
-# ---- T42u: an update push held open across the marker and the cascade ------------------------------------------
+# ---- an update push held open across the marker and the cascade ------------------------------------------
 
 async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hold_at: str, lost_attempts: int | None = None) -> dict:
     IT.record_keys(env, "upd-1")
@@ -438,7 +438,7 @@ async def test_update_push_held_past_the_lock_wait_makes_the_cascade_retry(env, 
 
 @pytest.mark.arango_only  # the conflict is certain only on Arango (a write-write conflict); on Neo4j the batch waits for the lock
 async def test_update_push_during_cascade_without_the_cascade_retry_leaves_the_kb_deleting(env, deleting, monkeypatch) -> None:
-    """Negative control (spike case M): without the retry, a conflict leaves the KB DELETING with its record."""
+    """Negative control: without the retry, a conflict leaves the KB DELETING with its record."""
     with monkeypatch.context() as m:
         m.setattr("app.services.graph_db.arango.arango_http_provider.CASCADE_ATTEMPTS", 1)
         out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", lost_attempts=1)
@@ -450,7 +450,7 @@ async def test_update_push_during_cascade_without_the_cascade_retry_leaves_the_k
     assert finished["success"] is True and await kb_doc(env) is None
 
 
-# ---- T42e: a delete that failed, then pushes --------------------------------------------------------------------
+# ---- a delete that failed, then pushes --------------------------------------------------------------------
 
 async def test_failed_kb_delete_before_the_cascade_restores_the_status(env, deleting) -> None:
     IT.record_keys(env, "kept-1", "new-1")
@@ -532,7 +532,7 @@ async def test_the_fallback_applied_to_an_update_would_delete_an_existing_record
     assert await env.record("kept-1") is None
 
 
-# ---- T42f: the finisher ----------------------------------------------------------------------------------------
+# ---- the finisher ----------------------------------------------------------------------------------------
 
 class FakeLock:
     def __init__(self) -> None:
@@ -597,7 +597,7 @@ async def test_finisher_completes_stuck_delete(env, deleting, monkeypatch, finis
     assert await storage_release.list_pending_storage_releases(deleting.config) == []
 
 
-# ---- T42g: two deleters at once ---------------------------------------------------------------------------------
+# ---- two deleters at once ---------------------------------------------------------------------------------
 
 async def _collected(env_: IT.Env) -> dict[str, list[str]]:
     graph = env_.graph
@@ -681,7 +681,7 @@ async def test_concurrent_deleters(env, deleting, kind, seed, run) -> None:
 
 
 async def test_concurrent_deleters_with_the_count_rule_on_the_type_docs_fail(env, deleting) -> None:
-    """Negative control (round 5): the isOfType step measured by a count makes the second deleter 500."""
+    """Negative control: the isOfType step measured by a count makes the second deleter 500."""
     graph = env.graph
 
     async def count_rule(transaction: str, targets: list[dict], *args: object, **kw: object) -> tuple:
@@ -709,7 +709,7 @@ async def test_a_second_deleter_that_meets_the_type_documents_already_gone_succe
     assert await kb_doc(env) is None and await survivors(env) == []
 
 
-# ---- T42r: KB rename while pushes are open -------------------------------------------------------------------------
+# ---- KB rename while pushes are open -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("seed,run", CASES)
 async def test_kb_rename_during_push(env, seed, run) -> None:

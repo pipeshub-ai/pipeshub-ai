@@ -367,10 +367,15 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/entity.py::get_users": "admin widens the directory",
     # Every account joins the All team when it is created, service accounts
     # included, so these answer a member a shorter member list than an
-    # administrator. Neither refuses anyone.
+    # administrator. An administrator also sees every team in the org; a member
+    # sees, and can read, only the teams they belong to.
     "api/routes/entity.py::get_team": "admin widens the member list",
     "api/routes/entity.py::get_user_teams": "admin widens the member list",
     "api/routes/entity.py::get_team_users": "admin widens the member list",
+    # A team's OWNER may change or delete it, admin or not; an administrator may
+    # also change or delete any team in their org.
+    "api/routes/entity.py::update_team": "owner or admin",
+    "api/routes/entity.py::delete_team": "owner or admin",
 }
 
 

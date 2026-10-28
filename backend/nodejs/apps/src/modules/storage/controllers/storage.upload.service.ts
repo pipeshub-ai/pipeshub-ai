@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 import { NextFunction, Response } from 'express';
-import mongoose from 'mongoose';
 import path from 'path';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
   Document,
+  DocumentVersion,
   FilePayload,
   StorageInfo,
   StorageServiceResponse,
@@ -14,6 +14,7 @@ import {
   BadRequestError,
   ConflictError,
   InternalServerError,
+  NotFoundError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -37,7 +38,7 @@ import {
   DocumentInfoResponse,
   extractUserId,
   normalizeExtension,
-  toObjectId,
+  requireId,
   validateFileAndDocumentName,
   writeToStorage,
 } from '../utils/utils';
@@ -46,11 +47,13 @@ import {
   claimUpload,
   createDocumentOnce,
   getIdempotencyKey,
-  holdLeaseOnSave,
   releaseUpload,
   requestFingerprint,
 } from '../utils/idempotency';
-import { DocumentModel } from '../schema/document.schema';
+import {
+  getDocumentRepository,
+  type DocumentPatch,
+} from '../../../libs/repositories/document';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
   maxFileSizeForPipesHubService,
@@ -179,7 +182,7 @@ export class UploadDocumentService {
     const ext = normalizeExtension(path.extname(originalname));
     const rootPath = getDocumentRootPath(
       orgId ?? '',
-      String(documentId),
+      documentId,
       strippedDocPath,
     );
     const fullDocumentPath = getFullDocumentPath(orgId ?? '', strippedDocPath);
@@ -198,7 +201,7 @@ export class UploadDocumentService {
       );
     } catch (error) {
       logger.error('Could not get a direct-upload URL from storage', {
-        documentId: String(documentId),
+        documentId: documentId,
         error: error instanceof Error ? error.message : String(error),
       });
       throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
@@ -206,7 +209,7 @@ export class UploadDocumentService {
     const baseUrl = storageURL ? getBaseUrl(storageURL) : undefined;
     if (!storageURL || !baseUrl) {
       logger.error('Storage returned no direct-upload URL', {
-        documentId: String(documentId),
+        documentId: documentId,
       });
       throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
     }
@@ -219,19 +222,28 @@ export class UploadDocumentService {
       });
     }
 
+    const patch: DocumentPatch = {
+      documentPath: fullDocumentPath,
+      awaitingDirectUpload: true,
+    };
     if (this.storageVendor === StorageVendor.S3) {
-      placeholderDoc.s3 = { url: baseUrl };
+      patch.s3 = { url: baseUrl };
     } else if (this.storageVendor === StorageVendor.AzureBlob) {
-      placeholderDoc.azureBlob = { url: baseUrl };
+      patch.azureBlob = { url: baseUrl };
     }
-    placeholderDoc.documentPath = fullDocumentPath;
-    placeholderDoc.awaitingDirectUpload = true;
-    await placeholderDoc.save();
+    const saved = await getDocumentRepository().update(
+      orgId,
+      documentId,
+      patch,
+    );
+    if (!saved) {
+      throw new NotFoundError('Document does not exist');
+    }
 
     res.setHeader('Location', storageURL);
-    res.setHeader('x-document-id', String(documentId));
+    res.setHeader('x-document-id', documentId);
     res.setHeader('x-document-name', documentName as string);
-    res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
+    res.status(HTTP_STATUS.PERMANENT_REDIRECT).json({ document: saved });
   }
 
   /**
@@ -251,18 +263,18 @@ export class UploadDocumentService {
         if (stored) {
           logger.warn(
             'A failed upload left a file in storage; keeping its document',
-            { documentId: String(documentId) },
+            { documentId: documentId },
           );
           return;
         }
       }
-      await DocumentModel.deleteOne({
-        _id: documentId as mongoose.Types.ObjectId,
-        [this.storageVendor]: { $exists: false },
-      });
+      await getDocumentRepository().removeUnstored(
+        String(documentId),
+        this.storageVendor,
+      );
     } catch (error) {
       logger.warn('Could not remove a document whose upload failed', {
-        documentId: String(documentId),
+        documentId: documentId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -292,9 +304,9 @@ export class UploadDocumentService {
     const documentInfo: Partial<Document> = {
       documentName,
       alternateDocumentName,
-      orgId: toObjectId(orgId, 'organization'),
+      orgId: requireId(orgId, 'organization'),
       isVersionedFile: isVersioned,
-      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
+      initiatorUserId: userId ? requireId(userId, 'user') : null,
       permissions,
       sizeInBytes: size,
       customMetadata,
@@ -354,7 +366,7 @@ export class UploadDocumentService {
       await this.storeUpload(savedDocument, leaseToken, res, {
         documentName,
         documentPath,
-        orgId: String(orgId),
+        orgId: orgId,
         isVersioned,
         fileExtension,
         buffer,
@@ -366,7 +378,7 @@ export class UploadDocumentService {
         await releaseUpload(savedDocument._id, leaseToken).catch(
           (releaseError: unknown) => {
             logger.warn('Failed to release upload lease', {
-              documentId: String(savedDocument._id),
+              documentId: savedDocument._id,
               error: String(releaseError),
             });
           },
@@ -377,7 +389,7 @@ export class UploadDocumentService {
   }
 
   private async storeUpload(
-    savedDocument: DocumentModel,
+    savedDocument: Document,
     leaseToken: string | undefined,
     res: Response,
     upload: {
@@ -401,7 +413,7 @@ export class UploadDocumentService {
     } = upload;
     const rootPath = getDocumentRootPath(
       orgId,
-      String(savedDocument._id),
+      savedDocument._id,
       documentPath,
     );
     const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
@@ -422,7 +434,7 @@ export class UploadDocumentService {
           documentPath: concatenatedPath,
           isVersioned,
         },
-        { documentId: String(savedDocument._id) },
+        { documentId: savedDocument._id },
       );
     } catch (error) {
       if (leaseToken === undefined) {
@@ -438,7 +450,8 @@ export class UploadDocumentService {
       throw error;
     }
     const storedPath = uploadResult.data as string;
-    savedDocument.documentPath = fullDocumentPath;
+    const patch: DocumentPatch = { documentPath: fullDocumentPath };
+    const addedVersions: DocumentVersion[] = [];
 
     const storageTypeKey = this.storageVendor;
     let normalizedUrl = '';
@@ -464,18 +477,23 @@ export class UploadDocumentService {
           url: normalizedUrl,
           localPath: localPath,
         };
-        savedDocument[storageTypeKey] = storageInfo;
+        patch[storageTypeKey] = storageInfo;
       } else {
         const storageInfo: StorageInfo = { url: storedPath };
-        savedDocument[storageTypeKey] = storageInfo;
+        patch[storageTypeKey] = storageInfo;
       }
     } else {
       throw new InternalServerError(`Invalid storage type: ${storageTypeKey}`);
     }
 
     if (isVersioned === false) {
-      await this.saveUpload(savedDocument, leaseToken);
-      res.status(200).json(savedDocument);
+      const saved = await this.saveUpload(
+        savedDocument,
+        patch,
+        addedVersions,
+        leaseToken,
+      );
+      res.status(200).json(saved);
       return;
     }
 
@@ -502,7 +520,7 @@ export class UploadDocumentService {
       }
 
       if (cloneResponse.statusCode === HTTP_STATUS.OK && cloneResponse.data) {
-        savedDocument.versionHistory.push({
+        addedVersions.push({
           version: nextVersion,
           [`${storageTypeKey}`]: {
             url: cloneResponse.data,
@@ -517,28 +535,38 @@ export class UploadDocumentService {
         });
       }
     }
-    await this.saveUpload(savedDocument, leaseToken);
-    res.status(200).json(savedDocument);
+    const saved = await this.saveUpload(
+      savedDocument,
+      patch,
+      addedVersions,
+      leaseToken,
+    );
+    res.status(200).json(saved);
   }
 
   /** The upload's final write; for a keyed one, only while it holds the lease. */
   private async saveUpload(
-    document: DocumentModel,
+    document: Document,
+    patch: DocumentPatch,
+    pushVersions: DocumentVersion[],
     leaseToken: string | undefined,
-  ): Promise<void> {
-    if (leaseToken !== undefined) {
-      holdLeaseOnSave(document, leaseToken);
-    }
-    try {
-      await document.save();
-    } catch (error) {
-      if (error instanceof mongoose.Error.DocumentNotFoundError) {
-        throw new ConflictError(
-          'A later attempt with the same Idempotency-Key took this upload over',
-        );
+  ): Promise<Document> {
+    const saved = await getDocumentRepository().update(
+      document.orgId,
+      document._id,
+      patch,
+      { pushVersions, holdLease: leaseToken },
+    );
+    if (!saved) {
+      // Without a lease nothing can have taken the upload over; the row was removed.
+      if (leaseToken === undefined) {
+        throw new NotFoundError('Document does not exist');
       }
-      throw error;
+      throw new ConflictError(
+        'A later attempt with the same Idempotency-Key took this upload over',
+      );
     }
+    return saved;
   }
 
   /**

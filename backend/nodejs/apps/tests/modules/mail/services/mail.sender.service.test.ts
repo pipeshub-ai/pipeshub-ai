@@ -4,6 +4,8 @@ import sinon from 'sinon';
 import nodemailer from 'nodemailer';
 import { MailSenderService } from '../../../../src/modules/mail/services/mail.sender.service';
 import { MailModel } from '../../../../src/modules/mail/schema/mailInfo.schema';
+import { setMailLogRepository } from '../../../../src/libs/repositories/mail-log';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 
 describe('MailSenderService', () => {
   let mockLogger: any;
@@ -37,7 +39,10 @@ describe('MailSenderService', () => {
     sinon.stub(MailModel.prototype, 'save').resolves({} as any);
   });
 
-  afterEach(() => sinon.restore());
+  afterEach(() => {
+    setMailLogRepository();
+    sinon.restore();
+  });
 
   it('reads SMTP config through the provider so a rebind is picked up', async () => {
     // AppConfig is rebound on an SMTP update; a captured config would go stale.
@@ -217,6 +222,25 @@ describe('MailSenderService', () => {
     await sender.send({ ...body, orgId: '507f1f77bcf86cd799439012' }, smtp);
 
     expect(savedOrgId).to.equal('507f1f77bcf86cd799439012');
+  });
+
+  it('writes the audit entry in the org named on the mail when the caller bound none', async () => {
+    // The route is reached with a service token only, so nothing is bound when the audit write runs.
+    let boundDuringRecord: string | undefined;
+    const written = new Promise<void>((resolve) =>
+      setMailLogRepository({
+        record: async () => {
+          boundDuringRecord = getCurrentOrgId();
+          resolve();
+        },
+      } as any),
+    );
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    await sender.send({ ...body, orgId: '507f1f77bcf86cd799439012' }, smtp);
+    await written;
+
+    expect(boundDuringRecord).to.equal('507f1f77bcf86cd799439012');
   });
 
   it('fails fast after repeated connection failures, then probes again after the cooldown', async () => {

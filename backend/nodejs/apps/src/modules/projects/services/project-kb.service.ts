@@ -5,8 +5,8 @@ import {
   handleBackendError,
 } from '../../tokens_manager/utils/connector.utils';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Project } from '../schema/project.schema';
-import { IProjectDocument } from '../types/project.interfaces';
+import { getProjectRepository } from '../../../libs/repositories/project';
+import { ProjectDto } from '../types/project.interfaces';
 
 type KbRole = 'OWNER' | 'WRITER' | 'READER';
 
@@ -96,11 +96,11 @@ export class ProjectKnowledgeBaseService {
     orgId: string,
     projectId: string,
   ): Promise<string> {
-    const project = await Project.findOne({ _id: projectId, isDeleted: false });
+    const project = await getProjectRepository().getLive(projectId);
     // Tenant isolation defense-in-depth — callers normally reach this only
     // after `ProjectService.assertAccess`, but a caller-supplied `orgId`
     // must never be trusted to already match without a check here too.
-    if (!project || project.orgId.toString() !== orgId) {
+    if (!project || project.orgId !== orgId) {
       throw new NotFoundError('Project not found');
     }
 
@@ -132,10 +132,10 @@ export class ProjectKnowledgeBaseService {
       throw new InternalServerError('Knowledge base creation did not return an id');
     }
 
-    const won = await Project.findOneAndUpdate(
-      { _id: projectId, linkedKnowledgeBaseId: previousKbId },
-      { $set: { linkedKnowledgeBaseId: kbId } },
-      { returnDocument: 'after' },
+    const won = await getProjectRepository().claimLinkedKb(
+      projectId,
+      previousKbId,
+      kbId,
     );
 
     if (!won) {
@@ -146,7 +146,7 @@ export class ProjectKnowledgeBaseService {
         HttpMethod.DELETE,
         headers,
       ).catch(() => undefined);
-      const winner = await Project.findOne({ _id: projectId, isDeleted: false });
+      const winner = await getProjectRepository().getLive(projectId);
       if (!winner?.linkedKnowledgeBaseId) {
         throw new InternalServerError('Failed to link project knowledge base');
       }
@@ -176,18 +176,18 @@ export class ProjectKnowledgeBaseService {
   static async syncMemberPermissions(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
 
-    await this.grantUsers(appConfig, headers, kbId, [project.userId.toString()], 'OWNER');
+    await this.grantUsers(appConfig, headers, kbId, [project.userId], 'OWNER');
 
     const editorUserIds: string[] = [];
     const viewerUserIds: string[] = [];
     const teamIds: string[] = [];
     for (const member of project.members) {
-      const principalId = member.principalId.toString();
+      const principalId = member.principalId;
       if (member.principalType === 'team') {
         teamIds.push(principalId);
         continue;
@@ -195,20 +195,29 @@ export class ProjectKnowledgeBaseService {
       (member.role === 'editor' ? editorUserIds : viewerUserIds).push(principalId);
     }
 
-    await this.grantUsers(appConfig, headers, kbId, editorUserIds, KB_ROLE_BY_PROJECT_ROLE.editor);
     await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
     await this.grantTeams(appConfig, headers, kbId, teamIds);
 
     if (project.visibility === 'org') {
-      await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId.toString())]);
+      await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId)]);
     }
+
+    // Editors go last: an editor whose upload created the KB is its OWNER until
+    // this grant makes them WRITER, and only an OWNER may grant the rest.
+    await this.grantUsers(
+      appConfig,
+      headers,
+      kbId,
+      editorUserIds,
+      KB_ROLE_BY_PROJECT_ROLE.editor,
+    );
   }
 
   /** Revokes one principal's KB permission — pair with every `ProjectService.removeMember` call so a removed member doesn't keep a stale READER/WRITER edge. No-op if the project has no linked KB yet, or if the principal never had a KB-level permission (upstream 404). */
   static async revokePrincipalPermission(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
     principalId: string,
     principalType: 'user' | 'team',
   ): Promise<void> {
@@ -233,7 +242,7 @@ export class ProjectKnowledgeBaseService {
   static async revokeOrgVisibility(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
@@ -241,7 +250,7 @@ export class ProjectKnowledgeBaseService {
       `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.DELETE,
       headers,
-      { userIds: [], teamIds: [allOrgTeamId(project.orgId.toString())] },
+      { userIds: [], teamIds: [allOrgTeamId(project.orgId)] },
     );
     if (response.statusCode !== 200 && response.statusCode !== 404) {
       throw handleBackendError(response, 'revoke project knowledge base org visibility');
@@ -252,7 +261,7 @@ export class ProjectKnowledgeBaseService {
   static async deleteLinkedKb(
     appConfig: AppConfig,
     headers: Record<string, string>,
-    project: IProjectDocument,
+    project: ProjectDto,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;

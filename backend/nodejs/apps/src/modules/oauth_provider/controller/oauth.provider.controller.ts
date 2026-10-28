@@ -32,12 +32,12 @@ import {
   ConsentData,
   OAuthErrorResponse,
 } from '../types/oauth.types';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
-} from '../schema/knowledge_limit.schema';
-import { Org } from '../../user_management/schema/org.schema';
+} from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
@@ -159,10 +159,7 @@ export class OAuthProviderController {
           description: s.description,
           category: s.category,
         }));
-      const org = await Org.findOne({ _id: user.orgId, isDeleted: false })
-        .select('registeredName shortName')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getNames(user.orgId);
       const workspaceName = org?.shortName || org?.registeredName;
 
       const consentData: ConsentData = {
@@ -713,27 +710,18 @@ export class OAuthProviderController {
     let fullName: string | undefined;
     let accountType: string | undefined;
     if (codeResult.userId) {
-      const user = await Users.findOne({
-        _id: codeResult.userId,
-        orgId: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('fullName')
-        .lean()
-        .exec();
+      const user = await getUserRepository().getLiveFields(
+        codeResult.orgId,
+        codeResult.userId,
+        ['fullName'],
+      );
       if (user) {
         fullName = user.fullName;
       }
 
-      const org = await Org.findOne({
-        _id: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('accountType')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getAccountType(codeResult.orgId);
       if (org) {
-        accountType = (org as any).accountType;
+        accountType = org.accountType;
       }
     }
 
@@ -835,14 +823,11 @@ export class OAuthProviderController {
     // authenticates as that identity for as long as it lives.
     const identityId = app.tokenIdentityUserId ?? app.createdBy;
     if (identityId) {
-      const identity = await Users.findOne({
-        _id: identityId,
-        orgId: app.orgId,
-        isDeleted: false,
-      })
-        .select('fullName isDisabled restoreOpId')
-        .lean()
-        .exec();
+      const identity = await getUserRepository().getLiveFields(
+        app.orgId,
+        identityId,
+        ['fullName', 'isDisabled', 'restoreOpId'],
+      );
 
       // Refused rather than issued against an identity that cannot be used.
       // A client_credentials token is stored without a userId, so it is not
@@ -867,22 +852,16 @@ export class OAuthProviderController {
       fullName = identity.fullName;
     }
 
-    const org = await Org.findOne({
-      _id: app.orgId,
-      isDeleted: false,
-    })
-      .select('accountType')
-      .lean()
-      .exec();
+    const org = await getOrgRepository().getAccountType(app.orgId);
     if (org) {
-      accountType = (org as any).accountType;
+      accountType = org.accountType;
     }
 
     // Generate tokens (no refresh token for client_credentials)
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       null, // No user
-      app.orgId.toString(),
+      app.orgId,
       filteredScopes,
       false, // No refresh token
       fullName,

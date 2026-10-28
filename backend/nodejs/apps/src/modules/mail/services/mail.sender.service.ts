@@ -4,7 +4,8 @@ import type { Transporter } from 'nodemailer';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
-import { MailModel } from '../schema/mailInfo.schema';
+import { getMailLogRepository } from '../../../libs/repositories/mail-log';
+import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
 import { getEmailContent } from '../utils/email-content';
 import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
@@ -207,16 +208,21 @@ export class MailSenderService {
             : String(persistError),
       });
     try {
-      new MailModel({
-        orgId: bodyData.orgId,
-        subject: bodyData.subject,
-        from: smtpConfig.fromEmail,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
-        emailTemplateType: bodyData.emailTemplateType,
-      })
-        .save()
-        .catch(logFailure);
+      const write = (): Promise<void> =>
+        getMailLogRepository().record({
+          orgId: bodyData.orgId,
+          subject: bodyData.subject,
+          from: smtpConfig.fromEmail,
+          to: bodyData.sendEmailTo,
+          cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
+          emailTemplateType: bodyData.emailTemplateType,
+        });
+      // The route is called by a service with only a scoped token, so no org is bound: use the one named on the mail.
+      const run =
+        getCurrentOrgId() === undefined && bodyData.orgId
+          ? forOrg(bodyData.orgId, 'mail.audit', write)
+          : write();
+      run.catch(logFailure);
     } catch (persistError) {
       logFailure(persistError);
     }

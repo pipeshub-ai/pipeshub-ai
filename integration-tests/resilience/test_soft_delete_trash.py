@@ -12,9 +12,11 @@ beside this one would see the trash instead. That is why this module carries the
 (``-m resilience``). It turns the setting on for its own run and puts it back.
 
 The purge test runs only on a stack whose connectors service shortens the purge
-(``SOFT_DELETE_PURGE_MIN_AGE_SECONDS=0``, ``SOFT_DELETE_PURGE_INTERVAL_SECONDS=0``,
-``SOFT_DELETE_PURGE_TICK_SECONDS`` and ``SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS``
-small); set ``PIPESHUB_IT_TRASH_PURGE_TIMEOUT_SEC`` to say so.
+(``SOFT_DELETE_PURGE_INTERVAL_SECONDS=0`` and ``SOFT_DELETE_PURGE_TICK_SECONDS`` and
+``SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS`` small); set
+``PIPESHUB_IT_TRASH_PURGE_TIMEOUT_SEC`` to say so. The integration compose files do
+both. Keep ``SOFT_DELETE_PURGE_MIN_AGE_SECONDS`` above the time the other tests here
+keep a record in the trash, and the timeout above that age plus a few ticks.
 """
 
 from __future__ import annotations

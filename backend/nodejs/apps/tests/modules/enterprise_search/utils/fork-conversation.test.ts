@@ -18,6 +18,7 @@ import {
   FORK_COPY_BATCH_SIZE,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import { MongoTx } from '../../../../src/libs/repositories/mongo'
 
 describe('fork-conversation helpers', () => {
   it('buildForkTitle prefixes the original title', () => {
@@ -93,7 +94,7 @@ describe('copySessionUpToMessage', () => {
 
     expect(result.messageCount).to.equal(2)
     expect(result.conversation.title).to.equal('Fork of Quarterly numbers')
-    expect(String(result.conversation.userId)).to.equal(String(owner))
+    expect(result.conversation.userId).to.equal(String(owner))
     expect(result.conversation.isShared).to.equal(false)
     expect(store.messagesOf(source._id)).to.have.length(sourceMessageCount)
     expect(store.session(source._id)?.title).to.equal('Quarterly numbers')
@@ -103,7 +104,7 @@ describe('copySessionUpToMessage', () => {
       'What were Q3 sales?',
       'Q3 sales were 4M.',
     ])
-    expect(forked.every((m) => String(m.sessionId) === String(result.conversation._id))).to.equal(true)
+    expect(forked.every((m) => String(m.sessionId) === result.conversation._id)).to.equal(true)
   })
 
   it('rejects a message that does not belong to the source session', async () => {
@@ -207,7 +208,7 @@ describe('copySessionUpToMessage', () => {
         String(owner),
         String(orgId),
         { sessionType: 'chat' },
-        {} as never,
+        new MongoTx({} as never),
       )
       expect.fail('expected the copy to fail')
     } catch (error) {
@@ -245,7 +246,7 @@ describe('copySessionUpToMessage', () => {
       const projectId = oid()
       const assert = sinon.stub(ProjectService, 'assertAccess').resolves({} as never)
       expect(String(await resolveForkProjectId(chatIn(projectId), 'org', 'user'))).to.equal(String(projectId))
-      expect(assert.firstCall.args).to.deep.equal(['org', 'user', String(projectId), 'viewer'])
+      expect(assert.firstCall.args.map(String)).to.deep.equal(['org', 'user', String(projectId), 'viewer'])
     })
 
     it('drops the project once the caller cannot see it', async () => {
@@ -362,7 +363,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const artifacts = await copyArtifactsForFork(
       source,
       String(forkPoint._id),
-      new Types.ObjectId(),
+      new Types.ObjectId().toHexString(),
       copyArtifacts as never,
     )
     return copySessionUpToMessage(
@@ -385,7 +386,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const result = await fork(seeded, copyArtifacts)
 
     expect(copyArtifacts.calledOnce).to.equal(true)
-    expect(copyArtifacts.firstCall.args[0]).to.equal(String(result.conversation._id))
+    expect(copyArtifacts.firstCall.args[0]).to.equal(result.conversation._id)
     expect(copyArtifacts.firstCall.args[1]).to.deep.equal([{ artifactId: 'old', upToVersion: 2 }])
 
     const rows = store.messagesOf(result.conversation._id) as any[]
@@ -477,7 +478,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     store.install()
     const seeded = seedWithArtifacts(store)
     const sessionsBefore = store.sessions.length
-    const forkId = new Types.ObjectId()
+    const forkId = new Types.ObjectId().toHexString()
     let sessionsWhenCopying = -1
     const copyArtifacts = sinon.stub().callsFake(async () => {
       sessionsWhenCopying = store.sessions.length
@@ -496,8 +497,8 @@ describe('copySessionUpToMessage with artifacts', () => {
     )
 
     expect(sessionsWhenCopying).to.equal(sessionsBefore)
-    expect(copyArtifacts.firstCall.args[0]).to.equal(String(forkId))
-    expect(String(result.conversation._id)).to.equal(String(forkId))
+    expect(copyArtifacts.firstCall.args[0]).to.equal(forkId)
+    expect(result.conversation._id).to.equal(forkId)
   })
 
   it('answers 404, and copies nothing, when the fork point is not a message of the chat', async () => {
@@ -507,11 +508,18 @@ describe('copySessionUpToMessage with artifacts', () => {
     const copyArtifacts = sinon.stub()
 
     try {
-      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId(), copyArtifacts as never)
+      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId().toHexString(), copyArtifacts as never)
       expect.fail('expected a 404')
     } catch (error) {
       expect(error).to.be.instanceOf(NotFoundError)
     }
     expect(copyArtifacts.called).to.equal(false)
+  })
+})
+
+describe('stripMessageForCopy', () => {
+  it('drops the author stamp and keeps the turn as written', () => {
+    const message = { content: 'c', authorUserId: 'b'.repeat(24), tools: [1], reasoning: [1], parts: [1], referenceData: [1] }
+    expect(stripMessageForCopy(message)).to.deep.equal({ content: 'c', tools: [1], reasoning: [1], parts: [1], referenceData: [1] })
   })
 })

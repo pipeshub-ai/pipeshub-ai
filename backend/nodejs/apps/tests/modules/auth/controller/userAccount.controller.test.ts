@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { createMockQuery } from '../../../helpers/mock-mongo';
 import { expect } from 'chai';
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import sinon from 'sinon';
@@ -550,7 +551,7 @@ describe('UserAccountController', () => {
       const reserved = { wrongCredentialCount: 3 };
       const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
 
-      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.deep.equal(reserved);
       expect(update.firstCall.args).to.deep.equal([
         {
           userId: 'u1',
@@ -677,9 +678,7 @@ describe('UserAccountController', () => {
 
   describe('hasPasswordMethod', () => {
   const stubPolicy = (policy: unknown) =>
-    sinon.stub(OrgAuthConfig, 'findOne').returns({
-      select: () => ({ lean: async () => policy }),
-    } as any);
+    sinon.stub(OrgAuthConfig, 'findOne').resolves(policy as any);
 
     it('should return isPasswordAuthEnabled true when password method exists', async () => {
       const req: any = {
@@ -1858,19 +1857,22 @@ describe('UserAccountController', () => {
         save: saveStub,
       };
 
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        isBlocked: false,
-        hashedOTP,
-        otpValidity: Date.now() + 600000,
-        wrongCredentialCount: 1,
-        save: sinon.stub().resolves(),
-      } as any);
+      // the first read is the sign-in check; the lock then reads the account's credential again to save it
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          isBlocked: false,
+          hashedOTP,
+          otpValidity: Date.now() + 600000,
+          wrongCredentialCount: 1,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
 
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ fullName: 'Test User' }) as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2215,16 +2217,18 @@ describe('UserAccountController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        hashedPassword,
-        isBlocked: false,
-        wrongCredentialCount: 4,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          hashedPassword,
+          isBlocked: false,
+          wrongCredentialCount: 4,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Users, 'findOne').callsFake((() =>
-        Promise.resolve({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
+        createMockQuery({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2897,6 +2901,15 @@ describe('UserAccountController', () => {
         ipAddress: null,
         save: sinon.stub().resolves(),
       } as any);
+      // Third call: the repository re-reads the credential to store the new hash
+      findOneStub.onThirdCall().resolves({
+        isBlocked: false,
+        hashedPassword: hashedPassword,
+        orgId: 'o1',
+        userId: 'u1',
+        ipAddress: null,
+        save: sinon.stub().resolves(),
+      } as any);
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserById.resolves({
@@ -2978,6 +2991,7 @@ describe('UserAccountController', () => {
         commitTransaction: sinon.stub().resolves(),
         abortTransaction: sinon.stub().resolves(),
         endSession: sinon.stub(),
+        withTransaction: sinon.stub().callsFake((fn: () => Promise<unknown>) => fn()),
       };
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any);
 
@@ -3722,10 +3736,8 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('hasPasswordMethod - via tokenPayload', () => {
     it('should return isPasswordAuthEnabled based on OrgAuthConfig', async () => {
-      sinon.stub(OrgAuthConfig, 'findOne').returns({
-        select: () => ({
-          lean: async () => ({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] }),
-        }),
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }],
       } as any);
 
       const req: any = {

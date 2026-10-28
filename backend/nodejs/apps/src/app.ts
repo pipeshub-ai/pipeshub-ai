@@ -27,6 +27,8 @@ import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { TtlSweeper } from './libs/services/ttl-sweeper.service';
+import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
@@ -172,6 +174,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private ttlSweeper: TtlSweeper | null = null;
   private scheduleRepairTimer: NodeJS.Timeout | null = null;
   private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
@@ -360,6 +363,12 @@ export class Application {
         this.logger,
       );
       this.outboxDispatcher.start();
+
+      // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
+        this.ttlSweeper = new TtlSweeper(this.logger);
+        this.ttlSweeper.start();
+      }
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -1062,6 +1071,8 @@ export class Application {
       // containers below are about to disconnect.
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
+      await this.ttlSweeper?.stop();
+      this.ttlSweeper = null;
 
       await NotificationContainer.dispose();
       await StorageContainer.dispose();

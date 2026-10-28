@@ -52,6 +52,23 @@ function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
   }
 }
 
+/**
+ * Key under which a project chat keeps its own "+" menu capabilities, beside
+ * the per-agent ones. Project chats used to send the global setting, so
+ * turning Internal search off anywhere stopped them reading the project's files.
+ */
+export function projectCapabilitiesKey(projectId: string): string {
+  return `project:${projectId}`;
+}
+
+/** The capabilities a project chat sends: its own choice, else everything on. */
+export function projectAgentCapabilities(
+  scoped: Record<string, AgentCapabilities>,
+  projectId: string,
+): AgentCapabilities {
+  return scoped[projectCapabilitiesKey(projectId)] ?? { ...DEFAULT_AGENT_CAPABILITIES };
+}
+
 function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void {
   if (typeof window === 'undefined') return;
   try {
@@ -69,6 +86,8 @@ export interface ScopedToolGroupRow {
   toolDescriptions?: Record<string, string>;
   /** Display name per `fullNames` entry, where the full name doesn't read as one (MCP). */
   toolLabels?: Record<string, string>;
+  /** What a tool does to data, per `fullNames` entry, where it is known. */
+  toolKinds?: Record<string, 'read' | 'write' | 'destructive'>;
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
@@ -1733,6 +1752,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       searchResults: [],
       searchQuery: '',
+      isSearching: false,
       searchId: null,
       searchError: null,
       searchResponseMeta: null,

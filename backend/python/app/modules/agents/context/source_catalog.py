@@ -78,6 +78,8 @@ class KnowledgeSource:
     scope_lines: tuple[str, ...] = field(default_factory=tuple)  # type: ignore[assignment]
     #: A connected app's limit reaches only some of its folders or files.
     partly_shared: bool = False
+    #: The files uploaded to the project this chat belongs to.
+    project_files: bool = False
 
     @property
     def list_files_param(self) -> str:
@@ -145,6 +147,7 @@ class SourceCatalog:
                     source_id=s.get("connector_id", ""),
                     scope_lines=tuple(scope),
                     partly_shared=bool(s.get("partly_shared")),
+                    project_files=bool(s.get("project_files")),
                 ))
             return cls(
                 sources=tuple(sources),
@@ -378,6 +381,16 @@ class SourceCatalog:
                     f"- **{s.label}** — {kind} — only part of it is shared through this "
                     f"connection; find that part with `{retrieval}` or `{list_files}` "
                     "without source_ids"
+                )
+                continue
+
+            if s.project_files and s.source_id:
+                lines.append(
+                    f"- **{s.label}** — KB collection — id `{s.source_id}` — the files uploaded "
+                    "to the project this chat belongs to. When the person refers to the "
+                    "project's files or documents (\"the file in the project\", \"our project "
+                    "docs\"), search here first, passing this id as `source_ids`, or list them "
+                    f"with `{list_files}`, before any other source."
                 )
                 continue
 

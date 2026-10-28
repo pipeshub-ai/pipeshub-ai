@@ -1,3 +1,162 @@
+column content.documents.alternate_document_name type=text notnull=false identity= generated= default=-
+column content.documents.artifact_set type=jsonb notnull=false identity= generated= default=-
+column content.documents.awaiting_direct_upload type=boolean notnull=false identity= generated= default=-
+column content.documents.azure_blob type=jsonb notnull=false identity= generated= default=-
+column content.documents.connector_id type=text notnull=false identity= generated= default=-
+column content.documents.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.documents.current_version type=integer notnull=true identity= generated= default=0
+column content.documents.custom_metadata type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column content.documents.deleted_by_user_id type=text notnull=false identity= generated= default=-
+column content.documents.document_name type=text notnull=true identity= generated= default=-
+column content.documents.document_path type=text notnull=false identity= generated= default=-
+column content.documents.extension type=text notnull=false identity= generated= default=-
+column content.documents.id type=content.oid24 notnull=true identity= generated= default=-
+column content.documents.idempotency_fingerprint type=text notnull=false identity= generated= default=-
+column content.documents.idempotency_key type=text notnull=false identity= generated= default=-
+column content.documents.initiator_unset type=boolean notnull=true identity= generated= default=false
+column content.documents.initiator_user_id type=content.oid24 notnull=false identity= generated= default=-
+column content.documents.is_deleted type=boolean notnull=true identity= generated= default=false
+column content.documents.is_versioned_file type=boolean notnull=true identity= generated= default=false
+column content.documents.local type=jsonb notnull=false identity= generated= default=-
+column content.documents.mime_type type=text notnull=false identity= generated= default=-
+column content.documents.mutation_count type=integer notnull=true identity= generated= default=1
+column content.documents.org_id type=text notnull=true identity= generated= default=-
+column content.documents.permissions type=text notnull=false identity= generated= default=-
+column content.documents.retired_at type=bigint notnull=false identity= generated= default=-
+column content.documents.s3 type=jsonb notnull=false identity= generated= default=-
+column content.documents.size_in_bytes type=bigint notnull=false identity= generated= default=-
+column content.documents.storage_vendor type=text notnull=true identity= generated= default=-
+column content.documents.tags type=text[] notnull=true identity= generated= default='{}'::text[]
+column content.documents.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.documents.upload_lease_expires_at type=timestamp with time zone notnull=false identity= generated= default=-
+column content.documents.upload_lease_token type=text notnull=false identity= generated= default=-
+column content.documents.version type=integer notnull=true identity= generated= default=0
+column content.documents.version_history type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column content.project_members.added_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.project_members.added_by type=content.oid24 notnull=true identity= generated= default=-
+column content.project_members.org_id type=text notnull=true identity= generated= default=-
+column content.project_members.pos type=integer notnull=true identity= generated= default=-
+column content.project_members.principal_id type=text notnull=true identity= generated= default=-
+column content.project_members.principal_type type=text notnull=true identity= generated= default=-
+column content.project_members.project_id type=content.oid24 notnull=true identity= generated= default=-
+column content.project_members.role type=text notnull=true identity= generated= default=-
+column content.projects.applied_filters type=jsonb notnull=true identity= generated= default='{"kb": [], "apps": [], "records": [], "recordGroups": []}'::jsonb
+column content.projects.archived_by type=content.oid24 notnull=false identity= generated= default=-
+column content.projects.chat_sharing type=text notnull=true identity= generated= default='private'::text
+column content.projects.color type=text notnull=false identity= generated= default=-
+column content.projects.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.projects.deleted_by type=content.oid24 notnull=false identity= generated= default=-
+column content.projects.description type=text notnull=false identity= generated= default=-
+column content.projects.icon type=text notnull=false identity= generated= default=-
+column content.projects.id type=content.oid24 notnull=true identity= generated= default=-
+column content.projects.instructions type=text notnull=false identity= generated= default=-
+column content.projects.is_archived type=boolean notnull=true identity= generated= default=false
+column content.projects.is_deleted type=boolean notnull=true identity= generated= default=false
+column content.projects.is_pinned type=boolean notnull=true identity= generated= default=false
+column content.projects.knowledge_scope type=jsonb notnull=true identity= generated= default='{"kb": [], "apps": [], "records": [], "recordGroups": []}'::jsonb
+column content.projects.last_activity_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.projects.linked_knowledge_base_id type=text notnull=false identity= generated= default=-
+column content.projects.metadata type=jsonb notnull=false identity= generated= default=-
+column content.projects.name type=text notnull=true identity= generated= default=-
+column content.projects.org_id type=text notnull=true identity= generated= default=-
+column content.projects.pinned_by type=content.oid24[] notnull=true identity= generated= default='{}'::content.oid24[]
+column content.projects.tools type=text[] notnull=true identity= generated= default='{}'::text[]
+column content.projects.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column content.projects.user_id type=content.oid24 notnull=true identity= generated= default=-
+column content.projects.version type=integer notnull=true identity= generated= default=0
+column content.projects.visibility type=text notnull=true identity= generated= default='private'::text
+column conversation.chat_messages.applied_filters type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_messages.attachments type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.citations type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.confidence type=text notnull=false identity= generated= default=-
+column conversation.chat_messages.content type=text notnull=true identity= generated= default=''::text
+column conversation.chat_messages.content_format type=text notnull=false identity= generated= default=-
+column conversation.chat_messages.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.chat_messages.feedback type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.follow_up_questions type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_messages.message_type type=text notnull=true identity= generated= default=-
+column conversation.chat_messages.metadata type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_messages.model_info type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_messages.org_id type=text notnull=true identity= generated= default=-
+column conversation.chat_messages.parts type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.reasoning type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.reference_data type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.seq type=integer notnull=true identity= generated= default=-
+column conversation.chat_messages.session_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_messages.status type=text notnull=false identity= generated= default=-
+column conversation.chat_messages.tools type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.chat_session_members.access_level type=text notnull=true identity= generated= default=-
+column conversation.chat_session_members.entry_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_session_members.org_id type=text notnull=true identity= generated= default=-
+column conversation.chat_session_members.pos type=integer notnull=true identity= generated= default=-
+column conversation.chat_session_members.session_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_session_members.user_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_sessions.active_run_id type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.agent_key type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.archived_by type=conversation.oid24 notnull=false identity= generated= default=-
+column conversation.chat_sessions.compacted_at_timestamp type=bigint notnull=false identity= generated= default=-
+column conversation.chat_sessions.compacted_at_turn_index type=integer notnull=false identity= generated= default=-
+column conversation.chat_sessions.compacted_summary type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.conversation_errors type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_sessions.conversation_source type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.chat_sessions.deleted_by type=conversation.oid24 notnull=false identity= generated= default=-
+column conversation.chat_sessions.fail_reason type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_sessions.initiator type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_sessions.is_archived type=boolean notnull=true identity= generated= default=false
+column conversation.chat_sessions.is_deleted type=boolean notnull=true identity= generated= default=false
+column conversation.chat_sessions.is_pinned type=boolean notnull=true identity= generated= default=false
+column conversation.chat_sessions.is_shared type=boolean notnull=true identity= generated= default=false
+column conversation.chat_sessions.last_activity_at type=timestamp with time zone notnull=false identity= generated= default=-
+column conversation.chat_sessions.metadata type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_sessions.model_info type=jsonb notnull=true identity= generated= default='{"chatMode": "quick"}'::jsonb
+column conversation.chat_sessions.next_seq type=integer notnull=true identity= generated= default=0
+column conversation.chat_sessions.nulls type=text[] notnull=true identity= generated= default='{}'::text[]
+column conversation.chat_sessions.org_id type=text notnull=true identity= generated= default=-
+column conversation.chat_sessions.project_id type=conversation.oid24 notnull=false identity= generated= default=-
+column conversation.chat_sessions.project_visibility type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.session_type type=text notnull=true identity= generated= default='chat'::text
+column conversation.chat_sessions.share_link type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.status type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.title type=text notnull=false identity= generated= default=-
+column conversation.chat_sessions.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.chat_sessions.user_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_sessions.version type=integer notnull=true identity= generated= default=0
+column conversation.citations.chunk_index type=integer notnull=true identity= generated= default=-
+column conversation.citations.citation_type type=text notnull=true identity= generated= default=-
+column conversation.citations.content type=text notnull=true identity= generated= default=-
+column conversation.citations.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.citations.id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.citations.metadata type=jsonb notnull=true identity= generated= default=-
+column conversation.citations.org_id type=text notnull=true identity= generated= default=-
+column conversation.citations.record_id type=text notnull=true identity= generated= default=-
+column conversation.citations.record_name type=text notnull=false identity= generated= default=-
+column conversation.citations.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.citations.version type=integer notnull=true identity= generated= default=0
+column conversation.semantic_search_members.access_level type=text notnull=true identity= generated= default=-
+column conversation.semantic_search_members.entry_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.semantic_search_members.org_id type=text notnull=true identity= generated= default=-
+column conversation.semantic_search_members.pos type=integer notnull=true identity= generated= default=-
+column conversation.semantic_search_members.search_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.semantic_search_members.user_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.semantic_searches.archived_by type=conversation.oid24 notnull=false identity= generated= default=-
+column conversation.semantic_searches.citation_ids type=conversation.oid24[] notnull=true identity= generated= default='{}'::conversation.oid24[]
+column conversation.semantic_searches.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.semantic_searches.id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.semantic_searches.is_archived type=boolean notnull=true identity= generated= default=false
+column conversation.semantic_searches.is_shared type=boolean notnull=true identity= generated= default=false
+column conversation.semantic_searches.nulls type=text[] notnull=true identity= generated= default='{}'::text[]
+column conversation.semantic_searches.org_id type=text notnull=true identity= generated= default=-
+column conversation.semantic_searches.query type=text notnull=true identity= generated= default=-
+column conversation.semantic_searches.records type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column conversation.semantic_searches.result_limit type=integer notnull=true identity= generated= default=-
+column conversation.semantic_searches.share_link type=text notnull=false identity= generated= default=-
+column conversation.semantic_searches.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column conversation.semantic_searches.user_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.semantic_searches.version type=integer notnull=true identity= generated= default=0
 column kernel.alembic_version.version_num type=character varying(32) notnull=true identity= generated= default=-
 column kernel.completed_jobs.finished_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column kernel.completed_jobs.name type=text notnull=true identity= generated= default=-
@@ -82,6 +241,14 @@ column kernel.trigger_exemptions.reviewed_by type=text notnull=true identity= ge
 column kernel.vetted_extension_reads.rel type=regclass notnull=true identity= generated= default=-
 column kernel.vetted_violations.object type=text notnull=false identity= generated= default=-
 column kernel.vetted_violations.rule type=text notnull=false identity= generated= default=-
+column platform.connectors_config.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.connectors_config.id type=platform.oid24 notnull=true identity= generated= default=-
+column platform.connectors_config.is_enabled type=boolean notnull=true identity= generated= default=true
+column platform.connectors_config.last_updated_by type=platform.oid24 notnull=true identity= generated= default=-
+column platform.connectors_config.name type=text notnull=true identity= generated= default=-
+column platform.connectors_config.org_id type=text notnull=true identity= generated= default=-
+column platform.connectors_config.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.connectors_config.version type=integer notnull=true identity= generated= default=0
 column platform.consumer_inbox.message_id type=text notnull=true identity= generated= default=-
 column platform.consumer_inbox.org_id type=text notnull=true identity= generated= default=-
 column platform.consumer_inbox.received_at type=timestamp with time zone notnull=true identity= generated= default=now()
@@ -97,6 +264,48 @@ column platform.kv_entries.expires_at type=timestamp with time zone notnull=fals
 column platform.kv_entries.key type=text notnull=true identity= generated= default=-
 column platform.kv_entries.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column platform.kv_entries.value type=bytea notnull=true identity= generated= default=-
+column platform.mail_log.cc_addresses type=text[] notnull=true identity= generated= default='{}'::text[]
+column platform.mail_log.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.mail_log.email_template_type type=text notnull=true identity= generated= default=-
+column platform.mail_log.from_address type=text notnull=true identity= generated= default=-
+column platform.mail_log.id type=platform.oid24 notnull=true identity= generated= default=-
+column platform.mail_log.org_id type=text notnull=true identity= generated= default=-
+column platform.mail_log.subject type=text notnull=false identity= generated= default=-
+column platform.mail_log.to_addresses type=text[] notnull=true identity= generated= default=-
+column platform.mail_log.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.mail_log.version type=integer notnull=true identity= generated= default=0
+column platform.notifications.assigned_to type=platform.oid24 notnull=true identity= generated= default=-
+column platform.notifications.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.notifications.deleted_by type=platform.oid24 notnull=false identity= generated= default=-
+column platform.notifications.id type=platform.oid24 notnull=true identity= generated= default=-
+column platform.notifications.is_deleted type=boolean notnull=true identity= generated= default=false
+column platform.notifications.message type=text notnull=false identity= generated= default=-
+column platform.notifications.org_id type=text notnull=true identity= generated= default=-
+column platform.notifications.origin_service type=text notnull=false identity= generated= default=-
+column platform.notifications.payload type=jsonb notnull=false identity= generated= default=-
+column platform.notifications.redirect_link type=text notnull=false identity= generated= default=-
+column platform.notifications.severity type=text notnull=false identity= generated= default=-
+column platform.notifications.status type=text notnull=true identity= generated= default='unread'::text
+column platform.notifications.title type=text notnull=false identity= generated= default=-
+column platform.notifications.type type=text notnull=true identity= generated= default=-
+column platform.notifications.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.notifications.version type=integer notnull=true identity= generated= default=0
+column platform.outbox.attempts type=integer notnull=true identity= generated= default=0
+column platform.outbox.claimed_at type=timestamp with time zone notnull=false identity= generated= default=-
+column platform.outbox.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.outbox.headers type=jsonb notnull=false identity= generated= default=-
+column platform.outbox.id type=bigint notnull=true identity=d generated= default=-
+column platform.outbox.last_error type=text notnull=false identity= generated= default=-
+column platform.outbox.msg_key type=text notnull=true identity= generated= default=-
+column platform.outbox.next_attempt_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.outbox.ordering_key type=text notnull=true identity= generated= default='global'::text
+column platform.outbox.org_id type=text notnull=true identity= generated= default=-
+column platform.outbox.published_at type=timestamp with time zone notnull=false identity= generated= default=-
+column platform.outbox.status type=text notnull=true identity= generated= default='pending'::text
+column platform.outbox.topic type=text notnull=true identity= generated= default=-
+column platform.outbox.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.outbox.value type=text notnull=true identity= generated= default=-
+column platform.outbox.version type=integer notnull=true identity= generated= default=0
 column platform.queue_deliveries.attempts type=integer notnull=true identity= generated= default=0
 column platform.queue_deliveries.consumer type=text notnull=false identity= generated= default=-
 column platform.queue_deliveries.group_id type=text notnull=true identity= generated= default=-
@@ -150,6 +359,51 @@ column platform.store_epoch.epoch type=integer notnull=true identity= generated=
 column platform.store_epoch.one type=boolean notnull=true identity= generated= default=true
 column platform.store_epoch.readonly type=boolean notnull=true identity= generated= default=false
 column platform.store_epoch.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+constraint content.documents documents_permissions_check c def=1555164b1275eacd102b354b33a4861b
+constraint content.documents documents_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint content.documents documents_storage_vendor_check c def=dffac3739b9e430c685ececcad5d3181
+constraint content.documents org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint content.documents org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint content.project_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint content.project_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint content.project_members project_members_check c def=d72ee771d9f21f18e0f46be4e293ff5f
+constraint content.project_members project_members_org_id_project_id_fkey f def=17dee742ff9d65e8724ed6a047860dfc
+constraint content.project_members project_members_pkey p def=e88678dfb6b494b2ce463f88bd173d4e
+constraint content.project_members project_members_principal_type_check c def=1c6663dcf95b1a2e30b84a356413e428
+constraint content.project_members project_members_role_check c def=d109474c5fecf38b08cc12a2da938137
+constraint content.projects org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint content.projects org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint content.projects projects_chat_sharing_check c def=c4e99a58d6384655e3866fc5143e6d89
+constraint content.projects projects_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint content.projects projects_visibility_check c def=525fe83e109c4bdb816240aea354172a
+constraint conversation.chat_messages chat_messages_message_type_check c def=799651887854c2809022870d3ae8b038
+constraint conversation.chat_messages chat_messages_org_id_id_key u def=5ef3b4120fdd7ab25636c8033ea499e9
+constraint conversation.chat_messages chat_messages_org_id_session_id_fkey f def=e3c271ecf50d61587b5401cb61923caf
+constraint conversation.chat_messages chat_messages_pkey p def=f8532852df271a56d69edb45ad76909b
+constraint conversation.chat_messages org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.chat_messages org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.chat_session_members chat_session_members_access_level_check c def=de398975097f16b06d573bfe32eaf284
+constraint conversation.chat_session_members chat_session_members_org_id_session_id_fkey f def=e3c271ecf50d61587b5401cb61923caf
+constraint conversation.chat_session_members chat_session_members_pkey p def=10c7ca57bf28b4a693068d5a793bd84e
+constraint conversation.chat_session_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.chat_session_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.chat_sessions chat_sessions_conversation_source_check c def=659acb0d50f3cd96d754311a3f3566f8
+constraint conversation.chat_sessions chat_sessions_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint conversation.chat_sessions chat_sessions_project_visibility_check c def=35676ee54419f470fa96f410ce493d80
+constraint conversation.chat_sessions chat_sessions_session_type_check c def=02a48b4f866312ee9caa03563ad65bb1
+constraint conversation.chat_sessions org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.chat_sessions org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.citations citations_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint conversation.citations org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.citations org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.semantic_search_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.semantic_search_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.semantic_search_members semantic_search_members_access_level_check c def=de398975097f16b06d573bfe32eaf284
+constraint conversation.semantic_search_members semantic_search_members_org_id_search_id_fkey f def=df771904e2ace68e2f39381265dca301
+constraint conversation.semantic_search_members semantic_search_members_pkey p def=52c4794b80f5462bd756c7c57885003a
+constraint conversation.semantic_searches org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint conversation.semantic_searches org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint conversation.semantic_searches semantic_searches_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint kernel.alembic_version alembic_version_pkc p def=9ff9b7a06b20441038321e312af2b931
 constraint kernel.completed_jobs completed_jobs_pkey p def=c302dc585e3d60f2f29aa138474141ea
 constraint kernel.extension_schemas extension_schemas_pkey p def=ad15a3f885884f639b9ce12e76a1d0b6
@@ -179,12 +433,29 @@ constraint kernel.settings settings_one_check c def=21c1ed2340b0cfd00c3a8b8b5b66
 constraint kernel.settings settings_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
 constraint kernel.trigger_exemptions trigger_exemptions_pkey p def=b664a5b1e44013a75f9cb4978b703ade
 constraint kernel.vetted_extension_reads vetted_extension_reads_pkey p def=e4e9923f49f3d59f199c0867a2422f66
+constraint platform.connectors_config connectors_config_org_id_id_key u def=5ef3b4120fdd7ab25636c8033ea499e9
+constraint platform.connectors_config connectors_config_pkey p def=77f510dfe3515389613d946569fbc8d7
+constraint platform.connectors_config org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.connectors_config org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint platform.consumer_inbox consumer_inbox_pkey p def=200b24df51f90df254103634480056dc
 constraint platform.consumer_inbox org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint platform.consumer_inbox org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint platform.jobs jobs_pkey p def=4c6419b3704337bbfe50f018842a9ad3
 constraint platform.jobs jobs_status_check c def=0b1660fa4b72c6172fa023081f133040
 constraint platform.kv_entries kv_entries_pkey p def=729d3ed6c85722f863da384d2313331e
+constraint platform.mail_log mail_log_pkey p def=48a08b3c3358406f44dea2f2d12bb5e2
+constraint platform.mail_log org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.mail_log org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint platform.notifications notifications_origin_service_check c def=28fe86bc2a7a94faa73954223d3cf55c
+constraint platform.notifications notifications_pkey p def=48a08b3c3358406f44dea2f2d12bb5e2
+constraint platform.notifications notifications_severity_check c def=182f7821a920fc37cf1cccdcddd2678b
+constraint platform.notifications notifications_status_check c def=9bfa091f2ea9ae48b688fbd19770dabe
+constraint platform.notifications org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.notifications org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint platform.outbox org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.outbox org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint platform.outbox outbox_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint platform.outbox outbox_status_check c def=83c5ce892210731501976acf9c4d3229
 constraint platform.queue_deliveries queue_deliveries_pkey p def=642a7b2d61320c918711d7f4c8347790
 constraint platform.queue_groups queue_groups_pkey p def=f4e295329f4fbbd78c4bf423598128b4
 constraint platform.queue_messages queue_messages_pkey p def=4c6419b3704337bbfe50f018842a9ad3
@@ -197,6 +468,7 @@ constraint platform.store_epoch store_epoch_pkey p def=2f0d4b6d30e5d97037ac5ea5a
 database owner=<bootstrap-superuser>
 databaseacl PUBLIC CONNECT grantable=false
 databaseacl pipeshub_owner CREATE grantable=false
+extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
@@ -256,6 +528,36 @@ funcacl kernel.restore_allows(text) pipeshub_restore EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
+index content.documents_artifact_set on content.documents unique=true exclusion=false valid=true def=66b66cb22ee4b83b8ce15ce05c5b6ef2
+index content.documents_by_connector on content.documents unique=false exclusion=false valid=true def=758d149d5d885f2d089e87f7a5cb02f0
+index content.documents_by_name on content.documents unique=false exclusion=false valid=true def=989ea889f3b9334e327fa9cca1444de7
+index content.documents_by_path on content.documents unique=false exclusion=false valid=true def=c282fe75c791fc00a59902406add2764
+index content.documents_idempotency on content.documents unique=true exclusion=false valid=true def=599d416724c2e2fb5491083b5b4b1819
+index content.documents_pkey on content.documents unique=true exclusion=false valid=true def=7e94e269d5af7f9ce434d8784ce1c317
+index content.project_members_by_principal on content.project_members unique=false exclusion=false valid=true def=918e2f7029497eb377d5490a98a08b4e
+index content.project_members_pkey on content.project_members unique=true exclusion=false valid=true def=b4c0bb1adc3426ea9706bd8f6840535d
+index content.projects_by_owner on content.projects unique=false exclusion=false valid=true def=9ccd15db66f5b07ae6e2fd9c2b53ae98
+index content.projects_listing on content.projects unique=false exclusion=false valid=true def=cc4f0bcb27b311a5ac6446b71e43aa44
+index content.projects_org_visible on content.projects unique=false exclusion=false valid=true def=8daa63a4d0b3c374164bc9edae5e2b7f
+index content.projects_pkey on content.projects unique=true exclusion=false valid=true def=04834da7e2baaae39859e25b2da11435
+index conversation.chat_messages_content_trgm on conversation.chat_messages unique=false exclusion=false valid=true def=c0c702f06a1dc68cb013424aadb66757
+index conversation.chat_messages_org_id_id_key on conversation.chat_messages unique=true exclusion=false valid=true def=1e0c4e2d5fb905bc1c3794c5da91eca0
+index conversation.chat_messages_pkey on conversation.chat_messages unique=true exclusion=false valid=true def=dcf3429f060ea4628716ac468a4a0892
+index conversation.chat_session_members_by_user on conversation.chat_session_members unique=false exclusion=false valid=true def=2dd10822abf05244c456f4626881c201
+index conversation.chat_session_members_pkey on conversation.chat_session_members unique=true exclusion=false valid=true def=88abc22eb02684fd771d6b2fd618fbe2
+index conversation.chat_sessions_agent on conversation.chat_sessions unique=false exclusion=false valid=true def=d7b4f3cf3cb745ab920f2fb7128a803e
+index conversation.chat_sessions_archived_list on conversation.chat_sessions unique=false exclusion=false valid=true def=aa976fb35fb280e45514f09790fdfe9c
+index conversation.chat_sessions_owner_list on conversation.chat_sessions unique=false exclusion=false valid=true def=15a5dbfa43dddf8a7671b1d4ecc3cc85
+index conversation.chat_sessions_owner_pinned on conversation.chat_sessions unique=false exclusion=false valid=true def=1d80b730d572ebba4e44d1dd666e6d31
+index conversation.chat_sessions_pkey on conversation.chat_sessions unique=true exclusion=false valid=true def=c5ecb987ec552e0c6250883db8a9ed69
+index conversation.chat_sessions_project_list on conversation.chat_sessions unique=false exclusion=false valid=true def=e6aa89c83bfacc3695d51defa474ff8d
+index conversation.chat_sessions_project_visible on conversation.chat_sessions unique=false exclusion=false valid=true def=650bb0e6fa607a916f66ed8dc0042578
+index conversation.citations_by_record on conversation.citations unique=false exclusion=false valid=true def=f9f27dd2a2aaa58c3648b3cd80feb917
+index conversation.citations_pkey on conversation.citations unique=true exclusion=false valid=true def=8f02c27f26f0949a121c4e016e775334
+index conversation.semantic_search_members_by_user on conversation.semantic_search_members unique=false exclusion=false valid=true def=fd291ddc6642d1c25a3c67a3f93aae05
+index conversation.semantic_search_members_pkey on conversation.semantic_search_members unique=true exclusion=false valid=true def=47fc089f0ad23e20b90919c90e7671f4
+index conversation.semantic_searches_by_user on conversation.semantic_searches unique=false exclusion=false valid=true def=9a480d28e67f5fb38dde0e7f96244463
+index conversation.semantic_searches_pkey on conversation.semantic_searches unique=true exclusion=false valid=true def=5afcff0ea8f2d669186c57738eb82fd3
 index kernel.alembic_version_pkc on kernel.alembic_version unique=true exclusion=false valid=true def=c141328fa649632bd48c615b4bb672db
 index kernel.completed_jobs_pkey on kernel.completed_jobs unique=true exclusion=false valid=true def=15027330d42fe41c06bc07732df27c9c
 index kernel.extension_schemas_pkey on kernel.extension_schemas unique=true exclusion=false valid=true def=542ab4475729ca447b06e65f4bccc85c
@@ -272,6 +574,8 @@ index kernel.sequence_waivers_pkey on kernel.sequence_waivers unique=true exclus
 index kernel.settings_pkey on kernel.settings unique=true exclusion=false valid=true def=ed2b9216ae4996a86b1ef1b08bba07c7
 index kernel.trigger_exemptions_pkey on kernel.trigger_exemptions unique=true exclusion=false valid=true def=5a5c9cce9f2561d6615c813ceab48725
 index kernel.vetted_extension_reads_pkey on kernel.vetted_extension_reads unique=true exclusion=false valid=true def=cc195b08ec1797e6cf63209b89a33a6f
+index platform.connectors_config_org_id_id_key on platform.connectors_config unique=true exclusion=false valid=true def=09e601289ed5ed8616e86d4121f66d88
+index platform.connectors_config_pkey on platform.connectors_config unique=true exclusion=false valid=true def=8be515e185caba990b91eac1d5005905
 index platform.consumer_inbox_pkey on platform.consumer_inbox unique=true exclusion=false valid=true def=fdd7dcc3e0a1196783a6f4123c894660
 index platform.consumer_inbox_received_at on platform.consumer_inbox unique=false exclusion=false valid=true def=aedce0110dc15e21ca7265496b1a0100
 index platform.deployment_profile_one_row on platform.deployment_profile unique=true exclusion=false valid=true def=d14b131f206cb2b4f70564ec9404b576
@@ -279,6 +583,15 @@ index platform.jobs_one_running_per_kind on platform.jobs unique=true exclusion=
 index platform.jobs_pkey on platform.jobs unique=true exclusion=false valid=true def=79f9c6e47506242e024f85e368948de3
 index platform.kv_entries_expiry on platform.kv_entries unique=false exclusion=false valid=true def=3fd96ca779f6b615709654ddb1a836fc
 index platform.kv_entries_pkey on platform.kv_entries unique=true exclusion=false valid=true def=3b0c327cf2af823aa5b132cf444b9604
+index platform.mail_log_pkey on platform.mail_log unique=true exclusion=false valid=true def=c719d3a90642058b616d76a1f88aa0b1
+index platform.notifications_by_id on platform.notifications unique=false exclusion=false valid=true def=3d6f5d34f84fecbd5952e0f9ee5f6f5d
+index platform.notifications_inbox on platform.notifications unique=false exclusion=false valid=true def=06ac82fb8e2962cfd6c433c57c866e0d
+index platform.notifications_pkey on platform.notifications unique=true exclusion=false valid=true def=181a7fa68961a17044571da8e77cc701
+index platform.outbox_by_id on platform.outbox unique=false exclusion=false valid=true def=6009e39e1c33496fef2cf0fc26be14e4
+index platform.outbox_by_ordering_key on platform.outbox unique=false exclusion=false valid=true def=cffb17cd63b7db071c14c0d4cc816be8
+index platform.outbox_due on platform.outbox unique=false exclusion=false valid=true def=d4346857da0b3225422c3080bac0f37c
+index platform.outbox_pkey on platform.outbox unique=true exclusion=false valid=true def=019c01dac1244b705d3fdc462a8d3b9f
+index platform.outbox_published on platform.outbox unique=false exclusion=false valid=true def=4d81917431befee1de38776558d41fe7
 index platform.queue_deliveries_by_message on platform.queue_deliveries unique=false exclusion=false valid=true def=95d363ac9cc9c05ff75a3d5bd63763c8
 index platform.queue_deliveries_key on platform.queue_deliveries unique=false exclusion=false valid=true def=29cb2c01c3ab61859e445da3a1009988
 index platform.queue_deliveries_open on platform.queue_deliveries unique=false exclusion=false valid=true def=384c937ce9fce4be55d7c9417680f2ba
@@ -325,10 +638,66 @@ operator ext.<->>>(text,text) owner=<bootstrap-superuser> function=ext.strict_wo
 operator ext.<<%(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_op
 operator ext.<<->(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_op
 operator ext.<<<->(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_op
+policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy content.documents restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy content.project_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.project_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy content.project_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy content.projects backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy content.projects org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy content.projects restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.chat_messages backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_messages jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_messages org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.chat_messages restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.chat_session_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_session_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_session_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.chat_session_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.chat_sessions backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.chat_sessions jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_sessions org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.chat_sessions restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.citations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.citations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.citations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.citations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.semantic_search_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.semantic_search_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.semantic_search_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.semantic_search_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy conversation.semantic_searches backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy conversation.semantic_searches jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.semantic_searches org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy conversation.semantic_searches restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.connectors_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.connectors_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.connectors_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.consumer_inbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.consumer_inbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy platform.consumer_inbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.consumer_inbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.mail_log restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.notifications backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.notifications jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.notifications org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.notifications restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy platform.outbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.outbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.outbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.outbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+rel content.documents kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel content.project_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel content.projects kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.chat_messages kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.chat_session_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.chat_sessions kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.citations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.semantic_search_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel conversation.semantic_searches kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel kernel.alembic_version kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.completed_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.extension_schemas kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -350,11 +719,16 @@ rel kernel.surface_skips kind=r owner=pipeshub_owner rls=false force=false optio
 rel kernel.trigger_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.vetted_extension_reads kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.vetted_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=ac60a8348f9045e9ea4af61a1da3eeac
+rel platform.connectors_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.consumer_inbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.deployment_profile kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.jobs_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.kv_entries kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.mail_log kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel platform.notifications kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel platform.outbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel platform.outbox_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.queue_deliveries kind=r owner=pipeshub_owner rls=false force=false options=fillfactor=85,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=2000 ext=-
 rel platform.queue_groups kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.queue_messages kind=r owner=pipeshub_owner rls=false force=false options=autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=2000 ext=-
@@ -362,11 +736,94 @@ rel platform.queue_messages_id_seq kind=S owner=pipeshub_owner rls=false force=f
 rel platform.sched_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.sched_repeats kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel platform.store_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+relacl content.documents pipeshub_backup SELECT grantable=false
+relacl content.documents pipeshub_node DELETE grantable=false
+relacl content.documents pipeshub_node INSERT grantable=false
+relacl content.documents pipeshub_node SELECT grantable=false
+relacl content.documents pipeshub_node UPDATE grantable=false
+relacl content.documents pipeshub_restore INSERT grantable=false
+relacl content.project_members pipeshub_backup SELECT grantable=false
+relacl content.project_members pipeshub_node DELETE grantable=false
+relacl content.project_members pipeshub_node INSERT grantable=false
+relacl content.project_members pipeshub_node SELECT grantable=false
+relacl content.project_members pipeshub_node UPDATE grantable=false
+relacl content.project_members pipeshub_restore INSERT grantable=false
+relacl content.projects pipeshub_backup SELECT grantable=false
+relacl content.projects pipeshub_node DELETE grantable=false
+relacl content.projects pipeshub_node INSERT grantable=false
+relacl content.projects pipeshub_node SELECT grantable=false
+relacl content.projects pipeshub_node UPDATE grantable=false
+relacl content.projects pipeshub_restore INSERT grantable=false
+relacl conversation.chat_messages pipeshub_backup SELECT grantable=false
+relacl conversation.chat_messages pipeshub_jobs DELETE grantable=false
+relacl conversation.chat_messages pipeshub_jobs INSERT grantable=false
+relacl conversation.chat_messages pipeshub_jobs SELECT grantable=false
+relacl conversation.chat_messages pipeshub_jobs UPDATE grantable=false
+relacl conversation.chat_messages pipeshub_node DELETE grantable=false
+relacl conversation.chat_messages pipeshub_node INSERT grantable=false
+relacl conversation.chat_messages pipeshub_node SELECT grantable=false
+relacl conversation.chat_messages pipeshub_node UPDATE grantable=false
+relacl conversation.chat_messages pipeshub_restore INSERT grantable=false
+relacl conversation.chat_session_members pipeshub_backup SELECT grantable=false
+relacl conversation.chat_session_members pipeshub_jobs DELETE grantable=false
+relacl conversation.chat_session_members pipeshub_jobs INSERT grantable=false
+relacl conversation.chat_session_members pipeshub_jobs SELECT grantable=false
+relacl conversation.chat_session_members pipeshub_jobs UPDATE grantable=false
+relacl conversation.chat_session_members pipeshub_node DELETE grantable=false
+relacl conversation.chat_session_members pipeshub_node INSERT grantable=false
+relacl conversation.chat_session_members pipeshub_node SELECT grantable=false
+relacl conversation.chat_session_members pipeshub_node UPDATE grantable=false
+relacl conversation.chat_session_members pipeshub_restore INSERT grantable=false
+relacl conversation.chat_sessions pipeshub_backup SELECT grantable=false
+relacl conversation.chat_sessions pipeshub_jobs DELETE grantable=false
+relacl conversation.chat_sessions pipeshub_jobs INSERT grantable=false
+relacl conversation.chat_sessions pipeshub_jobs SELECT grantable=false
+relacl conversation.chat_sessions pipeshub_jobs UPDATE grantable=false
+relacl conversation.chat_sessions pipeshub_node DELETE grantable=false
+relacl conversation.chat_sessions pipeshub_node INSERT grantable=false
+relacl conversation.chat_sessions pipeshub_node SELECT grantable=false
+relacl conversation.chat_sessions pipeshub_node UPDATE grantable=false
+relacl conversation.chat_sessions pipeshub_restore INSERT grantable=false
+relacl conversation.citations pipeshub_backup SELECT grantable=false
+relacl conversation.citations pipeshub_jobs DELETE grantable=false
+relacl conversation.citations pipeshub_jobs INSERT grantable=false
+relacl conversation.citations pipeshub_jobs SELECT grantable=false
+relacl conversation.citations pipeshub_jobs UPDATE grantable=false
+relacl conversation.citations pipeshub_node DELETE grantable=false
+relacl conversation.citations pipeshub_node INSERT grantable=false
+relacl conversation.citations pipeshub_node SELECT grantable=false
+relacl conversation.citations pipeshub_node UPDATE grantable=false
+relacl conversation.citations pipeshub_restore INSERT grantable=false
+relacl conversation.semantic_search_members pipeshub_backup SELECT grantable=false
+relacl conversation.semantic_search_members pipeshub_jobs DELETE grantable=false
+relacl conversation.semantic_search_members pipeshub_jobs INSERT grantable=false
+relacl conversation.semantic_search_members pipeshub_jobs SELECT grantable=false
+relacl conversation.semantic_search_members pipeshub_jobs UPDATE grantable=false
+relacl conversation.semantic_search_members pipeshub_node DELETE grantable=false
+relacl conversation.semantic_search_members pipeshub_node INSERT grantable=false
+relacl conversation.semantic_search_members pipeshub_node SELECT grantable=false
+relacl conversation.semantic_search_members pipeshub_node UPDATE grantable=false
+relacl conversation.semantic_search_members pipeshub_restore INSERT grantable=false
+relacl conversation.semantic_searches pipeshub_backup SELECT grantable=false
+relacl conversation.semantic_searches pipeshub_jobs DELETE grantable=false
+relacl conversation.semantic_searches pipeshub_jobs INSERT grantable=false
+relacl conversation.semantic_searches pipeshub_jobs SELECT grantable=false
+relacl conversation.semantic_searches pipeshub_jobs UPDATE grantable=false
+relacl conversation.semantic_searches pipeshub_node DELETE grantable=false
+relacl conversation.semantic_searches pipeshub_node INSERT grantable=false
+relacl conversation.semantic_searches pipeshub_node SELECT grantable=false
+relacl conversation.semantic_searches pipeshub_node UPDATE grantable=false
+relacl conversation.semantic_searches pipeshub_restore INSERT grantable=false
 relacl kernel.restore_window pipeshub_restore SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_connectors SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_indexing SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_node SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_query SELECT grantable=false
+relacl platform.connectors_config pipeshub_backup SELECT grantable=false
+relacl platform.connectors_config pipeshub_node INSERT grantable=false
+relacl platform.connectors_config pipeshub_node SELECT grantable=false
+relacl platform.connectors_config pipeshub_node UPDATE grantable=false
+relacl platform.connectors_config pipeshub_restore INSERT grantable=false
 relacl platform.consumer_inbox pipeshub_backup SELECT grantable=false
 relacl platform.consumer_inbox pipeshub_connectors INSERT grantable=false
 relacl platform.consumer_inbox pipeshub_connectors SELECT grantable=false
@@ -403,6 +860,24 @@ relacl platform.kv_entries pipeshub_query DELETE grantable=false
 relacl platform.kv_entries pipeshub_query INSERT grantable=false
 relacl platform.kv_entries pipeshub_query SELECT grantable=false
 relacl platform.kv_entries pipeshub_query UPDATE grantable=false
+relacl platform.mail_log pipeshub_backup SELECT grantable=false
+relacl platform.mail_log pipeshub_node INSERT grantable=false
+relacl platform.mail_log pipeshub_node SELECT grantable=false
+relacl platform.mail_log pipeshub_restore INSERT grantable=false
+relacl platform.notifications pipeshub_backup SELECT grantable=false
+relacl platform.notifications pipeshub_jobs DELETE grantable=false
+relacl platform.notifications pipeshub_jobs SELECT grantable=false
+relacl platform.notifications pipeshub_node DELETE grantable=false
+relacl platform.notifications pipeshub_node INSERT grantable=false
+relacl platform.notifications pipeshub_node SELECT grantable=false
+relacl platform.notifications pipeshub_node UPDATE grantable=false
+relacl platform.notifications pipeshub_restore INSERT grantable=false
+relacl platform.outbox pipeshub_backup SELECT grantable=false
+relacl platform.outbox pipeshub_jobs DELETE grantable=false
+relacl platform.outbox pipeshub_jobs SELECT grantable=false
+relacl platform.outbox pipeshub_jobs UPDATE grantable=false
+relacl platform.outbox pipeshub_node INSERT grantable=false
+relacl platform.outbox pipeshub_restore INSERT grantable=false
 relacl platform.queue_deliveries pipeshub_connectors DELETE grantable=false
 relacl platform.queue_deliveries pipeshub_connectors INSERT grantable=false
 relacl platform.queue_deliveries pipeshub_connectors SELECT grantable=false
@@ -481,10 +956,19 @@ role pipeshub_restore login=false super=false inherit=true createrole=false crea
 role pipeshub_ro login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_kernel login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_platform login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+schema content owner=pipeshub_owner
+schema conversation owner=pipeshub_owner
 schema ext owner=pipeshub_owner
 schema kernel owner=pipeshub_owner
 schema platform owner=pipeshub_owner
 schema public owner=pg_database_owner
+schemaacl content pipeshub_backup USAGE grantable=false
+schemaacl content pipeshub_node USAGE grantable=false
+schemaacl content pipeshub_restore USAGE grantable=false
+schemaacl conversation pipeshub_backup USAGE grantable=false
+schemaacl conversation pipeshub_jobs USAGE grantable=false
+schemaacl conversation pipeshub_node USAGE grantable=false
+schemaacl conversation pipeshub_restore USAGE grantable=false
 schemaacl ext pipeshub_app USAGE grantable=false
 schemaacl kernel pipeshub_app USAGE grantable=false
 schemaacl kernel pipeshub_connectors_login USAGE grantable=false
@@ -574,3 +1058,6 @@ sysrelacl information_schema.views PUBLIC SELECT
 sysschemaacl information_schema PUBLIC USAGE
 tablespace pg_default owner=<bootstrap-superuser>
 tablespace pg_global owner=<bootstrap-superuser>
+type content.oid24 kind=d owner=pipeshub_owner
+type conversation.oid24 kind=d owner=pipeshub_owner
+type platform.oid24 kind=d owner=pipeshub_owner

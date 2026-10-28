@@ -36,9 +36,9 @@ describe('FirstPartyDeviceAppService', () => {
     const orgQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([{ _id: orgId }]),
+      lean: sinon.stub().resolves({ _id: orgId }),
     }
-    sinon.stub(Org, 'find').returns(orgQuery)
+    sinon.stub(Org, 'findOne').returns(orgQuery)
     const userQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
@@ -80,7 +80,7 @@ describe('FirstPartyDeviceAppService', () => {
     await service.getOrCreate()
     expect(update.calledOnce).to.be.true
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['kb:write', 'kb:upload'] } } },
     ])
   })
@@ -106,7 +106,7 @@ describe('FirstPartyDeviceAppService', () => {
     const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
     await service.getOrCreate()
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['offline_access'] } } },
     ])
   })
@@ -165,10 +165,10 @@ describe('FirstPartyDeviceAppService', () => {
   })
 
   it('should return null when the instance has no org', async () => {
-    ;(Org.find as sinon.SinonStub).returns({
+    ;(Org.findOne as sinon.SinonStub).returns({
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([]),
+      lean: sinon.stub().resolves(null),
     })
     sinon.stub(OAuthApp, 'findOne').resolves(null)
     const create = sinon.stub(OAuthApp, 'create')

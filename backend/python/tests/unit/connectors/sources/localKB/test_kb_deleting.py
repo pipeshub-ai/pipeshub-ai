@@ -1,4 +1,4 @@
-"""A knowledge base being deleted: the DELETING marker, the method classification, the write refusals (T42d)."""
+"""A knowledge base being deleted: the DELETING marker, the method classification, the write refusals."""
 
 from __future__ import annotations
 
@@ -245,7 +245,7 @@ def test_the_refusal_wording_is_the_one_the_gateway_recognises() -> None:
     assert kb_module.KB_BEING_DELETED_REASON == "This knowledge base is being deleted, so it can't be changed."
 
 
-# ---- two deleters writing the marker at once (T42g) -----------------------------------------------------------------
+# ---- two deleters writing the marker at once -----------------------------------------------------------------
 
 CONFLICT = RuntimeError("write-write conflict")
 
@@ -302,7 +302,7 @@ async def test_a_kb_that_is_gone_is_not_marked(service) -> None:
     service.graph_provider.update_knowledge_base.assert_not_awaited()
 
 
-# ---- a rename that loses a write-write conflict to a push or a delete (T42r) ---------------------------------------
+# ---- a rename that loses a write-write conflict to a push or a delete ---------------------------------------
 
 @pytest.mark.asyncio
 async def test_a_rename_that_loses_a_write_conflict_writes_again(service) -> None:

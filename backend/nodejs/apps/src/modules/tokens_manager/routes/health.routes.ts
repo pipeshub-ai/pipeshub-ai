@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
+import { readStoreEpoch } from '../../../libs/db/boot';
+import { pgRuntime } from '../../../libs/db/uow';
 import { MongoService } from '../../../libs/services/mongo.service';
 import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
@@ -64,7 +66,10 @@ export function createHealthRouter(
   const router = Router();
   const redis = container.get<ICacheService>(TYPES.RedisService);
   const tokenEventProducer = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
-  const mongooseService = container.get<MongoService>(TYPES.MongoService);
+  // Not bound when the document store is PostgreSQL.
+  const mongooseService = container.isBound(TYPES.MongoService)
+    ? container.get<MongoService>(TYPES.MongoService)
+    : null;
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
   );
@@ -155,13 +160,27 @@ export function createHealthRouter(
         overallHealthy = false;
       }
 
-      try {
-        const isMongoHealthy = await mongooseService.healthCheck();
-        services.mongodb = isMongoHealthy ? 'healthy' : 'unhealthy';
-        if (!isMongoHealthy) overallHealthy = false;
-      } catch (error) {
-        services.mongodb = 'unhealthy';
-        overallHealthy = false;
+      if (mongooseService) {
+        try {
+          const isMongoHealthy = await mongooseService.healthCheck();
+          services.mongodb = isMongoHealthy ? 'healthy' : 'unhealthy';
+          if (!isMongoHealthy) overallHealthy = false;
+        } catch (error) {
+          services.mongodb = 'unhealthy';
+          overallHealthy = false;
+        }
+      } else {
+        delete services.mongodb;
+        delete serviceNames.mongodb;
+        // The document store is PostgreSQL: report it in the place MongoDB would have been.
+        try {
+          await readStoreEpoch(pgRuntime());
+          services.postgres = 'healthy';
+        } catch {
+          services.postgres = 'unhealthy';
+          overallHealthy = false;
+        }
+        serviceNames.postgres = 'PostgreSQL';
       }
 
       // KV Store — only check separately when using etcd

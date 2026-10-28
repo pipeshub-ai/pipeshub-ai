@@ -29,13 +29,16 @@ from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, STORED_REV
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.modules.transformers.stored_write import STORED_WRITE
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.services.featureflag.platform_settings import ArtifactSettings
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
 REV = "0123456789abcdef"
+GENERATION = "gen-1"
 OLD_REV = "fedcba9876543210"
 MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 PNG_URI = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"px" * 64).decode()
@@ -63,7 +66,7 @@ def _record(blocks: list[Block] | None = None, groups: list[BlockGroup] | None =
 
 def _written(document_id: str = "doc-rev-1") -> WrittenRevision:
     return WrittenRevision(
-        manifest=Manifest(virtualRecordId="vr-1", rev=REV, orgId="org-1", producedAt=1, artifacts={}),
+        manifest=Manifest(virtualRecordId="vr-1", rev=REV, orgId="org-1", producedAt=1, storedRun=f"{GENERATION}:run", artifacts={}),
         manifest_ref=ArtifactRef(document_id=document_id, root="org-1/PipesHub/record-revisions/vr-1/" + REV,
                                  path="manifest.json"),
     )
@@ -90,7 +93,7 @@ class Graph:
         assert collection == MAPPING and key == "vr-1"
         if self.race_lost or self.mapping is None:
             return False
-        if self.mapping.get("currentRev") != expected["currentRev"]:
+        if any(self.mapping.get(k) != v for k, v in expected.items()):
             return False
         self.mapping.update(updates)
         return True
@@ -120,11 +123,22 @@ def _orchestrator(graph: Graph, *, flag: bool = True) -> SinkOrchestrator:
     orch.artifact_writer = MagicMock()
     orch.artifact_writer.write_revision = AsyncMock(return_value=_written())
     orch._flag = flag  # type: ignore[attr-defined]
+
+    async def apply(ctx: TransformContext) -> None:
+        # What the switch leaves on the mapping: the run this write came from.
+        if graph.mapping is not None:
+            graph.mapping["storedRun"] = ctx.settings[STORED_WRITE].run
+
+    orch.blob_storage.apply = AsyncMock(side_effect=apply)
     return orch
 
 
-async def _index(orch: SinkOrchestrator, ctx: TransformContext) -> None:
-    with patch.object(sink_module, "is_artifact_write_enabled", AsyncMock(return_value=orch._flag)):  # type: ignore[attr-defined]
+async def _index(orch: SinkOrchestrator, ctx: TransformContext, *, layout: str = "cow") -> None:
+    settings = ArtifactSettings(layout, GENERATION if layout == "cow" else None)  # type: ignore[arg-type]
+    with (
+        patch.object(sink_module, "is_artifact_write_enabled", AsyncMock(return_value=orch._flag)),  # type: ignore[attr-defined]
+        patch.object(sink_module, "artifact_settings", AsyncMock(return_value=settings)),
+    ):
         await orch.index(ctx)
 
 
@@ -186,7 +200,13 @@ class TestWhenItWrites:
         graph = _graph(contentRev=content_rev)
         orch = _orchestrator(graph)
         seen: list[Any] = []
-        orch.blob_storage.apply = AsyncMock(side_effect=lambda ctx: seen.append(dict(ctx.settings)))
+        real_apply = orch.blob_storage.apply.side_effect
+
+        async def apply(ctx: TransformContext) -> None:
+            seen.append(dict(ctx.settings))
+            await real_apply(ctx)
+
+        orch.blob_storage.apply = AsyncMock(side_effect=apply)
 
         await _index(orch, TransformContext(record=_record()))
 
@@ -215,7 +235,10 @@ class TestWhenItWrites:
             seen_between.append((dict(graph.mapping or {}), orch.vector_store.apply.await_count > 0))
             if mapping_write_fails:
                 raise RuntimeError("Failed to store virtual record mapping")
-            graph.mapping = {**(graph.mapping or {}), "storedRev": ctx.settings[STORED_REV]}
+            graph.mapping = {
+                **(graph.mapping or {}), "storedRev": ctx.settings[STORED_REV],
+                "storedRun": ctx.settings[STORED_WRITE].run,
+            }
 
         orch.blob_storage.apply = AsyncMock(side_effect=blob_write)
 
@@ -383,24 +406,30 @@ class TestTicketProperties:
 class TestRevisionPointer:
     async def test_flips_when_the_pointer_still_holds_what_was_read(self) -> None:
         graph = _graph({"id": "vr-1", "record_doc_id": "doc-1", "currentRev": OLD_REV, "manifestDocId": "doc-old"})
+        ctx = TransformContext(record=_record())
 
-        await _index(_orchestrator(graph), TransformContext(record=_record()))
+        await _index(_orchestrator(graph), ctx)
 
+        run = ctx.settings[STORED_WRITE].run
         graph.provider.update_node_fields_if_match.assert_awaited_once_with(
             "vr-1", MAPPING,
-            {"currentRev": REV, "previousRev": OLD_REV, "manifestDocId": "doc-rev-1"},
-            {"currentRev": OLD_REV},
+            {"currentRev": REV, "previousRev": OLD_REV, "manifestDocId": "doc-rev-1", "currentRun": run},
+            {"storedRun": run, "currentRev": OLD_REV},
         )
-        assert graph.mapping["currentRev"] == REV
+        assert (graph.mapping["currentRev"], graph.mapping["currentRun"]) == (REV, run)
 
     async def test_first_flip_expects_no_current_rev(self) -> None:
         graph = _graph()
+        ctx = TransformContext(record=_record())
 
-        await _index(_orchestrator(graph), TransformContext(record=_record()))
+        await _index(_orchestrator(graph), ctx)
 
-        assert graph.provider.update_node_fields_if_match.await_args.args[3] == {"currentRev": None}
-        assert graph.mapping == {"id": "vr-1", "record_doc_id": "doc-1", "currentRev": REV,
-                                 "previousRev": None, "manifestDocId": "doc-rev-1"}
+        run = ctx.settings[STORED_WRITE].run
+        assert graph.provider.update_node_fields_if_match.await_args.args[3] == {"storedRun": run, "currentRev": None}
+        assert graph.mapping == {
+            "id": "vr-1", "record_doc_id": "doc-1", "storedRun": run, "currentRev": REV,
+            "previousRev": None, "manifestDocId": "doc-rev-1", "currentRun": run,
+        }
 
     async def test_a_lost_race_leaves_the_pointer(self) -> None:
         graph = _graph({"id": "vr-1", "currentRev": OLD_REV})
@@ -411,35 +440,92 @@ class TestRevisionPointer:
         graph.provider.update_node_fields_if_match.assert_awaited_once()
         assert graph.mapping["currentRev"] == OLD_REV
 
-    async def test_a_run_the_record_has_left_does_not_move_the_pointer(self) -> None:
-        """A newer revision indexed meanwhile: the slower, older run must not point back at its rev."""
+    async def test_a_stored_write_the_mapping_has_left_does_not_move_the_pointer(self) -> None:
+        """Another write switched the mapping after this one's: its set must not become the pointer."""
         graph = _graph({"id": "vr-1", "currentRev": OLD_REV, "manifestDocId": "doc-old"})
-        reads = 0
-        original = graph._get
+        orch = _orchestrator(graph)
 
-        async def get(key: str, collection: str) -> dict[str, Any] | None:
-            nonlocal reads
-            doc = await original(key, collection)
-            if collection != MAPPING:
-                reads += 1
-                # The first read is the run's own; by the flip the record is on a newer rev.
-                if reads > 1 and doc is not None:
-                    doc["contentRev"] = "ffffffffffffffff"
-            return doc
+        async def switched_away(ctx: TransformContext) -> None:
+            assert graph.mapping is not None
+            graph.mapping["storedRun"] = f"{GENERATION}:another-writer"
 
-        graph.provider.get_document = AsyncMock(side_effect=get)
+        orch.blob_storage.apply = AsyncMock(side_effect=switched_away)
 
-        await _index(_orchestrator(graph), TransformContext(record=_record()))
+        await _index(orch, TransformContext(record=_record()))
 
-        graph.provider.update_node_fields_if_match.assert_not_awaited()
+        graph.provider.update_node_fields_if_match.assert_awaited_once()
         assert graph.mapping["currentRev"] == OLD_REV
+        assert "currentRun" not in graph.mapping
 
     async def test_already_current_is_left_alone(self) -> None:
         graph = _graph({"id": "vr-1", "currentRev": REV, "manifestDocId": "doc-rev-1"})
+        orch = _orchestrator(graph)
+        real_apply = orch.blob_storage.apply.side_effect
 
-        await _index(_orchestrator(graph), TransformContext(record=_record()))
+        async def apply(ctx: TransformContext) -> None:
+            await real_apply(ctx)
+            graph.mapping["currentRun"] = ctx.settings[STORED_WRITE].run  # type: ignore[index]
+
+        orch.blob_storage.apply = AsyncMock(side_effect=apply)
+
+        await _index(orch, TransformContext(record=_record()))
 
         graph.provider.update_node_fields_if_match.assert_not_awaited()
+
+    async def test_the_pointer_moves_before_the_vectors_and_completed(self) -> None:
+        """Right after the set: a crash between the flip and the vectors leaves a record that is served
+        from its set (the stored record is the same write) and is indexed again."""
+        order: list[str] = []
+        graph = _graph()
+        orch = _orchestrator(graph)
+        graph.provider.update_node_fields_if_match = AsyncMock(
+            side_effect=lambda *a, **k: order.append("flip") or True
+        )
+        orch.vector_store.apply = AsyncMock(side_effect=lambda ctx: order.append("vectors") or True)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert order == ["flip", "vectors"]
+
+    async def test_an_in_place_write_writes_no_set_and_no_pointer(self) -> None:
+        graph = _graph()
+        orch = _orchestrator(graph)
+
+        await _index(orch, TransformContext(record=_record()), layout="in_place")
+
+        orch.artifact_writer.write_revision.assert_not_awaited()
+        graph.provider.update_node_fields_if_match.assert_not_awaited()
+
+    async def test_a_superseded_stored_write_writes_no_set_and_no_pointer(self) -> None:
+        graph = _graph()
+        orch = _orchestrator(graph)
+
+        async def superseded(ctx: TransformContext) -> None:
+            ctx.settings["run_superseded"] = True
+
+        orch.blob_storage.apply = AsyncMock(side_effect=superseded)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        orch.artifact_writer.write_revision.assert_not_awaited()
+        graph.provider.update_node_fields_if_match.assert_not_awaited()
+        orch.vector_store.apply.assert_awaited_once()
+
+    async def test_a_run_with_no_generation_writes_no_set(self) -> None:
+        """A flag on but the generation missing: the layout is copy-on-write, the run is a ``none`` run
+        that is never served, so its set would be wasted."""
+        graph = _graph()
+        orch = _orchestrator(graph)
+        settings = ArtifactSettings("cow", None)
+
+        with patch.object(sink_module, "artifact_settings", AsyncMock(return_value=settings)), patch.object(
+            sink_module, "is_artifact_write_enabled", AsyncMock(return_value=True),
+        ):
+            ctx = TransformContext(record=_record())
+            await orch.index(ctx)
+
+        assert ctx.settings[STORED_WRITE].run.startswith("none:")
+        orch.artifact_writer.write_revision.assert_not_awaited()
 
     async def test_no_flip_without_a_manifest(self) -> None:
         graph = _graph()
@@ -447,14 +533,6 @@ class TestRevisionPointer:
         orch.artifact_writer.write_revision = AsyncMock(return_value=None)
 
         await _index(orch, TransformContext(record=_record()))
-
-        graph.provider.update_node_fields_if_match.assert_not_awaited()
-
-    async def test_no_flip_when_the_record_is_gone_before_completed(self) -> None:
-        graph = _graph()
-        graph.provider.batch_update_nodes = AsyncMock(return_value=False)
-
-        await _index(_orchestrator(graph), TransformContext(record=_record()))
 
         graph.provider.update_node_fields_if_match.assert_not_awaited()
 
@@ -483,11 +561,12 @@ async def test_end_to_end_the_stored_record_keeps_images_inline(storage: FakeSto
     logger = logging.getLogger("test-sink-artifacts")
     orch.artifact_writer = ArtifactWriter(NodeArtifactStore(storage.blob_storage(), logger), logger)
     stored_blocks: list[dict] = []
-    orch.blob_storage.apply = AsyncMock(
-        side_effect=lambda ctx: stored_blocks.extend(
-            b.model_dump(mode="json") for b in ctx.record.block_containers.blocks
-        )
-    )
+    async def apply(ctx: TransformContext) -> None:
+        stored_blocks.extend(b.model_dump(mode="json") for b in ctx.record.block_containers.blocks)
+        assert graph.mapping is not None
+        graph.mapping["storedRun"] = ctx.settings[STORED_WRITE].run
+
+    orch.blob_storage.apply = AsyncMock(side_effect=apply)
     image = Block(index=0, type=BlockType.IMAGE, data={"uri": PNG_URI})
 
     await _index(orch, TransformContext(record=_record([image])))

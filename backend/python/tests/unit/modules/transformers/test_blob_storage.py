@@ -8,7 +8,13 @@ import aiohttp
 import pytest
 from yarl import URL
 
-from app.modules.transformers.blob_storage import STORED_REV, BlobStorage, StorageLookupUnavailableError
+from app.modules.transformers.blob_storage import (
+    STORED_REV,
+    BlobStorage,
+    DocumentRetiredError,
+    StorageDocumentNotFoundError,
+    StorageLookupUnavailableError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +37,22 @@ def _make_blob_storage(
     )
     # No document left unmapped by an earlier attempt, unless a test says so.
     bs._find_unmapped_record_document = AsyncMock(return_value=None)
+    # The mapping node, the switch of the mapping, the record re-check and the retire mark
+    # are the graph and storage seams of a stored write; a test that cares replaces them.
+    bs._mapping_node = AsyncMock(return_value=None)
+    bs._switch_mapping = AsyncMock(return_value=True)
+    bs._record_still_exists = AsyncMock(return_value=True)
+    bs._retire_document = AsyncMock()
+    bs._get_document_row = AsyncMock(return_value=None)
     return bs
+
+
+def _node(document_id: str, **fields) -> dict:
+    """A mapping node whose last stored write was in place."""
+    return {
+        "id": "vr-1", "documentId": document_id, "record_doc_id": document_id,
+        "storedRun": "none:previous", "switchSeq": 3, **fields,
+    }
 
 
 def _make_record_mock(org_id="org-1", record_id="rec-1", virtual_record_id="vr-1"):
@@ -303,40 +324,42 @@ class TestBlobStorageApply:
     """Tests for BlobStorage.apply (main transform)."""
 
     @pytest.mark.asyncio
-    async def test_apply_calls_save_record(self):
-        """apply should call save_record_to_storage and store_virtual_record_mapping."""
+    async def test_apply_calls_save_record_and_names_the_document_on_the_mapping(self):
+        """A first write creates the document and the mapping node, by create-if-absent (no upsert)."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id-123", 4096))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {}
 
         result = await bs.apply(ctx)
 
         bs.save_record_to_storage.assert_awaited_once()
-        bs.store_virtual_record_mapping.assert_awaited_once_with(
-            "org-1", "vr-1", "doc-id-123", 4096
-        )
+        bs._switch_mapping.assert_awaited_once()
+        node, fields = bs._switch_mapping.await_args.args[2:4]
+        assert node is None
+        assert (fields["documentId"], fields["record_doc_id"], fields["fileSizeBytes"]) == ("doc-id-123", "doc-id-123", 4096)
+        assert fields["switchSeq"] == 1 and fields["switchDoc"] == "doc-id-123"
+        assert fields["updatedAt"] == fields["switchUpdatedAt"]
+        assert fields["storedRun"].startswith("none:")
+        bs.graph_provider.batch_upsert_nodes.assert_not_called()
         assert result.record == record
 
     @pytest.mark.asyncio
-    async def test_apply_no_document_id_skips_mapping(self):
-        """When save_record_to_storage returns None doc id, skip mapping."""
+    async def test_apply_without_a_document_id_is_an_error(self):
+        """A create that answers no document id is never named on the mapping."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=(None, None))
-        bs.store_virtual_record_mapping = AsyncMock()
-
-        record = _make_record_mock()
         ctx = MagicMock()
-        ctx.record = record
+        ctx.record = _make_record_mock()
+        ctx.settings = {}
 
-        await bs.apply(ctx)
+        with pytest.raises(RuntimeError, match="no document id"):
+            await bs.apply(ctx)
 
-        bs.store_virtual_record_mapping.assert_not_awaited()
+        bs._switch_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_apply_no_graph_provider_skips_mapping(self):
@@ -344,54 +367,52 @@ class TestBlobStorageApply:
         bs = _make_blob_storage(graph_provider=None)
         bs.graph_provider = None
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id-123", 4096))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {}
 
         await bs.apply(ctx)
 
-        bs.store_virtual_record_mapping.assert_not_awaited()
+        bs._switch_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_apply_propagates_save_error(self):
         """If save_record_to_storage raises, apply should propagate."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(side_effect=Exception("upload failed"))
 
         record = _make_record_mock()
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {}
 
         with pytest.raises(Exception, match="upload failed"):
             await bs.apply(ctx)
 
     @pytest.mark.asyncio
-    async def test_apply_non_versioned_existing_doc_falls_back_to_create(self):
-        """If legacy mapped doc is non-versioned, apply should create a replacement document."""
+    async def test_apply_a_missing_mapped_document_is_replaced_not_retried(self):
+        """A 404 on the mapped document stores a replacement and switches to it; nothing is deleted."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "legacy-doc"}
-        )
-        bs.update_record_buffer = AsyncMock(
-            side_effect=Exception("This document cannot be versioned")
-        )
+        bs._mapping_node = AsyncMock(return_value=_node("legacy-doc"))
+        bs.update_record_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
         bs.save_record_to_storage = AsyncMock(return_value=("new-doc", 2048))
-        bs.store_virtual_record_mapping = AsyncMock()
+        bs._delete_replaced_document = AsyncMock()
 
         record = _make_record_mock()
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {}
 
         await bs.apply(ctx)
 
-        assert bs.update_record_buffer.await_count == 2
+        assert bs.update_record_buffer.await_count == 1
         bs.save_record_to_storage.assert_awaited_once()
-        bs.store_virtual_record_mapping.assert_awaited_once_with(
-            "org-1", "vr-1", "new-doc", 2048
-        )
+        bs._delete_replaced_document.assert_not_awaited()
+        fields = bs._switch_mapping.await_args.args[3]
+        assert fields["documentId"] == "new-doc"
+        assert [e["doc"] for e in fields["retired"]] == ["legacy-doc"]
 
 
 class TestStoredRevision:
@@ -406,72 +427,36 @@ class TestStoredRevision:
         return ctx
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("kwargs", "expected"), [
-        ({"stored_rev": "rev-b"}, {"storedRev": "rev-b"}),
-        ({"stored_rev": None}, {"storedRev": None}),
-        ({}, {}),
-    ])
-    async def test_the_mapping_document_carries_the_revision_only_when_given(
-        self, kwargs: dict, expected: dict,
-    ) -> None:
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", 10, **kwargs)
-
-        mapping_doc = graph_provider.batch_upsert_nodes.call_args[0][0][0]
-        assert {k: v for k, v in mapping_doc.items() if k == "storedRev"} == expected
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("rev", ["rev-b", None])
     async def test_a_new_upload_maps_the_revision_from_the_context(self, rev: str | None) -> None:
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-1", 10))
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
 
         await bs.apply(self._ctx({STORED_REV: rev}))
 
-        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-1", 10, stored_rev=rev)
+        assert bs._switch_mapping.await_args.args[3]["storedRev"] == rev
 
     @pytest.mark.asyncio
     async def test_an_update_in_place_maps_the_revision_from_the_context(self) -> None:
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs._live_holders = AsyncMock(return_value=["rec-1"])
         bs.update_record_buffer = AsyncMock(return_value=("doc-1", 10))
         bs._get_current_document_path = AsyncMock(return_value=None)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
 
         await bs.apply(self._ctx({STORED_REV: "rev-b"}))
 
-        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-1", 10, stored_rev="rev-b")
+        fields = bs._switch_mapping.await_args.args[3]
+        assert (fields["documentId"], fields["storedRev"], fields["fileSizeBytes"]) == ("doc-1", "rev-b", 10)
 
     @pytest.mark.asyncio
     async def test_without_the_setting_the_revision_is_left_as_it_is(self) -> None:
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-1", 10))
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
 
         await bs.apply(self._ctx({}))
 
-        assert "stored_rev" not in bs.store_virtual_record_mapping.await_args.kwargs
-
-    @pytest.mark.asyncio
-    async def test_a_classification_rewrite_leaves_the_revision_as_it_is(self) -> None:
-        bs = _make_blob_storage()
-        bs.get_record_from_storage = AsyncMock(return_value={"id": "rec-1", "block_containers": {}})
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
-        bs._live_holders = AsyncMock(return_value=["rec-1"])
-        bs.update_record_buffer = AsyncMock(return_value=("doc-1", 10))
-        bs._get_current_document_path = AsyncMock(return_value=None)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
-
-        await bs.save_semantic_metadata("org-1", "rec-1", "vr-1", {"summary": "s"})
-
-        assert "stored_rev" not in bs.store_virtual_record_mapping.await_args.kwargs
+        assert "storedRev" not in bs._switch_mapping.await_args.args[3]
 
 
 # ===================================================================
@@ -575,7 +560,6 @@ class TestBlobStorageApplyDeep:
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 2048))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = MagicMock()
         record.org_id = "org-1"
@@ -602,7 +586,6 @@ class TestBlobStorageApplyDeep:
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = MagicMock()
         record.org_id = "org-1"
@@ -719,6 +702,7 @@ class TestGetRecordFromStorage:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
 
         record_data = {"id": "rec-1", "content": "hello"}
         mock_resp = AsyncMock()
@@ -750,6 +734,7 @@ class TestGetRecordFromStorage:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
 
         mock_resp = AsyncMock()
         mock_resp.status = 404
@@ -930,58 +915,6 @@ class TestDownloadChunkWithRetry:
 
 # ===================================================================
 # store_virtual_record_mapping
-# ===================================================================
-
-class TestStoreVirtualRecordMapping:
-    """Tests for BlobStorage.store_virtual_record_mapping."""
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", 4096)
-        assert result is True
-        # Verify the mapping document shape
-        call_args = graph_provider.batch_upsert_nodes.call_args
-        mapping_doc = call_args[0][0][0]
-        assert mapping_doc["id"] == "vr-1"
-        assert mapping_doc["orgId"] == "org-1"
-        assert mapping_doc["documentId"] == "doc-1"
-        assert mapping_doc["fileSizeBytes"] == 4096
-
-    @pytest.mark.asyncio
-    async def test_success_without_file_size(self):
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
-        assert result is True
-        call_args = graph_provider.batch_upsert_nodes.call_args
-        mapping_doc = call_args[0][0][0]
-        assert "fileSizeBytes" not in mapping_doc
-
-    @pytest.mark.asyncio
-    async def test_upsert_returns_false_raises(self):
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(return_value=False)
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        with pytest.raises(Exception, match="Failed to store virtual record mapping"):
-            await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
-
-    @pytest.mark.asyncio
-    async def test_graph_provider_exception_propagates(self):
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db error"))
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        with pytest.raises(RuntimeError, match="db error"):
-            await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
-
-
 # ===================================================================
 # get_document_id_by_virtual_record_id
 # ===================================================================
@@ -1296,6 +1229,7 @@ class TestGetRecordFromStorageSignedUrl:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123", "fileSizeBytes": 100}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
 
         record_data = {"id": "rec-1", "content": "hello"}
 
@@ -1346,6 +1280,7 @@ class TestGetRecordFromStorageSignedUrl:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
 
         original_record = {"id": "rec-1", "data": "compressed content"}
         # Simulate compression pipeline: msgpack -> zstd -> base64
@@ -1388,6 +1323,7 @@ class TestGetRecordFromStorageSignedUrl:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-123", "fileSizeBytes": 500}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-123"))
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -1611,7 +1547,6 @@ class TestBlobStorageApplyFullFlow:
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-id", 2048))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = MagicMock()
         record.org_id = "org-1"
@@ -1877,25 +1812,6 @@ class TestCreatePlaceholderDeep:
 # ===================================================================
 # store_virtual_record_mapping — with file_size=None
 # ===================================================================
-
-class TestStoreVirtualRecordMappingDeep:
-    """Deeper tests for store_virtual_record_mapping."""
-
-    @pytest.mark.asyncio
-    async def test_success_with_none_file_size(self):
-        """File size of None means fileSizeBytes is not included in mapping."""
-        graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", None)
-        assert result is True
-        call_args = graph_provider.batch_upsert_nodes.call_args
-        mapping_doc = call_args[0][0][0]
-        assert "fileSizeBytes" not in mapping_doc
-
-
-# ===================================================================
 # _download_with_range_requests — multiple chunks
 # ===================================================================
 
@@ -1972,6 +1888,7 @@ class TestApplyStoragePath:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
         )
@@ -1979,7 +1896,6 @@ class TestApplyStoragePath:
             return_value="org-1/PipesHub/records/vr-1"
         )
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         record.org_id = "org-1"
@@ -2002,6 +1918,7 @@ class TestApplyStoragePath:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/NewFolder/doc.pdf"
         )
@@ -2009,7 +1926,6 @@ class TestApplyStoragePath:
             return_value="org-1/PipesHub/records/conn-1/NewFolder/doc.pdf"
         )
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         record.org_id = "org-1"
@@ -2030,12 +1946,12 @@ class TestApplyStoragePath:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
         )
         bs._get_current_document_path = AsyncMock(return_value=None)
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         record.org_id = "org-1"
@@ -2056,12 +1972,12 @@ class TestApplyStoragePath:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-existing"))
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
         )
-        bs.update_record_buffer = AsyncMock(side_effect=Exception("buffer update failed"))
+        bs.update_record_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
         bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         record.org_id = "org-1"
@@ -2085,7 +2001,6 @@ class TestApplyStoragePath:
             return_value="records/conn-1/Finance/doc.pdf"
         )
         bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
 
         record = _make_record_mock()
         record.org_id = "org-1"
@@ -2105,6 +2020,7 @@ class TestGetActualContentPath:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-1"}
         )
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs._get_current_document_path = AsyncMock(
             return_value="org-1/PipesHub/records/conn-1/Finance/doc.pdf"
         )
@@ -2150,6 +2066,7 @@ class TestGetActualContentPath:
 
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs._get_auth_and_config = AsyncMock(return_value=({}, "http://node", "local"))
         session = MagicMock()
         session.get = MagicMock(return_value=_FakeResponse(status))
@@ -2161,6 +2078,7 @@ class TestGetActualContentPath:
     async def test_a_deleted_document_is_absent(self) -> None:
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs._get_auth_and_config = AsyncMock(return_value=({}, "http://node", "local"))
         session = MagicMock()
         session.get = MagicMock(return_value=_FakeResponse(404))
@@ -2375,92 +2293,56 @@ class TestApplyNeverDuplicatesStoredRecord:
         # Reading the failure as "no document yet" stored a second copy and
         # left the first one unreferenced on disk, where grep still finds it.
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        bs._mapping_node = AsyncMock(side_effect=RuntimeError("graph down"))
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 10))
-        bs.store_virtual_record_mapping = AsyncMock()
         ctx = MagicMock()
         ctx.record = _make_record_mock()
+        ctx.settings = {}
 
         with pytest.raises(RuntimeError, match="graph down"):
             await bs.apply(ctx)
 
         bs.save_record_to_storage.assert_not_awaited()
-        bs.store_virtual_record_mapping.assert_not_awaited()
+        bs._switch_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_unmapped_document_from_an_interrupted_attempt_is_reused(self) -> None:
+    async def test_a_document_an_interrupted_attempt_left_is_not_adopted(self) -> None:
+        """A write into a document no mapping names could land in one a concurrent writer is
+        about to name. The write stores a document of its own; the leftover is a stray."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs._find_unmapped_record_document = AsyncMock(return_value="doc-left-behind")
-        bs.update_record_buffer = AsyncMock(return_value=("doc-left-behind", 42))
-        bs._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/c/a")
-        bs.save_record_to_storage = AsyncMock()
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+        bs.update_record_buffer = AsyncMock()
+        bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 42))
         ctx = MagicMock()
         ctx.record = _make_record_mock()
         ctx.settings = {}
 
         await bs.apply(ctx)
 
-        bs.save_record_to_storage.assert_not_awaited()
-        bs.update_record_buffer.assert_awaited_once()
-        assert bs.update_record_buffer.call_args.args[1] == "doc-left-behind"
-        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-left-behind", 42)
-        assert ctx.settings["storage_path"] == "records/c/a"
+        bs._find_unmapped_record_document.assert_not_awaited()
+        bs.update_record_buffer.assert_not_awaited()
+        bs.save_record_to_storage.assert_awaited_once()
+        assert bs._switch_mapping.await_args.args[3]["documentId"] == "doc-new"
 
     @pytest.mark.asyncio
-    async def test_a_reused_unmapped_copy_on_a_stale_path_is_relocated(self) -> None:
+    async def test_a_lost_first_write_is_retried_into_the_document_that_won(self) -> None:
+        """Two first writes: the loser's create-if-absent is refused, it re-reads and overwrites the winner's document."""
         bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
-        bs._find_unmapped_record_document = AsyncMock(return_value="doc-left-behind")
-        bs._build_hierarchical_storage_path = AsyncMock(return_value="records/c/Folder/a")
-        bs.update_record_buffer = AsyncMock(return_value=("doc-left-behind", 42))
-        bs._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/vr-1")
+        bs._mapping_node = AsyncMock(side_effect=[None, _node("doc-winner")])
+        bs._switch_mapping = AsyncMock(side_effect=[False, True, True])
+        bs.save_record_to_storage = AsyncMock(return_value=("doc-loser", 7))
+        bs.update_record_buffer = AsyncMock(return_value=("doc-winner", 9))
         bs._live_holders = AsyncMock(return_value=["rec-1"])
-        bs._relocate_stored_copy = AsyncMock(return_value="records/c/Folder/a")
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+        bs._get_current_document_path = AsyncMock(return_value=None)
         ctx = MagicMock()
         ctx.record = _make_record_mock()
         ctx.settings = {}
-
-        await bs.apply(ctx)
-
-        bs._relocate_stored_copy.assert_awaited_once_with(
-            "org-1", "rec-1", "vr-1", "records/vr-1", "records/c/Folder/a",
-            holders=["rec-1"], document_id="doc-left-behind",
-        )
-        assert ctx.settings["storage_path"] == "records/c/Folder/a"
-
-    @pytest.mark.asyncio
-    async def test_unmapped_document_gone_meanwhile_falls_back_to_create(self) -> None:
-        from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
-
-        bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
-        bs._find_unmapped_record_document = AsyncMock(return_value="doc-gone")
-        bs.update_record_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
-        bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 7))
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
-        ctx = MagicMock()
-        ctx.record = _make_record_mock()
 
         await bs.apply(ctx)
 
         bs.save_record_to_storage.assert_awaited_once()
-        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-new", 7)
-
-    @pytest.mark.asyncio
-    async def test_unmapped_lookup_failure_fails_the_write(self) -> None:
-        bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
-        bs._find_unmapped_record_document = AsyncMock(side_effect=RuntimeError("storage down"))
-        bs.save_record_to_storage = AsyncMock()
-        ctx = MagicMock()
-        ctx.record = _make_record_mock()
-
-        with pytest.raises(RuntimeError):
-            await bs.apply(ctx)
-        bs.save_record_to_storage.assert_not_awaited()
+        assert bs.update_record_buffer.call_args.args[1] == "doc-winner"
+        assert bs._switch_mapping.await_args.args[3]["documentId"] == "doc-winner"
 
 
 class TestFindUnmappedRecordDocument:
@@ -2558,9 +2440,9 @@ class TestSharedContentKeepsItsOwner:
     async def test_apply_writes_the_merged_copy(self) -> None:
         bs = self._bs(["rec-x", "rec-1"], {"id": "rec-x", "record_name": "Owner"})
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs.update_record_buffer = AsyncMock(return_value=("doc-1", 5))
         bs._get_current_document_path = AsyncMock(return_value=None)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
         ctx = MagicMock()
         ctx.record = _make_record_mock(record_id="rec-1", virtual_record_id="vr-1")
         await bs.apply(ctx)
@@ -2601,9 +2483,9 @@ class TestRelocateOnReindex:
         bs.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=list(holders))
         bs._build_hierarchical_storage_path = AsyncMock(return_value=computed)
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._mapping_node = AsyncMock(return_value=_node("doc-1"))
         bs.update_record_buffer = AsyncMock(return_value=("doc-1", 5))
         bs._get_current_document_path = AsyncMock(return_value=stored_at)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
         bs._get_auth_and_config = AsyncMock(return_value=({}, "http://node", "local"))
         return bs
 
@@ -2668,7 +2550,7 @@ class TestRelocateOnReindex:
                    new_callable=AsyncMock, side_effect=RuntimeError("503")):
             await bs.apply(ctx)
         assert ctx.settings["storage_path"] == "records/vr-1"
-        bs.store_virtual_record_mapping.assert_awaited_once()
+        bs._switch_mapping.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_never_moved_into_its_own_folder(self) -> None:
@@ -2696,18 +2578,24 @@ class TestRelocateOnReindex:
     @pytest.mark.asyncio
     async def test_a_replacement_for_shared_content_is_stored_on_the_owners_path(self) -> None:
         bs = self._bs(holders=("rec-0", "rec-1"), stored_at="org-1/PipesHub/records/conn0/Owner/doc")
-        bs.update_record_buffer = AsyncMock(side_effect=RuntimeError("write failed"))
+        bs.update_record_buffer = AsyncMock(side_effect=DocumentRetiredError("retired"))
         bs.get_record_from_storage = AsyncMock(return_value={"id": "rec-0"})
         bs.save_record_to_storage = AsyncMock(return_value=("doc-2", 5))
         bs._delete_replaced_document = AsyncMock()
-        with patch("app.modules.transformers.blob_storage.asyncio.sleep", new_callable=AsyncMock):
-            await bs.apply(self._ctx())
+        bs._get_document_row = AsyncMock(return_value={
+            "documentPath": "org-1/PipesHub/records/conn0/Owner/doc",
+            "customMetadata": [{"key": "connectorId", "value": "conn0"}],
+        })
+        await bs.apply(self._ctx())
+        # A retired document's row still exists: the replacement takes its path and tags.
         assert bs.save_record_to_storage.call_args.kwargs["document_path"] == "records/conn0/Owner/doc"
+        assert bs.save_record_to_storage.call_args.kwargs["connector_id"] == "conn0"
+        bs._delete_replaced_document.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_new_copy_is_written_at_the_right_path_without_a_move(self) -> None:
         bs = self._bs()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+        bs._mapping_node = AsyncMock(return_value=None)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-9", 5))
         with patch("app.modules.transformers.blob_storage.post_move_tree", new_callable=AsyncMock) as move:
             await bs.apply(self._ctx())

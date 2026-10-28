@@ -1,7 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
 import { BaseError } from '../errors/base.error';
-import { HttpError } from '../errors/http.errors';
+import {
+  BadRequestError,
+  HttpError,
+  LargePayloadError,
+  UnsupportedMediaTypeError,
+} from '../errors/http.errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import {
   jsonResponse,
@@ -22,6 +27,44 @@ import {
  */
 const INFRASTRUCTURE_FAILURE_MESSAGE =
   "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help.";
+
+/**
+ * Maps a body-parser rejection to the 4xx it stands for. body-parser marks
+ * these with `type` and `expose`; without this they reach the unknown-error
+ * path and a malformed JSON body answers 500. Its own message quotes the body
+ * ("Unexpected token } in JSON at position 12"), so a fixed sentence replaces it.
+ */
+function bodyParserError(error: Error): HttpError | null {
+  const { type, expose } = error as Error & {
+    type?: unknown;
+    expose?: unknown;
+  };
+  if (expose !== true || typeof type !== 'string') {
+    return null;
+  }
+  switch (type) {
+    case 'entity.parse.failed':
+      return new BadRequestError('The request body is not valid JSON.');
+    case 'request.size.invalid':
+      return new BadRequestError(
+        'The request body does not match its Content-Length.',
+      );
+    case 'entity.too.large':
+      return new LargePayloadError('The request body is too large.');
+    case 'parameters.too.many':
+      return new LargePayloadError('The form body has too many fields.');
+    case 'encoding.unsupported':
+      return new UnsupportedMediaTypeError(
+        'The request body uses an unsupported content encoding.',
+      );
+    case 'charset.unsupported':
+      return new UnsupportedMediaTypeError(
+        'The request body uses an unsupported character set.',
+      );
+    default:
+      return null;
+  }
+}
 
 export class ErrorMiddleware {
   private static logger = Logger.getInstance();
@@ -67,8 +110,10 @@ export class ErrorMiddleware {
       }
 
       try {
-        if (error instanceof BaseError) {
-          this.handleBaseError(error, req, res);
+        const mapped =
+          error instanceof BaseError ? error : bodyParserError(error);
+        if (mapped) {
+          this.handleBaseError(mapped, req, res);
         } else {
           this.handleUnknownError(error, req, res);
         }

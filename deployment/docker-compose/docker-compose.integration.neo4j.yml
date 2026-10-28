@@ -77,6 +77,9 @@ services:
       # Signs service tokens. Fixed so the storage suite can mint tokens this
       # stack accepts; the app only reads it on the first boot of a fresh volume.
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
+      # Signs user sessions. Fixed for the same reason, so the security suite
+      # can sign an already-expired session token and check it is refused.
+      - JWT_SECRET=${JWT_SECRET:-pipeshub-integration-jwt-secret-test-only}
       # Empty unless the Gmail suites run (gmail-sim profile): then the Gmail connectors, and only they,
       # call the Gmail simulator instead of Google (integration-tests/connectors/gmail/DESIGN.md).
       - GMAIL_GOOGLE_API_BASE_URL=${GMAIL_GOOGLE_API_BASE_URL:-}
@@ -162,7 +165,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read,project:read,project:write,project:delete}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -170,6 +173,14 @@ services:
       # One minute rather than twenty, so the expired-link test waits a minute, not
       # twenty. Only forgot-password links use it; invites have their own lifetime.
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
+      # The trash purge, shortened from every 14 days on records 14 days old, so
+      # resilience/test_soft_delete_trash.py can watch it run. The minimum age
+      # stays above the few minutes the other trash tests keep a record in the
+      # trash, or the purge would take it out from under them.
+      - SOFT_DELETE_PURGE_INTERVAL_SECONDS=${SOFT_DELETE_PURGE_INTERVAL_SECONDS:-0}
+      - SOFT_DELETE_PURGE_MIN_AGE_SECONDS=${SOFT_DELETE_PURGE_MIN_AGE_SECONDS:-240}
+      - SOFT_DELETE_PURGE_TICK_SECONDS=${SOFT_DELETE_PURGE_TICK_SECONDS:-15}
+      - SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS=${SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS:-30}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -372,6 +383,9 @@ services:
     command: ["notion"]
     environment:
       CONNSIM_SOURCES: notion
+      # Only the listed tokens are accepted, as on Notion: by default any unknown token acts as
+      # the default integration, so the suite's invalid-token case could never fail to connect.
+      CONNSIM_NOTION_AUTH: strict
       CONNSIM_PACK: /pack
       CONNSIM_SEED: "42"
       CONNSIM_BUILD_TIME_MS: "1767225600000"

@@ -1,6 +1,7 @@
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
+import { deletesByName } from '@/app/(main)/workspace/mcp-servers/tool-rules';
 import type { ScopedToolGroupRow } from './store';
 
 /** Toolset / MCP group row built from the caller's own catalog (my-toolsets, my-mcp-servers). */
@@ -41,11 +42,14 @@ export function buildCatalogToolGroups(toolsets: BuilderSidebarToolset[]): Catal
     const fullNames = rawFullNames.map((fn) => `${groupDiscriminator}:${fn}`);
 
     const toolDescriptions: Record<string, string> = {};
-    rawFullNames.forEach((_rawFn, j) => {
+    const toolKinds: Record<string, 'destructive'> = {};
+    rawFullNames.forEach((rawFn, j) => {
       const key = fullNames[j]!;
       const t = (ts.tools || [])[j];
       const d = t && typeof t.description === 'string' ? t.description.trim() : '';
       if (d) toolDescriptions[key] = d;
+      // Toolsets carry no read/write metadata; only a deleting name is known to be destructive.
+      if (deletesByName(t?.name || rawFn.slice(rawFn.indexOf('.') + 1))) toolKinds[key] = 'destructive';
     });
 
     const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
@@ -58,6 +62,7 @@ export function buildCatalogToolGroups(toolsets: BuilderSidebarToolset[]): Catal
       iconPath: ts.iconPath?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      ...(Object.keys(toolKinds).length ? { toolKinds } : {}),
       isAuthenticated: Boolean(ts.isAuthenticated),
     });
   }
@@ -80,9 +85,12 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
     const fullNames: string[] = [];
     const toolDescriptions: Record<string, string> = {};
     const toolLabels: Record<string, string> = {};
+    const toolKinds: Record<string, 'read' | 'write' | 'destructive'> = {};
     for (const tool of tools) {
       const key = `${entry._id}:${tool.namespacedName.trim()}`;
       fullNames.push(key);
+      const kind = tool.kind ?? (deletesByName(tool.name || '') ? 'destructive' : undefined);
+      if (kind) toolKinds[key] = kind;
       const description = typeof tool.description === 'string' ? tool.description.trim() : '';
       if (description) toolDescriptions[key] = description;
       // The server's own name; `namespacedName` carries an `mcp_{server}_` prefix.
@@ -97,6 +105,7 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
       toolLabels,
+      ...(Object.keys(toolKinds).length ? { toolKinds } : {}),
       isAuthenticated: Boolean(entry.isAuthenticated),
     });
   }

@@ -1,4 +1,4 @@
-"""The storage-release finisher completes a knowledge-base delete that is stuck DELETING (T42f)."""
+"""The storage-release finisher completes a knowledge-base delete that is stuck DELETING."""
 
 from __future__ import annotations
 

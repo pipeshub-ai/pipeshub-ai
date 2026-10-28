@@ -40,7 +40,11 @@
     "tabArchived": "संग्रहित",
     "archivedEmptyState": "कोई संग्रहित प्रोजेक्ट नहीं",
     "archivedEmptyStateHint": "आपके द्वारा संग्रहित प्रोजेक्ट यहाँ दिखाई देंगे।",
-    "actionsLabel": "प्रोजेक्ट क्रियाएँ"
+    "actionsLabel": "प्रोजेक्ट क्रियाएँ",
+    "noSearchResults": "“{{query}}” से कोई प्रोजेक्ट मेल नहीं खाता",
+    "noSearchResultsHint": "कोई दूसरा नाम आज़माएँ या खोज साफ़ करें।",
+    "clearSearch": "खोज साफ़ करें",
+    "cardActionsLabel": "{{name}} के लिए क्रियाएँ"
   },
   "timeGroup": {
     "today": "आज",
@@ -647,7 +651,9 @@
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
       "passwordProtected": "पासवर्ड से सुरक्षित",
       "skipped": "छोड़ा गया",
-      "pending": "लंबित"
+      "pending": "लंबित",
+      "emptyFileZeroBytes": "खाली फ़ाइल — इंडेक्स करने के लिए कुछ नहीं (0 बाइट)",
+      "emptyNoContent": "खाली — इंडेक्स करने के लिए कोई टेक्स्ट नहीं मिला"
     },
     "allRecordsBusy_one": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
     "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
@@ -687,6 +693,10 @@
     "createDialog": {
       "titlePlaceholder": "जैसे इंजीनियरिंग",
       "descriptionPlaceholder": "जैसे डेव टीम के दस्तावेज़"
+    },
+    "nameRules": {
+      "folderSeparator": "फ़ोल्डर के नाम में \"/\" या \"\\\" नहीं हो सकता।",
+      "collectionExists": "आपके पास पहले से \"{{name}}\" नाम का संग्रह है। कोई दूसरा नाम चुनें।"
     }
   },
   "connectorTypes": {
@@ -1190,7 +1200,6 @@
         "connectorsStatusNone": "कोई नहीं",
         "connectorsStatusCount_one": "{{count}} कनेक्टेड",
         "connectorsStatusCount_other": "{{count}} कनेक्टेड",
-        "toolsStatusDefault": "डिफ़ॉल्ट",
         "toolsStatusCount_one": "{{count}} सक्षम",
         "toolsStatusCount_other": "{{count}} सक्षम",
         "membersStatusOnlyYou": "केवल आप",
@@ -1198,7 +1207,20 @@
         "suggestPlanWork": "किसी काम की योजना बनाएँ",
         "suggestWriteInstructions": "प्रोजेक्ट के निर्देश लिखें",
         "suggestSummariseDocumentPrompt": "इस प्रोजेक्ट की फ़ाइलों में सबसे महत्वपूर्ण दस्तावेज़ का सारांश दें।",
-        "suggestPlanWorkPrompt": "इस प्रोजेक्ट के लिए किसी काम की योजना बनाने में मेरी मदद करें। इसे ठोस अगले चरणों में बाँटें।"
+        "suggestPlanWorkPrompt": "इस प्रोजेक्ट के लिए किसी काम की योजना बनाने में मेरी मदद करें। इसे ठोस अगले चरणों में बाँटें।",
+        "visibilityShared": "{{members}} के साथ साझा",
+        "visibilityPrivateOwner": "स्वामी के लिए निजी",
+        "toolsStatusNone": "कोई सक्षम नहीं",
+        "toolsSubtitle": "इस प्रोजेक्ट की चैट केवल वही टूल उपयोग कर सकती हैं जिन्हें आप यहाँ चुनते हैं।",
+        "toolKind": {
+          "read": "डेटा पढ़ता है",
+          "write": "बदलाव करता है",
+          "destructive": "हटाता है या पूर्ववत नहीं हो सकता",
+          "unknown": "अन्य"
+        },
+        "toolNeedsApproval": "स्वीकृति आवश्यक",
+        "toolNeedsApprovalHint": "यह टूल डेटा हटा सकता है। प्रोजेक्ट चैट में यह किसी की स्वीकृति के बाद ही चलता है।",
+        "indexingStatusLabel": "इंडेक्सिंग: {{status}}"
       },
       "moveDialog": {
         "title": "प्रोजेक्ट में ले जाएँ",
@@ -1209,16 +1231,71 @@
       },
       "deleteDialog": {
         "title": "क्या यह प्रोजेक्ट हटाना है?",
-        "description": "प्रोजेक्ट हटा दिया जाएगा और चैट अनलिंक हो जाएँगी। चैट स्वयं हटाई नहीं जाएँगी।",
+        "description": "प्रोजेक्ट हटाना पूर्ववत नहीं किया जा सकता:",
         "confirm": "प्रोजेक्ट हटाएँ",
         "deleting": "हटाया जा रहा है…",
-        "failed": "प्रोजेक्ट हटाने में विफल"
+        "failed": "प्रोजेक्ट हटाने में विफल",
+        "filesDeleted": "प्रोजेक्ट में अपलोड की गई फ़ाइलें स्थायी रूप से हटा दी जाती हैं।",
+        "membersLoseAccess": "जिनके साथ यह साझा है, वे सभी पहुँच खो देते हैं।",
+        "chatsKept": "चैट बनी रहती हैं, लेकिन अब किसी प्रोजेक्ट का हिस्सा नहीं रहतीं।"
       },
       "roles": {
         "owner": "स्वामी",
         "editor": "संपादक",
         "viewer": "दर्शक"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "स्वामी",
+          "description": "प्रोजेक्ट बनाया और तय करते हैं कि इसे कौन उपयोग कर सकता है"
+        },
+        "editor": {
+          "label": "संपादित कर सकते हैं",
+          "description": "नाम, निर्देश, फ़ाइलें, कनेक्टर और टूल बदलें, और प्रोजेक्ट में चैट करें"
+        },
+        "viewer": {
+          "label": "देख सकते हैं",
+          "description": "प्रोजेक्ट खोलें और उसकी फ़ाइलों और टूल के साथ चैट करें"
+        }
+      },
+      "unknownMember": "अज्ञात सदस्य",
+      "unknownTeam": "अज्ञात टीम",
+      "allMembersTeam": "आपके संगठन में सभी",
+      "ownerCannotChange": "प्रोजेक्ट स्वामी की पहुँच यहाँ नहीं बदली जा सकती।",
+      "sharingSettings": {
+        "saved": "साझाकरण सेटिंग सहेजी गईं",
+        "saveFailed": "साझाकरण सेटिंग सहेजी नहीं जा सकीं",
+        "visibilityLabel": "यह प्रोजेक्ट कौन ढूँढ सकता है",
+        "visibilityPrivate": "केवल वे लोग जिनके साथ यह साझा है",
+        "visibilityOrg": "आपके संगठन में सभी",
+        "visibilityPrivateHint": "केवल आप और नीचे दिए गए लोग या टीमें इसे खोल सकते हैं।",
+        "visibilityOrgHint": "आपके संगठन में कोई भी इसे ढूँढ और खोल सकता है।",
+        "chatSharingLabel": "इस प्रोजेक्ट में नई चैट",
+        "chatSharingPrivate": "शुरू करने वाले के लिए निजी",
+        "chatSharingMembers": "प्रोजेक्ट सदस्यों के साथ साझा",
+        "chatSharingPrivateHint": "हर चैट तब तक निजी रहती है जब तक उसका लेखक उसे साझा न करे।",
+        "chatSharingMembersHint": "सदस्य नई चैट देख सकते हैं; लेखक अब भी किसी चैट को निजी बना सकता है।"
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "प्रोजेक्ट विवरण संपादित करें",
+        "saved": "प्रोजेक्ट विवरण सहेजा गया",
+        "saveFailed": "प्रोजेक्ट विवरण सहेजा नहीं जा सका"
+      },
+      "editDetails": "नाम और विवरण संपादित करें",
+      "leaveProject": "प्रोजेक्ट छोड़ें",
+      "leaveDialog": {
+        "title": "{{name}} छोड़ें?",
+        "description": "आप इस प्रोजेक्ट और उसकी फ़ाइलों तक पहुँच खो देंगे। आपकी चैट आपकी ही रहेंगी। स्वामी आपको फिर से जोड़ सकता है।",
+        "leaving": "छोड़ा जा रहा है…",
+        "left": "आपने प्रोजेक्ट छोड़ दिया",
+        "failed": "प्रोजेक्ट नहीं छोड़ा जा सका",
+        "inherited": "आप यह प्रोजेक्ट नहीं छोड़ सकते: आपकी पहुँच आपके संगठन या किसी टीम से आती है। मालिक से कहें कि वह इसे साझा करने की सेटिंग बदले।"
+      },
+      "archiveSuccess": "प्रोजेक्ट संग्रहीत किया गया",
+      "archivedNoNewChats": "यह प्रोजेक्ट संग्रहीत है, इसलिए इसमें नई चैट शुरू नहीं की जा सकती।",
+      "archivedBanner": "यह प्रोजेक्ट संग्रहीत है। नई चैट शुरू करने के लिए इसे असंग्रहीत करें।",
+      "archivedBannerMember": "यह प्रोजेक्ट संग्रहीत है, इसलिए नई चैट शुरू नहीं की जा सकती। इसके स्वामी से इसे असंग्रहीत करने के लिए कहें।"
     },
     "demoHide": "डेमो डेटा छिपाएँ",
     "scrollAttachmentsLeft": "अटैचमेंट बाईं ओर स्क्रॉल करें",
@@ -1393,7 +1470,18 @@
       "downloading": "आर्टिफैक्ट डाउनलोड हो रहा है"
     },
     "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।",
-    "noResultsFor": "“{{query}}” के लिए कोई परिणाम नहीं मिला"
+    "noResultsFor": "“{{query}}” के लिए कोई परिणाम नहीं मिला",
+    "removeSelectedSource": "{{name}} हटाएँ",
+    "diagramSourceCopied": "आरेख का स्रोत कॉपी किया गया",
+    "diagramImageCopied": "आरेख की छवि कॉपी की गई",
+    "diagramImageDownloaded": "क्लिपबोर्ड उपलब्ध नहीं है, आरेख PNG के रूप में सहेजा गया",
+    "diagramCopyFailed": "आरेख कॉपी नहीं हो सका",
+    "fitDiagram": "स्क्रीन पर फ़िट करें",
+    "answerMode": {
+      "internalSearch": "आंतरिक खोज",
+      "webSearch": "वेब खोज",
+      "internalAndWebSearch": "आंतरिक + वेब खोज"
+    }
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -1533,7 +1621,21 @@
         "editError": "आमंत्रण अपडेट नहीं हो सका",
         "editTitle": "आमंत्रण संपादित करें",
         "update": "आमंत्रण अपडेट करें",
-        "smtpNotConfiguredTooltip": "SMTP कॉन्फ़िगर नहीं है। आमंत्रण भेजने से पहले ईमेल सेटिंग्स सेट करें।"
+        "smtpNotConfiguredTooltip": "SMTP कॉन्फ़िगर नहीं है। आमंत्रण भेजने से पहले ईमेल सेटिंग्स सेट करें।",
+        "userCount_one": "{{count}} उपयोगकर्ता",
+        "userCount_other": "{{count}} उपयोगकर्ता",
+        "successDescriptionCount_one": "{{count}} उपयोगकर्ता को आमंत्रित किया गया",
+        "successDescriptionCount_other": "{{count}} उपयोगकर्ताओं को आमंत्रित किया गया",
+        "alreadyMembersSkipped_one": "{{count}} पता पहले से किसी सदस्य का है, इसलिए उसे आमंत्रण नहीं भेजा गया।",
+        "alreadyMembersSkipped_other": "{{count}} पते पहले से सदस्यों के हैं, इसलिए उन्हें आमंत्रण नहीं भेजे गए।",
+        "alreadyMembersTitle": "पहले से सदस्य — कोई आमंत्रण नहीं भेजा गया",
+        "alreadyMembersDescription_one": "यह पता पहले से एक सक्रिय सदस्य का है।",
+        "alreadyMembersDescription_other": "हर पता पहले से किसी सक्रिय सदस्य का है।",
+        "importUnsupportedType": "केवल .csv, .xlsx और .xls फ़ाइलें आयात की जा सकती हैं।",
+        "importTooLongSkipped_one": "254 वर्णों से लंबी {{count}} प्रविष्टि छोड़ दी गई।",
+        "importTooLongSkipped_other": "254 वर्णों से लंबी {{count}} प्रविष्टियाँ छोड़ दी गईं।",
+        "invalidBlocksSend_one": "{{count}} अमान्य पता लाल रंग में चिह्नित है। आमंत्रण भेजने के लिए उसे ठीक करें या हटाएँ।",
+        "invalidBlocksSend_other": "{{count}} अमान्य पते लाल रंग में चिह्नित हैं। आमंत्रण भेजने के लिए उन्हें ठीक करें या हटाएँ।"
       },
       "bulk": {
         "resendInvite": "आमंत्रण पुनः भेजें",
@@ -1665,7 +1767,11 @@
         "viewTeam": "टीम देखें",
         "delete": "हटाएँ",
         "deleteError": "टीम हटाने में विफल",
-        "deleteSuccess": "टीम हटाई गई"
+        "deleteSuccess": "टीम हटाई गई",
+        "deleteConfirmTitle": "टीम हटाएँ?",
+        "deleteConfirmMessage": "\"{{name}}\" हटा दी जाएगी और इसके सदस्य इसके ज़रिए साझा की गई पहुँच खो देंगे। इसे पूर्ववत नहीं किया जा सकता।",
+        "deleteConfirmButton": "टीम हटाएँ",
+        "deleting": "हटाया जा रहा है…"
       },
       "create": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
@@ -1684,7 +1790,8 @@
         "submit": "टीम बनाएं",
         "successDescription": "\"{{name}}\" सफलतापूर्वक बनाई गई है",
         "successTitle": "टीम बनाई गई!",
-        "title": "टीम बनाएं"
+        "title": "टीम बनाएं",
+        "errorDescription": "टीम नहीं बन सकी। कृपया फिर से प्रयास करें।"
       },
       "detail": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
@@ -5492,7 +5599,13 @@
     },
     "team": "टीम",
     "teamsNoRoles": "टीमों की कोई भूमिकाएँ नहीं होतीं",
-    "invite": "Pipeshub में आमंत्रित करें"
+    "invite": "Pipeshub में आमंत्रित करें",
+    "searchPlaceholderTeams": "ईमेल, टीम या नाम (अल्पविराम से अलग करें)",
+    "searchPlaceholderUsers": "ईमेल या नाम (अल्पविराम से अलग करें)",
+    "alreadyRemoved": "पहले ही हटाया जा चुका है",
+    "alreadyRemovedDescription": "{{name}} की पहुँच पहले ही हट चुकी थी",
+    "removeConfirmTitle": "पहुँच हटाएँ?",
+    "removeConfirmDescription": "{{name}} की पहुँच तुरंत हट जाएगी। आप बाद में फिर से साझा कर सकते हैं।"
   },
   "demoData": {
     "badge": {

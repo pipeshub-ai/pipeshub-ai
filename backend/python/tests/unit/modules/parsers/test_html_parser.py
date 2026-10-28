@@ -409,7 +409,7 @@ class TestDoclingHtmlParse:
     async def test_parse_uses_docling_processor(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = '{"doc": true}'
-        with patch("html_to_markdown.convert", return_value="# Hello"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# Hello"), \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
              patch.object(parser, "extract_and_replace_images", return_value=("<p>Hello</p>", [])), \
@@ -430,7 +430,7 @@ class TestDoclingHtmlParse:
     async def test_parse_converts_to_markdown(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = "{}"
-        with patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# markdown") as mock_convert, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
              patch.object(parser, "extract_and_replace_images", return_value=("<p>Hello</p>", [])), \
@@ -449,7 +449,7 @@ class TestDoclingHtmlParse:
     async def test_parse_bytes_strips_and_runs_pipeline(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = "{}"
-        with patch("html_to_markdown.convert", return_value="# md") as mock_convert, \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md") as mock_convert, \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -473,7 +473,7 @@ class TestDoclingHtmlParse:
                 "new_alt_text": "Image_1",
             }
         ]
-        with patch("html_to_markdown.convert", return_value="# md"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -497,7 +497,7 @@ class TestDoclingHtmlParse:
             {"url": "https://example.com/a.png", "alt_text": "a", "new_alt_text": "Image_1"},
             {"url": "https://example.com/b.png", "alt_text": "b", "new_alt_text": "Image_2"},
         ]
-        with patch("html_to_markdown.convert", return_value="# md"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -523,7 +523,7 @@ class TestDoclingHtmlParse:
             data=None,
         )
         expected_blocks = BlocksContainer(blocks=[image_block], block_groups=[])
-        with patch("html_to_markdown.convert", return_value="# Title"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# Title"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())

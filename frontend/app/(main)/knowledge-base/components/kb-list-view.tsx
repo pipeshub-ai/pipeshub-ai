@@ -91,7 +91,14 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
       case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;
       case 'QUEUED': baseLabel = t('kb.indexingStatus.queued'); showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
       case 'AUTO_INDEX_OFF': baseLabel = t('kb.indexingStatus.manualIndexing'); break;
-      case 'EMPTY': baseLabel = t('kb.indexingStatus.empty'); break;
+      case 'EMPTY':
+        // The bare word "Empty" did not say why nothing was indexed.
+        baseLabel = !withReason
+          ? t('kb.indexingStatus.empty')
+          : item.sizeInBytes === 0
+            ? t('kb.indexingStatus.emptyFileZeroBytes', 'Empty file — nothing to index (0 bytes)')
+            : t('kb.indexingStatus.emptyNoContent', 'Empty — no text was found to index');
+        break;
       case 'PAUSED': baseLabel = t('kb.indexingStatus.paused'); break;
       case 'ENABLE_MULTIMODAL_MODELS': baseLabel = t('kb.indexingStatus.needsMultimodalModel'); break;
       case 'SKIPPED': baseLabel = t('kb.indexingStatus.skipped'); break;
@@ -439,6 +446,7 @@ function TableRow({
     const { baseName } = getNameParts(item.name);
     setEditValue(baseName);
     setIsEditing(true);
+    setIsMenuOpen(false);
   };
 
   const handleRenameSave = async () => {

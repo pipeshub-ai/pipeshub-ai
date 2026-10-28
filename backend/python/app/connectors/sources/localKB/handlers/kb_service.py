@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+import weakref
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
 from app.config.constants.arangodb import (
@@ -225,6 +226,22 @@ def _browse_failure(result: object, missing: str, action: str) -> dict:
     if _provider_refusal_code(result) == 404:
         return {"success": False, "code": 404, "reason": missing}
     return {"success": False, "code": 500, "reason": action_failed(action)}
+
+
+# The duplicate-name check reads the parent's names, then the write lands several
+# awaits later, so two uploads of one name at the same moment both pass the check.
+# Neither graph backend has a uniqueness constraint over (parent, name, type), so
+# uploads to one KB are serialised here. This covers one process only: replicas of
+# the connectors service can still race.
+_UPLOAD_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _upload_lock(kb_id: str) -> asyncio.Lock:
+    lock = _UPLOAD_LOCKS.get(kb_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _UPLOAD_LOCKS[kb_id] = lock
+    return lock
 
 
 class KnowledgeBaseService:
@@ -2621,8 +2638,13 @@ class KnowledgeBaseService:
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
+            # Anyone with access may drop their own permission (leaving a shared
+            # project removes its member's edge on the project's hidden collection).
+            # The owner and creator checks below still apply to that removal.
+            removing_only_self = not team_ids and user_ids == [requester_id]
             requester_key, _, err = await self._resolve_user_and_kb_access(
-                kb_id, requester_id, required_roles=["OWNER"],
+                kb_id, requester_id,
+                required_roles=None if removing_only_self else ["OWNER"],
                 permission_denied_reason="Only KB owners can remove permissions",
                 for_write=True,
             )
@@ -3311,19 +3333,22 @@ class KnowledgeBaseService:
                 return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}
 
             analysis = gp._analyze_upload_structure(files, validation)
-
-            folder_map, new_folder_records = await self._resolve_upload_folders(kb_id, org_id, analysis)
-            gp._populate_file_destinations(analysis, folder_map)
-
             storage_url = await self._get_storage_url()
-            file_records, skipped_files, failed_files = await self._build_upload_file_records(
-                kb_id, files, analysis, storage_url, user_id=user_id
-            )
 
-            entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
-            if entities:
-                processor = await self.processor_for_kb(kb_id)
-                await processor.on_new_records(entities)
+            # Held from the name reads to the commit, so a concurrent upload of the same
+            # name sees this one's records and is skipped as a duplicate.
+            async with _upload_lock(kb_id):
+                folder_map, new_folder_records = await self._resolve_upload_folders(kb_id, org_id, analysis)
+                gp._populate_file_destinations(analysis, folder_map)
+
+                file_records, skipped_files, failed_files = await self._build_upload_file_records(
+                    kb_id, files, analysis, storage_url, user_id=user_id
+                )
+
+                entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
+                if entities:
+                    processor = await self.processor_for_kb(kb_id)
+                    await processor.on_new_records(entities)
 
             result = {
                 "total_created": len(file_records),
