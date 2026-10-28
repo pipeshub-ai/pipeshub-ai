@@ -25,17 +25,15 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.link_text import link_destination_end
+from app.modules.parsers.markdown.linear_image_search import (
+    HTML_IMG_ALT,
+    MD_IMAGE_NESTED,
+)
 from app.modules.parsers.text_splitting import split_long_text
 from app.modules.transformers.block_container_validator import strip_base64_images
 
-_MD_IMAGE_RE = re.compile(
-    r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
-    r'(data:(?:[^"\s)]|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
-    r'(?:\s+"[^"]*")?\)'
-)
-_HTML_IMG_ALT_RE = re.compile(
-    r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
-)
+_MD_IMAGE_RE = MD_IMAGE_NESTED
+_HTML_IMG_ALT_RE = HTML_IMG_ALT
 _LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 
 

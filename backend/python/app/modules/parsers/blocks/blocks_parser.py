@@ -7,6 +7,7 @@ from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.services.parsing.interface import ParseErrorCode, ParseError, ParseResult
+from app.utils.cpu_offload import offload_if_large
 from app.utils.table_enrichment import enhance_tables_with_llm
 
 
@@ -254,7 +255,9 @@ class BlocksParser:
         md_parser = MarkdownParser(logger=self.logger, config_service=self.config_service)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = await offload_if_large(
+                md_parser.extract_and_replace_images, markdown_data
+            )
 
             if images:
                 # Collect all image URLs
@@ -332,7 +335,9 @@ class BlocksParser:
         html_content = html_parser.clean_html(html_data)
 
         caption_map: dict[str, str] = {}
-        modified_html, images = html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            html_parser.extract_and_replace_images, html_content
+        )
 
         if images:
             image_parser = ImageParser(self.logger)

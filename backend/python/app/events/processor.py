@@ -874,7 +874,9 @@ class Processor:
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = await offload_if_large(
+                md_parser.extract_and_replace_images, markdown_data
+            )
 
             if images:
                 # Collect all image URLs
@@ -968,7 +970,9 @@ class Processor:
         html_content = html_parser.clean_html(html_data)
 
         caption_map: Dict[str, str] = {}
-        modified_html, images = html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            html_parser.extract_and_replace_images, html_content
+        )
 
         if images:
             image_parser = self.parsers.get(ExtensionTypes.PNG.value)
@@ -1596,7 +1600,9 @@ class Processor:
 
             # Extract image URLs and convert to base64 (mirrors the Markdown flow)
             caption_map: Dict[str, str] = {}
-            modified_html, images = html_parser.extract_and_replace_images(html_content)
+            modified_html, images = await offload_if_large(
+                html_parser.extract_and_replace_images, html_content
+            )
 
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
