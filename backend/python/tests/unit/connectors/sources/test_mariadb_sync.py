@@ -835,7 +835,7 @@ class TestRenames:
         assert "shop.a" in world.outcome.restructured_tables
         assert world.record("b").id in world.outcome.renamed
 
-
+    async def test_a_rebuild_under_the_same_name_is_data_only(self, world) -> None:
         world.catalog.add("orders", columns=("id", ("status", "varchar(20)")))
         await world.sync()
         record_id = world.record("orders").id
