@@ -12,6 +12,7 @@ import 'reflect-metadata';
 import { randomUUID } from 'crypto';
 import { expect } from 'chai';
 import mongoose from 'mongoose';
+import sinon from 'sinon';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { jsonDiff } from '../../src/libs/repositories/json-compare';
 import { MongoConversationRepository } from '../../src/libs/repositories/conversation/mongo';
@@ -309,13 +310,27 @@ function normalise(log: Log): unknown[] {
   return log.map((l) => ({ label: l.label, out: walk(l.out) }));
 }
 
+/**
+ * Some repository calls stamp the wall clock themselves (archiving sets the last activity). Two stores
+ * running the script one after the other would stamp different milliseconds, and two chats archived in
+ * consecutive steps are sometimes a tie in one store and a millisecond apart in the other, which orders
+ * them differently. The clock is therefore frozen and moved by a fixed amount after every step, so both
+ * stores see the same time at the same step.
+ */
 async function run(r: Repos): Promise<Log> {
   const log: Log = [];
-  await script(r, async (label, p) => {
-    const out = await p;
-    log.push({ label, out });
-    return out;
-  });
+  const base = 1_800_000_000_000;
+  const clock = sinon.useFakeTimers({ now: base, toFake: ['Date'] });
+  try {
+    await script(r, async (label, p) => {
+      const out = await p;
+      log.push({ label, out });
+      clock.setSystemTime(base + log.length * 10);
+      return out;
+    });
+  } finally {
+    clock.restore();
+  }
   return log;
 }
 
