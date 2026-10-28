@@ -113,6 +113,7 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     prepare_streaming_html,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.people import confluence_people
 from app.connectors.sources.atlassian.core.quota import (
     API_TOKEN_REQUESTS_PER_SECOND,
     OAUTH_REQUESTS_PER_SECOND,
@@ -120,7 +121,6 @@ from app.connectors.sources.atlassian.core.quota import (
     QuotaAwarePolicy,
     quota_reset_text,
 )
-from app.connectors.sources.atlassian.core.people import confluence_people
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
     Block,

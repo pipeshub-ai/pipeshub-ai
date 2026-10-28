@@ -1092,14 +1092,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
             f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A person a source names without an email (see Person.source_key).
+            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
             # A sync point key names one sync point: connectors embed their org and
             # connector id, code-graph build state its record group's id. Without it
             # two first upserts both created one, and reads returned either (B3).
             "CREATE CONSTRAINT syncpoint_key_unique IF NOT EXISTS "
             f"FOR (n:{collection_to_label(CollectionNames.SYNC_POINTS.value)}) REQUIRE n.syncPointKey IS UNIQUE",
-            # A person a source names without an email (see Person.source_key).
-            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
-            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
         ]
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -5953,7 +5953,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         raise_on_error: bool = False,
         org_id: str | None = None,
     ) -> User | None:
-        """Get user by email"""
+        """Get user by email; with ``org_id``, only a user of that organisation."""
         try:
             scoped = org_id is not None
             org_filter = "AND u.orgId = $org_id" if scoped else ""
@@ -18130,7 +18130,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET p = $props
                 RETURN p.id AS id
                 """,
-                parameters={"source_key": props["sourceKey"], "org_id": props["orgId"], "props": props},
+                parameters={"source_key": person.source_key, "org_id": person.org_id, "props": props},
                 txn_id=transaction,
             )
             return results[0]["id"] if results else None

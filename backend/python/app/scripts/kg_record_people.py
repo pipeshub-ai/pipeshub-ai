@@ -66,11 +66,13 @@ class _DryRunStore:
         return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error, **scope)
 
     async def get_user_by_source_id(
-        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
     ) -> User | None:
-        return await self._graph.get_user_by_source_id(source_user_id, connector_id, raise_on_error=raise_on_error)
+        return await self._graph.get_user_by_source_id(
+            source_user_id, connector_id, raise_on_error=raise_on_error,
+        )
 
-    async def get_person_by_email(self, email: str, org_id: str) -> Person | None:
+    async def get_person_by_email(self, email: str, org_id: str, *, raise_on_error: bool = False) -> Person | None:
         return await self._graph.get_person_by_email(email, org_id, raise_on_error=True)
 
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
@@ -202,7 +204,7 @@ async def backfill(
 
 
 async def stamp_organization_keys(graph: IGraphDBProvider, org_id: str, *, page_size: int = PAGE_SIZE) -> int:
-    """Write ``normalizedName`` on the tenant's external organisations, so a
+    """Write ``normalizedName`` on the org's external organisations, so a
     name a document extracts finds an account synced before it was keyed.
     Returns how many were written."""
     written, after = 0, None

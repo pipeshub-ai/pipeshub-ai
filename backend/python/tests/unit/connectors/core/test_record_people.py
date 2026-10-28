@@ -168,38 +168,35 @@ class TestWriteBehaviour:
         assert await link_record_people(file_record, store, logging.getLogger("t"), may_have_edges=False) == 0
         store.delete_edges_between_collections.assert_not_awaited()
 
-    async def test_a_failed_lookup_keeps_the_existing_edges_and_logs_no_address(self, caplog) -> None:
+    async def test_a_failed_member_read_is_raised_not_read_as_nobody(self) -> None:
+        """Read as "not a member" it would commit the record without the edge
+        (or with a stand-in person) until the record next changes."""
+        import pytest
+
         store = _store()
         store.get_user_by_email.side_effect = lambda email, **_: (
             (_ for _ in ()).throw(RuntimeError("db")) if email == "bob@acme.com" else SimpleNamespace(id=MEMBERS[email])
         )
-        with caplog.at_level(logging.WARNING, logger="t"):
-            written = await link_record_people(
+        with pytest.raises(RuntimeError, match="db"):
+            await link_record_people(
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
-        assert written == 0
-        store.delete_edges_between_collections.assert_not_awaited()
         store.batch_create_entity_relations.assert_not_awaited()
-        assert "bob" not in caplog.text
 
-    async def test_lookups_ask_for_errors_to_be_raised_not_answered_as_no_user(self) -> None:
+    async def test_member_reads_ask_to_raise_and_the_email_read_is_scoped_to_the_org(self) -> None:
         store = _store()
-        ticket = TicketRecord(
-            record_type=RecordType.TICKET, assignee_email="ann@acme.com", reporter_source_id="src-ann",
-            is_email_hidden=False, **BASE,
-        )
-        await link_record_people(ticket, store, logging.getLogger("t"))
-        assert store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": BASE["org_id"]}
-        hidden = TicketRecord(
-            record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["src-ann"], **BASE,
-        )
-        await link_record_people(hidden, store, logging.getLogger("t"))
-        assert store.get_user_by_source_id.await_args.kwargs == {"raise_on_error": True}
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+        store.get_user_by_email.assert_awaited_once_with("ann@acme.com", raise_on_error=True, org_id="org-1")
 
-    async def test_a_genuinely_missing_user_still_lets_the_edges_be_replaced(self) -> None:
+    async def test_another_orgs_user_with_the_address_does_not_hide_this_orgs_member(self) -> None:
+        """The same address in a second org must not decide the answer: the
+        lookup is for this record's org, wherever else the address exists."""
         store = _store()
-        await link_record_people(_mail(from_email="stranger@else.com"), store, logging.getLogger("t"))
-        store.delete_edges_between_collections.assert_awaited_once()
+        users = {("org-2", "ann@acme.com"): SimpleNamespace(id="u-other", org_id="org-2"),
+                 ("org-1", "ann@acme.com"): SimpleNamespace(id="u-ann", org_id="org-1")}
+        store.get_user_by_email.side_effect = lambda email, org_id=None, **_: users.get((org_id, email))
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+        assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
 
     async def test_the_number_of_edges_per_record_is_capped(self, monkeypatch) -> None:
         monkeypatch.setattr(record_people, "MAX_LINKED_PEOPLE", 2)
@@ -284,13 +281,14 @@ class TestFailuresTheCallerMustSee:
             await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
         store.batch_create_entity_relations.assert_not_awaited()
 
-    async def test_a_failed_lookup_is_raised_when_the_caller_needs_it(self) -> None:
+    async def test_a_failed_person_write_is_raised_when_the_caller_needs_it(self) -> None:
         import pytest
 
-        store = _store()
-        store.get_user_by_email = AsyncMock(side_effect=RuntimeError("deadlock"))
+        store = _person_store()
+        store.upsert_person_by_source_key = AsyncMock(side_effect=RuntimeError("deadlock"))
+        file_record = _file(last_modified_by=SourcePerson(source_id="acc-9"))
         with pytest.raises(RuntimeError, match="deadlock"):
-            await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
+            await link_record_people(file_record, store, logging.getLogger("t"), lambda exc: True)
 
     async def test_a_failed_new_edge_write_is_raised_when_the_caller_needs_it(self) -> None:
         import pytest
@@ -302,13 +300,11 @@ class TestFailuresTheCallerMustSee:
                 _mail(from_email="ann@acme.com"), store, logging.getLogger("t"), lambda exc: True,
             )
 
-    async def test_other_failures_still_do_not_fail_the_record(self) -> None:
+    async def test_other_failures_to_clear_do_not_fail_the_record(self) -> None:
         store = _store()
         store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("boom"))
-        store.get_user_by_email = AsyncMock(side_effect=RuntimeError("boom"))
         written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
-        assert written == 0
-        store.delete_edges_between_collections.assert_not_awaited()
+        assert written == 1
 
 
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
@@ -506,3 +502,17 @@ class TestTicketsNamedBySourceId:
         assert {e for e in _edges(store) if e[0].startswith("users/")} == {
             ("users/u-ann", "ASSIGNED_TO"), ("users/u-dan", "REPORTED_BY"),
         }
+
+
+class TestEmailLookupsStayInTheOrg:
+    """An address is not unique across orgs: unscoped, the lookup could answer
+    with another tenant's user, which is refused, and this org's member
+    would never be read."""
+
+    async def test_the_email_lookup_is_scoped_to_the_records_org(self) -> None:
+        store = _store()
+
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+
+        assert store.get_user_by_email.await_args.kwargs["org_id"] == BASE["org_id"]
+        assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}

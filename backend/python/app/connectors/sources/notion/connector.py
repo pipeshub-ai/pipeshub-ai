@@ -190,6 +190,13 @@ def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
     return status in _WAITING_FOR_INDEXING
 
 
+def notion_person(user: dict[str, Any] | None) -> SourcePerson | None:
+    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson."""
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot")
+
+
 def _edit_part(revision: str | None) -> str | None:
     """A revision without the comment digest or row marker: the part last_edited_time sets."""
     return revision.split("|", 1)[0] if revision else revision
@@ -238,13 +245,6 @@ def _failure_summary(error: BaseException) -> str:
         return text[:200]
     code = re.search(r'"code"\s*:\s*"(\w+)"', text)
     return f"Notion answered HTTP {status.group(1)}" + (f" ({code.group(1)})" if code else "")
-
-
-def notion_person(user: dict[str, Any] | None) -> SourcePerson | None:
-    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson."""
-    if not isinstance(user, dict) or not user.get("id"):
-        return None
-    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot")
 
 
 class _RecordGone:

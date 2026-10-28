@@ -209,6 +209,7 @@ class BaseDataStore(ABC):
     async def get_user_by_email(
         self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> Optional[User]:
+        """With ``org_id``, only a user of that organisation answers."""
         pass
 
     @abstractmethod

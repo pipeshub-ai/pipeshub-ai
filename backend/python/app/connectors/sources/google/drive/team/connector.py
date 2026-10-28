@@ -73,6 +73,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -115,7 +116,6 @@ from app.connectors.sources.google.drive.utils.drive_run_report import (
 )
 from app.connectors.sources.google.drive.utils.folder_removal import remove_folder_confirming_contents
 from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
-from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.common.impersonation import (
     MAX_IMPERSONATION_CANDIDATES,
     get_impersonation_candidates,

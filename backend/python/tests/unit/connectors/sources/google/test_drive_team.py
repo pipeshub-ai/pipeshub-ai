@@ -582,6 +582,7 @@ class TestTeamInit:
 
 class TestTeamDriveItemPeople:
     async def test_my_drive_file_carries_owner_author_and_last_modifier(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
         metadata = _make_file_metadata(
             owners=[{"displayName": "Alice", "emailAddress": "alice@example.com", "permissionId": "p-alice"}],
             parents=["folder-1"],

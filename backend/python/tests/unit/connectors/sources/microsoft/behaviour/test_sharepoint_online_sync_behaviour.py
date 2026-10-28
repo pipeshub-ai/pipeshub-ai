@@ -865,6 +865,53 @@ class TestFullRun:
         assert "i1" in db.records
 
 
+class TestAuthorship:
+    async def test_a_library_files_creator_and_last_editor_come_from_the_delta_payload(self, connector, api, db) -> None:
+        item = file_item("i1", "plan.pdf")
+        item["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        item["lastModifiedBy"] = {"application": {"id": "app-sync", "displayName": "Migration Tool"}}
+        delta_pages(api, {None: page([item], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        await sync_site(connector)
+
+        plan = db.by_name("plan.pdf")
+        assert plan.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert plan.last_modified_by == SourcePerson(
+            source_id="app-sync", display_name="Migration Tool", is_service_account=True
+        )
+
+    async def test_a_pages_creator_and_last_editor_come_from_the_page_listing(self, connector, api, db) -> None:
+        serve_site(api)
+        await connector._get_all_sites()
+        listed = site_page("pg1", "Home")
+        listed["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        listed["lastModifiedBy"] = {"user": {"id": "u-ben", "displayName": "Ben"}}
+        api.on("GET", PAGES, page([listed]))
+        delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
+
+        await sync_site(connector)
+
+        home = db.by_name("Home - Eng")
+        assert home.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert home.last_modified_by == SourcePerson(source_id="u-ben", display_name="Ben")
+
+    async def test_a_list_items_creator_and_last_editor_are_kept(self, connector) -> None:
+        payload = {
+            "id": "7", "eTag": "le1", "webUrl": f"{SITE_URL}/Lists/Tasks/7_.000",
+            "createdDateTime": "2024-01-01T00:00:00Z", "lastModifiedDateTime": "2024-05-01T10:00:00Z",
+            "createdBy": {"user": {"id": "u-ana", "displayName": "Ana"}},
+            "lastModifiedBy": {"user": {"displayName": "System Account"}},
+            "fields": {"Title": "Ship it"},
+        }
+        node = JsonParseNodeFactory().get_root_parse_node("application/json", json.dumps(payload).encode())
+
+        record = await connector._create_list_item_record(node.get_object_value(ListItem), SITE_ID, "list-1")
+
+        assert record.authored_by == SourcePerson(source_id="u-ana", display_name="Ana")
+        assert record.last_modified_by is not None and record.last_modified_by.is_service_account
+
+
 ADMIN_FOLDER_ID = "9617aacb-e380-454f-ae8e-7fd2526ed289"
 SHARED_PDF_ID = "9d3f757b-2a74-4695-8ea4-60dcc5c5276c"
 INHERITING_ID = "3e5a6276-a93f-4219-976e-f6fe93e9b84d"
@@ -1506,48 +1553,3 @@ class TestConnectionCheck:
         api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
 
         assert await connector.test_connection_and_access() is True
-
-
-class TestAuthorship:
-    async def test_a_library_files_creator_and_last_editor_come_from_the_delta_payload(self, connector, api, db) -> None:
-        item = file_item("i1", "plan.pdf")
-        item["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
-        item["lastModifiedBy"] = {"application": {"id": "app-sync", "displayName": "Migration Tool"}}
-        delta_pages(api, {None: page([item], delta_link=delta_url("d1"))})
-        serve_item(api, "i1", [])
-
-        await sync_site(connector)
-
-        plan = db.by_name("plan.pdf")
-        assert plan.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
-        assert plan.last_modified_by == SourcePerson(
-            source_id="app-sync", display_name="Migration Tool", is_service_account=True
-        )
-
-    async def test_a_pages_creator_and_last_editor_come_from_the_page_listing(self, connector, api, db) -> None:
-        listed = site_page("pg1", "Home")
-        listed["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
-        listed["lastModifiedBy"] = {"user": {"id": "u-ben", "displayName": "Ben"}}
-        api.on("GET", PAGES, page([listed]))
-        delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
-
-        await sync_site(connector)
-
-        home = db.by_name("Home - Eng")
-        assert home.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
-        assert home.last_modified_by == SourcePerson(source_id="u-ben", display_name="Ben")
-
-    async def test_a_list_items_creator_and_last_editor_are_kept(self, connector) -> None:
-        payload = {
-            "id": "7", "eTag": "le1", "webUrl": f"{SITE_URL}/Lists/Tasks/7_.000",
-            "createdDateTime": "2024-01-01T00:00:00Z", "lastModifiedDateTime": "2024-05-01T10:00:00Z",
-            "createdBy": {"user": {"id": "u-ana", "displayName": "Ana"}},
-            "lastModifiedBy": {"user": {"displayName": "System Account"}},
-            "fields": {"Title": "Ship it"},
-        }
-        node = JsonParseNodeFactory().get_root_parse_node("application/json", json.dumps(payload).encode())
-
-        record = await connector._create_list_item_record(node.get_object_value(ListItem), SITE_ID, "list-1")
-
-        assert record.authored_by == SourcePerson(source_id="u-ana", display_name="Ana")
-        assert record.last_modified_by is not None and record.last_modified_by.is_service_account

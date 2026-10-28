@@ -82,6 +82,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -118,7 +119,6 @@ from app.connectors.sources.google.drive.utils.drive_shortcuts import (
     materialize_drive_shortcuts,
     shortcut_target,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     HELD_FILTER_FOLDERS,
@@ -1476,6 +1476,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     "restrictToMyDrive": False,
                     "supportsAllDrives": True,
                     "includeItemsFromAllDrives": True,
+                    # Specify fields to retrieve
                     "fields": DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS,
                 }
 

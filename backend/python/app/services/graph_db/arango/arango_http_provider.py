@@ -7741,7 +7741,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> User | None:
         """
-        Get user by email.
+        Get user by email; with ``org_id``, only a user of that organisation.
         """
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
@@ -8563,7 +8563,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN NEW._key
                 """,
                 bind_vars={
-                    "source_key": doc["sourceKey"], "org_id": doc["orgId"], "doc": doc,
+                    "source_key": person.source_key, "org_id": person.org_id, "doc": doc,
                     "@collection": CollectionNames.PEOPLE.value,
                 },
                 txn_id=transaction,
