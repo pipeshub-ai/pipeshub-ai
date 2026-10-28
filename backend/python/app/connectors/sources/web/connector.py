@@ -242,6 +242,7 @@ RENDER_VERDICT_MAX_AGE_MS = 7 * 24 * 3600 * 1000
 MIN_MAIN_CONTENT_CHARS = 200
 LAZY_IMAGE_ATTRS = ("data-src", "data-lazy-src", "data-original", "data-url")
 _META_CHARSET = re.compile(r"<meta[^>]+charset\s*=\s*[\"']?[\w-]+[\"']?[^>]*>", re.IGNORECASE)
+_SITEMAP_FILE = re.compile(r"[^/]*sitemap[^/]*\.xml(\.gz)?")
 MIN_REFUSALS_FOR_HINT = 3
 STORE_RETRY_WAITS = (2.0, 8.0)
 PRUNE_PAGE_SIZE = 500
@@ -301,6 +302,13 @@ IMAGE_MIME_TYPES = {
     MimeTypes.JPG.value,
     MimeTypes.GIF.value,
 }
+
+
+def _is_crawler_file(path: str) -> bool:
+    """Whether a URL path is the site's robots.txt or a sitemap, which the crawler reads itself and never stores."""
+    path = unquote(path).lower()
+    return path.rstrip("/") == "/robots.txt" or _SITEMAP_FILE.fullmatch(path.rsplit("/", 1)[-1]) is not None
+
 
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
@@ -658,6 +666,8 @@ class WebConnector(BaseConnector):
         self.browser_like_identity: bool = False
         # Per crawl: each site's robots.txt rules, or None when it couldn't be read (RFC 9309: crawl nothing there).
         self._robots: dict[str, RobotsRules | None] = {}
+        # The normalised URLs the robots.txt files read so far name as sitemaps, on whatever site.
+        self._robots_sitemap_urls: set[str] = set()
         self._robots_skipped: set[str] = set()
         # The script-rendering check waits for a robots.txt that could be read.
         self._script_check_pending = False
@@ -1061,6 +1071,7 @@ class WebConnector(BaseConnector):
             self._landed_urls.clear()
             self._kept_urls.clear()
             self._robots.clear()
+            self._robots_sitemap_urls.clear()
             self._robots_skipped.clear()
             # A body the last sync's rendering check read but never used is not this sync's answer.
             self._served_pages.clear()
@@ -1102,6 +1113,11 @@ class WebConnector(BaseConnector):
 
             # Start crawling
             assert self.url is not None, "URL not set — init() must be called first"
+            if self._is_crawler_url(self.url):
+                self.logger.info(
+                    "The start URL %s is robots.txt or a sitemap, which is never stored, so this crawl "
+                    "can't complete and pages gone from the site won't be removed", redact_url(self.url),
+                )
             if self.crawl_type == "recursive":
                 await self._crawl_recursive(self.url, depth=0)
             elif self.crawl_type in ("single", None, ""):
@@ -1246,14 +1262,16 @@ class WebConnector(BaseConnector):
         A crawl that suddenly misses most of the site is more likely to have hit a broken page than
         to be right, so it deletes nothing.
         """
-        # Pages stored under URLs this crawl now cleans are leftovers, not misses, so they don't
-        # count toward the "missed most of the site" check: turning on Ignore URL Parameters on a
-        # site full of variants must still clear the variants out.
+        # Pages stored under URLs this crawl now cleans, and robots.txt or sitemaps an older build
+        # stored, are leftovers, not misses, so they don't count toward the "missed most of the site"
+        # check: turning on Ignore URL Parameters on a site full of variants must still clear the variants out.
         current = 0
         unreached: list[Record] = []
         missed = 0
         async for record in self._stored_pages():
-            keyed_now = self._keyed_by_current_rules(record.external_record_id)
+            keyed_now = self._keyed_by_current_rules(record.external_record_id) and not self._is_crawler_url(
+                record.weburl or record.external_record_id
+            )
             current += keyed_now
             if not self._was_reached(record):
                 unreached.append(record)
@@ -1269,7 +1287,6 @@ class WebConnector(BaseConnector):
         for record in missed_again:
             self.logger.info("Removing %s: no longer reached by two complete crawls in a row", record.weburl)
             await self._remove_record(record, record.weburl or record.external_record_id)
-            self._stored_page_ids.discard(record.id)
         report.pruned = len(missed_again)
         removed = {r.external_record_id for r in missed_again}
         return sorted(r.external_record_id for r in unreached if r.external_record_id not in removed)
@@ -2162,10 +2179,7 @@ class WebConnector(BaseConnector):
 
         if "noindex" in directives:
             self._noindex_skipped += 1
-            stored = await self._stored_record(final_url)
-            if stored is not None and not stored.is_internal:
-                self.logger.info("Removing %s: the page now asks not to be indexed", final_url)
-                await self._remove_record(stored, final_url)
+            await self._remove_stored_page(final_url, "the page now asks not to be indexed")
             return False
         if await self._excluded_by_extension_filter(result):
             await self._remove_filtered_out(result, requested_url)
@@ -2219,7 +2233,11 @@ class WebConnector(BaseConnector):
         parsed = urlparse(url)
         origin = f"{parsed.scheme}://{parsed.netloc}".lower()
         if origin not in self._robots:
-            self._robots[origin] = await shared_robots_cache.rules(origin, functools.partial(self._read_robots, origin))
+            read = await shared_robots_cache.rules(origin, functools.partial(self._read_robots, origin))
+            self._robots[origin] = read
+            self._robots_sitemap_urls.update(
+                self._normalize_url(urljoin(origin + "/", s)) for s in (read.sitemaps if read else [])
+            )
         rules = self._robots[origin]
         allowed = rules is not None and rules.allows(url)
         if not allowed:
@@ -2390,6 +2408,7 @@ class WebConnector(BaseConnector):
         finally:
             if not keep_robots:
                 self._robots.clear()
+                self._robots_sitemap_urls.clear()
                 self._robots_skipped.clear()
 
     async def _detect_csr(self, url: str) -> bool:
@@ -2882,6 +2901,13 @@ class WebConnector(BaseConnector):
             final_url_normalized = self._normalize_url(final_url)
             if final_url_normalized != self._normalize_url(url):
                 self.visited_urls.add(final_url_normalized)
+            return None
+
+        # Redirect landings, the start URL, retries and a resumed queue reach here without passing
+        # _is_valid_url; checked before any failure is filed, or a refused robots.txt becomes a failed page.
+        if self._is_crawler_url(final_url):
+            self.retry_urls.pop(self._normalize_url(url), None)
+            await self._remove_stored_page(final_url, "robots.txt and sitemaps are read by the crawler, not stored")
             return None
 
         if result.headers.get("X-Fetch-Skip-Reason") == "browser_crash":
@@ -3600,6 +3626,12 @@ class WebConnector(BaseConnector):
             self.logger.info("Removing %s: the file-type filter now leaves it out", requested_url)
             await self._remove_record(old, requested_url)
 
+    async def _remove_stored_page(self, url: str, reason: str) -> None:
+        stored = await self._stored_record(url)
+        if stored is not None and not stored.is_internal:
+            self.logger.info("Removing %s: %s", redact_url(url), reason)
+            await self._remove_record(stored, url)
+
     async def _remove_record(self, record: Record, url: str) -> None:
         # A folder placeholder is only removed once it holds nothing.
         children = [] if record.is_internal else await self._children_of(record.external_record_id)
@@ -3608,6 +3640,7 @@ class WebConnector(BaseConnector):
             self._gone_this_sync.add(record.external_record_id)
             return
         in_trash = await self.data_entities_processor.on_record_deleted(record.id)
+        self._stored_page_ids.discard(record.id)
         # A page in the trash keeps its stored copy and its links; the purge removes both.
         if in_trash:
             return
@@ -3726,6 +3759,9 @@ class WebConnector(BaseConnector):
             if any(parsed.path.lower().endswith(ext) for ext in skip_extensions):
                 return False
 
+            if self._is_crawler_url(url):
+                return False
+
             # Check domain restrictions
             if not self.follow_external and parsed.netloc != base_parsed.netloc:
                 return False
@@ -3744,6 +3780,14 @@ class WebConnector(BaseConnector):
 
         except Exception:
             return False
+
+    def _is_crawler_url(self, url: str) -> bool:
+        """Whether ``url`` is robots.txt or a sitemap, which the crawler reads itself and never stores."""
+        return _is_crawler_file(urlparse(url).path) or self._is_robots_sitemap(url)
+
+    def _is_robots_sitemap(self, url: str) -> bool:
+        """Whether robots.txt names ``url`` as a sitemap, whatever the file is called."""
+        return self._normalize_url(url) in self._robots_sitemap_urls
 
     def _same_page_canonical(self, html: bytes, page_url: str) -> str | None:
         """The page's ``rel=canonical`` URL when it names this same page (see ``is_same_page``)."""

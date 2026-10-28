@@ -20,8 +20,31 @@ on:
     - cron: '18 8 * * 5'
 
 jobs:
+  # Which of the jobs below this pull request's changes can affect
+  # (scripts/pr_changes.py). A pull request analyses only the languages it
+  # changed; a push to main and the weekly schedule analyse every language.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      codeql_languages: ${{ steps.changes.outputs.codeql_languages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.codeql_languages != '[]'
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
     #   - https://gh.io/supported-runners-and-hardware-resources
@@ -42,13 +65,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - language: actions
-          build-mode: none
-        - language: javascript-typescript
-          build-mode: none
-        - language: python
-          build-mode: none
+        # actions, javascript-typescript and python, each with build-mode none
+        # (scripts/pr_changes.py CODEQL_LANGUAGES), less those a pull request
+        # left untouched.
+        include: ${{ fromJSON(needs.changes.outputs.codeql_languages) }}
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both

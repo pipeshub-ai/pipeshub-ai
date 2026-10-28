@@ -1,0 +1,255 @@
+"""Which CI checks a pull request's changed files run.
+
+Run: python3 -m unittest discover -s scripts -p 'test_*.py'
+"""
+
+import json
+import re
+import sys
+import tempfile
+import unittest
+import unittest.mock
+from pathlib import Path
+
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import pr_changes as pc  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS = ROOT / ".github" / "workflows"
+MATRIX = {name for name in pc.NAMES if name.startswith("matrix_")}
+PYTHON_LEGS = MATRIX - {"matrix_storage"}
+PYTHON_CHECKS = {"python_unit", "codeql_python"}
+
+
+def runs(*paths: str) -> set[str]:
+    return set(pc.decide(list(paths)))
+
+
+def _workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())
+
+
+def _example(glob: str) -> str:
+    """A path the glob matches: each wildcard replaced by a plausible name."""
+    path = glob.replace("**/", "deep/er/").replace("**", "deep/file.py").replace("*", "x")
+    return path.replace("?", "x")
+
+
+class TestGlobs(unittest.TestCase):
+    def test_a_single_star_stays_inside_one_directory(self) -> None:
+        self.assertTrue(pc.matches("backend/python/tests/integration/conftest.py", ["backend/python/tests/integration/*.py"]))
+        self.assertFalse(pc.matches("backend/python/tests/integration/kv/test_a.py", ["backend/python/tests/integration/*.py"]))
+
+    def test_a_double_star_spans_directories_or_none(self) -> None:
+        self.assertTrue(pc.matches("README.md", ["**/*.md"]))
+        self.assertTrue(pc.matches("frontend/app/a/b.md", ["**/*.md"]))
+        self.assertTrue(pc.matches("frontend/app/a/b.tsx", ["frontend/**"]))
+        self.assertFalse(pc.matches("frontendx/a.tsx", ["frontend/**"]))
+
+
+class TestDecisions(unittest.TestCase):
+    def test_a_docs_only_change_runs_nothing(self) -> None:
+        self.assertEqual(runs("changelog/0.10.0.md", "docs/indexing-service.md", ".github/dependabot.yml"), set())
+
+    def test_a_node_only_change_runs_no_python(self) -> None:
+        checks = runs("backend/nodejs/apps/src/libs/errors/backend-error.ts")
+        self.assertTrue({"node_unit", "node_build", "codeql_javascript", "e2e_smoke"} <= checks)
+        self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"frontend"}))
+
+    def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
+        checks = runs("backend/python/app/connectors/sources/jira/connector.py")
+        self.assertTrue(PYTHON_CHECKS <= checks)
+        self.assertFalse(checks & {"node_unit", "node_build", "frontend", "codeql_javascript"})
+
+    def test_any_python_change_runs_every_matrix_leg(self) -> None:
+        # The suites' shared conftest loads most of app/, so none can be narrowed.
+        for path in (
+            "backend/python/app/services/messaging/kafka/handlers/record.py",
+            "backend/python/app/services/vector_db/qdrant/qdrant.py",
+            "backend/python/app/modules/transformers/blob_storage.py",
+            "backend/python/tests/integration/graph_db/test_new_e2e.py",
+            "backend/python/pyproject.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, MATRIX)
+                if path.startswith("backend/python/app/"):
+                    self.assertIn("redis_cluster", runs(path))
+
+    def test_a_compose_file_the_graph_legs_start_runs_them(self) -> None:
+        for name in ("messaging", "vector-db", "graph-db"):
+            with self.subTest(name=name):
+                self.assertIn("matrix_graph", runs(f"deployment/docker-compose/docker-compose.integration.{name}.yml"))
+
+    def test_node_storage_runs_the_storage_legs_only(self) -> None:
+        for path in (
+            "backend/nodejs/apps/src/modules/storage/storage.service.ts",
+            "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, {"matrix_storage"})
+
+    def test_node_code_outside_storage_runs_no_matrix_leg(self) -> None:
+        self.assertEqual(runs("backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts") & MATRIX, set())
+
+    def test_the_redis_cluster_job_runs_on_any_backend_change(self) -> None:
+        # Its Node step runs the whole suite in cluster mode, and its Python suite
+        # imports the messaging scenarios.
+        for path in (
+            "backend/nodejs/apps/tests/libs/services/redis/clusterRedisProvider.integration.test.ts",
+            "backend/nodejs/apps/src/libs/errors/backend-error.ts",
+            "backend/nodejs/apps/.mocharc.yaml",
+            "backend/nodejs/apps/tsconfig.test.json",
+            "backend/python/tests/integration/messaging/report_scenario.py",
+            "backend/python/tests/support/require_service.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("redis_cluster", runs(path))
+        self.assertNotIn("redis_cluster", runs("frontend/app/(main)/chat/page.tsx"))
+
+    def test_a_helper_the_integration_suites_import_runs_every_python_leg(self) -> None:
+        for path in (
+            "backend/python/tests/support/vector_db.py",
+            "backend/python/tests/unit/modules/pipeline/fakes.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & PYTHON_LEGS, PYTHON_LEGS)
+        self.assertEqual(runs("backend/python/tests/unit/modules/pipeline/test_other.py") & MATRIX, set())
+
+    def test_a_frontend_change_runs_the_frontend_checks_only(self) -> None:
+        checks = runs("frontend/app/(main)/chat/page.tsx")
+        self.assertEqual(checks, {"frontend", "codeql_javascript", "e2e_smoke"})
+
+    def test_a_workflow_change_runs_its_own_checks_and_the_actions_scan(self) -> None:
+        checks = runs(".github/workflows/unit-test.yml")
+        self.assertTrue({"node_unit", "python_unit", "redis_cluster", "codeql_actions"} <= checks)
+
+    def test_a_change_to_these_rules_runs_everything(self) -> None:
+        self.assertEqual(runs("README.md", "scripts/pr_changes.py"), set(pc.NAMES))
+        self.assertEqual(runs(".github/actions/pr-changes/action.yml"), set(pc.NAMES))
+
+    def test_no_list_or_a_cut_off_list_runs_everything(self) -> None:
+        self.assertEqual(runs(), set(pc.NAMES))
+        self.assertEqual(set(pc.decide(["README.md"] * pc.FILES_API_LIMIT)), set(pc.NAMES))
+
+    def test_codeql_analyses_only_the_changed_languages(self) -> None:
+        include = json.loads(pc.codeql_matrix(pc.decide(["backend/python/app/x.py"])))
+        self.assertEqual(include, [{"language": "python", "build-mode": "none"}])
+        self.assertEqual(json.loads(pc.codeql_matrix(pc.decide(["README.md"]))), [])
+        every = json.loads(pc.codeql_matrix(pc.everything()))
+        self.assertEqual([entry["language"] for entry in every], ["actions", "javascript-typescript", "python"])
+
+
+class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
+    """Each workflow's own trigger paths still start at least one of its jobs."""
+
+    def _paths(self, workflow: str) -> list[str]:
+        on = _workflow(workflow).get(True) or _workflow(workflow)["on"]
+        return on["pull_request"]["paths"]
+
+    def test_unit_test_triggers(self) -> None:
+        for glob in self._paths("unit-test.yml"):
+            with self.subTest(glob=glob):
+                self.assertTrue(runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster"})
+
+    def test_backend_matrix_triggers(self) -> None:
+        # Every old trigger still starts the storage job; every one outside Node
+        # still starts every Python leg, which run no Node.
+        for glob in self._paths("backend-matrix.yml"):
+            with self.subTest(glob=glob):
+                checks = runs(_example(glob))
+                self.assertIn("matrix_storage", checks)
+                if not glob.startswith("backend/nodejs/"):
+                    self.assertEqual(checks & PYTHON_LEGS, PYTHON_LEGS)
+
+    def test_every_backend_matrix_suite_has_a_check(self) -> None:
+        include = _workflow("backend-matrix.yml")["jobs"]["backend"]["strategy"]["matrix"]["include"]
+        for suite in {entry["suite"] for entry in include} | {"storage"}:
+            self.assertIn(f"matrix_{suite}", pc.NAMES)
+
+    def test_the_codeql_languages_match_the_checks(self) -> None:
+        self.assertEqual(set(pc.CODEQL_LANGUAGES), {name for name in pc.NAMES if name.startswith("codeql_")})
+
+
+_TESTS_IMPORT = re.compile(r"^\s*(?:from|import)\s+(tests(?:\.\w+)+)", re.M)
+
+
+def _module_file(python: Path, module: str) -> Path | None:
+    """The file ``module`` names, or for ``from tests.a import b`` the one ``tests.a`` names."""
+    while module.count(".") >= 1:
+        path = python.joinpath(*module.split("."))
+        for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+            if candidate.exists():
+                return candidate
+        module = module.rsplit(".", 1)[0]
+    return None
+
+
+def _helpers_the_integration_tests_import() -> set[str]:
+    python = ROOT / "backend" / "python"
+    integration = python / "tests" / "integration"
+    todo = list(integration.rglob("*.py"))
+    seen: set[Path] = set()
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        for module in _TESTS_IMPORT.findall(path.read_text(encoding="utf-8", errors="ignore")):
+            found = _module_file(python, module)
+            if found is not None and found not in seen:
+                todo.append(found)
+    return {
+        path.relative_to(ROOT).as_posix()
+        for path in seen
+        if integration not in path.parents and path.name != "__init__.py"
+    }
+
+
+class TestEveryImportedHelperIsCovered(unittest.TestCase):
+    """A helper the integration suites import must start them when it changes."""
+
+    def test_the_matrix_rules_and_trigger_list_every_helper(self) -> None:
+        helpers = _helpers_the_integration_tests_import()
+        self.assertTrue(helpers, "the import walk found nothing, so it checked nothing")
+        on = _workflow("backend-matrix.yml").get(True) or _workflow("backend-matrix.yml")["on"]
+        trigger = on["pull_request"]["paths"]
+        for path in sorted(helpers):
+            with self.subTest(path=path):
+                self.assertTrue(pc.matches(path, pc.MATRIX_PYTHON))
+                self.assertTrue(pc.matches(path, trigger))
+
+
+class TestTheActionAndWorkflowsAgree(unittest.TestCase):
+    def test_the_action_exposes_every_output(self) -> None:
+        action = yaml.safe_load((ROOT / ".github/actions/pr-changes/action.yml").read_text())
+        self.assertEqual(set(action["outputs"]), set(pc.NAMES) | {"codeql_languages"})
+
+    def test_workflows_read_only_outputs_that_exist(self) -> None:
+        known = set(pc.NAMES) | {"codeql_languages"}
+        for path in WORKFLOWS.glob("*.yml"):
+            used = set(re.findall(r"needs\.changes\.outputs\.(\w+)", path.read_text()))
+            job = (yaml.safe_load(path.read_text()).get("jobs") or {}).get("changes") or {}
+            used |= {re.sub(r"\W", "", v.split(".")[-1]) for v in (job.get("outputs") or {}).values()}
+            with self.subTest(workflow=path.name):
+                self.assertLessEqual(used, known)
+
+    def test_the_outputs_are_written_for_github(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            listed = Path(tmp, "files.txt")
+            listed.write_text("frontend/app/page.tsx\n")
+            output = Path(tmp, "out")
+            summary = Path(tmp, "summary")
+            env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+            with unittest.mock.patch.dict("os.environ", env), unittest.mock.patch("sys.stdout"):
+                self.assertEqual(pc.main(["--files", str(listed)]), 0)
+            written = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(written["frontend"], "true")
+        self.assertEqual(written["python_unit"], "false")
+        self.assertEqual(json.loads(written["codeql_languages"]), [{"language": "javascript-typescript", "build-mode": "none"}])
+
+
+if __name__ == "__main__":
+    unittest.main()
