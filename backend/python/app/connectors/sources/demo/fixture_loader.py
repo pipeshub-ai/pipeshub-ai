@@ -88,7 +88,7 @@ def validate_fixture(fx: Mapping[str, Any]) -> None:
     for person in fx.get("people", []):
         _check_person(person, ids, orgs)
     for container in fx.get("containers", []):
-        _check_container(container, ids)
+        _check_container(container, ids, orgs)
     for thread in fx.get("threads", []):
         _check_refs(f"thread {thread['id']}", "container", [thread.get("container")], ids["containers"])
     for rec in fx.get("records", []):
@@ -135,7 +135,7 @@ def _check_person(person: Mapping, ids: Mapping[str, set[str]], orgs: Mapping[st
         raise FixtureError(f"{owner}: an external person's address must be on {domain}")
 
 
-def _check_container(container: Mapping, ids: Mapping[str, set[str]]) -> None:
+def _check_container(container: Mapping, ids: Mapping[str, set[str]], orgs: Mapping[str, Mapping]) -> None:
     owner = f"container {container['id']}"
     spec = SYSTEMS.get(container.get("system"))
     if spec is None:
@@ -145,8 +145,8 @@ def _check_container(container: Mapping, ids: Mapping[str, set[str]]) -> None:
     _check_refs(owner, "group", [container.get("group")], ids["groups"])
     _check_refs(owner, "owner", [container.get("owner")], ids["people"])
     _check_refs(owner, "organization", [container.get("organization")], ids["organizations"])
-    if container["system"] == "SALESFORCE" and not container.get("organization"):
-        raise FixtureError(f"{owner}: a Salesforce account names its organization")
+    if container["system"] == "SALESFORCE" and not orgs.get(container.get("organization"), {}).get("crm"):
+        raise FixtureError(f"{owner}: a Salesforce account names an organization with crm: true")
 
 
 def _check_record(rec: Mapping, ids: Mapping[str, set[str]], containers: Mapping[str, Mapping]) -> None:

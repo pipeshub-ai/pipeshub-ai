@@ -140,6 +140,13 @@ def test_a_field_or_type_the_real_connector_does_not_emit_fails_loading(
         load_fixture(_write(tmp_path, MAIN, {"00.yaml": extra}))
 
 
+def test_a_salesforce_account_belongs_to_a_crm_organization(tmp_path: Path) -> None:
+    extra = _globex_extra()
+    extra["organizations"][0]["crm"] = False
+    with pytest.raises(FixtureError, match="sf-globex.*crm"):
+        load_fixture(_write(tmp_path, MAIN, {"00.yaml": extra}))
+
+
 def test_an_external_person_needs_an_address_on_their_companys_domain(tmp_path: Path) -> None:
     extra = _globex_extra()
     extra["people"][0]["email"] = "gina@acme-demo.example"

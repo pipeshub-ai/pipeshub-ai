@@ -1,0 +1,158 @@
+# One record per system the demo connector imitates beyond the original five,
+# plus a pull request, a ticket and a document that name people in every role
+# their system has. Small on purpose: the demo connector's coverage tests and
+# the knowledge-graph ground truth are checked against it.
+
+organizations:
+  - id: globex
+    name: Globex Corporation
+    aliases: ["Globex"]
+    domain: globex.example
+    crm: true
+  - id: initech
+    name: Initech
+    aliases: ["Initech Inc."]
+    domain: initech.example
+    crm: false
+
+people:
+  - id: gina
+    name: Gina Moretti
+    email: gina.moretti@globex.example
+    title: Head of Finance Systems, Globex
+    kind: external
+    company: globex
+    aliases: ["Gina M."]
+
+containers:
+  - id: confluence-eng
+    system: CONFLUENCE
+    kind: space
+    name: ENG — Engineering
+    group: engineering-readers
+    web_url: https://confluence.acme-demo.example/spaces/ENG
+  - id: gmail-omar
+    system: GMAIL
+    kind: mailbox
+    name: Omar Haddad's mailbox
+    owner: omar
+    group: sales-readers
+    web_url: https://mail.acme-demo.example/omar
+  - id: sf-globex
+    system: SALESFORCE
+    kind: account
+    name: Globex Corporation
+    organization: globex
+    group: sales-readers
+    web_url: https://salesforce.acme-demo.example/accounts/globex
+  - id: kb-eng
+    system: KB
+    kind: collection
+    name: Engineering notes
+    group: engineering-readers
+    web_url: https://kb.acme-demo.example/engineering-notes
+
+records:
+  - id: confluence-e0-ledger-adr
+    container: confluence-eng
+    type: PAGE
+    title: "ADR-014: Ledger exports move to the batch queue"
+    author: dana
+    last_modified_by: priya
+    created: 2026-04-08T10:00:00Z
+    updated: 2026-04-21T15:30:00Z
+    mentions_orgs: [initech]
+    body: |
+      ## Decision
+      Ledger exports leave the request path and run on the batch export queue.
+
+      ## Context
+      Initech's reconciliation tool polls the export endpoint every minute, which
+      is the load the queue was built to absorb.
+
+  - id: gmail-e0-globex-renewal
+    container: gmail-omar
+    type: MAIL
+    title: "Globex renewal: revised order form"
+    from: omar
+    to: [gina]
+    cc: [lena]
+    created: 2026-04-14T09:20:00Z
+    mentions_orgs: [globex]
+    body: |
+      Hi Gina,
+
+      Attached is the revised order form for the Globex renewal: 400 seats on
+      the annual plan, with the ledger export add-on included.
+
+      Omar
+
+  - id: sf-e0-globex-renewal
+    container: sf-globex
+    type: DEAL
+    title: "Globex — 2026 renewal"
+    owner: omar
+    created: 2026-03-30T12:00:00Z
+    updated: 2026-04-14T09:30:00Z
+    body: |
+      Stage: Negotiation. Amount: $96,000. Close date: 2026-05-15.
+
+  - id: sf-e0-globex-case
+    container: sf-globex
+    type: CASE
+    title: "Case 00981: Ledger export times out for Globex"
+    author: omar
+    owner: sam
+    reporter: gina
+    created: 2026-04-16T08:45:00Z
+    updated: 2026-04-17T11:00:00Z
+    body: |
+      Status: Closed. The nightly ledger export for Globex timed out twice;
+      rerun after the batch queue rollout completed in four minutes.
+
+  - id: kb-e0-export-faq
+    container: kb-eng
+    type: KB_FILE
+    title: "Ledger export FAQ"
+    author: priya
+    created: 2026-04-22T14:00:00Z
+    body: |
+      Exports of more than 10,000 rows run on the batch queue and arrive by
+      email within fifteen minutes.
+
+  - id: gh-pr-e0-export-batch
+    container: gh-svc-export
+    type: PULL_REQUEST
+    title: "PR #530: Route ledger exports through the batch queue"
+    author: priya
+    assignees: [priya]
+    reviewers: [dana, marcus]
+    created: 2026-04-09T16:00:00Z
+    updated: 2026-04-11T10:00:00Z
+    body: |
+      Implements ADR-014: ledger exports are enqueued and the endpoint returns a
+      job id.
+
+  - id: jira-e0-sup-140
+    container: jira-sup
+    type: TICKET
+    title: "SUP-140: Globex asks for export status emails"
+    author: sam
+    reporter: bob
+    assignee: priya
+    created: 2026-04-18T09:00:00Z
+    body: |
+      Globex wants an email when a queued ledger export finishes.
+
+  - id: drive-e0-export-rollout
+    container: drive-engineering
+    type: FILE
+    title: "Ledger export rollout checklist"
+    owners: [dana]
+    last_modified_by: priya
+    created: 2026-04-10T08:00:00Z
+    updated: 2026-04-20T17:00:00Z
+    body: |
+      1. Enable the batch queue for internal accounts.
+      2. Enable it for Globex after their sign-off.
+      3. Remove the synchronous export path.
