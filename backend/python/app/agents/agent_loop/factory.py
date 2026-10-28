@@ -91,12 +91,6 @@ from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
 )
-from app.agents.agent_loop.entity_search_tool import (
-    ENTITY_SEARCH_OFFERED_STATE_KEY,
-    NAMED_ENTITIES_ENABLED_STATE_KEY,
-    SEARCH_BY_ENTITIES_TOOL_NAME,
-    entity_search_tool_offered,
-)
 from app.agents.agent_loop.history_window import (
     HISTORY_SHARE,
     attachment_stub,
@@ -142,6 +136,11 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
+from app.agents.agent_loop.knowledge_graph_policy import (
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    decide_knowledge_graph_policy,
+    entity_tools_granted,
+)
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
@@ -204,10 +203,7 @@ from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
-from app.services.featureflag.platform_settings import (
-    is_named_entity_extraction_enabled,
-    is_skills_enabled,
-)
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.citations import rewrite_request_refs
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
@@ -389,10 +385,11 @@ def _composed_agents_enabled() -> bool:
 
 def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
     """Entity tools are hidden when no entity store is wired (they could only
-    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
-    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
-    earlier turn already used an entity tool and its ids are in the history."""
-    if not context.tool_state.get("entity_vector_store"):
+    fail) or the request's knowledge-graph arm has none. ``find_records_by_entity``
+    needs an entityId, so it starts hidden until ``search_entities`` runs
+    (``hooks/progressive_tools.py``) — unless an earlier turn already used an
+    entity tool and its ids are in the history."""
+    if not entity_tools_granted(context.tool_state):
         return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
     if entity_tools_used_in_history(context.previous_conversations):
         return tool_names
@@ -562,10 +559,7 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
-        context.tool_state[NAMED_ENTITIES_ENABLED_STATE_KEY] = await is_named_entity_extraction_enabled(
-            context.tool_state.get("config_service"),
-        )
-        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = entity_search_tool_offered(context.tool_state)
+        await decide_knowledge_graph_policy(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )

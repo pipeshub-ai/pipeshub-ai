@@ -19,6 +19,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     remember_entities,
 )
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
@@ -29,7 +30,6 @@ from app.modules.named_entities.domain.kinds import (
 )
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
-    SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
@@ -47,12 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NAMED_ENTITIES_DISABLED_MSG = "Named-entity lookup is not enabled."
-
-
-async def _named_entities_enabled(state: "ChatState") -> bool:
-    from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
-
-    return await is_named_entity_extraction_enabled(state.get("config_service"))
+ENTITY_SEARCH_DISABLED_MSG = "Entity search is not enabled."
 
 _MAX_TOP_K = 25
 _DEFAULT_TOP_K = 10
@@ -101,6 +96,10 @@ async def execute_search_entities(
     graph_provider = state.get("graph_provider")
     if not entity_vector_store or not graph_provider:
         return False, _error("Entity search is not available in this deployment", retryable=True)
+    policy = knowledge_graph_policy_in(state)
+    if not policy.entity_tools:
+        return False, _error(ENTITY_SEARCH_DISABLED_MSG)
+    searchable = policy.entity_types
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
@@ -108,12 +107,12 @@ async def execute_search_entities(
     # other types searched; it is a named-entity kind. One that is also an
     # entity type ("person") stays one too, so it is searched with extraction off.
     kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
-    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in searchable]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)
     if entity_search_offered:
         kinds, kind_notes = _searchable_kinds(kinds)
-    enabled = await _named_entities_enabled(state)
+    enabled = policy.named_entities
     if not enabled:
         wanted_named = asked_kinds or "named_entity" in requested
         requested = [t for t in requested if t != "named_entity"]
@@ -135,9 +134,9 @@ async def execute_search_entities(
             })
     elif kinds and "named_entity" not in requested:
         requested.append("named_entity")
-    valid_types = [t for t in dict.fromkeys(requested) if t in SEARCHABLE_ENTITY_TYPES]
+    valid_types = [t for t in dict.fromkeys(requested) if t in searchable]
     if requested and not valid_types:
-        supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
+        supported = ", ".join(sorted(searchable))
         return False, _error(f"Unsupported entity_types {requested}; supported: {supported}")
 
     bounded_top_k = max(
@@ -153,7 +152,7 @@ async def execute_search_entities(
             entity_types=valid_types or None,
             kinds=_with_related_kinds(kinds) or None,
             top_k=bounded_top_k,
-            include_named=enabled,
+            allowed_types=searchable,
         )
     except EntitySearchTimedOut:
         logger.warning("search_entities timed out", exc_info=True)
@@ -166,7 +165,7 @@ async def execute_search_entities(
         logger.warning("search_entities failed", exc_info=True)
         return False, _error("Entity search failed — try again.", retryable=True)
 
-    ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
+    ignored = sorted(set(requested) - searchable)
     if not hits:
         payload: dict[str, Any] = {
             "status": "success",

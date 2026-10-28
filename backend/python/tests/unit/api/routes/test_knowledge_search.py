@@ -17,8 +17,14 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 import app.edition_config  # noqa: F401  (the route module loads cleanly only after this)
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+    KnowledgeGraphMode,
+    KnowledgeGraphPolicy,
+)
 from app.api.routes import knowledge_search as ks
 from app.core.org_context import OrgContext, bind
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityRecordPage,
@@ -251,7 +257,7 @@ async def test_neighbors_lists_only_accessible_records_and_their_shared_entities
         {"recordId": RID, "collection": "topics", "entityId": "self", "name": "Self"},
     ])
     page = EntityRecordPage(records=[{"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}], next_cursor=None)
-    with _patch_entity_state(), patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=False)), \
+    with _patch_entity_state(), patch.object(ks, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False)), \
          patch.object(ks, "load_entity_access_context", AsyncMock(return_value=_context())), \
          patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=page)), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
@@ -269,7 +275,7 @@ async def test_neighbors_lists_only_accessible_records_and_their_shared_entities
 async def test_neighbors_without_readable_records_is_empty_and_reads_no_labels() -> None:
     graph = MagicMock()
     graph.get_record_taxonomy_links = AsyncMock()
-    with _patch_entity_state(), patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=True)), \
+    with _patch_entity_state(), patch.object(ks, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True)), \
          patch.object(ks, "load_entity_access_context", AsyncMock(return_value=_context())), \
          patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=EntityRecordPage([], None))), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
@@ -287,7 +293,7 @@ async def test_search_entities_returns_nothing_when_the_access_check_keeps_nothi
     with patch.object(ks, "_entity_state", AsyncMock(return_value=state)), \
          patch("app.agents.actions.knowledge_graph.ops.entity_discovery.load_entity_access_context", AsyncMock(return_value=_context())), \
          patch("app.agents.actions.knowledge_graph.ops.entity_discovery.search_entities_for_user", AsyncMock(return_value=[])), \
-         patch("app.agents.actions.knowledge_graph.ops.entity_discovery._named_entities_enabled", AsyncMock(return_value=False)):
+         patch("app.agents.actions.knowledge_graph.ops.entity_discovery.knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False)):
         response = await ks.search_entities(_request(), ks.EntitySearchQuery(query="payments"), MagicMock())
     assert json.loads(response.body)["results"] == []
 
@@ -344,16 +350,36 @@ async def test_the_access_check_is_built_for_the_session_user() -> None:
         return _context()
 
     state = {"org_id": ORG, "user_id": USER, "config_service": MagicMock(), "filters": {}}
-    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)),          patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=False)),          patch.object(ks, "load_entity_access_context", context),          patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=EntityRecordPage([], None))),          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
+    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)),          patch.object(ks, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False)),          patch.object(ks, "load_entity_access_context", context),          patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=EntityRecordPage([], None))),          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
         await ks.entity_neighbors(_request(), ks.EntityNeighborsQuery(entityId="e", entityType="topic"), graph)
     assert seen == {"org": ORG, "user": USER}
 
 
 async def test_an_entity_type_the_search_does_not_cover_is_a_400() -> None:
     state = {"org_id": ORG, "user_id": USER, "config_service": MagicMock(), "filters": {}}
-    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)),          patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=True)),          patch.object(ks, "SEARCHABLE_ENTITY_TYPES", frozenset({"topic"})):
+    with patch.object(ks, "_entity_state", AsyncMock(return_value=state)),          patch.object(ks, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True)),          patch.object(ks, "SEARCHABLE_ENTITY_TYPES", frozenset({"topic"})):
         with pytest.raises(HTTPException) as err:
             await ks.entity_neighbors(_request(), ks.EntityNeighborsQuery(entityId="e", entityType="department"), MagicMock())
+    assert err.value.status_code == 400
+
+
+async def test_the_routes_serve_the_entity_types_the_labs_flags_allow() -> None:
+    """The routes and an assistant turn decide the knowledge-graph arm alike."""
+    request = _request()
+    request.app.container.config_service.return_value = MagicMock()
+    flags = MagicMock(tools=True, people_and_companies=False, named_entities=True)
+    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=None)), \
+         patch("app.agents.agent_loop.knowledge_graph_policy.knowledge_graph_flags", AsyncMock(return_value=flags)):
+        state = await ks._entity_state(request, MagicMock())
+    policy = state[KNOWLEDGE_GRAPH_POLICY_STATE_KEY]
+    assert policy.mode is KnowledgeGraphMode.TAXONOMY and not policy.named_entities
+
+
+async def test_neighbors_of_a_type_the_arm_leaves_out_is_a_400() -> None:
+    off = KnowledgeGraphPolicy(mode=KnowledgeGraphMode.OFF)
+    with _patch_entity_state(), patch.object(ks, "knowledge_graph_policy_in", lambda _state: off):
+        with pytest.raises(HTTPException) as err:
+            await ks.entity_neighbors(_request(), ks.EntityNeighborsQuery(entityId="e", entityType="topic"), MagicMock())
     assert err.value.status_code == 400
 
 
@@ -391,7 +417,7 @@ def _neighbors_graph(record: dict, **overrides) -> tuple[MagicMock, EntityRecord
 
 
 async def _neighbors(graph: MagicMock, page: EntityRecordPage, *, named: bool = False) -> JSONResponse:
-    with _patch_entity_state(), patch.object(ks, "_named_entities_enabled", AsyncMock(return_value=named)), \
+    with _patch_entity_state(), patch.object(ks, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=named)), \
          patch.object(ks, "load_entity_access_context", AsyncMock(return_value=_context())), \
          patch.object(ks, "list_accessible_entity_records", AsyncMock(return_value=page)), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):

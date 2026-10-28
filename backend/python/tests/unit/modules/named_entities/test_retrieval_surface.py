@@ -21,6 +21,7 @@ from app.modules.retrieval.retrieval_service import (
 )
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 
 def _service() -> RetrievalService:
@@ -184,7 +185,7 @@ def _state(graph) -> dict:
 
 @pytest.fixture
 def tool_env(monkeypatch):
-    monkeypatch.setattr(values, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(values, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     context = AsyncMock(return_value=_context("app-in-scope"))
     monkeypatch.setattr(values, "load_entity_access_context", context)
     monkeypatch.setattr(values, "resolve_frontend_url", AsyncMock(return_value=None))
@@ -338,7 +339,7 @@ async def test_find_records_by_value_fails_when_access_cannot_be_resolved(tool_e
 
 
 async def test_find_records_by_value_is_off_with_the_labs_flag(monkeypatch):
-    monkeypatch.setattr(values, "_named_entities_enabled", AsyncMock(return_value=False))
+    monkeypatch.setattr(values, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
     graph = _tool_graph()
 
     ok, message = await values.execute_find_records_by_value(_state(graph), kinds=["organization"])

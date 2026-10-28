@@ -24,6 +24,7 @@ def _build_knowledge_context(
     catalog: SourceCatalog | None = None,
     *,
     tool_names: list[str] | None = None,
+    people_and_companies: bool = False,
 ) -> str:
     """Build the knowledge & data sources block for the agent-loop system prompt.
 
@@ -36,10 +37,11 @@ def _build_knowledge_context(
     to avoid re-walking ``agent_knowledge`` when the caller already has one.
 
     Pass ``tool_names`` (from ``spec.tool_names``) so that tool references
-    in the rendered text use the exact granted spellings the model can call.
+    in the rendered text use the exact granted spellings the model can call,
+    and ``people_and_companies`` when the entity tools return them.
     """
     del log  # reserved for future diagnostics; keep signature stable
     resolved = catalog if catalog is not None else SourceCatalog.from_state(state)
     if resolved.is_empty():
         return ""
-    return resolved.render(tool_names=tool_names)
+    return resolved.render(tool_names=tool_names, people_and_companies=people_and_companies)

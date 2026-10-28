@@ -125,7 +125,8 @@ async def find_unindexed_matches(
     """
     hits = await search_entities_for_user(
         store, graph_provider, context, query,
-        entity_types=[RECORD_ENTITY_TYPE], top_k=TITLE_SEARCH_TOP_K, include_named=False,
+        entity_types=[RECORD_ENTITY_TYPE], top_k=TITLE_SEARCH_TOP_K,
+        allowed_types=frozenset({RECORD_ENTITY_TYPE}),
     )
     candidates = unindexed_matches(hits, context, TITLE_SEARCH_TOP_K)
     if not candidates:

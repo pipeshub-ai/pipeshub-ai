@@ -22,6 +22,7 @@ from app.modules.retrieval.entity_permissions import (
     EntitySearchTimedOut,
 )
 from app.modules.retrieval.selection_scope import SelectionScope
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -110,7 +111,7 @@ class TestGuards:
     async def test_a_named_entity_search_with_the_flag_off_does_not_search_every_type(
         self, patched, monkeypatch, ask,
     ) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
         ok, text = await execute_search_entities(_state(), "acme", **ask)
         assert ok is False
         assert json.loads(text)["message"] == entity_discovery.NAMED_ENTITIES_DISABLED_MSG
@@ -118,7 +119,7 @@ class TestGuards:
 
     @pytest.mark.asyncio
     async def test_the_flag_off_drops_only_the_named_entity_type(self, patched, monkeypatch) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
         ok, _ = await execute_search_entities(
             _state(), "acme", entity_types=["named_entity", "topic"], named_entity_kinds=["currency"],
         )
@@ -128,7 +129,7 @@ class TestGuards:
 
     @pytest.mark.asyncio
     async def test_a_kind_given_as_an_entity_type_searches_named_entities(self, patched, monkeypatch) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         ok, text = await execute_search_entities(_state(), "ValeHealth", entity_types=["organization", "record"])
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
@@ -141,7 +142,7 @@ class TestGuards:
     async def test_an_organisation_search_with_extraction_off_searches_the_organisation_entities(
         self, patched, monkeypatch,
     ) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
         ok, _ = await execute_search_entities(_state(), "Orrin Biotech", entity_types=["organization"])
         assert ok is True
         _, search_kwargs = patched[1].call_args
@@ -154,7 +155,7 @@ class TestGuards:
         # "person" is both an entity type (the members records name) and a
         # named-entity kind: read as the kind alone, every people lookup failed
         # while extraction was off, the default.
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
         ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
         assert ok is True
         _, search_kwargs = patched[1].call_args
@@ -164,7 +165,7 @@ class TestGuards:
     async def test_a_person_search_with_extraction_on_also_searches_named_people(
         self, patched, monkeypatch,
     ) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
         assert ok is True
         _, search_kwargs = patched[1].call_args
@@ -317,7 +318,7 @@ class TestWhereEntitySearchIsOffered:
 
     @pytest.fixture(autouse=True)
     def _extraction_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
 
     @staticmethod
     async def _offered(**kwargs) -> tuple[bool, dict]:
@@ -441,7 +442,7 @@ class TestWithoutEntitySearch:
 
     @pytest.fixture(autouse=True)
     def _extraction_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
 
     @pytest.mark.asyncio
     async def test_kinds_go_to_the_search_with_the_kinds_their_names_are_filed_under(self, patched) -> None:

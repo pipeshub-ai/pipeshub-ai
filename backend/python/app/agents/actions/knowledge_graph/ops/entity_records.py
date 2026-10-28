@@ -16,9 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
-from app.agents.actions.knowledge_graph.ops.entity_discovery import (
-    _named_entities_enabled,
-)
+from app.agents.actions.knowledge_graph.ops.entity_discovery import NAMED_ENTITIES_DISABLED_MSG
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
     limited_scope_note,
@@ -31,6 +29,7 @@ from app.agents.actions.knowledge_graph.views import (
     _short,
     _trunc,
 )
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
@@ -42,7 +41,6 @@ from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     SEARCH_SCOPE_MAX_RECORDS,
     SEARCH_SCOPE_MAX_SCAN,
-    SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
     EntityRecordPage,
@@ -109,16 +107,17 @@ async def execute_find_records_by_entity(
     resolved_id = shortener.resolve(raw_id) if shortener is not None else raw_id
     indexed: dict[str, str] = (state.get(ENTITY_INDEX_CACHE_KEY) or {}).get(resolved_id) or {}
     resolved_type = (entity_type or "").strip().lower() or indexed.get("type")
-    supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
+    policy = knowledge_graph_policy_in(state)
+    supported = ", ".join(sorted(policy.entity_types))
     if not resolved_type:
         return False, (
             "entity_type is required for an entity that search_entities did not return "
             f"in this turn — pass one of: {supported}."
         )
-    if resolved_type not in SEARCHABLE_ENTITY_TYPES:
+    if resolved_type == "named_entity" and not policy.named_entities:
+        return False, NAMED_ENTITIES_DISABLED_MSG
+    if not policy.allows(resolved_type):
         return False, f"Unsupported entity_type {resolved_type!r} — pass one of: {supported}."
-    if resolved_type == "named_entity" and not await _named_entities_enabled(state):
-        return False, "Named-entity lookup is not enabled."
 
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()] or None
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
@@ -126,6 +125,7 @@ async def execute_find_records_by_entity(
         context = await load_entity_access_context(state)
         page = await _first_readable_page(
             state, context, resolved_id, resolved_type, wanted_types, bounded_limit, cursor,
+            allowed_types=policy.entity_types,
         )
     except ValueError as exc:
         return False, str(exc)
@@ -310,13 +310,15 @@ async def _first_readable_page(
     record_types: list[str] | None,
     limit: int,
     cursor: str | None,
+    *,
+    allowed_types: frozenset[str],
 ) -> EntityRecordPage:
     """The listing's page; when its scan ran out before a readable record, the page
     from the next readable one the probe finds, else that empty page."""
     graph = state["graph_provider"]
     page = await list_accessible_entity_records(
         graph, context, entity_id=entity_id, entity_type=entity_type,
-        record_types=record_types, limit=limit, cursor=cursor,
+        record_types=record_types, limit=limit, cursor=cursor, allowed_types=allowed_types,
     )
     if page.records or page.next_cursor is None:
         return page
@@ -329,7 +331,7 @@ async def _first_readable_page(
         return EntityRecordPage(records=[], next_cursor=None)
     return await list_accessible_entity_records(
         graph, context, entity_id=entity_id, entity_type=entity_type,
-        record_types=record_types, limit=limit, cursor=str(start),
+        record_types=record_types, limit=limit, cursor=str(start), allowed_types=allowed_types,
     )
 
 
@@ -443,14 +445,16 @@ async def resolve_entity_virtual_ids(
     state: "ChatState", entities: list[tuple[str, str]],
 ) -> EntitySearchScope:
     """Deduplicated ``virtualRecordId``s of the accessible records connected to
-    each ``(entity_id, entity_type)``, used to scope ``search(entity_ids=[...])``.
+    each ``(entity_id, entity_type)`` of a type the request's policy allows, used
+    to scope ``search(entity_ids=[...])``.
     Bounded per call; raises ``EntityAccessError`` on failure so search never
     silently widens to an unscoped query."""
     context = await load_entity_access_context(state)
     graph_provider = state["graph_provider"]
+    allowed_types = knowledge_graph_policy_in(state).entity_types
     seen: set[str] = set()
     virtual_ids: list[str] = []
-    unique = list(dict.fromkeys(entities))
+    unique = [entity for entity in dict.fromkeys(entities) if entity[1] in allowed_types]
     entities_skipped = max(0, len(unique) - SEARCH_SCOPE_MAX_ENTITIES)
     truncated = False
     for entity_id, entity_type in unique[:SEARCH_SCOPE_MAX_ENTITIES]:

@@ -3,7 +3,9 @@ with the real `KnowledgeGraph` toolset, in every mode.
 
 The deployment switch ``ENTITY_SEARCH_TOOL`` (off by default, and off under
 ``HIGH_ACCURACY_MODE`` unless set) decides whether the tool is offered, and
-only where named-entity extraction is on and the entity store is wired. With
+only in the ``full`` knowledge-graph arm with named-entity extraction on and the
+entity store wired. These run the ``full`` arm (``test_knowledge_graph_arms``
+covers the others). With
 it off, the tools and the system prompt are what they were before the tool
 existed. Either way they do not depend on the question, so the provider's
 prompt cache keeps hitting across questions.
@@ -21,20 +23,21 @@ import pytest
 from app.agent_loop_lib.agent.tool_loop import tool_schemas_for_turn
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
-from app.agents.agent_loop.entity_search_tool import (
-    ENTITY_SEARCH_OFFERED_STATE_KEY,
-    ENTITY_SEARCH_TOOL_ENV_VAR,
-    NAMED_ENTITIES_ENABLED_STATE_KEY,
-    SEARCH_BY_ENTITIES_TOOL_NAME,
-    entity_search_tool_offered,
-)
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks.progressive_tools import (
     PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
 )
+from app.agents.agent_loop.knowledge_graph_policy import (
+    ENTITY_SEARCH_TOOL_ENV_VAR,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    KnowledgeGraphPolicy,
+    entity_search_tool_switched_on,
+    knowledge_graph_policy_in,
+)
+from app.services.featureflag.platform_settings import KnowledgeGraphFlags
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
-_NER_FLAG = "app.agents.agent_loop.factory.is_named_entity_extraction_enabled"
+_KG_FLAGS = "app.agents.agent_loop.knowledge_graph_policy.knowledge_graph_flags"
 _JIRA = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
 _MODES = ("quick", "react", "planExecute", "deep")
 _QUESTIONS = ("Who owns the Contoso renewal?", "Summarize the Q3 incident reviews for Northwind")
@@ -83,14 +86,18 @@ async def _create(
     context.tool_state["web_search_config"] = {"provider": "duckduckgo"}
     if store:
         context.tool_state["entity_vector_store"] = MagicMock()
-    flag = flag or AsyncMock(return_value=ner)
+    flag = flag or _full_arm(ner)
     with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=_registry()), \
             patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None), \
-            patch(_NER_FLAG, flag):
+            patch(_KG_FLAGS, flag):
         agent, runtime, goal, _clarifying = await PipesHubAgentFactory().create(
             context, context.llm, mode, query=query,
         )
     return context, agent, runtime, goal
+
+
+def _full_arm(ner: bool) -> AsyncMock:
+    return AsyncMock(return_value=KnowledgeGraphFlags(tools=True, people_and_companies=True, named_entities=ner))
 
 
 def _granted(mode: str, agent: Any, runtime: Any) -> list[str]:  # noqa: ANN401
@@ -133,18 +140,16 @@ class TestTheSwitch:
     ) -> None:
         for name, value in env.items():
             monkeypatch.setenv(name, value)
-        state = {"entity_vector_store": object(), NAMED_ENTITIES_ENABLED_STATE_KEY: True}
-        assert entity_search_tool_offered(state) is expected
+        assert entity_search_tool_switched_on() is expected
 
-    @pytest.mark.parametrize(("store", "ner"), [(None, True), (object(), False), (object(), None)])
-    def test_it_needs_extraction_and_the_entity_store(
-        self, monkeypatch: pytest.MonkeyPatch, store: object, ner: bool | None,
+    @pytest.mark.parametrize(("wired", "ner", "people"), [(False, True, True), (True, False, True), (True, True, False)])
+    def test_it_needs_extraction_the_entity_store_and_the_full_arm(
+        self, wired: bool, ner: bool, people: bool,
     ) -> None:
-        monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
-        state: dict[str, Any] = {"entity_vector_store": store}
-        if ner is not None:
-            state[NAMED_ENTITIES_ENABLED_STATE_KEY] = ner
-        assert entity_search_tool_offered(state) is False
+        policy = KnowledgeGraphPolicy.from_flags(
+            tools=True, people_and_companies=people, named_entities=ner, search_by_entities_wired=wired,
+        )
+        assert policy.search_by_entities is False
 
 
 class TestTheNamedEntityFlag:
@@ -154,11 +159,12 @@ class TestTheNamedEntityFlag:
     async def test_one_read_decides_both(self, monkeypatch: pytest.MonkeyPatch, switch: str, ner: bool) -> None:
         if switch == "on":
             monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
-        flag = AsyncMock(return_value=ner)
+        flag = _full_arm(ner)
         context, _agent, _runtime, _ = await _create(flag=flag)
         flag.assert_awaited_once()
-        assert context.tool_state[NAMED_ENTITIES_ENABLED_STATE_KEY] is ner
-        assert context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] is (ner and switch == "on")
+        policy = knowledge_graph_policy_in(context.tool_state)
+        assert policy.named_entities is ner
+        assert policy.search_by_entities is (ner and switch == "on")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", _MODES)
@@ -187,7 +193,7 @@ class TestGrantPerMode:
         for name, value in env.items():
             monkeypatch.setenv(name, value)
         context, agent, runtime, goal = await _create(mode)
-        assert context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] is False
+        assert knowledge_graph_policy_in(context.tool_state).search_by_entities is False
         assert not runtime.tool_registry.has(SEARCH_BY_ENTITIES_TOOL_NAME)
         system, schemas = _surface(mode, agent, runtime, goal)
         assert "search_by_entities" not in system and "search_by_entities" not in schemas
@@ -199,7 +205,7 @@ class TestGrantPerMode:
         _context, off_agent, off_runtime, _ = await _create(mode)
         monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
         context, agent, runtime, _ = await _create(mode)
-        assert context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] is True
+        assert knowledge_graph_policy_in(context.tool_state).search_by_entities is True
         off, on = _granted(mode, off_agent, off_runtime), _granted(mode, agent, runtime)
         assert [name for name in on if name != SEARCH_BY_ENTITIES_TOOL_NAME] == off
         assert SEARCH_BY_ENTITIES_TOOL_NAME in on

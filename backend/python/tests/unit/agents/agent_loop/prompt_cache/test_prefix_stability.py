@@ -415,8 +415,11 @@ class TestAnswerRulesKeepThePrefixStable:
         self, monkeypatch: pytest.MonkeyPatch, mode: str,
     ) -> None:
         # HIGH_ACCURACY_MODE also turns named-entity extraction on, which adds its tools.
+        from app.services.featureflag.platform_settings import KnowledgeGraphFlags
+
         monkeypatch.setattr(
-            "app.agents.agent_loop.factory.is_named_entity_extraction_enabled", AsyncMock(return_value=True),
+            "app.agents.agent_loop.knowledge_graph_policy.knowledge_graph_flags",
+            AsyncMock(return_value=KnowledgeGraphFlags(tools=True, people_and_companies=True, named_entities=True)),
         )
         _set_answer_rules(monkeypatch, on=False)
         unset = await _mode_request(mode, _QUESTIONS[0])

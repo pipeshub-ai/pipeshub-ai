@@ -22,6 +22,7 @@ from tests.unit.agents.actions.knowledge_graph.test_find_records_by_value import
     _rows,
     _state,
 )
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,7 +32,7 @@ _MANY = values._MAX_SCAN + 1000
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    monkeypatch.setattr(values, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(values, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(values, "resolve_frontend_url", AsyncMock(return_value=None))
     context = AsyncMock(return_value=_context())
     monkeypatch.setattr(values, "load_entity_access_context", context)

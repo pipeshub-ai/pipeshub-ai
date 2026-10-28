@@ -52,6 +52,10 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.knowledge_graph_policy import (
+    decide_knowledge_graph_policy,
+    entity_tools_granted,
+)
 from app.agents.agent_loop.period_summary import timeline_replaces_prefetch
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
@@ -161,15 +165,16 @@ def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy)
     prompt builder whether its fetch policy must ask for full reads to match.
 
     Reads each switch once, so the mode text and the fetch policy can never
-    disagree within a request. Entity tools are granted exactly when an
-    entity store is wired (`factory._initial_entity_tool_grant`)."""
+    disagree within a request. Entity tools are granted exactly when
+    `entity_tools_granted` says so (`factory._initial_entity_tool_grant`), from
+    the knowledge-graph policy decided before this runs."""
     internal_search = policy.system_prompt_key == "internal_search"
     thorough = internal_search and thorough_retrieval_enabled()
     chat_state["instructions"] = _with_mode_instructions(
         chat_state.get("instructions"), policy,
         composition=internal_search and answer_composition_rules_enabled(),
         thorough=thorough,
-        entity_tools=bool(chat_state.get("entity_vector_store")),
+        entity_tools=entity_tools_granted(chat_state),
     )
     chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
 
@@ -385,10 +390,16 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
     are not granted (see ``factory._initial_entity_tool_grant``).
     """
-    from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
+    from app.modules.agents.qna.chat_state import (
+        build_initial_state,
+        remember_shown_results,
+    )
     from app.modules.code_graph.connectors import connector_instances_have_code
     from app.modules.transformers.blob_storage import BlobStorage
-    from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
+    from app.utils.execute_query import (
+        connector_instances_have_sql,
+        sql_connector_instance_ids,
+    )
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
@@ -506,6 +517,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state, policy, web_search_config,
             sql_connector_ids=sql_connector_instance_ids(connector_instances, user_info["orgId"]),
         )
+        await decide_knowledge_graph_policy(chat_state)
         _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper

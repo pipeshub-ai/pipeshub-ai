@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     NAMED_ENTITIES_DISABLED_MSG,
-    _named_entities_enabled,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     limited_scope_note,
@@ -36,6 +35,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import parse_iso_to_epoch_ms
 from app.agents.actions.knowledge_graph.views import _read_hint
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
 from app.modules.agents.qna.chat_state import remember_record_ids
@@ -136,7 +136,7 @@ async def execute_find_records_by_value(
 ) -> tuple[bool, str]:
     if not state or not state.get("graph_provider"):
         return False, "Knowledge graph tool state not initialized."
-    if not await _named_entities_enabled(state):
+    if not knowledge_graph_policy_in(state).named_entities:
         return False, NAMED_ENTITIES_DISABLED_MSG
     # A blank currency is none: the filter strips it, so the note must too.
     currency, dimension = (currency or "").strip(), (dimension or "").strip()

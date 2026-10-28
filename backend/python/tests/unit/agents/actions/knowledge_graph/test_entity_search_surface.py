@@ -1,5 +1,6 @@
-"""The knowledge-graph tools with and without ``search_by_entities`` offered,
-and with named-entity extraction off (``entity_search_surface``)."""
+"""The ``full``-arm knowledge-graph tools with and without ``search_by_entities``
+offered, and with named-entity extraction off (``entity_search_surface``).
+``test_knowledge_graph_arms`` covers the ``off`` and ``taxonomy`` arms."""
 
 from __future__ import annotations
 
@@ -15,10 +16,11 @@ from app.agent_loop_lib.tools.toolset import ToolsetBuilder
 from app.agents.actions.knowledge_graph import entity_search_surface as surface
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
-from app.agents.agent_loop.entity_search_tool import (
-    ENTITY_SEARCH_OFFERED_STATE_KEY,
-    NAMED_ENTITIES_ENABLED_STATE_KEY,
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
     SEARCH_BY_ENTITIES_TOOL_NAME,
+    KnowledgeGraphMode,
+    KnowledgeGraphPolicy,
 )
 
 _VARIED = {
@@ -28,11 +30,9 @@ _VARIED = {
 }
 
 
-def _tools(offered: bool | None, *, named: bool | None = True) -> tuple[list[Any], list[Any]]:
-    """``None`` leaves the key off the state, as for a request that never read it."""
-    keys = ((ENTITY_SEARCH_OFFERED_STATE_KEY, offered), (NAMED_ENTITIES_ENABLED_STATE_KEY, named))
-    state: dict[str, Any] = {key: value for key, value in keys if value is not None}
-    instance = KnowledgeGraph(state=state)
+def _tools(offered: bool, *, named: bool = True) -> tuple[list[Any], list[Any]]:
+    policy = KnowledgeGraphPolicy(mode=KnowledgeGraphMode.FULL, named_entities=named, search_by_entities=offered)
+    instance = KnowledgeGraph(state={KNOWLEDGE_GRAPH_POLICY_STATE_KEY: policy})
     built = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
     # The timeline tool has its own switch (test_timeline.py); these are about entity search.
     declared = [t for t in built if t.name != TIMELINE_TOOL_NAME]
@@ -43,9 +43,8 @@ def _schema(tool: Any) -> tuple[str, str, list[Any]]:  # noqa: ANN401
     return tool.name, tool.description, tool.parameters
 
 
-@pytest.mark.parametrize("offered", [None, False])
-def test_not_offered_is_the_declared_toolset_without_the_tool(offered: bool | None) -> None:
-    declared, served = _tools(offered)
+def test_not_offered_is_the_declared_toolset_without_the_tool() -> None:
+    declared, served = _tools(False)
     assert [t.name for t in served] == [t.name for t in declared if t.name != SEARCH_BY_ENTITIES_TOOL_NAME]
     by_name = {t.name: t for t in declared}
     assert all(t is by_name[t.name] for t in served), "the declared tools themselves, unchanged"
@@ -55,10 +54,9 @@ def test_not_offered_is_the_declared_toolset_without_the_tool(offered: bool | No
     )
 
 
-@pytest.mark.parametrize("named", [False, None])
-def test_extraction_off_leaves_out_the_named_entity_tool_and_parameter(named: bool | None) -> None:
+def test_extraction_off_leaves_out_the_named_entity_tool_and_parameter() -> None:
     """Shown with the flag off, they made the model call tools that could only fail."""
-    declared, served = _tools(False, named=named)
+    declared, served = _tools(False, named=False)
     left_out = {
         SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value",
         "knowledgegraph__find_co_mentioned_entities",

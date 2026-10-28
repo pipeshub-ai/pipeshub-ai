@@ -15,9 +15,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.entity_discovery import (
-    _named_entities_enabled,
-)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     load_entity_access_context,
     remember_entities,
@@ -32,7 +29,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
     DEADLINE_SECONDS,
 )
 from app.agents.actions.knowledge_graph.views import _short
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
@@ -117,7 +114,7 @@ async def execute_find_co_mentioned_entities(
 ) -> tuple[bool, str]:
     if not state or not state.get("graph_provider"):
         return False, "Knowledge graph tool state not initialized."
-    if not await _named_entities_enabled(state):
+    if not knowledge_graph_policy_in(state).named_entities:
         return False, NAMED_ENTITIES_DISABLED_MSG
     shortener = get_record_id_shortener_if_enabled(state)
     wanted = [str(i).strip() for i in entity_ids or [] if str(i).strip()]
@@ -226,7 +223,7 @@ async def _render(
     lines.append("")
     lines.append(f"Note: {COUNT_NOTE} {COVERAGE_NOTE}")
     hint = "Next: knowledgegraph__find_records_by_entity(entity_id=...) lists every record of one of them"
-    if entity_search_offered_in(state):
+    if knowledge_graph_policy_in(state).search_by_entities:
         hint += '; knowledgegraph__search_by_entities(mentions=[...], match="all") lists the records naming both'
     lines.append(hint + ".")
     # So a follow-up find_records_by_entity or search(entity_ids=...) knows these ids.

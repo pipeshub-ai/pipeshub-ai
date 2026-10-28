@@ -49,6 +49,7 @@ from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.hooks.code_graph_unlock import CODE_GRAPH_TOOLSET
 # from app.agents.agent_loop.hooks.repo_instructions import SECTION_STATE_KEY
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
@@ -983,7 +984,10 @@ class PipesHubPromptBuilder:
         # tpl.set("repo_instructions", state.get(SECTION_STATE_KEY) or None)
 
         # ── Knowledge sources (Band B) ────────────────────────────────────────
-        knowledge_context = _build_knowledge_context(state, log, catalog=catalog, tool_names=tool_names)
+        knowledge_context = _build_knowledge_context(
+            state, log, catalog=catalog, tool_names=tool_names,
+            people_and_companies=knowledge_graph_policy_in(state).people_and_companies,
+        )
         tpl.set("knowledge_sources", knowledge_context or None)
 
         # ── Capability summary (Band B) ───────────────────────────────────────

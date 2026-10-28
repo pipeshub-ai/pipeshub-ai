@@ -24,13 +24,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
-    _named_entities_enabled,
     execute_search_entities,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import _compact_date
+from app.agents.agent_loop.knowledge_graph_policy import (
+    decide_knowledge_graph_policy,
+    knowledge_graph_policy_in,
+)
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
@@ -439,12 +442,13 @@ async def grep(
 # ---------------------------------------------------------------------------
 async def _entity_state(request: Request, graph_provider: IGraphDBProvider) -> dict[str, Any]:
     """The state the knowledge-graph tools read, for one request: no chat, no
-    scope beyond the caller's own access."""
+    scope beyond the caller's own access, and the entity types the Labs
+    knowledge-graph flags allow, as an assistant turn decides them."""
     from app.api.routes.chatbot import load_entity_vector_store
 
     org_id, user_id = _user(request)
     container = request.app.container
-    return {
+    state: dict[str, Any] = {
         "org_id": org_id,
         "user_id": user_id,
         "graph_provider": graph_provider,
@@ -452,6 +456,8 @@ async def _entity_state(request: Request, graph_provider: IGraphDBProvider) -> d
         "entity_vector_store": await load_entity_vector_store(container, container.logger(), org_id),
         "filters": {},
     }
+    await decide_knowledge_graph_policy(state)
+    return state
 
 
 class EntitySearchQuery(BaseModel):
@@ -572,18 +578,20 @@ async def entity_neighbors(
     share with it, and the relation types between them. An entity the caller
     cannot reach and an entity with no readable records answer alike."""
     state = await _entity_state(request, graph_provider)
-    named_enabled = await _named_entities_enabled(state)
+    policy = knowledge_graph_policy_in(state)
+    named_enabled = policy.named_entities
     if body.entityType == "named_entity" and not named_enabled:
         raise HTTPException(status_code=400, detail="Named-entity lookup is not enabled.")
-    if body.entityType not in SEARCHABLE_ENTITY_TYPES:
-        raise HTTPException(status_code=400, detail=f"Unsupported entityType; use one of {sorted(SEARCHABLE_ENTITY_TYPES)}.")
+    if body.entityType not in SEARCHABLE_ENTITY_TYPES or not policy.allows(body.entityType):
+        allowed = sorted(SEARCHABLE_ENTITY_TYPES & policy.entity_types)
+        raise HTTPException(status_code=400, detail=f"Unsupported entityType; use one of {allowed}.")
     frontend_url = await resolve_frontend_url(state["config_service"])
     try:
         context = await load_entity_access_context(state)
         page = await list_accessible_entity_records(
             graph_provider, context, entity_id=body.entityId, entity_type=body.entityType,
             record_types=[t.strip().upper() for t in body.recordTypes or [] if t.strip()] or None,
-            limit=body.recordLimit, cursor=body.cursor,
+            limit=body.recordLimit, cursor=body.cursor, allowed_types=policy.entity_types,
         )
         keys = [r["_key"] for r in page.records if r.get("_key")]
         related, relations = (

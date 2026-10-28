@@ -9,7 +9,8 @@ together for ``match="all"``, are then searched with the query (the names when
 none is given) through ``execute_search``, which renders and cites them as any
 search does. A resolution header opens the result.
 
-Offered only when the deployment turns it on (``agent_loop/entity_search_tool``).
+Offered only where the request's ``KnowledgeGraphPolicy`` says so
+(``agent_loop/knowledge_graph_policy``).
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     NAMED_ENTITIES_DISABLED_MSG,
-    _named_entities_enabled,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     limited_scope_note,
@@ -30,6 +30,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
 from app.agents.actions.knowledge_graph.ops.search import execute_search
 from app.agents.actions.knowledge_graph.views import _short, _trunc
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.agents.agent_loop.protocol.run_usage import (
     ENTITY_LINKING_SOURCE,
     llm_usage_reporter,
@@ -107,7 +108,7 @@ async def execute_search_by_entities(
 ) -> tuple[bool, str] | str | list[Part]:
     if not state:
         return False, LOOKUP_FAILED_MSG
-    if not await _named_entities_enabled(state):
+    if not knowledge_graph_policy_in(state).named_entities:
         return False, NAMED_ENTITIES_DISABLED_MSG
     parsed = parse_mentions(mentions)
     notes = list(parsed.notes)

@@ -240,7 +240,7 @@ class SourceCatalog:
     # Renderer
     # ---------------------------------------------------------------------------
 
-    def render(self, tool_names: list[str] | None = None) -> str:
+    def render(self, tool_names: list[str] | None = None, *, people_and_companies: bool = False) -> str:
         """Return the canonical source-table text.
 
         This is the ONE place in the entire prompt where connector IDs appear.
@@ -252,6 +252,10 @@ class SourceCatalog:
         When ``tool_names`` is provided the header resolves tool references to
         their granted spellings (double-underscore form), so the printed names
         are callable.  Omitting it falls back to the dotted canonical forms.
+
+        ``people_and_companies``: the entity tools return colleagues and
+        companies (the request's knowledge-graph policy), so the Entities
+        paragraph names them.
         """
         if self.is_empty():
             return ""
@@ -340,8 +344,8 @@ class SourceCatalog:
                 entity_content_hint = ""
             lines.extend([
                 "**Entities.** Records are tagged with departments, categories, subcategories, "
-                "topics and languages; record groups (project, space, folder, channel), "
-                "colleagues, companies and record titles are indexed. "
+                "topics and languages; record groups (project, space, folder, channel)"
+                f"{', colleagues, companies' if people_and_companies else ''} and record titles are indexed. "
                 "When a question names one, call "
                 f"`{search_entities}(query=...)`: it returns the entity's type, the apps it "
                 "appears in, and a few openable records for the best matches. "

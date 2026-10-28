@@ -28,6 +28,7 @@ from app.modules.retrieval.entity_permissions import (
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -147,7 +148,7 @@ class TestFindRecordsByEntity:
 
     @pytest.mark.asyncio
     async def test_the_first_page_names_the_same_entity_under_a_learned_alias(self, patched, monkeypatch) -> None:
-        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         family = AsyncMock(return_value=[{"id": "short-1", "kind": "organization", "name": "Pinecrest"}])
         monkeypatch.setattr(entity_records, "alias_family", family)
         patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor="20")
@@ -169,7 +170,7 @@ class TestFindRecordsByEntity:
         async def stall(*_args: object, **_kwargs: object) -> None:
             await asyncio.Event().wait()
 
-        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         monkeypatch.setattr(entity_records, "alias_family", stall)
         monkeypatch.setattr(entity_records, "ALIAS_NOTE_SECONDS", 0.05, raising=False)
         patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
@@ -191,7 +192,7 @@ class TestFindRecordsByEntity:
 
         family = AsyncMock(return_value=[{"id": "x", "kind": "organization", "name": "X"}])
         monkeypatch.setattr(entity_records, "alias_family", family)
-        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         patched[1].return_value = EntityRecordPage(records=[_row("r1")], next_cursor=None)
         _, topic = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
         monkeypatch.setattr(
@@ -205,7 +206,7 @@ class TestFindRecordsByEntity:
     async def test_each_row_can_be_cited_for_what_the_listing_says(self, patched, monkeypatch) -> None:
         cite = AsyncMock(return_value={"r1": "ref1"})
         monkeypatch.setattr(entity_records, "cite_listed_records", cite)
-        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         patched[1].return_value = EntityRecordPage(
             records=[_row("r1", sourceLastModifiedTimestamp=1_767_225_600_000)], next_cursor=None,
         )
@@ -520,7 +521,7 @@ class TestAliasFamilyTotal:
 
     @pytest.fixture
     def aliased(self, patched, monkeypatch) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
-        monkeypatch.setattr(entity_records, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_records, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         monkeypatch.setattr(
             entity_records, "alias_family",
             AsyncMock(return_value=[{"id": "short-1", "kind": "organization", "name": "Pinecrest"}]),

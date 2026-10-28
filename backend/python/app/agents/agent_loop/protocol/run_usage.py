@@ -17,6 +17,10 @@ from app.agent_loop_lib.core.responses import (
     TokenUsage,  # noqa: TC001 - dataclass field type
 )
 from app.agent_loop_lib.core.usage_source import MAIN_SOURCE
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+    KnowledgeGraphPolicy,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -29,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 RUN_USAGE_EVENT_NAME = "run_usage"
 # 3: every model call of the request, each labelled in `callSources`.
-RUN_USAGE_SCHEMA_VERSION = 3
+# 4: `knowledgeGraphArm`, the knowledge-graph arm the request ran with.
+RUN_USAGE_SCHEMA_VERSION = 4
 _MAX_AGENT_ERROR_CHARS = 500
 # The totals always cover every call; only the per-call breakdown is cut.
 MAX_CALLS_PER_FRAME = 200
@@ -114,6 +119,10 @@ class RunUsagePayload(BaseModel):
     # Set when `calls` lists only the first `MAX_CALLS_PER_FRAME` calls;
     # absent otherwise.
     truncated: bool | None = None
+    # `off`, `taxonomy` or `full`: the request's `KnowledgeGraphPolicy` mode, so
+    # an evaluation can confirm which arm answered. Absent when the turn ended
+    # before it was decided.
+    knowledgeGraphArm: str | None = None
 
     @classmethod
     def from_ledger(cls, ledger: UsageLedger, *, model: str | None) -> RunUsagePayload:
@@ -176,6 +185,9 @@ async def emit_run_usage(
             error = getattr(result, "error", None)
             payload.agentError = str(error)[:_MAX_AGENT_ERROR_CHARS] if error else None
         payload.completionGateNudges = context.completion_gate_nudges
+        policy = context.tool_state.get(KNOWLEDGE_GRAPH_POLICY_STATE_KEY)
+        if isinstance(policy, KnowledgeGraphPolicy):
+            payload.knowledgeGraphArm = policy.mode.value
         for event in context.formatter.run_usage(context, payload=payload):
             await context.event_sink.write(event)
     except Exception:

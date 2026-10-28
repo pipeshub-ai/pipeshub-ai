@@ -1,16 +1,20 @@
-"""The knowledge-graph tools a request sees when it is offered
-``search_by_entities`` (``agent_loop/entity_search_tool``), and the tools it
-sees otherwise.
+"""The knowledge-graph tools one request sees, from its ``KnowledgeGraphPolicy``
+(``agent_loop/knowledge_graph_policy``).
 
-Not offered, the request gets the toolset exactly as declared, minus
-``search_by_entities``. Offered, it also gets the descriptions that only hold
-with named-entity extraction on (``search_entities`` finds named entities,
-``search``/``find_records_by_entity`` take their ids), ``search_entities``
-takes several queries at once and explains the kinds it cannot serve, and
-whatever names ``search_by_entities`` does so only because it is granted.
-With named-entity extraction off, the request also goes without
-``find_records_by_value`` and ``search_entities``' ``named_entity_kinds``,
-which could only fail there.
+- ``off``: no entity tools, and ``search`` without ``entity_ids``, which only
+  takes ids those tools return.
+- ``taxonomy``: the entity tools with people and organisations edited out of
+  their descriptions, since the arm never returns them.
+- ``full``: the toolset as declared.
+
+Where ``search_by_entities`` is offered, the request also gets the
+descriptions that only hold with named-entity extraction on (``search_entities``
+finds named entities, ``search``/``find_records_by_entity`` take their ids),
+``search_entities`` takes several queries at once and explains the kinds it
+cannot serve, and whatever names ``search_by_entities`` does so only because
+it is granted. Without named entities, the request also goes without
+``find_records_by_value``, ``find_co_mentioned_entities`` and
+``search_entities``' ``named_entity_kinds``, which could only fail there.
 
 Each variant is a small, named edit of the declared text, so the declared tool
 stays the single source of its wording; an edit whose anchor is gone fails
@@ -24,13 +28,15 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
-from app.agents.agent_loop.entity_search_tool import SEARCH_BY_ENTITIES_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
+from app.agents.agent_loop.knowledge_graph_policy import SEARCH_BY_ENTITIES_TOOL_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from app.agent_loop_lib.tools.base import Tool
     from app.agent_loop_lib.tools.decorators import ToolMeta
+    from app.agents.agent_loop.knowledge_graph_policy import KnowledgeGraphPolicy
 
 SEARCH_TOOL_NAME = "knowledgegraph__search"
 SEARCH_ENTITIES_TOOL_NAME = "knowledgegraph__search_entities"
@@ -39,6 +45,11 @@ FIND_RECORDS_BY_VALUE_TOOL_NAME = "knowledgegraph__find_records_by_value"
 FIND_CO_MENTIONED_TOOL_NAME = "knowledgegraph__find_co_mentioned_entities"
 # Tools that read only named entities: left out with extraction off, where they could only fail.
 _NAMED_ENTITY_ONLY_TOOLS = frozenset({FIND_RECORDS_BY_VALUE_TOOL_NAME, FIND_CO_MENTIONED_TOOL_NAME})
+ENTITY_TOOL_NAMES: frozenset[str] = frozenset({
+    SEARCH_ENTITIES_TOOL_NAME,
+    FIND_RECORDS_BY_ENTITY_TOOL_NAME,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+}) | _NAMED_ENTITY_ONLY_TOOLS
 
 
 @dataclass(frozen=True)
@@ -49,6 +60,7 @@ class _Edit:
 
 @dataclass(frozen=True)
 class _Variant:
+    short_description: tuple[_Edit, ...] = ()
     description: tuple[_Edit, ...] = ()
     parameters: tuple[tuple[str, tuple[_Edit, ...]], ...] = ()
     """``(parameter name, edits of its description)``."""
@@ -57,6 +69,8 @@ class _Variant:
     extra_parameters: tuple[ToolParameter, ...] = ()
     optional: tuple[str, ...] = ()
     """Parameters the variant no longer requires."""
+    removed: tuple[str, ...] = ()
+    """Parameters the variant leaves out."""
     args_summary: Callable[[dict[str, Any]], str | None] | None = None
 
 
@@ -155,39 +169,92 @@ _VARIANTS: dict[str, _Variant] = {
 }
 
 
-def tools_for_request(
-    instance: Any, tools: list[Tool], *, offered: bool, named_entities: bool,  # noqa: ANN401
-) -> list[Tool]:
-    """``tools`` as declared, without ``search_by_entities`` unless ``offered``;
-    with it, the entity-search variants in place of their declared tools.
-    Without ``named_entities``, also without the named-entity tool and parameter."""
-    if offered:
-        return [_variant_tool(instance, tool) for tool in tools]
-    served = [tool for tool in tools if tool.name != SEARCH_BY_ENTITIES_TOOL_NAME]
-    if named_entities:
-        return served
-    return [
-        _without_named_entity_kinds(instance, tool)
-        for tool in served
-        if tool.name not in _NAMED_ENTITY_ONLY_TOOLS
-    ]
+# What the taxonomy arm's entity tools leave out: it never returns a person or
+# an organisation, so naming them would send the model after nothing.
+_TAXONOMY_VARIANTS: dict[str, _Variant] = {
+    SEARCH_ENTITIES_TOOL_NAME: _Variant(
+        short_description=(_Edit("record groups, people, organizations and record titles", "record groups and record titles"),),
+        description=(
+            _Edit(
+                "folder, channel, ...), people (members of the organization named on records as "
+                "author, sender, recipient, assignee, reporter, reviewer or owner), organizations "
+                "(customer and prospect companies from CRM accounts, and companies or institutions "
+                "named in two or more documents) and record titles.",
+                "folder, channel, ...) and record titles.",
+            ),
+            _Edit("a project or space, a colleague, a customer, a document title", "a project or space, a document title"),
+            _Edit("language/record_group/person/organization results", "language/record_group results"),
+            _Edit(
+                "department/category/subcategory/topic/language, record_group, person or organization entity.",
+                "department/category/subcategory/topic/language or record_group entity.",
+            ),
+        ),
+        parameters=(("entity_types", (_Edit("'record_group', 'person', 'organization', 'record'.", "'record_group', 'record'."),)),),
+    ),
+    FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
+        description=(
+            _Edit(
+                "every record directly inside a record_group, every record naming a person, every "
+                "record of an organization's account or naming the organization, or the record",
+                "every record directly inside a record_group, or the record",
+            ),
+        ),
+        parameters=(("entity_type", (_Edit("'record_group', 'person', 'organization' or 'record'", "'record_group' or 'record'"),)),),
+    ),
+}
 
 
-def _variant_tool(instance: Any, tool: Tool) -> Tool:  # noqa: ANN401
-    variant = _VARIANTS.get(tool.name)
+# Without entity tools, nothing returns an entityId for these to take.
+_OFF_VARIANTS: dict[str, _Variant] = {
+    SEARCH_TOOL_NAME: _Variant(removed=("entity_ids",)),
+    TIMELINE_TOOL_NAME: _Variant(
+        description=(_Edit(
+            " To keep to one channel, "
+            "project or space, pass its record_group entityId from "
+            "knowledgegraph__search_entities in entity_ids.",
+            "",
+        ),),
+        removed=("entity_ids",),
+    ),
+}
+
+_NO_NAMED_ENTITY_VARIANTS: dict[str, _Variant] = {
+    SEARCH_ENTITIES_TOOL_NAME: _Variant(removed=("named_entity_kinds",)),
+}
+
+
+def tools_for_request(instance: Any, tools: list[Tool], policy: KnowledgeGraphPolicy) -> list[Tool]:  # noqa: ANN401
+    """``tools`` as ``policy`` serves them: the tools it withdraws left out, the
+    others with their text and parameters edited to match."""
+    withdrawn = _withdrawn(policy)
+    return [_served(instance, tool, policy) for tool in tools if tool.name not in withdrawn]
+
+
+def _withdrawn(policy: KnowledgeGraphPolicy) -> frozenset[str]:
+    if not policy.entity_tools:
+        return ENTITY_TOOL_NAMES
+    withdrawn = set() if policy.search_by_entities else {SEARCH_BY_ENTITIES_TOOL_NAME}
+    if not policy.named_entities:
+        withdrawn |= _NAMED_ENTITY_ONLY_TOOLS
+    return frozenset(withdrawn)
+
+
+def _served(instance: Any, tool: Tool, policy: KnowledgeGraphPolicy) -> Tool:  # noqa: ANN401
     declared = _declared_meta(instance, tool)
-    if variant is None or declared is None:
+    if declared is None:
         return tool
-    method: Callable[..., Any] = getattr(instance, variant.method or _method_name(tool))
-    return BoundMethodTool(method, variant_meta(tool.name, declared))
-
-
-def _without_named_entity_kinds(instance: Any, tool: Tool) -> Tool:  # noqa: ANN401
-    declared = _declared_meta(instance, tool)
-    if tool.name != SEARCH_ENTITIES_TOOL_NAME or declared is None:
-        return tool
-    parameters = [p for p in declared.parameters if p.name != "named_entity_kinds"]
-    return BoundMethodTool(getattr(instance, _method_name(tool)), replace(declared, parameters=parameters))
+    meta, method = declared, _method_name(tool)
+    if policy.search_by_entities and tool.name in _VARIANTS:
+        meta = variant_meta(tool.name, meta)
+        method = _VARIANTS[tool.name].method or method
+    for applies, variants in (
+        (not policy.entity_tools, _OFF_VARIANTS),
+        (not policy.people_and_companies, _TAXONOMY_VARIANTS),
+        (not policy.named_entities, _NO_NAMED_ENTITY_VARIANTS),
+    ):
+        if applies and tool.name in variants:
+            meta = _edited_meta(tool.name, meta, variants[tool.name])
+    return tool if meta is declared else BoundMethodTool(getattr(instance, method), meta)
 
 
 def _declared_meta(instance: Any, tool: Tool) -> ToolMeta | None:  # noqa: ANN401
@@ -199,7 +266,10 @@ def _method_name(tool: Tool) -> str:
 
 
 def variant_meta(tool_name: str, declared: ToolMeta) -> ToolMeta:
-    variant = _VARIANTS[tool_name]
+    return _edited_meta(tool_name, declared, _VARIANTS[tool_name])
+
+
+def _edited_meta(tool_name: str, declared: ToolMeta, variant: _Variant) -> ToolMeta:
     edits = dict(variant.parameters)
     parameters = [
         replace(
@@ -208,12 +278,14 @@ def variant_meta(tool_name: str, declared: ToolMeta) -> ToolMeta:
             required=parameter.required and parameter.name not in variant.optional,
         )
         for parameter in declared.parameters
+        if parameter.name not in variant.removed
     ]
-    missing = set(edits) - {parameter.name for parameter in declared.parameters}
+    missing = (set(edits) | set(variant.removed)) - {parameter.name for parameter in declared.parameters}
     if missing:
         raise ValueError(f"{tool_name}: no parameter {sorted(missing)} to edit")
     return replace(
         declared,
+        short_description=_edited(declared.short_description, variant.short_description, tool_name),
         description=_edited(declared.description, variant.description, tool_name),
         parameters=[*parameters, *variant.extra_parameters],
         args_summary=variant.args_summary or declared.args_summary,
@@ -233,4 +305,4 @@ def _edited(text: str, edits: tuple[_Edit, ...], where: str) -> str:
     return text
 
 
-__all__ = ["tools_for_request", "variant_meta"]
+__all__ = ["ENTITY_TOOL_NAMES", "tools_for_request", "variant_meta"]

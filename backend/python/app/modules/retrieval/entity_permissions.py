@@ -53,6 +53,7 @@ RECORD_ENTITY_TYPE = "record"
 RECORD_GROUP_ENTITY_TYPE = "record_group"
 # An external organisation (a CRM account), reached through its records (KG-13).
 ORGANIZATION_ENTITY_TYPE = "organization"
+NAMED_ENTITY_TYPE = "named_entity"
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
 )
@@ -61,7 +62,7 @@ SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_GROUP_ENTITY_TYPE,
     PERSON_ENTITY_TYPE,
     ORGANIZATION_ENTITY_TYPE,
-    "named_entity",
+    NAMED_ENTITY_TYPE,
 }
 # Named by the records extracted into them; departments are the org's list.
 EXTRACTED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES - {"department"}
@@ -79,7 +80,6 @@ PROBE_MIN_SECONDS = 1.5
 # Probes may use the whole deadline; the spellings of the records they found
 # are still looked up, as one keyed query.
 NAME_LOOKUP_MIN_SECONDS = 1.0
-NAMED_ENTITY_TYPE = "named_entity"
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -593,7 +593,7 @@ async def search_entities_for_user(
     entity_types: list[str] | None = None,
     kinds: list[str] | None = None,
     top_k: int = 10,
-    include_named: bool = True,
+    allowed_types: frozenset[str] = SEARCHABLE_ENTITY_TYPES,
 ) -> list[EntityHit]:
     """Vector search in widening passes, keeping only entities the graph
     confirms the user can reach, best score first.
@@ -611,7 +611,19 @@ async def search_entities_for_user(
     entity a readable record was found for was not named in time. Probe rounds
     that ran out answer as no match, since only hits not yet found readable keep
     them running.
+
+    Only ``allowed_types`` are searched or returned; asked-for types outside
+    them are dropped, and nothing is searched when none is left.
     """
+    allowed = allowed_types & SEARCHABLE_ENTITY_TYPES
+    include_named = NAMED_ENTITY_TYPE in allowed
+    if entity_types:
+        entity_types = [t for t in entity_types if t in allowed]
+        if not entity_types:
+            return []
+    elif allowed - {NAMED_ENTITY_TYPE} != SEARCHABLE_ENTITY_TYPES - {NAMED_ENTITY_TYPE}:
+        # "Every type" would let the left-out types take candidate slots.
+        entity_types = sorted(allowed)
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
     fetch_k = min(max(top_k * OVERFETCH_FACTOR, top_k), OVERFETCH_CAP)
@@ -639,9 +651,7 @@ async def search_entities_for_user(
         for hit in hits:
             entity_id = hit.get("entityId")
             entity_type = hit.get("entityType")
-            if not entity_id or entity_type not in SEARCHABLE_ENTITY_TYPES:
-                continue
-            if entity_type == NAMED_ENTITY_TYPE and not include_named:
+            if not entity_id or entity_type not in allowed:
                 continue
             if (entity_type, entity_id) in seen or len(probes) >= MAX_EVALUATED_HITS:
                 continue
@@ -929,14 +939,16 @@ async def list_accessible_entity_records(
     limit: int = 20,
     cursor: str | None = None,
     max_scan: int = MAX_SCAN_PER_CALL,
+    allowed_types: frozenset[str] = SEARCHABLE_ENTITY_TYPES,
 ) -> EntityRecordPage:
     """Records connected to one entity that the user can access, newest
     first. ``next_cursor`` is an offset into the org- and connector-scoped
     candidate list; every row is decided by the access check, so a forged
     cursor exposes nothing. The page carries no total (see
     ``count_accessible_entity_records``). ``capped`` is set when the
-    provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
-    if entity_type not in SEARCHABLE_ENTITY_TYPES:
+    provider's scan of the entity hit its cap (see ``EntityRecordPage``).
+    An ``entity_type`` outside ``allowed_types`` is refused like an unknown one."""
+    if entity_type not in SEARCHABLE_ENTITY_TYPES or entity_type not in allowed_types:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
     return await _list_ref_records(
         graph_provider, context, {"id": entity_id, "type": entity_type},
@@ -1196,6 +1208,7 @@ __all__ = [
     "EntityRecordPage",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
+    "NAMED_ENTITY_TYPE",
     "ORGANIZATION_ENTITY_TYPE",
     "PERSON_ENTITY_TYPE",
     "RECORD_GROUP_ENTITY_TYPE",

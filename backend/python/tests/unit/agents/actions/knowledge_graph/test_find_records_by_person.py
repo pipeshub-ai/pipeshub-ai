@@ -19,7 +19,11 @@ from app.agents.actions.knowledge_graph.ops.people import (
     execute_find_records_by_person,
 )
 from app.agents.agent_loop.domain_agents import DOMAIN_AGENT_DEFINITIONS
-from app.agents.agent_loop.entity_search_tool import ENTITY_SEARCH_OFFERED_STATE_KEY
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+    KnowledgeGraphMode,
+    KnowledgeGraphPolicy,
+)
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
@@ -156,7 +160,9 @@ class TestResolvingThePerson:
 
     async def test_the_text_search_pointer_names_search_by_entities_only_when_offered(self, listing) -> None:
         _, text = await execute_find_records_by_person(
-            _state([], **{ENTITY_SEARCH_OFFERED_STATE_KEY: True}), "Darshan",
+            _state([], **{KNOWLEDGE_GRAPH_POLICY_STATE_KEY: KnowledgeGraphPolicy(
+                mode=KnowledgeGraphMode.FULL, named_entities=True, search_by_entities=True,
+            )}), "Darshan",
         )
         assert "knowledgegraph__search_by_entities" in text
 

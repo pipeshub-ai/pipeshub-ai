@@ -11,6 +11,7 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops import co_mentions
 from app.modules.retrieval.entity_permissions import EntityAccessError, EntityRecordPage
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 ACME = "e-acme"
 
@@ -41,7 +42,7 @@ _ROWS = [
 @pytest.fixture
 def listing(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     monkeypatch.setattr(co_mentions, "load_entity_access_context", AsyncMock(return_value=MagicMock(org_id="org")))
-    monkeypatch.setattr(co_mentions, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(co_mentions, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(co_mentions, "resolve_frontend_url", AsyncMock(return_value=None))
     page = AsyncMock(return_value=EntityRecordPage(records=[_record("r1"), _record("r2"), _record("r3")], next_cursor=None))
     monkeypatch.setattr(co_mentions, "list_accessible_entity_records", page)
@@ -166,7 +167,7 @@ async def test_a_slow_later_id_keeps_the_records_already_listed_as_a_sample(
 async def test_extraction_off_or_no_ids_is_refused(listing: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, body = await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[" "])
     assert not ok and "entity_ids" in body
-    monkeypatch.setattr(co_mentions, "_named_entities_enabled", AsyncMock(return_value=False))
+    monkeypatch.setattr(co_mentions, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
     assert await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME]) == (
         False, co_mentions.NAMED_ENTITIES_DISABLED_MSG,
     )

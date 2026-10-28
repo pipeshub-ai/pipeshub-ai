@@ -34,6 +34,7 @@ from app.modules.named_entities.linking.records import (
 from app.modules.named_entities.linking.service import Linking, LinkResult, LinkStatus
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import RETRIEVED_BY_KEY
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 
 def _meta() -> Any:  # noqa: ANN401 - ToolMeta
@@ -93,7 +94,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The op with its collaborators replaced: what linking and the records
     stage return, and what execute_search receives."""
     calls: dict[str, Any] = {"linking": None, "scope": None, "search": []}
-    monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(entity_search, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
 
     class _Linker:
@@ -123,7 +124,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_disabled_extraction_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=False))
+    monkeypatch.setattr(entity_search, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=False))
     assert await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Acme"}]) == (
         False, NAMED_ENTITIES_DISABLED_MSG,
     )
@@ -193,7 +194,7 @@ async def test_all_with_a_name_that_did_not_link_searches_nothing(
 
     monkeypatch.setattr(records_module, "list_accessible_entity_records", _list)
     searches: list[Any] = []
-    monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(entity_search, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
     monkeypatch.setattr(entity_search, "execute_search", AsyncMock(side_effect=lambda *a, **k: searches.append(k)))
     linking = _linking(
@@ -468,7 +469,7 @@ class TestPermissions:
             searches.append(kwargs["scope_virtual_record_ids"])
             return kwargs["preamble"] + "PASSAGES"
 
-        monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
+        monkeypatch.setattr(entity_search, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
         monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=context))
         monkeypatch.setattr(entity_search, "execute_search", _search)
         state = _state(org_id=context.org_id, graph_provider=self._graph())

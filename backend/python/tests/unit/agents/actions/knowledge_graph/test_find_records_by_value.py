@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 APP = "app-1"
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 
 def _context(**extra: object) -> EntityAccessContext:
@@ -39,7 +40,7 @@ def _context(**extra: object) -> EntityAccessContext:
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    monkeypatch.setattr(values, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(values, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(values, "resolve_frontend_url", AsyncMock(return_value=None))
     context = AsyncMock(return_value=_context())
     monkeypatch.setattr(values, "load_entity_access_context", context)

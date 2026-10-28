@@ -24,6 +24,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.services.graph_db.common.utils import EntityCandidateRows
 from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 ORG = "org-1"
 JIRA = "jira-1"
@@ -105,7 +106,7 @@ def _graph(
 
 @pytest.fixture(autouse=True)
 def _wiring(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(entity_search, "knowledge_graph_policy_in", lambda _state: full_arm(named_entities=True))
     monkeypatch.setattr(entity_filters, "get_entity_access_context", AsyncMock(return_value=CONTEXT))
 
     async def _search(state: dict[str, Any], query: str, **kwargs: Any) -> str:  # noqa: ANN401

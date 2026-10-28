@@ -26,7 +26,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     record_line,
 )
 from app.agents.actions.knowledge_graph.views import _read_hint, _trunc
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.config.constants.arangodb import EntityRelations
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
@@ -229,7 +229,9 @@ def _ambiguous(asked: str, groups: list[list[dict[str, Any]]]) -> str:
 
 def _no_match(state: "ChatState", asked: str, context: EntityAccessContext) -> str:
     text_tool = (
-        "knowledgegraph__search_by_entities" if entity_search_offered_in(state) else "knowledgegraph__search"
+        "knowledgegraph__search_by_entities"
+        if knowledge_graph_policy_in(state).search_by_entities
+        else "knowledgegraph__search"
     )
     return " ".join(filter(None, (
         f'No readable records are linked to a person matching "{_trunc(asked)}". '

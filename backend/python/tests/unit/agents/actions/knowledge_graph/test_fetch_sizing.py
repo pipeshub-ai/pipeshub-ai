@@ -27,8 +27,12 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 )
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+)
 from app.models.blocks import BlockType, GroupType
 from app.utils.render_budget import resolve_render_budget
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 _CITE_RULE = "\n\nCite facts from the above"
 _PARA = re.compile(r"\b(\w+) para (\d+)\b")
@@ -418,14 +422,10 @@ class TestEntityNote:
     async def test_the_note_is_counted_and_the_reads_run_together(self) -> None:
         graph, state = self._graph(3)
         context = _context(query="")
-        context.tool_state.update({"graph_provider": graph, "config_service": MagicMock()})
+        context.tool_state.update({"graph_provider": graph, KNOWLEDGE_GRAPH_POLICY_STATE_KEY: full_arm()})
         records = [_text_record(f"t{i}", 200, 400) for i in range(3)]
 
-        with patch(
-            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
-            AsyncMock(return_value=True),
-        ):
-            text = await _fetch(context, records)
+        text = await _fetch(context, records)
 
         assert "Named entities on rec-t0" in text
         assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
@@ -593,12 +593,8 @@ class TestEdgesOfACall:
         graph = AsyncMock()
         graph.get_named_entities_for_record = AsyncMock(side_effect=entities)
         context = _context(query="")
-        context.tool_state.update({"graph_provider": graph, "config_service": MagicMock()})
-        with patch(
-            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
-            AsyncMock(return_value=True),
-        ):
-            text = await _fetch(context, [_text_record(f"f{i}", 5, 100) for i in range(2)])
+        context.tool_state.update({"graph_provider": graph, KNOWLEDGE_GRAPH_POLICY_STATE_KEY: full_arm()})
+        text = await _fetch(context, [_text_record(f"f{i}", 5, 100) for i in range(2)])
 
         assert "Named entities on rec-f1: ORG:Harbor Bank" in text
         assert "Named entities on rec-f0" not in text

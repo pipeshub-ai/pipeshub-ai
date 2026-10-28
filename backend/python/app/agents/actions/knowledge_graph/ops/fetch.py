@@ -14,6 +14,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
+from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.selection_scope import (
     connection_sources_of,
@@ -52,19 +53,11 @@ _MAX_ENTITIES_PER_RECORD = 20
 
 
 async def _named_entity_note(context: "AgentContext", records: list[dict[str, Any]]) -> str:
-    """Entities on the records this fetch reads. Omitted when the flag is off."""
+    """Entities on the records this fetch reads. Omitted unless the request's
+    policy has named entities."""
     tool_state = getattr(context, "tool_state", None) or {}
     graph = tool_state.get("graph_provider")
-    if graph is None or not records:
-        return ""
-    try:
-        from app.services.featureflag.platform_settings import (
-            is_named_entity_extraction_enabled,
-        )
-
-        if not await is_named_entity_extraction_enabled(tool_state.get("config_service")):
-            return ""
-    except Exception:
+    if graph is None or not records or not knowledge_graph_policy_in(tool_state).named_entities:
         return ""
     record_ids = [str(record["id"]) for record in records if record.get("id")]
 
