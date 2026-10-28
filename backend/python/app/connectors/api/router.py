@@ -84,7 +84,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
-from app.connectors.core.registry.code_indexing_flags import code_indexing_filters_changed
+from app.connectors.core.registry.code_indexing_flags import (
+    code_indexing_filters_changed,
+    sync_filters_changed_beyond_branch,
+)
 from app.connectors.services.reindex_events import build_reindex_event
 from app.edition_config import (
     allowed_connector_list_scopes,
@@ -5677,7 +5680,7 @@ async def update_connector_instance_filters_sync_config(
         # Only delete sync points and edges when sync filters change
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
-        sync_filters_changed = old_sync_filters != new_sync_filters
+        sync_filters_changed = sync_filters_changed_beyond_branch(old_sync_filters, new_sync_filters)
         # Turning "Index Test Files" on applies to files already synced only if
         # they are synced again: a record's indexing status is set at sync time (P-6).
         code_filters_changed = code_indexing_filters_changed(

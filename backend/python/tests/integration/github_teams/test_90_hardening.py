@@ -9,6 +9,7 @@ GitHub in ``sim/``; see README.md.
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.sources.github_teams.repos import ReposSync
 from tests.integration.github_teams.helpers import hook_nth, issues_listing
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -59,6 +60,12 @@ async def test_code_prune_that_fails_is_redone_next_sync(world, org, monkeypatch
     await world.sync()
     gh.commit(repo, {"README.md": "# slim\n"}, branch="slim", replace=True, parent=None)
     repo.default_branch = "slim"
+
+    async def no_delta(*_args: object) -> bool:
+        return False
+
+    # A branch switch is synced from the delta when it can be; the walk is the fallback.
+    monkeypatch.setattr(ReposSync, "_incremental_sync", no_delta)
     original = world.processor.on_records_deleted_cascade
     calls = {"n": 0}
 

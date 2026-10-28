@@ -35,7 +35,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
-from app.modules.code_graph import edge_build_trigger
+from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import (
     BuildStateStore,
@@ -875,10 +875,17 @@ class RecordEventHandler(BaseEventService):
         if not all(isinstance(value, str) and value for value in scope):
             return
         try:
-            # Full: an incremental build starts from records updated since the
-            # last one, and a deleted record is not among them, so the files
-            # that called into it would keep their old bindings.
-            await self._ask_for_code_edge_build(*scope, full=True)
+            # The connector kept the names the file defined before deleting it,
+            # and an incremental build re-resolves the files referencing them.
+            # Without those names it cannot find the files that called into the
+            # deleted one, so they would keep their old bindings: build in full.
+            try:
+                full = not await deleted_files.was_remembered(
+                    self.event_processor.graph_provider, scope[0], payload.get("recordId") or "",
+                )
+            except Exception:
+                full = True
+            await self._ask_for_code_edge_build(*scope, full=full)
         except Exception as exc:
             await self._edge_request_failed(
                 exc, "Failed to request a code edge build after deleting record %s",

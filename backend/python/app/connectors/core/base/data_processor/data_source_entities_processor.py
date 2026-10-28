@@ -71,6 +71,7 @@ from app.connectors.core.base.data_processor.record_links import (
     link_target,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.modules.code_graph import deleted_files
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
@@ -2804,6 +2805,20 @@ class DataSourceEntitiesProcessor:
                 record.source_created_at = existing_record.source_created_at
             if record.source_updated_at is None:
                 record.source_updated_at = existing_record.source_updated_at
+            # The code edge build re-resolves every file stamped since its last
+            # run. A full code sync re-saves every file, so a fresh stamp on
+            # unchanged ones turned each resync into a whole-repo build. The
+            # path is part of the external id, so an equal revision means the
+            # same content at the same path.
+            if (
+                record.record_type in (RecordType.CODE_FILE, RecordType.CODE_FILE.value)
+                and record.external_revision_id
+                and record.external_revision_id == existing_record.external_revision_id
+                and existing_record.updated_at is not None
+                and not existing_record.is_placeholder
+                and not restored_from_trash
+            ):
+                record.updated_at = existing_record.updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
@@ -3982,6 +3997,7 @@ class DataSourceEntitiesProcessor:
             connector_id = (existing or {}).get("connectorId")
             if not connector_id:
                 return False
+            await self._remember_deleted_code_files([{**existing, "_key": record_id}])
             # The record alone, as the hard delete removes only its vertex.
             await self.on_records_soft_deleted(
                 [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
@@ -4006,6 +4022,7 @@ class DataSourceEntitiesProcessor:
                 return False
             trashed = bool(existing) and not is_live_record(existing)
             if not trashed:
+                await self._remember_deleted_code_files([{**existing, "_key": record_id}])
                 orphans = await self._collect_orphans(tx_store, existing, record_id)
                 result = await tx_store.delete_single_record(record_id)
                 if not (result or {}).get("success", False):
@@ -4030,6 +4047,29 @@ class DataSourceEntitiesProcessor:
             return False
         await self._publish_delete_events((result or {}).get("eventData"))
         return False
+
+    async def _remember_deleted_code_files(self, records: list[dict] | list[str]) -> None:
+        """Keep what each code file about to be deleted defined, so the edge build
+        that follows can stay incremental (see ``code_graph.deleted_files``).
+
+        Takes record documents, or ids to read them by. Never raises.
+        """
+        graph_provider = getattr(self.data_store_provider, "graph_provider", None)
+        if graph_provider is None or not records:
+            return
+        if isinstance(records[0], str):
+            try:
+                records = await graph_provider.get_nodes_by_field_in(
+                    CollectionNames.RECORDS.value, "_key", list(records),
+                    return_fields=["_key", "orgId", "connectorId", "connectorName",
+                                   "recordGroupId", "recordType"],
+                )
+            except Exception:
+                self.logger.warning("Could not read records about to be deleted; deleted code "
+                                    "files among them will ask for a full code edge build",
+                                    exc_info=True)
+                return
+        await deleted_files.remember(graph_provider, records, self.logger)
 
     @retry_on_deadlock()
     async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
@@ -4208,6 +4248,9 @@ class DataSourceEntitiesProcessor:
             }
         if soft_delete is None:
             soft_delete = await is_soft_delete_enabled(self.config_service)
+        # Roots only: a code file under a deleted folder is not read here, and its
+        # delete event asks for a full code edge build.
+        await self._remember_deleted_code_files(list(record_ids))
         if soft_delete:
             try:
                 return await self.on_records_soft_deleted(

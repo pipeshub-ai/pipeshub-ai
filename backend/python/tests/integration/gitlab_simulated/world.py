@@ -317,14 +317,14 @@ class World:
             self.pending_full_sync = True
 
     def set_branch(self, name: str | None) -> None:
-        """The admin picks the branch to index (None clears it): a filter change, so the next sync is a full one."""
+        """The admin picks the branch to index (None clears it). Unlike other filter
+        changes it asks for no full sync (``sync_filters_changed_beyond_branch``): the
+        next sync sees the checkpoint's branch differ and syncs the difference."""
         values = self.config["filters"]["sync"]["values"]
         if name is None:
             values.pop("branch", None)
-            if self.synced_once:
-                self.pending_full_sync = True
         else:
-            self.set_sync_filter("branch", [name], type_="select")
+            values["branch"] = {"operator": "in", "type": "select", "value": [name]}
         self.branch = name
 
     def select(self, project: Project, path: str | None = None) -> None:

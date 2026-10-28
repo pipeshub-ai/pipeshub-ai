@@ -38,6 +38,25 @@ def code_indexing_filters_changed(old: dict | None, new: dict | None) -> bool:
     return any(old.get(key) != new.get(key) for key in _CODE_INDEXING_KEYS)
 
 
+def sync_filters_changed_beyond_branch(old: dict | None, new: dict | None) -> bool:
+    """Whether a save changed the sync filters, as stored config dicts, other than the branch.
+
+    A branch change alone needs no full resync: each code connector keeps the
+    branch it synced in its checkpoint, and on a different one syncs the
+    difference between the two heads. The full resync deleted that checkpoint
+    and the code graph's build state with it, so every file was walked and every
+    edge rebuilt.
+    """
+    def without_branch(filters: dict | None) -> dict:
+        filters = dict(filters or {})
+        values = filters.get("values")
+        if isinstance(values, dict):
+            filters["values"] = {k: v for k, v in values.items() if k != SyncFilterKey.BRANCH.value}
+        return filters
+
+    return without_branch(old) != without_branch(new)
+
+
 def exclude_paths_filter_field() -> FilterField:
     """The "Exclude paths" sync filter every code-repository connector declares (P-1)."""
     return FilterField(
