@@ -416,3 +416,44 @@ def test_an_out_of_range_date_does_not_fail_the_other_spans() -> None:
     text = "Valid until 9999-12-31, signed 2026-03-01."
     found = _deterministic([TextUnit(0, "b", text)], default_enabled_kinds(), NormalizationContext())
     assert [m.surface for m in found if m.kind is EntityKind.DATE] == ["2026-03-01"]
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "value"),
+    [
+        ("Sales tax (8.25%): $1,234.00", "8.25%", 0.0825),
+        ("| Q3 margin | (3.2%) |", "(3.2%)", -0.032),
+        ("Churn fell -1.5% this quarter.", "-1.5%", -0.015),
+    ],
+)
+def test_parentheses_after_a_word_are_an_aside_not_a_negative_percent(text, surface, value) -> None:
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.PERCENTAGE})).recognize([TextUnit(0, "b", text)])
+    assert mention.surface == surface
+    assert float(normalize_percent(mention.surface).value) == pytest.approx(value)
+
+
+def test_accounting_parentheses_still_make_money_negative() -> None:
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize(
+        [TextUnit(0, "b", "Net loss ($1,200) for the year")]
+    )
+    assert mention.surface == "($1,200)"
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "kelvin"),
+    [
+        ("Rated for -25 °C cold starts.", "-25 °C", 248.15),
+        ("Operating range 10-40 °C.", "40 °C", 313.15),
+        ("Down to −40 °F at the pole.", "−40 °F", 233.15),
+    ],
+)
+def test_a_temperature_keeps_its_minus_sign_but_a_range_dash_is_not_one(text, surface, kelvin) -> None:
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", text)])
+    assert mention.surface == surface
+    assert normalize_quantity(mention.surface).si_value == pytest.approx(kelvin)
+
+
+def test_a_dash_before_a_non_temperature_is_not_a_sign() -> None:
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", "Weights: -5 kg each")])
+    assert mention.surface == "5 kg"
+    assert normalize_quantity("-5 kg") is None and normalize_quantity("-20 tokens") is None

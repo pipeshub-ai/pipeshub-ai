@@ -82,8 +82,8 @@ class ValueCandidateRecognizer:
         if kind not in self._enabled:
             return
         start, end = match.span()
-        if kind in _SIGNED:
-            start, end = _with_sign(unit.text, start, end)
+        if kind in _SIGNED or (kind is EntityKind.DIMENSION and _TEMPERATURE.search(match.group(0))):
+            start, end = _with_sign(unit.text, start, end, kind)
         out.append(
             RawMention(
                 kind=kind,
@@ -121,12 +121,21 @@ class ValueCandidateRecognizer:
 
 
 _SIGNED = frozenset({EntityKind.CURRENCY, EntityKind.PERCENTAGE})
+# Only temperatures go below zero; a minus before "5 kg" is a dash.
+_TEMPERATURE = re.compile(r"°[CF]|celsius|fahrenheit", re.IGNORECASE)
 
 
-def _with_sign(text: str, start: int, end: int) -> tuple[int, int]:
+def _with_sign(text: str, start: int, end: int, kind: EntityKind) -> tuple[int, int]:
     """Take in a minus sign or accounting parentheses: a refund of "-$500" or a
-    "($1,200)" loss is not the same amount as a $500 fee."""
-    if start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")":
+    "($1,200)" loss is not the same amount as a $500 fee. A percentage in
+    parentheses after a word is an aside ("Sales tax (8.25%)" is 8.25%); only one
+    standing alone, as in a table cell, is negative. A temperature takes a minus
+    sign only."""
+    if (
+        kind is not EntityKind.DIMENSION
+        and start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")"
+        and (kind is not EntityKind.PERCENTAGE or not text[:start - 1].rstrip()[-1:].isalnum())
+    ):
         return start - 1, end + 1
     if start > 0 and text[start - 1] in "-−\u2012\u2013" and (start == 1 or not text[start - 2].isalnum()):
         return start - 1, end
