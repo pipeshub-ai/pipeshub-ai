@@ -10,9 +10,18 @@ import type {
 import { ConflictError } from '../../../src/libs/repositories/errors';
 import { StorageVendor } from '../../../src/modules/storage/types/storage.service.types';
 
+export interface HiddenState {
+  writeSeq: number;
+  writers: { t: string; until: number }[];
+}
+
 export interface DocumentFixture {
   repo: DocumentRepository;
   newId(): string;
+  /** Writes the hidden write state of one row straight into the store, bypassing the repository. */
+  setHiddenState(orgId: string, id: string, state: HiddenState): Promise<void>;
+  /** Reads it back the same way. */
+  getHiddenState(orgId: string, id: string): Promise<HiddenState>;
 }
 
 const HEX = /^[0-9a-f]{24}$/;
@@ -571,6 +580,99 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const foreign = await repo.create(mk(fx.newId()));
       const found = await repo.findExistingIds(org, [live._id, dead._id, foreign._id, fx.newId()]);
       expect(found).to.deep.equal([live._id]);
+    });
+  });
+
+  describe('document store contract (state hidden)', () => {
+    // The write state of a row (a counter and the writers in flight) must stay out of every row a method returns, however the
+    // store reads it: the callers serialise rows into HTTP responses and logs.
+    const LEAK = /"(writeSeq|writers|write_seq)"/;
+
+    it('no method that returns rows returns the write state', async () => {
+      const org = fx.newId();
+      const flat = `${org}/PipesHub/records/v1`;
+      const scope = { connectorId: 'conn', prefixes: [`${org}/PipesHub/records/conn`] };
+      const hidden = async (id: string): Promise<void> =>
+        fx.setHiddenState(org, id, { writeSeq: 7, writers: [{ t: 'tok', until: Date.now() + 60_000 }] });
+      const envelope = await repo.create(
+        mk(org, { documentName: 'record_v1', documentPath: flat, customMetadata: [{ key: 'connectorId', value: 'conn' }] }),
+      );
+      const inScope = await repo.create(mk(org, { documentPath: `${scope.prefixes[0]}/a` }));
+      const tagged = await repo.create(
+        mk(org, { documentPath: `${org}/PipesHub/flat/x`, customMetadata: [{ key: 'connectorId', value: 'conn' }] }),
+      );
+      const folder = await repo.create(mk(org, { documentPath: `${org}/PipesHub/folder` }));
+      const rev = await repo.createArtifactSetOnce(
+        mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` } }),
+        fence(Date.now()),
+      );
+      const keyed = await repo.createIdempotent(mk(org, { initiatorUserId: fx.newId() }), { key: 'k', fingerprint: 'fp' }, {});
+      const unfinished = await repo.create(mk(org));
+      const toRetire = await repo.create(mk(org, { documentName: 'record_v1', documentPath: flat }));
+      const deleted = await repo.create(mk(org, { documentPath: `${org}/PipesHub/gone` }));
+      const rows = [envelope, inScope, tagged, folder, rev, keyed.document, unfinished, toRetire, deleted];
+      for (const r of rows) await hidden(r._id);
+      // Rows built by the repository are plain objects or models; either way their JSON is what callers send out.
+      const seen: [string, unknown][] = [];
+      const call = async (name: string, fn: () => Promise<unknown>): Promise<void> => {
+        seen.push([name, await fn()]);
+      };
+      await call('get', () => repo.get(org, envelope._id));
+      await call('getLive', () => repo.getLive(org, envelope._id));
+      await call('getLive lean', () => repo.getLive(org, envelope._id, true));
+      await call('listByVirtualRecord', () => repo.listByVirtualRecord(org, 'v1', flat));
+      await call('listForRelocate', () => repo.listForRelocate(org, 'v1', flat));
+      await call('listEnvelopes', () => repo.listEnvelopes(org, 'v1'));
+      await call('pageFlatEnvelopes', () => repo.pageFlatEnvelopes(org, `${org}/PipesHub/records/`, undefined, 10));
+      await call('listByFolders', () => repo.listByFolders(org, [`${org}/PipesHub/folder`]));
+      await call('subtree', () => repo.subtree(org, `${org}/PipesHub`));
+      await call('listArtifactSets', () => repo.listArtifactSets(org, 'v1'));
+      await call('pageByConnector', () => repo.pageByConnector(org, scope, undefined, 10));
+      await call('streamTaggedOutsidePrefixes', async () => {
+        const out: unknown[] = [];
+        for await (const d of repo.streamTaggedOutsidePrefixes(org, scope)) out.push(d);
+        return out;
+      });
+      await call('createIdempotent (replay)', () => repo.createIdempotent(mk(org, { initiatorUserId: keyed.document.initiatorUserId ?? null }), { key: 'k', fingerprint: 'fp' }, {}));
+      await call('claimUpload', () => repo.claimUpload(unfinished._id, StorageVendor.Local, 'lease', 60_000));
+      await call('update', () => repo.update(org, inScope._id, { sizeInBytes: 5 }));
+      await call('update (delete)', () => repo.update(org, deleted._id, { isDeleted: true, deletedByUserId: fx.newId() }));
+      await call('retire', () => repo.retire(org, toRetire._id, 100));
+      await call('createArtifactSetOnce (again)', () =>
+        repo.createArtifactSetOnce(
+          mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` } }),
+          fence(Date.now()),
+        ),
+      );
+      await call('claimArtifactSetForDelete', () => repo.claimArtifactSetForDelete(org, rev._id, { now: Date.now(), staleMs: STALE }));
+      // A create reads the row back: its own return value is checked after the state was set on a sibling row.
+      await call('create', () => repo.create(mk(org)));
+      for (const [name, value] of seen) {
+        const flatRows = Array.isArray(value) ? value : [value];
+        // A call that found nothing proves nothing: every call above has a row to return.
+        expect(value, `${name} found no row`).to.not.equal(null);
+        if (Array.isArray(value)) expect(value.length, `${name} returned no rows`).to.be.greaterThan(0);
+        for (const row of flatRows) expect(JSON.stringify(row), `${name} leaked the write state`).to.not.match(LEAK);
+      }
+    });
+
+    it('a row read after its state was set has the same fields as before', async () => {
+      const org = fx.newId();
+      const row = await repo.create(mk(org, { documentPath: `${org}/PipesHub/same` }));
+      const before = JSON.parse(JSON.stringify(await repo.get(org, row._id)));
+      await fx.setHiddenState(org, row._id, { writeSeq: 3, writers: [{ t: 'a', until: 1 }] });
+      expect(JSON.parse(JSON.stringify(await repo.get(org, row._id)))).to.deep.equal(before);
+    });
+
+    it('a write by the repository leaves the stored state alone', async () => {
+      const org = fx.newId();
+      const row = await repo.create(mk(org));
+      await fx.setHiddenState(org, row._id, { writeSeq: 9, writers: [{ t: 'a', until: 1 }] });
+      await repo.update(org, row._id, { sizeInBytes: 1 });
+      await repo.setFields(row._id, { documentPath: `${org}/PipesHub/moved` });
+      expect((await repo.get(org, row._id))?.sizeInBytes).to.equal(1);
+      expect(await fx.getHiddenState(org, row._id)).to.deep.equal({ writeSeq: 9, writers: [{ t: 'a', until: 1 }] });
+      expect(JSON.stringify(await repo.get(org, row._id))).to.not.match(LEAK);
     });
   });
 
