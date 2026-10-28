@@ -452,7 +452,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 "Page %s could not be read after %d attempts (%s); indexing it empty",
                                 page_number, attempt + 1, last_error,
                             )
-                            unreadable.append(e)
+                            # Its frames hold this page's image; keeping them would outgrow the window.
+                            unreadable.append(e.with_traceback(None))
                             return {
                                 "page_number": page_number,
                                 "markdown": "",
