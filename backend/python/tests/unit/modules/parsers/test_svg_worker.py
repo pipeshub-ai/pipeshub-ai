@@ -238,28 +238,17 @@ def test_a_renderer_is_killed_by_its_cpu_limit_even_if_the_parent_never_asks() -
 
 
 @pytest.mark.asyncio
-async def test_a_pool_that_is_gone_by_submit_time_never_renders_in_a_service_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The pool reports workers, then has none (or closes) by the time the job is
-    submitted. render_in_worker caps the address space of the process that runs it
-    and has no deadline in a thread, so it must not run here; the bounded child does."""
-    monkeypatch.setattr(parse_pool, "parse_pool_workers", lambda: 1)
-    monkeypatch.setattr(parse_pool, "_pool", lambda: None)
-    in_process: list[dict] = []
-    monkeypatch.setattr(svg_worker, "render_in_worker", lambda request: in_process.append(request) or "")
+async def test_the_async_path_never_queues_an_svg_on_the_parse_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In the parse pool an SVG could wait behind heavy parses and for a cold worker
+    before its timeout started, and a worker that failed to start ran the job in a
+    service thread. The bounded renderer's one deadline covers all of that."""
+    monkeypatch.setattr(parse_pool, "parse_pool_workers", lambda: 2)
 
-    png = await ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))
+    async def no_pool(*_: object, **__: object) -> object:
+        raise AssertionError("an SVG was submitted to the parse pool")
 
-    assert in_process == []
-    assert png.startswith("iVBOR")
+    monkeypatch.setattr(parse_pool, "submit", no_pool)
 
-
-@pytest.mark.asyncio
-async def test_submit_refuses_the_thread_fallback_when_asked() -> None:
-    assert parse_pool.parse_pool_workers() == 0
-    ran: list[int] = []
-    with pytest.raises(parse_pool.ParsePoolUnavailable):
-        await parse_pool.submit(ran.append, 1, label="probe", in_thread=False)
-    assert ran == []
-    assert await parse_pool.submit(len, "abc") == 3
+    assert (await ImageParser.svg_base64_to_png_base64_async(_b64(GOOD))).startswith("iVBOR")
+    with pytest.raises(DocumentProcessingError):
+        await ImageParser.svg_base64_to_png_base64_async(_b64("<svg><g></svg>"))

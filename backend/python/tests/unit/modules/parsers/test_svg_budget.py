@@ -23,6 +23,8 @@ def _use_chain(depth: int) -> str:
     return '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' + "".join(parts) + "</svg>"
 
 
+GOOD_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>'
+
 HOSTILE = {
     "use chain": _use_chain(60),
     "entities": (
@@ -37,9 +39,20 @@ HOSTILE = {
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE))
-def test_a_hostile_svg_is_refused_within_a_bounded_time(name: str) -> None:
-    # Wall-clock: the render runs in a child, whose CPU the parent's clock misses.
-    start = time.monotonic()
+def test_a_hostile_svg_is_refused_quickly_by_the_static_checks(name: str) -> None:
+    """The refusal itself, in this process: no renderer start-up in the timing."""
+    start = time.process_time()
+    with pytest.raises(DocumentProcessingError):
+        ImageParser._svg_to_png_in_process(_b64(HOSTILE[name]))
+    assert time.process_time() - start < 2.0
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE))
+def test_a_hostile_svg_is_refused_through_the_renderer(name: str) -> None:
+    # A warm renderer first, so the timed window is the refusal, not a cold
+    # start (each test process starts its own renderers).
+    ImageParser.svg_base64_to_png_base64(_b64(GOOD_SVG))
+    start = time.monotonic()  # wall-clock: the refusal happens in the child
     with pytest.raises(DocumentProcessingError):
         ImageParser.svg_base64_to_png_base64(_b64(HOSTILE[name]))
     assert time.monotonic() - start < 2.0

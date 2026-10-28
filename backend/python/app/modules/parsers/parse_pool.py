@@ -54,7 +54,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 __all__ = [
-    "ParsePoolUnavailable",
     "ParseWorkerError",
     "parse_pool_workers",
     "set_resource_governor",
@@ -83,10 +82,6 @@ class ParseWorkerError(ParseError):
     def __init__(self, message: str, cause: str) -> None:
         super().__init__(ParseErrorCode.PARSE_FAILED, message, {"parse_worker": cause})
         self.cause = cause
-
-
-class ParsePoolUnavailable(Exception):
-    """No worker process can take the job, and the caller refused the thread fallback."""
 
 
 class ParseAbandonedError(IndexingError):
@@ -394,7 +389,6 @@ async def submit(
     label: str = "",
     size: int = 0,
     timeout: float | None = None,
-    in_thread: bool = True,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -406,11 +400,6 @@ async def submit(
     seconds (``RECORD_PROCESSING_TIMEOUT`` when not given). Only this job
     fails. A thread cannot be stopped, so without a pool *timeout* is not
     enforced.
-
-    With ``in_thread=False`` the job never runs in this process: when there is
-    no pool, or it closes before taking the job, ``ParsePoolUnavailable`` is
-    raised instead. For a *fn* that is only safe in a worker, for example one
-    that sets process-wide limits.
     """
     pool = _pool()
     if pool is not None:
@@ -418,8 +407,6 @@ async def submit(
             return await pool.submit(_Job(fn, args, label, size, timeout))
         except _PoolClosed:
             pass
-    if not in_thread:
-        raise ParsePoolUnavailable(label or getattr(fn, "__name__", "job"))
     return await asyncio.to_thread(fn, *args)
 
 

@@ -5,10 +5,9 @@ spend minutes (references that each draw their target twice, thousands of
 ``<use>`` or ``<text>`` elements). A thread cannot be stopped, so the work runs
 in a process that can be killed:
 
-* ``render_async`` uses a parse-pool worker when the service has a pool
-  (``parse_pool.submit`` kills and replaces the worker at the deadline), and
-  otherwise a child process of its own;
-* ``run_bounded`` is the child-process form, for synchronous callers. The
+* ``run_bounded`` renders in a child process; ``render_async`` runs it off
+  the event loop. Not the shared parse pool: there an SVG could queue behind
+  heavy parses and wait for a cold worker before any deadline started. The
   child is a small process (``svg_core`` and cairosvg only) that stays up and
   renders one SVG after another, so only the first SVG pays its start-up. The
   deadline covers the whole request (waiting for a renderer, its start-up, the
@@ -16,7 +15,7 @@ in a process that can be killed:
   with its parent (PR_SET_PDEATHSIG), has a CPU limit, is killed at the deadline
   and replaced by a warm spare, and is closed when idle. At most four exist.
 
-Both end in ``render_in_worker`` under ``memory_cap``. A refusal, a deadline, a
+The renderer runs under ``memory_cap``. A refusal, a deadline, a
 crash or running out of memory raises ``DocumentProcessingError``; callers skip
 the image and the document still indexes.
 """
@@ -84,23 +83,6 @@ def memory_cap(extra_bytes: int = SVG_EXTRA_MEMORY_BYTES) -> Iterator[None]:
         yield
     finally:
         resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
-
-
-def render_in_worker(request: dict) -> str:
-    """PNG base64 for ``request`` (the arguments of ``svg_base64_to_png_base64``).
-
-    Module level and picklable, for ``parse_pool.submit``.
-    """
-    from app.modules.parsers.image_parser.image_parser import ImageParser
-
-    with memory_cap():
-        return ImageParser._svg_to_png_in_process(
-            request["svg"],
-            request.get("width"),
-            request.get("height"),
-            request.get("scale", 1.0),
-            request.get("background"),
-        )
 
 
 def _request(svg: str, width: int | None, height: int | None, scale: float, background: str | None) -> dict:
@@ -423,26 +405,9 @@ def run_bounded(
 
 async def render_async(svg: str) -> str:
     """Rasterise for async callers; see the module docstring."""
-    from app.modules.parsers import parse_pool
-
-    try:
-        # Never in a service thread: render_in_worker caps the address space of
-        # whatever process runs it, and a thread has no deadline.
-        return await parse_pool.submit(
-            render_in_worker,
-            _request(svg, None, None, 1.0, None),
-            label="svg",
-            size=len(svg),
-            timeout=SVG_DEADLINE_SECONDS,
-            in_thread=False,
-        )
-    except parse_pool.ParsePoolUnavailable:
-        return await asyncio.to_thread(run_bounded, svg)
-    except parse_pool.ParseWorkerError as exc:
-        _logger.warning("An SVG was not rasterised: %s", exc.cause)
-        raise DocumentProcessingError(
-            "SVG rasterising failed or timed out", details={"cause": exc.cause}
-        ) from exc
+    # run_bounded's one deadline covers waiting for a renderer, its start-up and
+    # the render; the thread only waits on it.
+    return await asyncio.to_thread(run_bounded, svg)
 
 
 def _die_with_parent(parent_pid: int) -> None:
