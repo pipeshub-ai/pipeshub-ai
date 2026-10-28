@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
     limits_rows,
@@ -74,6 +73,9 @@ PROBE_MIN_SECONDS = 1.5
 # Probes may use the whole deadline; the spellings of the records they found
 # are still looked up, as one keyed query.
 NAME_LOOKUP_MIN_SECONDS = 1.0
+NAMED_ENTITY_TYPE = "named_entity"
+# Readable records per named entity whose mention edges are read to spell it.
+_NAMED_SPELLING_RECORDS = 50
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -613,7 +615,7 @@ async def search_entities_for_user(
             entity_type = hit.get("entityType")
             if not entity_id or entity_type not in SEARCHABLE_ENTITY_TYPES:
                 continue
-            if entity_type == "named_entity" and not include_named:
+            if entity_type == NAMED_ENTITY_TYPE and not include_named:
                 continue
             if (entity_type, entity_id) in seen or len(probes) >= MAX_EVALUATED_HITS:
                 continue
@@ -662,6 +664,27 @@ async def search_entities_for_user(
     return kept[:top_k]
 
 
+async def readable_spellings(
+    graph_provider: "IGraphDBProvider", org_id: str, entity_ids: list[str], record_ids: list[str],
+) -> dict[str, str]:
+    """Each named entity's most frequent spelling on its mention edges in
+    ``record_ids`` (records the caller can read), ties alphabetical. An entity
+    none of them spells is left out, never given its stored name."""
+    if not entity_ids or not record_ids:
+        return {}
+    rows = await graph_provider.get_named_entity_mentions_in_records(org_id, entity_ids, record_ids)
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows or []:
+        for spelling in row.get("extractedNames") or []:
+            if isinstance(spelling, str) and spelling.strip():
+                per_entity = counts.setdefault(str(row.get("entityId")), {})
+                per_entity[spelling.strip()] = per_entity.get(spelling.strip(), 0) + 1
+    return {
+        entity_id: min(spellings.items(), key=lambda item: (-item[1], item[0]))[0]
+        for entity_id, spellings in counts.items()
+    }
+
+
 def _stored_name(probe: _Probe) -> str:
     return str(probe.hit.get("name") or probe.hit.get("canonicalName") or probe.entity_id)
 
@@ -675,10 +698,12 @@ async def _names_from_permitted_records(
     """``{(entity_type, entity_id): name to show}`` for the kept probes, and
     whether the deadline left any of them unnamed.
 
-    A category, subcategory, topic or language node is named by whichever
-    record created it, and keeps every record's spelling as an alias. It is
-    shown under a spelling of a record this user can read: its own name when
-    one of them spells it that way, otherwise the newest such record's.
+    A category, subcategory, topic, language or named-entity node is named by
+    whichever record created it, so it is shown only under a spelling of a
+    record this user can read. A taxonomy node keeps its own name when one of
+    them spells it exactly that way, otherwise the newest such record's; a
+    named entity takes its most frequent readable spelling, as
+    ``search_by_entities`` shows it.
 
     The readable records the probes found may all have edges that do not
     record a spelling (copies made by earlier releases), so the walk goes on
@@ -686,14 +711,18 @@ async def _names_from_permitted_records(
     probes' and then stay at the widest, until one spells the node, they run
     out, or the search deadline passes. A node no readable record spells is
     left out, and so is one the deadline stopped; the latter is logged.
-    Other entity types keep their name.
+    Named entities are spelled from the records their probe already found
+    (their newest ``_NAMED_SPELLING_RECORDS``), with no further walk: every
+    mention edge records its spelling. Other entity types keep their name.
     """
     shown = {
         (p.entity_type, p.entity_id): _stored_name(p)
         for p in probes
-        if p.entity_type not in EXTRACTED_ENTITY_TYPES
+        if p.entity_type not in EXTRACTED_ENTITY_TYPES and p.entity_type != NAMED_ENTITY_TYPE
     }
     extracted = [p for p in probes if p.entity_type in EXTRACTED_ENTITY_TYPES]
+    named = [p for p in probes if p.entity_type == NAMED_ENTITY_TYPE]
+    named_spellings: dict[str, str] = {}
     spellings: dict[tuple[str, str], tuple[str, ...]] = {}
     looked_up: set[str] = set()
 
@@ -717,11 +746,22 @@ async def _names_from_permitted_records(
             for spelling in spellings.get((probe.entity_id, row.get("_key")), ())
         ]
 
+    async def _spell_named() -> None:
+        record_ids = sorted({
+            r["_key"] for p in named for r in p.permitted[:_NAMED_SPELLING_RECORDS] if r.get("_key")
+        })
+        try:
+            named_spellings.update(await readable_spellings(
+                graph_provider, context.org_id, [p.entity_id for p in named], record_ids,
+            ))
+        except Exception as exc:
+            raise EntityAccessError("Entity name lookup failed") from exc
+
     timed_out = False
     try:
         await _within(
             max(deadline, time.monotonic() + NAME_LOOKUP_MIN_SECONDS),
-            _look_up(r for p in extracted for r in p.permitted),
+            asyncio.gather(_look_up(r for p in extracted for r in p.permitted), _spell_named()),
         )
     except TimeoutError:
         timed_out = True
@@ -764,7 +804,9 @@ async def _names_from_permitted_records(
             timed_out = True
             break
 
-    unnamed = [p for p in extracted if not _own(p)] if timed_out else []
+    unnamed = [
+        *(p for p in extracted if not _own(p)), *(p for p in named if p.entity_id not in named_spellings),
+    ] if timed_out else []
     if unnamed:
         logger.info(
             "entity search org=%s left %d entities unnamed at the deadline after %d naming rounds",
@@ -776,8 +818,11 @@ async def _names_from_permitted_records(
         if not own:
             continue
         stored = _stored_name(probe)
-        key = (probe.entity_type, probe.entity_id)
-        shown[key] = stored if any(normalize_name(s) == normalize_name(stored) for s in own) else own[0]
+        # Equal only after folding case is not enough: the stored casing may be an unreadable record's.
+        shown[(probe.entity_type, probe.entity_id)] = stored if stored in own else own[0]
+    for probe in named:
+        if probe.entity_id in named_spellings:
+            shown[(probe.entity_type, probe.entity_id)] = named_spellings[probe.entity_id]
     return shown, bool(unnamed)
 
 

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.modules.entity_resolution.normalizer import display_form
 from app.modules.retrieval import entity_permissions as ep
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
@@ -1022,13 +1023,25 @@ class TestNamesShownComeFromReadableRecords:
         assert graph.get_record_taxonomy_links.await_args.args[0] == ["r-open"]
 
     @pytest.mark.asyncio
-    async def test_the_stored_name_is_shown_when_a_readable_record_spells_it(self) -> None:
+    async def test_the_stored_name_is_shown_when_a_readable_record_spells_it_exactly(self) -> None:
         store = _store([_hit("t1", "topic", 0.9, name="Launch plan")])
-        graph = self._graph([self._link("t1", "Launch plan", "launch plan.")])
+        graph = self._graph([self._link("t1", "Launch plan", "Launch plan")])
 
         (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
 
         assert hit.name == "Launch plan"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_casing_no_readable_record_uses_is_not_shown(self) -> None:
+        """The stored name came from records this user cannot read; equal after
+        folding case is not their spelling."""
+        store = _store([_hit("t1", "topic", 0.9, name="NORTHWIND LOGISTICS INC")])
+        graph = self._graph([self._link("t1", "NORTHWIND LOGISTICS INC", "Northwind Logistics Inc.")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "northwind", top_k=5)
+
+        assert hit.name == display_form("Northwind Logistics Inc.")
+        assert hit.graph_filter_name == "NORTHWIND LOGISTICS INC"
 
     @pytest.mark.asyncio
     async def test_a_node_no_readable_record_spells_is_left_out(self) -> None:
@@ -1053,6 +1066,73 @@ class TestNamesShownComeFromReadableRecords:
 
         with pytest.raises(EntityAccessError):
             await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+
+class TestNamedEntityNamesComeFromReadableRecords:
+    """A named entity is named by the record that created it; the user sees its
+    most frequent spelling in the records they can read."""
+
+    @staticmethod
+    def _graph(mentions: list[dict] | Exception) -> MagicMock:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "e1": [_row("r-open", "conf-1"), _row("r-open-2", "conf-1")], "e2": [_row("r-open", "conf-1")],
+            },
+            permitted={"r-open", "r-open-2"},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(return_value=[])
+        graph.get_named_entity_mentions_in_records = AsyncMock(
+            side_effect=mentions if isinstance(mentions, Exception) else None,
+            return_value=None if isinstance(mentions, Exception) else mentions,
+        )
+        return graph
+
+    @staticmethod
+    def _store() -> MagicMock:
+        return _store([
+            _hit("e1", "named_entity", 0.9, name="Halcyon Ledger Ltd (HR)"),
+            _hit("e2", "named_entity", 0.8, name="Quillfeather"),
+        ])
+
+    @pytest.mark.asyncio
+    async def test_the_most_frequent_readable_spelling_is_shown_and_ties_are_alphabetical(self) -> None:
+        graph = self._graph([
+            {"recordId": "r-open", "entityId": "e1", "extractedNames": ["Halcyon Ledger", "Halcyon"]},
+            {"recordId": "r-open-2", "entityId": "e1", "extractedNames": ["Halcyon Ledger"]},
+            {"recordId": "r-open", "entityId": "e2", "extractedNames": ["Quillfeather plc", "Quillfeather Holdings"]},
+        ])
+
+        hits = await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+
+        assert [(h.entity_id, h.name) for h in hits] == [("e1", "Halcyon Ledger"), ("e2", "Quillfeather Holdings")]
+        assert hits[0].graph_filter_name == "Halcyon Ledger Ltd (HR)"
+        org, entity_ids, record_ids = graph.get_named_entity_mentions_in_records.await_args.args
+        assert (org, sorted(entity_ids), record_ids) == ("org-1", ["e1", "e2"], ["r-open", "r-open-2"])
+        graph.get_named_entity_mentions_in_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_named_entity_no_readable_record_spells_is_left_out(self) -> None:
+        graph = self._graph([{"recordId": "r-open", "entityId": "e2", "extractedNames": ["Quillfeather"]}])
+
+        hits = await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+
+        assert [(h.entity_id, h.name) for h in hits] == [("e2", "Quillfeather")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_spelling_lookup_is_an_access_error(self) -> None:
+        graph = self._graph(RuntimeError("db down"))
+
+        with pytest.raises(EntityAccessError):
+            await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_only_each_entitys_newest_readable_records_are_read(self, monkeypatch) -> None:
+        monkeypatch.setattr(ep, "_NAMED_SPELLING_RECORDS", 1)
+        graph = self._graph([{"recordId": "r-open", "entityId": "e1", "extractedNames": ["Halcyon Ledger"]}])
+
+        await search_entities_for_user(self._store(), graph, _context(), "halcyon", top_k=5)
+
+        assert graph.get_named_entity_mentions_in_records.await_args.args[2] == ["r-open"]
 
 
 class TestNamesWalkPastRecordsWithoutASpelling:
