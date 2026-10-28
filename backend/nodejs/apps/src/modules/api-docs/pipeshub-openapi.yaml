@@ -70494,11 +70494,11 @@ paths:
         - MCP
       summary: MCP SSE streaming endpoint
       description: |
-        Opens the standalone server-to-client SSE stream of the Streamable HTTP transport.
-        PipesHub runs the transport in stateless mode, where nothing is ever sent on this stream:
-        it answers `200` with `text/event-stream` and then stays open, with no events, until the
-        client closes it. (The route comment in the code says stateless mode answers `405`; it
-        does not.)
+        The standalone server-to-client SSE stream of the Streamable HTTP transport. PipesHub runs
+        the transport stateless, with a new server for every request, so this stream could never
+        carry an event: an authenticated `GET` is answered `405` with `Allow: POST`, which the MCP
+        specification lets a client read as "this server offers no SSE stream". Clients send every
+        message with `POST /mcp`.
       operationId: handleMCPStreamingRequest
       servers:
         - url: "{instance_url}"
@@ -70508,40 +70508,50 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: []
-      parameters:
-        - name: Mcp-Protocol-Version
-          in: header
-          required: false
-          description: |
-            MCP protocol version the client speaks. A value outside this list is refused with `400`.
-          schema:
-            type: string
-            enum: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
       responses:
-        '200':
-          description: An SSE stream that stays open and never carries an event
-          content:
-            text/event-stream:
+        '405':
+          description: This server offers no SSE stream; send messages with `POST /mcp`
+          headers:
+            Allow:
+              description: Always `POST`.
               schema:
                 type: string
+                enum: [POST]
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                        enum: ["Method not allowed."]
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
         '400':
           description: |
-            The Streamable HTTP transport rejected the request, for example because the
-            `Mcp-Protocol-Version` header names a protocol version the server does not support.
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned before authentication when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/McpTransportError'
-                  - $ref: '#/components/schemas/ErrorResponse'
-        '406':
-          description: Not Acceptable - the `Accept` header does not include `text/event-stream`
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpTransportError'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           headers:

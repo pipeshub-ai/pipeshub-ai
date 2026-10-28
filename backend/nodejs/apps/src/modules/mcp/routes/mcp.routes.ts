@@ -37,13 +37,24 @@ export function createMCPRouter(container: Container): Router {
 
   /**
    * GET /
-   * Used by clients for SSE streaming — in stateless mode the transport returns 405
+   * Used by clients for SSE streaming. Each request gets its own server that is
+   * gone once it answers, so a GET stream would never carry a message: refuse it
+   * with 405, which the MCP spec lets a client take as "no SSE stream here".
    */
   router.get(
     '/',
     authMiddleware.authenticate,
-    handleMCPRequest(appConfig),
-  )
+    (_req: Request, res: Response) => {
+      res
+        .status(405)
+        .set('Allow', 'POST')
+        .json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Method not allowed.' },
+          id: null,
+        });
+    },
+  );
 
   // An MCP client learns where to authorize from this header on a 401 (MCP
   // authorization spec, RFC 9728 section 5.1); without it, one with no token,
