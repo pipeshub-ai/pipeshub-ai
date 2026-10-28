@@ -92,6 +92,15 @@ async def connect_to_checked_address(
     return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
 
 
+
+def _client_timeout(timeout_s: int | None) -> float | None:
+    """asyncpg's own timeout, set past the server's so the server's clearer error wins.
+
+    Without it the connection's ``command_timeout`` (30 s by default) cancels first.
+    """
+    return timeout_s + 10.0 if timeout_s else None
+
+
 class PostgreSQLClient:
     """PostgreSQL client for asyncpg pool management."""
 
@@ -295,13 +304,14 @@ class PostgreSQLClient:
                 async with conn.transaction(readonly=read_only):
                     if timeout_s:
                         await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
-                    statement = await conn.prepare(query)
+                    client_timeout = _client_timeout(timeout_s)
+                    statement = await conn.prepare(query, timeout=client_timeout)
                     attributes = statement.get_attributes()
                     if not attributes:
                         await conn.execute(query, *prepared_params)
                         return ([], [])
 
-                    rows = await self._fetch(statement, prepared_params, max_rows)
+                    rows = await self._fetch(statement, prepared_params, max_rows, client_timeout)
                     columns = [attr.name for attr in attributes]
                     raw_rows = [tuple(row) for row in rows]
                     return (columns, raw_rows)
@@ -330,20 +340,26 @@ class PostgreSQLClient:
         async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
             async with conn.transaction(readonly=True):
                 await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
-                statement = await conn.prepare(query)
+                client_timeout = _client_timeout(timeout_s)
+                statement = await conn.prepare(query, timeout=client_timeout)
                 attributes = statement.get_attributes()
                 if not attributes:
                     raise ValueError("Only statements that return rows can be run here.")
-                rows = await self._fetch(statement, (), max_rows)
+                rows = await self._fetch(statement, (), max_rows, client_timeout)
                 return [attr.name for attr in attributes], [tuple(row) for row in rows]
 
     @staticmethod
-    async def _fetch(statement: asyncpg.prepared_stmt.PreparedStatement, params: Sequence[Any], max_rows: int | None) -> list[Any]:
+    async def _fetch(
+        statement: asyncpg.prepared_stmt.PreparedStatement,
+        params: Sequence[Any],
+        max_rows: int | None,
+        timeout: float | None = None,
+    ) -> list[Any]:
         """All rows, or at most ``max_rows`` read from a server-side cursor (needs a transaction)."""
         if max_rows is None:
-            return await statement.fetch(*params)
-        cursor = await statement.cursor(*params)
-        return await cursor.fetch(max_rows)
+            return await statement.fetch(*params, timeout=timeout)
+        cursor = await statement.cursor(*params, timeout=timeout)
+        return await cursor.fetch(max_rows, timeout=timeout)
 
     @staticmethod
     def _normalize_params(

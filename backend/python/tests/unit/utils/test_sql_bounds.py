@@ -55,10 +55,12 @@ def test_other_errors_pass_through() -> None:
 
 # ---- PostgreSQL client: server-side cursor + SET LOCAL statement_timeout ----
 
+PG_CLIENT_TIMEOUT = SQL_QUERY_TIMEOUT_S + 10.0
+
 
 def _pg_client() -> tuple[PostgreSQLClient, MagicMock, MagicMock]:
     cursor = MagicMock()
-    cursor.fetch = AsyncMock(side_effect=lambda n: [(i,) for i in range(min(n, BIG))])
+    cursor.fetch = AsyncMock(side_effect=lambda n, timeout=None: [(i,) for i in range(min(n, BIG))])
     statement = MagicMock()
     statement.get_attributes.return_value = [SimpleNamespace(name="id")]
     statement.fetch = AsyncMock(side_effect=AssertionError("unbounded fetch"))
@@ -83,7 +85,7 @@ async def test_postgres_reads_at_most_the_cap_through_a_cursor() -> None:
     columns, rows = await client.execute_query_raw(
         "SELECT id FROM t", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
     )
-    cursor.fetch.assert_awaited_once_with(SQL_MAX_ROWS + 1)
+    cursor.fetch.assert_awaited_once_with(SQL_MAX_ROWS + 1, timeout=PG_CLIENT_TIMEOUT)
     assert (columns, len(rows)) == (["id"], SQL_MAX_ROWS + 1)
     conn.execute.assert_awaited_once_with(f"SET LOCAL statement_timeout = {SQL_QUERY_TIMEOUT_S * 1000}")
 
@@ -92,8 +94,18 @@ async def test_postgres_reads_at_most_the_cap_through_a_cursor() -> None:
 async def test_postgres_read_only_path_is_bounded_too() -> None:
     client, _, cursor = _pg_client()
     _, rows = await client.execute_read_only_query("SELECT id FROM t", SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
-    cursor.fetch.assert_awaited_once_with(SQL_MAX_ROWS + 1)
+    cursor.fetch.assert_awaited_once_with(SQL_MAX_ROWS + 1, timeout=PG_CLIENT_TIMEOUT)
     assert len(rows) == SQL_MAX_ROWS + 1
+
+
+@pytest.mark.asyncio
+async def test_postgres_client_timeout_outlasts_the_server_limit() -> None:
+    # The connection's 30 s command_timeout would otherwise cancel before the server's 120 s limit.
+    client, conn, _ = _pg_client()
+    await client.execute_query_raw("SELECT id FROM t", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
+    statement = conn.prepare.return_value
+    assert conn.prepare.await_args.kwargs["timeout"] > SQL_QUERY_TIMEOUT_S
+    assert statement.cursor.await_args.kwargs["timeout"] > SQL_QUERY_TIMEOUT_S
 
 
 # ---- Snowflake client: ALTER SESSION + fetchmany ----
