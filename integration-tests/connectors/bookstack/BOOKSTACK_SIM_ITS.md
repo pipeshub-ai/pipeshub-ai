@@ -3,7 +3,8 @@
 The `bookstack_sim` suite (`bookstack_sim_*_test.py`, marker `bookstack_sim`) runs the real PipesHub stack
 against the connectors-simulator's BookStack simulator (`connsim serve bookstack`), so it can create the cases a
 shared BookStack cannot: role permissions that open books but not pages, explicit denies across roles, an
-instance in New York time, BookStack's default rate limit, purges, restores, moves through the UI, and faults.
+instance in New York time, BookStack's default rate limit, 429s with Retry-After, purges, restores, moves through
+the UI, and faults.
 The live `bookstack` suite (`bookstack_integration_test.py`, `bookstack_scenario_matrix_test.py`) keeps running
 against the real `bookstack-source` container.
 
