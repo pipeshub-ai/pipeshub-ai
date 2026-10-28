@@ -4,8 +4,10 @@ Issue security is not the project permission scheme. A project browse grant
 does not show an issue that has a security level. Jira judges every issue by its
 own level: it copies a parent's level onto its sub-tasks, so a sub-task's own
 ``security`` field carries it, but an epic's level does not reach the epic's
-children, which keep their own. So a sub-task inherits its parent issue and any
-other issue inherits its project (the connector files only sub-tasks under a parent).
+children, which keep their own. A record inherits the record it is filed under,
+so the connector files a sub-task under its parent, and a story under its epic only
+when everyone who can read the story can read the epic (``level_reads_alike``);
+any other issue inherits its project.
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -63,6 +65,12 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
+# Holders that name the same people on every issue of a project. Reporter, assignee and
+# the field holders name people on each issue, so two issues in one level can differ.
+_SAME_ON_EVERY_ISSUE = frozenset({
+    HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
+    HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
+})
 
 
 class SchemeKnowledge(str, Enum):
@@ -365,6 +373,18 @@ def read_security_level(fields: dict[str, Any] | None) -> tuple[bool, str | None
     return True, None
 
 
+def level_reads_alike(context: IssueSecurityContext, level_id: str) -> bool:
+    """Whether two issues of one project in this level are read by the same people.
+
+    True only when the level's members were read in full and none of them depends on
+    the issue. False for a level with no members listed.
+    """
+    if not context.enforce or not context.members_readable:
+        return False
+    holders = context.members_by_level.get(level_id)
+    return bool(holders) and all(holder.get("type") in _SAME_ON_EVERY_ISSUE for holder in holders)
+
+
 def _normalize_field_key(raw: str) -> str:
     text = raw.strip()
     if text.startswith("customfield_") or not text.isdigit():
@@ -584,10 +604,11 @@ def apply_issue_access_settled(
     absence) was read in full; a closed issue whose level could not be read is not,
     though both write no grants.
 
-    A sub-task inherits its parent issue, whose level Jira copies onto it; any other
-    issue inherits its project (the connector does not file a story under its epic).
-    A parent in another project is handled by the processor, which keeps the child on
-    its own project. Attachments are handled separately and stay empty.
+    An issue inherits the record it is filed under. A sub-task is filed under its parent
+    issue, whose level Jira copies onto it; a story under its epic only when everyone who
+    reads the story reads the epic; any other issue under its project. A parent in another
+    project is handled by the processor, which keeps the child on its own project.
+    Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
