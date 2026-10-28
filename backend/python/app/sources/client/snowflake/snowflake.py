@@ -715,7 +715,7 @@ class SnowflakeSDKClient:
         Args:
             query: SQL query to execute
             params: Optional query parameters
-            timeout_s: Sets the session's STATEMENT_TIMEOUT_IN_SECONDS first
+            timeout_s: Cancel the query after this many seconds
             max_rows: Read at most this many rows
 
         Returns:
@@ -732,12 +732,12 @@ class SnowflakeSDKClient:
         try:
             cursor = self._connection.cursor()  # type: ignore
 
-            if timeout_s:
-                cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {int(timeout_s)}")
+            # A per-call timeout cancels the query on the server and replaces the connection's
+            # network_timeout; ALTER SESSION would outlive this call.
             if params:
-                cursor.execute(query, params)
+                cursor.execute(query, params, timeout=timeout_s)
             else:
-                cursor.execute(query)
+                cursor.execute(query, timeout=timeout_s)
 
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
             rows = cursor.fetchmany(max_rows) if max_rows else cursor.fetchall()

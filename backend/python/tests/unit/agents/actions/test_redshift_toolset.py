@@ -39,7 +39,7 @@ class _FakeCursor:
 
     def execute(self, query: str, params: tuple | None = None) -> None:
         params = tuple(params or ())
-        if query.startswith("SET statement_timeout"):
+        if query.startswith("SET LOCAL statement_timeout"):
             self._conn.timeouts.append(query)
             return
         self._conn.calls.append((_flat(query), params))
@@ -67,7 +67,7 @@ class _FakeConnection:
     def __init__(self, responder: Responder) -> None:
         self.responder = responder
         self.calls: list[tuple[str, tuple]] = []
-        self.timeouts: list[str] = []  # SET statement_timeout statements
+        self.timeouts: list[str] = []  # SET LOCAL statement_timeout statements
         self.fetched: list[int] = []  # rows the driver was asked to hand over, per fetch
         self.commits = 0
         self.rollbacks = 0
@@ -297,7 +297,7 @@ class TestExecuteQuery:
     async def test_statement_timeout_is_set_on_the_server_before_the_query(self, make_tool) -> None:
         tool, conn = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(1)))
         await tool.execute_query(query="SELECT 1")
-        assert conn.timeouts == [f"SET statement_timeout TO {SQL_QUERY_TIMEOUT_S * 1000}"]
+        assert conn.timeouts == [f"SET LOCAL statement_timeout TO {SQL_QUERY_TIMEOUT_S * 1000}"]
 
     async def test_at_most_the_cap_plus_one_rows_are_read_and_the_cut_is_reported(self, make_tool) -> None:
         tool, conn = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(SQL_MAX_ROWS + 500)))

@@ -191,9 +191,9 @@ class RedshiftClient:
 
     @staticmethod
     def _set_statement_timeout(cursor: "redshift_connector.Cursor", timeout_s: int | None) -> None:
-        # Session-wide, in the open transaction: set again on every call, as a rollback undoes it.
+        # LOCAL: the commit or rollback that ends each call drops it, so later queries keep the session's limit.
         if timeout_s:
-            cursor.execute(f"SET statement_timeout TO {int(timeout_s) * 1000}")
+            cursor.execute(f"SET LOCAL statement_timeout TO {int(timeout_s) * 1000}")
 
     def execute_query(
         self,

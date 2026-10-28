@@ -42,6 +42,8 @@ def test_clip_cells_shortens_text_only() -> None:
         "canceling statement due to statement timeout",
         "Query execution was interrupted (max_statement_time exceeded)",
         "Statement reached its statement or warehouse timeout of 120 second(s) and was canceled.",
+        "SQL execution was cancelled by the client due to a timeout. Error message received from the server: "
+        "SQL execution canceled",
     ],
 )
 def test_timeout_errors_are_explained(message: str) -> None:
@@ -108,10 +110,10 @@ async def test_postgres_client_timeout_outlasts_the_server_limit() -> None:
     assert statement.cursor.await_args.kwargs["timeout"] > SQL_QUERY_TIMEOUT_S
 
 
-# ---- Snowflake client: ALTER SESSION + fetchmany ----
+# ---- Snowflake client: per-call timeout + fetchmany ----
 
 
-def test_snowflake_sets_the_session_timeout_and_reads_at_most_the_cap() -> None:
+def test_snowflake_times_out_this_call_only_and_reads_at_most_the_cap() -> None:
     cursor = MagicMock()
     cursor.description = [("ID",)]
     cursor.fetchall.side_effect = AssertionError("unbounded fetch")
@@ -123,10 +125,9 @@ def test_snowflake_sets_the_session_timeout_and_reads_at_most_the_cap() -> None:
     _, rows = client.execute_query_raw("SELECT id FROM t", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
     assert len(rows) == SQL_MAX_ROWS + 1
     cursor.fetchmany.assert_called_once_with(SQL_MAX_ROWS + 1)
-    assert cursor.execute.call_args_list[0].args == (
-        f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {SQL_QUERY_TIMEOUT_S}",
-    )
-    assert cursor.execute.call_args_list[1].args == ("SELECT id FROM t",)
+    # Without its own timeout the call would be cancelled at the connection's 60 s network_timeout,
+    # and an ALTER SESSION would keep the limit for every later query on this connection.
+    cursor.execute.assert_called_once_with("SELECT id FROM t", timeout=SQL_QUERY_TIMEOUT_S)
 
 
 # ---- MariaDB client: SET STATEMENT FOR + fetchmany, cursor closed before commit ----

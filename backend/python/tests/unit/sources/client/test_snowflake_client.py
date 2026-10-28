@@ -833,7 +833,7 @@ class TestSnowflakeSDKClientExecuteQueryRaw:
 
         c.execute_query_raw("SELECT * FROM t WHERE x = %s", (1,))
         cursor.execute.assert_called_once_with(
-            "SELECT * FROM t WHERE x = %s", (1,)
+            "SELECT * FROM t WHERE x = %s", (1,), timeout=None
         )
 
     def test_no_params(self):
@@ -842,7 +842,7 @@ class TestSnowflakeSDKClientExecuteQueryRaw:
         cursor.fetchall.return_value = []
         c = self._make_connected(cursor)
         c.execute_query_raw("SELECT 1")
-        cursor.execute.assert_called_once_with("SELECT 1")
+        cursor.execute.assert_called_once_with("SELECT 1", timeout=None)
 
     def test_auto_connects(self, sf_connector):
         mock_conn = MagicMock()

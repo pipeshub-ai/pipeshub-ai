@@ -9,7 +9,12 @@ SQL_QUERY_TIMEOUT_S = 120
 # Characters of one text cell shown to the model; the CSV keeps the whole value.
 SQL_CELL_MAX_CHARS = 100
 
-_TIMEOUT_MARKERS = ("statement timeout", "max_statement_time", "statement reached its statement or warehouse timeout")
+_TIMEOUT_MARKERS = (
+    "statement timeout",
+    "max_statement_time",
+    "statement reached its statement or warehouse timeout",
+    "cancelled by the client due to a timeout",
+)
 
 
 def cap_rows(rows: list[Any]) -> tuple[list[Any], bool]:
