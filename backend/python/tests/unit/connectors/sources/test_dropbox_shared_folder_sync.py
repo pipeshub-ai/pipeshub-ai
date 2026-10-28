@@ -236,6 +236,85 @@ class TestDeletedSharedFolders:
         connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
 
 
+class TestTeamMemberRootLayout:
+    """A real team on the team member root layout (dbx-audit/live, 2026-10-28): sharing/list_folders gives a folder
+    inside a team folder no path and no parent, and the parent's other members see its mount point, no_access."""
+
+    @staticmethod
+    def _entry(folder_id: str, *, team: bool = False, inside: bool = False) -> SimpleNamespace:
+        return SimpleNamespace(shared_folder_id=folder_id, name=folder_id, path_lower=None,
+                               access_type=SimpleNamespace(_tag="editor"), parent_shared_folder_id=None,
+                               access_inheritance=SimpleNamespace(_tag="no_inherit" if inside else "inherit"),
+                               is_team_folder=team, is_inside_team_folder=inside)
+
+    @pytest.mark.asyncio
+    async def test_a_folder_inside_a_team_folder_stays_and_gets_its_parent(self, connector) -> None:
+        connector._list_shared_folders = AsyncMock(return_value=[self._entry("tf", team=True),
+                                                                 self._entry("it", inside=True)])
+        connector.data_entities_processor.on_record_group_deleted = AsyncMock()
+        connector.data_source.sharing_get_folder_metadata = AsyncMock(return_value=DropboxResponse(
+            success=True, data=SimpleNamespace(parent_shared_folder_id="tf",
+                                               access_inheritance=SimpleNamespace(_tag="no_inherit"))))
+
+        plan = await connector._plan_shared_folders([MagicMock(source_user_id="dbmid:a")])
+
+        assert sorted(plan) == ["it", "tf"]
+        assert (plan["it"].parent_id, plan["it"].inherits) == ("tf", False)
+        connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+        connector.data_source.sharing_get_folder_metadata.assert_awaited_once_with(
+            shared_folder_id="it", team_member_id="dbmid:a")
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_parent_keeps_the_stored_group_and_fails_the_run(self, connector) -> None:
+        connector._list_shared_folders = AsyncMock(return_value=[self._entry("tf", team=True),
+                                                                 self._entry("it", inside=True)])
+        connector.data_source.sharing_get_folder_metadata = AsyncMock(
+            return_value=DropboxResponse(success=False, error="RateLimitError"))
+        connector._shared_folder_members = AsyncMock(return_value=[])
+
+        plan = await connector._plan_shared_folders([MagicMock(source_user_id="dbmid:a")])
+        await connector._sync_shared_folder_groups(plan)
+
+        written = [call.args[0][0][0].external_group_id
+                   for call in connector.data_entities_processor.on_new_record_groups.await_args_list]
+        assert written == ["tf"]
+        assert not connector._health.complete
+
+    @pytest.mark.asyncio
+    async def test_a_team_folder_listing_leaves_out_a_nested_folder_it_does_not_plan(self, connector) -> None:
+        """A no_access mount point and the folder's contents are not the team folder's, planned or not."""
+        mount = FolderMetadata(name="IT Files", id="id:mount", path_lower="/it files",
+                               sharing_info=FolderSharingInfo(read_only=True, shared_folder_id="it",
+                                                              parent_shared_folder_id="tf", no_access=True))
+        inside = MagicMock(sharing_info=SimpleNamespace(shared_folder_id=None, parent_shared_folder_id="it"))
+        own = MagicMock(sharing_info=SimpleNamespace(shared_folder_id=None, parent_shared_folder_id="tf"))
+        connector._process_dropbox_entry = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-mount"))
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+
+        async for _ in connector._process_dropbox_items_generator(
+            [mount, inside, own], "dbmid:a", "a@x.com", "tf", False, shared_folder_ids=frozenset({"tf"}),
+        ):
+            pass
+
+        assert [call.args[0] for call in connector._process_dropbox_entry.await_args_list] == [own]
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-mount")
+
+    @pytest.mark.asyncio
+    async def test_a_new_nested_folder_lists_its_parent_from_the_start_once(self, connector) -> None:
+        plan = {"tf": _folder("tf", team=True), "it": _folder("it", parent="tf")}
+        sync_point = connector.dropbox_cursor_sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(return_value={})
+
+        assert await connector._relist_parents_of_new_nested_folders(plan) == {"it"}
+        assert "tf" in connector._fresh_folders
+
+        connector._fresh_folders.clear()
+        sync_point.read_sync_point = AsyncMock(return_value={"ids": ["it"]})
+        await connector._relist_parents_of_new_nested_folders(plan)
+        assert "tf" not in connector._fresh_folders
+
+
 class TestListing:
     @pytest.mark.asyncio
     async def test_a_home_listing_leaves_out_shared_folder_content_and_drops_an_old_mount_record(self, connector) -> None:

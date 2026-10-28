@@ -257,7 +257,7 @@ class TestTeamConnector:
 
     @pytest.mark.asyncio
     async def test_a_member_who_left_a_shared_folder_does_not_remove_the_owners_item(self, team_connector) -> None:
-        async def lookup(path: str, team_member_id: str) -> DropboxResponse:
+        async def lookup(path: str, team_member_id: str, team_folder_id: str | None = None) -> DropboxResponse:
             return _found() if team_member_id == OWNER else NOT_FOUND
 
         team_connector.data_source.files_get_metadata = AsyncMock(side_effect=lookup)
@@ -272,7 +272,7 @@ class TestTeamConnector:
         processor.get_users_with_permission_to_node = AsyncMock(return_value=[MagicMock(email="owner@x.com")])
         processor.get_app_user_by_email = AsyncMock(return_value=MagicMock(source_user_id=holder, is_active=True))
 
-        async def lookup(path: str, team_member_id: str) -> DropboxResponse:
+        async def lookup(path: str, team_member_id: str, team_folder_id: str | None = None) -> DropboxResponse:
             return _found() if team_member_id == holder else NOT_FOUND
 
         team_connector.data_source.files_get_metadata = AsyncMock(side_effect=lookup)
@@ -282,6 +282,25 @@ class TestTeamConnector:
         assert await team_connector._team_item_still_exists(record, MEMBER) is True
         processor.get_users_with_permission_to_node.assert_awaited_once_with("rec-1", "records")
         processor.get_app_user_by_email.assert_awaited_once_with("owner@x.com", CONNECTOR_ID)
+
+    @pytest.mark.asyncio
+    async def test_a_shared_folder_item_is_asked_under_its_namespace(self, team_connector) -> None:
+        """On the team member root layout an id outside the member's home is not_found from the default root."""
+        team_connector.data_source.files_get_metadata = AsyncMock(return_value=_found())
+
+        assert await team_connector._team_item_still_exists(_record(group="14978535235"), MEMBER) is True
+        team_connector.data_source.files_get_metadata.assert_awaited_once_with(
+            path="id:a", team_member_id=MEMBER, team_folder_id="14978535235",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_home_item_is_asked_from_the_members_own_root(self, team_connector) -> None:
+        team_connector.data_source.files_get_metadata = AsyncMock(return_value=_found())
+
+        assert await team_connector._team_item_still_exists(_record(group=MEMBER), MEMBER) is True
+        team_connector.data_source.files_get_metadata.assert_awaited_once_with(
+            path="id:a", team_member_id=MEMBER, team_folder_id=None,
+        )
 
     @pytest.mark.asyncio
     async def test_gone_for_both_the_member_and_the_owner(self, team_connector) -> None:

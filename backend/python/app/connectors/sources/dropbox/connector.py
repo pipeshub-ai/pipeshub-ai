@@ -136,6 +136,8 @@ from app.utils.streaming import create_stream_record_response, stream_content
 _MAX_MEMBERS_TO_ASK = 5
 # Members tried in turn for a stream; each costs one temporary-link call on a user-facing request.
 _MAX_STREAM_CANDIDATES = 25
+# Sync point holding the nested shared folders the last complete run planned.
+_NESTED_FOLDERS_KEY = generate_record_sync_point_key(RecordType.DRIVE.value, "nested_shared_folders", "team")
 
 # Team-log sharing events after which an item's members are read again.
 SHARING_CHANGE_EVENTS = frozenset({
@@ -661,9 +663,13 @@ class DropboxConnector(BaseConnector):
             # Nobody to ask is no answer: a delete is applied only on Dropbox's word.
             return None
         unknown = False
+        # An id outside the member's home resolves only under its namespace's root: on the team member root
+        # layout a team folder item asked from the member's default root is not_found even for its owner.
+        group = record.external_record_group_id
+        namespace = group if group and not group.startswith("dbmid:") else None
         for member in members:
             answer = item_still_exists(await self.data_source.files_get_metadata(
-                path=record.external_record_id, team_member_id=member,
+                path=record.external_record_id, team_member_id=member, team_folder_id=namespace,
             ))
             if answer:
                 return True
@@ -1110,6 +1116,7 @@ class DropboxConnector(BaseConnector):
             plan = await self._plan_shared_folders(users_to_sync)
             self._shared_folder_plan = plan
             await self._sync_shared_folder_groups(plan)
+            nested = await self._relist_parents_of_new_nested_folders(plan)
             assigned: dict[str, list[str]] = {}
             for folder in plan.values():
                 assigned.setdefault(folder.syncer, []).append(folder.folder_id)
@@ -1139,6 +1146,10 @@ class DropboxConnector(BaseConnector):
                 await asyncio.sleep(1)
 
             await self._drop_vanished_shared_folders(plan)
+            if self._health.complete:
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    _NESTED_FOLDERS_KEY, sync_point_data={"ids": sorted(nested)}
+                )
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
@@ -1146,6 +1157,20 @@ class DropboxConnector(BaseConnector):
             raise
 
 
+
+    async def _relist_parents_of_new_nested_folders(self, plan: dict[str, SharedFolder]) -> set[str]:
+        """List from the start the parent of every nested folder no earlier run planned; return the nested ids.
+
+        Until then the parent listed that folder's mount point and contents as its own (a folder that just
+        stopped inheriting, or one an older version never planned). Its cursor reports no change for them, so
+        only a listing from the start removes that copy. The nested folders already seen are remembered, so an
+        empty one (which never has records) does not relist its parent on every run.
+        """
+        nested = {folder.folder_id for folder in plan.values() if folder.parent_id in plan}
+        known = set((await self.dropbox_cursor_sync_point.read_sync_point(_NESTED_FOLDERS_KEY)).get("ids") or [])
+        for folder_id in nested - known:
+            self._fresh_folders.add(plan[folder_id].parent_id)
+        return nested
 
     async def _plan_shared_folders(self, users: list[AppUser]) -> dict[str, SharedFolder]:
         """The team's shared folders, from every member's list, each with the member who lists it."""
@@ -1161,7 +1186,28 @@ class DropboxConnector(BaseConnector):
         self._plan_complete = len(listings) == len(users)
         if self._plan_complete:
             await self._drop_unmounted_shared_folders(plan)
+        await self._resolve_parents(plan)
         return plan
+
+    async def _resolve_parents(self, plan: dict[str, SharedFolder]) -> None:
+        """Read the parent of every folder listed inside a team folder without one.
+
+        Until it is known, the folder's group is not rewritten: written as a top-level
+        folder it would drop the members it inherits.
+        """
+        self._parent_unknown: set[str] = set()
+        for folder in [folder for folder in plan.values() if folder.parent_unknown]:
+            response = await self.data_source.sharing_get_folder_metadata(
+                shared_folder_id=folder.folder_id, team_member_id=folder.syncer
+            )
+            if not response.success:
+                self.logger.warning(f"Could not read where shared folder '{folder.name}' ({folder.folder_id}) sits: "
+                                    f"{response.error}")
+                self._health.skipped(f"parent of shared folder {folder.name}", "could not be read; stored folder kept")
+                self._parent_unknown.add(folder.folder_id)
+                continue
+            inheritance = getattr(getattr(response.data, "access_inheritance", None), "_tag", None) or folder.inheritance
+            folder.set_parent(getattr(response.data, "parent_shared_folder_id", None), inheritance)
 
     async def _drop_vanished_shared_folders(self, plan: dict[str, SharedFolder]) -> None:
         """Delete the stored shared and team folders that no synced member can open any more.
@@ -1192,7 +1238,10 @@ class DropboxConnector(BaseConnector):
         anyone, and its namespace still lists its files as live; Dropbox has no
         deleted flag for it. Team folders are synced from the team folder list.
         """
-        for folder in [folder for folder in plan.values() if not folder.mounted and not folder.is_team_folder]:
+        # A folder inside a team folder has no path on the team member root layout, members or not: it is
+        # reached through the team folder, so having no path does not mean it is gone.
+        for folder in [folder for folder in plan.values()
+                       if not folder.mounted and not folder.is_team_folder and not folder.inside_team_folder]:
             del plan[folder.folder_id]
             try:
                 stored = await self.data_entities_processor.get_record_group_by_external_id(
@@ -1235,6 +1284,8 @@ class DropboxConnector(BaseConnector):
         team_data.content.read, which the connector does not ask for).
         """
         for folder in parents_first(plan):
+            if folder.folder_id in getattr(self, "_parent_unknown", set()):
+                continue
             try:
                 if not await self.data_entities_processor.get_records_in_record_group(
                     self.connector_id, folder.folder_id, 1
