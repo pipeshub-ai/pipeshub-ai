@@ -66,6 +66,12 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     expect(missing).to.deep.equal([]);
   });
 
+  it('keeps a synchronous method synchronous (isConnected is a boolean, not a promise)', () => {
+    const repo = shadowWrap('thing', { isConnected: () => false }, () => ({ isConnected: () => true }), runPg);
+    expect(isReadMethod('isConnected')).to.equal(false);
+    expect(repo.isConnected()).to.equal(false);
+  });
+
   it('returns the Mongo answer, compares in the background, and counts an equal read', async () => {
     const calls: unknown[][] = [];
     const repo = shadowWrap('thing', { findById: async (id: string) => ({ _id: id, n: 1 }) }, () => ({ findById: async (...a: unknown[]) => (calls.push(a), { _id: a[0], n: 1 }) }), runPg);
