@@ -241,7 +241,9 @@ export class Logger {
 
   static getInstance(config?: LoggerConfig): Logger {
     if (!Logger.instance) {
-      Logger.instance = new Logger(config || { service: 'default-service', level: LogLevel.Info });
+      Logger.instance = new Logger(
+        config ?? { service: 'default-service', level: getLogLevel() },
+      );
     } else if (config) {
       Logger.instance.updateDefaultMeta({
         service: config.service,
