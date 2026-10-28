@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import app.connectors.sources.demo.connector as demo_connector
-from app.connectors.sources.demo.fixture_loader import load_fixture
+from app.connectors.sources.demo.fixture_loader import load_fixture, split_threads
 from app.connectors.sources.demo.harness.kb_harness import mentions, score
 
 FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-corp.yaml"
@@ -257,3 +257,32 @@ def test_every_record_revision_changes_so_a_resync_reaches_it(fx: dict) -> None:
         if demo_connector._revision_of(body) == hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     ]
     assert not unchanged
+
+
+def test_every_record_has_its_own_address(fx: dict) -> None:
+    # Saved citations carry no external id, so the KG harness maps a citation
+    # back to its fixture record by web URL: two records sharing one would be
+    # indistinguishable.
+    from collections import Counter
+    from types import SimpleNamespace
+
+    connector = demo_connector.DemoConnector.__new__(demo_connector.DemoConnector)
+    connector.data_entities_processor = SimpleNamespace(org_id="org-1")
+    connector.connector_id = "demo-1"
+    connector._bodies = demo_connector.render_bodies(fx)
+    containers = {c["id"]: c for c in fx["containers"]}
+    people = {p["id"]: p for p in fx["people"]}
+    singles, threads = split_threads(fx)
+    thread_info = {t["id"]: t for t in fx.get("threads", [])}
+    rg = SimpleNamespace(id="rg-1")
+    urls = [
+        connector._build_record(r, containers[r["container"]], people, rg, 0).weburl for r in singles
+    ] + [
+        connector._build_thread(
+            thread_info[tid], msgs, containers[thread_info[tid]["container"]], demo_connector.People(people), rg, 0,
+        ).weburl
+        for tid, msgs in threads.items()
+    ]
+    shared = sorted(url for url, n in Counter(urls).items() if n > 1)
+    assert not shared, f"addresses shared by several records: {shared}"
+    assert all(urls)

@@ -48,6 +48,7 @@ from app.connectors.sources.demo.accounts import sync_accounts
 from app.connectors.sources.demo.fixture_loader import (
     FIXTURE_PATH,
     load_fixture,
+    record_web_url,
     split_threads,
 )
 from app.connectors.sources.demo.records import (
@@ -483,12 +484,13 @@ class DemoConnector(BaseConnector):
         return relation_count
 
     def _common_fields(
-        self, external_id: str, title: str, container: Mapping[str, Any], rg: RecordGroup,
-        created: object, updated: object, web_url: str | None, now: int,
+        self, item: Mapping[str, Any], container: Mapping[str, Any], rg: RecordGroup,
+        created: object, updated: object, now: int,
     ) -> dict[str, Any]:
+        external_id = item["id"]
         return {
             "org_id": self.data_entities_processor.org_id,
-            "record_name": title,
+            "record_name": item["title"],
             "external_record_id": external_id,
             "external_revision_id": _revision_of(self._bodies[external_id]),
             "external_record_group_id": container["id"],
@@ -502,7 +504,7 @@ class DemoConnector(BaseConnector):
             # lead nowhere: hide_weburl hides it and citations open the record in
             # PipesHub. The address itself stays, because search drops a non-file
             # result whose record has none (retrieval_service).
-            "weburl": web_url or container.get("web_url"),
+            "weburl": record_web_url(item, container),
             "hide_weburl": True,
             "source_created_at": _epoch_ms(created),
             "source_updated_at": _epoch_ms(updated or created),
@@ -514,18 +516,14 @@ class DemoConnector(BaseConnector):
         self, rec: Mapping[str, Any], container: Mapping[str, Any], people: Mapping[str, Mapping[str, Any]],
         rg: RecordGroup, now: int,
     ) -> Record:
-        common = self._common_fields(
-            rec["id"], rec["title"], container, rg, rec["created"], rec.get("updated"), rec.get("web_url"), now,
-        )
+        common = self._common_fields(rec, container, rg, rec["created"], rec.get("updated"), now)
         return build_record(rec, container, People(people), common)
 
     def _build_thread(
         self, thread: Mapping[str, Any], msgs: list[dict], container: Mapping[str, Any], people: People,
         rg: RecordGroup, now: int,
     ) -> MessageRecord:
-        common = self._common_fields(
-            thread["id"], thread["title"], container, rg, msgs[0]["created"], msgs[-1]["created"], None, now,
-        )
+        common = self._common_fields(thread, container, rg, msgs[0]["created"], msgs[-1]["created"], now)
         involved = thread_slots(msgs)["involved"]
         return MessageRecord(
             record_type=RecordType.MESSAGE,

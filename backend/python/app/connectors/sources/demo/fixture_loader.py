@@ -80,6 +80,18 @@ def split_threads(fx: Mapping[str, Any]) -> tuple[list[dict], dict[str, list[dic
     return singles, dict(by_thread)
 
 
+def record_web_url(item: Mapping[str, Any], container: Mapping[str, Any]) -> str | None:
+    """The address a record (or thread) carries: its own ``web_url``, else one
+    under its container's, unique per record.
+
+    Saved citations carry no external id, so the evaluation harness maps a
+    citation back to its fixture record by this address."""
+    if item.get("web_url"):
+        return item["web_url"]
+    base = container.get("web_url")
+    return f"{base.rstrip('/')}/{item['id']}" if base else None
+
+
 def validate_fixture(fx: Mapping[str, Any]) -> None:
     _check_unique(fx)
     ids = {name: {item["id"] for item in fx.get(name, [])} for name in MERGED_LISTS}
