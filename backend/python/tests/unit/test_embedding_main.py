@@ -6,7 +6,7 @@ import struct
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -1252,7 +1252,7 @@ class TestIdleUnload:
         def slow_factory(model_name: str, **kwargs: object) -> MagicMock:
             return MagicMock()
 
-        async def blocked_to_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        async def blocked_to_thread(func: Callable[..., object], *args: object, **kwargs: object) -> object:
             loading.set()
             await asyncio.sleep(0.05)
             return func(*args, **kwargs)
