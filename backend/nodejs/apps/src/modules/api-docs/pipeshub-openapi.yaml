@@ -27156,7 +27156,7 @@ paths:
 
         **Security:**
 
-        - Account locks for 24 hours after 5 consecutive failed attempts, and the owner is
+        - Account locks for 24 hours after 10 consecutive failed attempts, and the owner is
           sent an email saying so. While it is locked, sign-in is refused with the same answer
           as a wrong password or code, even when the password or code is right
         - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
