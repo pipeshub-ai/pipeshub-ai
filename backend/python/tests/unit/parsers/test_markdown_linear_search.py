@@ -1,9 +1,12 @@
 """The image searches must match what the plain regexes match, in linear time."""
 from __future__ import annotations
 
+import functools
+import gzip
+import hashlib
+import json
 import random
 import re
-import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,15 +18,11 @@ from app.modules.parsers.markdown import linear_image_search as lis
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+# The Markdown image pattern is checked against a frozen record of what the
+# original exponential regex returned (see ``_oracle``); it is no longer
+# compiled here. The HTML pattern is compared against its live reference.
 REFERENCE = {
-    "MD_IMAGE_NESTED": (
-        lis.MD_IMAGE_NESTED,
-        re.compile(
-            r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
-            r'(data:(?:[^"\s)]|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
-            r'(?:\s+"[^"]*")?\)'
-        ),
-    ),
+    "MD_IMAGE_NESTED": (lis.MD_IMAGE_NESTED, None),
     "HTML_IMG_ALT": (
         lis.HTML_IMG_ALT,
         re.compile(r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE),
@@ -36,52 +35,68 @@ PIECES = [
 ]
 
 
-def _same(name: str, text: str) -> None:
+ORACLE_PATH = Path(__file__).parent / "fixtures" / "md_image_nested_oracle.json.gz"
+
+
+@functools.lru_cache(maxsize=1)
+def _oracle() -> dict:
+    with gzip.open(ORACLE_PATH, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _enc(m: re.Match[str] | None) -> list | None:
+    return m and [m.start(), m.end(), list(m.groups())]
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _same(name: str, text: str, want: dict | None = None) -> None:
+    """Compare finditer and search at fixed offsets; ``want`` is the frozen MD record."""
     ours, ref = REFERENCE[name]
-    got = [(m.span(), m.groups()) for m in ours.finditer(text)]
-    want = [(m.span(), m.groups()) for m in ref.finditer(text)]
-    assert got == want, (name, text[:200])
-    for pos in range(0, min(len(text), 40), 7):
-        a, b = ours.search(text, pos), ref.search(text, pos)
-        assert (a and (a.span(), a.groups())) == (b and (b.span(), b.groups())), (name, pos, text[:200])
+    got = [_enc(m) for m in ours.finditer(text)]
+    offsets = range(0, min(len(text), 40), 7)
+    got_search = [_enc(ours.search(text, pos)) for pos in offsets]
+    if ref is None:
+        assert want is not None and want["sha"] == _sha(text), (name, text[:200])
+        want_find, want_search = want["finditer"], want["search"]
+    else:
+        want_find = [_enc(m) for m in ref.finditer(text)]
+        want_search = [_enc(ref.search(text, pos)) for pos in offsets]
+    assert got == want_find, (name, text[:200])
+    assert got_search == want_search, (name, text[:200])
 
 
-def _tracked_markdown() -> list[Path]:
-    root = Path(__file__).resolve().parents[5]
-    out = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "*.md"], capture_output=True, text=True, check=False
-    ).stdout.split()
-    return [root / p for p in out]
+def _frozen(name: str, record: dict | None) -> dict | None:
+    return record if REFERENCE[name][1] is None else None
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
 def test_parity_on_tracked_markdown_files(name: str) -> None:
-    files = _tracked_markdown()
-    if not files:
-        pytest.skip("not a git checkout")
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        _same(name, text)
+    # The corpus is frozen in the fixture, so it cannot drift as docs change.
+    for rec in _oracle()["files"]:
+        _same(name, rec["text"], _frozen(name, rec))
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
 def test_parity_on_seeded_random_input(name: str) -> None:
     rng = random.Random(20260428)
-    for _ in range(4000):
+    seeded = _oracle()["seeded"]
+    for i in range(4000):
         text = "".join(rng.choice(PIECES) for _ in range(rng.randint(1, 40)))
-        _same(name, text)
+        _same(name, text, _frozen(name, seeded[i]))
 
 
 def test_parity_on_realistic_images() -> None:
+    rec = _oracle()["realistic"]
     text = (
         'a ![alt [x] y](http://u/p.png "t") b ![](data:image/png;base64,AAA "t" ) '
         '![r][id] <img src="a" alt="A > B"> <IMG ALT=\'q\' src=x>\n[id]: http://x "T"\n'
     )
+    assert text == rec["text"]
     for name in REFERENCE:
-        _same(name, text)
+        _same(name, text, _frozen(name, rec))
 
 
 # Each family is a repeated opener that used to cost O(n^2) in the regex.
@@ -237,12 +252,27 @@ WS_PIECES = [
 @pytest.mark.parametrize("name", ["MD_IMAGE_NESTED"])
 def test_parity_with_whitespace_runs_before_titles_and_inside_data_uris(name: str) -> None:
     rng = random.Random(77)
-    # Runs stay short: the plain regex is exponential in the run length.
-    for _ in range(20000):
+    recorded = {r["index"]: r for r in _oracle()["whitespace"]}
+    seen = 0
+    for i in range(20000):
         text = "".join(rng.choice(WS_PIECES) for _ in range(rng.randint(1, 14)))
         if len(re.findall(r"\s", text)) > 16:
+            assert i not in recorded, i
             continue
-        _same(name, text)
+        _same(name, text, recorded[i])
+        seen += 1
+    assert seen == len(recorded)
+
+
+def test_oracle_fixture_covers_every_parity_input() -> None:
+    data = _oracle()
+    assert len(data["files"]) == 231
+    assert len(data["seeded"]) == data["header"]["seeded_draws"] == 4000
+    assert len(data["whitespace"]) == 20000
+    assert data["realistic"]["text"]
+    assert all(r["sha"] == _sha(r["text"]) for r in data["files"])
+    # Provenance only: the exponential pattern must not be compiled anywhere.
+    assert "pattern" in data["header"] and "note" in data["header"]
 
 
 @pytest.mark.parametrize("spaces", [22, 24, 26, 1000, 100_000])
