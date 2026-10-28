@@ -8,6 +8,9 @@ that import telemetry, so importing it from there would cycle.
 # Used when TELEMETRY_COLLECTION_FLAG is unset.
 TELEMETRY_DEFAULT_ENABLED = True
 
+# The admin's Data Collection switch before an admin has set it.
+METRICS_CONSENT_DEFAULT = True
+
 # Extra migration module directories, relative to ``backend/`` (e.g. ``"db/extra/usage"``), added to the
 # ones under ``backend/db/versions/``. Read by ``backend/db`` by file path: keep this module import-free.
 EXTRA_MIGRATION_LOCATIONS: list[str] = []

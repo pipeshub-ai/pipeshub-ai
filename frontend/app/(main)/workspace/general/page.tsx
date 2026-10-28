@@ -105,6 +105,9 @@ export default function GeneralPage() {
   const [hasServerLogo, setHasServerLogo] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoDeleting, setLogoDeleting] = useState(false);
+  // Data Collection is shown only while telemetry can run on this deployment, so
+  // whatever is collected can always be seen and switched off.
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
   // Last server-confirmed logo URL — used to revert preview on discard
   const savedLogoUrlRef = useRef<string | null>(null);
 
@@ -158,6 +161,7 @@ export default function GeneralPage() {
             logoFileName: null,
           };
           setForm(loaded);
+          setTelemetryEnabled(metricsConfig.telemetryEnabled !== false);
           setLogoUrl(logoObjectUrl);
           savedLogoUrlRef.current = logoObjectUrl;
           setHasServerLogo(logoObjectUrl !== null);
@@ -500,55 +504,66 @@ export default function GeneralPage() {
         {/* ── Data Collection Settings Section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}
         <Box style={{ marginBottom: 80 }}>
-          <SettingsSection
-            title={t('workspace.general.dataCollection')}
-            rightAction={
-              <Flex align="center" gap="2">
-                <Switch
-                  checked={form.dataCollection}
-                  onCheckedChange={(checked) => setField('dataCollection', checked)}
-                  size="1"
-                />
-                <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                  {t('workspace.general.enableDataCollection')}
+          {telemetryEnabled && (
+            <SettingsSection
+              title={t('workspace.general.dataCollection')}
+              rightAction={
+                <Flex align="center" gap="2">
+                  <Switch
+                    checked={form.dataCollection}
+                    onCheckedChange={(checked) => setField('dataCollection', checked)}
+                    size="1"
+                  />
+                  <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                    {t('workspace.general.enableDataCollection')}
+                  </Text>
+                </Flex>
+              }
+            >
+              <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
+                {savedForm.dataCollection && (
+                  <Text
+                    size="2"
+                    weight="medium"
+                    style={{ color: 'var(--accent-11)', display: 'block', marginBottom: 'var(--space-3)' }}
+                  >
+                    {t('workspace.general.dataCollectionActive')}
+                  </Text>
+                )}
+                <Text
+                  size="2"
+                  style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
+                >
+                  {t('workspace.general.dataCollectionDescription')}
                 </Text>
-              </Flex>
-            }
-          >
-            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
-              <Text
-                size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
-              >
-                {t('workspace.general.dataCollectionDescription')}
-              </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
-                {[
-                  t('workspace.general.dataCollectionReason1'),
-                  t('workspace.general.dataCollectionReason2'),
-                  t('workspace.general.dataCollectionReason3'),
-                  t('workspace.general.dataCollectionReason4'),
-                  t('workspace.general.dataCollectionReason5'),
-                ].map((item) => (
-                  <Flex key={item} align="start" gap="2">
-                    <Box
-                      style={{
-                        width: 'var(--space-1)',
-                        height: 'var(--space-1)',
-                        borderRadius: '50%',
-                        backgroundColor: 'var(--slate-9)',
-                        marginTop: 'var(--space-2)',
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                      {item}
-                    </Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </Box>
-          </SettingsSection>
+                <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
+                  {[
+                    t('workspace.general.dataCollectionReason1'),
+                    t('workspace.general.dataCollectionReason2'),
+                    t('workspace.general.dataCollectionReason3'),
+                    t('workspace.general.dataCollectionReason4'),
+                    t('workspace.general.dataCollectionReason5'),
+                  ].map((item) => (
+                    <Flex key={item} align="start" gap="2">
+                      <Box
+                        style={{
+                          width: 'var(--space-1)',
+                          height: 'var(--space-1)',
+                          borderRadius: '50%',
+                          backgroundColor: 'var(--slate-9)',
+                          marginTop: 'var(--space-2)',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                        {item}
+                      </Text>
+                    </Flex>
+                  ))}
+                </Flex>
+              </Box>
+            </SettingsSection>
+          )}
         </Box>
       </SettingsPageContainer>
 

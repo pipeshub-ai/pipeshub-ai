@@ -2790,7 +2790,8 @@
         "message": "Pokud změny zahodíte, vaše úpravy nebudou uloženy",
         "confirm": "Zahodit",
         "cancel": "Pokračovat v úpravách"
-      }
+      },
+      "dataCollectionActive": "Data o využití z tohoto pracovního prostoru se shromažďují a odesílají do PipesHub. Vypnutím tohoto přepínače to zastavíte."
     },
     "labs": {
       "title": "Konfigurace platformy",

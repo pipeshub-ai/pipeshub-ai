@@ -2694,7 +2694,8 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
-      }
+      },
+      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
     },
     "labs": {
       "title": "Platform configuration",

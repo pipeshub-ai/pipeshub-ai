@@ -2544,7 +2544,8 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
-      }
+      },
+      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
     },
     "labs": {
       "title": "Plattformkonfiguration",

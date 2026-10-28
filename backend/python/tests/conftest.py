@@ -20,6 +20,7 @@ from app.utils.process_hardening import disable_vendor_telemetry
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
 os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
+from app.telemetry.flag import set_collection_consent  # noqa: E402
 
 # Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
 # later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file
@@ -41,6 +42,12 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.messaging.lanes import assignment
 
     monkeypatch.setattr(assignment, "_shared", {})
+
+
+@pytest.fixture(autouse=True)
+def _telemetry_consent_on() -> None:
+    # A test whose stored config switches Data Collection off would leave it off for later tests.
+    set_collection_consent(True)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

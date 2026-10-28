@@ -2676,7 +2676,8 @@
         "message": "취소하면 편집 내용이 저장되지 않습니다",
         "confirm": "취소",
         "cancel": "계속 편집"
-      }
+      },
+      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
     },
     "labs": {
       "title": "플랫폼 구성",

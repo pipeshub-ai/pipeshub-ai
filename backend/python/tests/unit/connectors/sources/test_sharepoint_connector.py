@@ -57,6 +57,7 @@ def _make_mock_deps():
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     data_store_provider = MagicMock()
     config_service = MagicMock()

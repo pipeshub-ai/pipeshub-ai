@@ -96,7 +96,8 @@ vi.mock('@/config', async (importOriginal) => {
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // The store is state, not the auth client; chat state reads the signed-in user through it.
+    useAuthStore: (await import('@/lib/store/auth-store')).useAuthStore,
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,

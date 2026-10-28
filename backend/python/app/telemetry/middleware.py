@@ -11,6 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
 
+from app.telemetry.flag import telemetry_collecting
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.http_metrics import (
     HTTP_REQUEST_DURATION,
@@ -27,6 +28,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         self.service_name = service_name
 
     async def dispatch(self, request: Request, call_next):
+        if not telemetry_collecting():
+            return await call_next(request)
         start = time.perf_counter()
         status_code = 500
         try:

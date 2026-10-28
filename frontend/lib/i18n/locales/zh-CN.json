@@ -2676,7 +2676,8 @@
         "message": "如果放弃，您的编辑将不会被保存",
         "confirm": "放弃",
         "cancel": "继续编辑"
-      }
+      },
+      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
     },
     "labs": {
       "title": "平台配置",

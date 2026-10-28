@@ -905,7 +905,7 @@ class TestSearchSurvivesQueryTransformationFailure:
     async def test_a_rewrite_that_never_answers_does_not_hold_the_search(self) -> None:
         """A stalled LLM call gives up at the route's bound, not at the LLM's own timeout of minutes."""
         request, retrieval = self._build_request(), self._retrieval()
-        async def never(_query: str) -> str:
+        async def never(_query: str, **_kwargs: object) -> str:
             await asyncio.Event().wait()
             return "unreachable"
 
@@ -1076,8 +1076,7 @@ class TestSearchWithoutQueryRewrite:
         return request
 
     def _retrieval(self) -> MagicMock:
-        retrieval = MagicMock()
-        retrieval.llm = MagicMock()
+        retrieval = _retrieval_with_llm()
         retrieval.search_with_filters = AsyncMock(return_value=dict(self.RESULTS))
         return retrieval
 
