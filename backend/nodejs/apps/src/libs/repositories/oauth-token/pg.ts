@@ -670,7 +670,8 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
         [
           k.orgId,
           newObjectId(),
-          hashOpaqueToken(i.code),
+          // the digest of the code as it was issued, the same value `findCode` digests (a generated code holds no U+0000)
+          hashOpaqueToken(input.code),
           i.codeChallenge ?? null,
           i.codeChallengeMethod ?? null,
           i.clientId,
