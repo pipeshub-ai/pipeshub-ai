@@ -361,6 +361,8 @@ def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:
+    # A union's own enum applies to every arm, so it wins over the first arm's.
+    own_enum = prop_schema.get("enum")
     prop_schema = _unwrap_any_of(prop_schema)
     raw_type = prop_schema.get("type")
     param_type = _resolve_parameter_type(raw_type if isinstance(raw_type, str) else "string")
@@ -375,7 +377,7 @@ def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], req
         nested_required = prop_schema.get("required")
         required_properties = list(nested_required) if nested_required else None
 
-    enum = prop_schema.get("enum")
+    enum = own_enum or prop_schema.get("enum")
     return ToolParameter(
         name=name,
         type=param_type,
@@ -521,22 +523,28 @@ def _accepts_null(prop_schema: Any) -> bool:  # noqa: ANN401
     # nullable reference.
     if prop_schema.get("nullable") is True or prop_schema.get("type") == "null":
         return True
+    # The property's own type applies alongside any union or `allOf`, whose arms may be untyped.
+    if "type" in prop_schema:
+        return False
     all_of = prop_schema.get("allOf")
     if isinstance(all_of, list) and not all(_accepts_null(arm) for arm in all_of):
         return False
     arms = prop_schema.get("anyOf") or prop_schema.get("oneOf")
     if isinstance(arms, list) and arms:
         return any(_accepts_null(arm) for arm in arms)
-    return "type" not in prop_schema
+    return True
 
 
-def _is_multi_type_union(prop_schema: Any) -> bool:  # noqa: ANN401
-    """Whether a property is a union of two or more non-null schemas. `parameters` keeps only
-    the first arm (`_unwrap_any_of`), so an enum it carries is not the whole contract."""
-    arms = (prop_schema.get("anyOf") or prop_schema.get("oneOf")) if isinstance(prop_schema, dict) else None
+def _enum_is_authoritative(prop_schema: Any) -> bool:  # noqa: ANN401
+    """Whether the enum `parameters` holds for a property is its whole contract. The property's
+    own enum is. A union's comes from its first arm (`_unwrap_any_of`), which is the whole
+    contract only when it is the one non-null arm."""
+    if not isinstance(prop_schema, dict) or isinstance(prop_schema.get("enum"), list):
+        return True
+    arms = prop_schema.get("anyOf") or prop_schema.get("oneOf")
     if not isinstance(arms, list):
-        return False
-    return sum(1 for arm in arms if not (isinstance(arm, dict) and arm.get("type") == "null")) > 1
+        return True
+    return sum(1 for arm in arms if not (isinstance(arm, dict) and arm.get("type") == "null")) <= 1
 
 
 def _is_null_text(value: Any) -> bool:  # noqa: ANN401
@@ -657,7 +665,7 @@ class SchemaShallowValidationMixin:
                 kwargs[param.name] = _checked_value(
                     param, value,
                     type_is_authoritative=param.name in typed_properties,
-                    enum_is_authoritative=not _is_multi_type_union(properties.get(param.name)),
+                    enum_is_authoritative=_enum_is_authoritative(properties.get(param.name)),
                 )
             except ToolValidationError:
                 if param.required or not _is_null_text(value):

@@ -397,6 +397,14 @@ class TestUnsetOptionalArgumentsAreLeftOut:
         _adapter_with({"limit": {"allOf": [{"type": "integer"}]}}, []).validate(kwargs)
         assert kwargs == {}
 
+    def test_the_enclosing_type_refuses_null_even_when_the_arms_are_untyped(self) -> None:
+        """JSON Schema applies the property's own type and its union together."""
+        kwargs = {"owner": None}
+        _adapter_with(
+            {"owner": {"type": "object", "anyOf": [{"required": ["id"]}, {"required": ["name"]}]}}, [],
+        ).validate(kwargs)
+        assert kwargs == {}
+
     def test_the_string_null_for_an_enum_holding_null_is_left_out(self) -> None:
         """The fuzzy enum match used to call `.lower()` on the null member and crash."""
         kwargs = {"assignee": "null"}
@@ -517,6 +525,18 @@ class TestValidateSkipsNonAuthoritativeTypes:
             kwargs = {"order": value}
             adapter.validate(kwargs)
             assert kwargs == {"order": value}
+
+    def test_a_unions_own_enum_is_enforced(self) -> None:
+        """An enum beside the union applies to every arm, so it is checked, and "null" outside
+        it is left out like any other optional "null"."""
+        adapter = _adapter_with(
+            {"mode": {"anyOf": [{"type": "string"}, {"type": "integer"}], "enum": ["allowed"]}}, [],
+        )
+        with pytest.raises(ToolValidationError, match=r"must be one of \['allowed'\], got 7"):
+            adapter.validate({"mode": 7})
+        kwargs = {"mode": "null"}
+        adapter.validate(kwargs)
+        assert kwargs == {}
 
     def test_a_nullable_enum_is_still_enforced(self) -> None:
         """One non-null arm is the whole contract, so its enum still applies."""
