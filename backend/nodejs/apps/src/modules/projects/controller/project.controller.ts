@@ -4,7 +4,10 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ForbiddenError,
+} from '../../../libs/errors/http.errors';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
@@ -160,10 +163,7 @@ export const updateProject =
       );
       // Widening is fail-closed the other way: the label may say org before
       // the grant lands. Grant is a no-op if the edge already exists.
-      if (
-        patch.visibility === 'org' &&
-        project.linkedKnowledgeBaseId
-      ) {
+      if (patch.visibility === 'org' && project.linkedKnowledgeBaseId) {
         await ProjectKnowledgeBaseService.syncMemberPermissions(
           appConfig,
           headers,
