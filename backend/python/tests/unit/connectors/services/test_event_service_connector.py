@@ -20,7 +20,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.sync.sync_coordinator import LocalSyncCoordinator
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services import event_service as event_service_module
 from app.connectors.services.event_service import EventService, evict_cached_connector
 
 from app.config.constants.arangodb import CollectionNames
@@ -404,25 +406,6 @@ class TestEvictCachedConnector:
         connector.cleanup.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_waits_for_a_reindex_too(self) -> None:
-        connector = AsyncMock()
-        container = MagicMock(spec=[])
-        container.connectors_map = {"conn1": connector}
-        reindexing = [True]
-
-        with local_run(running=False) as run, \
-             patch("app.connectors.services.event_service._reindexing_here",
-                   side_effect=lambda _cid: reindexing[0]):
-            await evict_cached_connector(container, "conn1", MagicMock())
-            await asyncio.sleep(0)
-            connector.cleanup.assert_not_awaited()
-
-            reindexing[0] = False
-            await end_local_run(run)
-
-        connector.cleanup.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_a_cleanup_error_still_drops_the_connector(self) -> None:
         connector = AsyncMock()
         connector.cleanup.side_effect = RuntimeError("boom")
@@ -437,6 +420,101 @@ class TestEvictCachedConnector:
     @pytest.mark.asyncio
     async def test_nothing_cached_is_a_no_op(self) -> None:
         await evict_cached_connector(MagicMock(spec=[]), "conn1", MagicMock())
+
+
+class TestEvictWaitsOnlyForRunsLiveAtEviction:
+    """The deferred dispose waits for the runs that held the evicted instance, not later ones."""
+
+    @staticmethod
+    def _cached(connector: AsyncMock) -> MagicMock:
+        container = MagicMock(spec=[])
+        container.connectors_map = {"conn1": connector}
+        return container
+
+    @staticmethod
+    async def _settle() -> None:
+        await asyncio.gather(*event_service_module._evict_tasks)
+
+    @pytest.mark.asyncio
+    async def test_old_run_ending_disposes_even_while_a_new_run_holds_the_id(self) -> None:
+        coordinator = LocalSyncCoordinator(logging.getLogger("test"))
+        connector = AsyncMock()
+        _, old = await coordinator.begin("conn1")
+
+        with patch.object(event_service_module, "get_coordinator", return_value=coordinator):
+            await evict_cached_connector(self._cached(connector), "conn1", MagicMock())
+            await asyncio.sleep(0)
+            connector.cleanup.assert_not_awaited()
+
+            await coordinator.end(old)
+            _, new = await coordinator.begin("conn1")
+            await self._settle()
+
+        assert coordinator.is_running_here("conn1")
+        connector.cleanup.assert_awaited_once()
+        await coordinator.end(new)
+
+    @pytest.mark.asyncio
+    async def test_an_idle_connector_is_disposed_at_once(self) -> None:
+        coordinator = LocalSyncCoordinator(logging.getLogger("test"))
+        connector = AsyncMock()
+
+        with patch.object(event_service_module, "get_coordinator", return_value=coordinator):
+            await evict_cached_connector(self._cached(connector), "conn1", MagicMock())
+
+        connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_old_reindex_ending_disposes_even_while_a_new_one_runs(self) -> None:
+        connector = AsyncMock()
+        finish_old, finish_new = asyncio.Event(), asyncio.Event()
+        await reindex_task_manager.start_if_idle("reindex:conn1:old", finish_old.wait())
+
+        with patch.object(event_service_module, "get_coordinator", return_value=None):
+            await evict_cached_connector(self._cached(connector), "conn1", MagicMock())
+            await asyncio.sleep(0)
+            connector.cleanup.assert_not_awaited()
+
+            await reindex_task_manager.start_if_idle("reindex:conn1:new", finish_new.wait())
+            finish_old.set()
+            await self._settle()
+
+        connector.cleanup.assert_awaited_once()
+        finish_new.set()
+        await reindex_task_manager.cancel_by_prefix("reindex:conn1:")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reindex_still_releases_the_dispose(self) -> None:
+        connector = AsyncMock()
+        release = asyncio.Event()
+
+        async def _fails() -> None:
+            await release.wait()
+            raise RuntimeError("reindex failed")
+
+        await reindex_task_manager.start_if_idle("reindex:conn1:x", _fails())
+        with patch.object(event_service_module, "get_coordinator", return_value=None):
+            await evict_cached_connector(self._cached(connector), "conn1", MagicMock())
+            release.set()
+            await self._settle()
+
+        connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_cleanup_error_is_logged_not_raised(self) -> None:
+        coordinator = LocalSyncCoordinator(logging.getLogger("test"))
+        connector = AsyncMock()
+        connector.cleanup.side_effect = RuntimeError("boom")
+        logger = MagicMock()
+        _, lease = await coordinator.begin("conn1")
+
+        with patch.object(event_service_module, "get_coordinator", return_value=coordinator):
+            await evict_cached_connector(self._cached(connector), "conn1", logger)
+            await coordinator.end(lease)
+            await self._settle()
+
+        logger.error.assert_called_once()
+        assert "boom" in logger.error.call_args.args[0]
 
 
 # ===========================================================================

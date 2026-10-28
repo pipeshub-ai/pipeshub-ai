@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Coroutine
 from typing import Any, cast
 
 from dependency_injector import providers
@@ -100,9 +101,30 @@ def _reindexing_here(connector_id: str) -> bool:
     return any(key.startswith(prefix) for key in reindex_task_manager.active_keys())
 
 
-async def _dispose_when_idle(connector_id: str, connector: object, logger: logging.Logger) -> None:
-    while _running_here(connector_id) or _reindexing_here(connector_id):  # noqa: ASYNC110 - no event marks a local sync or reindex ending
-        await asyncio.sleep(_DEFERRED_DISPOSE_POLL_SEC)
+def _runs_holding(connector_id: str) -> list[Coroutine[Any, Any, object]]:
+    """Waits that end with the local sync and reindexes now running for this connector.
+
+    Captured at eviction so a deferred dispose waits for *those* runs only: a run
+    started later under the same id uses the rebuilt instance, not this one.
+    """
+    coordinator = get_coordinator()
+    lease = coordinator.lease_here(connector_id) if coordinator is not None else None
+    reindexes = reindex_task_manager.tasks_with_prefix(f"reindex:{connector_id}:")
+    runs: list[Coroutine[Any, Any, object]] = [lease.ended.wait()] if lease is not None else []
+    if reindexes:
+        # asyncio.wait neither raises a task's error nor cancels the task.
+        runs.append(asyncio.wait(reindexes))
+    return runs
+
+
+async def _dispose_after(
+    runs: list[Coroutine[Any, Any, object]],
+    connector_id: str,
+    connector: object,
+    logger: logging.Logger,
+) -> None:
+    for run in runs:
+        await run
     try:
         await dispose_connector(connector)
         logger.info(f"Cleaned up connector instance {connector_id}")
@@ -117,20 +139,21 @@ async def evict_cached_connector(
 ) -> None:
     """Drop the in-memory connector so the next lookup rebuilds it from current config.
 
-    The entry always goes, but a sync or reindex in this process still holds
-    the instance, so its cleanup() waits until that task ends rather than
-    closing the client under it.
+    The entry always goes, but a sync or reindex in this process may still hold
+    the instance, so its cleanup() waits until the runs live at eviction end
+    rather than closing the client under them.
     """
     if connector_id not in getattr(container, "connectors_map", {}):
         return
     logger.info(f"Removing connector {connector_id} from connectors_map")
     existing_connector = container.connectors_map.pop(connector_id)
-    if not (_running_here(connector_id) or _reindexing_here(connector_id)):
-        await _dispose_when_idle(connector_id, existing_connector, logger)
+    runs = _runs_holding(connector_id)
+    if not runs:
+        await _dispose_after(runs, connector_id, existing_connector, logger)
         return
     logger.info(f"Disposing connector {connector_id} once its running sync/reindex ends")
     task = spawn_detached(
-        _dispose_when_idle(connector_id, existing_connector, logger),
+        _dispose_after(runs, connector_id, existing_connector, logger),
         name=f"dispose_connector_{connector_id}",
     )
     _evict_tasks.add(task)
@@ -148,9 +171,6 @@ def connector_cache_max() -> int:
 #: Eviction closes the connector's sessions on the loop; hold a reference so the
 #: task is not garbage collected mid-flight.
 _evict_tasks: set = set()
-
-#: How often a deferred dispose checks whether the sync/reindex using it has ended.
-_DEFERRED_DISPOSE_POLL_SEC = 1.0
 
 #: A release pages through all of a connector's storage; it runs off the sync
 #: consumer so one large delete does not hold up every other connector's events.

@@ -160,6 +160,9 @@ class SyncLease:
     lost: asyncio.Event = field(default_factory=asyncio.Event)
     stop_requested: asyncio.Event = field(default_factory=asyncio.Event)
     stop_requested_at_ms: int | None = None
+    #: Set when the coordinator releases this lease: the moment this run stops
+    #: counting as running, even if a newer run for the same connector starts.
+    ended: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
     def lease_key(self) -> str:
@@ -230,6 +233,7 @@ class LocalSyncCoordinator:
         if self._held.get(lease.connector_id) is lease:
             del self._held[lease.connector_id]
         self._tasks.deregister(lease.connector_id, lease.task)
+        lease.ended.set()
         return True
 
     async def cancel_and_wait(self, connector_id: str) -> None:
@@ -248,6 +252,10 @@ class LocalSyncCoordinator:
         # about tasks answers "nothing is running" for seconds after admission,
         # which silently dropped a Stop issued in that window.
         return connector_id in self._held or self._tasks.is_running(connector_id)
+
+    def lease_here(self, connector_id: str) -> SyncLease | None:
+        """The lease of the sync now holding this connector in this process, if any."""
+        return self._held.get(connector_id)
 
     async def is_running(self, connector_id: str) -> bool:
         return self.is_running_here(connector_id)
@@ -335,6 +343,7 @@ class SyncCoordinator(Protocol):
         self, lease: "SyncLease", coro: Coroutine
     ) -> "asyncio.Task | None": ...
     def is_running_here(self, connector_id: str) -> bool: ...
+    def lease_here(self, connector_id: str) -> "SyncLease | None": ...
     async def is_running(self, connector_id: str) -> bool: ...
     def running_count(self) -> int: ...
     async def request_stop(self, connector_id: str) -> bool: ...
