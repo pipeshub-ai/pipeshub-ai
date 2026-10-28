@@ -165,6 +165,13 @@ test.describe('Developer OAuth apps', () => {
       await expect(panel.getByRole('tab', { name: 'Permissions & scopes' })).toHaveAttribute('aria-selected', 'true');
       const scopeBox = scopeCheckbox(panel, SCOPE);
       await expect(scopeBox).toBeVisible({ timeout: 15_000 });
+      // The form opens with what an MCP client needs to chat already ticked.
+      await expect(scopeCheckbox(panel, 'conversation:chat')).toBeChecked();
+      await expect(scopeCheckbox(panel, 'semantic:write')).toBeChecked();
+      await expect(scopeBox).not.toBeChecked();
+
+      await panel.getByRole('button', { name: 'Select all' }).click();
+      await panel.getByRole('button', { name: 'Clear all' }).click();
       await expect(panel.getByText('Select at least one permission scope.', { exact: true })).toBeVisible();
       await expect(panel.getByRole('button', { name: 'Next' })).toBeDisabled();
       await scopeBox.click();

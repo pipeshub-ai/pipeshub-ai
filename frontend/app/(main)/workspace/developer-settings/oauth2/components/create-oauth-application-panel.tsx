@@ -110,6 +110,31 @@ export interface CreateOAuthApplicationPanelProps {
 
 type CreateTab = 'general' | 'scopes' | 'granular';
 
+/**
+ * Ticked when the form opens: the least an MCP client needs to search and
+ * chat, with or without an agent. Search needs semantic:write, not read: the
+ * Python route it forwards to requires write. Scopes the instance does not
+ * offer this user are dropped.
+ */
+export const DEFAULT_SELECTED_SCOPES = [
+  'offline_access',
+  'kb:read',
+  'connector:read',
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+] as const;
+
+function defaultScopeSelection(
+  scopes: Record<string, OAuthScopeItem[]>
+): Set<string> {
+  const offered = new Set(
+    Object.values(scopes).flatMap((items) => items.map((i) => i.name))
+  );
+  return new Set(DEFAULT_SELECTED_SCOPES.filter((name) => offered.has(name)));
+}
+
 export function CreateOAuthApplicationPanel({
   open,
   onOpenChange,
@@ -235,7 +260,10 @@ export function CreateOAuthApplicationPanel({
     const loadScopes = async () => {
       try {
         const data = await Oauth2Api.getScopes();
-        if (!cancelled) setScopesByCategory(data.scopes ?? {});
+        if (cancelled) return;
+        const scopes = data.scopes ?? {};
+        setScopesByCategory(scopes);
+        setSelectedScopes(defaultScopeSelection(scopes));
       } catch {
         if (!cancelled) {
           setScopesError(t('workspace.oauth2.create.scopesLoadError'));
@@ -1142,7 +1170,11 @@ export function CreateOAuthApplicationPanel({
                       setScopesError(null);
                       setScopesLoading(true);
                       void Oauth2Api.getScopes()
-                        .then((data) => setScopesByCategory(data.scopes ?? {}))
+                        .then((data) => {
+                          const scopes = data.scopes ?? {};
+                          setScopesByCategory(scopes);
+                          setSelectedScopes(defaultScopeSelection(scopes));
+                        })
                         .catch(() =>
                           setScopesError(t('workspace.oauth2.create.scopesLoadError'))
                         )
