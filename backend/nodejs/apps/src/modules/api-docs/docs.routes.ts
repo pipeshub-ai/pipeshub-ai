@@ -131,7 +131,7 @@ function getDocumentationHtml(): string {
     [data-theme="dark"] .body-field-input input,
     [data-theme="dark"] .body-field-input select,
     [data-theme="dark"] .body-field-input textarea {
-      background: rgba(0,0,0,0.3);
+      background-color: rgba(0,0,0,0.3);
       border-color: rgba(255,255,255,0.1);
       color: var(--code-text);
     }
