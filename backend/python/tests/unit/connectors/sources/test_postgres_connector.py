@@ -4912,7 +4912,7 @@ class TestFailedProfilingKeepsStoredValues:
         _, failing, table = await self._stored_and_failing()
         failing.data_entities_processor.get_typed_records_by_ids = read
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises((LookupError, RuntimeError)):
             await failing._sync_table_columns(_table_record(), table)
 
         failing.data_entities_processor.on_new_records.assert_not_awaited()

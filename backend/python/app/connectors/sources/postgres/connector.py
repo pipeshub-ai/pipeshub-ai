@@ -79,6 +79,7 @@ from app.connectors.core.sql.column_records import (
     load_typed_columns,
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
+from app.connectors.core.sql.permissions import database_permissions
 from app.connectors.core.sql.qualified_names import (
     join_qualified_name,
     split_qualified_name,
@@ -103,7 +104,7 @@ from app.models.entities import (
     SQLTableRecord,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.postgres.postgres import PostgreSQLConfig, PostgreSQLResponse
 from app.sources.external.postgres.postgres_ import (
     ColumnInfo,
@@ -1093,27 +1094,7 @@ class PostgreSQLConnector(BaseConnector):
         return min(db_row_count, max_rows)
 
     async def _get_permissions(self) -> list[Permission]:
-        """Who reaches the database, and through it every schema, table and column.
-
-        Team scope: the whole organisation. Personal scope: the creator only;
-        with no creator to name, nobody rather than everybody.
-        """
-        if self.scope == ConnectorScope.TEAM.value:
-            return [Permission(type=PermissionType.OWNER, entity_type=EntityType.ORG)]
-        if not self.creator_email:
-            await self._load_creator_email()
-        if self.creator_email:
-            return [Permission(
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER,
-                email=self.creator_email,
-                external_id=self.created_by,
-            )]
-        self.logger.warning(
-            "Personal PostgreSQL connector %s has no creator email; its database is shared with no one",
-            self.connector_id,
-        )
-        return []
+        return await database_permissions(self)
 
     async def _build_table_record(
         self,
@@ -1251,15 +1232,11 @@ class PostgreSQLConnector(BaseConnector):
     async def _typed_columns(self, stored: dict[str, Record]) -> dict[str, Record]:
         """Stored column records with their stats and profiles, to keep when profiling failed.
 
-        A parent lookup gives base records, which carry neither. When they
-        cannot be loaded, none are kept: the columns are written without
-        stats until the next profile, rather than with another column's.
+        A parent lookup gives base records, which carry neither. Raises when
+        they cannot be loaded: the table's sync fails and is tried again,
+        rather than writing its columns back without their profiles.
         """
-        try:
-            return await load_typed_columns(self.data_store_provider.graph_provider, stored)
-        except Exception as e:
-            self.logger.warning(f"Could not load stored column profiles to keep: {e}")
-            return {}
+        return await load_typed_columns(self.data_entities_processor, stored)
 
     async def _stored_columns(self, table_fqn: str) -> dict[str, Record]:
         async with self.data_store_provider.transaction() as tx_store:

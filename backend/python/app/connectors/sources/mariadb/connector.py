@@ -71,6 +71,8 @@ from app.connectors.core.sql.column_records import (
     build_column_records,
     load_typed_columns,
 )
+from app.connectors.core.sql.permissions import database_permissions
+from app.connectors.core.sql.profiling import looks_personal
 from app.connectors.core.sql.record_moves import Moves
 from app.connectors.core.sql.sync_lifecycle import (
     LOOKUP_ATTEMPTS,
@@ -112,7 +114,7 @@ from app.models.entities import (
     SQLTableRecord,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.mariadb.mariadb import MariaDBConfig
 from app.sources.external.mariadb.mariadb_ import (
     ColumnInfo,
@@ -792,10 +794,7 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         return not self.indexing_filters or self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value)
 
     async def _get_permissions(self) -> list[Permission]:
-        return [Permission(
-            type=PermissionType.OWNER,
-            entity_type=EntityType.ORG,
-        )]
+        return await database_permissions(self)
 
     async def _build_record(self, table: MariaDBTable) -> tuple[SQLTableRecord, Record | None]:
         """The table's record, keeping the stored record's id and created time; and the stored record, if any.
@@ -882,8 +881,9 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
     async def _stored_columns(self, table_fqn: str, *, typed: bool) -> dict[str, Record]:
         """The table's stored column records; ``typed`` loads their stats and profiles too.
 
-        A typed node that cannot be loaded leaves that column's base record:
-        its kept stats are lost once, rather than the table never being written.
+        Raises when they cannot all be loaded so: the table is not written this
+        sync and is tried again, rather than writing its columns back without
+        their stats. A table whose profile is taken next time needs no load.
         """
         async with self.data_store_provider.transaction() as tx_store:
             existing = await tx_store.get_records_by_parent(
@@ -892,11 +892,7 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         by_fqn = {child.external_record_id: child for child in existing}
         if not typed or not by_fqn:
             return by_fqn
-        try:
-            return await load_typed_columns(self.data_store_provider.graph_provider, by_fqn)
-        except LookupError as e:
-            self.logger.warning(f"Stored column stats of {table_fqn} could not all be read; writing without them: {e}")
-            return by_fqn
+        return await load_typed_columns(self.data_entities_processor, by_fqn)
 
     async def _column_records(
         self, table_record: Record, table: MariaDBTable, *, existed: bool,
@@ -1177,13 +1173,20 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         except ValueError:
             raise HTTPException(status_code=500, detail="Invalid table FQN") from None
         column = record.record_name
-        try:
-            value_counts = await self.data_source.column_value_counts(
-                database, table, column, MAX_COLUMN_VALUES_STREAMED,
-            )
-        except Exception as e:
-            self.logger.error(f"❌ Failed to read values of {table_id}.{column}: {e}")
-            raise to_sql_stream_error(e, connector=self.display_name) from e
+        # The counts group the whole table, past the rows a table stream is
+        # capped to, so a column that looks personal gets none, as it gets no
+        # top values in its profile.
+        withheld = looks_personal(column)
+        value_counts: list[dict[str, Any]] = []
+        if not withheld:
+            try:
+                # One past the limit, to tell a cut-off list from one that fits exactly.
+                value_counts = await self.data_source.column_value_counts(
+                    database, table, column, MAX_COLUMN_VALUES_STREAMED + 1,
+                )
+            except Exception as e:
+                self.logger.error(f"❌ Failed to read values of {table_id}.{column}: {e}")
+                raise to_sql_stream_error(e, connector=self.display_name) from e
         top_values = getattr(record, "top_values", None) or []
         frequencies = getattr(record, "top_value_frequencies", None) or []
         data = {
@@ -1209,9 +1212,11 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                 ],
             },
             "value_counts": [
-                {"value": _bit_value(row.get("value"), record), "count": row.get("count")} for row in value_counts
+                {"value": _bit_value(row.get("value"), record), "count": row.get("count")}
+                for row in value_counts[:MAX_COLUMN_VALUES_STREAMED]
             ],
-            "value_counts_truncated": len(value_counts) >= MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_truncated": len(value_counts) > MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_withheld": withheld,
             "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
         }
         json_bytes = json.dumps(data, default=json_default).encode("utf-8")

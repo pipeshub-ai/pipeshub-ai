@@ -156,7 +156,7 @@ class Harness:
         store_provider = MagicMock()
         store_provider.transaction = _transaction
         store_provider.graph_provider.get_typed_records_batch = AsyncMock(
-            side_effect=lambda ids: {r.id: copy.deepcopy(r) for r in self.stored.values() if r.id in ids}
+            side_effect=lambda ids, **_: {r.id: copy.deepcopy(r) for r in self.stored.values() if r.id in ids}
         )
         store_provider.compare_and_set_indexing_status = AsyncMock(
             side_effect=lambda ids, expected, new_status: list(ids)

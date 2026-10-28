@@ -169,18 +169,18 @@ def build_column_records(
     return records
 
 
-async def load_typed_columns(graph_provider: Any, records: Mapping[str, Record]) -> dict[str, Record]:  # noqa: ANN401
+async def load_typed_columns(processor: Any, records: Mapping[str, Record]) -> dict[str, Record]:  # noqa: ANN401
     """The typed records of these stored column records, keyed the same way.
 
     A parent lookup returns base records, which hold none of a column's
-    stats or profile; those live on its type node. Raises LookupError when
-    any of them cannot be loaded, so a caller never mistakes a failed read
-    for a column without stats.
+    stats or profile; those live on its type node. Raises when the read
+    fails, and LookupError when any of them cannot be loaded, so a caller
+    never mistakes a failed read for a column without stats.
     """
     ids = {key: record.id for key, record in records.items() if record.id}
     if not ids:
         return {}
-    typed = await graph_provider.get_typed_records_batch(list(ids.values()))
+    typed = await processor.get_typed_records_by_ids(list(ids.values()), raise_on_error=True)
     missing = [record_id for record_id in ids.values() if record_id not in typed]
     if missing:
         raise LookupError(f"Could not load {len(missing)} of {len(ids)} column record(s)")

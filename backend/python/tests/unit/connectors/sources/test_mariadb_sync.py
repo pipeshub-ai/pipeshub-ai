@@ -13,7 +13,11 @@ from fastapi import HTTPException
 
 from app.connectors.core.registry.filters import Filter, FilterCollection
 from app.connectors.core.sql.profiling import ColumnProfile
-from app.connectors.sources.mariadb.connector import SYNC_STATE_KEY, MariaDBConnector
+from app.connectors.sources.mariadb.connector import (
+    MAX_COLUMN_VALUES_STREAMED,
+    SYNC_STATE_KEY,
+    MariaDBConnector,
+)
 from app.connectors.sources.mariadb.tables import split_table_fqn, table_fqn
 from app.models.entities import Record, RecordType
 from app.sources.client.mariadb.mariadb import MariaDBResponse
@@ -248,10 +252,10 @@ class World:
 
         provider = MagicMock()
         provider.transaction = MagicMock(side_effect=lambda: Tx())
-        provider.graph_provider.get_typed_records_batch = AsyncMock(
-            side_effect=lambda ids: {r.id: r for r in store.records.values() if r.id in ids}
-        )
         self.connector.data_store_provider = provider
+        self.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
+            side_effect=lambda ids, **_: {r.id: r for r in store.records.values() if r.id in ids}
+        )
         self.profiler = MagicMock()
         self.profiler.profile_table = AsyncMock(side_effect=self._profile)
         self.connector.profiler = self.profiler
@@ -267,6 +271,7 @@ class World:
         processor = self.connector.data_entities_processor
         processor.sql_tables_to_relate_again = AsyncMock(side_effect=self._related_through)
         processor.on_sql_table_renamed = self.refreshed
+        processor.move_incoming_relations = self.relations_moved
 
     async def _profile(self, database, table, columns, **kwargs) -> TableProfile:
         if table in self.profile_fails:
@@ -283,8 +288,6 @@ class World:
         with patch(
             "app.connectors.sources.mariadb.connector.load_connector_filters",
             new_callable=AsyncMock, return_value=(filters or FilterCollection(), indexing or FilterCollection()),
-        ), patch(
-            "app.connectors.core.sql.sync_lifecycle.move_incoming_relations", self.relations_moved,
         ), patch("app.connectors.sources.mariadb.connector.asyncio.sleep", new_callable=AsyncMock):
             await self.connector.run_sync()
 
@@ -553,6 +556,34 @@ class TestColumnStreaming:
         assert data["value_counts"] == [{"value": "paid", "count": 3}]
         assert world.connector.data_source.column_value_counts.await_args.args[:3] == ("shop", "orders", "status")
 
+    @staticmethod
+    async def _stream(world, column: str) -> dict:
+        response = await world.connector.stream_record(world.store.records[f"shop.orders.{column}"])
+        return json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+
+    @pytest.mark.parametrize(("rows", "truncated"), [
+        (MAX_COLUMN_VALUES_STREAMED, False),
+        (MAX_COLUMN_VALUES_STREAMED + 1, True),
+    ])
+    async def test_truncated_only_when_a_value_was_cut_off(self, world, rows: int, truncated: bool) -> None:
+        world.catalog.add("orders", columns=("id", "status"))
+        await world.sync()
+        world.connector.data_source.column_value_counts = AsyncMock(
+            return_value=[{"value": str(i), "count": 1} for i in range(rows)],
+        )
+        data = await self._stream(world, "status")
+        assert len(data["value_counts"]) == MAX_COLUMN_VALUES_STREAMED
+        assert data["value_counts_truncated"] is truncated
+        assert world.connector.data_source.column_value_counts.await_args.args[3] == MAX_COLUMN_VALUES_STREAMED + 1
+
+    async def test_a_personal_column_streams_no_value_counts(self, world) -> None:
+        world.catalog.add("orders", columns=("id", "email"))
+        await world.sync()
+        world.connector.data_source.column_value_counts = AsyncMock()
+        data = await self._stream(world, "email")
+        world.connector.data_source.column_value_counts.assert_not_awaited()
+        assert (data["value_counts"], data["value_counts_withheld"]) == ([], True)
+
     async def test_a_failed_value_read_is_an_error_not_an_empty_column(self, world) -> None:
         world.catalog.add("orders", columns=("id", "status"))
         await world.sync()
@@ -660,12 +691,20 @@ class TestProfileReview:
         await sync_with(off)
         assert not world.store.records["shop.orders.status"].top_values
 
-    async def test_a_missing_typed_column_node_does_not_block_the_table(self, world) -> None:
+    async def test_stored_stats_that_cannot_be_read_hold_the_table_until_its_profile_is_taken(self, world) -> None:
         world.catalog.add("orders", columns=("id", "status"))
         await world.sync()
-        world.connector.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock(return_value={})
+        processor = world.connector.data_entities_processor
+        read = processor.get_typed_records_by_ids
+        processor.get_typed_records_by_ids = AsyncMock(return_value={})
         world.profile_fails = {"orders"}  # stored stats are wanted
         world.catalog.add("orders", columns=("id", "status", "total"), updated="2026-02-01T00:00:00")
+        await world.sync()
+        # Not written without its stored stats: the next sync tries again.
+        assert "shop.orders.total" not in world.store.records
+
+        processor.get_typed_records_by_ids = read
+        world.profile_fails = set()
         await world.sync()
         assert "shop.orders.total" in world.store.records
 

@@ -12,7 +12,6 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.sql.record_moves import Moves, hold_renames, rename_updates
 from app.models.entities import Record, RecordType
 
@@ -288,9 +287,7 @@ class SqlSyncLifecycleMixin:
             occupant = await tx_store.get_record_by_external_id(self.connector_id, fqn, raise_on_error=True)
         if occupant is None or occupant.id == table.id:
             return
-        await move_incoming_relations(
-            self.data_store_provider.graph_provider, from_record_id=occupant.id, to_record_id=table.id,
-        )
+        await self.data_entities_processor.move_incoming_relations(occupant.id, table.id)
         await self._remove_records([occupant.id])
 
     async def _move_renamed_columns(self, table_fqn: str, renames: dict[str, str]) -> bool:

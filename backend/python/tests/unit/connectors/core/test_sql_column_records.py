@@ -129,11 +129,12 @@ class TestLoadTypedColumns:
 
         from app.connectors.core.sql.column_records import load_typed_columns
 
-        graph = MagicMock()
+        processor = MagicMock()
         typed = SimpleNamespace(id="c1", distinct_count=3)
-        graph.get_typed_records_batch = AsyncMock(return_value={"c1": typed})
-        assert await load_typed_columns(graph, {"x.c": SimpleNamespace(id="c1")}) == {"x.c": typed}
-        assert await load_typed_columns(graph, {}) == {}
+        processor.get_typed_records_by_ids = AsyncMock(return_value={"c1": typed})
+        assert await load_typed_columns(processor, {"x.c": SimpleNamespace(id="c1")}) == {"x.c": typed}
+        assert await load_typed_columns(processor, {}) == {}
+        processor.get_typed_records_by_ids.assert_awaited_once_with(["c1"], raise_on_error=True)
 
     async def test_a_missing_typed_record_raises(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
@@ -142,10 +143,10 @@ class TestLoadTypedColumns:
 
         from app.connectors.core.sql.column_records import load_typed_columns
 
-        graph = MagicMock()
-        graph.get_typed_records_batch = AsyncMock(return_value={})
+        processor = MagicMock()
+        processor.get_typed_records_by_ids = AsyncMock(return_value={})
         with pytest.raises(LookupError):
-            await load_typed_columns(graph, {"x.c": SimpleNamespace(id="c1")})
+            await load_typed_columns(processor, {"x.c": SimpleNamespace(id="c1")})
 
 
 class TestColumnRevision:
