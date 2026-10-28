@@ -277,13 +277,18 @@ export class PgGroupRepository implements GroupRepository {
     });
   }
 
-  async addToEveryone(orgId: string, userId: string): Promise<void> {
+  async addToEveryone(
+    orgId: string,
+    userId: string,
+    opts: { liveOnly?: boolean } = {},
+  ): Promise<void> {
     const uid = oidOf(userId);
     if (uid === undefined) return;
     await inUnit(undefined, { write: true }, async (k) => {
       assertOrg(k, orgId);
+      // As on MongoDB, a removed "everyone" group is left alone only when the caller asks (`liveOnly`).
       const found = await k.query<{ id: string }>(
-        "/* pipeshub:identity.group_everyone */ UPDATE identity.user_groups g SET updated_at = $2 WHERE g.org_id = $1 AND g.id = (SELECT x.id FROM identity.user_groups x WHERE x.org_id = $1 AND x.type = 'everyone' ORDER BY x.id LIMIT 1) RETURNING g.id",
+        `/* pipeshub:identity.group_everyone */ UPDATE identity.user_groups g SET updated_at = $2 WHERE g.org_id = $1 AND g.id = (SELECT x.id FROM identity.user_groups x WHERE x.org_id = $1 AND x.type = 'everyone'${opts.liveOnly ? ' AND NOT x.is_deleted' : ''} ORDER BY x.id LIMIT 1) RETURNING g.id`,
         [k.orgId, new Date()],
       );
       if (found.rows.length > 0)
