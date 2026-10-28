@@ -38,6 +38,7 @@ from app.models.entities import EntityRecord, EntityType
 from app.modules.indexing.entity_index_rebuild import (
     EntityIndexRebuilder,
     EntityIndexState,
+    ORG_PASS_VERSION,
     entity_index_marker,
 )
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
@@ -208,7 +209,7 @@ async def test_the_entity_index_outlives_the_records_rebuild_and_is_refilled_whe
     assert await d.entities_by_type() == BOTH
     # Two entities and the stamp.
     assert (await d.count(d.records), await d.count(d.entities)) == (1, 3)
-    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, stamp)
+    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, stamp, version=ORG_PASS_VERSION)
     # As adoption left the manifest on some deployments in an earlier release.
     await d.registry.manifest_store.record(ManagedCollection(
         name=d.entities, collection_type=CollectionType.ENTITIES.value,
@@ -252,7 +253,7 @@ async def test_the_entity_index_outlives_the_records_rebuild_and_is_refilled_whe
     assert "taxonomy" in outcomes
     assert await d.entities_by_type() == BOTH
     assert d.state(APPS, d.app) == entity_index_marker(FINGERPRINT, restamped)
-    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, restamped)
+    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, restamped, version=ORG_PASS_VERSION)
     assert await d.rebuild() == ["idle"]
 
     await d.service.delete_collection(d.entities)

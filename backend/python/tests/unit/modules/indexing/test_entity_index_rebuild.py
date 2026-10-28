@@ -57,7 +57,7 @@ USERS = CollectionNames.USERS.value
 
 FP = "openai:text-embedding-3-small:1536"
 MARKER = entity_index_marker(FP)
-ORG_MARKER = entity_index_marker(FP, ORG_PASS_VERSION)
+ORG_MARKER = entity_index_marker(FP, version=ORG_PASS_VERSION)
 NOW = 1_800_000_000_000
 
 
@@ -1030,9 +1030,11 @@ class TestTheStampIsPartOfTheMarker:
 
     @staticmethod
     def _done(graph: FakeGraph, marker: str) -> None:
+        # The org pass has its own version, so its marker differs from the app's.
+        org_marker = marker.replace(f"v{ENTITY_INDEX_VERSION}", f"v{ORG_PASS_VERSION}", 1)
         graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker})
         graph.docs[ORGS]["org-1"] = _org(**{
-            EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker, EntityIndexState.SWEPT_AT: NOW,
+            EntityIndexState.STATE: org_marker, EntityIndexState.TARGET: org_marker, EntityIndexState.SWEPT_AT: NOW,
         })
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan")]
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "Billing"}]
@@ -1050,7 +1052,9 @@ class TestTheStampIsPartOfTheMarker:
             (EntityType.RECORD, "r1"), (EntityType.TOPIC, "t1"),
         }
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
-        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(
+            FP, "snew", version=ORG_PASS_VERSION,
+        )
 
     async def test_documents_done_before_there_were_stamps_are_projected_again(self) -> None:
         """Every deployment once, on upgrade: it cannot be known whether an
@@ -1190,9 +1194,9 @@ class TestACollectionEmptiedFromOutside:
         with self._default_model():
             db, _, graph, rebuilder = self._deployment()
             await _run_until_idle(rebuilder)
-            legacy = entity_index_marker(fingerprint)
             db.points = dict(db.entity_points)
-            for collection, key in ((APPS, "app-1"), (ORGS, "org-1")):
+            for collection, key, version in ((APPS, "app-1", ENTITY_INDEX_VERSION), (ORGS, "org-1", ORG_PASS_VERSION)):
+                legacy = entity_index_marker(fingerprint, version=version)
                 graph.docs[collection][key][EntityIndexState.STATE] = legacy
                 graph.docs[collection][key][EntityIndexState.TARGET] = legacy
 
@@ -1201,7 +1205,9 @@ class TestACollectionEmptiedFromOutside:
 
         assert "connector" in first and "taxonomy" in first
         assert second == ["idle"]
-        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(fingerprint, db.stamp)
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(
+            fingerprint, db.stamp, version=ORG_PASS_VERSION,
+        )
 
     async def test_a_deployment_with_nothing_to_index_is_stamped_once(self) -> None:
         """No point is ever written, and the collection must still not read

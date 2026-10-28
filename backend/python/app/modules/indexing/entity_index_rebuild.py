@@ -16,11 +16,11 @@ projects what the graph already holds, with no extraction or LLM call:
 A document is done when its ``entityIndexState`` equals the current marker,
 ``v<version>:<embedding fingerprint>`` (``ENTITY_INDEX_VERSION`` for
 connectors, ``ORG_PASS_VERSION`` for orgs), so a model change re-runs every
-pass, and each point records the model that embedded it, so a point from
-another model is re-embedded whenever it is next written. The marker also
-carries the collection's stamp (``EntityVectorStore.collection_stamp``), so a
-collection dropped, recreated or emptied from outside is refilled the same
-way. Mechanics
+pass, and each point records the model that embedded it, so a point
+from another model is re-embedded whenever it is next written. The marker
+also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
+so a collection dropped, recreated or emptied from outside is refilled the
+same way. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
 """
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 # Bump when what a pass writes changes, so its documents are re-projected;
 # separate, so a change to one pass does not re-scan every connector.
 ENTITY_INDEX_VERSION = 1
-# 2: people (KG-13).
+# 2: people.
 ORG_PASS_VERSION = 2
 
 LEADER_KEY = "entity_index_rebuild:leader"
@@ -170,7 +170,9 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION) -> str:
+def entity_index_marker(
+    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION,
+) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
     under another stamp was projected into a collection that is gone."""
     return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"

@@ -200,52 +200,6 @@ async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend)
         assert [i["fields"] for i in index_node["indexes"]] == [["orgId", "_key"]]
 
 
-async def test_an_address_another_org_also_uses_still_links_this_orgs_member(backend) -> None:
-    """Unscoped, the lookup could answer with the other tenant's user (written
-    first), which is refused, and this org's member would get no edge."""
-    from app.connectors.core.base.data_processor.record_people import link_record_people
-
-    provider, org = backend
-    await provider.ensure_schema()
-    other = f"{org}-x"
-    shared = f"sam@{org}.test"
-    await provider.batch_upsert_nodes([
-        {"id": f"{other}-sam", "userId": f"{other}-sam", "orgId": other, "email": shared, "fullName": "Sam X"},
-    ], CollectionNames.USERS.value)
-    await provider.batch_upsert_nodes([
-        {"id": f"{org}-sam", "userId": f"{org}-sam", "orgId": org, "email": shared, "fullName": "Sam"},
-    ], CollectionNames.USERS.value)
-    try:
-        found = await provider.get_user_by_email(shared, org_id=org, raise_on_error=True)
-        assert found is not None and found.id == f"{org}-sam"
-        assert await provider.get_user_by_email(shared, org_id=f"{org}-none", raise_on_error=True) is None
-
-        mail = MailRecord(
-            id=f"{org}-shared", org_id=org, external_record_id=f"{org}-shared", record_name="Plan",
-            origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=f"{org}-conn",
-            record_type=RecordType.MAIL, version=1, source_created_at=1000, source_updated_at=1000,
-            from_email=shared,
-        )
-        await provider.batch_upsert_records([mail])
-        async with GraphDataStore(logger, provider).transaction() as tx:
-            await link_record_people(mail, tx, logger)
-        assert await _edges(provider, mail.id) == [(f"{org}-sam", "AUTHORED_BY")]
-    finally:
-        await _remove_users_of(provider, other)
-
-
-async def _remove_users_of(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> None:
-    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-
-    if isinstance(provider, Neo4jProvider):
-        await provider.client.execute_query("MATCH (u:User {orgId: $org}) DETACH DELETE u", parameters={"org": org})
-        return
-    await provider.http_client.execute_aql(
-        f"FOR u IN {CollectionNames.USERS.value} FILTER u.orgId == @org REMOVE u IN {CollectionNames.USERS.value}",
-        {"org": org},
-    )
-
-
 async def test_a_person_lists_the_records_naming_them_in_either_direction(backend) -> None:
     """KG-13 slice 2: a member's records are the ones linked to them by any
     entityRelations edge (record -> user from record_people, user -> record
@@ -364,3 +318,47 @@ async def test_a_person_is_reachable_only_through_records_the_viewer_may_read(ba
     assert [r["_key"] for r in seen[("person", f"{org}-bob")]] == [mail_id]
     unseen = await provider.get_permitted_entity_records([ref], org, stranger, app_level_connector_ids=[])
     assert list(unseen[("person", f"{org}-bob")]) == []
+async def test_an_address_another_org_also_uses_still_links_this_orgs_member(backend) -> None:
+    """Unscoped, the lookup could answer with the other tenant's user (written
+    first), which is refused, and this org's member would get no edge."""
+    from app.connectors.core.base.data_processor.record_people import link_record_people
+
+    provider, org = backend
+    await provider.ensure_schema()
+    other = f"{org}-x"
+    shared = f"sam@{org}.test"
+    await provider.batch_upsert_nodes([
+        {"id": f"{other}-sam", "userId": f"{other}-sam", "orgId": other, "email": shared, "fullName": "Sam X"},
+    ], CollectionNames.USERS.value)
+    await provider.batch_upsert_nodes([
+        {"id": f"{org}-sam", "userId": f"{org}-sam", "orgId": org, "email": shared, "fullName": "Sam"},
+    ], CollectionNames.USERS.value)
+    try:
+        found = await provider.get_user_by_email(shared, org_id=org, raise_on_error=True)
+        assert found is not None and found.id == f"{org}-sam"
+        assert await provider.get_user_by_email(shared, org_id=f"{org}-none", raise_on_error=True) is None
+
+        mail = MailRecord(
+            id=f"{org}-shared", org_id=org, external_record_id=f"{org}-shared", record_name="Plan",
+            origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=f"{org}-conn",
+            record_type=RecordType.MAIL, version=1, source_created_at=1000, source_updated_at=1000,
+            from_email=shared,
+        )
+        await provider.batch_upsert_records([mail])
+        async with GraphDataStore(logger, provider).transaction() as tx:
+            await link_record_people(mail, tx, logger)
+        assert await _edges(provider, mail.id) == [(f"{org}-sam", "AUTHORED_BY")]
+    finally:
+        await _remove_users_of(provider, other)
+
+
+async def _remove_users_of(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> None:
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query("MATCH (u:User {orgId: $org}) DETACH DELETE u", parameters={"org": org})
+        return
+    await provider.http_client.execute_aql(
+        f"FOR u IN {CollectionNames.USERS.value} FILTER u.orgId == @org REMOVE u IN {CollectionNames.USERS.value}",
+        {"org": org},
+    )
