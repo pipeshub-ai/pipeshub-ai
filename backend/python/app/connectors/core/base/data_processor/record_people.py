@@ -327,6 +327,10 @@ async def link_record_people(
     nobody then costs no query. An existing record is always cleared, so
     one that stops naming anyone loses its old edges.
     """
+    # A stub saved over the record it stands for names no one; linking it
+    # would delete that record's person edges.
+    if record.is_placeholder:
+        return 0
     links = person_links(record)
     if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
