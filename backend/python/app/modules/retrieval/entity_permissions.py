@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.core.org_context import spawn_in_request
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
@@ -40,7 +41,7 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.taxonomy import taxonomy_links
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterable, Mapping
+    from collections.abc import Awaitable, Coroutine, Iterable, Mapping
 
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -464,9 +465,9 @@ async def _run_probes(
     return rounds, timed_out
 
 
-async def _all_or_none(*awaitables: Awaitable[object]) -> None:
+async def _all_or_none(*awaitables: Coroutine[Any, Any, object]) -> None:
     """Await them together; when one fails, the others are cancelled, not left running."""
-    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    tasks = [spawn_in_request(awaitable) for awaitable in awaitables]
     try:
         await asyncio.gather(*tasks)
     except BaseException:
