@@ -84,6 +84,11 @@ def test_an_acronym_joins_the_one_organization_it_abbreviates() -> None:
     assert _names(link_short_forms(entities)) == {"Northwind Logistics": ["Northwind Logistics", "NL"]}
 
 
+def test_a_short_form_two_rules_point_two_ways_stays_apart() -> None:
+    entities = [_entity(K.ORGANIZATION, "NL Systems"), _entity(K.ORGANIZATION, "Northwind Logistics"), _entity(K.ORGANIZATION, "NL")]
+    assert set(_names(link_short_forms(entities))) == {"NL Systems", "Northwind Logistics", "NL"}
+
+
 def test_kinds_never_join_each_other() -> None:
     entities = [_entity(K.PERSON, "Jordan Lee"), _entity(K.COUNTRY_REGION, "Jordan")]
     assert set(_names(link_short_forms(entities))) == {"Jordan Lee", "Jordan"}

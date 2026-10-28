@@ -109,4 +109,5 @@ def _organization_full_form(entity: NamedEntity, others: list[NamedEntity]) -> N
             and "".join(word[0] for word in words) == acronym.casefold()
         )
 
-    return _only(others, extends) or _only(others, abbreviates)
+    # One target across both rules: "NL" beside "NL Systems" and "Northwind Logistics" stays apart.
+    return _only(others, lambda full: extends(full) or abbreviates(full))
