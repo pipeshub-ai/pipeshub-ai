@@ -28,7 +28,7 @@ class TestOnSqlRecordsDeleted:
         removed = await proc.on_sql_records_deleted(["table-1"], "conn-1")
 
         assert removed == ["table-1", "col-1", "col-2"]
-        proc.on_records_deleted_cascade.assert_awaited_once_with(["table-1"], "conn-1")
+        proc.on_records_deleted_cascade.assert_awaited_once_with(["table-1"], "conn-1", include_trashed_roots=True)
 
     async def test_columns_of_a_table_are_deleted_the_same_way(self) -> None:
         proc = _processor(deleted=["col-1"])
@@ -81,7 +81,7 @@ class TestGraphReadsForSqlConnectors:
         graph.get_typed_records_batch = AsyncMock(return_value={"c1": "column"})
 
         assert await proc.get_typed_records_by_ids(["c1"]) == {"c1": "column"}
-        graph.get_typed_records_batch.assert_awaited_once_with(["c1"])
+        graph.get_typed_records_batch.assert_awaited_once_with(["c1"], raise_on_error=False)
 
     async def test_no_ids_reads_nothing(self) -> None:
         proc = _processor()

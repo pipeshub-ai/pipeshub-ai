@@ -1989,21 +1989,19 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
-            raise_on_error (bool): Raise when the lookup fails, rather than
-                answer None as if no record existed
+            raise_on_error (bool): Let the lookup's own error out instead of
+                wrapping it in GraphQueryError
 
         Returns:
-            Optional['Record']: Record data if found, None otherwise. With
-                ``raise_on_error=True``, None means there is no such record -
-                never that the lookup failed; without it, a failed lookup is
-                also None.
+            Optional['Record']: Record data if found, None otherwise. None means
+                there is no such record - never that the lookup failed.
 
         Raises:
-            GraphQueryError: With ``raise_on_error=True``, when the lookup
-                could not be read. Callers act on None
-                by creating the record or concluding it was deleted, so a
-                failure reported as None becomes a duplicate record or a
-                deletion that never happened.
+            GraphQueryError: The lookup could not be read; with
+                ``raise_on_error=True``, the error the lookup raised instead.
+                Callers act on None by creating the record or concluding it
+                was deleted, so a failure reported as None would become a
+                duplicate record or a deletion that never happened.
         """
         pass
 

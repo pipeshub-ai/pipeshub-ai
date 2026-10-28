@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     RecordRelations,
 )
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection, FilterOption
 from app.connectors.sources.postgres.catalog_diff import TableChange, diff_catalog
 from app.connectors.sources.postgres.connector import (
@@ -774,6 +775,31 @@ class TestGetPermissions:
         perms = await connector._get_permissions()
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
+
+    @staticmethod
+    def _personal(email: str | None) -> PostgreSQLConnector:
+        connector = _make_connector()
+        connector.scope = ConnectorScope.PERSONAL.value
+        connector.created_by = "user-1"
+        tx_store = MagicMock()
+        tx_store.get_user_by_user_id = AsyncMock(return_value={"email": email} if email else None)
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=tx_store)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        connector.data_store_provider.transaction = MagicMock(return_value=transaction)
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_reaches_the_creator_only(self) -> None:
+        perms = await self._personal("owner@example.com")._get_permissions()
+
+        assert [(p.entity_type.value, p.email, p.external_id) for p in perms] == [
+            ("USER", "owner@example.com", "user-1"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_without_a_creator_email_reaches_no_one(self) -> None:
+        assert await self._personal(None)._get_permissions() == []
 
 
 # ===========================================================================
@@ -4854,7 +4880,7 @@ class TestFailedProfilingKeepsStoredValues:
 
         await failing._sync_table_columns(_table_record(), table)
 
-        failing.data_entities_processor.get_typed_records_by_ids.assert_awaited_once_with([stored.id])
+        failing.data_entities_processor.get_typed_records_by_ids.assert_awaited_once_with([stored.id], raise_on_error=True)
         [(record, _)] = failing.data_entities_processor.on_new_records.await_args.args[0]
         assert record.top_values == ["A", "B"]
         assert record.distinct_count == 2
@@ -4879,6 +4905,17 @@ class TestFailedProfilingKeepsStoredValues:
         await failing._sync_table_columns(_table_record(), table)
 
         failing.data_entities_processor.get_typed_records_by_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [AsyncMock(return_value={}), AsyncMock(side_effect=RuntimeError("graph down"))])
+    async def test_a_stored_profile_that_cannot_be_read_is_not_overwritten(self, read) -> None:
+        _, failing, table = await self._stored_and_failing()
+        failing.data_entities_processor.get_typed_records_by_ids = read
+
+        with pytest.raises(RuntimeError):
+            await failing._sync_table_columns(_table_record(), table)
+
+        failing.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dropped_table_takes_its_column_records(self) -> None:

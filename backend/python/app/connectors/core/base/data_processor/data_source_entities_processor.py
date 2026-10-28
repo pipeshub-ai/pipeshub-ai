@@ -4287,7 +4287,9 @@ class DataSourceEntitiesProcessor:
         """
         if not record_ids:
             return []
-        result = await self.on_records_deleted_cascade(record_ids, connector_id)
+        # The source no longer has them, so one already in the trash still goes:
+        # refused, it would read as deleted and never be tried again.
+        result = await self.on_records_deleted_cascade(record_ids, connector_id, include_trashed_roots=True)
         if not (result or {}).get("success"):
             raise RuntimeError(
                 f"Could not delete {len(record_ids)} record(s) of connector {connector_id}: "
@@ -4321,12 +4323,17 @@ class DataSourceEntitiesProcessor:
         """Record groups (schemas) a sync deleted with ``on_record_group_deleted``.
         Nothing else to clean up by default."""
 
-    async def get_typed_records_by_ids(self, record_ids: list[str]) -> dict[str, Record]:
+    async def get_typed_records_by_ids(
+        self, record_ids: list[str], *, raise_on_error: bool = False,
+    ) -> dict[str, Record]:
         """Records by id as their subclasses (SQLColumnRecord, ...), which carry the
-        fields plain records lack. An id that cannot be read is left out."""
+        fields plain records lack. An id that cannot be read is left out; a failed
+        query reads as none, or raises with ``raise_on_error``."""
         if not record_ids:
             return {}
-        return await self.data_store_provider.graph_provider.get_typed_records_batch(record_ids) or {}
+        return await self.data_store_provider.graph_provider.get_typed_records_batch(
+            record_ids, raise_on_error=raise_on_error,
+        ) or {}
 
     async def move_incoming_relations(self, from_record_id: str, to_record_id: str) -> int:
         """Move every link into a stand-in record onto the record that replaces it;

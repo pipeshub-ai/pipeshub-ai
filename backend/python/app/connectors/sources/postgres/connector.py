@@ -1177,10 +1177,27 @@ class PostgreSQLConnector(BaseConnector):
         return min(db_row_count, max_rows)
 
     async def _get_permissions(self) -> list[Permission]:
-        return [Permission(
-            type=PermissionType.OWNER,
-            entity_type=EntityType.ORG,
-        )]
+        """Who reaches the database, and through it every schema, table and column.
+
+        Team scope: the whole organisation. Personal scope: the creator only;
+        with no creator to name, nobody rather than everybody.
+        """
+        if self.scope == ConnectorScope.TEAM.value:
+            return [Permission(type=PermissionType.OWNER, entity_type=EntityType.ORG)]
+        if not self.creator_email:
+            await self._load_creator_email()
+        if self.creator_email:
+            return [Permission(
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                external_id=self.created_by,
+            )]
+        self.logger.warning(
+            "Personal PostgreSQL connector %s has no creator email; its database is shared with no one",
+            self.connector_id,
+        )
+        return []
 
     async def _build_table_record(
         self,
@@ -1382,10 +1399,16 @@ class PostgreSQLConnector(BaseConnector):
 
     async def _with_profiles(self, stored: dict[str, Record]) -> dict[str, Record]:
         """Saved column records as ``SQLColumnRecord``s, which carry the stats and
-        profile the plain records lack; one that cannot be read so stays as is."""
-        typed = await self.data_entities_processor.get_typed_records_by_ids(
-            [record.id for record in stored.values() if record.id]
-        )
+        profile the plain records lack.
+
+        Raises when any of them cannot be read so: a plain record in its place
+        would write the column back with no profile.
+        """
+        ids = [record.id for record in stored.values() if record.id]
+        typed = await self.data_entities_processor.get_typed_records_by_ids(ids, raise_on_error=True)
+        missing = [record_id for record_id in ids if record_id not in typed]
+        if missing:
+            raise RuntimeError(f"Could not read the stored profiles of {len(missing)} column record(s)")
         return {fqn: typed.get(record.id, record) for fqn, record in stored.items()}
 
     async def _remove_records(self, record_ids: list[str], *, table_record_id: str | None = None) -> None:
