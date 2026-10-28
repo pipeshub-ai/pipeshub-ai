@@ -5,7 +5,7 @@
  */
 import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth.types';
 import { currentOrgContext } from '../../context/orgContext';
-import { InternalServerError } from '../../errors/http.errors';
+import { ConflictError, InternalServerError } from '../../errors/http.errors';
 import { UniqueConstraintError } from '../errors';
 import { stripNul } from '../nul';
 import { hashOpaqueToken } from './token-hash';
@@ -891,11 +891,16 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
         throw new InternalServerError(
           'the user of the call differs from the one the unit of work runs as',
         );
-      await k.query(
+      const approved = await k.query(
         `/* pipeshub:oauth.device_approve */ UPDATE oauth.device_authorizations SET status = 'approved', approved_user_id = $3, updated_at = $4
           WHERE org_id = $1 AND id = $2 AND (status = 'pending' OR (status = 'approved' AND approved_user_id = $3))`,
         [k.orgId, did, decision.userId, new Date()],
       );
+      // nothing matched: the request was decided by someone else first, or is not in this org. Say so rather than report an approval that never happened.
+      if (approved.rowCount !== 1)
+        throw new ConflictError(
+          'This device authorization can no longer be approved.',
+        );
     });
   }
 

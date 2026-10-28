@@ -239,6 +239,50 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       });
     });
 
+    describe('device approval (PostgreSQL only: MongoDB overwrites a decided request)', () => {
+      const raw = new PgOAuthTokenRepository();
+      const tokens = scoped(raw, ledger);
+      const orgId = newId();
+      const device = async () => {
+        ledger.learn({ orgId });
+        const input = {
+          deviceCodeHash: createHash('sha256').update(`dc-${newId()}`).digest('hex'),
+          userCode: newId().slice(-12).toUpperCase(),
+          clientId: 'c',
+          scopes: ['a'],
+          interval: 5,
+          expiresAt: new Date(Date.now() + 600_000),
+        };
+        await tokens.createDevice(input);
+        return (await tokens.findDeviceByUserCode(input.userCode))!;
+      };
+      const approve = (id: string, userId: string) =>
+        inOrg(orgId, () => raw.decideDevice(id, { status: OAuthDeviceCodeStatus.APPROVED, userId, orgId }), userId);
+
+      it('approves a pending request, lets the same person confirm again, and refuses anyone after that or after a denial', async () => {
+        const first = await device();
+        const alice = newId();
+        await approve(first._id, alice);
+        await approve(first._id, alice);
+        let failure: Error | undefined;
+        try {
+          await approve(first._id, newId());
+        } catch (e) {
+          failure = e as Error;
+        }
+        expect(failure?.message).to.match(/can no longer be approved/);
+        const denied = await device();
+        await tokens.decideDevice(denied._id, { status: OAuthDeviceCodeStatus.DENIED });
+        failure = undefined;
+        try {
+          await approve(denied._id, alice);
+        } catch (e) {
+          failure = e as Error;
+        }
+        expect(failure?.message).to.match(/can no longer be approved/);
+      });
+    });
+
     describe('the org of a refresh grant (PostgreSQL only: MongoDB needs no org)', () => {
       const raw = new PgOAuthTokenRepository();
       const tokens = scoped(raw, ledger);
