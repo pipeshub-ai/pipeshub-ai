@@ -8,7 +8,7 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>Open-source AI platforma pro firemní prostředí</h3>
+<h3>Open-source kontextová vrstva pro AI agenty</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">Web</a> ·
@@ -46,11 +46,11 @@
 
 </div>
 
-<h2 id="about-pipeshub">PipesHub – vysvětlitelný a rozšiřitelný</h2>
+<h2 id="about-pipeshub">Dejte svým AI agentům skutečné porozumění vaší firmě</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> je open-source platforma pro propojení AI aplikací se znalostmi uloženými napříč firemními systémy vaší společnosti.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> promění vše, co vaše firma ví, v pracovní prostor respektující oprávnění, který AI agenti prozkoumávají tak, jako programovací agenti prozkoumávají repozitář. Agenti v něm vyhledávají, používají na něj `grep`, procházejí jeho složky a znalostní graf, čtou jen to, co potřebují, a citují přesný blok, ze kterého každá odpověď pochází.
 
-Připojte Slack, Google Drive, GitHub, Microsoft 365, Notion a více než 50 dalších systémů. Vyhledávejte napříč nimi a získávejte odpovědi s citacemi, filtrované podle toho, co smí každý uživatel vidět — nebo tentýž kontext poskytněte vlastním agentům, workflow a MCP klientům.
+Připojte Slack, Google Drive, GitHub, Microsoft 365, Jira, Notion, Postgres a více než 25 dalších systémů. Používejte vestavěný chat, hloubkový výzkum a agenty, nebo předejte stejný kontext přes MCP a SDK do Claude Code, Cursoru, Codexu a vlastních agentů. Vlastní hosting, Apache 2.0, model podle vaší volby.
 
 > [!TIP]
 > Nasaďte jediným příkazem:
@@ -64,22 +64,95 @@ Připojte Slack, Google Drive, GitHub, Microsoft 365, Notion a více než 50 dal
   <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Podívejte se na 2½minutové demo</a></strong>: Claude Code odpovídá ze systémů Jira, Slack, GitHub a Drive s respektováním oprávnění každého uživatele
 </p>
 
-## Co můžete s PipesHub vytvořit?
+## Proč kontextová vrstva?
 
-PipesHub nejen používejte — stavějte na něm.
+Agenti obvykle selhávají na firemních znalostech kvůli kontextu, ne kvůli modelu. Vyhledávání top-k úryvků předá agentovi hrstku fragmentů a zahodí, kde každý z nich leží, na co odkazuje, kdo ho smí vidět a odkud pochází.
 
-**[Dejte nástrojům Claude Code, Cursor nebo Codex bezpečný přístup ke znalostem vaší společnosti →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
-Zabere to zhruba deset minut, jakmile PipesHub běží a má zaindexovaná data. Vytvořte si osobní přístupový token (Personal Access Token, bez nutnosti administrátora), připojte svého asistenta (jeden příkaz pro Claude Code, jeden konfigurační soubor pro Cursor nebo Codex) a zeptejte se *„proč byla změněna logika opakování pokusů v billing workeru?“* — odpoví z postmortem reportu incidentu, pull requestu, chatového vlákna i návrhového dokumentu, každý zdroj ocituje, a to pouze pokud je smíte vidět.
+Programovací agenti se zlepšili ve chvíli, kdy mohli v repozitáři používat `ls`, `grep` a číst ho, místo aby dostávali vložené úryvky. PipesHub dává agentům totéž nad daty vaší firmy.
 
-Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pro svůj tým? [Startovací projekt SDK a ukázka vyhledávání](https://github.com/pipeshub-ai/examples) pokrývají obojí. Něco jste vytvořili? [Ukažte nám to](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
+| | RAG s top-k úryvky | PipesHub |
+| --- | --- | --- |
+| **Co agent vidí nejdřív** | Několik textových úryvků | Název, umístění, metadata a shrnutí každého záznamu a k tomu bloky, které odpovídají dotazu |
+| **Jak se dostane hlouběji** | Nedostane: jedno vyhledání na otázku | Hybridní vyhledávání, `grep`/`find` nad záznamy, procházení složek a dotazy do znalostního grafu, ve smyčce |
+| **Struktura** | Ztracena při dělení na úryvky | Každý zdroj se stane Bloky: sekce, tabulky s řádky a buňkami, vlákna, kód, SQL tabulky s jejich schématem |
+| **Oprávnění** | Často jen přibližně při indexaci | Kontrolována vůči oprávněním zdrojového systému pro uživatele, který se ptá, při každém volání nástroje |
+| **Citace** | Na úryvek, pokud vůbec | Na blok: stránka, buňka tabulky, řádek, snímek nebo řádek kódu; vymyšlené citace se odstraní |
+
+## Jak to funguje
+
+```mermaid
+flowchart LR
+  subgraph Sources["40+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: search, grep, navigate, entities, fetch record"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+Každý zdroj se stane **Bloky**: jednou reprezentací, která zachová tabulky, vlákna a kód a pamatuje si přesnou stránku, buňku nebo řádek, odkud každý blok pochází. Každý indexovaný dokument se ukládá jako prostý text, takže při lokálním úložišti blobů mohou agenti použít `grep` na PDF, soubor Word nebo prezentaci stejně jako na textový soubor (záznamy nad 20 MB se přeskakují; viz [současná omezení](../../context-layer.md#current-limitations)). Bloky jsou uspořádány dvojím způsobem: podle **struktury složek** každého zdrojového systému a ve **znalostním grafu** lidí, projektů a zákazníků. Agenti obojí prozkoumávají pomocí **nástrojů, které odhalují detaily postupně**: vyhledávání nejprve ukáže název, shrnutí a odpovídající pasáže každého záznamu a agent jde hlouběji (grep, procházení složek, sledování entit, čtení celého záznamu) jen tehdy, když to potřebuje. **Každé volání nástroje se kontroluje vůči oprávněním zdrojového systému** pro osobu, za kterou agent jedná.
+
+**[Přečtěte si, jak kontextová vrstva funguje →](../../context-layer.md)** Popisuje formát Bloků, hierarchii a graf, všechny nástroje agenta a kód, ve kterém jsou, vynucování oprávnění, smyčku agenta a současná omezení.
+
+## Co můžete s PipesHub vytvořit
+
+Jedna kontextová vrstva, mnoho produktů nad ní. Používejte vestavěné aplikace tak, jak jsou, nebo si postavte vlastní přes MCP a SDK.
+
+| Co vytvořit | Co vám dá PipesHub | Kde začít |
+| --- | --- | --- |
+| **Agentní RAG pipeline** | Nástroje pro vyhledávání, které agent volá ve smyčce (hybridní vyhledávání, `grep`, navigace, dotazy na entity, čtení celých záznamů), s hotovou kontrolou oprávnění a citacemi na úrovni bloků | [SDK starter](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#použití-z-claude-code-cursor-nebo-codex) |
+| **Podnikové vyhledávání** | Jedno vyhledávací pole napříč 40+ konektory, které každému ukáže jen to, co smí vidět, s odpověďmi s citacemi | Vestavěno · [příklad](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
+| **AI asistent pro práci** | Chat a hloubkový výzkum nad firemními znalostmi, k tomu vyhledávání na webu a hlasový vstup | Vestavěno |
+| **Kontext pro programovací agenty** | Claude Code, Cursor a Codex odpovídají z návrhových dokumentů, tiketů, incidentů a vláken v chatu, nejen z kódu | [příklad](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
+| **Agenti bez kódu a nástroje pro workflow** | Vizuální drag-and-drop editor, který propojí firemní znalosti s akcemi ve Slacku, Gmailu, Jira, Confluence, GitHubu, Linearu, Notionu, Salesforce, Zendesku, Freshdesku a 20 dalších nástrojích. Nebo si na stejném API postavte vlastní produkt pro workflow, aby každý krok dostal kontext respektující oprávnění. | Vestavěno · [Headless použití](#mohu-pipeshub-používat-headless-bez-jeho-uživatelského-rozhraní) |
+| **Kopiloti zákaznické podpory** | Odpovědi z dřívějších tiketů, runbooků a dokumentace (ServiceNow, Zammad, Jira, Confluence) s akcemi zpět v tiketovacím nástroji | Vestavěno · SDK |
+| **Obchodní přehled o zákaznících** | Účty, kontakty a obchody ze Salesforce ve znalostním grafu, prohledávatelné spolu s e-maily, dokumenty a chaty o stejných zákaznících | Vestavěno |
+| **Dotazy nad vašimi databázemi** | Tabulky z Postgres, MariaDB a Snowflake indexované se schématy a cizími klíči, k tomu sandboxy, které spouštějí SQL a Python pro analýzy | Vestavěno |
+| **Reporty, grafy a dashboardy** | Agenti napíší a spustí kód v sandboxu a výsledek vrátí jako sdílitelný artefakt | Vestavěno |
+| **Vyhledávání v inženýrských znalostech** | Kód, pull requesty a commity z GitHubu a GitLabu, propojené s tikety a dokumenty kolem nich | Vestavěno |
+| **Vlastní aplikace nad firemními znalostmi** | SDK pro Python, TypeScript a Go, „Sign in with PipesHub“, aby každý uživatel vyhledával sám za sebe, a API pro nahrávání dokumentů, které žádný konektor nepokrývá | [příklady](https://github.com/pipeshub-ai/examples) |
+| **Právní aplikace a správa smluv (CLM)** | Ptejte se napříč smlouvami v Drive, SharePointu, Boxu nebo v nahraných souborech. Odpovědi citují přesnou klauzuli nebo stránku a každý vidí jen smlouvy, ke kterým má přístup. | [Headless použití](#mohu-pipeshub-používat-headless-bez-jeho-uživatelského-rozhraní) |
+| **Soukromá AI on-prem** | Vše výše uvedené na vlastní infrastruktuře, s libovolným poskytovatelem LLM nebo lokálními modely přes Ollama, s daty ve vaší infrastruktuře | [Nasazení](#-průvodce-nasazením) |
+
+## Použití z Claude Code, Cursor nebo Codex
+
+**[Dejte svému programovacímu asistentovi bezpečný přístup ke znalostem vaší firmy →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+
+Asi deset minut, jakmile PipesHub běží a má zaindexovaná data. Vytvořte si osobní přístupový token (Personal Access Token, není potřeba admin), připojte asistenta (jeden příkaz pro Claude Code, jeden konfigurační soubor pro Cursor nebo Codex) a zeptejte se *„proč se změnila logika opakování v billing workeru?“* Odpoví z postmortemu incidentu, pull requestu, vlákna v chatu a návrhového dokumentu, každý zdroj ocituje, a to jen pokud je smíte vidět.
+
+Přes MCP mají asistenti už dnes k dispozici vyhledávání, chat, čtení záznamů a procházení složek z PipesHub. `grep` a dotazy na entity do MCP přibudou jako další.
+
+Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pro svůj tým? [SDK starter a příklad vyhledávání](https://github.com/pipeshub-ai/examples) pokrývají obojí. Postavili jste něco? [Ukažte nám to](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub v akci
+
+### Citace
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
 ### Konektory
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
-### Citace
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
+<details>
+<summary><b>Další ukázky: všechny záznamy, vyhledávání ve znalostech</b></summary>
 
 ### Všechny záznamy
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
@@ -87,26 +160,23 @@ Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pr
 ### Vyhledávání ve znalostech
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
 
+</details>
+
 ## Funkce
 
-**Odpovědi, kterým můžete věřit**
+**Kontext pro agenty**
 
-- 📝 **Vysvětlitelné odpovědi:** PipesHub poskytuje podložené odpovědi s přesnými citacemi bloků z původních dokumentů.
-- 🔒 **Vyhledávání respektující oprávnění:** Vynucuje řízení přístupu na úrovni zdrojů, takže uživatelé vidí pouze to, k čemu mají oprávnění.
-- 🧠 **Vlastní model, plně provozovatelné na vlastní infrastruktuře:** Libovolný poskytovatel LLM, nasazený ve vaší VPC — data nikdy neopustí vaši infrastrukturu.
+- 🗂️ **Prozkoumatelné, nejen prohledávatelné:** Hybridní vyhledávání, `grep` nad každým indexovaným dokumentem včetně PDF a souborů Office (jen s lokálním úložištěm blobů, záznamy do 20 MB; [omezení](../../context-layer.md#current-limitations)), procházení složek a dotazy do znalostního grafu, vše jako nástroje agenta.
+- 🔒 **Oprávnění v každém kroku:** Každé volání nástroje se kontroluje vůči oprávněním zdrojového systému pro osobu, za kterou agent jedná.
+- 📝 **Citace na úrovni bloků:** Odpovědi citují stránku, buňku tabulky, řádek, snímek nebo řádek, odkud pocházejí.
+- 🧱 **Strukturovaná, polostrukturovaná i nestrukturovaná data v jedné vrstvě:** Dokumenty, tabulky, tikety, vlákna v chatu, kód i SQL tabulky se stanou Bloky.
 
 **Propojeno s vašimi systémy**
 
-- 🔌 **Podnikové konektory:** Více než 50 konektorů s indexováním v reálném čase i podle plánu, připravených k okamžitému použití.
-- 🕸️ **Vyhledávání pomocí znalostního grafu:** Vyhledávání opřené o graf, které zachycuje vztahy napříč podnikovými daty.
-- 🎙️ **Multimodální podpora:** Porozumění obrázkům, diagramům a skenovaným souborům plus hlasová interakce.
-
-**Co můžete vytvořit**
-
-- 🔍 **Jednotné vyhledávání, hloubkový výzkum a agenti:** Vyhledávání, otázky a odpovědi, hloubkový výzkum, vyhledávání na webu a AI agenti na jedné kontextové vrstvě.
-- 🤖 **No-code agenti a akce:** Vytvářejte agenty vizuálně a provádějte akce napříč podnikovými nástroji.
-- 📊 **Artefakty a spouštění kódu:** Generujte reporty, grafy a dashboardy v bezpečném izolovaném prostředí (sandboxu).
-- 🛠️ **Zaměřeno na vývojáře a rozšiřitelné:** API, SDK, MCP nástroje, vlastní konektory a nezávisle škálovatelné služby.
+- 🔌 **40+ konektorů:** Google Workspace, Microsoft 365, Slack, Jira, Confluence, Notion, GitHub, GitLab, Salesforce, ServiceNow, Postgres, Snowflake a další, se synchronizací v reálném čase i podle plánu.
+- 🕸️ **Znalostní graf:** Entity a vztahy vytěžené při indexaci a použité při odpovídání.
+- 🎙️ **Multimodální:** Obrázky, diagramy a naskenované soubory, k tomu hlasový vstup.
+- 🧠 **Vlastní model, plně na vlastní infrastruktuře:** Libovolný poskytovatel LLM nebo lokální model, nasazené ve vaší infrastruktuře.
 
 ## PipesHub Cloud
 
@@ -122,15 +192,15 @@ Kódovací agenti se připojují k `https://app.pipeshub.com/mcp` pomocí osobn�
 
 ## 🚀 Průvodce nasazením
 
-PipesHub lze spustit lokálně nebo nasadit na libovolný server pomocí Docker Compose. Interaktivní instalátor se postará o veškerou konfiguraci — včetně tajných klíčů, grafové databáze, brokeru a výběru tagu image — a vygeneruje za vás soubor `.env`.
+PipesHub můžete spustit lokálně nebo nasadit na libovolný server pomocí Docker Compose. Interaktivní instalátor se postará o veškerou konfiguraci, včetně tajných klíčů, grafové databáze, message brokeru a volby tagu image, a vygeneruje za vás soubor `.env`.
 
-> **HTTPS na cloudových serverech:** Pokud nasazujete PipesHub na cloudový server, použijte HTTPS endpoint. Prohlížeče blokují některé požadavky přes nešifrované HTTP. K ukončení TLS použijte Cloudflare, Nginx nebo Traefik. Bílá obrazovka po nasazení pouze přes HTTP je obvykle způsobena právě tímto omezením.
+> **HTTPS na cloudových serverech:** Pokud PipesHub nasazujete na cloudový server, použijte HTTPS endpoint. Prohlížeče blokují některé požadavky přes prosté HTTP. K ukončení TLS použijte Cloudflare, Nginx nebo Traefik. Bílá obrazovka po nasazení jen přes HTTP je obvykle způsobena tímto omezením.
 
 ---
 
 ### ⚡ Rychlý start (doporučeno)
 
-Vyžaduje [Docker](https://docs.docker.com/get-docker/) s Compose v2. Jediný příkaz:
+Vyžaduje [Docker](https://docs.docker.com/get-docker/) s Compose v2. Jeden příkaz:
 
 ```bash
 curl -fsSL https://get.pipeshub.com/install | bash
@@ -139,7 +209,7 @@ curl -fsSL https://get.pipeshub.com/install | bash
 Tento příkaz stáhne soubory pro nasazení nejnovější verze do `./pipeshub` a
 spustí interaktivní instalátor. Po dokončení otevřete **http://localhost:3000**.
 
-> **Chcete si skript před spuštěním přečíst?** Nejprve si ho stáhněte a zkontrolujte:
+> **Chcete si skript nejdřív přečíst?** Stáhněte si ho a prohlédněte:
 >
 > ```bash
 > curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
@@ -148,16 +218,16 @@ spustí interaktivní instalátor. Po dokončení otevřete **http://localhost:3
 > ```
 
 Instalátor:
-- Zkontroluje požadavky na Docker, RAM a diskový prostor
-- Zeptá se, zda chcete **slim** (odlehčené), nebo **full** (plné) nasazení
-- Volitelně vám umožní upravit grafovou databázi, message broker a KV úložiště
-- Vygeneruje náhodné tajné klíče a zapíše soubor `.env`
-- Stáhne image a spustí celý stack
-- Počká, až bude PipesHub v pořádku, ověří jeho dostupnost a vypíše URL
+- zkontroluje Docker, RAM a místo na disku,
+- zeptá se, zda chcete nasazení **slim** nebo **full**,
+- volitelně vám umožní upravit grafovou databázi, message broker a úložiště klíč-hodnota,
+- vygeneruje náhodné tajné klíče a zapíše soubor `.env`,
+- stáhne image a spustí stack,
+- počká, až bude PipesHub zdravý, ověří jeho dostupnost a vypíše URL.
 
 ### 🛠️ Z naklonovaného repozitáře (pro vývojáře)
 
-Pro sestavení ze zdrojových kódů, přispívání nebo připnutí instalátoru k vašemu checkoutu:
+Pro sestavení ze zdrojového kódu, přispívání nebo připnutí instalátoru k vaší pracovní kopii:
 
 ```bash
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
@@ -167,65 +237,39 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Sestavení lokálních image ze zdrojových kódů vyžaduje tuto cestu přes naklonovaný repozitář (`./install.sh --build`);
-instalátor na jeden příkaz uvedený výše používá vždy předsestavené image.
+V naklonovaném repozitáři se `./install.sh` zeptá, zda stáhnout předem sestavené image, nebo je sestavit ze zdrojového kódu;
+`./install.sh --build` sestaví ze zdrojového kódu bez ptaní. Jednopříkazový instalátor výše vždy používá předem sestavené image.
 
-#### Možnosti instalátoru
+> **Pokročilé možnosti:** přepínače instalátoru (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), proměnné prostředí pro CI, typy nasazení slim a full, ruční použití profilů Compose a lokální sestavení ze zdrojového kódu popisují [Pokročilé možnosti nasazení](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-| Přepínač | Popis |
-|------|-------------|
-| `-y` / `--yes` | Přijme všechny výchozí hodnoty; přeskočí interaktivní dotazy (vhodné pro CI) |
-| `--version TAG` | Připne konkrétní tag image, např. `--version 0.7.0` |
-| `--reconfigure` | Znovu spustí průvodce a přepíše existující `.env` |
-| `--print-env-only` | Zapíše `.env` a vypíše příkaz compose bez spuštění kontejnerů |
+## Stavějte na PipesHub: MCP a SDK
 
-> **Pokročilé možnosti:** Proměnné prostředí pro CI, typy nasazení slim vs. full, ruční použití profilů Compose a lokální sestavení ze zdrojových kódů jsou popsány v [Pokročilých možnostech nasazení](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
+Vestavěné vyhledávání je jen jedním ze způsobů, jak PipesHub používat. Stejný propojený
+kontext filtrovaný podle oprávnění mají k dispozici i vaši vlastní agenti a aplikace:
+přes MCP pro libovolného kompatibilního klienta, nebo přes SDK, když ho voláte
+z vlastního kódu.
 
-## Stavějte na PipesHub
+Agent se připojuje jako konkrétní osoba, ne jako aplikace, takže
+získá přesně to, co tato osoba smí vidět. Přístup se vyhodnocuje při
+spuštění dotazu vůči vlastním oprávněním zdrojového systému, místo aby se
+jen přibližně určil při sestavení.
 
-Vestavěné vyhledávání je jen jedním ze způsobů, jak PipesHub používat. Tentýž
-propojený, podle oprávnění filtrovaný kontext je k dispozici i vašim vlastním
-agentům a aplikacím — přes MCP pro libovolného kompatibilního klienta, nebo
-přes SDK, když jej voláte z vlastního kódu.
-
-Agent se připojuje jako konkrétní osoba, nikoli jako aplikace, takže získá
-přesně to, co smí daná osoba vidět. Přístup se vyhodnocuje v okamžiku spuštění
-dotazu podle oprávnění samotného zdrojového systému, místo aby se přibližně
-odhadoval při sestavení.
-
-Podrobné návody pro nejčastější scénáře — MCP pro vašeho kódovacího asistenta,
-soukromé podnikové vyhledávání a startovací projekty pro SDK — najdete v
-repozitáři [**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples).
-Referenční materiály k jednotlivým stavebním blokům následují níže.
+Návody krok za krokem pro nejčastější případy (MCP pro vašeho programovacího
+asistenta, soukromé podnikové vyhledávání a SDK startery) najdete v
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). Referenční
+materiály ke každému stavebnímu bloku jsou níže.
 
 ### MCP server
 
-Používejte PipesHub s libovolným klientem kompatibilním s MCP a přineste svůj podnikový kontext do AI workflow. Nastavení a použití najdete v README.
+Používejte PipesHub s libovolným klientem kompatibilním s MCP a přineste firemní kontext do svých AI workflow. Nastavení a použití popisuje README.
 
 **Repozitář:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-#### Připojení agenta Omnigent
-
-Nejprve si vytvořte dlouhodobé přihlašovací údaje: **workspace → Developer settings →
-Personal Access Tokens → New token**. Zvolte platnost (30/90/365 dní, nebo
-neomezeně) — token běží jako *vy*, takže výsledky respektují vaše vlastní
-uživatelská oprávnění, na rozdíl od client-credentials flow OAuth aplikace.
-
-Tři způsoby připojení, od nejjednoduššího po nejnáročnější na nastavení:
-
-1. **Připojení ve webovém rozhraní Omnigent (nejrychlejší, bez klonování).** Otevřete
-   informační panel relace → Manage MCP Servers → přidejte URL PipesHub a hlavičku
-   `Authorization: Bearer <token>` → restartujte relaci.
-2. **Spuštění přibaleného ukázkového agenta.** Hotový balíček agenta (vyladěný
-   prompt + instrukce) je součástí Omnigent:
-   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
-3. **Použití connect kitu** v [`integrations/omnigent/`](../../../integrations/omnigent/)
-   (`setup.sh` / `run.sh`) pro CI, servisní účty nebo ověření heslem či OAuth
-   client-credentials místo osobního tokenu.
+Používáte [Omnigent](https://omnigent.ai)? V [`integrations/omnigent/`](../../../integrations/omnigent/) najdete tři způsoby připojení, od připojení přes webové rozhraní po skriptovanou sadu pro připojení.
 
 ### SDK
 
-PipesHub poskytuje vývojářská SDK pro Python, TypeScript a Go, abyste mohli rychle integrovat. Podrobnosti o nastavení a použití najdete v README příslušného repozitáře SDK.
+PipesHub nabízí vývojářská SDK pro Python, TypeScript a Go, abyste mohli rychle začít s integrací. Nastavení a použití popisuje README příslušného repozitáře SDK.
 
 | Název | Popis | Odkaz |
 |------|-------------|------|
@@ -237,118 +281,71 @@ PipesHub poskytuje vývojářská SDK pro Python, TypeScript a Go, abyste mohli 
 
 ## Plán vývoje
 
-<p>Vyvíjíme otevřeně. Zde je, co je hotovo a co bude následovat:</p>
+<p>Vyvíjíme otevřeně. Tady je, co je hotovo a co přijde dál:</p>
 
 <ul>
-<li>✅ 🤖 <strong>AI agenti pro firemní prostředí</strong>: plnohodnotný no-code nástroj pro tvorbu agentů</li>
-<li>✅ 🔗 Podpora <strong>MCP (Model Context Protocol)</strong>, server i klient</li>
+<li>✅ 🤖 <strong>AI agenti pro práci</strong>: plnohodnotný editor agentů bez kódu</li>
+<li>✅ 🔗 Podpora <strong>MCP (Model Context Protocol)</strong>, jako server i klient</li>
 <li>✅ 🧰 <strong>SDK pro vývojáře</strong></li>
-<li>✅ 🔍 <strong>Vyhledávání v kódu</strong> napříč GitHub a GitLab</li>
+<li>✅ 🔍 <strong>Vyhledávání v kódu</strong> napříč GitHubem a GitLabem</li>
 <li>⬜ 👤 <strong>Personalizované vyhledávání</strong> podle týmu, role a historie</li>
-<li>✅ ☸️ <strong>Produkční nasazení v Kubernetes</strong> s výchozím nastavením pro vysokou dostupnost (HA)</li>
-<li>⬜ 📈 <strong>Relevance posílená algoritmem PageRank</strong> napříč znalostním grafem</li>
+<li>✅ ☸️ Produkční nasazení na <strong>Kubernetes</strong> s výchozím nastavením pro vysokou dostupnost</li>
+<li>⬜ 📈 <strong>Relevance rozšířená o PageRank</strong> napříč znalostním grafem</li>
 </ul>
-<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Zobrazit celý plán vývoje produktu na Notion</a></strong></p>
+<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Celý plán vývoje produktu na Notionu</a></strong></p>
 
 <hr>
 
 ## 👥 Přispívání
 
-Chcete se připojit k naší komunitě vývojářů? Podívejte se na našeho [průvodce přispíváním](CONTRIBUTING.md), kde najdete podrobnosti o nastavení vývojového prostředí, našich standardech kódu a postupu při přispívání.
+Chcete se připojit k naší komunitě vývojářů? Podívejte se na našeho [průvodce přispíváním](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md), kde najdete podrobnosti o nastavení vývojového prostředí, našich standardech kódu a postupu při přispívání.
 <h3>Kam se obrátit</h3>
 
 <table>
 
 <tr><td>Položit dotaz nebo získat pomoc</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
 <tr><td>Nahlásit chybu nebo navrhnout funkci</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>Nahlásit bezpečnostní problém</td><td><a href="SECURITY.md">Nahlásit bezpečnostní problém</a></td></tr>
+<tr><td>Nahlásit bezpečnostní problém</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Nahlásit bezpečnostní problém</a></td></tr>
 <tr><td>Přečíst si dokumentaci</td><td><a href="https://docs.pipeshub.com/">Dokumentace PipesHub</a></td></tr>
 <tr><td>Zjistit, co se změnilo v jednotlivých verzích</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
-</tbody>
 </table>
 
 ## Často kladené otázky
 
 ### Co je PipesHub?
 
-PipesHub je open-source platforma pro propojení AI aplikací se znalostmi uloženými napříč firemními systémy vaší společnosti.
+PipesHub je open-source kontextová vrstva pro AI agenty. Promění znalosti uložené napříč firemními systémy v pracovní prostor respektující oprávnění, ve kterém mohou agenti vyhledávat, používat `grep`, procházet ho a citovat.
 
-Propojuje systémy jako Slack, Google Drive, GitHub, Microsoft 365 a Notion a jejich obsah zpřístupňuje dvěma způsoby: jako vyhledávání s citacemi respektující oprávnění pro váš tým a jako důvěryhodný kontext pro vaše AI agenty prostřednictvím API, SDK a MCP. Agenti získávají stejný řízený pohled na znalosti vaší společnosti jako člověk, se stejně uplatněným řízením přístupu, takže mohou odpovídat ze skutečných firemních dat, místo aby hádali napříč nástroji. Můžete použít vestavěné vyhledávání, nebo si na něm postavit vlastní agenty, workflow a aplikace.
+Připojí systémy jako Slack, Google Drive, GitHub, Microsoft 365 a Notion a jejich obsah zpřístupní dvěma způsoby: vyhledáváním s citacemi, které respektuje oprávnění, pro váš tým, a důvěryhodným kontextem pro vaše AI agenty přes API, SDK a MCP. Agenti dostanou stejný řízený pohled na firemní znalosti jako člověk, se stejnými přístupovými právy, takže mohou odpovídat ze skutečných firemních dat, místo aby hádali napříč nástroji. Můžete používat vestavěné vyhledávání, nebo nad ním stavět vlastní agenty, workflow a aplikace.
+
+### Mohu PipesHub používat headless, bez jeho uživatelského rozhraní?
+
+Ano. Webová aplikace PipesHub používá stejné API, které můžete volat sami, takže vše, co uděláte v rozhraní, můžete udělat i v kódu: připojit zdroje, nahrát soubory, spravovat uživatele a oprávnění, vyhledávat, chatovat a vytvářet a spouštět agenty.
+
+- **REST API:** [specifikace OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) s přibližně 470 endpointy. Procházet ji můžete na adrese `/api/v1/docs` vaší instance.
+- **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) a [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** pro Claude Code, Cursor, Codex a další MCP klienty. Pokrývá jen část: vyhledávání, chat (i s existujícím agentem), čtení, stahování a procházení záznamů, dotazy na lidi a zdroje a nástroje grafu kódu. Připojení zdrojů, správa uživatelů a vytváření agentů vyžadují REST API nebo SDK.
+
+Zvolte, jak se váš kód přihlásí:
+- **Osobní přístupový token nebo OAuth:** jedná jako jedna osoba a vidí jen to, co tato osoba smí vidět.
+- **Servisní účet:** pro úlohy na pozadí, s vlastními oprávněními.
+- **OAuth aplikace:** umožní každému uživateli vaší aplikace přihlásit se sám za sebe („Sign in with PipesHub“).
+
+Týmy takto nad PipesHub stavějí vlastní produkty, například nástroje pro workflow, nástroje pro právníky a správu smluv (CLM), konzole podpory a interní agenty, aniž by ukazovaly rozhraní PipesHub.
 
 ### Čím se PipesHub liší od ostatních AI nástrojů pro firemní prostředí?
 
-PipesHub je plně open-source (Apache 2.0) a lze jej provozovat na vlastní infrastruktuře — vaše data ji nikdy neopustí. Nabízí vyhledávání respektující oprávnění, které vynucuje řízení přístupu na úrovni zdrojů, a poskytuje vysvětlitelné odpovědi s přesnými citacemi bloků z původních dokumentů.
+Většina nástrojů předá AI modelu několik vyhledaných textových úryvků. PipesHub dává agentům nástroje, kterými firemní znalosti prozkoumávají tak, jako programovací agent prozkoumává repozitář: hybridní vyhledávání, `grep` nad záznamy, procházení složek a dotazy do znalostního grafu, vše kontrolované vůči oprávněním uživatele ve zdrojovém systému. Každý zdroj se stane Bloky, takže odpovědi citují přesnou stránku, buňku tabulky, řádek nebo snímek. Je plně open source (Apache 2.0) a lze ho provozovat na vlastní infrastruktuře. S lokálním modelem (například přes Ollama) vaše data nikdy neopustí vaši infrastrukturu; s hostovaným poskytovatelem LLM se tomuto poskytovateli posílají pasáže, ze kterých se odpověď skládá. Viz [Proč kontextová vrstva?](#proč-kontextová-vrstva)
 
 ### Jaké konektory PipesHub podporuje?
 
-PipesHub má více než 50 podnikových konektorů s indexováním v reálném čase i podle plánu. Viz [přehled konektorů](https://docs.pipeshub.com/connectors/overview).
-
-### Jaké formáty souborů umí PipesHub indexovat?
-
-PDF (včetně skenů), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, prostý text a obrázky. Audio a video lze uložit, ale zatím se neindexují. Úložiště přijímá širší sadu MIME typů — viz [Podporované MIME typy](https://docs.pipeshub.com/system-overview/storage).
-
-### Jak PipesHub nasadím?
-
-```bash
-curl -fsSL https://get.pipeshub.com/install | bash
-```
-
-Tento příkaz zapíše soubory Compose do `./pipeshub` a spustí interaktivní instalátor. Po dokončení otevřete **http://localhost:3000**. Pro cloudová nasazení používejte HTTPS — HTTP může způsobit bezpečnostní blokace ve frontendu.
-
-Vývojáři sestavující ze zdrojových kódů by měli naklonovat repozitář a z jeho kořenového adresáře spustit `./install.sh` (nebo `./install.sh --build`). Viz [Průvodce nasazením](#-průvodce-nasazením).
+PipesHub má 40+ konektorů pro více než 30 systémů, s indexací v reálném čase i podle plánu. Viz [přehled konektorů](https://docs.pipeshub.com/connectors/overview).
 
 ### Jaké poskytovatele LLM PipesHub podporuje?
 
-PipesHub funguje na principu „Bring Your Own Model“ (vlastní model) — můžete použít libovolného poskytovatele LLM. Nasaďte jej ve své VPC s modely, které preferujete.
+PipesHub funguje na principu „Bring Your Own Model“: můžete použít libovolného poskytovatele LLM. Nasaďte ho ve svém VPC s modely, které preferujete.
 
-### Jaký je technologický stack?
-
-PipesHub má tři části:
-
-- **Webová aplikace** (Next.js) — vyhledávání, chat a administrace v prohlížeči.
-- **API** (Node.js) — účty, oprávnění, znalostní báze a soubory.
-- **Služby v Pythonu** — konektory synchronizují vaše zdroje; indexování zpracovává dokumenty; dotazovací služba odpovídá s citacemi.
-
-Tyto služby volají **AI modely, které si přinesete**. **Embedding model** převádí zpracovaný text na vektory pro vyhledávání. **LLM** píše odpověď s citacemi. Použijte libovolného poskytovatele nebo lokální model (Ollama); výchozí je lokální embedding server.
-
-Data jsou uložena ve znalostním grafu (ve výchozím nastavení Neo4j, nebo ArangoDB), vektorovém úložišti (Qdrant) a MongoDB. Redis slouží jako cache. Soubory jsou na disku nebo v objektovém úložišti. Služby si předávají práci přes Redis na lokálním stroji, nebo přes Kafka ve větším nasazení. Viz [přehled systému](https://docs.pipeshub.com/system-overview).
-
-### Co je funkce vyhledávání pomocí znalostního grafu?
-
-PipesHub používá vyhledávání opřené o graf, které zachycuje vztahy napříč podnikovými daty. Jako grafové databáze používá Neo4j nebo ArangoDB v kombinaci s Qdrant pro vektorové vyhledávání podobnosti.
-
-### Má PipesHub MCP server?
-
-Ano. PipesHub poskytuje MCP server pro integraci s libovolným klientem kompatibilním s MCP. Repozitář: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
-
-### Jaká SDK jsou k dispozici?
-
-PipesHub poskytuje SDK pro:
-- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
-
-### Mohu vytvářet AI agenty bez programování?
-
-Ano. PipesHub má no-code nástroj pro tvorbu agentů. Agenty můžete vytvářet vizuálně a provádět akce napříč podnikovými nástroji bez psaní kódu.
-
-### Co zahrnuje multimodální podpora?
-
-PipesHub podporuje porozumění obrázkům, diagramům a skenovaným souborům a také hlasovou interakci. Pro zpracování dokumentů používá Docling a pdfplumber, nebo multimodální LLM (VLM) pro OCR skenovaných PDF.
-
-### Jak řeším problémy s nasazením?
-
-1. Ujistěte se, že je pro cloudová nasazení nakonfigurováno HTTPS
-2. Zkontrolujte logy Docker Compose: `docker compose logs`
-3. Ověřte proměnné prostředí v env.template
-4. Podrobné návody najdete na [docs.pipeshub.com](https://docs.pipeshub.com/)
-
-### Kde získám pomoc?
-
-- [Discord](https://discord.com/invite/K5RskzJBm2) — ptejte se a získejte pomoc
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — nahlaste chyby nebo navrhněte funkce
-- [Dokumentace PipesHub](https://docs.pipeshub.com/) — přečtěte si dokumentaci
-
+**Další otázky:** formáty souborů, technologický stack, znalostní graf, multimodální podpora a řešení problémů jsou zodpovězeny v [úplných FAQ](../../FAQ.md).
 
 <hr>
 <div align="center">

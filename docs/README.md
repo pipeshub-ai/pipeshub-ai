@@ -7,7 +7,8 @@ For comprehensive guidance and resources, refer to our documentation:
 
 In-repo design docs:
 
-- [Connectors — design, decisions, permissions, error logging and testing for building a connector](./connectors/) (start at [CONNECTOR.md](../CONNECTOR.md))
+- [How the context layer works: Blocks, hierarchy and knowledge graph, agent tools, permissions, agent loop](./context-layer.md)
+- [FAQ](./FAQ.md)
 - [Indexing service — architecture, data flow, admission control, and the throughput-collapse root cause](./indexing-service.md)
 - [Non-streaming chat endpoints — HLD, LLD, data flow, error contract, and tests](./non-streaming-chat.md)
 - [S3 connector — IAM role (AssumeRole) authentication: base key, trust policy, external ID](./connectors/s3-iam-role.md)
