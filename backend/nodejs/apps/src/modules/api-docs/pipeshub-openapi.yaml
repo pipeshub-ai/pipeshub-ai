@@ -22074,6 +22074,7 @@ components:
         clientId:
           type: string
           description: OAuth client id (individual)
+          x-speakeasy-name-override: oauthClientId
         clientSecret:
           type: string
           description: OAuth client secret, returned unmasked (individual)
@@ -30250,6 +30251,7 @@ paths:
                         _id:
                           type: string
                           description: '`users/<id>`'
+                          x-speakeasy-name-override: graphDocumentId
                         userId:
                           type: string
                           format: ObjectId
@@ -36447,8 +36449,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
-        - oauth2:
-            - connector:read
       parameters:
         - name: page
           in: query
@@ -36586,8 +36586,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
-        - oauth2:
-            - connector:read
       parameters:
         - name: artifactId
           in: path
@@ -36705,8 +36703,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
-        - oauth2:
-            - connector:read
       parameters:
         - name: artifactId
           in: path
@@ -36777,8 +36773,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
-        - oauth2:
-            - connector:read
       parameters:
         - name: artifactId
           in: path
@@ -36838,8 +36832,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
-        - oauth2:
-            - connector:write
       parameters:
         - name: artifactId
           in: path
@@ -36910,8 +36902,6 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
-        - oauth2:
-            - connector:write
       parameters:
         - name: artifactId
           in: path
@@ -46492,7 +46482,6 @@ paths:
       x-pipeshub-sdk: false
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
         - oauth2: [project:read]
       parameters:
         - name: projectId
@@ -46556,11 +46545,12 @@ paths:
       tags:
         - Projects
       summary: Unpin a project
+      description: |
+        **OAuth scopes:** `project:read`; a token with `project:write` is also accepted.
       operationId: unpinProject
       x-pipeshub-sdk: false
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
         - oauth2: [project:read]
       parameters:
         - name: projectId
@@ -53535,12 +53525,12 @@ paths:
         base is also found for a member who holds a role on it; one without a
         role is refused with `403`. A team connector of another user is
         answered `404` to a member, as if it did not exist.<br><br>
-        Fields of the body other than `statusFilters` and `stages` are dropped without an error.
+        Fields of the body other than `statusFilters` and `stages` are dropped without an error.<br><br>
+        An OAuth token holding `kb:write` instead of `connector:sync` is accepted too.
       operationId: reindexConnector
       security:
         - bearerAuth: []
         - oauth2: [connector:sync]
-        - oauth2: [kb:write]
       parameters:
         - name: connectorId
           in: path
