@@ -890,6 +890,55 @@ class TestMakeTokenRequest:
         assert result["expires_in"] == "not_a_number"  # Left as string
 
 
+class TestFormEncodedRefreshRefusal:
+    """GitHub answers in form encoding unless asked for JSON, and reports errors with HTTP 200."""
+
+    @staticmethod
+    def _provider(mock_config_service, status: int, body: str, content_type: str) -> OAuthProvider:
+        provider = OAuthProvider(_make_oauth_config(), mock_config_service, "/path")
+        mock_response = AsyncMock()
+        mock_response.status = status
+        mock_response.headers = {"Content-Type": content_type}
+        mock_response.text = AsyncMock(return_value=body)
+        mock_response.raise_for_status = MagicMock()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        provider._session = MagicMock(closed=False, post=MagicMock(return_value=mock_response))
+        return provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [200, 401])
+    @pytest.mark.parametrize("code", ["incorrect_client_credentials", "bad_refresh_token"])
+    async def test_a_permanent_form_encoded_code_is_permanent(self, mock_config_service, status, code) -> None:
+        provider = self._provider(
+            mock_config_service, status, f"error={code}&error_description=nope", "application/x-www-form-urlencoded",
+        )
+        with pytest.raises(RefreshTokenInvalidError, match=code):
+            await provider.refresh_access_token("old-refresh")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [200, 400])
+    async def test_a_transient_form_encoded_code_stays_retryable(self, mock_config_service, status) -> None:
+        provider = self._provider(
+            mock_config_service, status, "error=temporarily_unavailable", "application/x-www-form-urlencoded",
+        )
+        with pytest.raises(OAuthTokenRequestError) as exc_info:
+            await provider.refresh_access_token("old-refresh")
+        assert not isinstance(exc_info.value, RefreshTokenInvalidError)
+        assert exc_info.value.error_code == "temporarily_unavailable"
+
+    @pytest.mark.parametrize(("body", "code"), [
+        ('{"error": "incorrect_client_credentials"}', "incorrect_client_credentials"),
+        ("error=incorrect_client_credentials&error_uri=x", "incorrect_client_credentials"),
+        ("<html>502 Bad Gateway</html>", None),
+        ("", None),
+        ("error=", None),
+        ('{"error": 5}', None),
+    ])
+    def test_body_error_code_reads_json_and_form_bodies(self, body: str, code) -> None:
+        assert oauth_service._body_error_code(body) == code
+
+
 # ---------------------------------------------------------------------------
 # OAuthProvider.exchange_code_for_token()
 # ---------------------------------------------------------------------------

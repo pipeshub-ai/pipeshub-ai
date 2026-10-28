@@ -46,11 +46,12 @@ class OAuthTokenRequestError(Exception):
         self.error_code = error_code
 
 
-def _json_error_code(text: str) -> Optional[str]:
+def _body_error_code(text: str) -> Optional[str]:
+    """The RFC 6749 `error` of a JSON or form-encoded (GitHub's default) token endpoint body."""
     try:
         return oauth_error_code(json.loads(text))
     except (ValueError, RecursionError):
-        return None
+        return oauth_error_code({k: v[0] for k, v in parse_qs(text).items()})
 
 
 _SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
@@ -322,7 +323,7 @@ class OAuthProvider:
                     f"Response: {error_text}"
                 )
                 raise OAuthTokenRequestError(
-                    error_msg, status=response.status, error_code=_json_error_code(error_text),
+                    error_msg, status=response.status, error_code=_body_error_code(error_text),
                 )
 
             response.raise_for_status()
@@ -344,6 +345,13 @@ class OAuthProvider:
                 text_response = await response.text()
                 parsed_data = parse_qs(text_response, keep_blank_values=True)
                 token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
+                # GitHub answers a refused grant with HTTP 200 and a form-encoded `error`.
+                if error_code := oauth_error_code(token_data):
+                    raise OAuthTokenRequestError(
+                        f"OAuth token request was rejected by {self.config.token_url}: {error_code}",
+                        status=response.status,
+                        error_code=error_code,
+                    )
                 # Convert string numbers to integers for expires_in if present
                 if 'expires_in' in token_data and token_data['expires_in']:
                     try:
