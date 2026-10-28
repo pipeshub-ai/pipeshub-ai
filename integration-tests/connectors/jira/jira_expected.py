@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -119,6 +120,13 @@ class JiraExpected:
         ).rstrip("/")
         weburl = f"{base_url}/browse/{key}" if base_url and key else None
 
+        # As apply_issue_access_settled writes it for a team connector: an issue with
+        # a security level is limited to the level's members, and one without a level
+        # is open to its project and no further.
+        security = fields.get("security")
+        has_level = isinstance(security, dict) and security.get("id") not in (None, "")
+        access_rule = AccessRule.RESTRICTED if has_level else AccessRule.STRICT
+
         external_group = ov.get("external_record_group_id")
         if external_group is None:
             project = fields.get("project") or {}
@@ -146,6 +154,7 @@ class JiraExpected:
             created_at=created_at,
             updated_at=updated_at,
             inherit_permissions=True,
+            access_rule=access_rule,
             preview_renderable=False,
             is_dependent_node=False,
             parent_node_id=None,

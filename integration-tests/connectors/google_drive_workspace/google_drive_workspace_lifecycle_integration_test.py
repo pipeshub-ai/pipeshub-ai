@@ -364,12 +364,6 @@ class TestDriveWorkspaceLifecycle:
         state["big_doc_id"] = doc_id
 
     @pytest.mark.order(8)
-    @pytest.mark.xfail(
-        strict=True,
-        reason="B7: indexing stores the processed record through /api/v1/document/internal/upload, which "
-        "reuses the org's user upload cap (default 30 MB); this doc's processed form is larger, so the "
-        "upload is refused (400), retried as transient three times, and the record ends FAILED.",
-    )
     async def test_tc_drv_lc_008b_google_doc_over_export_limit_indexes(
         self,
         drive_workspace_lifecycle_connector: dict[str, Any],

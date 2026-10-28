@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel
 
@@ -100,10 +101,28 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
 }
 
 
+_GOOGLE_FILE_HOSTS: Final[frozenset[str]] = frozenset({"docs.google.com", "drive.google.com"})
+
+
+def _comparable_weburl(url: object) -> object:
+    """``url`` without Google's ``ouid``, which Drive adds to an Office file's webViewLink
+    on some reads of the same file and not on others."""
+    if not isinstance(url, str):
+        return url
+    parts = urlsplit(url)
+    if parts.hostname not in _GOOGLE_FILE_HOSTS:
+        return url
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "ouid"]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 def _field_values_equal(key: str, expected: object, actual: object) -> bool:
-    """Return True if expected and actual match for this field (special case for empty semantic_metadata)."""
+    """Return True if expected and actual match for this field (special cases for empty
+    semantic_metadata and Google file links)."""
     if key == "semantic_metadata" and expected in (None, {}) and actual in (None, {}):
         return True
+    if key == "weburl":
+        return _comparable_weburl(expected) == _comparable_weburl(actual)
     return expected == actual
 
 
