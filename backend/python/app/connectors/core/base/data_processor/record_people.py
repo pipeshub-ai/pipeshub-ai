@@ -293,7 +293,7 @@ class _PersonResolver:
                 else self._store.upsert_person_by_source_key(person, raise_on_error=True)
             )
         except Exception as exc:
-            if self._must_propagate(exc) or self._store.is_transient_error(exc) is True:
+            if self._must_propagate(exc) or _is_bug(exc) or self._store.is_transient_error(exc) is True:
                 # A lock held by a concurrent sync, or a failure that ended the
                 # record's transaction: fail the record so it is retried.
                 raise
@@ -301,6 +301,12 @@ class _PersonResolver:
             self.failed += 1
             return None
         return (CollectionNames.PEOPLE.value, key) if key else None
+
+
+def _is_bug(exc: Exception) -> bool:
+    """A store called with arguments it does not take, or missing a method:
+    never an unanswered read, so it is raised rather than skipped."""
+    return isinstance(exc, (TypeError, AttributeError))
 
 
 async def link_record_people(
@@ -341,7 +347,7 @@ async def link_record_people(
                 record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, target,
             )
         except Exception as exc:  # stale edges are rewritten below
-            if propagate(exc) or store.is_transient_error(exc) is True:
+            if propagate(exc) or _is_bug(exc) or store.is_transient_error(exc) is True:
                 raise
             logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
 

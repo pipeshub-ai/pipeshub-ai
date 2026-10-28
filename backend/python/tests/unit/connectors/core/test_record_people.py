@@ -531,3 +531,17 @@ class TestPlaceholders:
 
         store.delete_edges_between_collections.assert_not_awaited()
         store.get_user_by_email.assert_not_awaited()
+
+
+class TestABugIsNotAFailedLookup:
+    """A store called with arguments it does not take raises TypeError. Read
+    as a failed lookup, the record kept its old edges and the call was never
+    seen to be wrong, in production or in a test whose stub did not match."""
+
+    @pytest.mark.parametrize("error", [TypeError("unexpected keyword argument 'org_id'"), AttributeError("x")])
+    @pytest.mark.parametrize("failing", ["get_user_by_email", "delete_edges_from", "batch_create_entity_relations"])
+    async def test_a_programming_error_is_raised(self, failing: str, error: Exception) -> None:
+        store = _store()
+        getattr(store, failing).side_effect = error
+        with pytest.raises(type(error)):
+            await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
