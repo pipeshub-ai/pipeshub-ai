@@ -1724,6 +1724,7 @@ class TestGetCreateIssueFields:
             ({"field_id": "customfield_1", "schema_type": "option"}, "as {'value': '<label>'}"),
             ({"field_id": "customfield_2", "schema_type": "array", "schema_items": "option"}, "as [{'value': '<label>'}]"),
             ({"field_id": "customfield_3", "schema_type": "array", "schema_items": "version"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "customfield_5", "schema_type": "array", "schema_items": "group"}, "as [{'name': '<label>'}]"),
             ({"field_id": "priority", "schema_type": "priority"}, "pass its name to the named parameter"),
             ({"field_id": "components", "schema_type": "array", "schema_items": "component"}, "pass its name to the named parameter"),
         ],

@@ -425,7 +425,8 @@ def _unlisted_option_hint(field: dict[str, Any], pass_via: str) -> str:
         return "To use one, pass its name to the named parameter as Jira shows it."
     is_list = field.get("schema_type") == "array"
     kind = field.get("schema_items") if is_list else field.get("schema_type")
-    key = "name" if kind in ("version", "priority", "component") else "value"
+    # Cloud user entries carry no name, so they are never listed or counted here.
+    key = "name" if kind in ("version", "priority", "component", "group") else "value"
     shape = "{'" + key + "': '<label>'}"
     return f"To use one, pass its label in custom_fields as {f'[{shape}]' if is_list else shape}."
 
