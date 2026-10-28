@@ -52,6 +52,9 @@ on:
       - 'backend/python/app/connectors/sources/localKB/**'
       - 'backend/python/app/services/storage_documents.py'
       - 'backend/python/app/modules/indexing/record_republish.py'
+      # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
+      - 'backend/python/app/modules/retrieval/**'
+      - 'backend/python/app/modules/named_entities/**'
       # Connectors whose real-graph tests drive the connector itself (graph_db/test_<name>_*).
       - 'backend/python/app/connectors/sources/linear/**'
       - 'backend/python/app/sources/client/linear/**'
