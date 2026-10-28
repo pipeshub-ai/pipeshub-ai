@@ -120,6 +120,8 @@ _TEXT_WEIGHT = 2
 # prompts only need the shape of a value; the row-text prompt keeps long prose in full.
 _PROMPT_SAMPLE_CHARS = 2000
 _PROMPT_ROW_VALUE_CHARS = 20000
+# Copies of a row-text prompt's text alive at once: cut values, json, numbered rows, joined text, messages.
+_PROMPT_COPIES = 5
 
 
 def _cut_for_prompt(value: object, limit: int) -> object:
@@ -1571,24 +1573,35 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get natural language text from LLM with count validation
             # Use CSV prompt which includes explicit row count validation
-            prompt_rows = [
-                {
-                    k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
-                    for k, v in row.items()
-                }
-                for row in rows_data
-            ]
-            messages = row_text_prompt_for_csv.format_messages(
-                table_summary=table_summary,
-                numbered_rows_data=format_rows_with_index(prompt_rows),
-                row_count=len(rows_data)
+            # The prompt is built and copied several times (cut values, json, numbered text, messages):
+            # charge it before it is built, give it back once the call is made.
+            prompt_chars = sum(
+                min(len(v), _PROMPT_ROW_VALUE_CHARS) for row in rows_data for v in row.values() if isinstance(v, str)
             )
-            del prompt_rows
+            prompt_charge = _PROMPT_COPIES * prompt_chars
+            self._output.charge(prompt_charge)
+            try:
+                prompt_rows = [
+                    {
+                        k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
+                        for k, v in row.items()
+                    }
+                    for row in rows_data
+                ]
+                messages = row_text_prompt_for_csv.format_messages(
+                    table_summary=table_summary,
+                    numbered_rows_data=format_rows_with_index(prompt_rows),
+                    row_count=len(rows_data)
+                )
+                del prompt_rows
 
-            # Use centralized utility with reflection and count validation
-            parsed_response = await invoke_with_row_descriptions_and_reflection(
-                self.llm, messages, expected_count=len(rows_data)
-            )
+                # Use centralized utility with reflection and count validation
+                parsed_response = await invoke_with_row_descriptions_and_reflection(
+                    self.llm, messages, expected_count=len(rows_data)
+                )
+                del messages
+            finally:
+                self._output.release(prompt_charge)
 
             if parsed_response is not None and parsed_response.descriptions:
                 descriptions = parsed_response.descriptions

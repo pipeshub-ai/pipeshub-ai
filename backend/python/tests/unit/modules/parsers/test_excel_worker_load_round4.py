@@ -141,3 +141,64 @@ def test_a_stray_far_cell_does_not_probe_the_bounding_box(monkeypatch) -> None:
     asyncio.run(parser.get_blocks_from_workbook(MagicMock()))
     # the box is 60 000 x 300 = 18 M positions; only populated rows are scanned
     assert probes[0] < 1_000_000, probes[0]
+
+
+def _wide_rows(n_rows: int, n_cols: int) -> list[list[dict]]:
+    big = "w" * 20_000
+    return [[{"header": f"h{c}", "value": big + str(r)} for c in range(n_cols)] for r in range(n_rows)]
+
+
+def test_a_wide_row_text_prompt_is_refused_before_it_is_built() -> None:
+    # 50 rows x 40 columns x 20 000 chars is 40 MB of prompt text, copied several times
+    parser = load(_big_cell_workbook(10))
+    _quiet(parser)
+    parser.llm = MagicMock()
+    parser._output.left = 20_000_000
+    built = [0]
+
+    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
+        built[0] += 1
+        return SimpleNamespace(descriptions=["d"] * k["expected_count"])
+
+    import app.modules.parsers.excel.excel_parser as ep
+
+    original = ep.invoke_with_row_descriptions_and_reflection
+    ep.invoke_with_row_descriptions_and_reflection = rows
+    try:
+        with pytest.raises(ParseError) as raised:
+            asyncio.run(parser.get_rows_text(_wide_rows(50, 40), "s"))
+    finally:
+        ep.invoke_with_row_descriptions_and_reflection = original
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    assert built[0] == 0  # the LLM was never called: the prompt was not built
+
+
+def test_a_wide_row_text_prompt_within_budget_is_charged_at_least_what_it_allocates(monkeypatch) -> None:
+    import tracemalloc
+
+    parser = load(_big_cell_workbook(10))
+    _quiet(parser)
+    parser.llm = MagicMock()
+    lowest = [parser._output.left]
+    start = parser._output.left
+    real_charge = module._OutputBudget.charge
+
+    def watch(self: object, nbytes: int) -> None:
+        real_charge(self, nbytes)
+        lowest[0] = min(lowest[0], self.left)
+
+    async def rows(_llm: object, messages: list, **k: int) -> SimpleNamespace:
+        return SimpleNamespace(descriptions=["d"] * k["expected_count"])
+
+    monkeypatch.setattr(module._OutputBudget, "charge", watch)
+    monkeypatch.setattr(module, "invoke_with_row_descriptions_and_reflection", rows)
+    data = _wide_rows(50, 4)  # 4 MB of values
+    tracemalloc.start(1)
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        asyncio.run(parser.get_rows_text(data, "s"))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    charged = start - lowest[0]
+    assert peak - before <= charged + 100_000, f"allocated {(peak - before) / 1e6:.1f} MB, charged {charged / 1e6:.1f} MB"
