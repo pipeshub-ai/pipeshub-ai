@@ -15,8 +15,10 @@ def _pages(*rows: dict) -> BookStackResponse:
     return BookStackResponse(success=True, data={"content": json.dumps({"data": list(rows), "total": len(rows)})})
 
 
-def _row(page_id: int) -> dict:
-    return {"id": page_id, "name": f"Page {page_id}", "book_id": 1, "chapter_id": 0}
+def _row(page_id: int, chapter_id: int = 0, owner: int = 1) -> dict:
+    return {"id": page_id, "name": f"Page {page_id}", "book_id": 1, "chapter_id": chapter_id, "owned_by": owner,
+            "book_slug": "handbook", "slug": f"page-{page_id}", "revision_count": 1,
+            "created_at": "2026-10-01T10:00:00.000000Z", "updated_at": "2026-10-02T10:00:00.000000Z"}
 
 
 @pytest.fixture
@@ -35,7 +37,8 @@ def connector() -> BookStackConnector:
     conn._load_roles_for_access = AsyncMock(return_value=True)
     conn._get_book_id_filter = MagicMock(return_value=([], None))
     conn._get_date_filters = MagicMock(return_value=(None, None, None, None))
-    conn._page_record = AsyncMock(side_effect=lambda page: (MagicMock(), []))
+    conn.bookstack_base_url = "https://wiki.example.com"
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     return conn
 
 
@@ -49,7 +52,7 @@ async def test_a_book_change_reuses_the_listed_rows_and_looks_up_only_the_rest(c
     def answer(**kwargs: object) -> BookStackResponse:
         wanted = (kwargs.get("filter") or {})
         if wanted.get("book_id") == "1":
-            return _pages(_row(10), _row(11), _row(12))
+            return _pages(_row(10), _row(11, chapter_id=5, owner=7), _row(12, owner=8))
         return _pages(_row(int(wanted["id"])))
 
     connector.data_source.list_pages = AsyncMock(side_effect=answer)
@@ -59,6 +62,12 @@ async def test_a_book_change_reuses_the_listed_rows_and_looks_up_only_the_rest(c
     await connector._apply_events(events, [])
 
     assert _looked_up(connector) == ["20"]
-    written = sorted(c.args[0]["id"] for c in connector._page_record.await_args_list)
-    assert written == [10, 11, 12, 20]
+    records = {r.external_record_id: r for c in connector.data_entities_processor.on_new_records.await_args_list
+               for r, _ in c.args[0]}
+    assert sorted(records) == ["page/10", "page/11", "page/12", "page/20"]
+    # The listed row carries the page's parent and owner into its record and its access.
+    assert records["page/10"].external_record_group_id == "book/1"
+    assert records["page/11"].external_record_group_id == "chapter/5"
+    owners = {c.args[1]["id"]: c.args[1]["owned_by"] for c in connector._access.await_args_list if c.args[0] == "page"}
+    assert owners == {10: 1, 11: 7, 12: 8, 20: 1}
     assert connector._health.ok

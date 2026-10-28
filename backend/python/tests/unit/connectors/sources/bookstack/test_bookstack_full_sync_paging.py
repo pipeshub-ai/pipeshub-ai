@@ -46,7 +46,7 @@ def _calls(connector: BookStackConnector, listings: list[BookStackResponse]) -> 
         return listings.pop(0)
 
     async def write(batch: list) -> None:
-        order.append(f"write:{len(batch)}")
+        order.append("write:" + ",".join(record.external_record_id for record, _ in batch))
 
     connector.data_source.list_pages = AsyncMock(side_effect=read)
     connector.data_entities_processor.on_new_records = AsyncMock(side_effect=write)
@@ -59,7 +59,8 @@ async def test_each_listing_page_is_written_before_the_next_is_read(connector) -
 
     await connector._sync_records_full()
 
-    assert order == ["list@0", "write:2", "list@3", "write:2", "write:1"]
+    # A batch that is not full carries over to the next listing page: memory holds one listing page and one batch.
+    assert order == ["list@0", "write:page/1,page/2", "list@3", "write:page/3,page/4", "write:page/5"]
     listed = connector._remove_pages_not_listed.await_args.args[0]
     assert listed == {f"page/{i}" for i in range(1, 6)}
     assert connector._health.ok
@@ -75,7 +76,7 @@ async def test_a_listing_that_stops_early_removes_nothing_and_fails(connector, s
 
     await connector._sync_records_full()
 
-    assert order == ["list@0", "write:2", "list@3", "write:1"]
+    assert order == ["list@0", "write:page/1,page/2", "list@3", "write:page/3"]
     connector._remove_pages_not_listed.assert_not_awaited()
     assert not connector._health.ok
 
