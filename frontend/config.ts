@@ -56,6 +56,8 @@ export { ConversationHeaderOverlay } from '@/app/(main)/chat/components/conversa
 export { SearchResultsExtras } from '@/app/(main)/chat/components/search-results/search-results-extras';
 export { useKbListExtraColumns } from '@/app/(main)/knowledge-base/hooks/use-kb-list-extra-columns';
 export { ConnectorOverviewExtras } from '@/app/(main)/workspace/connectors/components/instance-panel/connector-overview-extras';
+// Team connectors to warn about before setup: their data is searchable by the whole organization (OSS: no source permissions applied)
+export { TEAM_CONNECTOR_VISIBILITY_WARNINGS } from '@/app/(main)/workspace/connectors/utils/team-visibility-warning';
 // A toolset's "Tool approvals" (OSS: what its tools do by default; organization rules aren't set here)
 export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/workspace/actions/components/toolset-tool-rules-notice';
 // Notices for features this edition does not include (OSS: shown)

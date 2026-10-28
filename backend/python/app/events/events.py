@@ -33,6 +33,7 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
     IndexingError,
     ProcessingError,
+    RecordDeletedError,
 )
 from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
@@ -67,6 +68,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
@@ -473,7 +475,7 @@ class EventProcessor:
             raise_on_error=True,
         )
         if record_doc is None:
-            raise RuntimeError(f"Record {record_id} not found after parsing")
+            raise RecordDeletedError(record_id)
 
         await self.update_record_fields(
             record_doc,
@@ -1332,7 +1334,9 @@ class EventProcessor:
                 # Legitimately reachable: a record can be deleted between an
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message rather than retry it.
-                self.logger.error("❌ Record %s not found", record_id)
+                # WARNING, as the record handler's own read: None cannot tell a
+                # deletion from an id that never existed (a producer bug).
+                self.logger.warning("Record %s not found; dropping its event", record_id)
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -2119,7 +2123,8 @@ class EventProcessor:
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer
-            self.logger.error(f"❌ Error in event processor: {repr(e)}")
+            if not is_expected_outcome(e):  # the record handler logs it once
+                self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
         finally:
             if forced_record_id is not None and self.stage_ingress is not None:

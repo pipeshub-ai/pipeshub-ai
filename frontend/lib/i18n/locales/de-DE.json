@@ -40,7 +40,11 @@
     "tabArchived": "Archiviert",
     "archivedEmptyState": "Keine archivierten Projekte",
     "archivedEmptyStateHint": "Archivierte Projekte werden hier angezeigt.",
-    "actionsLabel": "Projektaktionen"
+    "actionsLabel": "Projektaktionen",
+    "noSearchResults": "Keine Projekte passen zu „{{query}}“",
+    "noSearchResultsHint": "Versuchen Sie einen anderen Namen oder leeren Sie die Suche.",
+    "clearSearch": "Suche leeren",
+    "cardActionsLabel": "Aktionen für {{name}}"
   },
   "timeGroup": {
     "today": "Heute",
@@ -239,7 +243,8 @@
     "beta": "Beta",
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
-    "notifications": "Benachrichtigungen"
+    "notifications": "Benachrichtigungen",
+    "home": "Startseite"
   },
   "artifacts": {
     "title": "Alle Artefakte",
@@ -422,7 +427,7 @@
     "willBeReindexed": "wird neu indiziert",
     "reindexConfirm": "Diesen {{type}} neu indizieren?",
     "reindexDescription": "Dies aktualisiert den Suchindex für diesen {{type}} und seinen Inhalt.",
-    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden.",
+    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden endgültig gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden. Dies kann nicht rückgängig gemacht werden.",
     "deleteFolderBody": "'{{name}}' und alle Inhalte werden aus dieser Sammlung gelöscht.",
     "deleteFileBody": "'{{name}}' wird aus dieser Sammlung gelöscht."
   },
@@ -647,7 +652,9 @@
       "needsMultimodalModel": "Multimodales Modell erforderlich",
       "passwordProtected": "Passwortgeschützt",
       "skipped": "Übersprungen",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "emptyFileZeroBytes": "Leere Datei – nichts zu indizieren (0 Byte)",
+      "emptyNoContent": "Leer – kein Text zum Indizieren gefunden"
     },
     "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
     "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden.",
@@ -687,6 +694,10 @@
     "createDialog": {
       "titlePlaceholder": "z. B. Engineering",
       "descriptionPlaceholder": "z. B. Dokumente fürs Dev-Team"
+    },
+    "nameRules": {
+      "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
+      "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     }
   },
   "connectorTypes": {
@@ -1187,7 +1198,6 @@
         "connectorsStatusNone": "Keine",
         "connectorsStatusCount_one": "{{count}} verbunden",
         "connectorsStatusCount_other": "{{count}} verbunden",
-        "toolsStatusDefault": "Standard",
         "toolsStatusCount_one": "{{count}} aktiviert",
         "toolsStatusCount_other": "{{count}} aktiviert",
         "membersStatusOnlyYou": "Nur Sie",
@@ -1195,7 +1205,20 @@
         "suggestPlanWork": "Eine Aufgabe planen",
         "suggestWriteInstructions": "Die Projektanweisungen schreiben",
         "suggestSummariseDocumentPrompt": "Fasse das wichtigste Dokument in den Dateien dieses Projekts zusammen.",
-        "suggestPlanWorkPrompt": "Hilf mir, eine Aufgabe für dieses Projekt zu planen. Unterteile sie in konkrete nächste Schritte."
+        "suggestPlanWorkPrompt": "Hilf mir, eine Aufgabe für dieses Projekt zu planen. Unterteile sie in konkrete nächste Schritte.",
+        "visibilityShared": "Geteilt mit {{members}}",
+        "visibilityPrivateOwner": "Privat für den Eigentümer",
+        "toolsStatusNone": "Keine aktiviert",
+        "toolsSubtitle": "Chats in diesem Projekt können nur die hier angehakten Tools verwenden.",
+        "toolKind": {
+          "read": "Liest Daten",
+          "write": "Nimmt Änderungen vor",
+          "destructive": "Löscht oder ist nicht umkehrbar",
+          "unknown": "Sonstige"
+        },
+        "toolNeedsApproval": "Erfordert Genehmigung",
+        "toolNeedsApprovalHint": "Dieses Tool kann Daten löschen. In einem Projekt-Chat wird es erst nach einer Genehmigung ausgeführt.",
+        "indexingStatusLabel": "Indizierung: {{status}}"
       },
       "moveDialog": {
         "title": "In Projekt verschieben",
@@ -1206,16 +1229,71 @@
       },
       "deleteDialog": {
         "title": "Dieses Projekt löschen?",
-        "description": "Das Projekt wird entfernt und die Verknüpfung mit den Chats aufgehoben. Die Chats selbst werden nicht gelöscht.",
+        "description": "Das Löschen eines Projekts kann nicht rückgängig gemacht werden:",
         "confirm": "Projekt löschen",
         "deleting": "Wird gelöscht…",
-        "failed": "Projekt konnte nicht gelöscht werden"
+        "failed": "Projekt konnte nicht gelöscht werden",
+        "filesDeleted": "In das Projekt hochgeladene Dateien werden endgültig gelöscht.",
+        "membersLoseAccess": "Alle, mit denen es geteilt ist, verlieren den Zugriff.",
+        "chatsKept": "Chats bleiben erhalten, gehören aber zu keinem Projekt mehr."
       },
       "roles": {
         "owner": "Eigentümer",
         "editor": "Bearbeiter",
         "viewer": "Betrachter"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Eigentümer",
+          "description": "Hat das Projekt erstellt und verwaltet, wer es nutzen kann"
+        },
+        "editor": {
+          "label": "Kann bearbeiten",
+          "description": "Name, Anweisungen, Dateien, Konnektoren und Tools ändern und im Projekt chatten"
+        },
+        "viewer": {
+          "label": "Kann ansehen",
+          "description": "Das Projekt öffnen und mit seinen Dateien und Tools chatten"
+        }
+      },
+      "unknownMember": "Unbekanntes Mitglied",
+      "unknownTeam": "Unbekanntes Team",
+      "allMembersTeam": "Alle in Ihrer Organisation",
+      "ownerCannotChange": "Der Zugriff des Projekteigentümers kann hier nicht geändert werden.",
+      "sharingSettings": {
+        "saved": "Freigabeeinstellungen gespeichert",
+        "saveFailed": "Freigabeeinstellungen konnten nicht gespeichert werden",
+        "visibilityLabel": "Wer dieses Projekt finden kann",
+        "visibilityPrivate": "Nur Personen, mit denen es geteilt ist",
+        "visibilityOrg": "Alle in Ihrer Organisation",
+        "visibilityPrivateHint": "Nur Sie und die unten aufgeführten Personen oder Teams können es öffnen.",
+        "visibilityOrgHint": "Jede Person in Ihrer Organisation kann es finden und öffnen.",
+        "chatSharingLabel": "Neue Chats in diesem Projekt",
+        "chatSharingPrivate": "Privat für die Person, die sie startet",
+        "chatSharingMembers": "Mit Projektmitgliedern geteilt",
+        "chatSharingPrivateHint": "Jeder Chat bleibt privat, bis die Person, die ihn erstellt hat, ihn teilt.",
+        "chatSharingMembersHint": "Mitglieder sehen neue Chats; Autoren können einen Chat weiterhin privat machen."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Projektdetails bearbeiten",
+        "saved": "Projektdetails gespeichert",
+        "saveFailed": "Projektdetails konnten nicht gespeichert werden"
+      },
+      "editDetails": "Name und Beschreibung bearbeiten",
+      "leaveProject": "Projekt verlassen",
+      "leaveDialog": {
+        "title": "{{name}} verlassen?",
+        "description": "Sie verlieren den Zugriff auf dieses Projekt und seine Dateien. Ihre Chats bleiben Ihnen erhalten. Der Eigentümer kann Sie wieder hinzufügen.",
+        "leaving": "Wird verlassen…",
+        "left": "Sie haben das Projekt verlassen",
+        "failed": "Projekt konnte nicht verlassen werden",
+        "inherited": "Sie können dieses Projekt nicht verlassen: Ihr Zugriff kommt über Ihre Organisation oder ein Team. Bitten Sie den Eigentümer, die Freigabe zu ändern."
+      },
+      "archiveSuccess": "Projekt archiviert",
+      "archivedNoNewChats": "Dieses Projekt ist archiviert, daher können darin keine neuen Chats gestartet werden.",
+      "archivedBanner": "Dieses Projekt ist archiviert. Heben Sie die Archivierung auf, um neue Chats zu starten.",
+      "archivedBannerMember": "Dieses Projekt ist archiviert, daher können keine neuen Chats gestartet werden. Bitten Sie den Eigentümer, die Archivierung aufzuheben."
     },
     "scrollAttachmentsLeft": "Anhänge nach links scrollen",
     "scrollAttachmentsRight": "Anhänge nach rechts scrollen",
@@ -1393,7 +1471,19 @@
       "downloading": "Artefakt wird heruntergeladen"
     },
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
-    "sourcesSettingUp": "Wird noch eingerichtet: {{sources}}. Antworten enthalten eventuell noch nicht alles aus diesen Quellen."
+    "sourcesSettingUp": "Wird noch eingerichtet: {{sources}}. Antworten enthalten eventuell noch nicht alles aus diesen Quellen.",
+    "noResultsFor": "Keine Ergebnisse für „{{query}}“",
+    "removeSelectedSource": "{{name}} entfernen",
+    "diagramSourceCopied": "Diagrammquelle kopiert",
+    "diagramImageCopied": "Diagrammbild kopiert",
+    "diagramImageDownloaded": "Zwischenablage nicht verfügbar, Diagramm als PNG gespeichert",
+    "diagramCopyFailed": "Diagramm konnte nicht kopiert werden",
+    "fitDiagram": "An Bildschirm anpassen",
+    "answerMode": {
+      "internalSearch": "Interne Suche",
+      "webSearch": "Websuche",
+      "internalAndWebSearch": "Interne + Websuche"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -1533,7 +1623,21 @@
         "editError": "Einladung konnte nicht aktualisiert werden",
         "editTitle": "Einladung bearbeiten",
         "update": "Einladung aktualisieren",
-        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden."
+        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden.",
+        "userCount_one": "{{count}} Benutzer",
+        "userCount_other": "{{count}} Benutzer",
+        "successDescriptionCount_one": "{{count}} Benutzer wurde eingeladen",
+        "successDescriptionCount_other": "{{count}} Benutzer wurden eingeladen",
+        "alreadyMembersSkipped_one": "{{count}} Adresse gehört bereits einem Mitglied, daher wurde keine Einladung gesendet.",
+        "alreadyMembersSkipped_other": "{{count}} Adressen gehören bereits Mitgliedern, daher wurden keine Einladungen gesendet.",
+        "alreadyMembersTitle": "Bereits Mitglieder – keine Einladungen gesendet",
+        "alreadyMembersDescription_one": "Diese Adresse gehört bereits einem aktiven Mitglied.",
+        "alreadyMembersDescription_other": "Jede Adresse gehört bereits einem aktiven Mitglied.",
+        "importUnsupportedType": "Nur .csv-, .xlsx- und .xls-Dateien können importiert werden.",
+        "importTooLongSkipped_one": "{{count}} Eintrag mit mehr als 254 Zeichen wurde ausgelassen.",
+        "importTooLongSkipped_other": "{{count}} Einträge mit mehr als 254 Zeichen wurden ausgelassen.",
+        "invalidBlocksSend_one": "{{count}} ungültige Adresse ist rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden.",
+        "invalidBlocksSend_other": "{{count}} ungültige Adressen sind rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden."
       },
       "bulk": {
         "resendInvite": "Einladung erneut senden",
@@ -1665,7 +1769,11 @@
         "viewTeam": "Team anzeigen",
         "delete": "Löschen",
         "deleteSuccess": "Team gelöscht",
-        "deleteError": "Team konnte nicht gelöscht werden"
+        "deleteError": "Team konnte nicht gelöscht werden",
+        "deleteConfirmTitle": "Team löschen?",
+        "deleteConfirmMessage": "\"{{name}}\" wird gelöscht, und seine Mitglieder verlieren den darüber geteilten Zugriff. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmButton": "Team löschen",
+        "deleting": "Wird gelöscht…"
       },
       "create": {
         "title": "Team erstellen",
@@ -1684,7 +1792,8 @@
         "successDescription": "\"{{name}}\" wurde erfolgreich erstellt",
         "errorGeneric": "Team konnte nicht erstellt werden",
         "applyToAll": "Auf alle anwenden",
-        "memberRoles": "Mitgliederrollen"
+        "memberRoles": "Mitgliederrollen",
+        "errorDescription": "Das Team konnte nicht erstellt werden. Bitte versuchen Sie es erneut."
       },
       "detail": {
         "nameLabel": "Teamname",
@@ -3296,6 +3405,15 @@
             "action": "Synchronisieren Sie erneut. Wenn es weiterhin fehlschlägt, prüfen Sie die Einstellungen des Konnektors oder wenden Sie sich an Ihren Admin."
           }
         }
+      },
+      "teamVisibilityDialog": {
+        "title": "Alle in Ihrer Organisation sehen diese Daten",
+        "noPermissions": "In der Community Edition wendet der {{name}}-Connector keine Berechtigungen an. Alles, was ein Team-Connector synchronisiert, kann von allen in Ihrer Organisation durchsucht werden.",
+        "usePersonal": "Wenn Sie diese Daten nur für sich selbst benötigen, richten Sie stattdessen einen persönlichen Connector ein. Verwenden Sie einen Team-Connector nur für Daten, die die gesamte Organisation lesen darf.",
+        "teamOnly": "{{name}} ist nur als Team-Connector verfügbar. Verbinden Sie ihn nur mit Daten, die die gesamte Organisation lesen darf, und geben Sie ihm Zugangsdaten, die nichts anderes lesen können.",
+        "cancel": "Abbrechen",
+        "continueTeam": "Mit Team-Connector fortfahren",
+        "goToPersonal": "Persönlichen Connector einrichten"
       }
     },
     "mcpServers": {
@@ -3720,7 +3838,11 @@
       "infoBanner": "Die SMTP-Konfiguration ist für E-Mail-basierte Funktionen wie OTP-Authentifizierung und Passwort-Zurücksetzung erforderlich. Bitte geben Sie die Details Ihres E-Mail-Servers unten ein.",
       "toasts": {
         "saved": "E-Mail-Einstellungen gespeichert",
-        "savedDescription": "Ihre E-Mail-Server-Konfiguration wurde aktualisiert."
+        "savedDescription": "Ihre E-Mail-Server-Konfiguration wurde aktualisiert.",
+        "turnedOff": "E-Mail ausgeschaltet",
+        "turnedOn": "E-Mail eingeschaltet",
+        "deleted": "SMTP-Einstellungen gelöscht",
+        "actionFailed": "Die SMTP-Einstellungen konnten nicht aktualisiert werden. Versuchen Sie es erneut."
       },
       "fields": {
         "host": "SMTP-Host *",
@@ -3734,6 +3856,21 @@
         "usernamePlaceholder": "SMTP-Benutzernamen eingeben",
         "password": "Passwort (optional)",
         "passwordHint": "Passwort für die SMTP-Authentifizierung (falls erforderlich)"
+      },
+      "turnedOff": "Ausgeschaltet",
+      "emailSending": "E-Mails senden",
+      "deleteSmtp": "SMTP-Einstellungen löschen",
+      "turnOffDialog": {
+        "title": "E-Mail ausschalten?",
+        "message": "PipesHub sendet keine E-Mails mehr: keine Einladungen, Passwort-Zurücksetzungen, Anmeldecodes oder Benachrichtigungen. Ihre SMTP-Einstellungen bleiben erhalten, sodass Sie E-Mails jederzeit wieder einschalten können.",
+        "confirm": "Ausschalten"
+      },
+      "deleteDialog": {
+        "title": "SMTP-Einstellungen löschen?",
+        "warning": "Damit werden Ihre SMTP-Servereinstellungen endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "message": "PipesHub sendet keine E-Mails mehr, auch keine Einladungen, Passwort-Zurücksetzungen und Anmeldecodes, bis SMTP erneut konfiguriert ist. Personen, die sich mit einem per E-Mail gesendeten Code anmelden, können sich nicht mehr anmelden.",
+        "confirm": "Löschen",
+        "deleting": "Wird gelöscht…"
       }
     },
     "prompts": {
@@ -3851,7 +3988,12 @@
         "title": "Passwort & Sicherheit",
         "accountPassword": "Konto-Passwort",
         "followEmailDescription": "Bitte folgen Sie den Anweisungen in der E-Mail, um Ihr Passwort festzulegen",
-        "changePassword": "Passwort ändern"
+        "changePassword": "Passwort ändern",
+        "setPassword": "Passwort festlegen",
+        "setPasswordDescription": "Sie haben noch kein Passwort festgelegt. Wir senden Ihnen einen Link per E-Mail, um eines festzulegen. Wenn Ihr Arbeitsbereich es erlaubt, können Sie sich dann auch mit E-Mail und Passwort anmelden.",
+        "setPasswordDialogTitle": "Passwort festlegen",
+        "setPasswordDialogMessage": "Wir senden einen Link zum Festlegen Ihres Passworts an Ihre registrierte E-Mail-Adresse und melden Sie von dieser Sitzung ab.",
+        "setPasswordDialogConfirm": "Link zum Festlegen senden"
       },
       "rolesPermissions": {
         "title": "Rollen & Berechtigungen",
@@ -3898,6 +4040,10 @@
         "saveErrorDescription": "Ihr Profil konnte nicht aktualisiert werden",
         "passwordUpdated": "Passwort wurde aktualisiert",
         "passwordUpdatedDescription": "Sie werden abgemeldet. Bitte melden Sie sich erneut an...",
+        "passwordSetupEmailSent": "Link zum Festlegen gesendet",
+        "passwordSetupEmailSentDescription": "Prüfen Sie Ihr Postfach, um Ihr Passwort festzulegen. Sie werden von dieser Sitzung abgemeldet…",
+        "passwordSetupEmailError": "E-Mail konnte nicht gesendet werden",
+        "passwordSetupEmailErrorDescription": "Bitte versuchen Sie es erneut.",
         "emailVerificationSent": "E-Mail-Bestätigungslink gesendet",
         "emailVerificationSentDescription": "Sie werden abgemeldet, wenn Sie die E-Mail bestätigen",
         "discardSuccess": "Änderungen verworfen",
@@ -5329,7 +5475,9 @@
       "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut.",
       "loadFailedTitle": "Anmeldung konnte nicht geladen werden",
       "loadFailedDescription": "PipesHub konnte den Server nicht erreichen, um die Anmeldeoptionen zu laden. Prüfen Sie Ihre Verbindung oder die Serveradresse und versuchen Sie es erneut.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "tabPassword": "Passwort",
+      "tabEmailOtp": "E-Mail-Code"
     },
     "common": {
       "signIn": "Anmelden",
@@ -5366,12 +5514,49 @@
       "integrationTitle": "Autorisierung an PipesHub gesendet",
       "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
       "openApp": "PipesHub öffnen"
+    },
+    "toasts": {
+      "checkInbox": "Prüfen Sie Ihren Posteingang",
+      "resetLinkSent": "Falls ein Konto mit dieser E-Mail-Adresse existiert, wurde ein Link zum Zurücksetzen des Passworts gesendet.",
+      "resetRequestFailed": "Zurücksetzen des Passworts konnte nicht angefordert werden",
+      "tryAgainLater": "Bitte versuchen Sie es später erneut.",
+      "contactAdmin": "Bitte wenden Sie sich an Ihren Administrator.",
+      "noPasswordSetTitle": "Für dieses Konto ist kein Passwort festgelegt.",
+      "noPasswordSetDescription": "Verwenden Sie unten „Passwort vergessen“, um ein Passwort festzulegen.",
+      "checkEmail": "Prüfen Sie Ihre E-Mails",
+      "otpSentDescription": "Falls sich diese E-Mail-Adresse mit einem Code anmelden kann, wird einer gesendet. Kommt in einigen Minuten nichts an, prüfen Sie Ihren Spam-Ordner oder versuchen Sie es später erneut.",
+      "otpSendFailed": "Bestätigungscode konnte nicht gesendet werden",
+      "additionalVerification": "Zusätzliche Bestätigung erforderlich",
+      "completeNextStep": "Schließen Sie den nächsten Schritt ab, um fortzufahren.",
+      "signInFailedTitle": "Anmeldung fehlgeschlagen",
+      "unexpectedResponse": "Unerwartete Antwort. Bitte versuchen Sie es erneut.",
+      "signInFailed": "Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "verificationFailed": "Bestätigung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "googleSignInFailed": "Google-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "microsoftSignInFailed": "Microsoft-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "tryAgainAfter": "Versuchen Sie es nach {{time}} erneut."
     }
   },
   "healthGate": {
     "title": "Verbindung zum Server nicht möglich",
     "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
-    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
+    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator.",
+    "toasts": {
+      "servicesUnavailableTitle": "Einige Dienste sind nicht verfügbar",
+      "affected": "Betroffen: {{services}}",
+      "featuresUnavailableReconnect": "Einige Funktionen sind vorübergehend nicht verfügbar. Wir verbinden uns automatisch neu; hält das an, wenden Sie sich an Ihren Administrator.",
+      "featuresUnavailable": "Einige Funktionen sind vorübergehend nicht verfügbar",
+      "viewStatus": "Status anzeigen",
+      "servicesDown_one": "{{services}} ist derzeit nicht verfügbar",
+      "servicesDown_other": "{{services}} sind derzeit nicht verfügbar"
+    },
+    "serviceGate": {
+      "title": "Dienst nicht verfügbar",
+      "requires_one": "Diese Seite benötigt {{services}}, der derzeit nicht verfügbar ist. Sie ist automatisch wieder verfügbar, sobald sich der Dienst erholt hat.",
+      "requires_other": "Diese Seite benötigt {{services}}, die derzeit nicht verfügbar sind. Sie ist automatisch wieder verfügbar, sobald sich die Dienste erholt haben.",
+      "memberBody": "Diese Seite ist vorübergehend nicht verfügbar. Sie kommt automatisch zurück; hält das an, wenden Sie sich an Ihren Administrator.",
+      "viewStatus": "Dienststatus anzeigen"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Frage :",
@@ -5598,7 +5783,13 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
-    "invite": "Zu PipesHub einladen"
+    "invite": "Zu PipesHub einladen",
+    "searchPlaceholderTeams": "E-Mails, Teams oder Namen (durch Kommas getrennt)",
+    "searchPlaceholderUsers": "E-Mails oder Namen (durch Kommas getrennt)",
+    "alreadyRemoved": "Bereits entfernt",
+    "alreadyRemovedDescription": "{{name}} hatte bereits keinen Zugriff mehr",
+    "removeConfirmTitle": "Zugriff entfernen?",
+    "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen."
   },
   "demoData": {
     "badge": {

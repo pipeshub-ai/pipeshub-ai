@@ -15,6 +15,8 @@ import {
   resolveMessageBrokerConfig,
 } from '../../../libs/services/message-broker.factory';
 import { MailSenderService } from '../services/mail.sender.service';
+import { SmtpConfig } from '../middlewares/types';
+import { ConfigService } from '../../tokens_manager/services/cm.service';
 import { MailConsumer } from '../services/mail.consumer';
 import { MailProducer } from '../services/mail.producer';
 import { NotificationProducer } from '../../notification/service/notification.producer';
@@ -51,6 +53,9 @@ export class MailServiceContainer {
         .bind<() => AppConfig>('AppConfigProvider')
         .toConstantValue(() => container.get<AppConfig>('AppConfig'));
 
+      container
+        .bind<() => Promise<SmtpConfig | null>>('StoredSmtpConfig')
+        .toConstantValue(() => ConfigService.getInstance().getSmtpConfig());
       container.bind(MailSenderService).toSelf().inSingletonScope();
 
       try {

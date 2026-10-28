@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from app.agents.actions.knowledge_graph.ops.entity_discovery import _named_entities_enabled
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
+    limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import (
@@ -129,7 +130,9 @@ async def execute_find_records_by_entity(
             return True, _empty_window_message(raw_id, resolved_type, page.next_cursor)
         # After a page of results, "none found" reads as "this entity is empty"
         # and contradicts what the caller was just shown.
-        return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
+        if cursor:
+            return True, NO_FURTHER_RECORDS_MSG
+        return True, " ".join(filter(None, (NO_ACCESSIBLE_RECORDS_MSG, limited_scope_note(context))))
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
     remember_record_ids(
@@ -180,22 +183,7 @@ def _render_page(
     subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
     order = "newest of a sample" if capped else "newest first"
     lines = [f"Records {preposition} {subject}, {order} ({len(records)} shown):"]
-    for record in records:
-        parts = [
-            f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
-            f"record_id={_short(record['_key'], shortener)}",
-        ]
-        app = context.app_names.get(record.get("connectorId"))
-        if app:
-            parts.append(f"app: {app}")
-        dated = RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
-        if dated:
-            parts.append(f"{dated[0]}: {_compact_date(dated[1])}")
-        url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
-        if url:
-            parts.append(f"url={url}")
-        lines.append(" | ".join(parts))
-
+    lines.extend(record_line(record, context, shortener, frontend_url) for record in records)
     lines.append("")
     if next_cursor is not None:
         lines.append(f"More records may exist: {_continue_call(entity_ref, entity_type, next_cursor)}")
@@ -207,6 +195,29 @@ def _render_page(
         "to see where a record sits."
     )
     return "\n".join(lines)
+
+
+def record_line(
+    record: dict[str, Any],
+    context: EntityAccessContext,
+    shortener: "RecordIdShortener | None",
+    frontend_url: str | None,
+) -> str:
+    """One listed record: type, name, id, app, date and url."""
+    parts = [
+        f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
+        f"record_id={_short(record['_key'], shortener)}",
+    ]
+    app = context.app_names.get(record.get("connectorId"))
+    if app:
+        parts.append(f"app: {app}")
+    dated = RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
+    if dated:
+        parts.append(f"{dated[0]}: {_compact_date(dated[1])}")
+    url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
+    if url:
+        parts.append(f"url={url}")
+    return " | ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -266,5 +277,6 @@ __all__ = [
     "NO_FURTHER_RECORDS_MSG",
     "execute_find_records_by_entity",
     "EntitySearchScope",
+    "record_line",
     "resolve_entity_virtual_ids",
 ]

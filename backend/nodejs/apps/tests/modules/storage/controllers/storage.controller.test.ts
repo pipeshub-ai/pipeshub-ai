@@ -11,6 +11,7 @@ import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
 import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimetypes'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -82,6 +83,9 @@ function makeDocument(overrides: any = {}): any {
     ...overrides,
   }
 }
+
+// Rows cross the repository seam as plain objects with string ids.
+const withStringId = <T extends { _id: unknown }>(row: T) => ({ ...row, _id: String(row._id) })
 
 describe('StorageController', () => {
   let controller: StorageController
@@ -261,7 +265,8 @@ describe('StorageController', () => {
 
       await controller.getDocumentById(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
-      expect(res.body).to.deep.equal(doc)
+      // The repository hands back plain rows: ids are strings, which serialise the same.
+      expect(JSON.parse(JSON.stringify(res.body))).to.deep.equal(JSON.parse(JSON.stringify(doc)))
     })
 
     it('should call next with BadRequestError when documentId is missing', async () => {
@@ -369,7 +374,7 @@ describe('StorageController', () => {
 
       expect(next.called).to.be.false
       expect(rows).to.have.length(0)
-      expect(adapter.deleteObject.firstCall.args[0]._id).to.equal(row._id)
+      expect(adapter.deleteObject.firstCall.args[0]._id).to.equal(String(row._id))
     })
 
     it('keeps a document that stopped being an unfinished upload mid-abort', async () => {
@@ -620,6 +625,33 @@ describe('StorageController', () => {
       await controller.deleteDocumentById(req, res, next)
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0].message).to.include('does not exist')
+    })
+
+    it('answers not found when the row is removed between the read and the soft delete', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').onFirstCall().resolves(doc).onSecondCall().resolves(null)
+
+      const req = makeReq({ params: { documentId: doc._id.toString() } })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.deleteDocumentById(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(doc.save.called).to.be.false
+    })
+
+    it('saveDocument answers not found, not a server error, when the row is gone', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').resolves(null)
+
+      let thrown: unknown
+      try {
+        await (controller as any).saveDocument(doc, { documentName: 'renamed' })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).to.be.instanceOf(NotFoundError)
     })
 
     it('should set deletedByUserId when userId present', async () => {
@@ -875,6 +907,7 @@ describe('StorageController', () => {
     it('should upload buffer and update document on success', async () => {
       const doc = makeDocument({ mutationCount: 1, sizeInBytes: 100 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       adapter.updateBuffer.resolves({ statusCode: 200, data: 'ok' })
 
       const req = makeReq({ body: { fileBuffer: { buffer: Buffer.from('new'), size: 200 } } })
@@ -902,6 +935,7 @@ describe('StorageController', () => {
     it('should throw InternalServerError on upload failure', async () => {
       const doc = makeDocument()
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       adapter.updateBuffer.resolves({ statusCode: 500, msg: 'disk full' })
 
       const req = makeReq({ body: { fileBuffer: { buffer: Buffer.from('x'), size: 10 } } })
@@ -922,6 +956,7 @@ describe('StorageController', () => {
     it('should upload next version for document with no version history', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v0.pdf')
@@ -947,6 +982,7 @@ describe('StorageController', () => {
     const nextVersionSetup = () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1022,6 +1058,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError for non-versioned documents', async () => {
       const doc = makeDocument({ isVersionedFile: false })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({
         body: { fileBuffer: { buffer: Buffer.from('x'), originalname: 'f.pdf', size: 1, mimetype: 'application/pdf' } },
@@ -1037,6 +1074,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError on extension mismatch', async () => {
       const doc = makeDocument({ extension: '.pdf' })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'normalizeExtension')
         .onFirstCall().returns('.pdf')
         .onSecondCall().returns('.docx')
@@ -1058,6 +1096,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1085,6 +1124,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('org/path/doc/versions/v1.pdf')
@@ -1106,6 +1146,7 @@ describe('StorageController', () => {
     it('should throw when version upload fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1129,6 +1170,7 @@ describe('StorageController', () => {
     it('should throw when current upload fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1152,6 +1194,7 @@ describe('StorageController', () => {
     it('should set document.azureBlob for AzureBlob vendor', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.AzureBlob })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1173,6 +1216,7 @@ describe('StorageController', () => {
     it('should throw when initial v0 clone fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1192,6 +1236,7 @@ describe('StorageController', () => {
     it('should throw when buffer fetch for v0 fails', async () => {
       const doc = makeDocument({ versionHistory: [], storageVendor: StorageVendor.S3 })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getVersionFilePath').returns('path')
@@ -1222,6 +1267,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1251,6 +1297,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1282,6 +1329,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError for non-versioned document', async () => {
       const doc = makeDocument({ isVersionedFile: false })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { version: 0, note: 'test' }, query: {} })
       const res = makeRes()
@@ -1295,6 +1343,7 @@ describe('StorageController', () => {
     it('should throw BadRequestError when version is null/undefined', async () => {
       const doc = makeDocument({ isVersionedFile: true, versionHistory: [{ version: 0 }] })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { note: 'test' }, query: {} })
       const res = makeRes()
@@ -1311,6 +1360,7 @@ describe('StorageController', () => {
         versionHistory: [{ version: 0 }, { version: 1 }],
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
 
       const req = makeReq({ body: { version: 1, note: 'test' }, query: {} })
       const res = makeRes()
@@ -1327,6 +1377,7 @@ describe('StorageController', () => {
         versionHistory: [{ version: 0 }, { version: 1 }],
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       adapter.getBufferFromStorageService.resolves({ statusCode: 500, msg: 'fail' })
@@ -1346,6 +1397,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1366,6 +1418,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1389,6 +1442,7 @@ describe('StorageController', () => {
         storageVendor: 'invalid' as any,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('path')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current')
@@ -1415,6 +1469,7 @@ describe('StorageController', () => {
         storageVendor: StorageVendor.S3,
       })
       sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
       sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
       sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
       sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
@@ -1671,7 +1726,7 @@ describe('StorageController.moveTree collision handling', () => {
 
     expect(next.called).to.be.false
     expect(deleteOne.called).to.be.false
-    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine])
+    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine].map(withStringId))
     expect(res.body).to.deep.equal({ moved: 1, collision: true })
   })
 
@@ -1701,7 +1756,7 @@ describe('StorageController.moveTree collision handling', () => {
     )
 
     expect(moveLocal.called).to.be.false
-    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine, attachment])
+    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine, attachment].map(withStringId))
     expect(res.body).to.deep.equal({ moved: 2, collision: true })
   })
 
@@ -1727,7 +1782,7 @@ describe('StorageController.moveTree collision handling', () => {
     await controller.moveTree(req, res, next)
 
     expect(next.called).to.be.false
-    expect(moveLocal.firstCall.args[3]).to.deep.equal([live, softDeleted])
+    expect(moveLocal.firstCall.args[3]).to.deep.equal([live, softDeleted].map(withStringId))
     expect(res.body).to.deep.equal({ moved: 1 })
   })
 
@@ -1767,7 +1822,7 @@ describe('StorageController.moveTree collision handling', () => {
 
       expect(next.called).to.be.false
       expect(moveLocal.called).to.be.false
-      expect(moveRemote.firstCall.args[4]).to.deep.equal([ownRecord, ownMeta])
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([ownRecord, ownMeta].map(withStringId))
       expect(res.body).to.deep.equal({ moved: 2, collision: true })
     })
 
@@ -1807,7 +1862,7 @@ describe('StorageController.moveTree collision handling', () => {
       )
 
       expect(moveLocal.called).to.be.false
-      expect(moveRemote.firstCall.args[4]).to.deep.equal([docRecord, docMeta])
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([docRecord, docMeta].map(withStringId))
       expect(res.body).to.deep.equal({ moved: 2, collision: true })
     })
 
@@ -1828,7 +1883,7 @@ describe('StorageController.moveTree collision handling', () => {
       )
 
       expect(moveLocal.called).to.be.false
-      expect(moveRemote.firstCall.args[4]).to.deep.equal([own])
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([withStringId(own)])
       expect(res.body).to.deep.equal({ moved: 1, collision: true })
     })
 
@@ -1849,7 +1904,7 @@ describe('StorageController.moveTree collision handling', () => {
       )
 
       expect(moveRemote.called).to.be.false
-      expect(moveLocal.firstCall.args[3]).to.deep.equal([own, ownDeleted])
+      expect(moveLocal.firstCall.args[3]).to.deep.equal([own, ownDeleted].map(withStringId))
       expect(res.body).to.deep.equal({ moved: 1, collision: false })
     })
 
@@ -1945,9 +2000,10 @@ describe('StorageController.listVirtualRecordDocuments', () => {
     expect(String(filter.orgId)).to.equal(String(orgId))
     expect(filter.documentName).to.deep.equal({ $in: ['record_v1', 'metadata_v1'] })
     expect(filter.isDeleted).to.deep.equal({ $ne: true })
-    expect(sort.firstCall.args[0]).to.deep.equal({ createdAt: -1 })
+    expect(sort.firstCall.args[0]).to.deep.equal({ createdAt: -1, _id: -1 })
+    expect(filter.$expr).to.equal(undefined)
     expect(res.body).to.deep.equal({
-      documents: [{ _id: String(rec._id), documentName: 'record_v1', documentPath: rec.documentPath, createdAt: 2 }],
+      documents: [{ _id: String(rec._id), documentName: 'record_v1', documentPath: rec.documentPath, createdAt: 2, retiredAt: null }],
     })
   })
 })

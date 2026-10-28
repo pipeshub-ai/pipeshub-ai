@@ -228,6 +228,9 @@ class TestCalls:
         args = {"limit": "5"}
         tools["list_tickets"].validate(args)
         assert args == {"limit": 5}
+        args = {"status": "null"}
+        tools["list_tickets"].validate(args)
+        assert args == {}  # the model's way of leaving it unset, as for MCP tools
 
     async def test_an_http_error_explains_itself(self, config: InMemoryConfigService, acme: tuple[str, Any]) -> None:
         tools = await self._tools(config, acme[0])

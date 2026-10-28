@@ -19,7 +19,7 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
-import { Users } from '../schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 import {
   ForbiddenError,
   NotFoundError,
@@ -507,13 +507,10 @@ export function createUserRouter(container: Container) {
         const userId = req.params.id;
         const orgId = req.tokenPayload?.orgId;
         try {
-          const user = await Users.findOne({
-            _id: userId,
-            orgId,
-            isDeleted: false,
-          })
-            .lean()
-            .exec();
+          const user = await getUserRepository().getLive(
+            orgId as string,
+            userId as string,
+          );
 
           if (!user) {
             throw new NotFoundError('User not found');

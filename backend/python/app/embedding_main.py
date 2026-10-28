@@ -10,6 +10,9 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 
 import asyncio
 import base64
+import contextlib
+import ctypes
+import gc
 import os
 import struct
 import threading
@@ -32,7 +35,9 @@ from app.config.constants.ai_models import (
     EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_PORT,
 )
+from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
+from app.core.org_context import spawn_detached
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
 from app.utils.logger import create_logger, install_log_redaction
@@ -77,6 +82,20 @@ if QUERY_RESERVED_SLOTS < 0:
     raise ValueError(
         f"EMBEDDING_SERVER_QUERY_RESERVED_SLOTS must be at least 0, got {QUERY_RESERVED_SLOTS}"
     )
+
+# Seconds a local model may sit unused before it is dropped from memory. The
+# next request loads it again (a cold load takes a few seconds for bge-large on
+# a warm disk cache). 0 keeps every loaded model for the life of the process.
+_ENV_MODEL_IDLE_SECONDS = (os.getenv("EMBEDDING_SERVER_MODEL_IDLE_SECONDS") or "").strip()
+MODEL_IDLE_SECONDS = float(_ENV_MODEL_IDLE_SECONDS) if _ENV_MODEL_IDLE_SECONDS else 900.0
+if MODEL_IDLE_SECONDS < 0:
+    raise ValueError(
+        f"EMBEDDING_SERVER_MODEL_IDLE_SECONDS must be at least 0, got {MODEL_IDLE_SECONDS}"
+    )
+
+# Providers whose embeddings are computed by this server. Every other provider
+# calls a remote API (or a separate server) and never touches the local model.
+_LOCAL_EMBEDDING_PROVIDERS = frozenset({"default", "huggingFace", "sentenceTransformers"})
 
 # Bound any Hub HTTP call so a slow/blocked network can never hang model load
 # indefinitely. huggingface_hub reads this on import, so set it before the
@@ -447,6 +466,24 @@ class EncodeGate:
             self.release(priority)
 
 
+def release_memory() -> None:
+    """Hand freed model memory back to the OS (a dropped model is not enough).
+
+    Python frees the tensors, but glibc keeps the freed arenas and the process
+    RSS stays high until they are trimmed.
+    """
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        logger.debug("torch cache release skipped", exc_info=True)
+    with contextlib.suppress(OSError, AttributeError):
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+
+
 class ModelManager:
     """Thread-safe cache of loaded SentenceTransformer models."""
 
@@ -457,8 +494,15 @@ class ModelManager:
         normalize_embeddings: bool = DEFAULT_NORMALIZE,
         max_concurrency: int = MAX_CONCURRENT_EMBEDDINGS,
         query_reserved_slots: int = QUERY_RESERVED_SLOTS,
+        idle_seconds: float = MODEL_IDLE_SECONDS,
     ) -> None:
         self._device = device
+        self._idle_seconds = idle_seconds
+        # Requests that hold a model right now, and when each model was last
+        # released. Both are touched only on the event loop, so a check and the
+        # change that follows it cannot interleave with another coroutine.
+        self._in_use: dict[str, int] = {}
+        self._last_used: dict[str, float] = {}
         self._normalize = normalize_embeddings
         self._models: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -469,11 +513,14 @@ class ModelManager:
         self._prepare_tasks: dict[str, asyncio.Task] = {}
 
     @staticmethod
-    def _cache_key(model_name: str, *, trust_remote_code: bool) -> str:
-        return f"{model_name}::trust_remote_code={trust_remote_code}"
+    def _cache_key(model_name: str) -> str:
+        # One entry per model. ``trust_remote_code`` is deliberately not part of
+        # the key: the same weights loaded twice only cost memory. The policy
+        # that refuses remote code is enforced by the request handlers.
+        return model_name
 
     def list_loaded_models(self) -> list[str]:
-        return list({key.split("::", 1)[0] for key in self._models})
+        return list(self._models)
 
     def is_ready(self, model_name: str) -> bool:
         return model_name in self.list_loaded_models()
@@ -520,7 +567,8 @@ class ModelManager:
 
         async def _run() -> None:
             try:
-                await self.get_model(model_name, trust_remote_code=trust_remote_code)
+                async with self._lease(model_name, trust_remote_code=trust_remote_code):
+                    pass
             except Exception as exc:
                 logger.exception(
                     "Background model preparation failed for '%s'", model_name
@@ -536,7 +584,59 @@ class ModelManager:
         return status
 
     async def warmup(self, model_name: str) -> None:
-        await self.get_model(model_name)
+        async with self._lease(model_name):
+            pass
+
+    @asynccontextmanager
+    async def _lease(
+        self, model_name: str, *, trust_remote_code: bool = False
+    ) -> AsyncIterator[Any]:
+        """Hold ``model_name`` in memory for the duration of the block.
+
+        The count goes up before the load is awaited, so the idle reaper can
+        never drop a model that a request is waiting for or running on.
+        """
+        key = self._cache_key(model_name)
+        self._in_use[key] = self._in_use.get(key, 0) + 1
+        try:
+            yield await self.get_model(model_name, trust_remote_code=trust_remote_code)
+        finally:
+            remaining = self._in_use[key] - 1
+            if remaining:
+                self._in_use[key] = remaining
+            else:
+                del self._in_use[key]
+            self._last_used[key] = time.monotonic()
+
+    def reap_idle(self, now: float | None = None) -> list[str]:
+        """Drop models nobody has used for ``idle_seconds``; return their names.
+
+        Runs on the event loop without awaiting, so it cannot interleave with a
+        request taking or releasing a lease.
+        """
+        if self._idle_seconds <= 0:
+            return []
+        now = time.monotonic() if now is None else now
+        dropped = [
+            key
+            for key in self._models
+            if key not in self._in_use
+            and now - self._last_used.get(key, 0.0) >= self._idle_seconds
+        ]
+        for key in dropped:
+            del self._models[key]
+            self._last_used.pop(key, None)
+            self._locks.pop(key, None)
+        return dropped
+
+    async def run_idle_reaper(self) -> None:
+        interval = max(1.0, min(60.0, self._idle_seconds / 4))
+        while True:
+            await asyncio.sleep(interval)
+            dropped = self.reap_idle()
+            if dropped:
+                logger.info("Unloaded idle embedding model(s): %s", ", ".join(dropped))
+                await asyncio.to_thread(release_memory)
 
     async def get_model(
         self,
@@ -544,7 +644,7 @@ class ModelManager:
         *,
         trust_remote_code: bool = False,
     ) -> Any:
-        cache_key = self._cache_key(model_name, trust_remote_code=trust_remote_code)
+        cache_key = self._cache_key(model_name)
         if cache_key in self._models:
             return self._models[cache_key]
 
@@ -646,6 +746,7 @@ class ModelManager:
 
             model = await asyncio.to_thread(_load)
             self._models[cache_key] = model
+            self._last_used[cache_key] = time.monotonic()
             logger.info("Embedding model '%s' loaded", model_name)
             return model
 
@@ -657,21 +758,18 @@ class ModelManager:
         trust_remote_code: bool = False,
         priority: EncodePriority = EncodePriority.BULK,
     ) -> list[list[float]]:
-        model = await self.get_model(
-            model_name,
-            trust_remote_code=trust_remote_code,
-        )
+        async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
 
-        def _encode() -> list[list[float]]:
-            embeddings = model.encode(
-                texts,
-                normalize_embeddings=self._normalize,
-                convert_to_numpy=True,
-            )
-            return embeddings.tolist()
+            def _encode() -> list[list[float]]:
+                embeddings = model.encode(
+                    texts,
+                    normalize_embeddings=self._normalize,
+                    convert_to_numpy=True,
+                )
+                return embeddings.tolist()
 
-        async with self._encode_gate.slot(priority):
-            return await asyncio.to_thread(_encode)
+            async with self._encode_gate.slot(priority):
+                return await asyncio.to_thread(_encode)
 
 
 model_manager = ModelManager()
@@ -701,31 +799,50 @@ def _format_embedding_vector(
     )
 
 
+async def _local_model_in_use(config_service: ConfigurationService | None) -> bool:
+    """Whether the organisation embeds with a model this server runs.
+
+    Mirrors the choice indexing makes: no saved embedding model means the
+    built-in local one; otherwise the default entry (else the first) decides.
+    When the settings cannot be read the answer is "no", so the model loads on
+    the first request instead of sitting in memory for a remote-only install.
+    """
+    if config_service is None:
+        return False
+    try:
+        ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=False, raise_on_error=True
+        )
+    except Exception as exc:
+        logger.warning("Could not read AI model settings; skipping warm-up: %s", exc)
+        return False
+    configs = ai_models.get("embedding") if isinstance(ai_models, dict) else None
+    if not configs:
+        return True
+    entries = [c for c in configs if isinstance(c, dict)]
+    if not entries:
+        return True
+    chosen = next((c for c in entries if c.get("isDefault")), entries[0])
+    return chosen.get("provider") in _LOCAL_EMBEDDING_PROVIDERS
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
     app.state.model_manager = model_manager
     logger.info(
-        "Starting embedding server warmup for %s (max_concurrency=%d, "
-        "slots reserved for search queries=%d)",
-        DEFAULT_EMBEDDING_MODEL,
+        "Starting embedding server (max_concurrency=%d, "
+        "slots reserved for search queries=%d, model idle unload=%ss)",
         MAX_CONCURRENT_EMBEDDINGS,
         min(QUERY_RESERVED_SLOTS, MAX_CONCURRENT_EMBEDDINGS - 1),
+        MODEL_IDLE_SECONDS or "off",
     )
     logger.info(
         "Security policy: allow_remote_code=%s, allowed_models=%s",
         ALLOW_REMOTE_CODE,
         sorted(ALLOWED_MODELS) if ALLOWED_MODELS is not None else "unrestricted",
     )
-    try:
-        await model_manager.warmup(DEFAULT_EMBEDDING_MODEL)
-        logger.info("Default embedding model ready")
-    except Exception as exc:
-        logger.error(
-            "Failed to warm up default embedding model (will retry on first request): %s",
-            exc,
-        )
 
     config_service: ConfigurationService | None = None
     try:
@@ -733,13 +850,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger=logger,
             key_value_store=EncryptedKeyValueStore(logger=logger),
         )
-        await telemetry.bind(config_service, logger).start()
     except Exception as exc:
-        logger.warning("Failed to start telemetry pusher: %s", exc)
+        logger.warning("Failed to create configuration service: %s", exc)
+
+    if await _local_model_in_use(config_service):
+        try:
+            await model_manager.warmup(DEFAULT_EMBEDDING_MODEL)
+            logger.info("Default embedding model ready")
+        except Exception as exc:
+            logger.error(
+                "Failed to warm up default embedding model (will retry on first request): %s",
+                exc,
+            )
+    else:
+        logger.info(
+            "Skipping default embedding model warm-up: no local embedding is "
+            "configured (it loads on the first request that needs it)"
+        )
+
+    reaper: asyncio.Task | None = None
+    if MODEL_IDLE_SECONDS > 0:
+        reaper = spawn_detached(model_manager.run_idle_reaper(), name="embedding-idle-reaper")
+
+    if config_service is not None:
+        try:
+            await telemetry.bind(config_service, logger).start()
+        except Exception as exc:
+            logger.warning("Failed to start telemetry pusher: %s", exc)
 
     yield
 
     logger.info("Shutting down embedding server")
+    if reaper is not None:
+        reaper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reaper
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     if config_service is not None:
@@ -772,7 +917,9 @@ telemetry = setup_telemetry(app, service_name="embedding_service")
 async def health_check() -> JSONResponse:
     try:
         loaded = model_manager.list_loaded_models()
-        status = "healthy" if DEFAULT_EMBEDDING_MODEL in loaded else "starting"
+        # The server answers once its lifespan startup has finished; a model
+        # that is not loaded yet (or was unloaded when idle) loads on demand.
+        status = "healthy"
         return JSONResponse(
             status_code=200,
             content={

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.models.entities import EntityRecord, EntityType
@@ -75,12 +76,21 @@ class TestApply:
         orch.blob_storage.apply.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
-    async def test_record_not_found_raises(self):
+    async def test_a_deleted_record_raises_record_deleted(self):
         orch = _make_orchestrator(graph_doc=None)
         ctx = _make_ctx("missing-id")
 
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(RecordDeletedError):
             await orch.apply(ctx)
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_raises_record_deleted(self) -> None:
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS", "isDeleted": True})
+
+        with pytest.raises(RecordDeletedError):
+            await orch.apply(_make_ctx("trashed-id"))
+
+        orch.vector_store.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_completed_skips_vector_and_does_not_classify(self) -> None:
@@ -157,7 +167,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.graph_provider.get_document.assert_awaited_once_with(
-            "my-record-id", "records"
+            "my-record-id", "records", raise_on_error=True
         )
 
     @pytest.mark.asyncio

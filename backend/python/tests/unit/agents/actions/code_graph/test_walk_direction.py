@@ -74,7 +74,9 @@ async def test_a_second_hop_names_the_node_it_came_through_and_never_the_anchor(
 async def test_two_callees_of_one_caller_are_not_a_path() -> None:
     graph = FakeGraphProvider(extra_edges=[("k_caller", "k_client")])
 
-    assert await _path(graph, TARGET, CLIENT, edge_types=["CALLS"]) == {"found": False, "hops": []}
+    directed = await _path(graph, TARGET, CLIENT, edge_types=["CALLS"])
+    assert directed["found"] is False
+    assert directed["hops"] == []
     related = await _path(graph, TARGET, CLIENT, edge_types=["CALLS"], undirected=True)
     assert related["found"] is True
 

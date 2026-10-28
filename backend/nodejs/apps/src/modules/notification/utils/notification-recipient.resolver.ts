@@ -1,10 +1,9 @@
-import mongoose from 'mongoose';
-import {
-  UserGroup,
-  UserGroups,
-} from '../../user_management/schema/userGroup.schema';
-import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { getGroupRepository } from '../../../libs/repositories/group';
+import { isValidId } from '../../../libs/repositories/ids';
 import { findOrgAdminUserIds } from '../../user_management/services/user-admin.service';
+
+/** An org id as a string or a driver id; callers outside the stores pass the string. */
+type OrgIdLike = string | { toString(): string };
 
 const SUPPORTED_GROUP_ROLE_TYPES = new Set(['standard', 'everyone', 'custom']);
 
@@ -18,9 +17,9 @@ function normalizeRole(role: string): string {
  * - other names → UserGroup.type match (standard / everyone / custom)
  */
 export async function resolveRoleRecipientUserIds(
-  orgId: mongoose.Types.ObjectId,
+  orgId: OrgIdLike,
   recipientRoles: string[],
-): Promise<mongoose.Types.ObjectId[]> {
+): Promise<string[]> {
   const validRoles = [
     ...new Set(
       recipientRoles
@@ -44,50 +43,40 @@ export async function resolveRoleRecipientUserIds(
 
   const groupRoles = validRoles.filter((r) => SUPPORTED_GROUP_ROLE_TYPES.has(r));
   if (groupRoles.length > 0) {
-    const groups = await UserGroups.find(
-      asQueryFilter<UserGroup>({
-        orgId,
-        type: { $in: groupRoles },
-        isDeleted: { $ne: true },
-      }),
-    )
-      .select('users')
-      .lean();
-
-    for (const group of groups) {
-      const users = (group as { users?: unknown[] }).users ?? [];
-      for (const userId of users) {
-        const asString = String(userId);
-        if (mongoose.isValidObjectId(asString)) {
-          userIdStrings.add(asString);
-        }
+    const memberIds = await getGroupRepository().memberIdsOfTypes(
+      String(orgId),
+      groupRoles,
+    );
+    for (const asString of memberIds) {
+      if (isValidId(asString)) {
+        userIdStrings.add(asString);
       }
     }
   }
 
-  return [...userIdStrings].map((id) => new mongoose.Types.ObjectId(id));
+  return [...userIdStrings];
 }
 
-function parseRecipientUserIds(raw: unknown): mongoose.Types.ObjectId[] {
+function parseRecipientUserIds(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
   const ids = new Set<string>();
   for (const entry of values) {
     const asString = String(entry);
-    if (mongoose.isValidObjectId(asString)) {
+    if (isValidId(asString)) {
       ids.add(asString);
     }
   }
-  return [...ids].map((id) => new mongoose.Types.ObjectId(id));
+  return [...ids];
 }
 
 /**
  * Merges explicit recipient user IDs and users resolved from recipient roles (deduped).
  */
 export async function resolveNotificationRecipientUserIds(
-  orgId: mongoose.Types.ObjectId,
+  orgId: OrgIdLike,
   recipientUserIds: unknown,
   recipientRoles: unknown,
-): Promise<mongoose.Types.ObjectId[]> {
+): Promise<string[]> {
   const direct = parseRecipientUserIds(recipientUserIds);
   const roleNames = Array.isArray(recipientRoles)
     ? recipientRoles.filter((r): r is string => typeof r === 'string')
@@ -96,8 +85,8 @@ export async function resolveNotificationRecipientUserIds(
     roleNames.length > 0 ? await resolveRoleRecipientUserIds(orgId, roleNames) : [];
 
   const merged = new Set<string>();
-  for (const oid of [...direct, ...fromRoles]) {
-    merged.add(oid.toString());
+  for (const id of [...direct, ...fromRoles]) {
+    merged.add(id);
   }
-  return [...merged].map((id) => new mongoose.Types.ObjectId(id));
+  return [...merged];
 }

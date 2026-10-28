@@ -16,6 +16,8 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   fromEmail: string;
+  /** Absent means on; only an explicit `false` turns sending off. */
+  enabled?: boolean;
 }
 
 export const SIGNING_SECRET_BYTES = 32;
@@ -158,7 +160,11 @@ export class ConfigService {
       configPaths.smtp,
     );
     if (encryptedConfig) {
-      return JSON.parse(this.encryptionService.decrypt(encryptedConfig));
+      const config = JSON.parse(
+        this.encryptionService.decrypt(encryptedConfig),
+      ) as SmtpConfig;
+      // An admin turned email off: the mail service must behave as if none is set.
+      return config.enabled === false ? null : config;
     }
     return null;
   }

@@ -782,10 +782,10 @@ describe('Knowledge base page — failures the user must be able to recover from
     await screen.findByRole('row', { name: 'Engineering' });
     await chooseRowAction('Engineering', 'Delete');
     const dialog = await screen.findByRole('dialog');
-    // A collection is named as one, never as a folder, and the agents that use it lose it too.
+    // A collection is named as one, never as a folder; the agents that use it lose it too, and it is gone for good.
     expect(
       within(dialog).getByText(
-        "'Engineering' and everything in it will be deleted. It will also be removed from any agents that use it.",
+        "'Engineering' and everything in it will be permanently deleted. It will also be removed from any agents that use it. This can't be undone.",
       ),
     ).toBeTruthy();
     typeInto(within(dialog).getByRole('textbox'), 'DELETE');
@@ -1379,6 +1379,19 @@ describe('Knowledge base page — uploading', () => {
       expect(byName['dump.bin'].errors?.[0]).toContain('larger than the 5 MB limit');
     });
     await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
+  });
+
+  it('does not offer Upload data on the collections list, where there is no collection to upload into', async () => {
+    withCollections();
+    openAt('/knowledge-base');
+    await screen.findByRole('row', { name: 'Engineering' });
+
+    const trigger = screen.getByTestId('new-dropdown-trigger');
+    await act(async () => {
+      fireEvent.keyDown(trigger, { key: 'Enter' });
+    });
+    expect(await screen.findByRole('menuitem', { name: /New folder$/ })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /Upload data$/ })).toBeNull();
   });
 
   it('marks every file failed when the upload connection drops', async () => {

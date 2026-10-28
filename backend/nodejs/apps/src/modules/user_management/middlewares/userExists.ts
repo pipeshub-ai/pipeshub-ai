@@ -1,7 +1,7 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Org } from '../schema/org.schema';
-import { Users } from '../schema/users.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { getUserRepository } from '../../../libs/repositories/user';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 
 export const userExists = async (
@@ -10,10 +10,7 @@ export const userExists = async (
   next: NextFunction,
 ) => {
   try {
-    const org = await Org.findOne({
-      _id: req.user?.orgId,
-      isDeleted: false,
-    });
+    const org = await getOrgRepository().getLive(req.user?.orgId as string);
 
     if (!org) {
       throw new NotFoundError('Account not found');
@@ -24,11 +21,10 @@ export const userExists = async (
     // actor id for privilege checks (e.g. role changes).
     const actorUserId = req.user?.userId;
 
-    const user = await Users.findOne({
-      _id: id,
-      orgId: req.user?.orgId,
-      isDeleted: false,
-    }).exec();
+    const user = await getUserRepository().getLive(
+      req.user?.orgId as string,
+      id as string,
+    );
 
     if (!user) {
       throw new NotFoundError('User not found');

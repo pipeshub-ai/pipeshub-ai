@@ -43,6 +43,7 @@ from app.services.messaging.distributed_concurrency import (
 )
 from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
+from app.services.resource_governor.memory_budget import record_memory_cost
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.probe import memory_domain_id
 from app.utils.loop_bridge import run_on_loop
@@ -394,14 +395,12 @@ async def increment_retry_and_check(
 
 
 async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, bool]:
-    """``(deliveries, backstop_tripped)`` for this message, counted before
-    the handler runs.
+    """``(deliveries, backstop_tripped)`` for this message, counted each time
+    it is handed back without an attempt (``RequeueWithoutAttempt``).
 
     Zero (and never tripped) when there is no tracker or the count cannot be
     written: the backstop this feeds must never block processing because
-    Redis is briefly unavailable -- that is the failure counter's job, and
-    this counter exists precisely for the cases where that one is never
-    written (a consumer that crashes mid-handler).
+    Redis is briefly unavailable.
     """
     if not host.retry_manager:
         return 0, False
@@ -421,6 +420,48 @@ async def clear_delivery_count(host: ConcurrencyHost, message_id: str) -> None:
         await host.retry_manager.clear_deliveries(message_id)
     except Exception as exc:
         log_distributed_error(host, "clear_deliveries", exc)
+
+
+# Attempts that ended with the process (an OOM kill, a segfault) run no except
+# clause, so the failure counter never sees them. A record with this many is
+# given up on rather than handed to the next process to crash.
+MAX_UNFINISHED_ATTEMPTS = 2
+
+
+async def unfinished_attempts(host: ConcurrencyHost, work_key: str) -> int:
+    """Attempts at ``work_key`` that started and never finished; 0 when unknown."""
+    if not host.retry_manager:
+        return 0
+    try:
+        return int(await host.retry_manager.unfinished_attempts(work_key))
+    except Exception as exc:
+        log_distributed_error(host, "unfinished_attempts", exc)
+        return 0
+
+
+async def start_attempt(host: ConcurrencyHost, work_key: str) -> int:
+    """Count an attempt at ``work_key`` as started; returns the unfinished ones before it.
+
+    Called only once the record's lease (or in-process claim) is held, so a
+    delivery waiting for a permit or a lock is never charged with a crash.
+    """
+    if not host.retry_manager:
+        return 0
+    try:
+        return int(await host.retry_manager.start_attempt(work_key))
+    except Exception as exc:
+        log_distributed_error(host, "start_attempt", exc)
+        return 0
+
+
+async def finish_attempt(host: ConcurrencyHost, work_key: str, *, settled: bool) -> None:
+    """Count the attempt ``start_attempt`` began as finished; see ``IRetryTracker.finish_attempt``."""
+    if not host.retry_manager:
+        return
+    try:
+        await host.retry_manager.finish_attempt(work_key, settled=settled)
+    except Exception as exc:
+        log_distributed_error(host, "finish_attempt", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1048,6 +1089,18 @@ class ParseAdmissionTimeout(RequeueWithoutAttempt):
         self.waited = waited
 
 
+class MemoryAdmissionTimeout(ParseAdmissionTimeout):
+    """No memory came free for a big record within the admission wait.
+
+    Not counted toward the delivery backstop: the wait ends when the
+    reservations ahead of it do, and one bigger than the whole budget runs
+    once nothing else is reserved, so counting it would fail a big record only
+    for being big.
+    """
+
+    counts_toward_backstop = False
+
+
 def parse_admission_wait_seconds() -> float:
     """How long a record may queue for a parse slot before it is handed back
     to the broker. Single source of truth, because
@@ -1130,6 +1183,42 @@ async def _wait_for_heavy_parse_slots(
             await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
         else:
             await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+
+
+async def reserve_record_memory(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    size_bytes: int | None,
+    timeout: float | None = None,
+    *,
+    downloaded: bool = False,
+    current: "Admission | None" = None,
+) -> "Admission | None":
+    """Reserve what a record too big for the governor's count limits is
+    expected to hold, until it finishes; ``None`` when it needs no reservation
+    or there is no governor.
+
+    Taken before the download when the record's size is known
+    (``START_DOWNLOAD``), else at ``START_PARSING`` with its content
+    *downloaded* and counted while it waits; either way before the parse
+    permit. *current* is a reservation taken before the download: it is kept
+    when it covers the size downloaded, else given back and the larger one
+    reserved (a document's ``sizeInBytes`` can be stale). With *timeout*,
+    raises ``MemoryAdmissionTimeout`` instead of waiting on.
+    """
+    governor = host.governor
+    if governor is None:
+        return current
+    cost = record_memory_cost(tier if tier is not None else ParseTier.HEAVY, size_bytes)
+    if current is not None and not current.released and current.cost >= cost:
+        return current
+    release_admission(current)
+    if not cost:
+        return None
+    budget = governor.memory_budget
+    if not await budget.reserve(cost, timeout, held=(size_bytes or 0) if downloaded else 0):
+        raise MemoryAdmissionTimeout("record_memory", timeout or 0.0)
+    return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
 
 async def acquire_parsing_slot(

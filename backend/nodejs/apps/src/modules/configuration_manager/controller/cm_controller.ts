@@ -36,6 +36,13 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
+import {
+  GENERATION_KEY,
+  nextGeneration,
+  readMembership,
+  readStoredPlatformBlob,
+  savePutsArtifactReadsAtRisk,
+} from '../utils/artifactRollout';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import {
@@ -107,6 +114,11 @@ import {
   isSecretRevealAvailable,
 } from '../utils/secretReveal';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import {
+  SMTP_SETTINGS_PROBLEM_MESSAGES,
+  smtpSettingsProblem,
+} from '../../mail/utils/smtp-transport';
+import { SmtpConfig } from '../../mail/middlewares/types';
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
@@ -497,16 +509,36 @@ export const createSmtpConfig =
       const hasPlaceholder = SMTP_SECRET_KEYS.some(
         (key) => smtpConfig[key] === CONFIG_SECRET_PLACEHOLDER,
       );
-      if (hasPlaceholder) {
-        const encryptedExisting = await keyValueStoreService.get<string>(
-          configPaths.smtp,
-        );
-        if (encryptedExisting) {
-          const existing = JSON.parse(
-            encryptionService.decrypt(encryptedExisting),
-          );
-          smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
-        }
+      // An unreadable stored config must not block saving a complete new one.
+      const existing = hasPlaceholder
+        ? await getParsedSmtpConfig(keyValueStoreService)
+        : await getParsedSmtpConfig(keyValueStoreService).catch(() => null);
+      if (hasPlaceholder && existing) {
+        smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
+      }
+      // Editing the settings must not quietly turn email back on.
+      if (existing?.enabled === false) {
+        smtpConfig = { ...smtpConfig, enabled: false };
+      }
+
+      // Bad credentials would otherwise surface only when mail starts failing,
+      // after invites and resets were already reported as sent.
+      // Codes only in the log: the host and username are secret
+      // (maskSmtpConfig), and a server's refusal text can repeat the username.
+      let refusal: { code?: unknown; responseCode?: unknown } = {};
+      const problem = await smtpSettingsProblem(
+        smtpConfig as unknown as SmtpConfig,
+        (error) => {
+          const { code, responseCode } = (error ?? {}) as typeof refusal;
+          refusal = { code, responseCode };
+        },
+      );
+      if (problem) {
+        logger.warn('SMTP settings refused by the mail server', {
+          problem,
+          ...refusal,
+        });
+        throw new BadRequestError(SMTP_SETTINGS_PROBLEM_MESSAGES[problem]);
       }
 
       const encryptedSmtpConfig = encryptionService.encrypt(
@@ -516,19 +548,11 @@ export const createSmtpConfig =
         configPaths.smtp,
         encryptedSmtpConfig,
       );
-      const config = {
-        method: 'post' as const,
-        url: `${communicationBackend}/api/v1/mail/updateSmtpConfig`,
-        headers: {
-          Authorization: `Bearer ${await generateFetchConfigAuthToken(req.user, scopedJwtSecret)}`,
-          'Content-Type': 'application/json',
-        },
-      };
-
-      const response = await axios(config);
-      if (response.status != 200) {
-        throw new BadRequestError('Error setting smtp config');
-      }
+      await reloadMailSmtpConfig(
+        req.user,
+        communicationBackend,
+        scopedJwtSecret,
+      );
 
       res
         .status(200)
@@ -539,6 +563,25 @@ export const createSmtpConfig =
       next(error);
     }
   };
+
+/** The mail service caches SMTP settings at startup; tell it to read them again. */
+const reloadMailSmtpConfig = async (
+  user: NonNullable<AuthenticatedUserRequest['user']>,
+  communicationBackend: string,
+  scopedJwtSecret: string,
+): Promise<void> => {
+  const response = await axios({
+    method: 'post' as const,
+    url: `${communicationBackend}/api/v1/mail/updateSmtpConfig`,
+    headers: {
+      Authorization: `Bearer ${await generateFetchConfigAuthToken(user, scopedJwtSecret)}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (response.status != 200) {
+    throw new BadRequestError('Error setting smtp config');
+  }
+};
 
 /** Loads, decrypts, and parses the stored SMTP config. Returns `null` when none is set. */
 const getParsedSmtpConfig = async (
@@ -593,7 +636,10 @@ export const getSmtpConfigStatus =
     try {
       const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
       const configured = Boolean(
-        smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
+        smtpConfig?.host &&
+        smtpConfig.port &&
+        smtpConfig.fromEmail &&
+        smtpConfig.enabled !== false,
       );
       res.status(200).json({ configured }).end();
     } catch (error: any) {
@@ -601,6 +647,77 @@ export const getSmtpConfigStatus =
       next(error);
     }
   };
+/** DELETE /smtpConfig — removes the stored settings; the org can no longer send email. */
+export const deleteSmtpConfig =
+  (
+    keyValueStoreService: KeyValueStoreService,
+    communicationBackend: string,
+    scopedJwtSecret: string,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        throw new UnauthorizedError('User not Found');
+      }
+      await keyValueStoreService.delete(configPaths.smtp);
+      await reloadMailSmtpConfig(
+        req.user,
+        communicationBackend,
+        scopedJwtSecret,
+      );
+      res
+        .status(200)
+        .json({ message: 'SMTP config deleted successfully' })
+        .end();
+    } catch (error: unknown) {
+      logger.error('Error deleting smtp config', { error });
+      next(error);
+    }
+  };
+
+/** PUT /smtpConfig/enabled — turns sending off or back on without losing the settings. */
+export const setSmtpConfigEnabled =
+  (
+    keyValueStoreService: KeyValueStoreService,
+    communicationBackend: string,
+    scopedJwtSecret: string,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        throw new UnauthorizedError('User not Found');
+      }
+      const { enabled } = req.body as { enabled: boolean };
+      const existing = await getParsedSmtpConfig(keyValueStoreService);
+      if (!existing) {
+        throw new NotFoundError('SMTP is not configured');
+      }
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encrypted = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify({ ...existing, enabled }));
+      await keyValueStoreService.set<string>(configPaths.smtp, encrypted);
+      await reloadMailSmtpConfig(
+        req.user,
+        communicationBackend,
+        scopedJwtSecret,
+      );
+      res.status(200).json({ enabled }).end();
+    } catch (error: unknown) {
+      logger.error('Error turning smtp config on or off', { error });
+      next(error);
+    }
+  };
+
 const SLACK_BOT_CAS_MAX_RETRIES = 5;
 export const SLACK_BOT_SETTINGS_UNREADABLE =
   "The saved Slack bot settings couldn't be read, so nothing was shown or changed. This usually means the server's encryption key (the SECRET_KEY setting) changed after the bots were saved. Ask whoever runs your PipesHub server to restore the original key, then try again.";
@@ -924,6 +1041,29 @@ export const setPlatformSettings =
     try {
       const { fileUploadMaxSizeBytes, featureFlags } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
+      const stored = await readStoredPlatformBlob(keyValueStoreService);
+      type Flags = Record<string, unknown> | undefined;
+      const storedFlags = stored.featureFlags as Flags;
+      const requestedFlags = featureFlags as Flags;
+      // Turning artifact reads on while an indexing member that does not follow the stored-write
+      // protocol may run, or while the membership check cannot be seen, could serve a mismatch.
+      if (savePutsArtifactReadsAtRisk(storedFlags, requestedFlags)) {
+        const verdict = await readMembership(keyValueStoreService);
+        if (!verdict.ok) {
+          throw new ConflictError(
+            verdict.reason === 'untagged'
+              ? `Artifact reads cannot be turned on while older indexing members run: ${verdict.untagged.join(', ')}`
+              : 'Artifact reads cannot be turned on: the indexing membership check is not available. Try again in a minute.',
+            { untagged: verdict.untagged, reason: verdict.reason },
+          );
+        }
+      }
+      // Server-side only: never taken from the request body.
+      const generation = nextGeneration(
+        stored[GENERATION_KEY],
+        storedFlags,
+        requestedFlags,
+      );
       const encryptedPlatformSettings = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
@@ -931,6 +1071,7 @@ export const setPlatformSettings =
         JSON.stringify({
           fileUploadMaxSizeBytes,
           featureFlags,
+          [GENERATION_KEY]: generation,
           updatedAt: new Date().toISOString(),
         }),
       );
@@ -2585,6 +2726,25 @@ const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
   'decision',
 ] as const;
 
+/**
+ * Throws unless a bulk health check answered 200. A 400 means the settings are
+ * wrong (an empty or rejected key, an endpoint the deployment may not call), so
+ * its message, written for the admin, is passed on as a 400; anything else is
+ * ours and stays a 500.
+ */
+const throwUnlessHealthy = (
+  response: AIServiceResponse | undefined,
+  fallback: string,
+): void => {
+  if (response?.data && response.statusCode === 200) return;
+  if (response?.statusCode === 400) {
+    throw new BadRequestError(
+      healthCheckFailureMessage(response.data, fallback),
+    );
+  }
+  throw new InternalServerError(fallback, response?.data);
+};
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -2616,12 +2776,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of llm configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of llm configuration, check credentials again',
+        );
       }
 
       // Handle embedding health check
@@ -2640,12 +2798,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of embedding configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of embedding configuration, check credentials again',
+        );
       }
 
       // The llm and embedding health checks above refuse an endpoint the
@@ -2661,15 +2817,10 @@ export const createAIModelsConfig =
           body: otherModels,
         }).execute()) as AIServiceResponse;
 
-        if (endpointCheck?.statusCode !== 200) {
-          const fallback = 'Failed to check the model endpoints, try again';
-          if (endpointCheck?.statusCode === 400) {
-            throw new BadRequestError(
-              healthCheckFailureMessage(endpointCheck.data, fallback),
-            );
-          }
-          throw new InternalServerError(fallback, endpointCheck?.data);
-        }
+        throwUnlessHealthy(
+          endpointCheck,
+          'Failed to check the model endpoints, try again',
+        );
       }
 
       if (aiConfig.llm.length > 0) {

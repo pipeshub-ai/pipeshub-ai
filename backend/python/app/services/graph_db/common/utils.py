@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    EntityRelations,
     OriginTypes,
     RecordRelations,
 )
@@ -244,6 +245,43 @@ class PermittedEntityRows(EntityCandidateRows):
             window_size=window_size,
             examined=min(examined, window_size),
         )
+
+
+# A person (User node) as a listable entity: the connector-written relations
+# linking a person to a record, by the direction they are stored in.
+PERSON_ENTITY_TYPE = "person"
+PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
+    EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+))
+PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
+))
+
+
+def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
+    """The person fields of a ``person`` ref as a candidate query reads them:
+    its user ids, and its edge types kept to the allow-list of each direction
+    (Record->User ``outTypes``, User->Record ``inTypes``)."""
+    return {
+        "userIds": list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i)),
+        "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
+        "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
+    }
+
+
+def within_param(within: list[dict[str, list[str]]] | None) -> list[dict[str, list[str]]] | None:
+    """Scopes for a candidate query's ``within`` bind variable: each
+    ``{"apps", "groups", "records"}`` with every key present and only string
+    ids, or None when there is no limit. An empty list is a limit too; it is
+    kept as one empty scope, so it admits nothing instead of everything."""
+    if within is None:
+        return None
+    scopes = [
+        {key: [str(i) for i in (scope.get(key) or []) if i] for key in ("apps", "groups", "records")}
+        for scope in within
+    ]
+    return scopes or [{"apps": [], "groups": [], "records": []}]
 
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:

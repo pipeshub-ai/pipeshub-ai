@@ -3,6 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema'
+import { getCurrentOrgId } from '../../../src/libs/context/orgContext'
+import { setActivityRepository } from '../../../src/libs/repositories/activity'
+import { setUserRepository } from '../../../src/libs/repositories/user'
 import {
   findSessionRefusal,
   findSessionRefusals,
@@ -89,6 +92,30 @@ describe('user-session.utils', () => {
         'User not found, please login again',
         'This account is disabled',
       ])
+    })
+
+    it('reads each organisation\'s sessions as that organisation, in two queries per organisation', async () => {
+      const ORG_B = '64b0000000000000000000bb'
+      const seen: Array<[string, string | undefined]> = []
+      setUserRepository({
+        listLiveFieldsByIds: async (ids: string[]) => (seen.push(['users', getCurrentOrgId()]), ids.map((_id) => ({ _id }))),
+      } as never)
+      setActivityRepository({
+        listSessionEndingSince: async () => (seen.push(['activities', getCurrentOrgId()]), []),
+      } as never)
+      try {
+        const refusals = await findSessionRefusals([
+          { userId: USER_A, orgId: ORG, iat: 1 },
+          { userId: USER_B, orgId: ORG_B, iat: 1 },
+          { userId: USER_B, orgId: ORG, iat: 1 },
+        ])
+        expect(refusals).to.deep.equal([null, null, null])
+        expect(seen.filter(([, o]) => o === ORG)).to.have.length(2)
+        expect(seen.filter(([, o]) => o === ORG_B)).to.have.length(2)
+      } finally {
+        setUserRepository()
+        setActivityRepository()
+      }
     })
 
     it('ends a session only when the latest activity came after its token', async () => {

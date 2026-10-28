@@ -39,6 +39,7 @@ from app.connectors.core.sync.full_sync_coverage import (
 )
 from app.connectors.core.sync.run_context import get_run_sync_id
 from app.connectors.core.sync.sync_progress import ChangeKind, SyncPhase, current_sync_progress
+from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -65,6 +66,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
@@ -77,7 +79,7 @@ from app.services.cache.invalidation_hooks import (
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
-from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
+from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -302,6 +304,20 @@ def _note_removed(connector_id: str | None, count: int) -> None:
     progress = current_sync_progress(connector_id)
     if progress is not None:
         progress.note_removed(count)
+
+
+def _system_file_reason(record: Record) -> str | None:
+    """Why a synced file is not content, or None. A Knowledge Base upload is the user's
+    explicit choice and is kept: a push that stores nothing is retried until its deadline."""
+    if record.connector_name == Connectors.KNOWLEDGE_BASE:
+        return None
+    if not (isinstance(record, FileRecord) and record.is_file):
+        return None
+    if is_office_lock_file(record.record_name):
+        return "office lock file"
+    if is_system_file_name(record.record_name):
+        return "operating system file"
+    return None
 
 
 class DataSourceEntitiesProcessor:
@@ -2599,6 +2615,10 @@ class DataSourceEntitiesProcessor:
         value because three callers already depend on the ``Record | None``
         return; they publish the collected ids *after* their transaction
         commits (see :meth:`_publish_membership_sync`).
+
+        Returns ``(None, [])`` when nothing is written: a new file no one
+        searches for (an Office lock file, Thumbs.db, ...) is not stored, and a
+        record in the trash or owned elsewhere is left as it is.
         """
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
@@ -2627,6 +2647,14 @@ class DataSourceEntitiesProcessor:
             if same_id is not None and not is_live_record(same_id):
                 self.logger.info(
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
+                )
+                return None, []
+            # Only a record not yet stored: one renamed onto such a name is still
+            # updated, or it would keep its old parent and access edges.
+            skip_reason = None if stored_under_its_id else _system_file_reason(record)
+            if skip_reason:
+                self.logger.debug(
+                    "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return None, []
         restored_from_trash = reindex_restored = False
@@ -3098,9 +3126,13 @@ class DataSourceEntitiesProcessor:
             # Already indexed and unchanged — the COMPLETED status was carried
             # forward from the stored record precisely so this publish can be
             # skipped; there is nothing for the indexing consumer to redo.
+            # FAILED is a verdict the connector reached itself (a page that
+            # answered an error), stored with its reason: indexing would only
+            # fetch it again, fail the same way, and replace that reason.
             if record.indexing_status in (
                 ProgressStatus.COMPLETED.value,
                 ProgressStatus.PASSWORD_PROTECTED.value,
+                ProgressStatus.FAILED.value,
             ):
                 self.logger.debug(
                     f"Skipping indexing event for already-settled record {record.id} "
@@ -3300,6 +3332,9 @@ class DataSourceEntitiesProcessor:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
                 self._preserve_indexing_state(processed, Record.from_arango_base_record(existing))
                 await tx_store.batch_upsert_records([processed])
+            # A push opened before the delete's marker read the KB as live in its snapshot (Arango).
+            # Read it again outside the transaction, so a marker committed since is seen.
+            await self._refuse_if_kb_not_live(record.connector_id)
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
         if not content_changed:
@@ -3317,6 +3352,15 @@ class DataSourceEntitiesProcessor:
             return PushOutcome(event=event, published=False)
         await self._mark_queued_after_publish([record.id])
         return PushOutcome(event=event, published=True)
+
+    async def _refuse_if_kb_not_live(self, kb_id: str) -> None:
+        """Raise ``PushClaimRefused`` when the KB is gone or being deleted. A failed read raises as is."""
+        graph = self.data_store_provider.graph_provider
+        kb = await graph.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb is None:
+            raise PushClaimRefused(PushClaim.KB_MISSING)
+        if kb.get("status") == KB_DELETING_STATUS:
+            raise PushClaimRefused(PushClaim.KB_DELETING)
 
     @staticmethod
     def _code_path_changed(new_record: Record, old_record: Record) -> bool:
@@ -4398,6 +4442,80 @@ class DataSourceEntitiesProcessor:
             result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
+
+    async def on_sql_records_deleted(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        table_record_id: str | None = None,
+    ) -> list[str]:
+        """Delete SQL table or column records and everything built from them.
+
+        Returns the id of every record removed; a table takes its columns
+        with it. The records' edges and type nodes go with them, and their
+        vectors through the usual deleteRecord events. Raises when the
+        delete fails.
+
+        ``table_record_id`` is the table the columns in ``record_ids`` belong
+        to, when only columns are removed.
+        """
+        if not record_ids:
+            return []
+        # The source no longer has them, so one already in the trash still goes:
+        # refused, it would read as deleted and never be tried again.
+        result = await self.on_records_deleted_cascade(record_ids, connector_id, include_trashed_roots=True)
+        if not (result or {}).get("success"):
+            raise RuntimeError(
+                f"Could not delete {len(record_ids)} record(s) of connector {connector_id}: "
+                f"{(result or {}).get('reason')}"
+            )
+        return [
+            str(row["record_id"]) for row in result.get("deleted_records") or [] if row.get("record_id")
+        ]
+
+    async def sql_tables_to_relate_again(
+        self, table_ids: list[str], *, column_ids: list[str] | None = None,
+    ) -> set[str]:
+        """Record ids of the tables whose relations depend on these tables, or
+        on these columns of one table, and need working out again once they go.
+
+        Declared foreign keys are read from the source on every sync, so by
+        default there are none.
+        """
+        return set()
+
+    async def on_sql_table_renamed(self, table_record_id: str) -> None:
+        """A table, or one of its columns, was renamed; its records already
+        carry the new names. Nothing else to update by default."""
+
+    async def on_sql_records_renamed(self, table_record_ids: list[str], connector_id: str) -> None:
+        """The tables a sync renamed, or whose columns it renamed, all at once
+        after the sync. Raises when they cannot be handled, so the connector
+        reports them as restructured instead. Nothing to do by default."""
+
+    async def on_sql_record_groups_deleted(self, record_group_ids: list[str], connector_id: str) -> None:
+        """Record groups (schemas) a sync deleted with ``on_record_group_deleted``.
+        Nothing else to clean up by default."""
+
+    async def get_typed_records_by_ids(
+        self, record_ids: list[str], *, raise_on_error: bool = False,
+    ) -> dict[str, Record]:
+        """Records by id as their subclasses (SQLColumnRecord, ...), which carry the
+        fields plain records lack. An id that cannot be read is left out; a failed
+        query reads as none, or raises with ``raise_on_error``."""
+        if not record_ids:
+            return {}
+        return await self.data_store_provider.graph_provider.get_typed_records_batch(
+            record_ids, raise_on_error=raise_on_error,
+        ) or {}
+
+    async def move_incoming_relations(self, from_record_id: str, to_record_id: str) -> int:
+        """Move every link into a stand-in record onto the record that replaces it;
+        returns how many moved."""
+        return await move_incoming_relations(
+            self.data_store_provider.graph_provider, from_record_id=from_record_id, to_record_id=to_record_id,
+        )
 
     @retry_on_deadlock()
     async def on_records_soft_deleted(
@@ -5821,9 +5939,13 @@ class DataSourceEntitiesProcessor:
             )
             return existing_edge
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False,
+    ) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+            return await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_record_id, raise_on_error=raise_on_error,
+            )
 
     async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         """Like ``get_record_by_external_id``, but as its subclass (WebpageRecord, FileRecord, ...).

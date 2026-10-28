@@ -49,10 +49,12 @@ from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     _has_selection,
+    browsable_app_ids,
     ids_within_scope,
     navigation_nameable_ids,
     resolve_scope,
     selection_browse_refusal,
+    turn_picked_sources,
 )
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
@@ -465,21 +467,19 @@ class KnowledgeGraph:
 
         # Resolve connector/kb scope from agent config / filters
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
-        kb_ids = list(scope.kb_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
-        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
-            # Chat-mode fallback: use all user-visible connectors. A selection
-            # below app level is already the scope; substituting the connector
-            # catalog would hide a collection folder's children, because a
-            # collection is not one of those connectors.
+        # A selection below app level is already the scope; a connector
+        # filter would hide a collection folder's children.
+        if not connector_ids and not _has_selection(state.get("filters") or {}):
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.debug(
-                "navigate: empty agent scope — using catalog-wide scope (%d connectors)",
-                len(catalog),
-            )
-            connector_ids = catalog.connector_ids()
+            # Nothing picked: no connector filter, so the listing gates by the
+            # user's own access. The catalog would leave out knowledge bases.
+            # A picked turn with nothing browsable (only attachments) keeps the
+            # catalog; its rows are re-checked against the turn's limit below.
+            if turn_picked_sources(state):
+                connector_ids = catalog.connector_ids()
 
         # If node_id looks like a URL or issue key, try to resolve it first
         if node_id:
@@ -535,7 +535,6 @@ class KnowledgeGraph:
                 page=page,
                 limit=limit,
                 connector_ids=connector_ids or None,
-                record_group_ids=list(kb_ids) if kb_ids else None,
                 depth=depth,
                 created_at=created_at,
                 updated_at=updated_at,
@@ -678,7 +677,7 @@ class KnowledgeGraph:
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
         resolver = RecordResolver(
             graph_provider=graph_provider,
@@ -1111,8 +1110,11 @@ class KnowledgeGraph:
         description=(
             "Find records the user can access that mention a typed value: a date range, "
             "an amount in a currency, a quantity, or a percentage. Requires named-entity "
-            "extraction to be enabled. A match set that is too large is rejected rather "
-            "than truncated."
+            "extraction to be enabled. Lists readable records most recently modified first, "
+            "each with the values that matched, in pages: continue with the call it prints. "
+            "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
+            "$50k\"), pass its id in source_ids. record_types is the storage type (FILE, MAIL, "
+            "TICKET, ...), not a document kind."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
@@ -1127,6 +1129,10 @@ class KnowledgeGraph:
             ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
+            ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),
+            ToolParameter(name="source_ids", type=ParameterType.ARRAY, description="Optional app or knowledge base ids to look in.", required=False, items={"type": "string"}),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Records per page (default 20, max 50).", required=False),
+            ToolParameter(name="cursor", type=ParameterType.STRING, description="Cursor from the previous page's continue call.", required=False),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         display_name="Found records by typed value",
@@ -1145,6 +1151,10 @@ class KnowledgeGraph:
         dimension: str | None = None,
         percent_min: float | None = None,
         percent_max: float | None = None,
+        record_types: list[str] | None = None,
+        source_ids: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         from .ops.values import execute_find_records_by_value
         return await execute_find_records_by_value(
@@ -1161,6 +1171,84 @@ class KnowledgeGraph:
             dimension=dimension,
             percent_min=percent_min,
             percent_max=percent_max,
+            record_types=record_types,
+            source_ids=source_ids,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_person",
+        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        description=(
+            "List the records the connectors link to a person by role (assignee, reporter, "
+            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
+            "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
+            "the links the connectors write (mentioned/involved come from indexing): for any "
+            "other record whose text mentions a name, search instead.\n\n"
+            "Pass a full name or an email; several people with that name are listed for you to "
+            "pick by email. Pages with cursor, the next call printed in the output; \"That is "
+            "all N\" means the list is complete."
+        ),
+        parameters=[
+            ToolParameter(
+                name="person",
+                type=ParameterType.STRING,
+                description="The person's full name or email, or \"me\" for the user asking.",
+                required=True,
+            ),
+            ToolParameter(
+                name="roles",
+                type=ParameterType.ARRAY,
+                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                required=False,
+                items={
+                    "type": "string",
+                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                },
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'TICKET', 'PROJECT').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records linked to {args.get("person", "")}' if args.get("person") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records linked to a person",
+    )
+    async def find_records_by_person(
+        self,
+        person: str | None = None,
+        roles: list[str] | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.people import execute_find_records_by_person
+        return await execute_find_records_by_person(
+            self.state, person=person, roles=roles, record_types=record_types, limit=limit, cursor=cursor,
         )
 
     # -----------------------------------------------------------------------
@@ -1188,7 +1276,8 @@ class KnowledgeGraph:
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
             "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
+            "surname alone is not looked up. For what a person is assigned, reported, created or "
+            "leads, use knowledgegraph__find_records_by_person. Only records indexed while named-entity extraction was on "
             "are linked to names, so confirm a name that is not found with search before saying it "
             "is absent."
         ),

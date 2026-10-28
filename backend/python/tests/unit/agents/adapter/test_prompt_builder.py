@@ -209,6 +209,23 @@ class TestLayering:
         assert "## Project Instructions" in result
         assert "Prefer the Q3 report." in result
 
+    def test_project_instructions_say_how_they_combine_with_an_agents_persona(self) -> None:
+        """An agent started in a project keeps its persona, and the project's instructions
+        render after it with the rule for a conflict, so neither silently drops the other."""
+        context = make_context(
+            system_prompt="You are Aria. Always reply in Marathi.",
+            instructions="Escalate anything about pricing.",
+            project_instructions="Answer in English.",
+        )
+        result = _build(context)
+        identity = result.index("You are Aria.")
+        agent = result.index("## Agent Instructions")
+        project = result.index("## Project Instructions")
+        assert identity < agent < project < result.index("Answer in English.")
+        section = result[project:]
+        assert "take precedence" in section
+        assert "always answer it" in section
+
     def test_project_instructions_and_custom_instructions_coexist(self) -> None:
         context = make_context(
             project_instructions="Prefer the Q3 report.",
@@ -249,6 +266,20 @@ class TestCitationRules:
             context.tool_state["final_results"] = [{"id": "r1"}]
             result = _build(context)
         assert "## Citation Rules" in result
+
+    def test_citation_rules_forbid_citing_what_the_source_does_not_say(self) -> None:
+        """A cited answer once added descriptions a CSV of names never held and
+        cited the CSV for them; the rule has to be in both copies."""
+        from app.agent_loop_lib.tools.builtin.planning.final_answer import (
+            _answer_markdown_description,
+        )
+
+        with patch(self._FA_PATCH, return_value=False):
+            context = make_context()
+            context.tool_state["final_results"] = [{"id": "r1"}]
+            result = _build(context)
+        for text in (result, _answer_markdown_description()):
+            assert "actually came from, only for what it states" in " ".join(text.split())
 
     def test_citation_rules_included_when_attachments_present(self) -> None:
         with patch(self._FA_PATCH, return_value=False):

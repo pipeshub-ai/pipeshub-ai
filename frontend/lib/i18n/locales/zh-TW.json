@@ -124,7 +124,11 @@
     "tabArchived": "已封存",
     "archivedEmptyState": "尚無封存的專案",
     "archivedEmptyStateHint": "您封存的專案會顯示在這裡。",
-    "actionsLabel": "專案操作"
+    "actionsLabel": "專案操作",
+    "noSearchResults": "沒有符合「{{query}}」的專案",
+    "noSearchResultsHint": "請嘗試其他名稱，或清除搜尋。",
+    "clearSearch": "清除搜尋",
+    "cardActionsLabel": "{{name}} 的操作"
   },
   "timeGroup": {
     "today": "今天",
@@ -323,7 +327,8 @@
     "beta": "測試版",
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
-    "notifications": "通知"
+    "notifications": "通知",
+    "home": "首頁"
   },
   "artifacts": {
     "title": "所有產物",
@@ -506,7 +511,7 @@
     "willBeReindexed": "將被重新索引",
     "reindexConfirm": "要重新索引此{{type}}嗎？",
     "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。",
-    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被刪除。它也會從所有使用它的代理中移除。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被永久刪除。它也會從所有使用它的代理中移除。此操作無法復原。",
     "deleteFolderBody": "'{{name}}' 及其中的所有內容將從此集合中刪除。",
     "deleteFileBody": "'{{name}}' 將從此集合中刪除。"
   },
@@ -736,7 +741,9 @@
       "needsMultimodalModel": "需要多模態模型",
       "passwordProtected": "受密碼保護",
       "skipped": "已略過",
-      "pending": "待處理"
+      "pending": "待處理",
+      "emptyFileZeroBytes": "空白檔案 — 沒有可建立索引的內容（0 位元組）",
+      "emptyNoContent": "空白 — 找不到可建立索引的文字"
     },
     "allRecordsBusy_other": "此檢視目前忙碌中，將在 {{count}} 秒後重試。",
     "allRecordsLoadFailed": "載入記錄失敗",
@@ -775,6 +782,10 @@
     "createDialog": {
       "titlePlaceholder": "例如：工程",
       "descriptionPlaceholder": "例如：開發團隊文件"
+    },
+    "nameRules": {
+      "folderSeparator": "資料夾名稱不能包含「/」或「\\」。",
+      "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
     }
   },
   "connectorTypes": {
@@ -1278,7 +1289,6 @@
         "connectorsStatusNone": "無",
         "connectorsStatusCount_one": "已連接 {{count}} 個",
         "connectorsStatusCount_other": "已連接 {{count}} 個",
-        "toolsStatusDefault": "預設",
         "toolsStatusCount_one": "已啟用 {{count}} 個",
         "toolsStatusCount_other": "已啟用 {{count}} 個",
         "membersStatusOnlyYou": "僅您自己",
@@ -1286,7 +1296,20 @@
         "suggestPlanWork": "規劃一項工作",
         "suggestWriteInstructions": "撰寫專案指令",
         "suggestSummariseDocumentPrompt": "請總結此專案檔案中最重要的文件。",
-        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。"
+        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。",
+        "visibilityShared": "已與 {{members}} 分享",
+        "visibilityPrivateOwner": "僅擁有者可見",
+        "toolsStatusNone": "未啟用",
+        "toolsSubtitle": "此專案中的對話只能使用您在此勾選的工具。",
+        "toolKind": {
+          "read": "讀取資料",
+          "write": "進行變更",
+          "destructive": "刪除或無法復原",
+          "unknown": "其他"
+        },
+        "toolNeedsApproval": "需要核准",
+        "toolNeedsApprovalHint": "此工具可能會刪除資料。在專案對話中，它只有在獲得核准後才會執行。",
+        "indexingStatusLabel": "索引：{{status}}"
       },
       "moveDialog": {
         "title": "移至專案",
@@ -1297,16 +1320,71 @@
       },
       "deleteDialog": {
         "title": "刪除此專案？",
-        "description": "這將刪除專案並取消與對話的關聯。對話本身不會被刪除。",
+        "description": "刪除專案後無法復原：",
         "confirm": "刪除專案",
         "deleting": "刪除中…",
-        "failed": "無法刪除專案"
+        "failed": "無法刪除專案",
+        "filesDeleted": "上傳到專案的檔案將被永久刪除。",
+        "membersLoseAccess": "所有分享對象都將失去存取權。",
+        "chatsKept": "對話會保留，但不再屬於任何專案。"
       },
       "roles": {
         "owner": "擁有者",
         "editor": "編輯者",
         "viewer": "檢視者"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "擁有者",
+          "description": "建立了專案並管理誰可以使用"
+        },
+        "editor": {
+          "label": "可編輯",
+          "description": "變更名稱、指示、檔案、連接器和工具，並在專案中聊天"
+        },
+        "viewer": {
+          "label": "可檢視",
+          "description": "開啟專案並使用其檔案和工具聊天"
+        }
+      },
+      "unknownMember": "未知成員",
+      "unknownTeam": "未知團隊",
+      "allMembersTeam": "您組織中的所有人",
+      "ownerCannotChange": "無法在此變更專案擁有者的存取權。",
+      "sharingSettings": {
+        "saved": "分享設定已儲存",
+        "saveFailed": "無法儲存分享設定",
+        "visibilityLabel": "誰可以找到此專案",
+        "visibilityPrivate": "僅限分享對象",
+        "visibilityOrg": "您組織中的所有人",
+        "visibilityPrivateHint": "只有您和下方的人員或團隊可以開啟。",
+        "visibilityOrgHint": "您組織中的任何人都可以找到並開啟。",
+        "chatSharingLabel": "此專案中的新對話",
+        "chatSharingPrivate": "僅發起者可見",
+        "chatSharingMembers": "與專案成員分享",
+        "chatSharingPrivateHint": "每個對話保持私密，除非其作者分享。",
+        "chatSharingMembersHint": "成員可以看到新對話；作者仍可將其設為私密。"
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "編輯專案詳細資料",
+        "saved": "專案詳細資料已儲存",
+        "saveFailed": "無法儲存專案詳細資料"
+      },
+      "editDetails": "編輯名稱和說明",
+      "leaveProject": "退出專案",
+      "leaveDialog": {
+        "title": "退出 {{name}}？",
+        "description": "您將失去此專案及其檔案的存取權。您的對話仍歸您所有。擁有者可以重新將您加入。",
+        "leaving": "正在退出…",
+        "left": "您已退出專案",
+        "failed": "無法退出專案",
+        "inherited": "您無法退出此專案：您的存取權來自您的組織或某個團隊。請擁有者變更共用對象。"
+      },
+      "archiveSuccess": "專案已封存",
+      "archivedNoNewChats": "此專案已封存，無法在其中開始新對話。",
+      "archivedBanner": "此專案已封存。取消封存後即可開始新對話。",
+      "archivedBannerMember": "此專案已封存，無法開始新對話。請擁有者取消封存。"
     },
     "demoHide": "隱藏示範資料",
     "scrollAttachmentsLeft": "向左捲動附件",
@@ -1478,7 +1556,19 @@
       "downloading": "正在下載產物"
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
-    "sourcesSettingUp": "仍在設定中：{{sources}}。回答可能尚未包含這些來源中的全部內容。"
+    "sourcesSettingUp": "仍在設定中：{{sources}}。回答可能尚未包含這些來源中的全部內容。",
+    "noResultsFor": "找不到「{{query}}」的結果",
+    "removeSelectedSource": "移除 {{name}}",
+    "diagramSourceCopied": "已複製圖表原始碼",
+    "diagramImageCopied": "已複製圖表圖片",
+    "diagramImageDownloaded": "剪貼簿無法使用，已將圖表儲存為 PNG",
+    "diagramCopyFailed": "無法複製圖表",
+    "fitDiagram": "符合螢幕",
+    "answerMode": {
+      "internalSearch": "內部搜尋",
+      "webSearch": "網路搜尋",
+      "internalAndWebSearch": "內部 + 網路搜尋"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -1618,7 +1708,15 @@
         "editError": "更新邀請失敗",
         "editTitle": "編輯邀請",
         "update": "更新邀請",
-        "smtpNotConfiguredTooltip": "尚未設定 SMTP。傳送邀請前請先完成電子郵件設定。"
+        "smtpNotConfiguredTooltip": "尚未設定 SMTP。傳送邀請前請先完成電子郵件設定。",
+        "userCount_other": "{{count}} 位使用者",
+        "successDescriptionCount_other": "已邀請 {{count}} 位使用者",
+        "alreadyMembersSkipped_other": "{{count}} 個地址已屬於成員，因此未向其傳送邀請。",
+        "alreadyMembersTitle": "已是成員 — 未傳送邀請",
+        "alreadyMembersDescription_other": "所有地址都已屬於使用中的成員。",
+        "importUnsupportedType": "只能匯入 .csv、.xlsx 和 .xls 檔案。",
+        "importTooLongSkipped_other": "已略過 {{count}} 個超過 254 個字元的項目。",
+        "invalidBlocksSend_other": "{{count}} 個無效地址已標紅。請修正或刪除後再傳送邀請。"
       },
       "bulk": {
         "resendInvite": "重新傳送邀請",
@@ -1744,7 +1842,11 @@
         "viewTeam": "檢視團隊",
         "delete": "刪除",
         "deleteSuccess": "團隊已刪除",
-        "deleteError": "無法刪除團隊"
+        "deleteError": "無法刪除團隊",
+        "deleteConfirmTitle": "刪除團隊？",
+        "deleteConfirmMessage": "「{{name}}」將被刪除，其成員將失去透過該團隊共用的存取權。此動作無法復原。",
+        "deleteConfirmButton": "刪除團隊",
+        "deleting": "正在刪除…"
       },
       "create": {
         "title": "建立團隊",
@@ -1763,7 +1865,8 @@
         "successDescription": "「{{name}}」已成功建立",
         "errorGeneric": "無法建立團隊",
         "applyToAll": "套用至全部",
-        "memberRoles": "成員角色"
+        "memberRoles": "成員角色",
+        "errorDescription": "無法建立團隊，請再試一次。"
       },
       "detail": {
         "nameLabel": "團隊名稱",
@@ -3433,6 +3536,15 @@
             "action": "請重新同步。如果仍然失敗，請檢查連接器的設定或聯絡管理員。"
           }
         }
+      },
+      "teamVisibilityDialog": {
+        "title": "組織中的所有人都會看到這些資料",
+        "noPermissions": "在社群版中，{{name}} 連接器不會套用權限。團隊連接器同步的所有內容，組織中的所有人都可以搜尋。",
+        "usePersonal": "如果這些資料只供你自己使用，請改為設定個人連接器。團隊連接器只用於整個組織都可以讀取的資料。",
+        "teamOnly": "{{name}} 只能作為團隊連接器使用。請只連接整個組織都可以讀取的資料，並為其提供無法讀取其他內容的憑證。",
+        "cancel": "取消",
+        "continueTeam": "繼續使用團隊連接器",
+        "goToPersonal": "設定個人連接器"
       }
     },
     "mcpServers": {
@@ -4007,7 +4119,11 @@
       "infoBanner": "OTP 驗證與密碼重設等電子郵件功能需要 SMTP 設定。請在下方輸入您的電子郵件伺服器詳細資訊。",
       "toasts": {
         "saved": "郵件設定已儲存",
-        "savedDescription": "您的電子郵件伺服器設定已更新。"
+        "savedDescription": "您的電子郵件伺服器設定已更新。",
+        "turnedOff": "已關閉電子郵件",
+        "turnedOn": "已開啟電子郵件",
+        "deleted": "已刪除 SMTP 設定",
+        "actionFailed": "無法更新 SMTP 設定，請再試一次。"
       },
       "fields": {
         "host": "SMTP 主機 *",
@@ -4021,6 +4137,21 @@
         "usernamePlaceholder": "輸入 SMTP 使用者名稱",
         "password": "密碼（選填）",
         "passwordHint": "SMTP 驗證的密碼（如需要）"
+      },
+      "turnedOff": "已關閉",
+      "emailSending": "傳送電子郵件",
+      "deleteSmtp": "刪除 SMTP 設定",
+      "turnOffDialog": {
+        "title": "要關閉電子郵件嗎？",
+        "message": "PipesHub 將停止傳送所有電子郵件：邀請、密碼重設、登入驗證碼和通知。你的 SMTP 設定會保留，可以隨時重新開啟電子郵件。",
+        "confirm": "關閉"
+      },
+      "deleteDialog": {
+        "title": "要刪除 SMTP 設定嗎？",
+        "warning": "這會永久刪除你的 SMTP 伺服器設定，且無法復原。",
+        "message": "在重新設定 SMTP 之前，PipesHub 不會傳送任何電子郵件，包括邀請、密碼重設和登入驗證碼。使用電子郵件驗證碼登入的使用者將無法登入。",
+        "confirm": "刪除",
+        "deleting": "正在刪除…"
       }
     },
     "prompts": {
@@ -4138,7 +4269,12 @@
         "title": "密碼與安全性",
         "accountPassword": "帳戶密碼",
         "followEmailDescription": "請依照電子郵件中的指示完成密碼設定",
-        "changePassword": "變更密碼"
+        "changePassword": "變更密碼",
+        "setPassword": "設定密碼",
+        "setPasswordDescription": "您尚未設定密碼。我們會以電子郵件寄送設定密碼的連結；若工作區允許，設定後也可以使用電子郵件和密碼登入。",
+        "setPasswordDialogTitle": "設定密碼",
+        "setPasswordDialogMessage": "我們會將設定密碼的連結寄到您的註冊電子郵件地址，並登出此工作階段。",
+        "setPasswordDialogConfirm": "寄送設定密碼連結"
       },
       "rolesPermissions": {
         "title": "角色與權限",
@@ -4185,6 +4321,10 @@
         "saveErrorDescription": "無法更新您的個人資料",
         "passwordUpdated": "密碼已更新",
         "passwordUpdatedDescription": "我們將為您登出。請重新登入...",
+        "passwordSetupEmailSent": "已寄出設定密碼連結",
+        "passwordSetupEmailSentDescription": "請查看電子郵件以設定密碼。正在登出此工作階段…",
+        "passwordSetupEmailError": "無法寄送電子郵件",
+        "passwordSetupEmailErrorDescription": "請再試一次。",
         "emailVerificationSent": "電子郵件驗證連結已傳送",
         "emailVerificationSentDescription": "驗證電子郵件後，您將被登出",
         "discardSuccess": "已捨棄編輯",
@@ -5394,7 +5534,9 @@
       "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
       "loadFailedTitle": "無法載入登入",
       "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
-      "retry": "重試"
+      "retry": "重試",
+      "tabPassword": "密碼",
+      "tabEmailOtp": "電子郵件驗證碼"
     },
     "common": {
       "signIn": "登入",
@@ -5431,12 +5573,49 @@
       "integrationTitle": "授權已傳送至 PipesHub",
       "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
       "openApp": "開啟 PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "請查看收件匣",
+      "resetLinkSent": "如果存在使用此電子郵件的帳戶，密碼重設連結已寄出。",
+      "resetRequestFailed": "無法要求重設密碼",
+      "tryAgainLater": "請稍後再試。",
+      "contactAdmin": "請聯絡您的管理員。",
+      "noPasswordSetTitle": "此帳戶未設定密碼。",
+      "noPasswordSetDescription": "請使用下方的「忘記密碼」設定密碼。",
+      "checkEmail": "請查看電子郵件",
+      "otpSentDescription": "如果該電子郵件可以使用驗證碼登入，驗證碼正在寄送。如果幾分鐘內未收到，請檢查垃圾郵件資料夾或稍後再試。",
+      "otpSendFailed": "無法寄送驗證碼",
+      "additionalVerification": "需要額外驗證",
+      "completeNextStep": "請完成下一步以繼續。",
+      "signInFailedTitle": "登入失敗",
+      "unexpectedResponse": "回應異常，請再試一次。",
+      "signInFailed": "登入失敗，請再試一次。",
+      "verificationFailed": "驗證失敗，請再試一次。",
+      "googleSignInFailed": "Google 登入失敗，請再試一次。",
+      "microsoftSignInFailed": "Microsoft 登入失敗，請再試一次。",
+      "tryAgainAfter": "請在 {{time}} 之後再試。"
     }
   },
   "healthGate": {
     "title": "無法連線至伺服器",
     "description": "目前無法連線至伺服器。伺服器可能正在啟動或進行維護。我們正在嘗試重新連線。",
-    "contactAdmin": "如果問題持續發生，請聯絡您的 PipesHub 管理員。"
+    "contactAdmin": "如果問題持續發生，請聯絡您的 PipesHub 管理員。",
+    "toasts": {
+      "servicesUnavailableTitle": "部分服務無法使用",
+      "affected": "受影響：{{services}}",
+      "featuresUnavailableReconnect": "部分功能暫時無法使用。我們會自動重新連線；如果問題持續，請聯絡管理員。",
+      "featuresUnavailable": "部分功能暫時無法使用",
+      "viewStatus": "查看狀態",
+      "servicesDown_one": "{{services}} 目前無法使用",
+      "servicesDown_other": "{{services}} 目前無法使用"
+    },
+    "serviceGate": {
+      "title": "服務無法使用",
+      "requires_one": "此頁面需要 {{services}}，該服務目前無法使用。服務恢復後，此頁面會自動恢復可用。",
+      "requires_other": "此頁面需要 {{services}}，這些服務目前無法使用。服務恢復後，此頁面會自動恢復可用。",
+      "memberBody": "此頁面暫時無法使用，稍後會自動恢復；如果問題持續，請聯絡管理員。",
+      "viewStatus": "查看服務狀態"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "問題：",
@@ -5570,7 +5749,13 @@
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",
-    "invite": "邀請加入 Pipeshub"
+    "invite": "邀請加入 Pipeshub",
+    "searchPlaceholderTeams": "電子郵件、團隊或名稱（以逗號分隔）",
+    "searchPlaceholderUsers": "電子郵件或名稱（以逗號分隔）",
+    "alreadyRemoved": "已移除",
+    "alreadyRemovedDescription": "{{name}} 先前已失去存取權",
+    "removeConfirmTitle": "移除存取權？",
+    "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。"
   },
   "demoData": {
     "badge": {

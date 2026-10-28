@@ -44,6 +44,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
     format_exception_chain,
+    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import (
@@ -57,6 +58,7 @@ from app.services.messaging.kafka.consumer.remembered import (
 )
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.membership import register_group
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -71,15 +73,17 @@ from app.services.messaging.scheduling.key_extractors import (
 )
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
+from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
+    bind_context,
     context_from_envelope,
     reset_context,
-    set_context,
+    run_in_context,
 )
 
 if TYPE_CHECKING:
@@ -218,6 +222,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
+        if kafka_config:
+            register_group(kafka_config.group_id, list(kafka_config.topics))
         self.consume_task = None
         self.retry_manager = retry_manager
         # Told about every message this consumer gives up on, before the commit
@@ -269,6 +275,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self.gate_waiters = concurrency.GateWaiters()
+        # Held by a record whose last attempt never finished, so such records
+        # run one at a time: when the process dies again, the record that
+        # took it down is the only suspect in flight. Used on the worker loop.
+        self._suspects = asyncio.Lock()
         self._backpressure_logged = False
         self._partition_lock = threading.Lock()
         self._in_flight_partitions: set[TopicPartition] = set()
@@ -349,7 +359,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
             'enable_auto_commit': kafka_config.enable_auto_commit,
-            'client_id': kafka_config.client_id,
+            'client_id': tagged(kafka_config.client_id),
             'topics': kafka_config.topics,
             'session_timeout_ms': kafka_config.session_timeout_ms,
             'heartbeat_interval_ms': kafka_config.heartbeat_interval_ms,
@@ -363,6 +373,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set up this consumer's admission and lease renewal on its worker loop."""
+        # A lock belongs to the loop that first waits on it, and a consumer
+        # started again runs on a new loop.
+        self._suspects = asyncio.Lock()
         if self.governor is not None:
             # One gate per pool, process-wide (ResourceGovernor.gate
             # memoises by pool, and raises if a second loop uses one), and
@@ -790,7 +803,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             ).items()
             if name not in ("topics", "enable_auto_commit", "auto_offset_reset")
         }
-        client_config["client_id"] = f"{self.kafka_config.client_id}-backlog"
+        client_config["client_id"] = f"{tagged(self.kafka_config.client_id)}-backlog"
         oldest = await read_partition_backlog(
             client_config,
             topic,
@@ -1638,7 +1651,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if name
                 not in ("topics", "group_id", "enable_auto_commit", "auto_offset_reset")
             }
-            client_config["client_id"] = f"{self.kafka_config.client_id}-fetch-back"
+            client_config["client_id"] = f"{tagged(self.kafka_config.client_id)}-fetch-back"
             self._offset_fetcher = OffsetFetcher(client_config, self.logger)
         return self._offset_fetcher
 
@@ -2324,8 +2337,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
 
+            # The handler's context is reset by now, and the send runs on the
+            # main loop under its own: re-bind the message's so the retry
+            # keeps its request id and org.
             await self._run_on_main_loop(
-                self._send_in_org(message, topic, message.eventType, payload)
+                run_in_context(
+                    context_from_envelope(
+                        {"requestId": message.requestId, "orgId": message.orgId}
+                    ),
+                    self._send_in_org(message, topic, message.eventType, payload),
+                )
             )
             self.logger.debug(
                 f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
@@ -2537,12 +2558,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
+        suspect_held = False
+        attempt_started = False
+        abandoned = False
         parsing_held = False
         indexing_held = False
         shutting_down = False
         parse_lease_pool = "parsing"
         index_lease_pool = "indexing"
         parsing_admission: concurrency.Admission | None = None
+        memory_admission: concurrency.Admission | None = None
         index_admission: concurrency.Admission | None = None
         distributed_leases = concurrency.new_lease_set(self)
         lease_handle: Any | None = None
@@ -2582,28 +2607,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
 
         stable_message_id = self._get_stable_message_id(message, parsed_message)
-
-        # Delivery-count backstop, the Kafka counterpart of the Redis
-        # consumer's times_delivered check: the failure counter below is
-        # written only after a failure, so a message that crashes the
-        # consumer mid-handler is redelivered on every rebalance forever
-        # without ever reaching it.
-        deliveries, backstop_tripped = await concurrency.record_delivery(self, stable_message_id)
-        if backstop_tripped:
-            await self.__abandon_message(
-                message_id,
-                stable_message_id,
-                parsed_message,
-                reason=(
-                    f"delivered {deliveries} times "
-                    f"(backstop {messaging_env.redis_max_deliveries}); likely crashing "
-                    "the consumer before the failure counter is written"
-                ),
-                attempts=deliveries,
-            )
-            await self.__settle_done(message, in_flight)
-            return False
-
         record_lock_id = concurrency.work_key(parsed_message.payload, stable_message_id)
         record_pool = f"record:{record_lock_id}"
 
@@ -2628,7 +2631,26 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             index_tier.value,
         )
 
+        async def give_up(reason: str, attempts: int) -> None:
+            nonlocal abandoned
+            # Our own record lease reads as a live holder, which keeps the
+            # sink from failing a record left IN_PROGRESS.
+            if distributed_leases.discard(record_pool) is not None:
+                await self._release_distributed_slot(record_pool, lease_owner)
+            await self.__abandon_message(
+                message_id, stable_message_id, parsed_message, reason=reason, attempts=attempts,
+            )
+            await self.__settle_done(message, in_flight)
+            abandoned = True
+
         try:
+            # Taken before any permit, so suspects queue here without holding
+            # one; one that will be given up on below does not need it.
+            unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
+            if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await self._suspects.acquire()
+                suspect_held = True
+
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
@@ -2686,6 +2708,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
+            # Counted only now that the record is ours: a crash while it waited
+            # for a permit or for its lease was not its doing.
+            unfinished = await concurrency.start_attempt(self, record_lock_id)
+            attempt_started = True
+            if unfinished >= concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await give_up(
+                    f"{unfinished} earlier attempts never finished; it is likely "
+                    "taking the indexing service down",
+                    unfinished,
+                )
+                return False
+
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
 
@@ -2699,8 +2733,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             if self.message_handler:
                 # Carry the producer's trace id into indexing logs.
-                ctx = context_from_envelope({"requestId": parsed_message.requestId})
-                token = set_context(ctx.root_id)
+                token = bind_context(
+                    context_from_envelope(
+                        {
+                            "requestId": parsed_message.requestId,
+                            "orgId": parsed_message.orgId,
+                        }
+                    )
+                )
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
@@ -2708,12 +2748,27 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
-                    nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
                             async for event in event_gen:
                                 if (
+                                    event.event == IndexingEvent.START_DOWNLOAD
+                                    and memory_admission is None
+                                ):
+                                    # Before the download: a record waiting
+                                    # for memory must not hold its content.
+                                    async with concurrency.parse_admission_wait(
+                                        self, budget, message_id
+                                    ) as wait:
+                                        memory_admission = await concurrency.reserve_record_memory(
+                                            self,
+                                            index_tier,
+                                            event.data.size_bytes if event.data else None,
+                                            timeout=wait.remaining(),
+                                        )
+                                elif (
                                     event.event == IndexingEvent.START_PARSING
                                     and not parsing_held
                                 ):
@@ -2733,10 +2788,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        size_bytes = event.data.size_bytes if event.data else None
+                                        memory_admission = await concurrency.reserve_record_memory(
+                                            self, parse_tier, size_bytes,
+                                            timeout=wait.remaining(), downloaded=True,
+                                            current=memory_admission,
+                                        )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
-                                            event.data.size_bytes if event.data else None,
+                                            size_bytes,
                                             timeout=wait.remaining(),
                                         )
                                         # Set before the lease attempt so the
@@ -2791,6 +2852,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         index_lease_pool, lease_owner
                                     )
                                     concurrency.release_admission(index_admission)
+                                    concurrency.release_admission(memory_admission)
                                     indexing_held = False
                                     self.logger.debug(
                                         f"Released indexing gate for {message_id}"
@@ -2899,6 +2961,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     # A clean run that found a dependency down, not a crash loop: its
                     # growing delay bounds how often it returns while the outage lasts.
                     await concurrency.clear_delivery_count(self, stable_message_id)
+                else:
+                    # A re-queue has a failure count of zero; only this counter
+                    # stops it coming back for ever.
+                    cycles, backstop_tripped = await concurrency.record_delivery(
+                        self, stable_message_id
+                    )
+                    if backstop_tripped:
+                        await give_up(
+                            f"handed back {cycles} times without being admitted "
+                            f"(backstop {messaging_env.redis_max_deliveries})",
+                            cycles,
+                        )
+                        return False
                 try:
                     await self._requeue_message(
                         topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
@@ -2914,11 +2989,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__settle_done(message, in_flight)
             return False
         except Exception as e:
-            # Log the full exception chain for debugging
-            exception_chain = format_exception_chain(e)
-            self.logger.error(
-                f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
-            )
+            if is_expected_outcome(e):
+                # Expected: the handler already logged it once.
+                self.logger.info(f"Item for {message_id} ended as expected: {type(e).__name__}: {e}")
+            else:
+                # Log the full exception chain for debugging
+                exception_chain = format_exception_chain(e)
+                self.logger.error(
+                    f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
+                )
             concurrency.report_memory_incident_if_applicable(self, message_id, e)
 
             # Classify the exception to determine if we should retry
@@ -2945,6 +3024,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return False
         finally:
+            if suspect_held:
+                self._suspects.release()
+            concurrency.release_admission(memory_admission)
             try:
                 # Ensure semaphores are released even on error
                 if renewal_task is not None:
@@ -2959,6 +3041,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # the TTL is for.
                 if self.lease_renewer is not None:
                     self.lease_renewer.unregister(lease_owner)
+                # Any exit this process lives through finishes the attempt; only
+                # a crash leaves it counted.
+                if attempt_started:
+                    await concurrency.finish_attempt(
+                        self, record_lock_id, settled=success or abandoned
+                    )
                 # Leases lost to the renewal deadline are gone from Redis
                 # already; releasing them is doomed traffic against a Redis that
                 # is still failing, and it arrives from every record at once.

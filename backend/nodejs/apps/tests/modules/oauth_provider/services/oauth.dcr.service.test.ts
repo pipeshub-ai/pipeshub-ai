@@ -7,6 +7,9 @@ import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oa
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { BadRequestError, ForbiddenError } from '../../../../src/libs/errors/http.errors'
+import { setUserRepository } from '../../../../src/libs/repositories/user'
+import { setIdentityPort } from '../../../../src/libs/repositories/identity'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthDcrService', () => {
@@ -58,9 +61,9 @@ describe('OAuthDcrService', () => {
     const orgQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([{ _id: orgId }]),
+      lean: sinon.stub().resolves({ _id: orgId }),
     }
-    sinon.stub(Org, 'find').returns(orgQuery)
+    sinon.stub(Org, 'findOne').returns(orgQuery)
     const userQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
@@ -71,7 +74,27 @@ describe('OAuthDcrService', () => {
 
   afterEach(() => {
     sinon.restore()
+    setUserRepository()
+    setIdentityPort()
     delete process.env.PIPESHUB_ENABLE_DCR
+  })
+
+  // The endpoint has no session, so the owner is read in the install's organisation, which PostgreSQL needs bound.
+  it('reads the owner in the install organisation', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any)
+    let bound: string | undefined
+    setUserRepository({
+      getOldestId: async () => {
+        bound = getCurrentOrgId()
+        return 'user-1'
+      },
+    } as any)
+
+    await service.register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'], scope: 'user:read' })
+
+    expect(bound).to.equal('org-1')
+    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].orgId).to.equal('org-1')
   })
 
   it('should refuse when DCR is unset', async () => {

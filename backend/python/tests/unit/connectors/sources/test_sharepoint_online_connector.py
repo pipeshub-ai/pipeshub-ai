@@ -13,9 +13,16 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
+from azure.identity import CredentialUnavailableError
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -326,14 +333,14 @@ class TestInit:
     async def test_init_no_config(self):
         c = _make_connector()
         c.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await c.init()
 
     @pytest.mark.asyncio
     async def test_init_empty_auth(self):
         c = _make_connector()
         c.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -342,7 +349,7 @@ class TestInit:
         c.config_service.get_config = AsyncMock(return_value={
             "auth": {"tenantId": "t", "clientId": "c"}
         })
-        with pytest.raises(ValueError, match="Incomplete SharePoint Online credentials"):
+        with pytest.raises(ConnectorInitError, match="Incomplete SharePoint Online credentials"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -355,7 +362,7 @@ class TestInit:
                 "sharepointDomain": "https://contoso.sharepoint.com",
             }
         })
-        with pytest.raises(ValueError, match="Authentication credentials missing"):
+        with pytest.raises(ConnectorInitError, match="Authentication credentials missing"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -492,7 +499,7 @@ class TestInit:
                 "privateKey": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -507,7 +514,7 @@ class TestInit:
                 "privateKey": 12345,
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -3637,3 +3644,215 @@ class TestGetDrivePermissions:
 
         result = await c._get_drive_permissions("site-1", "drive-1")
         assert result == []
+
+
+# =============================================================================
+# init(): a setup Microsoft rejects says what to fix (answers 400, not 500)
+# =============================================================================
+
+_CERT_AUTH = {
+    "tenantId": "t",
+    "clientId": "c",
+    "sharepointDomain": "https://contoso.sharepoint.com",
+    "certificate": "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----",
+    "privateKey": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
+}
+_SECRET_AUTH = {"tenantId": "t", "clientId": "c", "clientSecret": "s",
+                "sharepointDomain": "https://contoso.sharepoint.com"}
+_CERT_NOT_REGISTERED = (
+    "CertificateCredential.get_token failed: AADSTS700027: The certificate with identifier used to sign the client "
+    "assertion is not registered on application. [Reason - The key was not found., Thumbprint of key used by "
+    "client: 'ABC123'] Trace ID: 1 Correlation ID: 2 Timestamp: 2026-10-27 10:00:00Z"
+)
+_WRONG_SECRET = (
+    "ClientSecretCredential.get_token failed: AADSTS7000215: Invalid client secret provided. Ensure the secret "
+    "being sent in the request is the client secret value, not the client secret ID."
+)
+
+
+class TestInitSetupErrors:
+    @staticmethod
+    async def _init_with(auth: dict, token_error: Exception) -> tuple[Exception, AsyncMock]:
+        c = _make_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": auth})
+        credential = AsyncMock()
+        credential.get_token = AsyncMock(side_effect=token_error)
+        with patch(f"{MODULE}.CertificateCredential", return_value=credential), \
+             patch(f"{MODULE}.ClientSecretCredential", return_value=credential):
+            with pytest.raises(Exception) as caught:
+                await c.init()
+        return caught.value, c
+
+    @pytest.mark.asyncio
+    async def test_a_certificate_not_on_the_app_says_to_upload_it(self) -> None:
+        error, c = await self._init_with(_CERT_AUTH, ClientAuthenticationError(message=_CERT_NOT_REGISTERED))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "AADSTS700027" in str(error)
+        assert "Upload the public certificate" in str(error)
+        assert not os.path.exists(c.temp_cert_file.name)
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_client_secret_says_to_copy_the_secret_value(self) -> None:
+        error, _ = await self._init_with(_SECRET_AUTH, ClientAuthenticationError(message=_WRONG_SECRET))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "client secret is wrong" in str(error)
+
+    @pytest.mark.asyncio
+    async def test_a_network_failure_stays_an_internal_error(self) -> None:
+        error, _ = await self._init_with(
+            _SECRET_AUTH, ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"))
+
+        assert not isinstance(error, ConnectorInitError)
+        assert isinstance(error, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_an_unrecognised_sign_in_code_stays_an_internal_error(self) -> None:
+        error, _ = await self._init_with(
+            _SECRET_AUTH, ClientAuthenticationError(message="AADSTS90033: A transient error has occurred."))
+
+        assert not isinstance(error, ConnectorInitError)
+        assert isinstance(error, ValueError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth", [_SECRET_AUTH, _CERT_AUTH])
+    async def test_a_malformed_tenant_id_says_to_check_it(self, auth: dict) -> None:
+        c = _make_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {**auth, "tenantId": "contoso tenant"}})
+
+        with pytest.raises(ConnectorInitError, match=r"Directory \(Tenant\) ID is not valid"):
+            await c.init()
+
+    @staticmethod
+    async def _init_with_sharepoint_token_error(token_error: Exception) -> tuple[Exception, AsyncMock]:
+        """The Graph token is issued; the token for the SharePoint domain fails with ``token_error``."""
+        c = _make_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": _SECRET_AUTH})
+        credential = AsyncMock()
+        credential.get_token = AsyncMock(side_effect=[MagicMock(token="graph-token"), token_error])
+        with patch(f"{MODULE}.ClientSecretCredential", return_value=credential):
+            with pytest.raises(Exception) as caught:
+                await c.init()
+        assert [call.args[0] for call in credential.get_token.await_args_list] == [
+            "https://graph.microsoft.com/.default", "https://contoso.sharepoint.com/.default"]
+        return caught.value, c
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_sharepoint_resource_says_to_check_the_domain(self) -> None:
+        error, _ = await self._init_with_sharepoint_token_error(ClientAuthenticationError(message=(
+            "AADSTS500011: The resource principal named https://contoso.sharepoint.com was not found in the "
+            "tenant named Contoso. This can happen if the application has not been installed by the administrator "
+            "of the tenant or consented to by any user in the tenant.")))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "Microsoft sign-in failed (AADSTS500011)" in str(error)
+        assert "Check the SharePoint domain" in str(error)
+
+    @pytest.mark.asyncio
+    async def test_a_known_sign_in_problem_on_the_sharepoint_token_says_what_to_fix(self) -> None:
+        error, _ = await self._init_with_sharepoint_token_error(ClientAuthenticationError(message=_WRONG_SECRET))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "client secret is wrong" in str(error)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cause", [
+        ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"),
+        ClientAuthenticationError(message="AADSTS90033: A transient error has occurred. Please try again."),
+    ], ids=["network failure", "unrecognised sign-in code"])
+    async def test_a_passing_sharepoint_token_failure_stays_an_internal_error(self, cause: Exception) -> None:
+        error, _ = await self._init_with_sharepoint_token_error(cause)
+
+        assert not isinstance(error, ConnectorInitError)
+        assert isinstance(error, ValueError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("cause", "title"), [
+        (CredentialUnavailableError(message="no credential"), "SharePoint authentication failed"),
+        (ClientAuthenticationError(message=_WRONG_SECRET), "SharePoint authentication configuration error"),
+        (ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"),
+         "SharePoint could not reach Microsoft"),
+        (ServiceResponseError("Connection reset by peer"), "SharePoint could not reach Microsoft"),
+        (RuntimeError("unexpected"), "SharePoint authentication Failed"),
+    ], ids=["credential unavailable", "sign-in rejected", "no connection", "connection dropped", "other failure"])
+    async def test_a_sharepoint_token_failure_at_init_notifies_the_creator_and_still_raises(
+        self, cause: Exception, title: str,
+    ) -> None:
+        notify = AsyncMock()
+        with patch.object(SharePointConnector, "notify", notify):
+            error, connector = await self._init_with_sharepoint_token_error(cause)
+
+        assert error.__cause__ is cause
+        notify.assert_awaited_once()
+        # The creator may own several SharePoint connectors: the title names which one failed.
+        assert notify.await_args.kwargs["title"] == f"{connector.display_name}: {title}"
+        assert notify.await_args.kwargs["recipient_user_ids"] == ["test-user-id"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("cause", "raised", "title", "says"), [
+        (CredentialUnavailableError(message="no credential"), ValueError,
+         "SharePoint authentication failed", "verify the connector authentication credentials"),
+        (ClientAuthenticationError(message=_WRONG_SECRET), ConnectorInitError,
+         "SharePoint authentication failed", "client secret is wrong"),
+        (ClientAuthenticationError(message="AADSTS500011: The resource principal named https://graph.microsoft.com "
+                                           "was not found."), ConnectorInitError,
+         "SharePoint authentication failed", "grant admin consent"),
+        (ClientAuthenticationError(message="AADSTS90033: A transient error has occurred."), ValueError,
+         "SharePoint authentication failed", "AADSTS90033"),
+        (ServiceRequestError("Cannot connect to host login.microsoftonline.com:443"), ValueError,
+         "SharePoint could not reach Microsoft", "temporary network problem"),
+        (ServiceResponseError("Connection reset by peer"), ValueError,
+         "SharePoint could not reach Microsoft", "temporary network problem"),
+        (RuntimeError("unexpected"), ValueError,
+         "SharePoint authentication failed", "Microsoft Graph access token"),
+    ], ids=["credential unavailable", "known sign-in code", "unknown resource", "unrecognised sign-in code",
+            "no connection", "connection dropped", "other failure"])
+    async def test_a_graph_token_failure_at_init_notifies_the_creator_once_and_still_raises(
+        self, cause: Exception, raised: type, title: str, says: str,
+    ) -> None:
+        notify = AsyncMock()
+        with patch.object(SharePointConnector, "notify", notify):
+            error, connector = await self._init_with(_SECRET_AUTH, cause)
+
+        assert type(error) is raised
+        notify.assert_awaited_once()
+        notice = notify.await_args.kwargs
+        assert notice["title"] == f"{connector.display_name}: {title}"
+        assert says in notice["message"]
+        assert "host URL" not in notice["message"]
+        assert notice["recipient_user_ids"] == ["test-user-id"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_graph_resource_does_not_blame_the_sharepoint_domain(self) -> None:
+        error, _ = await self._init_with(_SECRET_AUTH, ClientAuthenticationError(message=(
+            "AADSTS500011: The resource principal named https://graph.microsoft.com was not found in the "
+            "tenant named Contoso.")))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "Microsoft sign-in failed (AADSTS500011)" in str(error)
+        assert "SharePoint domain" not in str(error)
+        assert "grant admin consent" in str(error)
+
+    def test_an_unknown_resource_names_the_setting_the_caller_requested(self) -> None:
+        from app.connectors.sources.microsoft.common.sign_in_errors import (
+            known_sign_in_problem,
+        )
+
+        problem = known_sign_in_problem("AADSTS500011: not found.", resource_setting="SharePoint domain")
+
+        assert "Check the SharePoint domain in the connector's settings" in problem
+        assert "grant admin consent" not in problem
+
+    @pytest.mark.parametrize(("code", "hint"), [
+        ("AADSTS700027", "Upload the public certificate"),
+        ("AADSTS700027", "does not match the private key"),
+        ("AADSTS700024", "server's clock"),
+        ("AADSTS500011", "grant admin consent"),
+    ])
+    def test_certificate_sign_in_codes_say_what_to_fix(self, code: str, hint: str) -> None:
+        from app.connectors.sources.microsoft.common.sign_in_errors import (
+            describe_sign_in_error,
+        )
+
+        assert hint in describe_sign_in_error(f"{code}: Client assertion rejected.")

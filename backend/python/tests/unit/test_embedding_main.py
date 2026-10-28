@@ -4,6 +4,8 @@ import asyncio
 import base64
 import struct
 import threading
+import time
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,10 +23,12 @@ from app.embedding_main import (
     ModelManager,
     _compute_expected_total_bytes,
     _format_embedding_vector,
+    _local_model_in_use,
     _measure_blobs_dir_bytes,
     _normalize_input,
     app,
     model_manager,
+    release_memory,
     run,
 )
 
@@ -35,6 +39,17 @@ if TYPE_CHECKING:
 async def _passthrough_to_thread(func, *args, **kwargs):
     """Drop-in replacement for asyncio.to_thread that runs func synchronously."""
     return func(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _no_settings_lookup_at_startup() -> Iterator[None]:
+    """Lifespan reads the AI settings to decide on warm-up; never hit a real store."""
+    with patch(
+        "app.embedding_main._local_model_in_use",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        yield
 
 
 @pytest.fixture
@@ -272,29 +287,19 @@ class TestEmbeddingHelpers:
 
 class TestModelManager:
     def test_cache_key(self):
-        assert (
-            ModelManager._cache_key("model-a", trust_remote_code=False)
-            == "model-a::trust_remote_code=False"
-        )
-        assert (
-            ModelManager._cache_key("model-a", trust_remote_code=True)
-            == "model-a::trust_remote_code=True"
-        )
+        # One key per model: trust_remote_code must not split it into two loads.
+        assert ModelManager._cache_key("model-a") == "model-a"
 
-    def test_list_loaded_models_deduplicates_trust_remote_code_keys(self):
+    def test_list_loaded_models(self):
         manager = ModelManager()
-        manager._models = {
-            "model-a::trust_remote_code=False": MagicMock(),
-            "model-a::trust_remote_code=True": MagicMock(),
-            "model-b::trust_remote_code=False": MagicMock(),
-        }
+        manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
 
     @pytest.mark.asyncio
     async def test_get_model_returns_cached_without_loading(self):
         manager = ModelManager()
         cached = MagicMock(name="cached-model")
-        manager._models["cached::trust_remote_code=False"] = cached
+        manager._models["cached"] = cached
 
         with patch("sentence_transformers.SentenceTransformer") as mock_st:
             result = await manager.get_model("cached")
@@ -434,7 +439,7 @@ class TestModelManager:
             manager, "get_model", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_get:
             await manager.warmup("warm-model")
-        mock_get.assert_awaited_once_with("warm-model")
+        mock_get.assert_awaited_once_with("warm-model", trust_remote_code=False)
 
     @pytest.mark.asyncio
     async def test_encode_returns_tolist_from_model(self):
@@ -462,7 +467,7 @@ class TestModelManager:
 
 
 class TestEmbeddingServerEdgeCases:
-    def test_health_starting_when_default_model_not_loaded(self):
+    def test_health_healthy_when_default_model_not_loaded(self):
         mock_manager = MagicMock(spec=ModelManager)
         mock_manager.list_loaded_models.return_value = []
         mock_manager.warmup = AsyncMock()
@@ -472,7 +477,8 @@ class TestEmbeddingServerEdgeCases:
                 response = test_client.get("/health")
 
         assert response.status_code == 200
-        assert response.json()["status"] == "starting"
+        # Not loaded is normal now: it loads on demand and unloads when idle.
+        assert response.json()["status"] == "healthy"
 
     def test_health_unhealthy_on_exception(self):
         mock_manager = MagicMock(spec=ModelManager)
@@ -534,12 +540,31 @@ class TestEmbeddingServerEdgeCases:
         mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
         mock_manager.warmup = AsyncMock(side_effect=RuntimeError("warmup failed"))
 
-        with patch("app.embedding_main.model_manager", mock_manager):
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
             with TestClient(app) as test_client:
                 response = test_client.get("/health")
 
         assert response.status_code == 200
         mock_manager.warmup.assert_awaited_once()
+
+    def test_lifespan_skips_warmup_when_no_local_model_in_use(self) -> None:
+        mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.list_loaded_models.return_value = []
+        mock_manager.warmup = AsyncMock()
+
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with TestClient(app) as test_client:
+                assert test_client.get("/health").status_code == 200
+
+        mock_manager.warmup.assert_not_awaited()
 
 
 class TestEmbeddingServerRun:
@@ -631,7 +656,7 @@ class TestModelManagerDownloadLifecycle:
 
     def test_start_prepare_returns_ready_status_when_already_loaded(self):
         manager = ModelManager()
-        manager._models["cached::trust_remote_code=False"] = MagicMock()
+        manager._models["cached"] = MagicMock()
 
         status = manager.start_prepare("cached")
 
@@ -1055,3 +1080,274 @@ class TestDefaultEncodeConcurrency:
         with patch.object(embedding_main, "MAX_CONCURRENT_EMBEDDINGS", 11):
             body = test_client.get("/health").json()
         assert body["cpu"]["max_concurrent_embeddings"] == 11
+
+
+def _config_service(value: object = None, error: Exception | None = None) -> MagicMock:
+    service = MagicMock()
+    service.get_config = AsyncMock(return_value=value, side_effect=error)
+    return service
+
+
+class TestWarmupDecision:
+    """The default local model is loaded at startup only when something uses it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ai_models",
+        [
+            None,
+            {},
+            {"embedding": []},
+            {"embedding": [{"provider": "default", "isDefault": True}]},
+            {"embedding": [{"provider": "huggingFace"}]},
+            {"embedding": [{"provider": "sentenceTransformers", "isDefault": True}]},
+            {
+                "embedding": [
+                    {"provider": "openAI"},
+                    {"provider": "default", "isDefault": True},
+                ]
+            },
+        ],
+    )
+    async def test_warms_when_local_model_is_chosen(self, ai_models: dict | None) -> None:
+        assert await _local_model_in_use(_config_service(ai_models)) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ai_models",
+        [
+            {"embedding": [{"provider": "openAI", "isDefault": True}]},
+            {"embedding": [{"provider": "bedrock"}]},
+            {"embedding": [{"provider": "ollama", "isDefault": True}]},
+            # The default entry decides, not an unused local one beside it.
+            {
+                "embedding": [
+                    {"provider": "default"},
+                    {"provider": "cohere", "isDefault": True},
+                ]
+            },
+        ],
+    )
+    async def test_skips_warmup_when_embedding_is_remote(self, ai_models: dict | None) -> None:
+        assert await _local_model_in_use(_config_service(ai_models)) is False
+
+    @pytest.mark.asyncio
+    async def test_skips_warmup_when_settings_unreadable(self) -> None:
+        assert await _local_model_in_use(_config_service(error=RuntimeError("redis down"))) is False
+        assert await _local_model_in_use(None) is False
+
+
+def _fake_st(loaded: list[str]) -> Callable[..., MagicMock]:
+    def factory(model_name: str, **kwargs: object) -> MagicMock:
+        loaded.append(model_name)
+        model = MagicMock(name=model_name)
+        model.encode.return_value = np.array([[0.1, 0.2]])
+        return model
+
+    return factory
+
+
+@pytest.fixture
+def inline_threads() -> Iterator[None]:
+    with patch(
+        "app.embedding_main.asyncio.to_thread", side_effect=_passthrough_to_thread
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("inline_threads")
+class TestIdleUnload:
+    @pytest.mark.asyncio
+    async def test_first_request_loads_lazily(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        assert manager.list_loaded_models() == []
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            result = await manager.encode("m", ["x"])
+
+        assert result == [[0.1, 0.2]]
+        assert loaded == ["m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_idle_model_is_unloaded_and_reloaded_by_next_request(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await manager.encode("m", ["x"])
+            # Not time.monotonic(): just below a power of two, (t + 60) - t rounds to
+            # 59.99999999999955 and the boundary check below failed on CI runners.
+            used_at = manager._last_used["m"] = 1000.0
+
+            assert manager.reap_idle(now=used_at + 59) == []
+            assert manager.list_loaded_models() == ["m"]
+
+            assert manager.reap_idle(now=used_at + 60) == ["m"]
+            assert manager.list_loaded_models() == []
+            assert "m" not in manager._locks
+
+            await manager.encode("m", ["x"])
+
+        assert loaded == ["m", "m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_zero_idle_seconds_never_unloads(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        manager._models["m"] = MagicMock()
+        manager._last_used["m"] = 0.0
+        assert manager.reap_idle(now=10**9) == []
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_request_in_flight_keeps_the_model(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            model = await manager.get_model("m")
+
+            # Hold the model the way a running request does.
+            async def request() -> None:
+                async with manager._lease("m"):
+                    started.set()
+                    await release.wait()
+
+            task = asyncio.create_task(request())
+            await started.wait()
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == []
+            assert manager._models["m"] is model
+
+            release.set()
+            await task
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_request_arriving_while_unloading_gets_a_model(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await manager.encode("m", ["x"])
+            future = manager._last_used["m"] + 61
+
+            # Unload and a new request interleave on the loop: both must succeed.
+            reap = asyncio.create_task(asyncio.to_thread(manager.reap_idle, future))
+            request = asyncio.create_task(manager.encode("m", ["y"]))
+            await asyncio.gather(reap, request)
+
+            assert request.result() == [[0.1, 0.2]]
+            # Either the request kept the first copy or it reloaded after the
+            # unload; it is never left without a model, and never loaded twice at once.
+            assert len(loaded) in (1, 2)
+            assert manager.list_loaded_models() in (["m"], [])
+            await manager.encode("m", ["z"])
+            assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_load_in_progress_is_not_unloaded(self) -> None:
+        manager = ModelManager(idle_seconds=1)
+        loading = asyncio.Event()
+
+        def slow_factory(model_name: str, **kwargs: object) -> MagicMock:
+            return MagicMock()
+
+        async def blocked_to_thread(func: Callable[..., object], *args: object, **kwargs: object) -> object:
+            loading.set()
+            await asyncio.sleep(0.05)
+            return func(*args, **kwargs)
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=slow_factory), patch(
+            "app.embedding_main.asyncio.to_thread", side_effect=blocked_to_thread
+        ):
+            task = asyncio.create_task(manager.warmup("m"))
+            await loading.wait()
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == []
+            await task
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_start_prepare_load_is_released_for_unloading(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            manager.start_prepare("m")
+            await manager._prepare_tasks["m"]
+        assert manager._in_use == {}
+        assert manager.reap_idle(now=manager._last_used["m"] + 61) == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_reaper_loop_unloads_and_returns_memory(self) -> None:
+        manager = ModelManager(idle_seconds=1)
+        manager._models["m"] = MagicMock()
+        manager._last_used["m"] = time.monotonic() - 100
+        with patch("app.embedding_main.release_memory") as release:
+            task = asyncio.create_task(manager.run_idle_reaper())
+            for _ in range(200):
+                if release.called:
+                    break
+                await asyncio.sleep(0.05)
+            task.cancel()
+        assert manager.list_loaded_models() == []
+        release.assert_called_once()
+
+    def test_release_memory_frees_unreferenced_objects(self) -> None:
+        import gc
+        import weakref
+
+        class Holder:
+            pass
+
+        holder = Holder()
+        holder.me = holder  # cycle: only gc frees it
+        ref = weakref.ref(holder)
+        del holder
+        release_memory()
+        assert ref() is None
+        assert gc.garbage == []
+
+
+@pytest.mark.usefixtures("inline_threads")
+class TestSingleCopyPerModel:
+    @pytest.mark.asyncio
+    async def test_trust_remote_code_does_not_load_a_second_copy(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            first = await manager.get_model("m", trust_remote_code=False)
+            second = await manager.get_model("m", trust_remote_code=True)
+        assert first is second
+        assert loaded == ["m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_with_both_flags_load_once(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await asyncio.gather(
+                manager.encode("m", ["a"], trust_remote_code=False),
+                manager.encode("m", ["b"], trust_remote_code=True),
+            )
+        assert loaded == ["m"]
+
+    def test_remote_code_is_still_refused_when_not_allowed(self) -> None:
+        mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.list_loaded_models.return_value = ["m"]
+        mock_manager.encode = AsyncMock(return_value=[[0.1]])
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main.ALLOW_REMOTE_CODE", False
+        ), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with TestClient(app) as test_client:
+                response = test_client.post(
+                    "/v1/embeddings",
+                    json={"model": "m", "input": "x", "trust_remote_code": True},
+                )
+        assert response.status_code == 403
+        mock_manager.encode.assert_not_awaited()

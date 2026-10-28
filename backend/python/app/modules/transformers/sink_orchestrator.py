@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -7,7 +8,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.exceptions.indexing_exceptions import IndexingError
+from app.exceptions.indexing_exceptions import IndexingError, RecordDeletedError
 from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
@@ -31,6 +32,14 @@ from app.modules.transformers.image_description import (
     ImageDescriber,
     harvest_descriptions,
 )
+from app.modules.transformers.stored_write import (
+    COW,
+    RUN_SUPERSEDED,
+    STORED_WRITE,
+    StoredWrite,
+    is_none_run,
+    mint_stored_write,
+)
 from app.modules.transformers.transformer import (
     ENRICHMENT_FOLLOWS,
     IMAGE_DESCRIPTION_BUDGET_S,
@@ -39,19 +48,50 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.featureflag.platform_settings import is_artifact_write_enabled
-from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.featureflag.platform_settings import (
+    artifact_settings,
+    is_artifact_write_enabled,
+)
+from app.services.graph_db.common.record_visibility import (
+    indexed_copy_fields,
+    is_live_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.telemetry.modules.record_storage_metrics import record_artifact_write
+from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.models.blocks import Block
     from app.models.entities import EntityRecord, Record
     from app.modules.entity_resolution import EntityResolver
     from app.modules.named_entities.domain.models import NamedEntityExtraction
+
+
+def _fit_images(images: "list[Block]") -> int:
+    """Shrink every inline image to what indexing keeps, in block order. Once
+    the record's images reach ``INDEX_RECORD_IMAGE_BYTES`` the rest lose their
+    pixels and keep their text. Returns how many lost them.
+
+    Here as well as where images are fetched: an image inlined by a connector
+    or a document parser never passed through the fetch.
+    """
+    kept = dropped = 0
+    for block in images:
+        data = block.data
+        uri = data.get("uri") if isinstance(data, dict) else None
+        if not isinstance(uri, str) or not uri.startswith("data:"):
+            continue
+        if kept >= INDEX_RECORD_IMAGE_BYTES:
+            block.data = {key: value for key, value in data.items() if key != "uri"}
+            dropped += 1
+            continue
+        data["uri"] = fit_image_for_index(uri)
+        kept += len(data["uri"])
+    return dropped
 
 
 class SinkOrchestrator(Transformer):
@@ -196,14 +236,15 @@ class SinkOrchestrator(Transformer):
         record_id = record.id
         with stage("graph.read"):
             record_doc = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
-        if record_doc is None:
-            self.logger.error(f"❌ Record {record_id} not found in database")
-            raise Exception(f"Record {record_id} not found in database")
+        if record_doc is None or not is_live_record(record_doc):
+            raise RecordDeletedError(record_id)
 
         if not skip_blob:
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
+            # One read of the settings picks the layout and mints the run; nothing below reads it again.
+            ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
             with stage("images.describe"):
                 await self._describe_images(ctx)
             with stage("blob.write"):
@@ -213,6 +254,9 @@ class SinkOrchestrator(Transformer):
         if not skip_blob and not skip_vector_store:
             with stage("artifacts.write"):
                 written = await self._write_artifacts(ctx, record_doc)
+            if written is not None:
+                # Right after the set, before vectors and COMPLETED: the pointer must not wait on them.
+                await self._flip_revision_pointer(ctx.record, written, ctx.settings[STORED_WRITE].run)
 
         if skip_vector_store:
             success = await self.graph_provider.batch_update_nodes(
@@ -255,9 +299,7 @@ class SinkOrchestrator(Transformer):
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
-                completed = await self._update_indexing_status(ctx)
-            if completed and written is not None:
-                await self._flip_revision_pointer(ctx.record, written)
+                await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
@@ -472,29 +514,44 @@ class SinkOrchestrator(Transformer):
         containers = record.block_containers
         if not containers or not containers.blocks:
             return
-        image_count = sum(1 for b in containers.blocks if b.type == BlockType.IMAGE)
-        if not image_count:
+        images = [b for b in containers.blocks if b.type == BlockType.IMAGE]
+        if not images:
             return
+        dropped = await asyncio.to_thread(_fit_images, images)
+        if dropped:
+            self.logger.info(
+                "Record %s: image budget of %d MB reached; %d image(s) kept as text only",
+                record.id, INDEX_RECORD_IMAGE_BYTES // (1024 * 1024), dropped,
+            )
 
         inherited: dict[str, str] = {}
-        if image_count >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
-            try:
-                previous = await self.blob_storage.get_record_from_storage(
-                    virtual_record_id=record.virtual_record_id, org_id=record.org_id,
-                )
-                inherited = harvest_descriptions(previous)
-            except Exception:
-                # A missing or unreadable previous version just means paying
-                # for the descriptions again, not failing the record.
-                self.logger.debug(
-                    "No previous version to inherit image descriptions from", exc_info=True,
-                )
+        if len(images) >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
+            inherited = await self._previous_descriptions(record)
 
         await self.image_describer.annotate(
             containers,
             inherited=inherited,
             budget_s=ctx.settings.get(IMAGE_DESCRIPTION_BUDGET_S),
         )
+
+    async def _previous_descriptions(self, record: Record) -> dict[str, str]:
+        """The stored previous version's image descriptions, by image content.
+
+        A method of its own so the decoded previous version, every image in
+        it, is freed before the vision calls rather than held through them.
+        """
+        try:
+            previous = await self.blob_storage.get_record_from_storage(
+                virtual_record_id=record.virtual_record_id, org_id=record.org_id,
+            )
+            return harvest_descriptions(previous)
+        except Exception:
+            # A missing or unreadable previous version just means paying
+            # for the descriptions again, not failing the record.
+            self.logger.debug(
+                "No previous version to inherit image descriptions from", exc_info=True,
+            )
+            return {}
 
     async def _write_artifacts(
         self, ctx: TransformContext, record_doc: dict[str, Any]
@@ -506,6 +563,15 @@ class SinkOrchestrator(Transformer):
         writes nothing, since there is no revision to file it under.
         """
         record = ctx.record
+        stored_write: StoredWrite = ctx.settings[STORED_WRITE]
+        # An in-place write has a ``none`` run, which is never served: its set would be wasted
+        # storage. A write that lost its compare-and-set stored nothing this run's set could match.
+        if (
+            stored_write.layout != COW
+            or is_none_run(stored_write.run)
+            or ctx.settings.get(RUN_SUPERSEDED)
+        ):
+            return None
         if not await is_artifact_write_enabled(self.config_service):
             return None
         rev = record_doc.get("contentRev")
@@ -526,6 +592,7 @@ class SinkOrchestrator(Transformer):
                 reconciliation_metadata=reconciliation or None,
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
                 properties=properties,
+                stored_run=stored_write.run,
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -566,34 +633,28 @@ class SinkOrchestrator(Transformer):
             )
             return None
 
-    async def _flip_revision_pointer(self, record: Record, written: WrittenRevision) -> None:
+    async def _flip_revision_pointer(self, record: Record, written: WrittenRevision, run: str) -> None:
         """Point the virtual record's mapping at the revision just written.
 
-        A compare-and-set on ``currentRev``: a writer that read an older value
-        than the one stored now lost a race, and the pointer is left to the
-        winner. Best-effort, like the artifact write itself.
+        A compare-and-set on ``{storedRun: run, currentRev: <read>}``: the pointer moves only
+        while the stored record is still the write this set was built from, and a writer that
+        read an older pointer than the one stored now lost a race. Sets ``currentRun`` with it,
+        so a reader serves the set only for the run the stored record came from. It never
+        writes ``updatedAt``. Best-effort, like the artifact write itself.
         """
         vrid = record.virtual_record_id
         rev = written.manifest.rev
         collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
         try:
-            # The CAS only orders writers that read the same pointer. A run the record
-            # has since left (re-indexed to a newer revision without a record lease)
-            # must not point search back at its older revision.
-            current_doc = await self.graph_provider.get_document(
-                record.id, CollectionNames.RECORDS.value
-            )
-            if current_doc is None or current_doc.get("contentRev") != rev:
-                self.logger.info(
-                    "Record %s moved off revision %s; revision pointer of %s left as it is",
-                    record.id, rev, vrid,
-                )
-                return
             mapping = await self.graph_provider.get_document(vrid, collection)
             if mapping is None:
                 return
             current = mapping.get("currentRev")
-            if current == rev and mapping.get("manifestDocId") == written.manifest_ref.document_id:
+            if (
+                current == rev
+                and mapping.get("manifestDocId") == written.manifest_ref.document_id
+                and mapping.get("currentRun") == run
+            ):
                 return
             flipped = await self.graph_provider.update_node_fields_if_match(
                 vrid,
@@ -602,8 +663,9 @@ class SinkOrchestrator(Transformer):
                     "currentRev": rev,
                     "previousRev": current if current != rev else mapping.get("previousRev"),
                     "manifestDocId": written.manifest_ref.document_id,
+                    "currentRun": run,
                 },
-                {"currentRev": current},
+                {"storedRun": run, "currentRev": current},
             )
             if not flipped:
                 self.logger.info(

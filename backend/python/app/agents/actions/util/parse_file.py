@@ -288,16 +288,16 @@ class FileContentParser:
         return await processor.create_blocks(conv_res)
 
     async def handle_doc(self, raw: bytes, file_name: str) -> BlocksContainer:
-        docx_stream = self._doc_parser.convert_doc_to_docx(raw)
+        docx_stream = await self._doc_parser.convert_doc_to_docx_async(raw)
         docx_bytes = docx_stream.read()
         return await self.handle_docx(docx_bytes, file_name)
 
     async def handle_ppt(self, raw: bytes, file_name: str) -> BlocksContainer:
-        pptx_bytes = self._ppt_parser.convert_ppt_to_pptx(raw)
+        pptx_bytes = await self._ppt_parser.convert_ppt_to_pptx_async(raw)
         return await self.handle_pptx(pptx_bytes, file_name)
 
     async def handle_xls(self, raw: bytes, file_name: str) -> BlocksContainer:
-        xlsx_bytes = self._xls_parser.convert_xls_to_xlsx(raw)
+        xlsx_bytes = await self._xls_parser.convert_xls_to_xlsx_async(raw)
         return await self.handle_xlsx(xlsx_bytes, file_name)
 
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:

@@ -1,30 +1,16 @@
 import { injectable, inject } from 'inversify';
-import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { isValidId } from '../../../libs/repositories/ids';
 import {
-  ServiceAccountDelegation,
-  IServiceAccountDelegation,
-} from '../schema/service-account-delegation.schema';
-import {
-  DelegationEvent,
-  DelegationOutcome,
-} from '../schema/delegation-event.schema';
-
-/** Mongo's duplicate-key code, which is what the unique index raises. */
-const DUPLICATE_KEY = 11000;
-
-function isDuplicateKeyError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === DUPLICATE_KEY
-  );
-}
+  getDelegationRepository,
+  type DelegationOutcome,
+  type DelegationRowDto,
+} from '../../../libs/repositories/delegation';
 
 /**
  * The most people one service account may be allowed to act as.
@@ -129,18 +115,15 @@ export class DelegationService {
     orgId: string,
     serviceAccountId: string,
   ): Promise<{ id: string; email: string }> {
-    if (!Types.ObjectId.isValid(serviceAccountId)) {
+    if (!isValidId(serviceAccountId)) {
       throw new NotFoundError('Service account not found');
     }
-    const account = await Users.findOne({
-      _id: { $eq: serviceAccountId },
-      orgId: { $eq: orgId },
-      kind: 'service',
-      isDeleted: false,
-    })
-      .select('email')
-      .lean()
-      .exec();
+    const account = await getUserRepository().getLiveFields(
+      orgId,
+      serviceAccountId,
+      ['email'],
+      { serviceOnly: true, strict: true },
+    );
     if (!account) {
       throw new NotFoundError('Service account not found');
     }
@@ -181,21 +164,18 @@ export class DelegationService {
     // but a query should not depend on a check three frames up to be safe —
     // and this one is reachable from the token endpoint, where the subject is
     // whatever the caller typed. Matches `oauth_token.service.ts:200`.
-    const query = Types.ObjectId.isValid(trimmed)
-      ? { _id: { $eq: trimmed }, orgId: { $eq: orgId } }
-      : { email: { $eq: trimmed.toLowerCase() }, orgId: { $eq: orgId } };
-
-    const user = await Users.findOne(query)
-      .select('email fullName role kind isDeleted isDisabled')
-      .lean()
-      .exec();
+    const user = await getUserRepository().getByIdOrEmail(
+      orgId,
+      isValidId(trimmed) ? { id: trimmed } : { email: trimmed.toLowerCase() },
+      ['_id', 'email', 'fullName', 'role', 'kind', 'isDeleted', 'isDisabled'],
+    );
 
     if (!user || user.isDeleted === true) {
       return { ok: false, refusedReason: 'subject_not_found' };
     }
 
     const resolved = {
-      userId: String(user._id),
+      userId: user._id,
       email: user.email,
       fullName: user.fullName,
     };
@@ -234,15 +214,11 @@ export class DelegationService {
     serviceAccountId: string,
     subjectUserId: string,
   ): Promise<boolean> {
-    const row = await ServiceAccountDelegation.findOne({
-      orgId: { $eq: orgId },
-      serviceAccountId: { $eq: serviceAccountId },
-      subjectUserId: { $eq: subjectUserId },
-    })
-      .select('_id')
-      .lean()
-      .exec();
-    return row !== null;
+    return getDelegationRepository().isAllowed(
+      orgId,
+      serviceAccountId,
+      subjectUserId,
+    );
   }
 
   /** Grant a service account the right to act as one named person. */
@@ -262,10 +238,10 @@ export class DelegationService {
       );
     }
 
-    const existing = await ServiceAccountDelegation.countDocuments({
-      orgId: { $eq: orgId },
-      serviceAccountId: { $eq: serviceAccountId },
-    });
+    const existing = await getDelegationRepository().countFor(
+      orgId,
+      serviceAccountId,
+    );
     if (existing >= MAX_DELEGATIONS_PER_SERVICE_ACCOUNT) {
       throw new BadRequestError(
         `This service account may already act as ${String(MAX_DELEGATIONS_PER_SERVICE_ACCOUNT)} people, which is the limit. ` +
@@ -273,34 +249,18 @@ export class DelegationService {
       );
     }
 
-    let row: IServiceAccountDelegation;
-    try {
-      row = await ServiceAccountDelegation.create({
-        orgId: new Types.ObjectId(orgId),
-        serviceAccountId: new Types.ObjectId(serviceAccountId),
-        subjectUserId: new Types.ObjectId(subject.userId),
-        grantedBy: new Types.ObjectId(actingUserId),
-        reason,
-      });
-    } catch (error) {
-      // Only a duplicate is forgiven, and only because the unique index is
-      // what raised it: granting a right the account already holds is not
-      // worth failing a script over. Anything else — a dropped connection, a
-      // validation failure — has to surface. Catching it here and then
-      // finding a row written by some earlier request would report a grant
-      // that this call did not make, and skip the audit record for it.
-      if (!isDuplicateKeyError(error)) {
-        throw error;
-      }
-      const already = await ServiceAccountDelegation.findOne({
-        orgId: { $eq: orgId },
-        serviceAccountId: { $eq: serviceAccountId },
-        subjectUserId: { $eq: subject.userId },
-      }).exec();
-      if (already) {
-        return this.toListItem(already, subject);
-      }
-      throw error;
+    // A duplicate is forgiven (granting a right the account already holds is
+    // not worth failing a script over) but writes no audit record: this call
+    // made no grant.
+    const { row, created } = await getDelegationRepository().grant({
+      orgId,
+      serviceAccountId,
+      subjectUserId: subject.userId,
+      grantedBy: actingUserId,
+      reason,
+    });
+    if (!created) {
+      return this.toListItem(row, subject);
     }
 
     // Written before the method returns so the log holds the grant even if
@@ -345,17 +305,17 @@ export class DelegationService {
   }
 
   private toListItem(
-    row: IServiceAccountDelegation,
+    row: DelegationRowDto,
     subject: Pick<SubjectResolution, 'email' | 'fullName'>,
   ): DelegationListItem {
     return {
-      id: String(row._id),
-      serviceAccountId: String(row.serviceAccountId),
-      subjectUserId: String(row.subjectUserId),
+      id: row._id,
+      serviceAccountId: row.serviceAccountId,
+      subjectUserId: row.subjectUserId,
       subjectEmail: subject.email,
       subjectFullName: subject.fullName,
       inactive: false,
-      grantedBy: String(row.grantedBy),
+      grantedBy: row.grantedBy,
       reason: row.reason,
       createdAt: row.createdAt,
     };
@@ -375,27 +335,22 @@ export class DelegationService {
   ): Promise<DelegationListItem[]> {
     await this.requireServiceAccount(orgId, serviceAccountId);
 
-    const rows = await ServiceAccountDelegation.find({
-      orgId: { $eq: orgId },
-      serviceAccountId: { $eq: serviceAccountId },
-    })
-      .sort({ createdAt: -1 })
-      .lean()
-      .exec();
+    const rows = await getDelegationRepository().listFor(
+      orgId,
+      serviceAccountId,
+    );
     if (rows.length === 0) {
       return [];
     }
 
-    const subjects = await Users.find({
-      _id: { $in: rows.map((r) => r.subjectUserId) },
-    })
-      .select('email fullName role kind isDeleted isDisabled')
-      .lean()
-      .exec();
-    const byId = new Map(subjects.map((s) => [String(s._id), s]));
+    const subjects = await getUserRepository().listFieldsByIds(
+      rows.map((r) => r.subjectUserId),
+      ['_id', 'email', 'fullName', 'role', 'kind', 'isDeleted', 'isDisabled'],
+    );
+    const byId = new Map(subjects.map((s) => [s._id, s]));
 
     return rows.map((row) => {
-      const subject = byId.get(String(row.subjectUserId));
+      const subject = byId.get(row.subjectUserId);
       let inactiveReason: string | undefined;
       if (!subject || subject.isDeleted === true) {
         inactiveReason = 'This person no longer has an account';
@@ -406,14 +361,14 @@ export class DelegationService {
       }
 
       return {
-        id: String(row._id),
-        serviceAccountId: String(row.serviceAccountId),
-        subjectUserId: String(row.subjectUserId),
+        id: row._id,
+        serviceAccountId: row.serviceAccountId,
+        subjectUserId: row.subjectUserId,
         subjectEmail: subject?.email,
         subjectFullName: subject?.fullName,
         inactive: inactiveReason !== undefined,
         inactiveReason,
-        grantedBy: String(row.grantedBy),
+        grantedBy: row.grantedBy,
         reason: row.reason,
         createdAt: row.createdAt,
       };
@@ -436,15 +391,15 @@ export class DelegationService {
     subjectUserId: string,
   ): Promise<void> {
     await this.requireServiceAccount(orgId, serviceAccountId);
-    if (!Types.ObjectId.isValid(subjectUserId)) {
+    if (!isValidId(subjectUserId)) {
       throw new NotFoundError('Delegation not found');
     }
 
-    const removed = await ServiceAccountDelegation.findOneAndDelete({
-      orgId: { $eq: orgId },
-      serviceAccountId: { $eq: serviceAccountId },
-      subjectUserId: { $eq: subjectUserId },
-    }).exec();
+    const removed = await getDelegationRepository().revoke(
+      orgId,
+      serviceAccountId,
+      subjectUserId,
+    );
     if (!removed) {
       throw new NotFoundError('Delegation not found');
     }
@@ -478,15 +433,15 @@ export class DelegationService {
     orgId: string,
     serviceAccountId: string,
   ): Promise<void> {
-    const result = await ServiceAccountDelegation.deleteMany({
-      orgId: { $eq: orgId },
-      serviceAccountId: { $eq: serviceAccountId },
-    }).exec();
-    if (result.deletedCount > 0) {
+    const deletedCount = await getDelegationRepository().revokeAllFor(
+      orgId,
+      serviceAccountId,
+    );
+    if (deletedCount > 0) {
       this.logger.info('Removed every delegation held by a service account', {
         orgId,
         serviceAccountId,
-        removed: result.deletedCount,
+        removed: deletedCount,
       });
     }
   }
@@ -507,29 +462,7 @@ export class DelegationService {
     expiresAt?: Date;
   }): Promise<void> {
     try {
-      await DelegationEvent.create({
-        orgId: new Types.ObjectId(event.orgId),
-        serviceAccountId: new Types.ObjectId(event.serviceAccountId),
-        subjectUserId:
-          event.subjectUserId === undefined
-            ? undefined
-            : new Types.ObjectId(event.subjectUserId),
-        requestedSubject: event.requestedSubject.slice(0, 320),
-        outcome: event.outcome,
-        refusedReason: event.refusedReason,
-        actedBy:
-          event.actedBy === undefined
-            ? undefined
-            : new Types.ObjectId(event.actedBy),
-        note: event.note,
-        scopes: event.scopes ?? [],
-        accessTokenId:
-          event.accessTokenId === undefined
-            ? undefined
-            : new Types.ObjectId(event.accessTokenId),
-        jti: event.jti,
-        expiresAt: event.expiresAt,
-      });
+      await getDelegationRepository().recordEvent(event);
     } catch (error) {
       // An audit write must never be the reason a request fails, but it is
       // also the thing this feature promises, so a failure is logged loudly
@@ -553,57 +486,53 @@ export class DelegationService {
       DELEGATION_EVENT_MAX_PAGE_SIZE,
     );
 
-    const query: Record<string, unknown> = { orgId: { $eq: orgId } };
     if (options.serviceAccountId !== undefined) {
-      if (!Types.ObjectId.isValid(options.serviceAccountId)) {
+      if (!isValidId(options.serviceAccountId)) {
         throw new NotFoundError('Service account not found');
       }
       await this.requireServiceAccount(orgId, options.serviceAccountId);
-      query.serviceAccountId = { $eq: options.serviceAccountId };
     }
 
-    const events = await DelegationEvent.find(query)
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean()
-      .exec();
+    const events = await getDelegationRepository().listEvents(
+      orgId,
+      options.serviceAccountId,
+      limit,
+    );
     if (events.length === 0) {
       return [];
     }
 
     const userIds = new Set<string>();
     for (const event of events) {
-      userIds.add(String(event.serviceAccountId));
-      if (event.subjectUserId) {
-        userIds.add(String(event.subjectUserId));
+      userIds.add(event.serviceAccountId);
+      if (event.subjectUserId !== undefined) {
+        userIds.add(event.subjectUserId);
       }
-      if (event.actedBy) {
-        userIds.add(String(event.actedBy));
+      if (event.actedBy !== undefined) {
+        userIds.add(event.actedBy);
       }
     }
-    const users = await Users.find({ _id: { $in: [...userIds] } })
-      .select('email')
-      .lean()
-      .exec();
-    const emailById = new Map(users.map((u) => [String(u._id), u.email]));
+    const users = await getUserRepository().listFieldsByIds(
+      [...userIds],
+      ['_id', 'email'],
+    );
+    const emailById = new Map(users.map((u) => [u._id, u.email]));
 
     return events.map((event) => ({
-      id: String(event._id),
-      serviceAccountId: String(event.serviceAccountId),
-      serviceAccountEmail: emailById.get(String(event.serviceAccountId)),
-      subjectUserId: event.subjectUserId
-        ? String(event.subjectUserId)
-        : undefined,
-      subjectEmail: event.subjectUserId
-        ? emailById.get(String(event.subjectUserId))
-        : undefined,
+      id: event._id,
+      serviceAccountId: event.serviceAccountId,
+      serviceAccountEmail: emailById.get(event.serviceAccountId),
+      subjectUserId: event.subjectUserId,
+      subjectEmail:
+        event.subjectUserId !== undefined
+          ? emailById.get(event.subjectUserId)
+          : undefined,
       requestedSubject: event.requestedSubject,
       outcome: event.outcome,
       refusedReason: event.refusedReason,
-      actedBy: event.actedBy ? String(event.actedBy) : undefined,
-      actedByEmail: event.actedBy
-        ? emailById.get(String(event.actedBy))
-        : undefined,
+      actedBy: event.actedBy,
+      actedByEmail:
+        event.actedBy !== undefined ? emailById.get(event.actedBy) : undefined,
       note: event.note,
       scopes: event.scopes,
       jti: event.jti,

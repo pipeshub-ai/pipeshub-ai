@@ -47,13 +47,18 @@ _QTY = re.compile(
     re.IGNORECASE,
 )
 _AGE = re.compile(r"^(?P<n>\d{1,3})[\-\s]?years?[\-\s]?old$", re.IGNORECASE)
+_MINUS = "-−\u2012\u2013"
 _PERCENT = re.compile(rf"^(?P<n>{_N})\s*(?P<u>%|bps|percent|per\s?cent|pct)$", re.IGNORECASE)
 
 
 def normalize_quantity(surface: str) -> QuantityValue | None:
     text = (surface or "").strip().replace("°", "")
+    # One sign written against the number; "- 25 °C" or "--25 °C" is not a reading.
+    negative = text[:1] in _MINUS and text[1:2].isdigit()
+    if negative:
+        text = text[1:]
     tokens = _TOKENS.match(text)
-    if tokens:
+    if tokens and not negative:
         count = Decimal(tokens.group("n").replace(",", "")) * _TOKEN_SCALE[tokens.group("scale").casefold()]
         count = count.quantize(Decimal(1)) if count == count.to_integral_value() else count
         return QuantityValue(value=count, unit="token", dimension="tokens", si_value=float(count), si_unit="token")
@@ -72,6 +77,10 @@ def normalize_quantity(surface: str) -> QuantityValue | None:
     except InvalidOperation:
         return None
     dimension, si_unit, factor = spec
+    if negative:
+        if dimension != "temperature":
+            return None
+        value = -value
     if unit in {"c", "celsius"}:
         si = float(value + Decimal("273.15"))
     elif unit in {"f", "fahrenheit"}:

@@ -45,7 +45,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
-from app.utils.request_context import context_from_envelope, reset_context, set_context
+from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -458,7 +458,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not isinstance(raw, dict):
             return False, True, None, "message is not an object"
         parsed: StreamMessage | None = None
-        token = set_context(context_from_envelope(raw).root_id)
+        token = bind_context(context_from_envelope(raw))
         try:
             if self.indexing:
                 try:

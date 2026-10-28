@@ -50,6 +50,9 @@ _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler is about to download a record of known size; its memory is
+    # reserved first, so a record waiting for memory holds no content.
+    START_DOWNLOAD = "start_download"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
@@ -70,6 +73,8 @@ class StreamMessage(BaseModel):
     timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: str | None = None
+    # Org propagated from the producer for log attribution only (unsigned; never an authority).
+    orgId: str | None = None
     # Verified (or fallback) org of the message; set by the consumer's envelope wrapper, never serialised.
     org_ctx: Any = Field(default=None, exclude=True)
     is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
@@ -457,17 +462,15 @@ class MessagingEnvConfig:
 
     @property
     def redis_max_deliveries(self) -> int:
-        """Delivery-count ceiling for the Redis dead-letter backstop.
+        """How many times a message may be handed back without an attempt
+        (``RequeueWithoutAttempt``), and stale recovery may hand a record back.
 
         Distinct from ``max_delivery_attempts``, which counts *processing
-        failures*. Redis's ``times_delivered`` counts every delivery: the
-        first read, a claim after a restart, an idle-drain recovery pass. A
-        record delivered three times may have failed zero times, so sharing
-        one threshold dead-letters healthy work — especially with fair
-        scheduling, where an entry legitimately sits un-ACKed while it waits
-        its turn. The backstop only needs to bound a true poison loop that
-        kills the process before the failure counter can be written (#2992),
-        so it is deliberately slack.
+        failures*. Without a retry tracker it is also the Redis dead-letter
+        backstop on ``times_delivered`` (#2992). With one, a record that kills
+        the process is bounded by its unfinished attempts instead
+        (``consumer_concurrency.MAX_UNFINISHED_ATTEMPTS``): ``times_delivered``
+        also counts every claim after a restart, of entries that never ran.
         """
         return max(
             self.max_delivery_attempts + 1,

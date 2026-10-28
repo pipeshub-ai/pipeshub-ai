@@ -827,6 +827,21 @@ class TestOnEventEdgeCases:
             await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
 
     @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self) -> None:
+        from app.exceptions.indexing_exceptions import RecordDeletedError
+
+        ep, logger, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=RecordDeletedError("rec-1"))
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(RecordDeletedError):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
         """If virtualRecordId not in payload, it's taken from the DB record."""
         ep, _, processor, gp = _make_event_processor()
@@ -1954,6 +1969,19 @@ class TestOnEventEarlyReturns:
             IndexingEvent.PARSING_COMPLETE,
             IndexingEvent.INDEXING_COMPLETE,
         ]
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+        """Draining a deleted record must not reach error-level alerting; WARNING,
+        as the record handler's own read, since None cannot rule out an id that
+        never existed."""
+        ep, logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        logger.error.assert_not_called()
+        logger.warning.assert_called_once_with("Record %s not found; dropping its event", "rec-1")
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):

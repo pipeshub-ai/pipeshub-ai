@@ -66,18 +66,19 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
     return d
 
 
-# the modules besides the kernel: platform (the store fence, background jobs and the runtime tables)
-MODULES = ("platform",)
-HEADS = {"kernel": (14, 11), "platform": (4, 0)}
-# platform depends on the kernel's last revision, so only platform's is a head
-REVISION_HEADS = {"platform_0004"}
+# the modules besides the kernel: platform (the store fence, background jobs and the runtime tables) and the document store's branches
+DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
+MODULES = ("platform", *DOCSTORE_BRANCHES)
+HEADS = {"kernel": (15, 11), "platform": (4, 0), "content": (2, 0), "conversation": (2, 0), "identity": (3, 0), "integrations": (2, 0), "oauth": (2, 0), "platform_data": (1, 0)}
+# the branches depend on early kernel and platform revisions, so the heads are the kernel's last revision and each branch's last
+REVISION_HEADS = {"kernel_0015", "platform_0004", "content_0002", "conversation_0002", "identity_0003", "integrations_0002", "oauth_0002", "platform_data_0001"}
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=14 min_code=11" in r.stdout and "epoch platform=4 min_code=0" in r.stdout
+    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform_data=1 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -94,7 +95,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 14
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 15
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -135,7 +136,7 @@ def test_bare_database_as_superuser(bare_db):
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 14
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 15
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
@@ -230,7 +231,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (14, 11)
+    assert epochs(cluster, name)["kernel"] == (15, 11)
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):
@@ -690,7 +691,7 @@ def test_an_older_build_finds_nothing_to_do_on_a_database_that_is_ahead_and_comp
     assert r.returncode == 0, r.stdout
     assert "database is ahead of this build" in r.stdout and "platform_0099" in r.stdout
     with cluster.admin(name) as c:                                           # nothing was touched
-        assert c.execute("SELECT version_num FROM kernel.alembic_version WHERE version_num LIKE 'platform%'").fetchall() == [("platform_0099",)]
+        assert c.execute("SELECT version_num FROM kernel.alembic_version WHERE version_num ~ '^platform_0'").fetchall() == [("platform_0099",)]
 
 
 def test_an_older_build_tells_the_operator_to_roll_forward_when_the_newer_schema_needs_newer_code(db):

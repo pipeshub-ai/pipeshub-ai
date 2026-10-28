@@ -5,8 +5,8 @@ import { BadRequestError } from '../../../libs/errors/http.errors';
 // routers, whose controllers import this service, so importing it here made the
 // two depend on each other. The schema module returns whatever `users` model is
 // already registered, which is the same object the barrel would give.
-import { Users } from '../../user_management/schema/users.schema';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getGroupRepository } from '../../../libs/repositories/group';
 import {
   EntitiesEventProducer,
   EventType,
@@ -47,32 +47,23 @@ export class JitProvisioningService {
 
 
     // Check if user was previously deleted
-    const deletedUser = await Users.findOne({
-      email,
-      orgId,
-      isDeleted: true,
-    });
-    if (deletedUser) {
+    if (await getUserRepository().hasRemovedAccount(orgId, email)) {
       throw new BadRequestError(
         'User account deleted by admin. Please contact your admin to restore your account.',
       );
     }
 
-    const newUser = new Users({
+    const newUser = await getUserRepository().create(orgId, {
       email,
       ...userDetails,
-      orgId,
       hasLoggedIn: true,
       isDeleted: false,
     });
 
-    await newUser.save();
-
     // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
+    await getGroupRepository().addToEveryone(orgId, newUser._id, {
+      liveOnly: true,
+    });
 
     // Publish user creation event
     try {
@@ -82,7 +73,7 @@ export class JitProvisioningService {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id.toString(),
+          userId: newUser._id,
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -102,7 +93,7 @@ export class JitProvisioningService {
       email,
     });
 
-    return newUser.toObject();
+    return newUser;
   }
 
   /**

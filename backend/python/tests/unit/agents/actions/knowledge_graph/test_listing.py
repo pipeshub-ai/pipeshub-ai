@@ -8,10 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.listing import (
+    _asks_for_contents,
     _normalize_list,
     _record_ids_in_items,
     _render_flat_text,
+    _wants_flat_listing,
     execute_list_files,
+)
+from app.agents.actions.knowledge_graph.ops.scope import (
+    KnowledgeScope,
+    browsable_app_ids,
+    turn_picked_sources,
 )
 
 
@@ -287,7 +294,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_happy_path(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         item = _item_with_enum("record", "rec-1")
         item.name = "Doc A"
         resp = _response(items=[item])
@@ -326,7 +333,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_query_too_short_ignored(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -362,7 +369,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_invalid_sort_defaults(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -400,9 +407,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_source_ids_matched(self) -> None:
 
-        scope = SimpleNamespace(
-            app_ids=("app-1", "app-2"), kb_ids=("kb-1",), is_empty=lambda: False
-        )
+        scope = KnowledgeScope(app_ids=("app-1", "app-2"), kb_ids=("kb-1",))
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -437,7 +442,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_exception_returns_error(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
 
         state: dict[str, Any] = {
             "graph_provider": AsyncMock(),
@@ -462,7 +467,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_page_limit_clamped(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -498,7 +503,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_node_types_filtered(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -535,7 +540,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_query_long_truncated(self) -> None:
 
-        scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -569,9 +574,7 @@ class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_source_ids_no_match_falls_back(self) -> None:
 
-        scope = SimpleNamespace(
-            app_ids=("app-1",), kb_ids=("kb-1",), is_empty=lambda: False
-        )
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=("kb-1",))
         resp = _response(items=[])
 
         mock_service = AsyncMock()
@@ -602,4 +605,258 @@ class TestExecuteListFiles:
         assert ok is True
         call_kwargs = mock_service.get_nodes.call_args.kwargs
         assert call_kwargs["connector_ids"] == ["app-1", "kb-1"]
-        assert call_kwargs["record_group_ids"] == ["kb-1"]
+        assert "record_group_ids" not in call_kwargs
+        assert call_kwargs["flattened"] is False
+
+
+# ---------------------------------------------------------------------------
+# Knowledge bases are apps: listing what is inside a source
+# ---------------------------------------------------------------------------
+
+class TestBrowsableAppIds:
+    def test_apps_then_kbs_without_duplicates(self) -> None:
+        scope = KnowledgeScope(app_ids=("jira", "kb-a"), kb_ids=("kb-a", "kb-b"))
+        assert browsable_app_ids({}, scope) == ["jira", "kb-a", "kb-b"]
+
+    def test_empty(self) -> None:
+        assert browsable_app_ids({}, KnowledgeScope(app_ids=(), kb_ids=())) == []
+
+    def test_leaves_out_the_turns_readable_attachments(self) -> None:
+        scope = KnowledgeScope(app_ids=("jira",), kb_ids=("vrid-1", "kb-a"))
+        assert browsable_app_ids({"attachment_record_ids": ["vrid-1"]}, scope) == ["jira", "kb-a"]
+
+    def test_client_attachment_metadata_cannot_drop_a_kb(self) -> None:
+        scope = KnowledgeScope(app_ids=(), kb_ids=("kb-a",))
+        state = {"attachments": [{"virtualRecordId": "kb-a"}]}
+        assert browsable_app_ids(state, scope) == ["kb-a"]
+
+
+class TestTurnPickedSources:
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            ({}, False),
+            ({"filters": {"apps": [], "kb": []}}, False),
+            ({"filters": {"kb": ["vrid-1"]}, "attachment_record_ids": ["vrid-1"]}, False),
+            ({"filters": {"kb": ["vrid-1"], "strictScope": True}, "attachment_record_ids": ["vrid-1"]}, True),
+            ({"filters": {"kb": ["kb-a"]}}, True),
+            ({"filters": {"apps": ["jira"], "kb": ["vrid-1"]}, "attachment_record_ids": ["vrid-1"]}, True),
+        ],
+    )
+    def test_truth_table(self, state: dict[str, Any], expected: bool) -> None:
+        assert turn_picked_sources(state) is expected
+
+
+class TestWantsFlatListing:
+    @pytest.mark.parametrize(
+        ("query", "matched", "wants_contents", "single_source", "expected"),
+        [
+            ("policy", ["kb-1"], True, True, None),
+            (None, [], False, False, False),
+            (None, [], False, True, False),
+            (None, [], True, False, False),
+            (None, [], True, True, True),
+            (None, ["kb-1"], False, False, True),
+            (None, ["kb-1"], True, False, True),
+        ],
+    )
+    def test_truth_table(
+        self, query: str | None, matched: list[str], wants_contents: bool, single_source: bool,
+        expected: bool | None,
+    ) -> None:
+        assert _wants_flat_listing(
+            query, matched, wants_contents=wants_contents, single_source=single_source,
+        ) is expected
+
+    @pytest.mark.parametrize(
+        ("node_types", "record_types", "expected"),
+        [
+            (None, None, False),
+            (["app"], None, False),
+            (["recordGroup", "app"], None, False),
+            (["record"], None, True),
+            (["app", "folder"], None, True),
+            (None, ["FILE"], True),
+        ],
+    )
+    def test_asks_for_contents(
+        self, node_types: list[str] | None, record_types: list[str] | None, expected: bool,
+    ) -> None:
+        assert _asks_for_contents(node_types, record_types) is expected
+
+
+async def _list_files(
+    scope: KnowledgeScope, state_extra: dict[str, Any] | None = None,
+    response: SimpleNamespace | None = None, **kwargs: object,
+) -> tuple[dict[str, Any] | None, str]:
+    """The service call ``list_files`` makes (None when it makes none) and its text."""
+    mock_service = AsyncMock()
+    mock_service.get_nodes = AsyncMock(return_value=response or _response(items=[]))
+    state: dict[str, Any] = {
+        "graph_provider": AsyncMock(),
+        "org_id": "org-1",
+        "user_id": "u-1",
+        "has_knowledge": True,
+        **(state_extra or {}),
+    }
+    with (
+        patch(
+            "app.agents.actions.knowledge_graph.ops.scope.resolve_scope",
+            new_callable=AsyncMock,
+            return_value=scope,
+        ),
+        patch(
+            "app.agents.actions.knowledge_graph.ops.listing.KnowledgeHubService",
+            return_value=mock_service,
+        ),
+        patch("app.modules.agents.qna.chat_state.remember_record_ids"),
+        patch(
+            "app.utils.chat_helpers.get_record_id_shortener_if_enabled",
+            return_value=None,
+        ),
+    ):
+        ok, text = await execute_list_files(state, **kwargs)
+    assert ok is True
+    call = mock_service.get_nodes.call_args
+    return (call.kwargs if call else None), text
+
+
+_JIRA_AND_KB = KnowledgeScope(app_ids=("jira",), kb_ids=("kb-a",))
+
+
+class TestListFilesInsideKnowledgeBase:
+    @pytest.mark.asyncio
+    async def test_records_of_a_named_kb_are_listed_flat(self) -> None:
+        call, _ = await _list_files(_JIRA_AND_KB, source_ids=["kb-a"], node_types=["record"])
+        assert call["flattened"] is True
+        assert call["connector_ids"] == ["kb-a"]
+        assert call["parent_id"] is None
+        assert "record_group_ids" not in call
+
+    @pytest.mark.asyncio
+    async def test_no_narrowing_lists_the_root(self) -> None:
+        call, text = await _list_files(_JIRA_AND_KB)
+        assert call["flattened"] is False
+        assert call["connector_ids"] == ["jira", "kb-a"]
+        assert "source_ids" not in text
+
+    @pytest.mark.asyncio
+    async def test_app_node_type_only_lists_the_root(self) -> None:
+        call, _ = await _list_files(_JIRA_AND_KB, node_types=["app"])
+        assert call["flattened"] is False
+
+    @pytest.mark.asyncio
+    async def test_records_across_sources_list_the_root_and_ask_for_one(self) -> None:
+        call, text = await _list_files(_JIRA_AND_KB, node_types=["record"])
+        assert call["flattened"] is False
+        assert call["connector_ids"] == ["jira", "kb-a"]
+        assert text.startswith("To list records or folders, name one source")
+        assert call["node_types"] is None
+
+    @pytest.mark.asyncio
+    async def test_records_of_the_only_source_are_listed_flat(self) -> None:
+        call, _ = await _list_files(KnowledgeScope(app_ids=(), kb_ids=("kb-a",)), record_types=["FILE"])
+        assert call["flattened"] is True
+        assert call["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_ids_list_the_root_with_a_note(self) -> None:
+        call, text = await _list_files(
+            _JIRA_AND_KB, source_ids=["kb-hr-not-readable"], node_types=["record"], query="policy",
+        )
+        assert call["flattened"] is False
+        assert call["q"] is None
+        assert call["connector_ids"] == ["jira", "kb-a"]
+        assert text.startswith("None of the named sources is available in this conversation")
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_in_a_single_source_scope_is_not_flattened(self) -> None:
+        call, _ = await _list_files(
+            KnowledgeScope(app_ids=(), kb_ids=("kb-a",)), source_ids=["kb-other"], node_types=["record"],
+        )
+        assert call["flattened"] is False
+
+    @pytest.mark.asyncio
+    async def test_query_searches(self) -> None:
+        call, _ = await _list_files(
+            KnowledgeScope(app_ids=(), kb_ids=("kb-a",)), query="contract", source_ids=["kb-a"],
+        )
+        assert call["flattened"] is None
+        assert call["q"] == "contract"
+
+    @pytest.mark.asyncio
+    async def test_too_short_query_with_source_lists_flat(self) -> None:
+        call, _ = await _list_files(
+            KnowledgeScope(app_ids=(), kb_ids=("kb-a",)), query="a", source_ids=["kb-a"],
+        )
+        assert call["flattened"] is True
+        assert call["q"] is None
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_kb_is_not_a_connector_filter(self) -> None:
+        call, _ = await _list_files(
+            KnowledgeScope(app_ids=("jira",), kb_ids=("kb-a", "vrid-1")),
+            {"attachment_record_ids": ["vrid-1"]},
+            source_ids=["kb-a", "vrid-1"],
+        )
+        assert call["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_default_chat_with_an_attachment_lists_the_users_sources(self) -> None:
+        call, _ = await _list_files(
+            KnowledgeScope(app_ids=(), kb_ids=("vrid-1",)),
+            {"attachment_record_ids": ["vrid-1"], "filters": {"kb": ["vrid-1"]}},
+        )
+        assert call["connector_ids"] is None
+        assert call["flattened"] is False
+
+    @pytest.mark.asyncio
+    async def test_strict_attachment_only_turn_lists_nothing(self) -> None:
+        call, text = await _list_files(
+            KnowledgeScope(app_ids=(), kb_ids=("vrid-1",)),
+            {"attachment_record_ids": ["vrid-1"], "filters": {"kb": ["vrid-1"], "strictScope": True}},
+            query="report",
+        )
+        assert call is None
+        assert text == "This conversation has no sources to list; only attached files."
+
+    @pytest.mark.asyncio
+    async def test_empty_scope_without_knowledge_is_refused(self) -> None:
+        mock_state = {"graph_provider": AsyncMock(), "org_id": "org-1", "user_id": "u-1"}
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.scope.resolve_scope",
+            new_callable=AsyncMock,
+            return_value=KnowledgeScope(app_ids=(), kb_ids=()),
+        ):
+            ok, text = await execute_list_files(mock_state)
+        assert ok is False
+        assert text == "No knowledge sources configured for this agent."
+
+
+class TestListFilesPagingAndErrors:
+    @pytest.mark.asyncio
+    async def test_more_pages_end_with_the_next_call(self) -> None:
+        response = SimpleNamespace(
+            success=True, error=None, total=None,
+            items=[_item("record", f"rec-{i}", f"file {i}") for i in range(20)],
+            pagination=SimpleNamespace(hasNext=True),
+        )
+        _, text = await _list_files(_JIRA_AND_KB, response=response, source_ids=["kb-a"], page=2)
+        assert "(More items follow: call again with page=3.)" in text
+
+    @pytest.mark.asyncio
+    async def test_last_page_has_no_next_call(self) -> None:
+        response = SimpleNamespace(
+            success=True, error=None, total=None,
+            items=[_item("record", "rec-1")], pagination=SimpleNamespace(hasNext=False),
+        )
+        _, text = await _list_files(_JIRA_AND_KB, response=response, source_ids=["kb-a"])
+        assert "More items follow" not in text
+
+    @pytest.mark.asyncio
+    async def test_too_large_listing_asks_to_narrow(self) -> None:
+        response = SimpleNamespace(
+            success=False, error="Open a folder", errorCode=422, items=[], total=None,
+        )
+        _, text = await _list_files(_JIRA_AND_KB, response=response, source_ids=["jira"])
+        assert text.startswith("Error: This listing is too large to read at once. Name one source")

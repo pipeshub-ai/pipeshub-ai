@@ -35,7 +35,9 @@ run_typescript() {
 
 run_python() {
   python3 -m venv .venv-sdk-tests || return 1
-  .venv-sdk-tests/bin/pip install --quiet -e . pytest pytest-asyncio pytest-xdist pytest-timeout || return 1
+  # The retriever tests import the extras and skip without them; the report counts a skip as a
+  # failure. pip only warns when an older SDK lacks an extra.
+  .venv-sdk-tests/bin/pip install --quiet -e ".[langchain,llamaindex]" pytest pytest-asyncio pytest-xdist pytest-timeout || return 1
   .venv-sdk-tests/bin/pytest tests/ -n 4 --timeout="$TEST_TIMEOUT_SECONDS" --junitxml="$1"
 }
 

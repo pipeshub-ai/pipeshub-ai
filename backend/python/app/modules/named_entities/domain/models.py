@@ -17,7 +17,9 @@ from app.modules.named_entities.domain.values import (
 from app.modules.named_entities.keys import KEY_SCHEME
 
 SCHEMA_VERSION = 1
-EXTRACTOR_VERSION = "ner-1"
+# Part of the entities stage fingerprint: bump when extraction of the same text
+# changes, so the next reindex of a record re-extracts it (ner-2: value signs).
+EXTRACTOR_VERSION = "ner-2"
 
 logger = logging.getLogger(__name__)
 

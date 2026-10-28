@@ -397,9 +397,43 @@ async def test_records_a_caller_cannot_read_change_neither_hits_nor_too_broad(gr
     acme_and_amount = NamedEntityQuery(name_prefix="acme", amount_min=1000, amount_max=2000)
     assert (await provider.get_records_for_named_entities(org_id, None, acme_and_amount, limit=2))["truncated"] is True
     within = await provider.get_records_for_named_entities(org_id, None, acme_and_amount, limit=2, within=[readable])
-    assert within == {"hits": [{"recordId": readable, "virtualRecordId": f"v-{readable}", "connectorId": f"{org_id}-conn"}], "truncated": False}
+    assert within == {"hits": [{
+        "recordId": readable, "virtualRecordId": f"v-{readable}", "connectorId": f"{org_id}-conn",
+        # A listing orders and filters by these; no timestamp set falls back to 0.
+        "recordType": "FILE", "sortTs": 0,
+    }], "truncated": False}
     nothing_readable = await provider.get_records_for_named_entities(org_id, None, acme_and_amount, within=[f"{org_id}-none"])
     assert nothing_readable == {"hits": [], "truncated": False}
+
+
+async def test_a_zero_modification_time_sorts_by_the_update_time_on_both_backends(graph) -> None:
+    provider, org_id, _ = graph
+    (record,) = await _records(provider, org_id, 1)
+    await provider.batch_upsert_nodes([{
+        "id": record, "orgId": org_id, "recordName": "Doc 0", "externalRecordId": record, "recordType": "MAIL",
+        "origin": "CONNECTOR", "connectorId": f"{org_id}-conn", "virtualRecordId": f"v-{record}",
+        "sourceLastModifiedTimestamp": 0, "updatedAtTimestamp": 5,
+    }], RECORDS)
+    await _writer(provider).write(org_id, record, [_amount(org_id, "1250")])
+
+    found = await provider.get_records_for_named_entities(org_id, None, NamedEntityQuery(amount_min=1000, amount_max=2000))
+
+    assert [(h["recordType"], h["sortTs"]) for h in found["hits"]] == [("MAIL", 5)]
+
+
+async def test_values_in_records_name_only_the_matching_values_of_the_given_records(graph) -> None:
+    provider, org_id, _ = graph
+    first, second, other = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    await writer.write(org_id, first, [_amount(org_id, "1250"), _amount(org_id, "90")])
+    await writer.write(org_id, second, [_amount(org_id, "1500")])
+    await writer.write(org_id, other, [_amount(org_id, "1700")])
+    over_1000 = NamedEntityQuery(amount_min=1000, amount_max=2000)
+
+    found = await provider.get_named_entity_values_in_records(org_id, over_1000, [first, second])
+
+    assert found == {first: ["USD 1250"], second: ["USD 1500"]}
+    assert await provider.get_named_entity_values_in_records(org_id, NamedEntityQuery(name_prefix="acme"), [first]) == {}
 
 
 async def test_value_rows_of_a_deleted_record_are_invisible_then_swept(graph) -> None:

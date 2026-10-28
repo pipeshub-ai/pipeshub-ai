@@ -124,7 +124,11 @@
     "tabArchived": "보관됨",
     "archivedEmptyState": "보관된 프로젝트가 없습니다",
     "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다.",
-    "actionsLabel": "프로젝트 작업"
+    "actionsLabel": "프로젝트 작업",
+    "noSearchResults": "“{{query}}”와(과) 일치하는 프로젝트가 없습니다",
+    "noSearchResultsHint": "다른 이름을 시도하거나 검색을 지우세요.",
+    "clearSearch": "검색 지우기",
+    "cardActionsLabel": "{{name}} 작업"
   },
   "timeGroup": {
     "today": "오늘",
@@ -323,7 +327,8 @@
     "beta": "베타",
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
-    "notifications": "알림"
+    "notifications": "알림",
+    "home": "홈"
   },
   "artifacts": {
     "title": "모든 아티팩트",
@@ -506,7 +511,7 @@
     "willBeReindexed": "이(가) 다시 인덱싱됩니다",
     "reindexConfirm": "이 {{type}}을(를) 다시 인덱싱하시겠습니까?",
     "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
-    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다.",
+    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 영구적으로 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다. 이 작업은 되돌릴 수 없습니다.",
     "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
     "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
   },
@@ -736,7 +741,9 @@
       "needsMultimodalModel": "멀티모달 모델 필요",
       "passwordProtected": "비밀번호로 보호됨",
       "skipped": "건너뜀",
-      "pending": "보류 중"
+      "pending": "보류 중",
+      "emptyFileZeroBytes": "빈 파일 — 색인할 내용이 없습니다(0바이트)",
+      "emptyNoContent": "비어 있음 — 색인할 텍스트를 찾지 못했습니다"
     },
     "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
     "allRecordsLoadFailed": "레코드를 불러오지 못했습니다",
@@ -775,6 +782,10 @@
     "createDialog": {
       "titlePlaceholder": "예: 엔지니어링",
       "descriptionPlaceholder": "예: 개발팀 문서"
+    },
+    "nameRules": {
+      "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
+      "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     }
   },
   "connectorTypes": {
@@ -1278,7 +1289,6 @@
         "connectorsStatusNone": "없음",
         "connectorsStatusCount_one": "{{count}}개 연결됨",
         "connectorsStatusCount_other": "{{count}}개 연결됨",
-        "toolsStatusDefault": "기본값",
         "toolsStatusCount_one": "{{count}}개 사용 중",
         "toolsStatusCount_other": "{{count}}개 사용 중",
         "membersStatusOnlyYou": "나만",
@@ -1286,7 +1296,20 @@
         "suggestPlanWork": "작업 계획 세우기",
         "suggestWriteInstructions": "프로젝트 지침 작성하기",
         "suggestSummariseDocumentPrompt": "이 프로젝트의 파일 중 가장 중요한 문서를 요약해 주세요.",
-        "suggestPlanWorkPrompt": "이 프로젝트의 작업 계획을 세울 수 있게 도와주세요. 구체적인 다음 단계로 나눠 주세요."
+        "suggestPlanWorkPrompt": "이 프로젝트의 작업 계획을 세울 수 있게 도와주세요. 구체적인 다음 단계로 나눠 주세요.",
+        "visibilityShared": "{{members}}과(와) 공유됨",
+        "visibilityPrivateOwner": "소유자만 볼 수 있음",
+        "toolsStatusNone": "사용 설정된 항목 없음",
+        "toolsSubtitle": "이 프로젝트의 채팅은 여기에서 선택한 도구만 사용할 수 있습니다.",
+        "toolKind": {
+          "read": "데이터 읽기",
+          "write": "변경 수행",
+          "destructive": "삭제하거나 취소할 수 없음",
+          "unknown": "기타"
+        },
+        "toolNeedsApproval": "승인 필요",
+        "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
+        "indexingStatusLabel": "인덱싱: {{status}}"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
@@ -1297,16 +1320,71 @@
       },
       "deleteDialog": {
         "title": "이 프로젝트를 삭제하시겠습니까?",
-        "description": "프로젝트가 삭제되고 채팅 연결이 해제됩니다. 채팅 자체는 삭제되지 않습니다.",
+        "description": "프로젝트를 삭제하면 되돌릴 수 없습니다:",
         "confirm": "프로젝트 삭제",
         "deleting": "삭제 중…",
-        "failed": "프로젝트를 삭제하지 못했습니다"
+        "failed": "프로젝트를 삭제하지 못했습니다",
+        "filesDeleted": "프로젝트에 업로드한 파일이 영구적으로 삭제됩니다.",
+        "membersLoseAccess": "공유된 모든 사람이 액세스 권한을 잃습니다.",
+        "chatsKept": "채팅은 유지되지만 더 이상 프로젝트에 속하지 않습니다."
       },
       "roles": {
         "owner": "소유자",
         "editor": "편집자",
         "viewer": "뷰어"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "소유자",
+          "description": "프로젝트를 만들고 사용할 수 있는 사람을 관리합니다"
+        },
+        "editor": {
+          "label": "편집 가능",
+          "description": "이름, 지침, 파일, 커넥터, 도구를 변경하고 프로젝트에서 채팅합니다"
+        },
+        "viewer": {
+          "label": "보기 가능",
+          "description": "프로젝트를 열고 해당 파일과 도구로 채팅합니다"
+        }
+      },
+      "unknownMember": "알 수 없는 멤버",
+      "unknownTeam": "알 수 없는 팀",
+      "allMembersTeam": "조직의 모든 사용자",
+      "ownerCannotChange": "여기에서는 프로젝트 소유자의 액세스 권한을 변경할 수 없습니다.",
+      "sharingSettings": {
+        "saved": "공유 설정을 저장했습니다",
+        "saveFailed": "공유 설정을 저장하지 못했습니다",
+        "visibilityLabel": "이 프로젝트를 찾을 수 있는 사람",
+        "visibilityPrivate": "공유된 사람만",
+        "visibilityOrg": "조직의 모든 사용자",
+        "visibilityPrivateHint": "나와 아래의 사람 또는 팀만 열 수 있습니다.",
+        "visibilityOrgHint": "조직의 누구나 찾아서 열 수 있습니다.",
+        "chatSharingLabel": "이 프로젝트의 새 채팅",
+        "chatSharingPrivate": "시작한 사람만 볼 수 있음",
+        "chatSharingMembers": "프로젝트 멤버와 공유",
+        "chatSharingPrivateHint": "각 채팅은 작성자가 공유하지 않는 한 비공개로 유지됩니다.",
+        "chatSharingMembersHint": "멤버가 새 채팅을 볼 수 있으며, 작성자는 여전히 채팅을 비공개로 설정할 수 있습니다."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "프로젝트 세부 정보 편집",
+        "saved": "프로젝트 세부 정보를 저장했습니다",
+        "saveFailed": "프로젝트 세부 정보를 저장하지 못했습니다"
+      },
+      "editDetails": "이름 및 설명 편집",
+      "leaveProject": "프로젝트 나가기",
+      "leaveDialog": {
+        "title": "{{name}}에서 나갈까요?",
+        "description": "이 프로젝트와 파일에 대한 액세스 권한을 잃게 됩니다. 내 채팅은 그대로 유지됩니다. 소유자가 다시 추가할 수 있습니다.",
+        "leaving": "나가는 중…",
+        "left": "프로젝트에서 나갔습니다",
+        "failed": "프로젝트에서 나가지 못했습니다",
+        "inherited": "이 프로젝트에서 나갈 수 없습니다. 조직이나 팀을 통해 액세스 권한을 받았기 때문입니다. 공유 대상을 변경하도록 소유자에게 요청하세요."
+      },
+      "archiveSuccess": "프로젝트를 보관했습니다",
+      "archivedNoNewChats": "이 프로젝트는 보관되어 새 채팅을 시작할 수 없습니다.",
+      "archivedBanner": "이 프로젝트는 보관되었습니다. 새 채팅을 시작하려면 보관을 해제하세요.",
+      "archivedBannerMember": "이 프로젝트는 보관되어 새 채팅을 시작할 수 없습니다. 소유자에게 보관 해제를 요청하세요."
     },
     "demoHide": "데모 데이터 숨기기",
     "scrollAttachmentsLeft": "첨부 파일 왼쪽으로 스크롤",
@@ -1478,7 +1556,19 @@
       "downloading": "아티팩트 다운로드 중"
     },
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
-    "sourcesSettingUp": "아직 설정 중: {{sources}}. 답변에 이 소스의 내용이 아직 모두 포함되지 않을 수 있습니다."
+    "sourcesSettingUp": "아직 설정 중: {{sources}}. 답변에 이 소스의 내용이 아직 모두 포함되지 않을 수 있습니다.",
+    "noResultsFor": "“{{query}}”에 대한 결과가 없습니다",
+    "removeSelectedSource": "{{name}} 제거",
+    "diagramSourceCopied": "다이어그램 소스를 복사했습니다",
+    "diagramImageCopied": "다이어그램 이미지를 복사했습니다",
+    "diagramImageDownloaded": "클립보드를 사용할 수 없어 다이어그램을 PNG로 저장했습니다",
+    "diagramCopyFailed": "다이어그램을 복사하지 못했습니다",
+    "fitDiagram": "화면에 맞추기",
+    "answerMode": {
+      "internalSearch": "내부 검색",
+      "webSearch": "웹 검색",
+      "internalAndWebSearch": "내부 + 웹 검색"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -1618,7 +1708,15 @@
         "editError": "초대를 업데이트하지 못했습니다",
         "editTitle": "초대 편집",
         "update": "초대 업데이트",
-        "smtpNotConfiguredTooltip": "SMTP가 구성되지 않았습니다. 초대를 보내기 전에 이메일 설정을 완료하세요."
+        "smtpNotConfiguredTooltip": "SMTP가 구성되지 않았습니다. 초대를 보내기 전에 이메일 설정을 완료하세요.",
+        "userCount_other": "사용자 {{count}}명",
+        "successDescriptionCount_other": "사용자 {{count}}명을 초대했습니다",
+        "alreadyMembersSkipped_other": "주소 {{count}}개는 이미 구성원의 주소이므로 초대를 보내지 않았습니다.",
+        "alreadyMembersTitle": "이미 구성원입니다 — 초대를 보내지 않았습니다",
+        "alreadyMembersDescription_other": "모든 주소가 이미 활성 구성원의 주소입니다.",
+        "importUnsupportedType": ".csv, .xlsx, .xls 파일만 가져올 수 있습니다.",
+        "importTooLongSkipped_other": "254자를 넘는 항목 {{count}}개는 제외했습니다.",
+        "invalidBlocksSend_other": "잘못된 주소 {{count}}개가 빨간색으로 표시되어 있습니다. 초대를 보내려면 수정하거나 삭제하세요."
       },
       "bulk": {
         "resendInvite": "초대 다시 보내기",
@@ -1744,7 +1842,11 @@
         "viewTeam": "팀 보기",
         "delete": "삭제",
         "deleteSuccess": "팀이 삭제되었습니다",
-        "deleteError": "팀을 삭제하지 못했습니다"
+        "deleteError": "팀을 삭제하지 못했습니다",
+        "deleteConfirmTitle": "팀을 삭제할까요?",
+        "deleteConfirmMessage": "\"{{name}}\" 팀이 삭제되고 구성원은 이 팀을 통해 공유된 액세스 권한을 잃게 됩니다. 이 작업은 되돌릴 수 없습니다.",
+        "deleteConfirmButton": "팀 삭제",
+        "deleting": "삭제 중…"
       },
       "create": {
         "title": "팀 만들기",
@@ -1763,7 +1865,8 @@
         "successDescription": "\"{{name}}\"이(가) 성공적으로 생성되었습니다",
         "errorGeneric": "팀을 생성하지 못했습니다",
         "applyToAll": "전체에 적용",
-        "memberRoles": "멤버 역할"
+        "memberRoles": "멤버 역할",
+        "errorDescription": "팀을 만들지 못했습니다. 다시 시도하세요."
       },
       "detail": {
         "nameLabel": "팀 이름",
@@ -3433,6 +3536,15 @@
             "action": "다시 동기화하세요. 계속 실패하면 커넥터 설정을 확인하거나 관리자에게 문의하세요."
           }
         }
+      },
+      "teamVisibilityDialog": {
+        "title": "조직의 모든 사람이 이 데이터를 보게 됩니다",
+        "noPermissions": "Community Edition에서는 {{name}} 커넥터가 권한을 적용하지 않습니다. 팀 커넥터가 동기화하는 모든 항목은 조직의 모든 사람이 검색할 수 있습니다.",
+        "usePersonal": "이 데이터가 본인에게만 필요하다면 개인 커넥터로 설정하세요. 팀 커넥터는 조직 전체가 읽어도 되는 데이터에만 사용하세요.",
+        "teamOnly": "{{name}}은(는) 팀 커넥터로만 사용할 수 있습니다. 조직 전체가 읽어도 되는 데이터에만 연결하고, 다른 것은 읽을 수 없는 자격 증명을 사용하세요.",
+        "cancel": "취소",
+        "continueTeam": "팀 커넥터로 계속",
+        "goToPersonal": "개인 커넥터 설정"
       }
     },
     "mcpServers": {
@@ -4007,7 +4119,11 @@
       "infoBanner": "OTP 인증 및 비밀번호 재설정과 같은 이메일 기반 기능을 사용하려면 SMTP 구성이 필요합니다. 아래에 이메일 서버의 세부 정보를 입력해 주세요.",
       "toasts": {
         "saved": "메일 설정이 저장되었습니다",
-        "savedDescription": "이메일 서버 구성이 업데이트되었습니다."
+        "savedDescription": "이메일 서버 구성이 업데이트되었습니다.",
+        "turnedOff": "이메일을 껐습니다",
+        "turnedOn": "이메일을 켰습니다",
+        "deleted": "SMTP 설정을 삭제했습니다",
+        "actionFailed": "SMTP 설정을 업데이트하지 못했습니다. 다시 시도하세요."
       },
       "fields": {
         "host": "SMTP 호스트 *",
@@ -4021,6 +4137,21 @@
         "usernamePlaceholder": "SMTP 사용자 이름 입력",
         "password": "비밀번호 (선택 사항)",
         "passwordHint": "SMTP 인증용 비밀번호 (필요한 경우)"
+      },
+      "turnedOff": "꺼짐",
+      "emailSending": "이메일 보내기",
+      "deleteSmtp": "SMTP 설정 삭제",
+      "turnOffDialog": {
+        "title": "이메일을 끄시겠습니까?",
+        "message": "PipesHub가 초대, 비밀번호 재설정, 로그인 코드, 알림 등 모든 이메일 발송을 중단합니다. SMTP 설정은 유지되므로 언제든지 이메일을 다시 켤 수 있습니다.",
+        "confirm": "끄기"
+      },
+      "deleteDialog": {
+        "title": "SMTP 설정을 삭제하시겠습니까?",
+        "warning": "SMTP 서버 설정이 영구적으로 삭제됩니다. 되돌릴 수 없습니다.",
+        "message": "SMTP를 다시 구성할 때까지 PipesHub는 초대, 비밀번호 재설정, 로그인 코드를 포함한 모든 이메일을 보내지 않습니다. 이메일로 받은 코드로 로그인하는 사용자는 로그인할 수 없습니다.",
+        "confirm": "삭제",
+        "deleting": "삭제 중…"
       }
     },
     "prompts": {
@@ -4138,7 +4269,12 @@
         "title": "비밀번호 및 보안",
         "accountPassword": "계정 비밀번호",
         "followEmailDescription": "이메일의 안내에 따라 비밀번호 설정을 완료해 주세요",
-        "changePassword": "비밀번호 변경"
+        "changePassword": "비밀번호 변경",
+        "setPassword": "비밀번호 설정",
+        "setPasswordDescription": "아직 비밀번호를 설정하지 않았습니다. 비밀번호를 설정할 수 있는 링크를 이메일로 보내 드리며, 워크스페이스에서 허용하는 경우 이메일과 비밀번호로도 로그인할 수 있습니다.",
+        "setPasswordDialogTitle": "비밀번호 설정",
+        "setPasswordDialogMessage": "등록된 이메일 주소로 비밀번호 설정 링크를 보내 드리고, 이 세션에서 로그아웃됩니다.",
+        "setPasswordDialogConfirm": "비밀번호 설정 링크 보내기"
       },
       "rolesPermissions": {
         "title": "역할 및 권한",
@@ -4185,6 +4321,10 @@
         "saveErrorDescription": "프로필을 업데이트할 수 없습니다",
         "passwordUpdated": "비밀번호가 업데이트되었습니다",
         "passwordUpdatedDescription": "로그아웃됩니다. 다시 로그인해 주세요...",
+        "passwordSetupEmailSent": "비밀번호 설정 링크를 보냈습니다",
+        "passwordSetupEmailSentDescription": "이메일을 확인하여 비밀번호를 설정하세요. 이 세션에서 로그아웃합니다…",
+        "passwordSetupEmailError": "이메일을 보내지 못했습니다",
+        "passwordSetupEmailErrorDescription": "다시 시도해 주세요.",
         "emailVerificationSent": "이메일 확인 링크를 보냈습니다",
         "emailVerificationSentDescription": "이메일을 확인하면 로그아웃됩니다",
         "discardSuccess": "편집 내용을 취소했습니다",
@@ -5394,7 +5534,9 @@
       "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요.",
       "loadFailedTitle": "로그인을 불러올 수 없습니다",
       "loadFailedDescription": "PipesHub가 로그인 옵션을 불러오기 위해 서버에 연결하지 못했습니다. 연결 또는 서버 주소를 확인한 후 다시 시도하세요.",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "tabPassword": "비밀번호",
+      "tabEmailOtp": "이메일 OTP"
     },
     "common": {
       "signIn": "로그인",
@@ -5431,12 +5573,49 @@
       "integrationTitle": "인증이 PipesHub로 전송되었습니다",
       "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
       "openApp": "PipesHub 열기"
+    },
+    "toasts": {
+      "checkInbox": "받은편지함을 확인하세요",
+      "resetLinkSent": "이 이메일로 등록된 계정이 있으면 비밀번호 재설정 링크를 보냈습니다.",
+      "resetRequestFailed": "비밀번호 재설정을 요청할 수 없습니다",
+      "tryAgainLater": "나중에 다시 시도하세요.",
+      "contactAdmin": "관리자에게 문의하세요.",
+      "noPasswordSetTitle": "이 계정에는 비밀번호가 설정되어 있지 않습니다.",
+      "noPasswordSetDescription": "아래의 비밀번호 찾기를 사용해 비밀번호를 설정하세요.",
+      "checkEmail": "이메일을 확인하세요",
+      "otpSentDescription": "이 이메일로 코드 로그인이 가능하면 코드를 보내고 있습니다. 몇 분 안에 도착하지 않으면 스팸 폴더를 확인하거나 나중에 다시 시도하세요.",
+      "otpSendFailed": "인증 코드를 보낼 수 없습니다",
+      "additionalVerification": "추가 인증이 필요합니다",
+      "completeNextStep": "계속하려면 다음 단계를 완료하세요.",
+      "signInFailedTitle": "로그인 실패",
+      "unexpectedResponse": "예기치 않은 응답입니다. 다시 시도하세요.",
+      "signInFailed": "로그인에 실패했습니다. 다시 시도하세요.",
+      "verificationFailed": "인증에 실패했습니다. 다시 시도하세요.",
+      "googleSignInFailed": "Google 로그인에 실패했습니다. 다시 시도하세요.",
+      "microsoftSignInFailed": "Microsoft 로그인에 실패했습니다. 다시 시도하세요.",
+      "tryAgainAfter": "{{time}} 이후에 다시 시도하세요."
     }
   },
   "healthGate": {
     "title": "서버에 연결할 수 없음",
     "description": "현재 서버에 연결할 수 없습니다. 서버가 시작 중이거나 점검 중일 수 있습니다. 다시 연결을 시도하고 있습니다.",
-    "contactAdmin": "문제가 계속되면 PipesHub 관리자에게 문의해 주세요."
+    "contactAdmin": "문제가 계속되면 PipesHub 관리자에게 문의해 주세요.",
+    "toasts": {
+      "servicesUnavailableTitle": "일부 서비스를 사용할 수 없습니다",
+      "affected": "영향을 받는 서비스: {{services}}",
+      "featuresUnavailableReconnect": "일부 기능을 일시적으로 사용할 수 없습니다. 자동으로 다시 연결되며, 계속되면 관리자에게 문의하세요.",
+      "featuresUnavailable": "일부 기능을 일시적으로 사용할 수 없습니다",
+      "viewStatus": "상태 보기",
+      "servicesDown_one": "{{services}}을(를) 현재 사용할 수 없습니다",
+      "servicesDown_other": "{{services}}을(를) 현재 사용할 수 없습니다"
+    },
+    "serviceGate": {
+      "title": "서비스를 사용할 수 없음",
+      "requires_one": "이 페이지에는 {{services}}이(가) 필요하지만 현재 사용할 수 없습니다. 서비스가 복구되면 자동으로 다시 사용할 수 있습니다.",
+      "requires_other": "이 페이지에는 {{services}}이(가) 필요하지만 현재 사용할 수 없습니다. 서비스가 복구되면 자동으로 다시 사용할 수 있습니다.",
+      "memberBody": "이 페이지를 일시적으로 사용할 수 없습니다. 자동으로 다시 사용할 수 있게 되며, 계속되면 관리자에게 문의하세요.",
+      "viewStatus": "서비스 상태 보기"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "질문:",
@@ -5570,7 +5749,13 @@
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",
-    "invite": "Pipeshub에 초대"
+    "invite": "Pipeshub에 초대",
+    "searchPlaceholderTeams": "이메일, 팀 또는 이름(쉼표로 구분)",
+    "searchPlaceholderUsers": "이메일 또는 이름(쉼표로 구분)",
+    "alreadyRemoved": "이미 제거됨",
+    "alreadyRemovedDescription": "{{name}} 님은 이미 액세스 권한이 없었습니다",
+    "removeConfirmTitle": "액세스 권한을 제거할까요?",
+    "removeConfirmDescription": "{{name}} 님은 즉시 액세스 권한을 잃습니다. 나중에 다시 공유할 수 있습니다."
   },
   "demoData": {
     "badge": {

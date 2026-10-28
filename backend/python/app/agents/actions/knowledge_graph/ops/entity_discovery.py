@@ -14,6 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
     remember_entities,
 )
@@ -167,6 +168,8 @@ async def execute_search_entities(
             "message": "No accessible entities matched",
             "results": [],
         }
+        if note := limited_scope_note(context):
+            payload["scopeNote"] = note
         if ignored:
             payload["ignoredEntityTypes"] = ignored
         if kind_notes:

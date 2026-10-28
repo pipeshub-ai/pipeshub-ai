@@ -4,13 +4,12 @@ import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import aclosing
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
-import pdfplumber
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -38,6 +37,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -45,10 +45,11 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers import parse_pool
+from app.modules.parsers.parse_pool import ParseWorkerError
+from app.modules.parsers.pdf.pdf_inspection import needs_ocr_and_page_count
 from app.modules.parsers.pdf.pdf_rasterizer import (
-    count_chars_per_page_from_bytes_sync,
-    render_all_pages_as_pil_from_bytes_sync,
+    render_all_pages_as_png,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
@@ -83,6 +84,7 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
+from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
@@ -196,43 +198,9 @@ class AttachmentUploadRequest(BaseModel):
     attachments: list[AttachmentUploadItem]
 
 
-def _text_layer_char_counts(file_content: bytes) -> list[int] | None:
-    try:
-        return count_chars_per_page_from_bytes_sync(file_content)
-    except Exception:
-        logger.warning(
-            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
-            exc_info=True,
-        )
-        return None
-
-
-def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
-    chars_per_page = _text_layer_char_counts(file_content)
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        total = len(pdf.pages)
-        if total == 0:
-            return False
-        if chars_per_page is None or len(chars_per_page) != total:
-            chars_per_page = [None] * total
-        # A page with no text layer always needs OCR (`needs_ocr` sees zero text
-        # density), so it is counted without pdfplumber, which can spend minutes
-        # walking a page whose glyphs are drawn as vector paths.
-        ocr_count = sum(
-            1
-            for page, chars in zip(pdf.pages, chars_per_page)
-            if chars == 0 or OCRStrategy.needs_ocr(page, logger)
-        )
-    return ocr_count / total >= 0.5
-
-
-def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
+def _build_pdf_image_blocks(png_pages: list[bytes]) -> BlocksContainer:
     blocks: list[Block] = []
-    images = render_all_pages_as_pil_from_bytes_sync(file_content, resolution=144)
-    for idx, image in enumerate(images):
-        buf = BytesIO()
-        image.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+    for idx, png_bytes in enumerate(png_pages):
         data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
         blocks.append(
             Block(
@@ -244,11 +212,6 @@ def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
             )
         )
     return BlocksContainer(blocks=blocks, block_groups=[])
-
-
-def _pdf_page_count(file_content: bytes) -> int:
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        return len(pdf.pages)
 
 
 # Limits for the copy of an uploaded image kept in its parsed record, which is
@@ -504,12 +467,25 @@ def _attachment_unreadable(file_name: str, kind: str) -> str:
     return f"Couldn't read {file_name}. {_ATTACHMENT_UNREADABLE_HINTS[kind]}"
 
 
+def _attachment_too_heavy(file_name: str) -> str:
+    return (
+        f"{file_name} is too large or complex to read right now, so it wasn't attached. "
+        "Try again, or split it into smaller files and attach those."
+    )
+
+
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
 # The browser gives an attachment upload 90s, and one stalled vision call can run
 # for minutes. An image left undescribed still reaches a multimodal chat model.
 _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S = 40
+
+# Reading the PDFs and describing images share this, so the upload answers
+# before a proxy in front of the app gives up on it (60s on a load balancer,
+# 100s on Cloudflare) and drops it without a status. A PDF still being read
+# then fails with a message, its parse worker killed rather than left running.
+_CHAT_ATTACHMENT_UPLOAD_BUDGET_S = 50
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
@@ -672,6 +648,8 @@ async def upload_chat_attachments(
     file_docs: list[dict[str, Any]] = []
     parsed_blocks_by_record: dict[str, BlocksContainer] = {}
     ocr_image_pages_used = 0
+    loop = asyncio.get_running_loop()
+    upload_deadline = loop.time() + _CHAT_ATTACHMENT_UPLOAD_BUDGET_S
 
     container: QueryAppContainer = request.app.container
     service_logger = container.logger()
@@ -786,30 +764,48 @@ async def upload_chat_attachments(
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
         else:
             try:
-                needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
-                if needs_ocr:
-                    page_count = await asyncio.to_thread(_pdf_page_count, file_binary)
-                    if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"{item.fileName} has too many scanned pages to attach: the limit is "
-                                f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
-                                "or split the document."
-                            ),
-                        )
-                    block_containers = await asyncio.to_thread(
-                        _build_pdf_image_blocks, file_binary
+                # pdfplumber and the layout parser are pure Python and hold the GIL,
+                # so they run in parse workers: a slow or hostile file then costs
+                # its own upload only, never this loop or this process's memory.
+                async with asyncio.timeout_at(upload_deadline):
+                    needs_ocr, page_count = await parse_pool.submit(
+                        needs_ocr_and_page_count,
+                        file_binary,
+                        label=item.fileName,
+                        size=len(file_binary),
                     )
-                    ocr_image_pages_used += page_count
-                    parse_mode = "image_direct"
-                else:
-                    parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
-                    block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
-                    parse_mode = "pdfplumber"
+                    if needs_ocr:
+                        if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                    f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                    "or split the document."
+                                ),
+                            )
+                        png_pages = await parse_pool.submit(
+                            render_all_pages_as_png,
+                            file_binary,
+                            144,
+                            label=item.fileName,
+                            size=len(file_binary),
+                        )
+                        block_containers = _build_pdf_image_blocks(png_pages)
+                        ocr_image_pages_used += page_count
+                        parse_mode = "image_direct"
+                    else:
+                        parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
+                        block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                        parse_mode = "pdfplumber"
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
+            except (TimeoutError, ParseWorkerError, BrokenProcessPool, MemoryError) as e:
+                # A worker that overran or died, or a renderer it started that
+                # died: most likely out of memory, not a damaged file.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
             except Exception as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
@@ -895,8 +891,9 @@ async def upload_chat_attachments(
 
         # One budget for the whole request: its records are indexed one after
         # another, and the Slack bot and API send up to 10 files in one upload.
-        loop = asyncio.get_running_loop()
-        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
+        describe_deadline = min(
+            loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S, upload_deadline
+        )
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -1251,6 +1248,58 @@ async def _org_user_keys(
             continue
         keys.append(user_key)
     return keys
+
+
+# Records read per address; an address that fills it is treated as unreadable.
+_RECORDS_PER_URL_LIMIT = 50
+
+
+class RecordAccessRequest(BaseModel):
+    recordIds: list[str] = Field(default_factory=list, max_length=500)
+    # Addresses of records known only by link (a tool's reference data): readable
+    # when every live record stored at the address is readable.
+    webUrls: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/chat/records/access")
+@inject
+async def check_viewer_record_access(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Which of these records the viewer named in the service token may read, by
+    the same `check_access` as search and `fetch_record`. Node signs the viewer's
+    own ids after authenticating them, so a shared chat is rendered for the person
+    looking at it. An access check that cannot answer is a 503, never a guess."""
+    org_id, viewer_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, RecordAccessRequest)
+    ids = list(dict.fromkeys(r for r in payload.recordIds if r))
+    urls = list(dict.fromkeys(u for u in payload.webUrls if u))
+    by_url: dict[str, list[str]] = {}
+    if urls:
+        try:
+            rows = await graph_provider.get_records_by_weburls(urls, org_id, per_address=_RECORDS_PER_URL_LIMIT)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+        for row in rows:
+            by_url.setdefault(row.get("webUrl"), []).append(row["id"])
+    try:
+        readable = await accessible_node_ids(
+            graph_provider, set(ids) | {r for rs in by_url.values() for r in rs}, viewer_id, org_id,
+        )
+    except PermissionVerificationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+    return {
+        "accessible": [r for r in ids if r in readable],
+        "accessibleUrls": [
+            u for u in urls
+            if by_url.get(u)
+            # A full page means records may be cut off, so the address is not trusted.
+            and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
+            and all(r in readable for r in by_url[u])
+        ],
+    }
 
 
 @router.post("/chat/attachments/permissions")

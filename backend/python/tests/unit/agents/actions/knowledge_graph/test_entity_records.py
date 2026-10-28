@@ -1,11 +1,15 @@
 """Unit tests for ``ops/entity_records.py`` (``find_records_by_entity`` and
 record-group scoping for ``search(entity_ids)``)."""
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import entity_filters, entity_records
-from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_INDEX_CACHE_KEY,
+    LIMITED_SCOPE_NOTE,
+)
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
     NO_ACCESSIBLE_RECORDS_MSG,
@@ -19,6 +23,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     EntityRecordPage,
 )
+from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -80,6 +85,12 @@ class TestFindRecordsByEntity:
     async def test_no_rows_is_the_same_response_as_no_access(self, patched) -> None:
         ok, text = await execute_find_records_by_entity(_state(), "rg-x", entity_type="record_group")
         assert (ok, text) == (True, NO_ACCESSIBLE_RECORDS_MSG)
+
+    @pytest.mark.asyncio
+    async def test_no_rows_inside_a_selection_says_only_the_selection_was_searched(self, patched) -> None:
+        patched[0].return_value = replace(CONTEXT, row_scopes=(SelectionScope(groups={"g": "conf-1"}),))
+        ok, text = await execute_find_records_by_entity(_state(), "rg-x", entity_type="record_group")
+        assert (ok, text) == (True, f"{NO_ACCESSIBLE_RECORDS_MSG} {LIMITED_SCOPE_NOTE}")
 
     @pytest.mark.asyncio
     async def test_empty_page_past_the_end_does_not_claim_the_entity_is_empty(

@@ -40,7 +40,11 @@
     "tabArchived": "Archived",
     "archivedEmptyState": "No archived projects",
     "archivedEmptyStateHint": "Projects you archive will show up here.",
-    "actionsLabel": "Project actions"
+    "actionsLabel": "Project actions",
+    "noSearchResults": "No projects match “{{query}}”",
+    "noSearchResultsHint": "Try a different name, or clear the search.",
+    "clearSearch": "Clear search",
+    "cardActionsLabel": "Actions for {{name}}"
   },
   "timeGroup": {
     "today": "Today",
@@ -239,7 +243,8 @@
     "beta": "Beta",
     "searchChats": "Search chats",
     "inbox": "Inbox",
-    "notifications": "Notifications"
+    "notifications": "Notifications",
+    "home": "Home"
   },
   "artifacts": {
     "title": "All artifacts",
@@ -422,7 +427,7 @@
     "willBeReindexed": "will be reindexed",
     "reindexConfirm": "Reindex this {{type}}?",
     "reindexDescription": "This will update the search index for this {{type}} and its contents.",
-    "deleteCollectionBody": "'{{name}}' and everything in it will be deleted. It will also be removed from any agents that use it.",
+    "deleteCollectionBody": "'{{name}}' and everything in it will be permanently deleted. It will also be removed from any agents that use it. This can't be undone.",
     "deleteFolderBody": "'{{name}}' and everything in it will be deleted from this collection.",
     "deleteFileBody": "'{{name}}' will be deleted from this collection."
   },
@@ -647,7 +652,9 @@
       "needsMultimodalModel": "Needs multimodal model",
       "passwordProtected": "Password protected",
       "skipped": "Skipped",
-      "pending": "Pending"
+      "pending": "Pending",
+      "emptyFileZeroBytes": "Empty file — nothing to index (0 bytes)",
+      "emptyNoContent": "Empty — no text was found to index"
     },
     "allRecordsBusy_one": "This view is busy right now. Retrying in {{count}} second.",
     "allRecordsBusy_other": "This view is busy right now. Retrying in {{count}} seconds.",
@@ -687,6 +694,10 @@
     "createDialog": {
       "titlePlaceholder": "e.g. Engineering",
       "descriptionPlaceholder": "e.g. Docs for the dev team"
+    },
+    "nameRules": {
+      "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
+      "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
     }
   },
   "connectorTypes": {
@@ -1229,7 +1240,6 @@
         "connectorsStatusNone": "None",
         "connectorsStatusCount_one": "{{count}} connected",
         "connectorsStatusCount_other": "{{count}} connected",
-        "toolsStatusDefault": "Default",
         "toolsStatusCount_one": "{{count}} enabled",
         "toolsStatusCount_other": "{{count}} enabled",
         "membersStatusOnlyYou": "Only you",
@@ -1237,7 +1247,20 @@
         "suggestPlanWork": "Plan a piece of work",
         "suggestWriteInstructions": "Write the project instructions",
         "suggestSummariseDocumentPrompt": "Summarize the most important document in this project's files.",
-        "suggestPlanWorkPrompt": "Help me plan a piece of work for this project. Break it down into concrete next steps."
+        "suggestPlanWorkPrompt": "Help me plan a piece of work for this project. Break it down into concrete next steps.",
+        "visibilityShared": "Shared with {{members}}",
+        "visibilityPrivateOwner": "Private to the owner",
+        "toolsStatusNone": "None enabled",
+        "toolsSubtitle": "Chats in this project can use only the tools you tick here.",
+        "toolKind": {
+          "read": "Reads data",
+          "write": "Makes changes",
+          "destructive": "Deletes or can't be undone",
+          "unknown": "Other"
+        },
+        "toolNeedsApproval": "Needs approval",
+        "toolNeedsApprovalHint": "This tool can delete data. In a project chat it runs only after someone approves it.",
+        "indexingStatusLabel": "Indexing: {{status}}"
       },
       "moveDialog": {
         "title": "Move to project",
@@ -1248,16 +1271,71 @@
       },
       "deleteDialog": {
         "title": "Delete this project?",
-        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "description": "Deleting a project can't be undone:",
         "confirm": "Delete project",
         "deleting": "Deleting…",
-        "failed": "Failed to delete project"
+        "failed": "Failed to delete project",
+        "filesDeleted": "Files uploaded to the project are permanently deleted.",
+        "membersLoseAccess": "Everyone it's shared with loses access.",
+        "chatsKept": "Chats are kept, but are no longer part of a project."
       },
       "roles": {
         "owner": "Owner",
         "editor": "Editor",
         "viewer": "Viewer"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Owner",
+          "description": "Created the project and manages who can use it"
+        },
+        "editor": {
+          "label": "Can edit",
+          "description": "Change the name, instructions, files, connectors and tools, and chat in the project"
+        },
+        "viewer": {
+          "label": "Can view",
+          "description": "Open the project and chat with its files and tools"
+        }
+      },
+      "unknownMember": "Unknown member",
+      "unknownTeam": "Unknown team",
+      "allMembersTeam": "Everyone in your organization",
+      "ownerCannotChange": "The project owner's access can't be changed here.",
+      "sharingSettings": {
+        "saved": "Sharing settings saved",
+        "saveFailed": "Couldn't save sharing settings",
+        "visibilityLabel": "Who can find this project",
+        "visibilityPrivate": "Only people it's shared with",
+        "visibilityOrg": "Everyone in your organization",
+        "visibilityPrivateHint": "Only you and the people or teams below can open it.",
+        "visibilityOrgHint": "Anyone in your organization can find and open it.",
+        "chatSharingLabel": "New chats in this project",
+        "chatSharingPrivate": "Private to whoever starts them",
+        "chatSharingMembers": "Shared with project members",
+        "chatSharingPrivateHint": "Each chat stays private unless its author shares it.",
+        "chatSharingMembersHint": "Members can see new chats; an author can still make one private."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Edit project details",
+        "saved": "Project details saved",
+        "saveFailed": "Couldn't save project details"
+      },
+      "editDetails": "Edit name and description",
+      "leaveProject": "Leave project",
+      "leaveDialog": {
+        "title": "Leave {{name}}?",
+        "description": "You'll lose access to this project and its files. Your chats stay yours. The owner can add you back.",
+        "leaving": "Leaving…",
+        "left": "You left the project",
+        "failed": "Couldn't leave the project",
+        "inherited": "You can't leave this project: your access comes from your organisation or a team. Ask the owner to change who it's shared with."
+      },
+      "archiveSuccess": "Project archived",
+      "archivedNoNewChats": "This project is archived, so new chats can't be started in it.",
+      "archivedBanner": "This project is archived. Unarchive it to start new chats.",
+      "archivedBannerMember": "This project is archived, so new chats can't be started. Ask its owner to unarchive it."
     },
     "demoHide": "Hide demo data",
     "scrollAttachmentsLeft": "Scroll attachments left",
@@ -1393,7 +1471,19 @@
       "downloading": "Downloading artifact"
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
-    "sourcesSettingUp": "Still being set up: {{sources}}. Answers may not include everything from these sources yet."
+    "sourcesSettingUp": "Still being set up: {{sources}}. Answers may not include everything from these sources yet.",
+    "noResultsFor": "No results found for “{{query}}”",
+    "removeSelectedSource": "Remove {{name}}",
+    "diagramSourceCopied": "Diagram source copied",
+    "diagramImageCopied": "Diagram image copied",
+    "diagramImageDownloaded": "Clipboard unavailable, diagram saved as PNG",
+    "diagramCopyFailed": "Couldn't copy the diagram",
+    "fitDiagram": "Fit to screen",
+    "answerMode": {
+      "internalSearch": "Internal search",
+      "webSearch": "Web search",
+      "internalAndWebSearch": "Internal + web search"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1533,7 +1623,21 @@
         "editError": "Failed to update invite",
         "editTitle": "Edit invite",
         "update": "Update invite",
-        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites."
+        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites.",
+        "userCount_one": "{{count}} user",
+        "userCount_other": "{{count}} users",
+        "successDescriptionCount_one": "{{count}} user has been invited",
+        "successDescriptionCount_other": "{{count}} users have been invited",
+        "alreadyMembersSkipped_one": "{{count}} address already belongs to a member, so no invite was sent to it.",
+        "alreadyMembersSkipped_other": "{{count}} addresses already belong to members, so no invites were sent to them.",
+        "alreadyMembersTitle": "Already members — no invites sent",
+        "alreadyMembersDescription_one": "This address already belongs to an active member.",
+        "alreadyMembersDescription_other": "Every address already belongs to an active member.",
+        "importUnsupportedType": "Only .csv, .xlsx and .xls files can be imported.",
+        "importTooLongSkipped_one": "{{count}} entry longer than 254 characters was left out.",
+        "importTooLongSkipped_other": "{{count}} entries longer than 254 characters were left out.",
+        "invalidBlocksSend_one": "{{count}} invalid address is marked in red. Fix or remove it to send invites.",
+        "invalidBlocksSend_other": "{{count}} invalid addresses are marked in red. Fix or remove them to send invites."
       },
       "bulk": {
         "resendInvite": "Resend invite",
@@ -1665,7 +1769,11 @@
         "viewTeam": "View team",
         "delete": "Delete",
         "deleteError": "Failed to delete team",
-        "deleteSuccess": "Team deleted"
+        "deleteSuccess": "Team deleted",
+        "deleteConfirmTitle": "Delete team?",
+        "deleteConfirmMessage": "\"{{name}}\" will be deleted and its members will lose access shared through it. This can't be undone.",
+        "deleteConfirmButton": "Delete team",
+        "deleting": "Deleting…"
       },
       "create": {
         "accessComingSoon": "Access permissions coming soon",
@@ -1684,7 +1792,8 @@
         "submit": "Create team",
         "successDescription": "\"{{name}}\" has been created successfully",
         "successTitle": "Team created!",
-        "title": "Create team"
+        "title": "Create team",
+        "errorDescription": "Could not create the team. Please try again."
       },
       "detail": {
         "accessComingSoon": "Access permissions coming soon",
@@ -1753,7 +1862,7 @@
         "clientSecretsHeading": "Client secrets",
         "clientSecretsHelper": "A client secret is required to authenticate this application with the API.",
         "generateSecret": "Generate new client secret",
-        "generatingSecret": "GeneratingΓÇª",
+        "generatingSecret": "Generating…",
         "newSecretLabel": "New client secret",
         "advancedSectionTitle": "Advanced",
         "statusLabel": "STATUS",
@@ -1761,7 +1870,7 @@
         "statusSuspended": "Suspended",
         "suspendApplicationButton": "Suspend application",
         "activateApplicationButton": "Activate",
-        "statusActionPending": "UpdatingΓÇª",
+        "statusActionPending": "Updating…",
         "typeKeywordToConfirm": "Type '{{keyword}}' to confirm",
         "typedConfirmFallbackName": "this application",
         "deleteTypedConfirmTitle": "Delete OAuth application",
@@ -1775,7 +1884,7 @@
         "suspendTypedConfirmBodyLine1": "Are you sure you want to suspend {{name}}? New tokens and usage may be blocked until you activate the application again.",
         "suspendTypedConfirmBodyLine2": "Existing tokens may continue to work until they expire or are revoked.",
         "suspendTypedConfirmAction": "Suspend application",
-        "suspendTypedConfirmSuspending": "SuspendingΓÇª",
+        "suspendTypedConfirmSuspending": "Suspending…",
         "suspendSuccessTitle": "Application suspended",
         "suspendErrorTitle": "Failed to suspend application",
         "activateSuccessTitle": "Application activated",
@@ -1785,7 +1894,7 @@
         "revokeTokensDescription": "Invalidates every access and refresh token for this application. This action cannot be undone. Users will need to authorize again to obtain new tokens.",
         "revokeTokensButton": "Revoke tokens",
         "revokeConfirmAction": "Revoke all",
-        "revoking": "RevokingΓÇª",
+        "revoking": "Revoking…",
         "revokeSuccessTitle": "Tokens revoked",
         "revokeSuccessDescription": "All tokens for this application have been invalidated.",
         "revokeErrorTitle": "Failed to revoke tokens",
@@ -1793,13 +1902,13 @@
         "deleteApplicationDescription": "Permanently delete this OAuth application. Clients using this app will no longer work. This action cannot be undone.",
         "deleteApplicationButton": "Delete application",
         "deleteConfirmAction": "Delete application",
-        "deletingApp": "DeletingΓÇª",
+        "deletingApp": "Deleting…",
         "deleteSuccessTitle": "Application deleted",
         "deleteSuccessDescription": "The OAuth application was removed.",
         "deleteErrorTitle": "Failed to delete application",
         "loadError": "Failed to load application.",
         "loadRetry": "Retry",
-        "loadingDetail": "Loading applicationΓÇª",
+        "loadingDetail": "Loading application…",
         "saveSuccessTitle": "Changes saved",
         "saveSuccessDescription": "Your OAuth application was updated.",
         "saveErrorTitle": "Failed to save changes",
@@ -1847,7 +1956,7 @@
         "permissionsSummary": "{{selected}} of {{total}} permissions selected",
         "selectAllScopes": "Select all",
         "clearAllScopes": "Clear all",
-        "scopesLoading": "Loading permissionsΓÇª",
+        "scopesLoading": "Loading permissions…",
         "scopesLoadError": "Failed to load permissions. Try again.",
         "scopesRetry": "Retry",
         "requiresConsent": "Requires user consent",
@@ -3287,6 +3396,15 @@
             "action": "Sync again. If it keeps failing, check the connector's settings or ask your admin."
           }
         }
+      },
+      "teamVisibilityDialog": {
+        "title": "Everyone in your organization will see this data",
+        "noPermissions": "In the Community Edition, the {{name}} connector does not apply permissions. Everything a team connector syncs is searchable by everyone in your organization.",
+        "usePersonal": "If you only need this data for yourself, set it up as a personal connector instead. Use a team connector only for data the whole organization may read.",
+        "teamOnly": "{{name}} is available only as a team connector. Connect it only to data the whole organization may read, and give it credentials that can read nothing else.",
+        "cancel": "Cancel",
+        "continueTeam": "Continue with team connector",
+        "goToPersonal": "Set up personal connector"
       }
     },
     "mcpServers": {
@@ -3711,7 +3829,11 @@
       "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
       "toasts": {
         "saved": "Mail settings saved",
-        "savedDescription": "Your email server configuration has been updated."
+        "savedDescription": "Your email server configuration has been updated.",
+        "turnedOff": "Email turned off",
+        "turnedOn": "Email turned on",
+        "deleted": "SMTP settings deleted",
+        "actionFailed": "Couldn't update the SMTP settings. Try again."
       },
       "fields": {
         "host": "SMTP host *",
@@ -3725,6 +3847,21 @@
         "usernamePlaceholder": "Enter SMTP username",
         "password": "Password (optional)",
         "passwordHint": "Password for SMTP authentication (if required)"
+      },
+      "turnedOff": "Turned off",
+      "emailSending": "Send email",
+      "deleteSmtp": "Delete SMTP settings",
+      "turnOffDialog": {
+        "title": "Turn off email?",
+        "message": "PipesHub will stop sending all email: invitations, password resets, sign-in codes and notifications. Your SMTP settings are kept, so you can turn email back on at any time.",
+        "confirm": "Turn off"
+      },
+      "deleteDialog": {
+        "title": "Delete SMTP settings?",
+        "warning": "This permanently removes your SMTP server settings. It cannot be undone.",
+        "message": "PipesHub will stop sending all email, including invitations, password resets and sign-in codes, until SMTP is configured again. People who sign in with an emailed code will not be able to sign in.",
+        "confirm": "Delete",
+        "deleting": "Deleting…"
       }
     },
     "prompts": {
@@ -3842,7 +3979,12 @@
         "title": "Password & security",
         "accountPassword": "Account password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
-        "changePassword": "Change password"
+        "changePassword": "Change password",
+        "setPassword": "Set password",
+        "setPasswordDescription": "You haven't set a password yet. We'll email you a link to set one, so you can also sign in with your email and password, if your workspace allows it.",
+        "setPasswordDialogTitle": "Set password",
+        "setPasswordDialogMessage": "We'll send a link to set your password to your registered email address, and log you out of this session.",
+        "setPasswordDialogConfirm": "Send set password link"
       },
       "rolesPermissions": {
         "title": "Roles & permissions",
@@ -3889,6 +4031,10 @@
         "saveErrorDescription": "Could not update your profile",
         "passwordUpdated": "Password has been updated",
         "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "passwordSetupEmailSent": "Set password link sent",
+        "passwordSetupEmailSentDescription": "Check your email to set your password. Logging you out of this session…",
+        "passwordSetupEmailError": "Couldn't send the email",
+        "passwordSetupEmailErrorDescription": "Please try again.",
         "emailVerificationSent": "Email verification link sent",
         "emailVerificationSentDescription": "You will be logged out when you verify the email",
         "discardSuccess": "Discarded edits",
@@ -5329,7 +5475,9 @@
       "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again.",
       "loadFailedTitle": "Couldn't load sign-in",
       "loadFailedDescription": "PipesHub couldn't reach the server to load sign-in options. Check your connection or server address and try again.",
-      "retry": "Try again"
+      "retry": "Try again",
+      "tabPassword": "Password",
+      "tabEmailOtp": "Email OTP"
     },
     "common": {
       "signIn": "Sign in",
@@ -5366,12 +5514,49 @@
       "integrationTitle": "Authorization sent to PipesHub",
       "description": "You can close this tab and return to the PipesHub app.",
       "openApp": "Open PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "Check your inbox",
+      "resetLinkSent": "If an account exists for this email, a password reset link has been sent.",
+      "resetRequestFailed": "Could not request password reset",
+      "tryAgainLater": "Please try again later.",
+      "contactAdmin": "Please contact your administrator.",
+      "noPasswordSetTitle": "No password set for this account.",
+      "noPasswordSetDescription": "Use Forgot Password below to set up your password.",
+      "checkEmail": "Check your email",
+      "otpSentDescription": "If that email can sign in with a code, one is being sent. If nothing arrives in a few minutes, check your spam folder or try again later.",
+      "otpSendFailed": "Could not send verification code",
+      "additionalVerification": "Additional verification required",
+      "completeNextStep": "Complete the next step to continue.",
+      "signInFailedTitle": "Sign-in failed",
+      "unexpectedResponse": "Unexpected response. Please try again.",
+      "signInFailed": "Sign in failed. Please try again.",
+      "verificationFailed": "Verification failed. Please try again.",
+      "googleSignInFailed": "Google sign-in failed. Please try again.",
+      "microsoftSignInFailed": "Microsoft sign-in failed. Please try again.",
+      "tryAgainAfter": "Try again after {{time}}."
     }
   },
   "healthGate": {
     "title": "Unable to connect to server",
     "description": "The server is currently unreachable. It may be starting up or undergoing maintenance. We're trying to reconnect.",
-    "contactAdmin": "If this persists, please contact your PipesHub administrator."
+    "contactAdmin": "If this persists, please contact your PipesHub administrator.",
+    "toasts": {
+      "servicesUnavailableTitle": "Some services are unavailable",
+      "affected": "Affected: {{services}}",
+      "featuresUnavailableReconnect": "Some features are temporarily unavailable. We'll reconnect automatically; if it lasts, contact your admin.",
+      "featuresUnavailable": "Some features are temporarily unavailable",
+      "viewStatus": "View status",
+      "servicesDown_one": "{{services}} is currently unavailable",
+      "servicesDown_other": "{{services}} are currently unavailable"
+    },
+    "serviceGate": {
+      "title": "Service unavailable",
+      "requires_one": "This page requires {{services}}, which is currently unavailable. It will become available automatically once the service recovers.",
+      "requires_other": "This page requires {{services}}, which are currently unavailable. It will become available automatically once the services recover.",
+      "memberBody": "This page is temporarily unavailable. It will come back automatically; if it lasts, contact your admin.",
+      "viewStatus": "View service status"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Question :",
@@ -5638,6 +5823,12 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",
-    "invite": "Invite to Pipeshub"
+    "invite": "Invite to Pipeshub",
+    "searchPlaceholderTeams": "Emails, teams or names (separated by commas)",
+    "searchPlaceholderUsers": "Emails or names (separated by commas)",
+    "alreadyRemoved": "Already removed",
+    "alreadyRemovedDescription": "{{name}} had already lost access",
+    "removeConfirmTitle": "Remove access?",
+    "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later."
   }
 }

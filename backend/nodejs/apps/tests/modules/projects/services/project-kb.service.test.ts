@@ -55,9 +55,9 @@ function respond(statusCode: number, data?: unknown): any {
 
 function makeProject(overrides: Record<string, any> = {}): any {
   return {
-    _id: new mongoose.Types.ObjectId(PROJECT_ID),
-    orgId: new mongoose.Types.ObjectId(ORG_ID),
-    userId: new mongoose.Types.ObjectId(OWNER_ID),
+    _id: PROJECT_ID,
+    orgId: ORG_ID,
+    userId: OWNER_ID,
     linkedKnowledgeBaseId: null,
     members: [],
     visibility: 'private',
@@ -69,7 +69,7 @@ function userMember(role: 'editor' | 'viewer'): { member: any; id: string } {
   const id = new mongoose.Types.ObjectId().toString();
   return {
     id,
-    member: { principalType: 'user', principalId: new mongoose.Types.ObjectId(id), role },
+    member: { principalType: 'user', principalId: id, role },
   };
 }
 
@@ -77,7 +77,7 @@ function teamMember(role: 'editor' | 'viewer'): { member: any; id: string } {
   const id = new mongoose.Types.ObjectId().toString();
   return {
     id,
-    member: { principalType: 'team', principalId: new mongoose.Types.ObjectId(id), role },
+    member: { principalType: 'team', principalId: id, role },
   };
 }
 
@@ -119,7 +119,7 @@ describe('ProjectKnowledgeBaseService', () => {
     it('throws NotFoundError for a project in another org, without calling the KB service', async () => {
       sinon
         .stub(Project, 'findOne')
-        .resolves(makeProject({ orgId: new mongoose.Types.ObjectId(OTHER_ORG_ID), linkedKnowledgeBaseId: 'kb-1' }));
+        .resolves(makeProject({ orgId: OTHER_ORG_ID, linkedKnowledgeBaseId: 'kb-1' }));
       const linkStub = sinon.stub(Project, 'findOneAndUpdate');
 
       await expectRejection(
@@ -355,12 +355,28 @@ describe('ProjectKnowledgeBaseService', () => {
       const bodies = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST);
       expect(bodies).to.deep.equal([
         { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-        { userIds: [editorA.id, editorB.id], teamIds: [], role: 'WRITER' },
         { userIds: [viewer.id], teamIds: [], role: 'READER' },
         { userIds: [], teamIds: [editorTeam.id, viewerTeam.id] },
+        { userIds: [editorA.id, editorB.id], teamIds: [], role: 'WRITER' },
       ]);
       // The KB API rejects a team grant that carries a role.
-      expect(bodies[3]).to.not.have.property('role');
+      expect(bodies[2]).to.not.have.property('role');
+    });
+
+    it('grants editors after everyone else, so an editor who created the KB can still grant the rest', async () => {
+      const editor = userMember('editor');
+      const viewer = userMember('viewer');
+      exec.resolves(respond(200));
+
+      await ProjectKnowledgeBaseService.syncMemberPermissions(
+        appConfig,
+        HEADERS,
+        makeProject({ linkedKnowledgeBaseId: 'kb-1', visibility: 'org', members: [editor.member, viewer.member] }),
+      );
+
+      const bodies = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST);
+      expect(bodies[bodies.length - 1]).to.deep.equal({ userIds: [editor.id], teamIds: [], role: 'WRITER' });
+      expect(bodies.slice(0, -1).some((body) => body.role === 'WRITER')).to.equal(false);
     });
 
     it('sends no request for an empty bucket', async () => {

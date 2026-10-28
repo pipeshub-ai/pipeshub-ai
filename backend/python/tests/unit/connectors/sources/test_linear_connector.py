@@ -334,7 +334,7 @@ class TestLinearConnectorFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_teams_response(
                 [
                     {"id": "team-1", "name": "Engineering", "key": "ENG"},
@@ -1968,20 +1968,20 @@ class TestLinearFilterOptions:
         c.data_source = MagicMock()
         mock_ds = MagicMock()
         # Linear applies the search; it returns only what matched.
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [{"id": "t1", "name": "Engineering", "key": "ENG"}],
             has_next=False,
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids", search="  eng ")
-        mock_ds.teams.assert_awaited_once_with(
-            first=20,
-            after=None,
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 20,
+            "after": None,
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         assert len(result.options) == 1
         assert "Engineering" in result.options[0].label
 
@@ -1990,7 +1990,7 @@ class TestLinearFilterOptions:
         c = _make_connector_cov()
         c.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [
                 {"id": "t1", "name": "Engineering", "key": "ENG"},
                 {"id": "t2", "name": "Design", "key": "DES"},
@@ -1999,7 +1999,7 @@ class TestLinearFilterOptions:
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids")
-        mock_ds.teams.assert_awaited_once_with(first=20, after=None, filter=None)
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {"first": 20, "after": None, "filter": None})
         assert [o.id for o in result.options] == ["t1", "t2"]
 
     @pytest.mark.asyncio
@@ -2010,7 +2010,7 @@ class TestLinearFilterOptions:
         failed = MagicMock()
         failed.success = False
         failed.message = "API error"
-        mock_ds.teams = AsyncMock(return_value=failed)
+        mock_ds.execute_operation = AsyncMock(return_value=failed)
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             with pytest.raises(RuntimeError, match="Failed to fetch team options"):
                 await c.get_filter_options("team_ids")
@@ -5639,7 +5639,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_paginated(
                 "teams",
                 [
@@ -5660,14 +5660,14 @@ class TestGetTeamOptions:
             )
 
         # Linear does the matching, on name or key, so paging stays correct.
-        mock_ds.teams.assert_awaited_once_with(
-            first=2,
-            after="cursor-1",
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 2,
+            "after": "cursor-1",
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         # What Linear returned is shown as is: a key match is not filtered away.
         assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
         assert result.has_more is True
@@ -5679,7 +5679,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_response(success=False, message="Error")
         )
 

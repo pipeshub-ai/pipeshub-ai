@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import type { AuthMethod } from '../api';
 import SingleProvider from './single-provider';
@@ -26,17 +28,17 @@ interface TabConfig {
   iconType: 'material' | 'image';
 }
 
-function getTabConfig(method: AuthMethod): TabConfig {
+function getTabConfig(method: AuthMethod, t: TFunction): TabConfig {
   switch (method) {
     case 'password':
       return {
         method,
-        label: 'Password',
+        label: t('auth.login.tabPassword'),
         icon: '/icons/auth-config/lock-closed.svg',
         iconType: 'image',
       };
     case 'otp':
-      return { method, label: 'Email OTP', icon: 'mail_lock', iconType: 'material' };
+      return { method, label: t('auth.login.tabEmailOtp'), icon: 'mail_lock', iconType: 'material' };
     case 'google':
       return {
         method,
@@ -75,7 +77,8 @@ export default function MultipleProviders({
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
-  const tabs = allowedMethods.map(getTabConfig);
+  const { t } = useTranslation();
+  const tabs = allowedMethods.map((method) => getTabConfig(method, t));
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;

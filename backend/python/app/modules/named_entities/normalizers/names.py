@@ -30,14 +30,38 @@ _LEGAL_SUFFIX = re.compile(
 _TRAILING_CONNECTOR = re.compile(r"(?:\s*(?:&|\+|\band\b))+$", re.IGNORECASE)
 
 
+# Chat and ticket text marks a person as "@Darshan Godase" or "Darshan Godase
+# (You)"; the marker is not part of the name. Only these markers come off:
+# "Acme (UK)" keeps its parenthesis.
+_MENTION_PREFIX = re.compile(r"^@+(?=\w)")
+_MARKER_WORDS = r"(?:you|me|guest|external|ext|bot|app|deactivated|inactive|he/him|she/her|they/them)"
+_SELF_MARKER = re.compile(rf"\s*(?:\({_MARKER_WORDS}\)|\[{_MARKER_WORDS}\])$", re.IGNORECASE)
+_MENTIONABLE_KINDS = frozenset({EntityKind.PERSON, EntityKind.ORGANIZATION})
+
+
 _APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "`": "'", "\u00b4": "'"})
 _ARTICLES = frozenset({"the", "a", "an"})
 
 
-def canonical_name(surface: str, *, organization: bool = False) -> str:
+def canonical_name(surface: str, kind: EntityKind) -> str:
     # Typographic apostrophes are one character to a reader: "O’Neil" is "O'Neil".
     display = display_form(surface.translate(_APOSTROPHES))
-    return _without_legal_form(display) if organization else display
+    # To a fixed point, so a display re-keys to itself: stripping one marker or
+    # legal form can expose another ("Foo (Bot) LLC", "Darshan (You) (Guest)").
+    while True:
+        stripped = display
+        if kind in _MENTIONABLE_KINDS:
+            stripped = _without_mention_markers(stripped)
+        if kind is EntityKind.ORGANIZATION:
+            stripped = _without_legal_form(stripped)
+        if stripped == display:
+            return display
+        display = stripped
+
+
+def _without_mention_markers(name: str) -> str:
+    stripped = display_form(_SELF_MARKER.sub("", _MENTION_PREFIX.sub("", name)))
+    return stripped or name
 
 
 def _without_legal_form(name: str) -> str:
@@ -63,8 +87,8 @@ def _significant(value: float) -> Decimal:
     return Decimal(f"{float(value):.12g}")
 
 
-def name_value(surface: str, *, organization: bool = False) -> NameValue:
-    return NameValue(canonical=canonical_name(surface, organization=organization))
+def name_value(surface: str, kind: EntityKind) -> NameValue:
+    return NameValue(canonical=canonical_name(surface, kind))
 
 
 # Neo4j caps an index key near 8 KB; a longer key could not be written at all.
@@ -94,5 +118,5 @@ def _norm_key(kind: EntityKind, display: str, value: TypedValue | None) -> str:
         return f"qty:{value.dimension}:{_number(_significant(value.si_value))}"
     if isinstance(value, ContactValue):
         return f"{value.scheme}:{value.canonical}"
-    key = normalize_name(canonical_name(display, organization=kind is EntityKind.ORGANIZATION))
+    key = normalize_name(canonical_name(display, kind))
     return f"name:{kind.value}:{key}"

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
 import type { Pipeshub } from "../../index.js";
-import { createClient } from "./client.js";
+import { createAdminClient } from "./client.js";
 import { expectStatus } from "./errors.js";
 
 // The integration stack's web-fixtures feed, so the sync does not depend on the internet.
@@ -24,7 +24,7 @@ async function waitForIdle(pipeshub: Pipeshub, connectorId: string): Promise<voi
 }
 
 test("Handwritten Connector Sync", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createAdminClient();
 
   const created = await pipeshub.connectorInstances.createConnectorInstance({
     connectorType: "RSS",
@@ -65,7 +65,8 @@ test("Handwritten Connector Sync", async () => {
     const stats = await pipeshub.connectorInstances.getConnectorStats({ connectorId });
     expect(stats.data.connectorId).toEqual(connectorId);
 
-    const app = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
+    // The listing declares a Retry-After header, so the SDK wraps its body in `result`.
+    const { result: app } = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
       parentType: "app",
       parentId: connectorId,
     });
@@ -77,7 +78,7 @@ test("Handwritten Connector Sync", async () => {
     });
     expect(reindexed.recordGroupId).toEqual(feed!.id);
 
-    const group = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
+    const { result: group } = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
       parentType: "recordGroup",
       parentId: feed!.id,
     });

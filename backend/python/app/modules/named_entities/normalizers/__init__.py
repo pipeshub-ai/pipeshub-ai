@@ -50,5 +50,5 @@ def _parse(kind: EntityKind, surface: str, ctx: NormalizationContext) -> TypedVa
     if spec is not None and spec.source is EntitySource.PATTERN:
         return normalize_contact(kind, surface)
     if spec is not None and spec.source is EntitySource.SEMANTIC:
-        return name_value(surface, organization=kind is EntityKind.ORGANIZATION)
+        return name_value(surface, kind)
     return None

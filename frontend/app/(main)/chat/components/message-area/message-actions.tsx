@@ -9,8 +9,9 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import {
   stripMarkdownAndCitations,
   formatChatMode,
+  answerSearchSource,
 } from '@/lib/utils/formatters';
-import type { ModelInfo, AppliedFilters } from '@/chat/types';
+import type { ModelInfo, AppliedFilters, MessagePart } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { ChatMessageExtras } from '@/config';
@@ -73,6 +74,8 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** The answer's tool activity: the footer names the search it actually used. */
+  parts?: MessagePart[];
 }
 
 /**
@@ -126,6 +129,7 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  parts,
 }: MessageActionsProps) {
   const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
@@ -358,7 +362,17 @@ export function MessageActions({
 
   if (isStreaming) return null;
 
-  const chatModeLabel = formatChatMode(modelInfo?.chatMode);
+  // Plain assistant turns all run as `agent`; the Internal/Web search toggles
+  // only gate tools, so the tools it called say what this answer used.
+  const searchSource = modelInfo?.chatMode === 'agent' ? answerSearchSource(parts) : null;
+  const chatModeLabel =
+    searchSource === 'internal'
+      ? t('chat.answerMode.internalSearch', 'Internal search')
+      : searchSource === 'web'
+        ? t('chat.answerMode.webSearch', 'Web search')
+        : searchSource === 'internal_and_web'
+          ? t('chat.answerMode.internalAndWebSearch', 'Internal + web search')
+          : formatChatMode(modelInfo?.chatMode);
   const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
 
   return (

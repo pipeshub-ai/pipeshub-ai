@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -29,6 +28,7 @@ import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
   ConflictError,
+  DocumentRetiredError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -53,11 +53,11 @@ import {
   getArtifactSetRoot,
   getCurrentFilePath,
   DocumentInfoResponse,
-  LeanDocumentInfoResponse,
   getDocumentRootPath,
   extractOrgId,
   extractUserId,
-  toObjectId,
+  requireId,
+  isHexId,
   getBaseUrl,
   getDocumentInfo,
   getFullDocumentPath,
@@ -74,7 +74,13 @@ import { UploadDocumentService } from './storage.upload.service';
 import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 import { storedServiceEndpoint } from '../utils/service-endpoint';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
-import { DocumentModel } from '../schema/document.schema';
+import {
+  ENVELOPE_PREFIXES,
+  getDocumentRepository,
+  type ConnectorScope,
+  type DocumentPatch,
+  type DocumentTreeRow,
+} from '../../../libs/repositories/document';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
@@ -99,19 +105,9 @@ function treeMoveLock(orgId: string): Mutex {
   return lock;
 }
 
-// Shape of a document row selected for a moveTree operation. documentPath is
-// non-optional here (unlike the base Document type) because every row comes
-// from a query filtered on documentPath.
-interface MatchedTreeDocument {
-  _id: unknown;
-  documentPath: string;
-  documentName: string;
-  extension?: string;
-  isVersionedFile?: boolean;
-  versionHistory?: DocumentVersion[];
-  isDeleted?: boolean;
-  customMetadata?: CustomTags;
-}
+// documentPath is non-optional on a tree row because every row comes from a
+// query filtered on documentPath.
+type MatchedTreeDocument = DocumentTreeRow;
 
 type CustomTags = { key: string; value?: unknown }[];
 
@@ -122,8 +118,7 @@ interface ScopedDocument {
 
 interface ConnectorStorageScope {
   prefixes: string[];
-  connectorTag: Record<string, unknown>;
-  underPrefixes: Record<string, unknown>[];
+  scope: ConnectorScope;
   isInScope: (doc: ScopedDocument) => boolean;
 }
 
@@ -144,8 +139,6 @@ interface ArtifactFileUrl extends SignedObjectUrl {
   method: 'GET' | 'PUT';
 }
 
-const ENVELOPE_PREFIXES = ['record_', 'metadata_'];
-const MONGO_DUPLICATE_KEY = 11000;
 // Same shape the relocate and purge routes accept.
 const VIRTUAL_RECORD_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -160,57 +153,22 @@ function connectorStorageScope(
     getFullDocumentPath(orgId, `WebConnector/${connectorId}`),
     getFullDocumentPath(orgId, `local-fs/${orgId}/${connectorId}`),
   ];
-  const connectorTag = {
-    customMetadata: { $elemMatch: { key: 'connectorId', value: connectorId } },
-  };
-  const underPrefixes: Record<string, unknown>[] = prefixes.flatMap(
-    (prefix) => [
-      { documentPath: prefix },
-      // '/' is followed by '0' in ASCII: every path under "prefix/", and no sibling.
-      { documentPath: { $gte: `${prefix}/`, $lt: `${prefix}0` } },
-    ],
-  );
   const isInScope = (doc: ScopedDocument): boolean =>
     tagOf(doc, 'connectorId') === connectorId ||
     prefixes.some(
       (p) =>
         doc.documentPath === p || (doc.documentPath ?? '').startsWith(`${p}/`),
     );
-  return { prefixes, connectorTag, underPrefixes, isInScope };
+  return { prefixes, scope: { connectorId, prefixes }, isInScope };
 }
 
 function tagOf(doc: ScopedDocument, key: string): unknown {
   return doc.customMetadata?.find((m) => m.key === key)?.value;
 }
 
-// A virtual record's `record_{id}` and `metadata_{id}` wherever they are filed,
-// anything at the flat `records/{id}` path older records used, and every
-// content revision stored for it. orgId sits in each branch so each one can
-// use its own index.
-function virtualRecordDocumentsFilter(
-  orgIdText: string,
-  orgId: mongoose.Types.ObjectId,
-  virtualRecordId: string,
-): Record<string, unknown> {
-  return {
-    $or: [
-      {
-        orgId,
-        documentPath: getFullDocumentPath(
-          orgIdText,
-          `records/${virtualRecordId}`,
-        ),
-      },
-      {
-        orgId,
-        documentName: {
-          $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
-        },
-      },
-      { orgId, 'artifactSet.virtualRecordId': virtualRecordId },
-    ],
-  };
-}
+// Older records filed their documents at the flat `records/{id}` path.
+const flatRecordPath = (orgId: string, virtualRecordId: string): string =>
+  getFullDocumentPath(orgId, `records/${virtualRecordId}`);
 
 // Rebuilt from the revision's ids rather than read from the stored root, so a
 // damaged row can never point a tree delete anywhere else.
@@ -243,10 +201,7 @@ function virtualRecordIdOf(
 
 // TODO: Remove these globals
 let storageConfig:
-  | AzureBlobStorageConfig
-  | LocalStorageConfig
-  | S3StorageConfig
-  | null = null;
+  AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
 
 @injectable()
 export class StorageController {
@@ -302,7 +257,7 @@ export class StorageController {
     return storageConfig;
   }
   async cloneDocument(
-    document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel,
+    document: Document,
     buffer: Buffer,
     newDocumentFilePath: string,
     _next: NextFunction,
@@ -318,12 +273,30 @@ export class StorageController {
     // Throws rather than calling next: every caller is inside its own try, and
     // answering here as well would send a second response.
     return writeToStorage(adapter, cloneFilePayload, {
-      documentId: String(document._id),
+      documentId: document._id,
     });
   }
 
+  /** Writes a change to a row this request read; the row may have been removed since. */
+  private async saveDocument(
+    document: Document,
+    patch: DocumentPatch,
+    pushVersions?: DocumentVersion[],
+  ): Promise<Document> {
+    const saved = await getDocumentRepository().update(
+      document.orgId,
+      document._id,
+      patch,
+      { pushVersions },
+    );
+    if (!saved) {
+      throw new NotFoundError('Document does not exist');
+    }
+    return saved;
+  }
+
   async compareDocuments(
-    document: DocumentModel,
+    document: Document,
     version1: number | undefined,
     version2: number | undefined,
     adapter: StorageServiceAdapter,
@@ -418,7 +391,8 @@ export class StorageController {
         this.keyValueStoreService,
         this.config,
       );
-      return await uploadDocumentService.uploadDocument(req, res, next);
+      await uploadDocumentService.uploadDocument(req, res, next);
+      return;
     } catch (error) {
       next(error);
     }
@@ -466,9 +440,9 @@ export class StorageController {
         documentName,
         documentPath: fullDocumentPath,
         alternateDocumentName,
-        orgId: toObjectId(orgId, 'organization'),
+        orgId: requireId(orgId, 'organization'),
         isVersionedFile: isVersionedFile,
-        initiatorUserId: userId ? toObjectId(userId, 'user') : null,
+        initiatorUserId: userId ? requireId(userId, 'user') : null,
         permissions: permissions,
         customMetadata,
         storageVendor: storageVendor,
@@ -511,10 +485,10 @@ export class StorageController {
         throw new BadRequestError(' document id is not passed ');
       }
       const orgId = extractOrgId(req);
-      const doc = await DocumentModel.findOne({
-        _id: documentId,
-        orgId: toObjectId(orgId, 'organization'),
-      });
+      const doc = await getDocumentRepository().get(
+        requireId(orgId, 'organization'),
+        documentId,
+      );
 
       if (!doc) {
         throw new NotFoundError('Document not found');
@@ -536,10 +510,9 @@ export class StorageController {
       const userId = extractUserId(req);
       const { documentId } = req.params;
       const hard = req.query.hard === 'true';
-      const document = await DocumentModel.findOne({
-        _id: documentId,
-        orgId: toObjectId(orgId, 'organization'),
-      });
+      const repo = getDocumentRepository();
+      const orgKey = requireId(orgId, 'organization');
+      const document = await repo.get(orgKey, String(documentId));
 
       if (!document) {
         if (hard) {
@@ -554,34 +527,36 @@ export class StorageController {
           artifactSetRootOf(document) ??
           getDocumentRootPath(
             orgId,
-            String(document._id),
+            document._id,
             undefined,
             document.documentPath,
           );
-        
+
         try {
           const adapter = await this.initializeStorageAdapter(req);
           await adapter.deleteTree(rootPath);
-          this.logger.info(`Hard-delete: blob cleanup successful for ${documentId}, ${rootPath}`);
+          this.logger.info(
+            `Hard-delete: blob cleanup successful for ${documentId}, ${rootPath}`,
+          );
         } catch (blobErr) {
-          this.logger.warn(`Hard-delete: blob cleanup failed for ${documentId}, ${rootPath}, continuing with Mongo removal`);
+          this.logger.warn(
+            `Hard-delete: blob cleanup failed for ${documentId}, ${rootPath}, continuing with Mongo removal`,
+          );
         }
-        await DocumentModel.deleteOne({ _id: document._id });
+        await repo.remove(document._id);
         res.status(HTTP_STATUS.OK).json({ deleted: true });
         return;
       }
 
-      document.isDeleted = true;
-      document.deletedByUserId = userId
-        ? (toObjectId(
-            userId,
-            'user',
-          ) as unknown as mongoose.Schema.Types.ObjectId)
-        : undefined;
+      const deleted = await repo.update(orgKey, document._id, {
+        isDeleted: true,
+        deletedByUserId: userId ? requireId(userId, 'user') : undefined,
+      });
+      if (!deleted) {
+        throw new NotFoundError('Document does not exist');
+      }
 
-      await document.save();
-
-      res.status(HTTP_STATUS.OK).json(document);
+      res.status(HTTP_STATUS.OK).json(deleted);
     } catch (error) {
       next(error);
     }
@@ -599,21 +574,17 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const orgId = extractOrgId(req);
       // Read under the lock: a move running now would leave the row stale.
-      const purged = await this.withLocalStorageLock(
-        req,
-        String(orgId),
-        async () => {
-          const document = await DocumentModel.findOne({
-            _id: req.params.documentId,
-            orgId,
-          });
-          const documents = document ? [document] : [];
-          await this.purgeDocuments(documents, orgId, req);
-          return documents.length;
-        },
-      );
+      const purged = await this.withLocalStorageLock(req, orgId, async () => {
+        const document = await getDocumentRepository().get(
+          orgId,
+          String(req.params.documentId),
+        );
+        const documents = document ? [document] : [];
+        await this.purgeDocuments(documents, orgId, req);
+        return documents.length;
+      });
       res.status(HTTP_STATUS.OK).json({ purged });
     } catch (error) {
       next(error);
@@ -634,17 +605,18 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgIdText = extractOrgId(req);
-      const orgId = new mongoose.Types.ObjectId(orgIdText);
       const virtualRecordId = String(req.params.virtualRecordId);
       // Read under the lock: a move running now would leave these rows stale.
       const documents = await this.withLocalStorageLock(
         req,
         orgIdText,
         async () => {
-          const found = await DocumentModel.find(
-            virtualRecordDocumentsFilter(orgIdText, orgId, virtualRecordId),
+          const found = await getDocumentRepository().listByVirtualRecord(
+            orgIdText,
+            virtualRecordId,
+            flatRecordPath(orgIdText, virtualRecordId),
           );
-          await this.purgeDocuments(found, orgId, req);
+          await this.purgeDocuments(found, orgIdText, req);
           return found;
         },
       );
@@ -667,17 +639,14 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgIdText = extractOrgId(req);
-      const orgId = new mongoose.Types.ObjectId(orgIdText);
       const conversationId = String(req.params.conversationId);
-      const documents = await DocumentModel.find({
-        orgId,
-        documentPath: {
-          $in: ['artifacts', 'conversations'].map((folder) =>
-            getFullDocumentPath(orgIdText, `${folder}/${conversationId}`),
-          ),
-        },
-      });
-      await this.purgeDocuments(documents, orgId, req);
+      const documents = await getDocumentRepository().listByFolders(
+        orgIdText,
+        ['artifacts', 'conversations'].map((folder) =>
+          getFullDocumentPath(orgIdText, `${folder}/${conversationId}`),
+        ),
+      );
+      await this.purgeDocuments(documents, orgIdText, req);
       res.status(HTTP_STATUS.OK).json({ purged: documents.length });
     } catch (error) {
       next(error);
@@ -696,24 +665,18 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
-      const virtualRecordId = String(req.params.virtualRecordId);
-      const documents = await DocumentModel.find({
-        orgId,
-        documentName: {
-          $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
-        },
-        isDeleted: { $ne: true },
-      })
-        .select('_id documentName documentPath createdAt')
-        .sort({ createdAt: -1 })
-        .lean();
+      const documents = await getDocumentRepository().listEnvelopes(
+        extractOrgId(req),
+        String(req.params.virtualRecordId),
+        { olderThanSeconds: Number(req.query.olderThanSeconds) },
+      );
       res.status(HTTP_STATUS.OK).json({
         documents: documents.map((d) => ({
-          _id: String(d._id),
+          _id: d._id,
           documentName: d.documentName,
           documentPath: d.documentPath,
           createdAt: d.createdAt,
+          retiredAt: d.retiredAt ?? null,
         })),
       });
     } catch (error) {
@@ -733,39 +696,18 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgIdText = extractOrgId(req);
-      const orgId = new mongoose.Types.ObjectId(orgIdText);
       const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
       const after =
         typeof req.query.after === 'string' ? req.query.after : undefined;
-      const flatPrefix = getFullDocumentPath(orgIdText, 'records/');
-      // documentPath == "<prefix><vrid>" where vrid is the name after "record_"/"metadata_".
-      const flatPathOf = (nameOffset: number): Record<string, unknown> => ({
-        $eq: [
-          '$documentPath',
-          {
-            $concat: [
-              flatPrefix,
-              { $substrCP: ['$documentName', nameOffset, 200] },
-            ],
-          },
-        ],
-      });
-      const documents = await DocumentModel.find({
-        orgId,
-        ...(after ? { _id: { $gt: new mongoose.Types.ObjectId(after) } } : {}),
-        isDeleted: { $ne: true },
-        $or: ENVELOPE_PREFIXES.map((p) => ({
-          documentName: new RegExp(`^${p}`),
-          $expr: flatPathOf(p.length),
-        })),
-      })
-        .select('_id documentName documentPath')
-        .sort({ _id: 1 })
-        .limit(limit)
-        .lean();
+      const documents = await getDocumentRepository().pageFlatEnvelopes(
+        orgIdText,
+        getFullDocumentPath(orgIdText, 'records/'),
+        after,
+        limit,
+      );
       res.status(HTTP_STATUS.OK).json({
         documents: documents.map((d) => ({
-          _id: String(d._id),
+          _id: d._id,
           documentName: d.documentName,
           documentPath: d.documentPath,
         })),
@@ -780,10 +722,10 @@ export class StorageController {
    * so the next attempt can still find the file.
    */
   private async purgeDocuments(
-    documents: DocumentModel[],
-    orgId: mongoose.Types.ObjectId,
+    documents: Document[],
+    orgId: string,
     req: AuthenticatedServiceRequest,
-    deleteFence: Record<string, unknown> = {},
+    claims?: number[],
   ): Promise<void> {
     if (documents.length === 0) {
       return;
@@ -798,7 +740,7 @@ export class StorageController {
           this.logger.error(
             'Could not remove an artifact set; its document was kept',
             {
-              documentId: String(document._id),
+              documentId: document._id,
               error: error instanceof Error ? error.message : String(error),
             },
           );
@@ -814,7 +756,7 @@ export class StorageController {
           this.logger.error(
             'Could not remove a stored file; its document was kept',
             {
-              documentId: String(document._id),
+              documentId: document._id,
               error: error instanceof Error ? error.message : String(error),
             },
           );
@@ -823,11 +765,15 @@ export class StorageController {
           );
         }
       }
-      await DocumentModel.deleteOne({
-        ...deleteFence,
-        _id: document._id,
-        orgId,
-      });
+      if (claims === undefined) {
+        await getDocumentRepository().remove(document._id, orgId);
+      } else {
+        await getDocumentRepository().removeClaimedArtifactSet(
+          document._id,
+          orgId,
+          claims,
+        );
+      }
     }
   }
 
@@ -1050,49 +996,24 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgIdText = extractOrgId(req);
-      const orgId = toObjectId(orgIdText, 'organization');
+      const orgId = extractOrgId(req);
       const { ifUnchangedSince } = req.query as { ifUnchangedSince?: number };
       // Under the lock, as every purge: a local move running now must not
       // interleave with the tree delete.
       const outcome = await this.withLocalStorageLock(
         req,
-        orgIdText,
+        orgId,
         async (): Promise<number | 'changed' | 'lost'> => {
-          const filter = {
-            _id: { $eq: String(req.params.documentId) },
-            orgId,
-            artifactSet: { $exists: true },
-          };
+          const documentId = String(req.params.documentId);
+          const repo = getDocumentRepository();
           const now = Date.now();
-          const guarded =
-            ifUnchangedSince === undefined
-              ? filter
-              : {
-                  ...filter,
-                  updatedAt: { $lte: ifUnchangedSince },
-                  $or: [
-                    { 'artifactSet.retiringAt': { $exists: false } },
-                    {
-                      'artifactSet.retiringAt': {
-                        $lt: now - ARTIFACT_RETIRING_STALE_MS,
-                      },
-                    },
-                  ],
-                };
-          // timestamps off: the claim is not a write of the revision, and a
-          // delete retried after a crash must still match the listed stamp.
-          const document = await DocumentModel.findOneAndUpdate(
-            guarded,
-            { $set: { 'artifactSet.retiringAt': now } },
-            { new: true, timestamps: false },
+          const document = await repo.claimArtifactSetForDelete(
+            orgId,
+            documentId,
+            { now, staleMs: ARTIFACT_RETIRING_STALE_MS, ifUnchangedSince },
           );
-          if (!document) {
-            const present =
-              ifUnchangedSince !== undefined &&
-              (await DocumentModel.findOne(filter)) !== null;
-            return present ? 'changed' : 0;
-          }
+          if (document === 'changed') return 'changed';
+          if (document === null) return 0;
           // The claim is renewed while the files go, so "stale" means a delete
           // that died and not one that is slow. Every value this delete has
           // written is its own, and the final document delete is fenced on
@@ -1106,32 +1027,27 @@ export class StorageController {
             claims.push(next);
             renewing = renewing.then(async () => {
               try {
-                await DocumentModel.updateOne(
-                  {
-                    _id: document._id,
-                    orgId,
-                    'artifactSet.retiringAt': { $in: known },
-                  },
-                  { $set: { 'artifactSet.retiringAt': next } },
-                  { timestamps: false },
+                await repo.renewArtifactSetClaim(
+                  orgId,
+                  documentId,
+                  known,
+                  next,
                 );
               } catch (error) {
                 this.logger.warn('Could not renew an artifact delete claim', {
-                  documentId: String(document._id),
+                  documentId,
                   error: error instanceof Error ? error.message : String(error),
                 });
               }
             });
           }, ARTIFACT_RETIRING_HEARTBEAT_MS);
           try {
-            await this.purgeDocuments([document], orgId, req, {
-              'artifactSet.retiringAt': { $in: claims },
-            });
+            await this.purgeDocuments([document], orgId, req, claims);
           } finally {
             clearInterval(heartbeat);
             await renewing;
           }
-          if ((await DocumentModel.findOne(filter)) === null) {
+          if ((await repo.get(orgId, documentId)) === null) {
             return 1;
           }
           // The claim was taken back while the files were going: they may be
@@ -1159,39 +1075,27 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = toObjectId(extractOrgId(req), 'organization');
+      const orgId = requireId(extractOrgId(req), 'organization');
       const virtualRecordId = req.query.virtualRecordId;
       if (typeof virtualRecordId !== 'string') {
         throw new BadRequestError('virtualRecordId must be a single value');
       }
-      const documents = await DocumentModel.find({
+      const documents = await getDocumentRepository().listArtifactSets(
         orgId,
-        'artifactSet.virtualRecordId': { $eq: virtualRecordId },
-        isDeleted: { $ne: true },
-      })
-        .sort({ createdAt: 1 })
-        .select('_id artifactSet storageVendor createdAt updatedAt')
-        .lean<
-          {
-            _id: unknown;
-            artifactSet: { rev: string; retiringAt?: number };
-            storageVendor: string;
-            createdAt?: number;
-            updatedAt?: number;
-          }[]
-        >();
+        virtualRecordId,
+      );
       res.status(HTTP_STATUS.OK).json({
         revisions: documents.map((d) => ({
-          documentId: String(d._id),
+          documentId: d._id,
           virtualRecordId,
-          rev: d.artifactSet.rev,
+          rev: d.artifactSet?.rev,
           storageVendor: d.storageVendor,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
           // Tells a client this server fences `ifUnchangedSince`; one that
           // does not send it must not delete with a stamp.
           deleteFence: true,
-          ...(d.artifactSet.retiringAt !== undefined && {
+          ...(d.artifactSet?.retiringAt !== undefined && {
             retiringAt: d.artifactSet.retiringAt,
           }),
         })),
@@ -1215,7 +1119,7 @@ export class StorageController {
     }
   }
 
-  private artifactRoot(document: DocumentModel): string {
+  private artifactRoot(document: Document): string {
     const root = artifactSetRootOf(document);
     if (root === null) {
       throw new NotFoundError('Artifact set not found');
@@ -1228,7 +1132,7 @@ export class StorageController {
    * storage change, writing or reading it on the new one would split it.
    */
   private assertArtifactSetOnConfiguredStorage(
-    document: DocumentModel,
+    document: Document,
     storageType: string,
   ): void {
     if (document.storageVendor !== getStorageVendor(storageType)) {
@@ -1241,14 +1145,12 @@ export class StorageController {
   private async findArtifactSet(
     req: AuthenticatedServiceRequest,
     orgId: string,
-  ): Promise<DocumentModel> {
-    const document = await DocumentModel.findOne({
-      _id: { $eq: String(req.params.documentId) },
-      orgId: toObjectId(orgId, 'organization'),
-      artifactSet: { $exists: true },
-      isDeleted: { $ne: true },
-    });
-    if (!document) {
+  ): Promise<Document> {
+    const document = await getDocumentRepository().get(
+      requireId(orgId, 'organization'),
+      String(req.params.documentId),
+    );
+    if (!document?.artifactSet || document.isDeleted) {
       throw new NotFoundError('Artifact set not found');
     }
     return document;
@@ -1260,27 +1162,18 @@ export class StorageController {
     virtualRecordId: string,
     rev: string,
     storageVendor: StorageVendor,
-  ): Promise<DocumentModel> {
-    const orgObjectId = toObjectId(orgId, 'organization');
+  ): Promise<Document> {
     const userId = extractUserId(req);
-    const initiatorUserId = userId !== null ? toObjectId(userId, 'user') : null;
-    // $eq: the validated ids are strings, and stay values even if that ever changes.
-    const filter = {
-      orgId: orgObjectId,
-      'artifactSet.virtualRecordId': { $eq: virtualRecordId },
-      'artifactSet.rev': { $eq: rev },
-    };
-    const existing = await this.touchArtifactSet(filter);
-    if (existing) {
-      return existing;
-    }
-    try {
-      return await DocumentModel.create({
+    // A rev is a hash of the source bytes, so a record whose source went back to earlier bytes
+    // writes an old revision again; the write stamp the repository moves is how a delete that
+    // listed the revision earlier sees that write.
+    return getDocumentRepository().createArtifactSetOnce(
+      {
         documentName: `revision_${rev}`,
         documentPath: getArtifactSetFolder(orgId, virtualRecordId),
-        orgId: orgObjectId,
+        orgId: requireId(orgId, 'organization'),
         isVersionedFile: false,
-        initiatorUserId,
+        initiatorUserId: userId !== null ? requireId(userId, 'user') : null,
         storageVendor,
         extension: '',
         artifactSet: {
@@ -1288,62 +1181,9 @@ export class StorageController {
           rev,
           root: getArtifactSetRoot(orgId, virtualRecordId, rev),
         },
-      });
-    } catch (error) {
-      // Another presign of the same revision created it first.
-      if ((error as { code?: unknown } | null)?.code !== MONGO_DUPLICATE_KEY) {
-        throw error;
-      }
-      const winner = await this.touchArtifactSet(filter);
-      if (!winner) {
-        throw error;
-      }
-      return winner;
-    }
-  }
-
-  /**
-   * Moves the revision's write stamp (`updatedAt`) and returns it, or null when
-   * there is no such revision. A rev is a hash of the source bytes, so a record
-   * whose source went back to earlier bytes writes an old revision again; the
-   * stamp is how a delete that listed the revision earlier sees that write.
-   * Refuses a revision a delete has claimed: its files may already be going.
-   * A claim past the stale bound is from a delete that died, and nothing else
-   * would ever clear it once a record is back on the revision (the sweep keeps
-   * held revisions), so it is dropped. The writer uploads every file again,
-   * manifest last, which repairs a tree the dead delete left half removed.
-   */
-  private async touchArtifactSet(
-    filter: Record<string, unknown>,
-  ): Promise<DocumentModel | null> {
-    const now = Date.now();
-    const touched = await DocumentModel.findOneAndUpdate(
-      {
-        ...filter,
-        $or: [
-          { 'artifactSet.retiringAt': { $exists: false } },
-          {
-            'artifactSet.retiringAt': {
-              $lt: now - ARTIFACT_RETIRING_STALE_MS,
-            },
-          },
-        ],
       },
-      {
-        $set: { updatedAt: now },
-        $unset: { 'artifactSet.retiringAt': 1 },
-      },
-      { new: true, timestamps: false },
+      { now: Date.now(), staleMs: ARTIFACT_RETIRING_STALE_MS },
     );
-    if (touched) {
-      return touched;
-    }
-    if (await DocumentModel.findOne(filter)) {
-      throw new ConflictError(
-        'This revision is being deleted; write it again once the delete has finished',
-      );
-    }
-    return null;
   }
 
   private async remoteArtifactAdapter(
@@ -1359,7 +1199,7 @@ export class StorageController {
   private async artifactFileUrls(
     req: AuthenticatedServiceRequest,
     adapter: StorageServiceAdapter | null,
-    document: DocumentModel,
+    document: Document,
     files: { path: string; contentType?: string }[],
     method: 'GET' | 'PUT',
   ): Promise<ArtifactFileUrl[]> {
@@ -1431,9 +1271,10 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = toObjectId(extractOrgId(req), 'organization');
+      const orgId = requireId(extractOrgId(req), 'organization');
       const { documentId } = req.params;
-      const document = await DocumentModel.findOne({ _id: documentId, orgId });
+      const repo = getDocumentRepository();
+      const document = await repo.get(orgId, String(documentId));
       if (!document) {
         throw new NotFoundError('Document does not exist');
       }
@@ -1449,7 +1290,7 @@ export class StorageController {
         exists = await adapter.objectExists(document);
       } catch (error) {
         this.logger.error('Could not check whether a direct upload arrived', {
-          documentId: String(document._id),
+          documentId: document._id,
           error: error instanceof Error ? error.message : String(error),
         });
         throw new ServiceUnavailableError(
@@ -1457,10 +1298,7 @@ export class StorageController {
         );
       }
       if (exists) {
-        await DocumentModel.updateOne(
-          { _id: document._id, orgId },
-          { $unset: { awaitingDirectUpload: '' } },
-        );
+        await repo.clearAwaitingDirectUpload(orgId, document._id);
         throw new ConflictError(
           'The file arrived in storage; the document was kept',
         );
@@ -1468,11 +1306,10 @@ export class StorageController {
 
       // Only a document still waiting for its direct upload may go: anything
       // that finished it in the meantime keeps its document.
-      const removed = await DocumentModel.findOneAndDelete({
-        _id: document._id,
+      const removed = await repo.removeAwaitingDirectUpload(
         orgId,
-        awaitingDirectUpload: true,
-      });
+        document._id,
+      );
       if (!removed) {
         throw new ConflictError(
           'The document changed while it was being aborted; it was kept',
@@ -1485,7 +1322,7 @@ export class StorageController {
         await adapter.deleteObject(document);
       } catch (error) {
         this.logger.warn('Could not clear the path of an aborted upload', {
-          documentId: String(document._id),
+          documentId: document._id,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -1502,23 +1339,18 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = toObjectId(extractOrgId(req), 'organization');
+      const orgId = requireId(extractOrgId(req), 'organization');
       const { documentIds } = req.body as { documentIds: string[] };
       const requested = [...new Set(documentIds)];
-      const wellFormed = requested.filter((id) =>
-        mongoose.isObjectIdOrHexString(id),
-      );
+      const wellFormed = requested.filter(isHexId);
       const found = new Set<string>();
       if (wellFormed.length > 0) {
-        const rows = await DocumentModel.find({
-          _id: { $in: wellFormed },
+        for (const id of await getDocumentRepository().findExistingIds(
           orgId,
-          isDeleted: false,
-        })
-          .select('_id')
-          .lean<{ _id: unknown }[]>()
-          .exec();
-        for (const row of rows) found.add(String(row._id));
+          wellFormed,
+        )) {
+          found.add(id);
+        }
       }
       res
         .status(HTTP_STATUS.OK)
@@ -1536,13 +1368,10 @@ export class StorageController {
     try {
       const orgId = String(extractOrgId(req));
       const connectorId = String(req.params.connectorId);
-      const { prefixes, connectorTag, underPrefixes } = connectorStorageScope(
-        orgId,
-        connectorId,
-      );
+      const { prefixes, scope } = connectorStorageScope(orgId, connectorId);
+      const repo = getDocumentRepository();
 
       const adapter = await this.initializeStorageAdapter(req);
-      const orgObjectId = new mongoose.Types.ObjectId(orgId);
 
       for (const prefix of prefixes) {
         await adapter.deleteTree(prefix);
@@ -1550,33 +1379,34 @@ export class StorageController {
 
       // A tagged document can live outside those prefixes (e.g. the flat
       // records/<vrid> path); its files go with its row.
-      const outside = DocumentModel.find({ orgId: orgObjectId, ...connectorTag, $nor: underPrefixes })
-        .select('_id documentPath')
-        .lean<{ _id: unknown; documentPath?: string }[]>()
-        .cursor();
-      for await (const doc of outside) {
-        const root = getDocumentRootPath(orgId, String(doc._id), undefined, doc.documentPath);
+      for await (const doc of repo.streamTaggedOutsidePrefixes(orgId, scope)) {
+        const root = getDocumentRootPath(
+          orgId,
+          doc._id,
+          undefined,
+          doc.documentPath,
+        );
         try {
           await adapter.deleteTree(root);
         } catch (error) {
-          this.logger.warn('deleteByConnector: could not delete a tagged document outside the connector prefixes', {
-            documentId: String(doc._id),
-            error: error instanceof Error ? error.message : String(error),
-          });
+          this.logger.warn(
+            'deleteByConnector: could not delete a tagged document outside the connector prefixes',
+            {
+              documentId: doc._id,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
         }
       }
 
-      const deleteResult = await DocumentModel.deleteMany({
-        orgId: orgObjectId,
-        $or: [connectorTag, ...underPrefixes],
-      });
+      const deleted = await repo.deleteByConnector(orgId, scope);
 
       this.logger.info(
-        `Deleted ${deleteResult.deletedCount} storage documents for connector ${connectorId}`,
+        `Deleted ${deleted} storage documents for connector ${connectorId}`,
       );
 
       res.status(HTTP_STATUS.OK).json({
-        deleted: deleteResult.deletedCount,
+        deleted,
       });
     } catch (error) {
       next(error);
@@ -1598,24 +1428,13 @@ export class StorageController {
       const after =
         typeof req.query.after === 'string' ? req.query.after : undefined;
       const limit = Number(req.query.limit ?? CONNECTOR_VRID_PAGE_DEFAULT);
-      const { connectorTag, underPrefixes } = connectorStorageScope(
+      const { scope } = connectorStorageScope(orgId, connectorId);
+      const docs = await getDocumentRepository().pageByConnector(
         orgId,
-        connectorId,
+        scope,
+        after,
+        limit,
       );
-      const filter: Record<string, unknown> = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        $or: [connectorTag, ...underPrefixes],
-      };
-      if (after !== undefined) {
-        filter._id = { $gt: new mongoose.Types.ObjectId(after) };
-      }
-      const docs = await DocumentModel.find(filter)
-        .sort({ _id: 1 })
-        .limit(limit)
-        .select('_id documentName documentPath')
-        .lean<
-          { _id: unknown; documentName?: string; documentPath?: string }[]
-        >();
       const ids = new Set<string>();
       for (const doc of docs) {
         const vrid = virtualRecordIdOf(orgId, doc);
@@ -1624,8 +1443,7 @@ export class StorageController {
       const last = docs[docs.length - 1];
       res.status(HTTP_STATUS.OK).json({
         virtualRecordIds: [...ids],
-        next:
-          docs.length === limit && last !== undefined ? String(last._id) : null,
+        next: docs.length === limit && last !== undefined ? last._id : null,
       });
     } catch (error) {
       next(error);
@@ -1647,7 +1465,6 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgIdText = extractOrgId(req);
-      const orgId = new mongoose.Types.ObjectId(orgIdText);
       const { fromConnectorId, moves } = req.body as {
         fromConnectorId: string;
         moves: RelocateMove[];
@@ -1662,22 +1479,14 @@ export class StorageController {
       await this.withLocalStorageLock(req, orgIdText, async () => {
         for (const move of moves) {
           const newFullPath = getFullDocumentPath(orgIdText, move.newPath);
-          const docs = await DocumentModel.find(
-            // A revision's files are keyed by virtual record, not by connector:
-            // they stay where they are when the record changes connector.
-            {
-              ...virtualRecordDocumentsFilter(
-                orgIdText,
-                orgId,
-                move.virtualRecordId,
-              ),
-              'artifactSet.virtualRecordId': { $exists: false },
-            },
-          )
-            .select(
-              '_id documentPath documentName extension isVersionedFile versionHistory customMetadata',
-            )
-            .lean<MatchedTreeDocument[]>();
+          // A revision's files are keyed by virtual record, not by connector: the
+          // repository leaves them out, they stay where they are when the
+          // record changes connector.
+          const docs = await getDocumentRepository().listForRelocate(
+            orgIdText,
+            move.virtualRecordId,
+            flatRecordPath(orgIdText, move.virtualRecordId),
+          );
           const handedOver = (d: MatchedTreeDocument): boolean =>
             d.documentPath === newFullPath &&
             tagOf(d, 'connectorId') === move.connectorId;
@@ -1775,8 +1584,8 @@ export class StorageController {
         );
       }
 
-      const oldFullPath = getFullDocumentPath(String(orgId), oldPath);
-      const newFullPath = getFullDocumentPath(String(orgId), newPath);
+      const oldFullPath = getFullDocumentPath(orgId, oldPath);
+      const newFullPath = getFullDocumentPath(orgId, newPath);
 
       // Moving a tree under itself (e.g. a/b -> a/b/c) would make the
       // post-move delete of the old root also wipe the freshly-written new
@@ -1788,30 +1597,15 @@ export class StorageController {
       }
 
       await this.withLocalStorageLock(req, orgId, async () => {
-        // '/' (0x2F) is immediately followed by '0' (0x30) in ASCII -- this
-        // range covers every documentPath that starts with "oldFullPath/"
-        // without also matching an unrelated sibling like "oldFullPath2/...".
-        const descendantLower = `${oldFullPath}/`;
-        const descendantUpper = `${oldFullPath}0`;
-
-        // The query matches only on documentPath, so every result is guaranteed
-        // to have one -- .lean<T>() reflects that, unlike the base Document
-        // type where documentPath is optional. Org isolation comes from the
-        // "${orgId}/PipesHub/" prefix baked into oldFullPath, and the orgId
-        // condition below enforces it independently of the path string.
-        // Soft-deleted rows are kept in underPrefix: a local renameTree moves
-        // their files too, so their paths must be rewritten with the rest.
-        const underPrefix = await DocumentModel.find({
+        // Org isolation comes from the "${orgId}/PipesHub/" prefix baked into
+        // oldFullPath, and the repository filters on the org independently of
+        // the path string. Soft-deleted rows are kept in underPrefix: a local
+        // renameTree moves their files too, so their paths must be rewritten
+        // with the rest.
+        const underPrefix = await getDocumentRepository().subtree(
           orgId,
-          $or: [
-            { documentPath: oldFullPath },
-            { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
-          ],
-        })
-          .select(
-            '_id documentPath documentName extension isVersionedFile versionHistory isDeleted',
-          )
-          .lean<MatchedTreeDocument[]>();
+          oldFullPath,
+        );
         const matched = underPrefix.filter((d) => d.isDeleted !== true);
 
         if (matched.length === 0) {
@@ -1941,20 +1735,12 @@ export class StorageController {
     }
 
     // Rows written under oldFullPath after the snapshot moved with the directory.
-    const seen = new Set(matched.map((m) => String(m._id)));
-    const late = (
-      await DocumentModel.find({
-        ...(orgId && { orgId }),
-        $or: [
-          { documentPath: oldFullPath },
-          { documentPath: { $gte: `${oldFullPath}/`, $lt: `${oldFullPath}0` } },
-        ],
-      })
-        .select(
-          '_id documentPath documentName extension isVersionedFile versionHistory isDeleted',
+    const seen = new Set(matched.map((m) => m._id));
+    const late = orgId
+      ? (await getDocumentRepository().subtree(orgId, oldFullPath)).filter(
+          (d) => !seen.has(d._id),
         )
-        .lean<MatchedTreeDocument[]>()
-    ).filter((d) => !seen.has(String(d._id)));
+      : [];
     const rows = [...matched, ...late];
 
     // Each row is rewritten to where its folder actually is, not where this
@@ -1962,7 +1748,7 @@ export class StorageController {
     // is never pointed at a path it is not at.
     const located = await adapter.locateDocuments(
       newFullPath,
-      rows.map((r) => String(r._id)),
+      rows.map((r) => r._id),
     );
     if (!renamed && located.size === 0) {
       throw new StorageNotFoundError(
@@ -1973,35 +1759,31 @@ export class StorageController {
       );
     }
 
-    const bulkOps: Parameters<typeof DocumentModel.bulkWrite>[0] = [];
+    const updates: { id: string; set: Record<string, unknown> }[] = [];
     for (const doc of rows) {
-      const actualPath = located.get(String(doc._id));
+      const actualPath = located.get(doc._id);
       if (actualPath === undefined) continue;
-      bulkOps.push({
-        updateOne: {
-          filter: { _id: doc._id },
-          update: {
-            $set: {
-              documentPath: actualPath,
-              ...this.buildStorageUrlSet(
-                adapter,
-                StorageVendor.Local,
-                doc,
-                actualPath,
-                doc.documentName,
-                orgId,
-              ),
-            },
-          },
+      updates.push({
+        id: doc._id,
+        set: {
+          documentPath: actualPath,
+          ...this.buildStorageUrlSet(
+            adapter,
+            StorageVendor.Local,
+            doc,
+            actualPath,
+            doc.documentName,
+            orgId,
+          ),
         },
       });
     }
     // Live rows of this move whose folder is not under the new path were not
     // moved; the caller is told, as for object stores, so it can repair them.
     const failedIds = matched
-      .filter((d) => d.isDeleted !== true && !located.has(String(d._id)))
-      .map((d) => String(d._id));
-    const missing = rows.length - bulkOps.length;
+      .filter((d) => d.isDeleted !== true && !located.has(d._id))
+      .map((d) => d._id);
+    const missing = rows.length - updates.length;
     if (missing > 0) {
       this.logger.warn(
         'moveTree: documents not found under the new path were left as they were',
@@ -2012,12 +1794,11 @@ export class StorageController {
         },
       );
     }
-    // Bounded round trips for a large tree; each op names its own row, so the
-    // batches are independent.
-    for (let i = 0; i < bulkOps.length; i += TREE_MOVE_WRITE_BATCH) {
-      await DocumentModel.bulkWrite(
-        bulkOps.slice(i, i + TREE_MOVE_WRITE_BATCH),
-        { ordered: false },
+    // Bounded round trips for a large tree; each update names its own row, so
+    // the batches are independent.
+    for (let i = 0; i < updates.length; i += TREE_MOVE_WRITE_BATCH) {
+      await getDocumentRepository().setFieldsMany(
+        updates.slice(i, i + TREE_MOVE_WRITE_BATCH),
       );
     }
     return { failedIds };
@@ -2055,7 +1836,7 @@ export class StorageController {
             orgId,
           ))
         ) {
-          failedIds.push(String(doc._id));
+          failedIds.push(doc._id);
         }
       }
     }
@@ -2076,7 +1857,7 @@ export class StorageController {
     orgId: string | undefined,
     extraSet: Record<string, unknown> = {},
   ): Promise<boolean> {
-    const docId = String(doc._id);
+    const docId = doc._id;
     const oldRoot = getDocumentRootPath(
       String(orgId),
       docId,
@@ -2097,10 +1878,7 @@ export class StorageController {
         return true;
       }
       try {
-        await DocumentModel.updateOne(
-          { _id: doc._id as mongoose.Types.ObjectId },
-          { $set: extraSet },
-        );
+        await getDocumentRepository().setFields(doc._id, extraSet);
         return true;
       } catch (error) {
         this.logger.warn(`relocate: could not update document ${docId}`, {
@@ -2162,10 +1940,7 @@ export class StorageController {
       ...extraSet,
     };
     try {
-      await DocumentModel.updateOne(
-        { _id: doc._id as mongoose.Types.ObjectId },
-        { $set: set },
-      );
+      await getDocumentRepository().setFields(doc._id, set);
     } catch (error) {
       // The blob already moved but Mongo didn't take the update -- this
       // document is now genuinely inconsistent and needs manual repair.
@@ -2197,11 +1972,16 @@ export class StorageController {
     const ext = normalizeExtension(doc.extension ?? '');
     const newRoot = getDocumentRootPath(
       String(orgId),
-      String(doc._id),
+      doc._id,
       undefined,
       docNewFullPath,
     );
-    const liveKey = getCurrentFilePath(newRoot, nameForThisDoc, ext, !!doc.isVersionedFile);
+    const liveKey = getCurrentFilePath(
+      newRoot,
+      nameForThisDoc,
+      ext,
+      !!doc.isVersionedFile,
+    );
     const liveUrl = adapter.getObjectUrl(liveKey);
 
     const set: Record<string, unknown> = {};
@@ -2222,10 +2002,16 @@ export class StorageController {
           getVersionFilePath(newRoot, v.version ?? 0, vExt),
         );
         if (storageType === StorageVendor.Local) {
-          return { ...v, local: { url: v.local?.url ?? '', localPath: versionUrl } };
+          return {
+            ...v,
+            local: { url: v.local?.url ?? '', localPath: versionUrl },
+          };
         }
         if (storageType === StorageVendor.AzureBlob) {
-          return { ...v, azureBlob: { ...(v.azureBlob ?? {}), url: versionUrl } };
+          return {
+            ...v,
+            azureBlob: { ...(v.azureBlob ?? {}), url: versionUrl },
+          };
         }
         return { ...v, s3: { ...(v.s3 ?? {}), url: versionUrl } };
       });
@@ -2246,7 +2032,7 @@ export class StorageController {
       // lean: this path only reads fields off the document and signs a URL, so
       // it does not need a hydrated model. Hydration is ~20% of gateway CPU and
       // this is the hottest route on it.
-      const docResult: LeanDocumentInfoResponse | undefined = await getDocumentInfo(
+      const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
         next,
         true,
@@ -2256,7 +2042,8 @@ export class StorageController {
       }
 
       const document = docResult.document;
-      const resolvedVersion = version !== undefined ? Number(version) : undefined;
+      const resolvedVersion =
+        version !== undefined ? Number(version) : undefined;
 
       if (
         resolvedVersion !== undefined &&
@@ -2265,7 +2052,7 @@ export class StorageController {
         throw new BadRequestError("This version doesn't exist");
       }
 
-      if (document.isVersionedFile === false && resolvedVersion !== undefined) {
+      if (!document.isVersionedFile && resolvedVersion !== undefined) {
         throw new BadRequestError('This is a non-versioned document');
       }
 
@@ -2321,9 +2108,13 @@ export class StorageController {
         ? document.versionHistory.length
         : 0;
 
-      const resolvedVersion = version !== undefined ? Number(version) : undefined;
+      const resolvedVersion =
+        version !== undefined ? Number(version) : undefined;
 
-      if (resolvedVersion !== undefined && resolvedVersion > lengthOfVersionHistory) {
+      if (
+        resolvedVersion !== undefined &&
+        resolvedVersion > lengthOfVersionHistory
+      ) {
         throw new BadRequestError("This version doesn't exist");
       }
 
@@ -2364,6 +2155,11 @@ export class StorageController {
       }
 
       const document = docResult.document;
+      // A retired document may still be mapped by a lookup an older writer holds;
+      // refusing here sends that writer to a replacement document of its own.
+      if (document.retiredAt) {
+        throw new DocumentRetiredError();
+      }
 
       const adapter = await this.initializeStorageAdapter(req);
       let uploadResult: StorageServiceResponse<string>;
@@ -2371,25 +2167,51 @@ export class StorageController {
         uploadResult = await adapter.updateBuffer(buffer, document);
       } catch (error) {
         this.logger.error('Failed to upload buffer', {
-          documentId: String(document._id),
+          documentId: document._id,
           error: error instanceof Error ? error.message : String(error),
         });
         throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
 
       if (uploadResult.statusCode === 200) {
-        document.mutationCount = (document.mutationCount ?? 0) + 1;
-        document.sizeInBytes = size;
-        await document.save();
+        await this.saveDocument(document, {
+          mutationCount: (document.mutationCount ?? 0) + 1,
+          sizeInBytes: size,
+        });
         res.status(200).json(uploadResult.data);
       } else {
         this.logger.error('Failed to upload buffer', {
-          documentId: String(document._id),
+          documentId: document._id,
           statusCode: uploadResult.statusCode,
           error: uploadResult.msg,
         });
         throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Marks a document retired: later in-place buffer writes get 404
+   * DOCUMENT_RETIRED. Idempotent; the first mark's time is kept. Reads are
+   * unaffected.
+   */
+  async retireDocumentById(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const retired = await getDocumentRepository().retire(
+        extractOrgId(req),
+        String(req.params.documentId),
+        Date.now(),
+      );
+      if (!retired) {
+        throw new NotFoundError('Document not found', { logLevel: 'warn' });
+      }
+      res.status(HTTP_STATUS.OK).json({ retiredAt: retired.retiredAt });
     } catch (error) {
       next(error);
     }
@@ -2406,12 +2228,7 @@ export class StorageController {
       const nextVersionNote = req.body.nextVersionNote;
       const userId = extractUserId(req);
       // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
-      const initiatedByUserId = userId
-        ? (toObjectId(
-            userId,
-            'user',
-          ) as unknown as mongoose.Schema.Types.ObjectId)
-        : undefined;
+      const initiatedByUserId = userId ? requireId(userId, 'user') : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -2424,6 +2241,14 @@ export class StorageController {
 
       const document = docResult.document;
       const storageType = document.storageVendor;
+      // The row is updated in memory as the steps below run, and the new
+      // versions are written to the store once, at the end.
+      const addedVersions: DocumentVersion[] = [];
+      const addVersion = (version: DocumentVersion): void => {
+        document.versionHistory = document.versionHistory ?? [];
+        document.versionHistory.push(version);
+        addedVersions.push(version);
+      };
 
       if (document.isVersionedFile === false) {
         throw new BadRequestError('This document cannot be versioned');
@@ -2433,19 +2258,25 @@ export class StorageController {
 
       const normalizedDocumentExtension = normalizeExtension(
         document.extension ?? '',
-      ).trim().toLowerCase();
+      )
+        .trim()
+        .toLowerCase();
       const normalizedUploadedExtension = normalizeExtension(
         uploadedFileExtension,
-      ).trim().toLowerCase();
+      )
+        .trim()
+        .toLowerCase();
       if (normalizedDocumentExtension !== normalizedUploadedExtension) {
-        throw new BadRequestError(`Uploaded file extension ${uploadedFileExtension} does not match the original document extension ${document.extension}`);
+        throw new BadRequestError(
+          `Uploaded file extension ${uploadedFileExtension} does not match the original document extension ${document.extension}`,
+        );
       }
 
       const adapter = await this.initializeStorageAdapter(req);
       const basePath = getDocumentRootPath(
-        String(orgId),
-        String(document._id),
-        "",
+        orgId,
+        document._id,
+        '',
         document.documentPath,
       );
       const ext = normalizeExtension(document.extension ?? '');
@@ -2465,7 +2296,7 @@ export class StorageController {
           this.logger.error(
             'Failed to read the current file before versioning',
             {
-              documentId: String(document._id),
+              documentId: document._id,
               statusCode: bufferResponse.statusCode,
               error: bufferResponse.msg,
             },
@@ -2485,7 +2316,7 @@ export class StorageController {
           // `data` is the storage service's response body, which can carry the
           // file or customer content, so only its status and message are kept.
           this.logger.error('Failed to save the previous version', {
-            documentId: String(document._id),
+            documentId: document._id,
             statusCode: response?.statusCode,
             error: response?.msg,
           });
@@ -2497,8 +2328,7 @@ export class StorageController {
           '{}';
         const { storageType: configStorageType } = JSON.parse(storageConfig);
 
-        document.versionHistory = document.versionHistory ?? [];
-        document.versionHistory.push({
+        addVersion({
           version: 0,
           [configStorageType]: {
             url: response?.data,
@@ -2539,7 +2369,7 @@ export class StorageController {
             this.logger.error(
               'Failed to read the current file before versioning',
               {
-                documentId: String(document._id),
+                documentId: document._id,
                 statusCode: bufferResponse.statusCode,
                 error: bufferResponse.msg,
               },
@@ -2559,14 +2389,14 @@ export class StorageController {
             // `data` is the storage service's response body, which can carry the
             // file or customer content, so only its status and message are kept.
             this.logger.error('Failed to save the previous version', {
-              documentId: String(document._id),
+              documentId: document._id,
               statusCode: response?.statusCode,
               error: response?.msg,
             });
             throw new InternalServerError(STORAGE_WRITE_FAILED_MESSAGE);
           }
 
-          document.versionHistory?.push({
+          addVersion({
             version: versionToSave,
             [document.storageVendor]: {
               url: response?.data,
@@ -2608,7 +2438,7 @@ export class StorageController {
       // The version file first, then the current file. Written together, a
       // failed version write could still replace the current file while the
       // document keeps describing the previous one.
-      const logContext = { documentId: String(document._id) };
+      const logContext = { documentId: document._id };
       const versionResponse = await writeToStorage(
         adapter,
         nextVersionPayload,
@@ -2626,7 +2456,7 @@ export class StorageController {
       document.mutationCount = (document.mutationCount ?? 0) + 1;
       document.sizeInBytes = size;
 
-      document.versionHistory?.push({
+      addVersion({
         version: nextVersion,
         [document.storageVendor]: {
           url: versionResponse?.data,
@@ -2638,16 +2468,28 @@ export class StorageController {
         initiatedByUserId,
         createdAt: Date.now(),
       });
+      const storageUrl: Pick<Document, 's3' | 'azureBlob'> = {};
       if (storageType === StorageVendor.S3 && currentResponse?.data) {
-        document.s3 = { url: currentResponse.data };
-      } else if (storageType === StorageVendor.AzureBlob && currentResponse?.data) {
-        document.azureBlob = { url: currentResponse.data };
+        storageUrl.s3 = { url: currentResponse.data };
+      } else if (
+        storageType === StorageVendor.AzureBlob &&
+        currentResponse?.data
+      ) {
+        storageUrl.azureBlob = { url: currentResponse.data };
       }
 
       // Single save at the end
-      await document.save();
+      const saved = await this.saveDocument(
+        document,
+        {
+          mutationCount: document.mutationCount,
+          sizeInBytes: document.sizeInBytes,
+          ...storageUrl,
+        },
+        addedVersions,
+      );
 
-      res.status(HTTP_STATUS.OK).json(document);
+      res.status(HTTP_STATUS.OK).json(saved);
     } catch (error) {
       next(error);
     }
@@ -2666,12 +2508,7 @@ export class StorageController {
       const { note } = req.body as { note: string };
       const userId = extractUserId(req);
       // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
-      const initiatedByUserId = userId
-        ? (toObjectId(
-            userId,
-            'user',
-          ) as unknown as mongoose.Schema.Types.ObjectId)
-        : undefined;
+      const initiatedByUserId = userId ? requireId(userId, 'user') : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -2695,7 +2532,7 @@ export class StorageController {
         );
       }
 
-      const versionNum = version as number;
+      const versionNum = version;
       const currentVersion = document.versionHistory?.length ?? 0;
 
       if (versionNum >= currentVersion - 1) {
@@ -2705,9 +2542,9 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const basePath = getDocumentRootPath(
-        String(orgId),
-        String(document._id),
-        "",
+        orgId,
+        document._id,
+        '',
         document.documentPath,
       );
       const ext = normalizeExtension(document.extension ?? '');
@@ -2719,7 +2556,7 @@ export class StorageController {
 
       if (bufferResult.statusCode !== HTTP_STATUS.OK) {
         this.logger.error('Failed to read the version being rolled back to', {
-          documentId: String(document._id),
+          documentId: document._id,
           version: versionNum,
           statusCode: bufferResult.statusCode,
           error: bufferResult.msg,
@@ -2768,26 +2605,28 @@ export class StorageController {
           `Invalid storage type: ${document.storageVendor}`,
         );
       }
-      document.mutationCount = (document.mutationCount ?? 0) + 1;
-      document.versionHistory = document.versionHistory ?? [];
-      document.versionHistory.push({
-        version: nextVersion,
-        [document.storageVendor]: {
-          url: response?.data,
-        },
-        mutationCount: document.mutationCount,
-        extension: document.extension,
-        note: note,
-        size: document.versionHistory[versionNum]?.size,
-        initiatedByUserId,
-        createdAt: Date.now(),
-      });
+      const mutationCount = (document.mutationCount ?? 0) + 1;
+      const restoredSize = document.versionHistory?.[versionNum]?.size;
+      const saved = await this.saveDocument(
+        document,
+        { mutationCount, sizeInBytes: restoredSize },
+        [
+          {
+            version: nextVersion,
+            [document.storageVendor]: {
+              url: response?.data,
+            },
+            mutationCount,
+            extension: document.extension,
+            note: note,
+            size: restoredSize,
+            initiatedByUserId,
+            createdAt: Date.now(),
+          },
+        ],
+      );
 
-      document.sizeInBytes = document.versionHistory[versionNum]?.size;
-
-      await document.save();
-
-      res.status(HTTP_STATUS.OK).json(document);
+      res.status(HTTP_STATUS.OK).json(saved);
     } catch (error) {
       next(error);
     }
@@ -2802,12 +2641,12 @@ export class StorageController {
       const { documentId } = req.params;
       const orgId = extractOrgId(req);
 
-      const document = await DocumentModel.findOne({
-        _id: documentId,
-        orgId: toObjectId(orgId, 'organization'),
-      });
+      const document = await getDocumentRepository().get(
+        requireId(orgId, 'organization'),
+        String(documentId),
+      );
 
-      if (!document || !document.documentPath) {
+      if (!document?.documentPath) {
         throw new NotFoundError('Document / Document Path does not exist');
       }
       const adapter = await this.initializeStorageAdapter(req);
@@ -2851,17 +2690,18 @@ export class StorageController {
         throw new BadRequestError(`Invalid storage type: ${storageVendor}`);
       }
 
+      const storageUrl: Pick<Document, 's3' | 'azureBlob'> = {};
       if (storageVendor === StorageVendor.S3) {
-        document.s3 = {
+        storageUrl.s3 = {
           url: getBaseUrl(url) as string,
         };
       } else if (storageVendor === StorageVendor.AzureBlob) {
-        document.azureBlob = {
+        storageUrl.azureBlob = {
           url: getBaseUrl(url) as string,
         };
       }
 
-      await document.save();
+      await this.saveDocument(document, storageUrl);
       res.status(HTTP_STATUS.OK).json({
         signedUrl: presignedUrlResponse.data?.url,
         documentId: document._id,
@@ -2895,9 +2735,7 @@ export class StorageController {
 
       // for not versioned files, mutationCount>1 means the file was changed
       if (!document.isVersionedFile || !document.versionHistory?.length) {
-        res
-          .status(HTTP_STATUS.OK)
-          .json((document.mutationCount ?? 1) > 1);
+        res.status(HTTP_STATUS.OK).json((document.mutationCount ?? 1) > 1);
         return;
       }
 
@@ -2910,13 +2748,13 @@ export class StorageController {
       ));
 
       if (isDocumentChanged === true) {
-          res.status(HTTP_STATUS.OK).json(true);
-        } else if (isDocumentChanged === false) {
-          res.status(HTTP_STATUS.OK).json(false);
-        } else {
-          throw new InternalServerError(
-            'Some error occurred while comparing documents',
-          );
+        res.status(HTTP_STATUS.OK).json(true);
+      } else if (isDocumentChanged === false) {
+        res.status(HTTP_STATUS.OK).json(false);
+      } else {
+        throw new InternalServerError(
+          'Some error occurred while comparing documents',
+        );
       }
     } catch (error) {
       next(error);

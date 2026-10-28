@@ -41,7 +41,11 @@
     "archivedEmptyState": "No hay proyectos archivados",
     "archivedEmptyStateHint": "Los proyectos que archives aparecerán aquí.",
     "chatCount_many": "{{count}} de chats",
-    "actionsLabel": "Acciones del proyecto"
+    "actionsLabel": "Acciones del proyecto",
+    "noSearchResults": "Ningún proyecto coincide con «{{query}}»",
+    "noSearchResultsHint": "Prueba con otro nombre o borra la búsqueda.",
+    "clearSearch": "Borrar búsqueda",
+    "cardActionsLabel": "Acciones para {{name}}"
   },
   "timeGroup": {
     "today": "Hoy",
@@ -246,7 +250,8 @@
     "beta": "Beta",
     "searchChats": "Buscar chats",
     "inbox": "Bandeja de entrada",
-    "notifications": "Notificaciones"
+    "notifications": "Notificaciones",
+    "home": "Inicio"
   },
   "artifacts": {
     "title": "Todos los artefactos",
@@ -429,7 +434,7 @@
     "willBeReindexed": "será reindexado",
     "reindexConfirm": "¿Reindexar este {{type}}?",
     "reindexDescription": "Esto actualizará el índice de búsqueda para este {{type}} y su contenido.",
-    "deleteCollectionBody": "Se eliminará '{{name}}' y todo su contenido. También se quitará de los agentes que la usen.",
+    "deleteCollectionBody": "Se eliminará de forma permanente '{{name}}' y todo su contenido. También se quitará de los agentes que la usen. Esta acción no se puede deshacer.",
     "deleteFolderBody": "Se eliminará '{{name}}' y todo su contenido de esta colección.",
     "deleteFileBody": "Se eliminará '{{name}}' de esta colección."
   },
@@ -654,7 +659,9 @@
       "needsMultimodalModel": "Requiere un modelo multimodal",
       "passwordProtected": "Protegido con contraseña",
       "skipped": "Omitido",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "emptyFileZeroBytes": "Archivo vacío: no hay nada que indexar (0 bytes)",
+      "emptyNoContent": "Vacío: no se encontró texto que indexar"
     },
     "allRecordsBusy_one": "Esta vista está ocupada en este momento. Reintentando en {{count}} segundo.",
     "allRecordsBusy_many": "Esta vista está ocupada en este momento. Reintentando en {{count}} de segundos.",
@@ -698,6 +705,10 @@
     "createDialog": {
       "titlePlaceholder": "p. ej., Ingeniería",
       "descriptionPlaceholder": "p. ej., Docs del equipo"
+    },
+    "nameRules": {
+      "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
+      "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
     }
   },
   "connectorTypes": {
@@ -1202,7 +1213,6 @@
         "connectorsStatusNone": "Ninguno",
         "connectorsStatusCount_one": "{{count}} conectado",
         "connectorsStatusCount_other": "{{count}} conectados",
-        "toolsStatusDefault": "Predeterminado",
         "toolsStatusCount_one": "{{count}} activada",
         "toolsStatusCount_other": "{{count}} activadas",
         "membersStatusOnlyYou": "Solo tú",
@@ -1216,7 +1226,20 @@
         "filesStatusCount_many": "{{count}} de archivos",
         "filesStatusCountWithSize_many": "{{count}} de archivos · {{size}}",
         "connectorsStatusCount_many": "{{count}} de conectados",
-        "toolsStatusCount_many": "{{count}} de activados"
+        "toolsStatusCount_many": "{{count}} de activados",
+        "visibilityShared": "Compartido con {{members}}",
+        "visibilityPrivateOwner": "Privado para el propietario",
+        "toolsStatusNone": "Ninguna activada",
+        "toolsSubtitle": "Los chats de este proyecto solo pueden usar las herramientas que marques aquí.",
+        "toolKind": {
+          "read": "Lee datos",
+          "write": "Hace cambios",
+          "destructive": "Elimina o no se puede deshacer",
+          "unknown": "Otros"
+        },
+        "toolNeedsApproval": "Requiere aprobación",
+        "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
+        "indexingStatusLabel": "Indexación: {{status}}"
       },
       "moveDialog": {
         "title": "Mover a proyecto",
@@ -1227,16 +1250,71 @@
       },
       "deleteDialog": {
         "title": "¿Eliminar este proyecto?",
-        "description": "Se eliminará el proyecto y se desvincularán sus chats. Los chats en sí no se eliminan.",
+        "description": "Eliminar un proyecto no se puede deshacer:",
         "confirm": "Eliminar proyecto",
         "deleting": "Eliminando…",
-        "failed": "No se pudo eliminar el proyecto"
+        "failed": "No se pudo eliminar el proyecto",
+        "filesDeleted": "Los archivos subidos al proyecto se eliminan de forma permanente.",
+        "membersLoseAccess": "Todas las personas con las que se comparte pierden el acceso.",
+        "chatsKept": "Los chats se conservan, pero ya no forman parte de un proyecto."
       },
       "roles": {
         "owner": "Propietario",
         "editor": "Editor",
         "viewer": "Lector"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Propietario",
+          "description": "Creó el proyecto y gestiona quién puede usarlo"
+        },
+        "editor": {
+          "label": "Puede editar",
+          "description": "Cambiar el nombre, las instrucciones, los archivos, los conectores y las herramientas, y chatear en el proyecto"
+        },
+        "viewer": {
+          "label": "Puede ver",
+          "description": "Abrir el proyecto y chatear con sus archivos y herramientas"
+        }
+      },
+      "unknownMember": "Miembro desconocido",
+      "unknownTeam": "Equipo desconocido",
+      "allMembersTeam": "Todos en tu organización",
+      "ownerCannotChange": "El acceso del propietario del proyecto no se puede cambiar aquí.",
+      "sharingSettings": {
+        "saved": "Configuración de uso compartido guardada",
+        "saveFailed": "No se pudo guardar la configuración de uso compartido",
+        "visibilityLabel": "Quién puede encontrar este proyecto",
+        "visibilityPrivate": "Solo las personas con las que se comparte",
+        "visibilityOrg": "Todos en tu organización",
+        "visibilityPrivateHint": "Solo tú y las personas o equipos de abajo pueden abrirlo.",
+        "visibilityOrgHint": "Cualquier persona de tu organización puede encontrarlo y abrirlo.",
+        "chatSharingLabel": "Chats nuevos en este proyecto",
+        "chatSharingPrivate": "Privados para quien los inicia",
+        "chatSharingMembers": "Compartidos con los miembros del proyecto",
+        "chatSharingPrivateHint": "Cada chat sigue siendo privado a menos que su autor lo comparta.",
+        "chatSharingMembersHint": "Los miembros pueden ver los chats nuevos; un autor aún puede hacer uno privado."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Editar detalles del proyecto",
+        "saved": "Detalles del proyecto guardados",
+        "saveFailed": "No se pudieron guardar los detalles del proyecto"
+      },
+      "editDetails": "Editar nombre y descripción",
+      "leaveProject": "Salir del proyecto",
+      "leaveDialog": {
+        "title": "¿Salir de {{name}}?",
+        "description": "Perderás el acceso a este proyecto y sus archivos. Tus chats siguen siendo tuyos. El propietario puede volver a añadirte.",
+        "leaving": "Saliendo…",
+        "left": "Saliste del proyecto",
+        "failed": "No se pudo salir del proyecto",
+        "inherited": "No puedes salir de este proyecto: tu acceso procede de tu organización o de un equipo. Pide al propietario que cambie con quién lo comparte."
+      },
+      "archiveSuccess": "Proyecto archivado",
+      "archivedNoNewChats": "Este proyecto está archivado, así que no se pueden iniciar chats nuevos en él.",
+      "archivedBanner": "Este proyecto está archivado. Desarchívalo para iniciar chats nuevos.",
+      "archivedBannerMember": "Este proyecto está archivado, así que no se pueden iniciar chats nuevos. Pide a su propietario que lo desarchive."
     },
     "demoHide": "Ocultar los datos de demostración",
     "scrollAttachmentsLeft": "Desplazar los adjuntos hacia la izquierda",
@@ -1415,7 +1493,19 @@
       "downloading": "Descargando artefacto"
     },
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
-    "sourcesSettingUp": "Aún se están configurando: {{sources}}. Puede que las respuestas todavía no incluyan todo lo de estas fuentes."
+    "sourcesSettingUp": "Aún se están configurando: {{sources}}. Puede que las respuestas todavía no incluyan todo lo de estas fuentes.",
+    "noResultsFor": "No se encontraron resultados para «{{query}}»",
+    "removeSelectedSource": "Quitar {{name}}",
+    "diagramSourceCopied": "Código del diagrama copiado",
+    "diagramImageCopied": "Imagen del diagrama copiada",
+    "diagramImageDownloaded": "Portapapeles no disponible; el diagrama se guardó como PNG",
+    "diagramCopyFailed": "No se pudo copiar el diagrama",
+    "fitDiagram": "Ajustar a la pantalla",
+    "answerMode": {
+      "internalSearch": "Búsqueda interna",
+      "webSearch": "Búsqueda web",
+      "internalAndWebSearch": "Búsqueda interna + web"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -1555,7 +1645,27 @@
         "editError": "No se ha podido actualizar la invitación",
         "editTitle": "Editar invitación",
         "update": "Actualizar invitación",
-        "smtpNotConfiguredTooltip": "SMTP no está configurado. Configure el correo electrónico antes de enviar invitaciones."
+        "smtpNotConfiguredTooltip": "SMTP no está configurado. Configure el correo electrónico antes de enviar invitaciones.",
+        "userCount_one": "{{count}} usuario",
+        "userCount_many": "{{count}} de usuarios",
+        "userCount_other": "{{count}} usuarios",
+        "successDescriptionCount_one": "Se ha invitado a {{count}} usuario",
+        "successDescriptionCount_many": "Se ha invitado a {{count}} de usuarios",
+        "successDescriptionCount_other": "Se ha invitado a {{count}} usuarios",
+        "alreadyMembersSkipped_one": "{{count}} dirección ya pertenece a un miembro, así que no se le envió invitación.",
+        "alreadyMembersSkipped_many": "{{count}} de direcciones ya pertenecen a miembros, así que no se les enviaron invitaciones.",
+        "alreadyMembersSkipped_other": "{{count}} direcciones ya pertenecen a miembros, así que no se les enviaron invitaciones.",
+        "alreadyMembersTitle": "Ya son miembros: no se enviaron invitaciones",
+        "alreadyMembersDescription_one": "Esta dirección ya pertenece a un miembro activo.",
+        "alreadyMembersDescription_many": "Todas las direcciones ya pertenecen a miembros activos.",
+        "alreadyMembersDescription_other": "Todas las direcciones ya pertenecen a miembros activos.",
+        "importUnsupportedType": "Solo se pueden importar archivos .csv, .xlsx y .xls.",
+        "importTooLongSkipped_one": "Se omitió {{count}} entrada de más de 254 caracteres.",
+        "importTooLongSkipped_many": "Se omitieron {{count}} de entradas de más de 254 caracteres.",
+        "importTooLongSkipped_other": "Se omitieron {{count}} entradas de más de 254 caracteres.",
+        "invalidBlocksSend_one": "Hay {{count}} dirección no válida marcada en rojo. Corrígela o elimínala para enviar invitaciones.",
+        "invalidBlocksSend_many": "Hay {{count}} de direcciones no válidas marcadas en rojo. Corrígelas o elimínalas para enviar invitaciones.",
+        "invalidBlocksSend_other": "Hay {{count}} direcciones no válidas marcadas en rojo. Corrígelas o elimínalas para enviar invitaciones."
       },
       "bulk": {
         "resendInvite": "Reenviar invitación",
@@ -1693,7 +1803,11 @@
         "viewTeam": "Ver equipo",
         "delete": "Eliminar",
         "deleteError": "Error al eliminar el equipo",
-        "deleteSuccess": "Equipo eliminado"
+        "deleteSuccess": "Equipo eliminado",
+        "deleteConfirmTitle": "¿Eliminar el equipo?",
+        "deleteConfirmMessage": "Se eliminará \"{{name}}\" y sus miembros perderán el acceso compartido a través de él. Esta acción no se puede deshacer.",
+        "deleteConfirmButton": "Eliminar equipo",
+        "deleting": "Eliminando…"
       },
       "create": {
         "accessComingSoon": "Permisos de acceso próximamente",
@@ -1712,7 +1826,8 @@
         "submit": "Crear equipo",
         "successDescription": "\"{{name}}\" se ha creado exitosamente",
         "successTitle": "¡Equipo creado!",
-        "title": "Crear equipo"
+        "title": "Crear equipo",
+        "errorDescription": "No se pudo crear el equipo. Inténtalo de nuevo."
       },
       "detail": {
         "accessComingSoon": "Permisos de acceso próximamente",
@@ -1752,19 +1867,19 @@
     "oauth2": {
       "title": "OAuth 2.0",
       "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted ve sus aplicaciones aquí.",
-      "searchPlaceholder": "Buscar aplicaciones por nombre o descripci├│n...",
-      "newApplication": "Nueva aplicaci├│n OAuth",
+      "searchPlaceholder": "Buscar aplicaciones por nombre o descripción...",
+      "newApplication": "Nueva aplicación OAuth",
       "emptyTitle": "No hay aplicaciones OAuth 2.0",
-      "emptyDescription": "Cree una aplicaci├│n OAuth 2.0 para permitir que integraciones de terceros accedan a su organizaci├│n a trav├⌐s de PipesHub.",
+      "emptyDescription": "Cree una aplicación OAuth 2.0 para permitir que integraciones de terceros accedan a su organización a través de PipesHub.",
       "loading": "Cargando aplicaciones...",
       "errorGeneric": "No se pudieron cargar las aplicaciones OAuth",
       "retry": "Reintentar",
       "scopesBadgeOne": "{{count}} permiso",
       "scopesBadgeMany": "{{count}} permisos",
       "manage": "Administrar",
-      "noSearchResults": "Ninguna aplicaci├│n coincide con su b├║squeda.",
-      "manageComingSoonTitle": "Pr├│ximamente",
-      "manageComingSoonDescription": "A├║n no est├í disponible administrar aplicaciones OAuth desde el panel.",
+      "noSearchResults": "Ninguna aplicación coincide con su búsqueda.",
+      "manageComingSoonTitle": "Próximamente",
+      "manageComingSoonDescription": "Aún no está disponible administrar aplicaciones OAuth desde el panel.",
       "manageApplication": {
         "panelTitle": "Manage OAuth 2.0 application",
         "saveChanges": "Guardar cambios",
@@ -1781,53 +1896,53 @@
         "clientSecretsHeading": "Client secrets",
         "clientSecretsHelper": "A client secret is required to authenticate this application with the API.",
         "generateSecret": "Generate new client secret",
-        "generatingSecret": "GeneratingΓÇª",
+        "generatingSecret": "Generando…",
         "newSecretLabel": "New client secret",
         "advancedSectionTitle": "Advanced",
         "statusLabel": "ESTADO",
         "statusActive": "Activa",
         "statusSuspended": "Suspendida",
-        "suspendApplicationButton": "Suspender aplicaci├│n",
+        "suspendApplicationButton": "Suspender aplicación",
         "activateApplicationButton": "Activar",
-        "statusActionPending": "ActualizandoΓÇª",
+        "statusActionPending": "Actualizando…",
         "typeKeywordToConfirm": "Escriba '{{keyword}}' para confirmar",
-        "typedConfirmFallbackName": "esta aplicaci├│n",
-        "deleteTypedConfirmTitle": "Eliminar aplicaci├│n OAuth",
-        "deleteTypedConfirmBodyLine1": "┬┐Seguro que desea eliminar {{name}}? Esta acci├│n no se puede deshacer.",
-        "deleteTypedConfirmBodyLine2": "Se eliminar├ín de forma permanente todos los datos asociados a esta aplicaci├│n.",
-        "deleteTypedConfirmBodyLine3": "Esto incluye credenciales de cliente, tokens y cualquier registro de autorizaci├│n.",
+        "typedConfirmFallbackName": "esta aplicación",
+        "deleteTypedConfirmTitle": "Eliminar aplicación OAuth",
+        "deleteTypedConfirmBodyLine1": "¿Seguro que desea eliminar {{name}}? Esta acción no se puede deshacer.",
+        "deleteTypedConfirmBodyLine2": "Se eliminarán de forma permanente todos los datos asociados a esta aplicación.",
+        "deleteTypedConfirmBodyLine3": "Esto incluye credenciales de cliente, tokens y cualquier registro de autorización.",
         "revokeTypedConfirmTitle": "Revocar todos los tokens",
-        "revokeTypedConfirmBodyLine1": "┬┐Seguro que desea revocar todos los tokens de {{name}}? Esta acci├│n no se puede deshacer.",
-        "revokeTypedConfirmBodyLine2": "Todos los tokens de acceso y actualizaci├│n emitidos para esta aplicaci├│n dejar├ín de ser v├ílidos de inmediato. Los usuarios deber├ín volver a autorizar para obtener tokens nuevos.",
-        "suspendTypedConfirmTitle": "Suspender aplicaci├│n",
-        "suspendTypedConfirmBodyLine1": "┬┐Seguro que desea suspender {{name}}? Es posible que se bloqueen tokens nuevos y el uso hasta que reactive la aplicaci├│n.",
+        "revokeTypedConfirmBodyLine1": "¿Seguro que desea revocar todos los tokens de {{name}}? Esta acción no se puede deshacer.",
+        "revokeTypedConfirmBodyLine2": "Todos los tokens de acceso y actualización emitidos para esta aplicación dejarán de ser válidos de inmediato. Los usuarios deberán volver a autorizar para obtener tokens nuevos.",
+        "suspendTypedConfirmTitle": "Suspender aplicación",
+        "suspendTypedConfirmBodyLine1": "¿Seguro que desea suspender {{name}}? Es posible que se bloqueen tokens nuevos y el uso hasta que reactive la aplicación.",
         "suspendTypedConfirmBodyLine2": "Los tokens existentes pueden seguir funcionando hasta que caduquen o se revoquen.",
-        "suspendTypedConfirmAction": "Suspender aplicaci├│n",
-        "suspendTypedConfirmSuspending": "SuspendiendoΓÇª",
-        "suspendSuccessTitle": "Aplicaci├│n suspendida",
-        "suspendErrorTitle": "No se pudo suspender la aplicaci├│n",
-        "activateSuccessTitle": "Aplicaci├│n activada",
-        "activateErrorTitle": "No se pudo activar la aplicaci├│n",
+        "suspendTypedConfirmAction": "Suspender aplicación",
+        "suspendTypedConfirmSuspending": "Suspendiendo…",
+        "suspendSuccessTitle": "Aplicación suspendida",
+        "suspendErrorTitle": "No se pudo suspender la aplicación",
+        "activateSuccessTitle": "Aplicación activada",
+        "activateErrorTitle": "No se pudo activar la aplicación",
         "dangerZoneLabel": "DANGER ZONE",
         "revokeTokensTitle": "Revoke all tokens",
         "revokeTokensDescription": "Invalidates every access and refresh token for this application. This action cannot be undone. Users will need to authorize again to obtain new tokens.",
         "revokeTokensButton": "Revoke tokens",
         "revokeConfirmAction": "Revocar todo",
-        "revoking": "RevokingΓÇª",
+        "revoking": "Revocando…",
         "revokeSuccessTitle": "Tokens revoked",
         "revokeSuccessDescription": "All tokens for this application have been invalidated.",
         "revokeErrorTitle": "Failed to revoke tokens",
         "deleteApplicationTitle": "Delete application",
         "deleteApplicationDescription": "Permanently delete this OAuth application. Clients using this app will no longer work. This action cannot be undone.",
         "deleteApplicationButton": "Delete application",
-        "deleteConfirmAction": "Eliminar aplicaci├│n",
-        "deletingApp": "DeletingΓÇª",
+        "deleteConfirmAction": "Eliminar aplicación",
+        "deletingApp": "Eliminando…",
         "deleteSuccessTitle": "Application deleted",
         "deleteSuccessDescription": "The OAuth application was removed.",
         "deleteErrorTitle": "Failed to delete application",
         "loadError": "Failed to load application.",
         "loadRetry": "Retry",
-        "loadingDetail": "Loading applicationΓÇª",
+        "loadingDetail": "Cargando aplicación…",
         "saveSuccessTitle": "Changes saved",
         "saveSuccessDescription": "Your OAuth application was updated.",
         "saveErrorTitle": "Failed to save changes",
@@ -1875,7 +1990,7 @@
         "permissionsSummary": "{{selected}} of {{total}} permissions selected",
         "selectAllScopes": "Select all",
         "clearAllScopes": "Clear all",
-        "scopesLoading": "Loading permissionsΓÇª",
+        "scopesLoading": "Cargando permisos…",
         "scopesLoadError": "Failed to load permissions. Try again.",
         "scopesRetry": "Retry",
         "requiresConsent": "Requires user consent",
@@ -3323,6 +3438,15 @@
             "action": "Vuelva a sincronizar. Si sigue fallando, revise la configuración del conector o consulte a su administrador."
           }
         }
+      },
+      "teamVisibilityDialog": {
+        "title": "Todos en tu organización verán estos datos",
+        "noPermissions": "En la Community Edition, el conector {{name}} no aplica permisos. Todo lo que sincroniza un conector de equipo lo puede buscar cualquier persona de tu organización.",
+        "usePersonal": "Si solo necesitas estos datos para ti, configúralo como conector personal. Usa un conector de equipo solo para datos que toda la organización pueda leer.",
+        "teamOnly": "{{name}} solo está disponible como conector de equipo. Conéctalo solo a datos que toda la organización pueda leer y dale credenciales que no puedan leer nada más.",
+        "cancel": "Cancelar",
+        "continueTeam": "Continuar con el conector de equipo",
+        "goToPersonal": "Configurar conector personal"
       }
     },
     "mcpServers": {
@@ -3753,7 +3877,11 @@
       "infoBanner": "SMTP configuration is required for email-based features like OTP authentication and password reset. Please enter the details of your email server below.",
       "toasts": {
         "saved": "Mail settings saved",
-        "savedDescription": "Your email server configuration has been updated."
+        "savedDescription": "Your email server configuration has been updated.",
+        "turnedOff": "Correo desactivado",
+        "turnedOn": "Correo activado",
+        "deleted": "Configuración SMTP eliminada",
+        "actionFailed": "No se pudo actualizar la configuración SMTP. Inténtalo de nuevo."
       },
       "fields": {
         "host": "SMTP host *",
@@ -3767,6 +3895,21 @@
         "usernamePlaceholder": "Enter SMTP username",
         "password": "Password (optional)",
         "passwordHint": "Password for SMTP authentication (if required)"
+      },
+      "turnedOff": "Desactivado",
+      "emailSending": "Enviar correo",
+      "deleteSmtp": "Eliminar la configuración SMTP",
+      "turnOffDialog": {
+        "title": "¿Desactivar el correo?",
+        "message": "PipesHub dejará de enviar correos: invitaciones, restablecimientos de contraseña, códigos de inicio de sesión y notificaciones. Tu configuración SMTP se conserva, así que puedes volver a activar el correo cuando quieras.",
+        "confirm": "Desactivar"
+      },
+      "deleteDialog": {
+        "title": "¿Eliminar la configuración SMTP?",
+        "warning": "Esto elimina de forma permanente la configuración de tu servidor SMTP. No se puede deshacer.",
+        "message": "PipesHub dejará de enviar correos, incluidas invitaciones, restablecimientos de contraseña y códigos de inicio de sesión, hasta que se vuelva a configurar SMTP. Quienes inician sesión con un código enviado por correo no podrán iniciar sesión.",
+        "confirm": "Eliminar",
+        "deleting": "Eliminando…"
       }
     },
     "prompts": {
@@ -3884,7 +4027,12 @@
         "title": "Password & security",
         "accountPassword": "Account password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
-        "changePassword": "Change password"
+        "changePassword": "Change password",
+        "setPassword": "Establecer contraseña",
+        "setPasswordDescription": "Aún no has establecido una contraseña. Te enviaremos un enlace por correo para establecerla; así podrás iniciar sesión también con tu correo y contraseña, si tu espacio de trabajo lo permite.",
+        "setPasswordDialogTitle": "Establecer contraseña",
+        "setPasswordDialogMessage": "Enviaremos un enlace para establecer tu contraseña a tu dirección de correo registrada y cerraremos esta sesión.",
+        "setPasswordDialogConfirm": "Enviar enlace para establecer contraseña"
       },
       "rolesPermissions": {
         "title": "Roles & permissions",
@@ -3931,6 +4079,10 @@
         "saveErrorDescription": "Could not update your profile",
         "passwordUpdated": "Password has been updated",
         "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "passwordSetupEmailSent": "Enlace enviado",
+        "passwordSetupEmailSentDescription": "Revisa tu correo para establecer tu contraseña. Cerrando esta sesión…",
+        "passwordSetupEmailError": "No se pudo enviar el correo",
+        "passwordSetupEmailErrorDescription": "Inténtalo de nuevo.",
         "emailVerificationSent": "Email verification link sent",
         "emailVerificationSentDescription": "You will be logged out when you verify the email",
         "discardSuccess": "Discarded edits",
@@ -5379,7 +5531,9 @@
       "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente.",
       "loadFailedTitle": "No se pudo cargar el inicio de sesión",
       "loadFailedDescription": "PipesHub no pudo conectar con el servidor para cargar las opciones de inicio de sesión. Comprueba tu conexión o la dirección del servidor e inténtalo de nuevo.",
-      "retry": "Reintentar"
+      "retry": "Reintentar",
+      "tabPassword": "Contraseña",
+      "tabEmailOtp": "Código por correo"
     },
     "common": {
       "signIn": "Iniciar sesión",
@@ -5416,12 +5570,51 @@
       "integrationTitle": "Autorización enviada a PipesHub",
       "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
       "openApp": "Abrir PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "Revisa tu bandeja de entrada",
+      "resetLinkSent": "Si existe una cuenta con este correo, se ha enviado un enlace para restablecer la contraseña.",
+      "resetRequestFailed": "No se pudo solicitar el restablecimiento de la contraseña",
+      "tryAgainLater": "Inténtalo de nuevo más tarde.",
+      "contactAdmin": "Ponte en contacto con tu administrador.",
+      "noPasswordSetTitle": "Esta cuenta no tiene contraseña.",
+      "noPasswordSetDescription": "Usa «¿Olvidaste tu contraseña?» más abajo para crear una.",
+      "checkEmail": "Revisa tu correo",
+      "otpSentDescription": "Si ese correo puede iniciar sesión con un código, se está enviando uno. Si no llega en unos minutos, revisa la carpeta de spam o inténtalo más tarde.",
+      "otpSendFailed": "No se pudo enviar el código de verificación",
+      "additionalVerification": "Se requiere verificación adicional",
+      "completeNextStep": "Completa el siguiente paso para continuar.",
+      "signInFailedTitle": "Error al iniciar sesión",
+      "unexpectedResponse": "Respuesta inesperada. Inténtalo de nuevo.",
+      "signInFailed": "Error al iniciar sesión. Inténtalo de nuevo.",
+      "verificationFailed": "Error en la verificación. Inténtalo de nuevo.",
+      "googleSignInFailed": "Error al iniciar sesión con Google. Inténtalo de nuevo.",
+      "microsoftSignInFailed": "Error al iniciar sesión con Microsoft. Inténtalo de nuevo.",
+      "tryAgainAfter": "Inténtalo de nuevo después de {{time}}."
     }
   },
   "healthGate": {
     "title": "No se puede conectar al servidor",
     "description": "El servidor no está disponible en este momento. Es posible que se esté iniciando o en mantenimiento. Estamos intentando reconectar.",
-    "contactAdmin": "Si el problema persiste, comuníquese con su administrador de PipesHub."
+    "contactAdmin": "Si el problema persiste, comuníquese con su administrador de PipesHub.",
+    "toasts": {
+      "servicesUnavailableTitle": "Algunos servicios no están disponibles",
+      "affected": "Afectados: {{services}}",
+      "featuresUnavailableReconnect": "Algunas funciones no están disponibles temporalmente. Nos volveremos a conectar automáticamente; si persiste, contacte con su administrador.",
+      "featuresUnavailable": "Algunas funciones no están disponibles temporalmente",
+      "viewStatus": "Ver estado",
+      "servicesDown_one": "{{services}} no está disponible en este momento",
+      "servicesDown_other": "{{services}} no están disponibles en este momento",
+      "servicesDown_many": "{{services}} no están disponibles en este momento"
+    },
+    "serviceGate": {
+      "title": "Servicio no disponible",
+      "requires_one": "Esta página requiere {{services}}, que no está disponible en este momento. Volverá a estar disponible automáticamente cuando el servicio se recupere.",
+      "requires_many": "Esta página requiere {{services}}, que no están disponibles en este momento. Volverá a estar disponible automáticamente cuando los servicios se recuperen.",
+      "requires_other": "Esta página requiere {{services}}, que no están disponibles en este momento. Volverá a estar disponible automáticamente cuando los servicios se recuperen.",
+      "memberBody": "Esta página no está disponible temporalmente. Volverá automáticamente; si persiste, contacte con su administrador.",
+      "viewStatus": "Ver estado de los servicios"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Pregunta :",
@@ -5663,7 +5856,13 @@
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",
     "invite": "Invitar a Pipeshub",
-    "memberCount_many": "{{count}} de miembros"
+    "memberCount_many": "{{count}} de miembros",
+    "searchPlaceholderTeams": "Correos, equipos o nombres (separados por comas)",
+    "searchPlaceholderUsers": "Correos o nombres (separados por comas)",
+    "alreadyRemoved": "Ya se había quitado",
+    "alreadyRemovedDescription": "{{name}} ya no tenía acceso",
+    "removeConfirmTitle": "¿Quitar el acceso?",
+    "removeConfirmDescription": "{{name}} perderá el acceso de inmediato. Puedes volver a compartir más tarde."
   },
   "demoData": {
     "badge": {

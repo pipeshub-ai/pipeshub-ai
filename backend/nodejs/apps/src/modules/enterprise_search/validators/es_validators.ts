@@ -3,7 +3,10 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  PIPESHUB_CHAT_MODE,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
 import {
   messageForUnknownOption,
   messageWhenMissing,
@@ -286,10 +289,7 @@ const filtersSchema = z
 
 /** Model selection fields shared across search, message, regenerate, etc. */
 const modelFieldsSchema = {
-  modelKey: z
-    .string()
-    .min(1, { message: 'Model key is required' })
-    .optional(),
+  modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
   modelName: z
     .string()
     .min(1, { message: 'Model name is required' })
@@ -419,10 +419,7 @@ const webSearchProviderParam = {
     .transform((value) => value.toLowerCase()),
 };
 const modelUsageParam = {
-  model_key: z
-    .string()
-    .trim()
-    .min(1, { message: 'Model key is required' }),
+  model_key: z.string().trim().min(1, { message: 'Model key is required' }),
 };
 
 // ---------------------------------------------------------------------------
@@ -447,19 +444,19 @@ const chatQuerySchema = z
   });
 
 const enterpriseSearchCreateBodySchema = z.object({
-    query: chatQuerySchema,
-    recordIds: z.array(objectId('record ID')).optional(),
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
-    // Only honored when creating a *new* conversation — see resolveProjectLink
-    // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
-    projectId: objectId('project ID').optional(),
-    projectVisibility: z.enum(['private', 'project']).optional(),
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
-    ...retrievalContextFieldsSchema,
+  query: chatQuerySchema,
+  recordIds: z.array(objectId('record ID')).optional(),
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  attachments: z.array(attachmentRefSchema).optional(),
+  chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
+  // Only honored when creating a *new* conversation — see resolveProjectLink
+  // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
+  projectId: objectId('project ID').optional(),
+  projectVisibility: z.enum(['private', 'project']).optional(),
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+  ...retrievalContextFieldsSchema,
   ...keywordSearchFieldsSchema,
 });
 
@@ -501,9 +498,10 @@ export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
 });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
-export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
-  body: cancelRunBodySchema,
-});
+export const cancelConversationStreamParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: cancelRunBodySchema,
+  });
 
 /** `projectId: null` unlinks — see `setConversationProject`, es_controller.ts. */
 export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
@@ -514,11 +512,12 @@ export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
   }),
 });
 
-export const conversationProjectVisibilitySchema = conversationIdParamsSchema.extend({
-  body: z.object({
-    visibility: z.enum(['private', 'project']),
-  }),
-});
+export const conversationProjectVisibilitySchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({
+      visibility: z.enum(['private', 'project']),
+    }),
+  });
 
 export const agentConversationProjectLinkSchema = z.object({
   params: z.object({ ...agentKeyParam, ...conversationIdParam }),
@@ -548,7 +547,8 @@ export const agentConversationParamsSchema = z.object({
 });
 
 /** Schema for DELETE /:agentKey/conversations/:conversationId — delete one agent conversation. */
-export const deleteAgentConversationParamsSchema = agentConversationParamsSchema;
+export const deleteAgentConversationParamsSchema =
+  agentConversationParamsSchema;
 
 export const agentConversationTitleParamsSchema =
   agentConversationParamsSchema.extend({
@@ -612,25 +612,38 @@ export const getAgentConversationByIdSchema = z.object({
       .optional()
       .transform((value) => (value === 'asc' ? 'asc' : 'desc')),
     startDate: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid start date format',
       ),
     endDate: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
     messageType: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) =>
           !value ||
-          ['user_query', 'bot_response', 'error', 'feedback', 'system'].includes(
-            value,
-          ),
+          [
+            'user_query',
+            'bot_response',
+            'error',
+            'feedback',
+            'system',
+          ].includes(value),
         'Invalid message type. Must be one of: user_query, bot_response, error, feedback, system',
       ),
   }),
@@ -641,14 +654,14 @@ export const getAgentConversationByIdSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const addMessageBodySchema = z.object({
-    query: chatQuerySchema,
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
-    ...retrievalContextFieldsSchema,
+  query: chatQuerySchema,
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  attachments: z.array(attachmentRefSchema).optional(),
+  chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+  ...retrievalContextFieldsSchema,
   ...keywordSearchFieldsSchema,
 });
 
@@ -724,12 +737,11 @@ export const agentAddMessageSchema = z.object({
 /** Defensive max length for long agent text fields (not enforced by Python). */
 const agentLongTextSchema = z.string().max(100_000);
 
-const agentToolRefSchema = z
-  .object({
-    name: z.string().trim().min(1),
-    fullName: z.string().trim().min(1).optional(),
-    description: z.string().max(10_000).optional(),
-  });
+const agentToolRefSchema = z.object({
+  name: z.string().trim().min(1),
+  fullName: z.string().trim().min(1).optional(),
+  description: z.string().max(10_000).optional(),
+});
 
 /**
  * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
@@ -763,15 +775,14 @@ const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
   error: 'Invalid toolset name',
 });
 
-const agentToolsetSchema = z
-  .object({
-    name: z.string().trim().pipe(agentToolsetNameSchema),
-    displayName: z.string().max(200).optional(),
-    type: z.string().max(100).optional(),
-    instanceId: z.string().max(256).optional(),
-    instanceName: z.string().max(200).optional(),
-    tools: z.array(agentToolRefSchema).optional(),
-  });
+const agentToolsetSchema = z.object({
+  name: z.string().trim().pipe(agentToolsetNameSchema),
+  displayName: z.string().max(200).optional(),
+  type: z.string().max(100).optional(),
+  instanceId: z.string().max(256).optional(),
+  instanceName: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).optional(),
+});
 
 /**
  * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
@@ -899,11 +910,10 @@ const readAgentKnowledgeFilters = (
   return limit;
 };
 
-const agentKnowledgeSchema = z
-  .object({
-    connectorId: z.string().trim().min(1),
-    filters: z.unknown().transform(readAgentKnowledgeFilters).optional(),
-  });
+const agentKnowledgeSchema = z.object({
+  connectorId: z.string().trim().min(1),
+  filters: z.unknown().transform(readAgentKnowledgeFilters).optional(),
+});
 
 const agentSkillSchema = z
   .object({
@@ -912,31 +922,30 @@ const agentSkillSchema = z
       .min(1, { message: 'Skill name is required' })
       .max(64, { message: 'Skill name must be 64 characters or fewer' })
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
-        message: 'Skill name must be lowercase alphanumeric with single hyphens',
+        message:
+          'Skill name must be lowercase alphanumeric with single hyphens',
       }),
   })
   .strict();
 
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
-  z
-    .object({
-      modelKey: z.string().trim().min(1),
-      modelName: z.string().optional(),
-      isReasoning: z.boolean().optional(),
-      provider: z.string().optional(),
-    }),
+  z.object({
+    modelKey: z.string().trim().min(1),
+    modelName: z.string().optional(),
+    isReasoning: z.boolean().optional(),
+    provider: z.string().optional(),
+  }),
 ]);
 
 const agentWebSearchSchema = z.union([
   z.string().trim().min(1),
-  z
-    .object({
-      provider: z.string().trim().min(1),
-      providerKey: z.string().max(256).optional(),
-      providerLabel: z.string().max(200).optional(),
-      iconPath: z.string().max(500).optional(),
-    }),
+  z.object({
+    provider: z.string().trim().min(1),
+    providerKey: z.string().max(256).optional(),
+    providerLabel: z.string().max(200).optional(),
+    iconPath: z.string().max(500).optional(),
+  }),
 ]);
 
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
@@ -1132,7 +1141,13 @@ export const listAgentsQuerySchema = z.object({
           });
         }
       }),
-    sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
+    sort_by: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .optional()
+      .default('updatedAtTimestamp'),
     sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
 });
@@ -1460,81 +1475,89 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
   params: z.object({
     ...agentKeyParam,
   }),
-  query: z.object({
-    page: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1) {
-          return 1;
-        }
-        return value;
-      }),
-    limit: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1 || value > 100) {
-          return 20;
-        }
-        return value;
-      }),
-    sortBy: z
-      .string()
-      .optional()
-      .transform((value) =>
-        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
-          ? value
-          : undefined,
-      ),
-    sortOrder: z
-      .string()
-      .optional()
-      .transform((value) => (value === 'asc' || value === 'desc' ? value : undefined)),
-    search: z
-      .string()
-      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
-      .optional()
-      .superRefine((value, ctx) => {
-        if (!value) {
-          return;
-        }
+  query: z
+    .object({
+      page: z
+        .preprocess((arg) => {
+          if (arg === undefined || arg === '') {
+            return undefined;
+          }
+          const parsed = parseInt(String(arg), 10);
+          return Number.isNaN(parsed) ? undefined : parsed;
+        }, z.number().optional())
+        .transform((value) => {
+          if (value === undefined || value < 1) {
+            return 1;
+          }
+          return value;
+        }),
+      limit: z
+        .preprocess((arg) => {
+          if (arg === undefined || arg === '') {
+            return undefined;
+          }
+          const parsed = parseInt(String(arg), 10);
+          return Number.isNaN(parsed) ? undefined : parsed;
+        }, z.number().optional())
+        .transform((value) => {
+          if (value === undefined || value < 1 || value > 100) {
+            return 20;
+          }
+          return value;
+        }),
+      sortBy: z
+        .string()
+        .optional()
+        .transform((value) =>
+          value === 'createdAt' ||
+          value === 'lastActivityAt' ||
+          value === 'title'
+            ? value
+            : undefined,
+        ),
+      sortOrder: z
+        .string()
+        .optional()
+        .transform((value) =>
+          value === 'asc' || value === 'desc' ? value : undefined,
+        ),
+      search: z
+        .string()
+        .max(1000, {
+          message: 'Search parameter too long (max 1000 characters)',
+        })
+        .optional()
+        .superRefine((value, ctx) => {
+          if (!value) {
+            return;
+          }
 
-        try {
-          validateNoXSS(value, 'search parameter');
-          validateNoFormatSpecifiers(value, 'search parameter');
-        } catch (error: any) {
-          ctx.addIssue({
-            code: 'custom',
-            message: error.message,
-          });
-        }
-      }),
-    startDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid start date format',
-      ),
-    endDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid end date format',
-      ),
-  }).strict(),
+          try {
+            validateNoXSS(value, 'search parameter');
+            validateNoFormatSpecifiers(value, 'search parameter');
+          } catch (error: any) {
+            ctx.addIssue({
+              code: 'custom',
+              message: error.message,
+            });
+          }
+        }),
+      startDate: z
+        .string()
+        .optional()
+        .refine(
+          (value) => !value || !isNaN(new Date(value).getTime()),
+          'Invalid start date format',
+        ),
+      endDate: z
+        .string()
+        .optional()
+        .refine(
+          (value) => !value || !isNaN(new Date(value).getTime()),
+          'Invalid end date format',
+        ),
+    })
+    .strict(),
 });
 
 /** Schema for GET /conversations/show/archives — list archived conversations. */
@@ -1599,7 +1622,7 @@ const recordIdParam = {
     .trim()
     .min(1, { message: 'recordId is required' })
     .max(256, { message: 'recordId is too long' }),
-}
+};
 
 const attachmentUploadBodySchema = z.object({
   conversationId: z
@@ -1607,7 +1630,9 @@ const attachmentUploadBodySchema = z.object({
       (v) => (typeof v === 'string' ? v.trim() : v),
       z.union([
         z.literal(''),
-        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+        z.string().regex(OBJECT_ID_REGEX, {
+          message: 'Invalid conversation ID format',
+        }),
       ]),
     )
     .nullable()

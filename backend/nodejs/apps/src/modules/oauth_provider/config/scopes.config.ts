@@ -229,7 +229,8 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
   'project:write': {
     name: 'project:write',
-    description: 'Create, update and share projects',
+    description:
+      'Create, update and share projects. Adding files to a project also needs kb:write',
     category: 'Projects',
     requiresUserConsent: true,
   },
@@ -370,6 +371,9 @@ export const DefaultMcpScopes = [
   'agent:execute',
   'connector:read',
   'code:read',
+  'project:read',
+  'project:write',
+  'project:delete',
 ];
 
 /**

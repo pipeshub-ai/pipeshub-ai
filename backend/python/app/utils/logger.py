@@ -8,6 +8,7 @@ from httpx import URL
 
 from app.utils.log_redaction import redact_secrets_in_text, refresh_env_secrets
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.structured_logging import StructuredLoggingProvider, get_provider
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
@@ -26,7 +27,8 @@ def _make_record_factory(
     def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
         record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
 
-        if get_context() is None:
+        ctx = get_context()
+        if ctx is None:
             record.request_id = ""
             record.task = NO_CONTEXT
             record.trace = ""
@@ -42,6 +44,11 @@ def _make_record_factory(
         record.request_id = display_id
         record.task = task_name
         record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
+
+        if ctx.org_id:
+            org_hash = get_provider().hash_org_id(ctx.org_id)
+            if org_hash:
+                record.organization_id_hash = org_hash
         return record
 
     _record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
@@ -204,8 +211,9 @@ class AccessLogRedactionFilter(logging.Filter):
 
 
 # Ensure log directory exists
+# Created by create_logger only when the provider keeps file logging, so a
+# read-only container filesystem never has to be written.
 log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -243,6 +251,31 @@ logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
 
 
+def _provider_formatter(
+    provider: StructuredLoggingProvider, default: logging.Formatter
+) -> logging.Formatter:
+    """The provider's console formatter, still redacting: a provider that returns
+    a plain formatter must not drop the redaction ``install_log_redaction`` set up."""
+    formatter = provider.console_formatter(default)
+    if getattr(formatter, "_pipeshub_redacting", False):
+        return formatter
+    return _RedactingWrapper(formatter)
+
+
+def _route_root_handlers(provider: StructuredLoggingProvider) -> None:
+    """Give the root handlers (third-party libraries log through them) the same
+    console formatter as the service loggers. Runs from create_logger, not at
+    import, because the provider must not be resolved at import time; each
+    handler is marked so a later call does not wrap its formatter again."""
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, "_pipeshub_provider_routed", False):
+            continue
+        handler.setFormatter(
+            _provider_formatter(provider, handler.formatter or logging.Formatter())
+        )
+        handler._pipeshub_provider_routed = True  # type: ignore[attr-defined]
+
+
 def create_logger(service_name: str) -> logging.Logger:
     """
     Create a logger for a specific service with file and console handlers
@@ -260,19 +293,22 @@ def create_logger(service_name: str) -> logging.Logger:
         # Enhanced format: request id + thread/task + filename and line number
         log_format = LOG_FORMAT
 
-        # File handler with enhanced format
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, f"{service_name}.log"),
-            encoding="utf-8",  # Explicitly set encoding here too
-        )
-        file_handler.setFormatter(RedactingFormatter(log_format))
+        provider = get_provider()
+        _route_root_handlers(provider)
 
-        # Console handler with colored format
+        if provider.file_logging_enabled():
+            os.makedirs(log_dir, exist_ok=True)
+            file_handler = logging.FileHandler(
+                os.path.join(log_dir, f"{service_name}.log"),
+                encoding="utf-8",  # Explicitly set encoding here too
+            )
+            file_handler.setFormatter(RedactingFormatter(log_format))
+            logger.addHandler(file_handler)
+
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(ColoredFormatter(log_format))
-
-        # Add handlers
-        logger.addHandler(file_handler)
+        console_handler.setFormatter(
+            _provider_formatter(provider, ColoredFormatter(log_format))
+        )
         logger.addHandler(console_handler)
         logger.propagate = False
 

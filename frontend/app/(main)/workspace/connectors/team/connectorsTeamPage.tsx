@@ -36,6 +36,9 @@ import { AdminAccessRequiredDialog } from '../components/admin-access-required-d
 import { DemoDataRemovalNotice } from '../demo-data/components';
 import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
 import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
+import { getTeamVisibilityWarning } from '../utils/team-visibility-warning';
+import { TeamVisibilityWarningDialog } from '../components/team-visibility-warning-dialog';
+import { TEAM_CONNECTOR_VISIBILITY_WARNINGS } from '@/config';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
@@ -302,9 +305,20 @@ function TeamConnectorsPageContent() {
     [openPanel]
   );
 
+  const [visibilityWarningConnector, setVisibilityWarningConnector] = useState<Connector | null>(null);
+
   const requestSetupOrPromptAdminAccess = useCallback(
-    (connector: Connector, connectorId?: string) => {
+    (connector: Connector, connectorId?: string, visibilityAcknowledged = false) => {
       const isCreateMode = connectorId === undefined;
+
+      if (
+        isCreateMode &&
+        !visibilityAcknowledged &&
+        getTeamVisibilityWarning(connector, TEAM_CONNECTOR_VISIBILITY_WARNINGS)
+      ) {
+        setVisibilityWarningConnector(connector);
+        return;
+      }
 
       if (shouldPromptAdminAccess(connector, isCreateMode)) {
         setPendingSetupConnector(connector);
@@ -317,6 +331,26 @@ function TeamConnectorsPageContent() {
       proceedWithSetup(connector, connectorId);
     },
     [proceedWithSetup]
+  );
+
+  const handleVisibilityWarningContinue = useCallback(() => {
+    const connector = visibilityWarningConnector;
+    setVisibilityWarningConnector(null);
+    if (connector) requestSetupOrPromptAdminAccess(connector, undefined, true);
+  }, [visibilityWarningConnector, requestSetupOrPromptAdminAccess]);
+
+  const visibilityWarningDialog = (
+    <TeamVisibilityWarningDialog
+      open={visibilityWarningConnector !== null}
+      onOpenChange={(open) => {
+        if (!open) setVisibilityWarningConnector(null);
+      }}
+      connector={visibilityWarningConnector}
+      hasPersonal={
+        getTeamVisibilityWarning(visibilityWarningConnector, TEAM_CONNECTOR_VISIBILITY_WARNINGS)?.hasPersonal ?? false
+      }
+      onContinue={handleVisibilityWarningContinue}
+    />
   );
 
   const handleAdminAccessConfirm = useCallback(() => {
@@ -541,6 +575,7 @@ function TeamConnectorsPageContent() {
           onPhaseChange={setAdminAccessDialogPhase}
           onConfirmAdmin={handleAdminAccessConfirm}
         />
+        {visibilityWarningDialog}
       </>
     );
   }
@@ -578,6 +613,7 @@ function TeamConnectorsPageContent() {
         onPhaseChange={setAdminAccessDialogPhase}
         onConfirmAdmin={handleAdminAccessConfirm}
       />
+      {visibilityWarningDialog}
     </>
   );
 }

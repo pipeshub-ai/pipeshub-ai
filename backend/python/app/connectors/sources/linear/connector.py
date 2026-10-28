@@ -642,13 +642,9 @@ class LinearConnector(BaseConnector):
                     {"key": {"containsIgnoreCase": term}},
                 ]}
 
-            # Fetch teams with pagination
-            # Use cursor if provided (for subsequent pages), otherwise start from beginning
-            response = await datasource.teams(
-                first=limit,
-                after=cursor,
-                filter=filter_dict
-            )
+            # Not through the gateway: its rate-limit retries outlast the UI's request timeout.
+            response = await datasource.execute_operation(
+                "teamList", {"first": limit, "after": cursor, "filter": filter_dict})
 
             if not response.success:
                 self.logger.error(f"❌ Failed to fetch teams: {response.message}")
@@ -656,15 +652,6 @@ class LinearConnector(BaseConnector):
 
             teams_data = response.data.get("teams", {}) if response.data else {}
             teams_list = teams_data.get("nodes", [])
-
-            # If server-side filtering didn't work or wasn't applied, do client-side filtering
-            if search and search.strip() and not filter_dict:
-                search_lower = search.strip().lower()
-                teams_list = [
-                    t for t in teams_list
-                    if search_lower in t.get("name", "").lower()
-                    or search_lower in t.get("key", "").lower()
-                ]
 
             # Get pagination info
             page_info = teams_data.get("pageInfo", {})
@@ -1090,15 +1077,14 @@ class LinearConnector(BaseConnector):
                 # Linear TeamFilter supports "in" for include
                 filter_dict = {"id": {"in": team_ids}}
 
-        # Fetch all teams with cursor-based pagination
-        # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         try:
             async for teams_list, _, _ in self._api.pages(
                 "teams", ["teams"], page_size=TEAM_PAGE_SIZE,
                 fetch=lambda ds, first, after: ds.teams(first=first, after=after, filter=filter_dict),
             ):
                 for team in teams_list:
-                    # A team lists 100 members inline; the rest come in further pages.
+                    # A team lists 10 members inline (Linear multiplies nested connection sizes into its
+                    # per-query complexity limit); the rest come in further pages.
                     await self._api.complete(team, "members", "teamMembers", ["team", "members"],
                                              page_size=NESTED_PAGE_SIZE)
                 all_teams.extend(teams_list)

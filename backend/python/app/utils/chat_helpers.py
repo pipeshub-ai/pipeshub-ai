@@ -3387,7 +3387,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             data = block.get("data")
             if data:
                 if from_retrieval_service:
-                    result["content"] = f"image_{image_index}"
+                    # Search shows this as the passage; the placeholder is only for an image with no text.
+                    result["content"] = image_block_text(block) or f"image_{image_index}"
                     image_index += 1
                 else:
                     if is_multimodal_llm:

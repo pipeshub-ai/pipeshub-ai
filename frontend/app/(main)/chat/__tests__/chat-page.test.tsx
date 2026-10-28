@@ -872,3 +872,19 @@ describe('Chat page — projects and previews', () => {
     expect(screen.getByLabelText('Fullscreen preview').textContent).toBe('handbook.pdf');
   });
 });
+
+describe('Chat page — search mode', () => {
+  it('keeps the results view for a search that failed or found nothing', async () => {
+    renderPage();
+    await screen.findByText('What do you want to explore today?');
+
+    act(() => {
+      const store = useChatStore.getState();
+      store.setMode('search');
+      store.setSearchResults([], null, 'zzqxw qqq');
+      store.setSearchError('Search is unavailable.');
+    });
+
+    expect(screen.getByText('Search results')).toBeTruthy();
+  });
+});

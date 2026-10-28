@@ -6,17 +6,25 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { toast } from '@/lib/store/toast-store';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MIN_ZOOM = 25;
+/** Floor for the zoom-out button. */
+const MIN_ZOOM = 5;
+/** "Fit to screen" may go below MIN_ZOOM so a very tall diagram still shows whole. */
+const MIN_FIT_ZOOM = 1;
 const MAX_ZOOM = 400;
 const ZOOM_STEP = 25;
 /** 100% = SVG fills the full width of the dialog content area. */
 const DEFAULT_ZOOM = 100;
-/** On a phone, 100% shrinks a wide diagram to unreadable text, so start zoomed in and let the user pan. */
+/** On a phone, fitting a wide diagram shrinks it to unreadable text, so start zoomed in and let the user pan. */
 const MOBILE_DEFAULT_ZOOM = 200;
 const COPY_FEEDBACK_MS = 2000;
+/** Inline diagrams never grow past this height; the full view shows them bigger. */
+const MAX_INLINE_HEIGHT_PX = 480;
+/** Padding of the full view's scroll area (var(--space-5)), excluded from the fit. */
+const FULLSCREEN_PADDING_PX = 24;
 
 // ─── Dark-mode detection ──────────────────────────────────────────────────────
 
@@ -390,8 +398,9 @@ function injectDarkEdgeStyles(svgString: string): string {
  *                                   never overflows: max-width caps it at 100 %.
  *                                   Small diagrams stay compact; wide ones shrink.
  */
-function makeSvgResponsive(svgString: string, fillWidth = true): string {
+export function makeSvgResponsive(svgString: string, fillWidth = true): string {
   try {
+    const natural = fillWidth ? null : parseSvgNaturalSize(svgString);
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgString, 'image/svg+xml');
     if (doc.querySelector('parsererror')) return svgString;
@@ -403,8 +412,12 @@ function makeSvgResponsive(svgString: string, fillWidth = true): string {
       svg.style.width = '100%';
       svg.style.maxWidth = 'none';
     } else {
-      // Inline: render at natural size; only shrink if wider than container
+      // Without an explicit width an SVG with only a viewBox stretches to the
+      // container, which blew a small flowchart up to one node per screen.
+      if (natural) svg.style.width = `${inlineDiagramWidth(natural.width, natural.height)}px`;
       svg.style.maxWidth = '100%';
+      svg.style.display = 'block';
+      svg.style.margin = '0 auto';
     }
     svg.style.height = 'auto';
     return new XMLSerializer().serializeToString(svg);
@@ -413,11 +426,8 @@ function makeSvgResponsive(svgString: string, fillWidth = true): string {
   }
 }
 
-/**
- * Read the natural diagram dimensions from viewBox (or width/height attrs).
- * Returns 2× values so the exported PNG is retina-quality.
- */
-function parseSvgDimensions(svgString: string): { width: number; height: number } {
+/** Natural diagram size in CSS px, from viewBox (or width/height attrs). */
+export function parseSvgNaturalSize(svgString: string): { width: number; height: number } | null {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgString, 'image/svg+xml');
@@ -427,14 +437,59 @@ function parseSvgDimensions(svgString: string): { width: number; height: number 
     if (vb) {
       const parts = vb.trim().split(/[\s,]+/).map(Number);
       if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) {
-        return { width: Math.ceil(parts[2]) * 2, height: Math.ceil(parts[3]) * 2 };
+        return { width: Math.ceil(parts[2]), height: Math.ceil(parts[3]) };
       }
     }
     const w = parseFloat(svg.getAttribute('width') ?? '');
     const h = parseFloat(svg.getAttribute('height') ?? '');
-    if (w > 0 && h > 0) return { width: Math.ceil(w) * 2, height: Math.ceil(h) * 2 };
+    if (w > 0 && h > 0) return { width: Math.ceil(w), height: Math.ceil(h) };
   } catch { /* ignore */ }
-  return { width: 1600, height: 1200 };
+  return null;
+}
+
+/** Inline width: the natural width, shrunk so the height stays within the inline cap. */
+export function inlineDiagramWidth(naturalWidth: number, naturalHeight: number): number {
+  if (naturalHeight <= MAX_INLINE_HEIGHT_PX) return naturalWidth;
+  return Math.max(1, Math.floor(naturalWidth * (MAX_INLINE_HEIGHT_PX / naturalHeight)));
+}
+
+/**
+ * Full-view zoom (percent of the content width) that shows the whole diagram:
+ * never wider than the area and never taller than it.
+ */
+export function fitZoomPercent(
+  naturalWidth: number,
+  naturalHeight: number,
+  areaWidth: number,
+  areaHeight: number,
+): number {
+  if (naturalWidth <= 0 || naturalHeight <= 0 || areaWidth <= 0 || areaHeight <= 0) return DEFAULT_ZOOM;
+  const byHeight = (areaHeight * naturalWidth) / (naturalHeight * areaWidth);
+  const pct = Math.floor(Math.min(1, byHeight) * 100);
+  return Math.min(DEFAULT_ZOOM, Math.max(MIN_FIT_ZOOM, pct));
+}
+
+/** One zoom-out step, floored at MIN_ZOOM; a fit already below the floor stays put rather than jumping up. */
+export function zoomOutPercent(zoom: number): number {
+  return zoom <= MIN_ZOOM ? zoom : Math.max(zoom - ZOOM_STEP, MIN_ZOOM);
+}
+
+/**
+ * PNG scale: at least 2x (or the screen's pixel ratio), raised so a small
+ * diagram's long side reaches ~2000px, and capped so the long side never
+ * exceeds 8000px (below 1x for huge diagrams) to keep the canvas sane.
+ */
+export function pngExportScale(naturalWidth: number, naturalHeight: number, devicePixelRatio = 1): number {
+  const longSide = Math.max(naturalWidth, naturalHeight, 1);
+  const wanted = Math.max(2, devicePixelRatio || 1, 2000 / longSide);
+  return Math.min(wanted, 4, 8000 / longSide);
+}
+
+function parseSvgDimensions(svgString: string): { width: number; height: number } {
+  const natural = parseSvgNaturalSize(svgString) ?? { width: 800, height: 600 };
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+  const scale = pngExportScale(natural.width, natural.height, dpr);
+  return { width: Math.ceil(natural.width * scale), height: Math.ceil(natural.height * scale) };
 }
 
 /**
@@ -544,7 +599,25 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   const [zoom, setZoom]                   = useState(DEFAULT_ZOOM);
   const [copyFeedback, setCopyFeedback]   = useState<CopyFeedback>(null);
   const { t } = useTranslation();
-  const startZoom = useIsMobile() ? MOBILE_DEFAULT_ZOOM : DEFAULT_ZOOM;
+  const isMobile = useIsMobile();
+  const [scrollArea, setScrollArea] = useState<HTMLDivElement | null>(null);
+  const naturalSize = useMemo(() => (svgContent ? parseSvgNaturalSize(svgContent) : null), [svgContent]);
+
+  const computeFitZoom = useCallback((): number => {
+    if (!scrollArea || !naturalSize) return DEFAULT_ZOOM;
+    return fitZoomPercent(
+      naturalSize.width,
+      naturalSize.height,
+      scrollArea.clientWidth - FULLSCREEN_PADDING_PX * 2,
+      scrollArea.clientHeight - FULLSCREEN_PADDING_PX * 2,
+    );
+  }, [scrollArea, naturalSize]);
+
+  const startZoom = useCallback((): number => {
+    const fit = computeFitZoom();
+    const isWide = naturalSize ? naturalSize.width > naturalSize.height : false;
+    return isMobile && isWide ? Math.max(fit, MOBILE_DEFAULT_ZOOM) : fit;
+  }, [computeFitZoom, isMobile, naturalSize]);
 
   // Inline view: max-width variant — natural size for compact diagrams,
   // shrinks to fit container for wide ones (no horizontal scroll).
@@ -624,15 +697,18 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
     };
   }, [chart]);
 
-  // ── Reset zoom when dialog opens ────────────────────────────────────────────
+  // ── Open the full view fitted to the screen (the scroll area mounts with the dialog) ──
   useEffect(() => {
-    if (open) setZoom(startZoom);
-  }, [open, startZoom]);
+    if (open && scrollArea) setZoom(startZoom());
+    // Only on open: re-fitting on every resize would undo the user's zoom.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, scrollArea]);
 
   // ── Zoom ────────────────────────────────────────────────────────────────────
   const zoomIn    = useCallback(() => setZoom((z) => Math.min(z + ZOOM_STEP, MAX_ZOOM)), []);
-  const zoomOut   = useCallback(() => setZoom((z) => Math.max(z - ZOOM_STEP, MIN_ZOOM)), []);
-  const zoomReset = useCallback(() => setZoom(startZoom), [startZoom]);
+  const zoomOut   = useCallback(() => setZoom(zoomOutPercent), []);
+  const zoomReset = useCallback(() => setZoom(DEFAULT_ZOOM), []);
+  const zoomFit   = useCallback(() => setZoom(computeFitZoom()), [computeFitZoom]);
 
   // ── Copy feedback helper ────────────────────────────────────────────────────
   const flash = useCallback((ok: boolean) => {
@@ -648,6 +724,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       blob = await svgToPngBlob(svgContent);
     } catch {
       flash(false);
+      toast.error(t('chat.diagramCopyFailed', "Couldn't copy the diagram"));
       return;
     }
 
@@ -659,6 +736,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       try {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
         flash(true);
+        toast.success(t('chat.diagramImageCopied', 'Diagram image copied'));
         return;
       } catch {
         // Clipboard API blocked (e.g. Firefox permission) — fall through to download
@@ -668,7 +746,8 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
     // Fallback: download as PNG
     downloadPng(blob);
     flash(true);
-  }, [svgContent, flash]);
+    toast.success(t('chat.diagramImageDownloaded', 'Clipboard unavailable, diagram saved as PNG'));
+  }, [svgContent, flash, t]);
 
   // ── Copy image button (shared between inline toolbar and fullscreen header) ──
   const copyImageBtn = svgContent ? (
@@ -678,6 +757,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       variant="ghost"
       color={copyFeedback === true ? 'green' : copyFeedback === false ? 'red' : 'gray'}
       title={t('chat.copyDiagramImage')}
+      aria-label={t('chat.copyDiagramImage')}
       style={{ cursor: 'pointer' }}
       onClick={handleCopyImage}
     >
@@ -688,17 +768,36 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
     </IconButton>
   ) : null;
 
-  // ── Copy source (used only in the error banner — not in normal toolbar) ──────
+  // ── Copy source (error banner, inline toolbar and full view) ─────────────────
   const [errorCopyFeedback, setErrorCopyFeedback] = useState<boolean | null>(null);
   const handleCopySource = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(chart);
       setErrorCopyFeedback(true);
+      toast.success(t('chat.diagramSourceCopied', 'Diagram source copied'));
     } catch {
       setErrorCopyFeedback(false);
+      toast.error(t('chat.diagramCopyFailed', "Couldn't copy the diagram"));
     }
     setTimeout(() => setErrorCopyFeedback(null), COPY_FEEDBACK_MS);
-  }, [chart]);
+  }, [chart, t]);
+
+  const copySourceBtn = svgContent ? (
+    <IconButton className="touch-hit"
+      size="1"
+      variant="ghost"
+      color={errorCopyFeedback === true ? 'green' : errorCopyFeedback === false ? 'red' : 'gray'}
+      title={t('chat.copyDiagramSource')}
+      aria-label={t('chat.copyDiagramSource')}
+      style={{ cursor: 'pointer' }}
+      onClick={handleCopySource}
+    >
+      <MaterialIcon
+        name={errorCopyFeedback === true ? 'check' : errorCopyFeedback === false ? 'close' : 'code'}
+        size={ICON_SIZES.SECONDARY}
+      />
+    </IconButton>
+  ) : null;
 
   // ── Error UI ─────────────────────────────────────────────────────────────────
   if (error) {
@@ -793,6 +892,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       {/* ── Inline toolbar — only shown once the SVG is ready ──────── */}
       {inlineSvg && (
         <Flex justify="end" align="center" gap="1" style={{ marginBottom: '4px' }}>
+          {copySourceBtn}
           {copyImageBtn}
           <ToolbarSep />
           <IconButton className="touch-hit"
@@ -817,7 +917,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
           padding: 'var(--space-3)',
           // Cap height so tall diagrams don't dominate the message list;
           // the expand button is the path to the full view.
-          maxHeight: inlineSvg ? '520px' : undefined,
+          maxHeight: inlineSvg ? `${MAX_INLINE_HEIGHT_PX + 40}px` : undefined,
           overflow: 'auto',
           minHeight: inlineSvg ? undefined : '90px',
           display: 'flex',
@@ -919,9 +1019,19 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
               </IconButton>
 
+              <IconButton className="touch-hit"
+                size="1" variant="ghost" color="gray"
+                title={t('chat.fitDiagram', 'Fit to screen')}
+                aria-label={t('chat.fitDiagram', 'Fit to screen')}
+                style={{ cursor: 'pointer' }}
+                onClick={zoomFit}
+              >
+                <MaterialIcon name="fit_screen" size={ICON_SIZES.SECONDARY} />
+              </IconButton>
+
               <ToolbarSep />
 
-              {/* Copy image */}
+              {copySourceBtn}
               {copyImageBtn}
 
               <ToolbarSep />
@@ -950,6 +1060,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
            * causing scroll containers to report stale overflow dimensions.
            */}
           <Box
+            ref={setScrollArea}
             style={{
               flex: 1, minHeight: 0,
               overflow: 'auto',

@@ -105,11 +105,26 @@ on:
       - 'backend/python/app/modules/parsers/code_parser/**'
       - 'backend/python/app/connectors/core/base/sync_point/**'
       - 'backend/python/app/connectors/core/registry/filters.py'
+      # Helpers outside tests/integration that the suites import.
+      - 'backend/python/tests/conftest.py'
+      - 'backend/python/tests/support/**'
+      - 'backend/python/tests/unit/agents/adapter/conftest.py'
+      - 'backend/python/tests/unit/agents/adapter/support/scripted_transport.py'
+      - 'backend/python/tests/unit/connectors/sources/test_connector_workflow_integration.py'
+      - 'backend/python/tests/unit/modules/entity_resolution/conftest.py'
+      - 'backend/python/tests/unit/modules/indexing/test_entity_index_rebuild.py'
+      - 'backend/python/tests/unit/modules/pipeline/fakes.py'
+      - 'backend/python/tests/unit/modules/transformers/test_entity_vectorstore_delete.py'
+      - 'backend/python/tests/unit/services/artifact_registry/fakes.py'
+      - 'backend/python/tests/unit/services/vector_db/test_strategy_contract.py'
+      - 'backend/python/tests/unit/web/qa/lab.py'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
       - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'
       - 'deployment/docker-compose/docker-compose.integration.graph-db.yml'
       - 'deployment/docker-compose/docker-compose.integration.kv.yml'
+      - 'scripts/pr_changes.py'
+      - '.github/actions/pr-changes/**'
       - '.github/workflows/backend-matrix.yml'
   schedule:
     - cron: '0 3 * * *'
@@ -123,8 +138,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which suites below this pull request's changes can affect
+  # (scripts/pr_changes.py); every other event runs them all. The backend job's
+  # matrix cannot be filtered, so a leg whose suite did not change starts and
+  # skips every step (SUITE_RUNS) in a few seconds.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix_messaging: ${{ steps.changes.outputs.matrix_messaging }}
+      matrix_vector: ${{ steps.changes.outputs.matrix_vector }}
+      matrix_kv: ${{ steps.changes.outputs.matrix_kv }}
+      matrix_graph: ${{ steps.changes.outputs.matrix_graph }}
+      matrix_gitlab: ${{ steps.changes.outputs.matrix_gitlab }}
+      matrix_storage: ${{ steps.changes.outputs.matrix_storage }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   backend:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -198,6 +241,9 @@ jobs:
             select: etcd
 
     env:
+      # 'true' when this pull request changes code this suite covers
+      # (scripts/pr_changes.py); every other event runs every suite.
+      SUITE_RUNS: ${{ needs.changes.outputs[format('matrix_{0}', matrix.suite)] }}
       COMPOSE: ${{ matrix.compose }}
       SERVICES: ${{ matrix.services }}
       TESTS: ${{ matrix.tests }}
@@ -217,33 +263,39 @@ jobs:
 
     steps:
       - name: Checkout code
+        if: env.SUITE_RUNS == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
+        if: env.SUITE_RUNS == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install system dependencies
+        if: env.SUITE_RUNS == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
+        if: env.SUITE_RUNS == 'true'
         run: pip install uv
 
       # The dependencies below, CUDA torch among them, can leave a hosted runner's
       # disk about 96% full: past OpenSearch's 95% flood stage, where the node
       # refuses to create any index. None of these jobs use Android or .NET.
       - name: Free disk space
+        if: env.SUITE_RUNS == 'true'
         run: |
           df -h /
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
           df -h /
 
       - name: Install dependencies
+        if: env.SUITE_RUNS == 'true'
         working-directory: backend/python
         run: |
           uv pip install --system pytest pytest-asyncio pytest-timeout
@@ -251,6 +303,7 @@ jobs:
           df -h /
 
       - name: Start ${{ matrix.backend }}
+        if: env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -259,6 +312,7 @@ jobs:
           docker compose "${files[@]}" up -d --wait --wait-timeout 300 $SERVICES
 
       - name: Run ${{ matrix.suite }} tests on ${{ matrix.backend }}
+        if: env.SUITE_RUNS == 'true'
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
@@ -271,6 +325,7 @@ jobs:
           pytest $TESTS -m integration -k "$SELECT" -v -rs --timeout=300 --junitxml="$REPORT"
 
       - name: Fail if anything skipped
+        if: env.SUITE_RUNS == 'true'
         run: |
           python - <<'EOF'
           import os
@@ -294,7 +349,7 @@ jobs:
           EOF
 
       - name: Dump service logs
-        if: failure()
+        if: failure() && env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -302,7 +357,7 @@ jobs:
           docker compose "${files[@]}" logs --no-color --timestamps
 
       - name: Tear down
-        if: always()
+        if: always() && env.SUITE_RUNS == 'true'
         working-directory: deployment/docker-compose
         run: |
           files=()
@@ -313,6 +368,8 @@ jobs:
   # same tests against one file store.
   storage:
     name: storage · ${{ matrix.backend }}
+    needs: changes
+    if: needs.changes.outputs.matrix_storage == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

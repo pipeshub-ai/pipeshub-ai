@@ -25,6 +25,7 @@ TOO_BROAD_MESSAGE = (
     "This entity filter matches too many documents. Narrow it: a tighter range, a name, or fewer kinds."
 )
 _KINDS = frozenset(kind.value for kind in EntityKind)
+UNKNOWN_KIND_PREFIX = "Unknown entity kind: "
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 
 
@@ -37,6 +38,9 @@ class EntityFilterHit:
     record_id: str
     virtual_record_id: str
     connector_id: str
+    record_type: str = ""
+    # Last source modification (else last update), for newest-first listings.
+    sort_ts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +69,7 @@ class EntityFilterResolver:
             return EntityFilterMatch(error="entityFilters must be an object")
         entity_ids = [str(item) for item in (raw.get("entityIds") or []) if item]
         try:
-            query = _query_from(raw)
+            query = entity_query_from(raw)
         except ValueError as exc:
             return EntityFilterMatch(error=str(exc))
         if not entity_ids and query is None:
@@ -86,11 +90,17 @@ class EntityFilterResolver:
                 record_id=str(row["recordId"]),
                 virtual_record_id=str(row.get("virtualRecordId") or ""),
                 connector_id=str(row.get("connectorId") or ""),
+                record_type=str(row.get("recordType") or ""),
+                sort_ts=_timestamp(row.get("sortTs")),
             )
             for row in result.get("hits") or []
             if row.get("recordId")
         )
         return EntityFilterMatch(hits=hits)
+
+
+def _timestamp(value: object) -> int:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
 def _number(value: object, field: str) -> float | None:
@@ -123,13 +133,16 @@ def _bound(low: float | None, high: float | None) -> tuple[float | None, float |
     return (_LOW if low is None else low), (_HIGH if high is None else high)
 
 
-def _query_from(raw: dict[str, Any]) -> NamedEntityQuery | None:
+def entity_query_from(raw: dict[str, Any]) -> NamedEntityQuery | None:
     """The typed query, or None when the filter names no constraint. Raises
     ValueError, with a message for the caller, on input the graph must not see."""
     kinds = [str(kind).strip().casefold() for kind in (raw.get("kinds") or [])]
     unknown = sorted(set(kinds) - _KINDS)
     if unknown:
-        raise ValueError(f"Unknown entity kind: {', '.join(unknown)}")
+        raise ValueError(
+            f"{UNKNOWN_KIND_PREFIX}{', '.join(unknown)}. Kinds are entity types, not document types; "
+            f"valid kinds: {', '.join(sorted(_KINDS))}."
+        )
     name = raw.get("name")
     if name is not None and not str(name).strip():
         raise ValueError("name must not be blank")

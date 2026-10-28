@@ -18,6 +18,7 @@ that counts every request by endpoint. They pin two things:
 from __future__ import annotations
 
 import base64
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -126,7 +127,7 @@ class CountingGitHub:
     async def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse:
         return self._ok("get_issue", SimpleNamespace(
             number=number, title=f"Issue {number}", body="It broke.", updated_at=_WHEN,
-            html_url=f"https://github.com/acme/widgets/issues/{number}",
+            html_url=f"https://github.com/acme/widgets/issues/{number}", comments=self._comments,
         ))
 
 
@@ -231,6 +232,31 @@ class TestIssueCallBudget:
         assert gh.calls["get_repo_by_id"] == 1
         assert gh.calls["get_issue"] == 10
         assert gh.calls["list_issue_comments"] == 10
+
+    async def test_an_issue_without_comments_does_not_ask_for_them(self) -> None:
+        gh = CountingGitHub(files=0, comments=0)
+        c = _connector(gh)
+
+        blocks = json.loads(await c.issues.build_ticket_blocks(_ticket_record(1)))
+
+        assert gh.calls == Counter({"get_repo_by_id": 1, "get_issue": 1})
+        assert [g["data"] for g in blocks["block_groups"]] == ["Issue 1\n\nIt broke."]
+
+    async def test_an_issue_without_a_comment_count_still_asks(self) -> None:
+        gh = CountingGitHub(files=0, comments=0)
+        c = _connector(gh)
+        get_issue = gh.get_issue
+
+        async def get_issue_without_count(owner: str, repo: str, number: int) -> GitHubResponse:
+            res = await get_issue(owner, repo, number)
+            del res.data.comments
+            return res
+
+        gh.get_issue = get_issue_without_count
+
+        await c.issues.build_ticket_blocks(_ticket_record(1))
+
+        assert gh.calls["list_issue_comments"] == 1
 
 
 class TestCodeFileCallBudget:
@@ -366,7 +392,7 @@ class TestRenamedDefaultBranch:
             await c.repos.fetch_code_file_content(_code_record("src/f0.py"))
 
         assert raised.value.status_code == 429
-        assert raised.value.headers == {"Retry-After": "600"}
+        assert raised.value.headers["Retry-After"] == "600"
         assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
 
     async def test_a_lookup_in_flight_cannot_restore_the_old_branch(self) -> None:

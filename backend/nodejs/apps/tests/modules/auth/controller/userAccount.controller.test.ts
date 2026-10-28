@@ -1,10 +1,12 @@
 import 'reflect-metadata';
+import { createMockQuery } from '../../../helpers/mock-mongo';
 import { expect } from 'chai';
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import nock from 'nock';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
@@ -19,7 +21,9 @@ import {
   ACCOUNT_NO_LONGER_ACTIVE,
   RESET_LINK_ALREADY_USED,
   RESET_LINK_NOT_CHECKED,
+  SESSION_NO_LONGER_VALID,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
@@ -28,6 +32,7 @@ import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
 import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 
 type ClaimedCredentials = Awaited<ReturnType<typeof UserCredentials.findOneAndUpdate>>;
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
@@ -547,14 +552,14 @@ describe('UserAccountController', () => {
       const reserved = { wrongCredentialCount: 3 };
       const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
 
-      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.deep.equal(reserved);
       expect(update.firstCall.args).to.deep.equal([
         {
           userId: 'u1',
           orgId: 'o1',
           isDeleted: false,
           isBlocked: { $ne: true },
-          wrongCredentialCount: { $lt: 5 },
+          wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
         },
         { $inc: { wrongCredentialCount: 1 } },
         { returnDocument: 'after' },
@@ -674,9 +679,7 @@ describe('UserAccountController', () => {
 
   describe('hasPasswordMethod', () => {
   const stubPolicy = (policy: unknown) =>
-    sinon.stub(OrgAuthConfig, 'findOne').returns({
-      select: () => ({ lean: async () => policy }),
-    } as any);
+    sinon.stub(OrgAuthConfig, 'findOne').resolves(policy as any);
 
     it('should return isPasswordAuthEnabled true when password method exists', async () => {
       const req: any = {
@@ -1159,6 +1162,62 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.equal(
         'Previous password not found',
       );
+    });
+  });
+
+  describe('password setup for users without a password', () => {
+    // userValidator sets req.user and nothing else, so the handlers must not need a bound context.
+    const authedReq: any = {
+      user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+    };
+
+    it('getPasswordStatus reports hasPassword false when no credentials are stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: false })).to.be.true;
+    });
+
+    it('getPasswordStatus reports hasPassword true when a hashed password is stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: true })).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail mails a reset link to a user with no password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'T' },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall?.args[0]?.usersMails).to.deep.equal(['test@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail refuses a request with no authenticated user', async () => {
+      await controller.sendPasswordSetupEmail({} as any, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('sendPasswordSetupEmail refuses a user who already has a password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(mockMailService.sendMail.called).to.be.false;
     });
   });
 
@@ -1788,30 +1847,33 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP (additional)', () => {
-    it('should block account, set cooldown expiry and send mail after 5 wrong OTPs', async () => {
+    it('should block account, set cooldown expiry and send mail after the last allowed wrong OTP', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedOTP,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
       };
 
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        isBlocked: false,
-        hashedOTP,
-        otpValidity: Date.now() + 600000,
-        wrongCredentialCount: 1,
-        save: sinon.stub().resolves(),
-      } as any);
+      // the first read is the sign-in check; the lock then reads the account's credential again to save it
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          isBlocked: false,
+          hashedOTP,
+          otpValidity: Date.now() + 600000,
+          wrongCredentialCount: 1,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
 
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ fullName: 'Test User' }) as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2143,29 +2205,31 @@ describe('UserAccountController', () => {
       expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
-    it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
+    it('should block account after the last allowed wrong password, set cooldown expiry and send mail', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedPassword,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
       };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        hashedPassword,
-        isBlocked: false,
-        wrongCredentialCount: 4,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          hashedPassword,
+          isBlocked: false,
+          wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Users, 'findOne').callsFake((() =>
-        Promise.resolve({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
+        createMockQuery({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2657,6 +2721,37 @@ describe('UserAccountController', () => {
       expect(used.size).to.equal(1);
     });
 
+    // Through the real IAM client: a deleted account comes back from IAM as an
+    // HTTP 404, which used to reach the error middleware as a raw axios error
+    // and be answered with a 500.
+    describe('when the account was deleted after the link was sent', () => {
+      beforeEach(() => {
+        const realIam = new IamService(mockConfig, mockLogger);
+        mockIamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        nock(mockConfig.iamBackend)
+          .get('/api/v1/users/internal/u1')
+          .reply(404, { error: { message: 'User not found' } });
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers that the link is no longer valid (404), changing nothing', async () => {
+        const used = fakeUsedResetLinks();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error.message).to.equal(SESSION_NO_LONGER_VALID);
+        expect((UserCredentials.prototype.save as sinon.SinonStub).called).to.be.false;
+        expect(used.size).to.equal(0, 'the link is handed back, as for any reset that changed nothing');
+      });
+    });
+
     it('refuses a link that was already used', async () => {
       fakeUsedResetLinks();
       await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
@@ -2807,6 +2902,15 @@ describe('UserAccountController', () => {
         ipAddress: null,
         save: sinon.stub().resolves(),
       } as any);
+      // Third call: the repository re-reads the credential to store the new hash
+      findOneStub.onThirdCall().resolves({
+        isBlocked: false,
+        hashedPassword: hashedPassword,
+        orgId: 'o1',
+        userId: 'u1',
+        ipAddress: null,
+        save: sinon.stub().resolves(),
+      } as any);
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserById.resolves({
@@ -2888,6 +2992,7 @@ describe('UserAccountController', () => {
         commitTransaction: sinon.stub().resolves(),
         abortTransaction: sinon.stub().resolves(),
         endSession: sinon.stub(),
+        withTransaction: sinon.stub().callsFake((fn: () => Promise<unknown>) => fn()),
       };
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any);
 
@@ -3632,10 +3737,8 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('hasPasswordMethod - via tokenPayload', () => {
     it('should return isPasswordAuthEnabled based on OrgAuthConfig', async () => {
-      sinon.stub(OrgAuthConfig, 'findOne').returns({
-        select: () => ({
-          lean: async () => ({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] }),
-        }),
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }],
       } as any);
 
       const req: any = {

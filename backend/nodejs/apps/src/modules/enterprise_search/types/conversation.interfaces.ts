@@ -2,6 +2,11 @@ import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
 
+export interface AiSearchResponse {
+  searchResults: ICitation[];
+  records: Record<string, unknown>;
+}
+
 export interface IFollowUpQuestion {
   question: string;
   confidence: string;

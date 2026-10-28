@@ -1,8 +1,7 @@
-import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
+import { getNotificationRepository } from '../../../libs/repositories/notification';
+import { getUserRepository } from '../../../libs/repositories/user';
 import { NotificationContainer } from '../../notification/container/notification.container';
-import { Notifications } from '../../notification/schema/notification.schema';
-import { Users } from '../../user_management/schema/users.schema';
 
 const logger = Logger.getInstance({ service: 'Chat Share Notifications' });
 
@@ -58,13 +57,7 @@ export const notifyChatShared = async ({
   if (targets.length === 0) return;
 
   try {
-    const owner = await Users.findOne({
-      _id: new mongoose.Types.ObjectId(ownerId),
-      orgId: new mongoose.Types.ObjectId(orgId),
-    })
-      .select('fullName firstName lastName email')
-      .lean()
-      .exec();
+    const owner = await getUserRepository().getAny(orgId, ownerId);
     const sharerName = (owner && displayName(owner)) || undefined;
     const sharer = sharerName || 'A colleague';
     const kind = agentKey ? 'an agent chat' : 'a chat';
@@ -77,9 +70,9 @@ export const notifyChatShared = async ({
     await Promise.all(
       targets.map(async (recipientId) => {
         try {
-          const saved = await Notifications.create({
-            orgId: new mongoose.Types.ObjectId(orgId),
-            assignedTo: new mongoose.Types.ObjectId(recipientId),
+          const saved = await getNotificationRepository().insert({
+            orgId,
+            assignedTo: recipientId,
             type: CHAT_SHARED_NOTIFICATION_TYPE,
             title,
             message,
@@ -100,7 +93,7 @@ export const notifyChatShared = async ({
           NotificationContainer.getNotificationService()?.sendToUser(
             recipientId,
             'newNotification',
-            saved.toObject(),
+            saved,
           );
         } catch (error: unknown) {
           logger.warn('Chat share notification failed', {

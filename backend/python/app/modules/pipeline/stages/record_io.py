@@ -14,15 +14,18 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
-from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
+from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
+from app.modules.transformers.stored_write import RunSuperseded, mint_stored_write
 from app.modules.transformers.transformer import TransformContext
+from app.services.featureflag.platform_settings import artifact_settings
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
+    from app.modules.transformers.stored_write import SidecarWrite
 
 RecordFromDocument = Callable[[dict[str, Any]], Record]
 StoredMetadata = dict[str, Any]
@@ -152,25 +155,40 @@ class RecordStageIO:
         before: Callable[[], Awaitable[object]] | None = None,
         written: Callable[[], Awaitable[object]] | None = None,
         then: Callable[[], Awaitable[object]] | None = None,
+        sidecar: "SidecarWrite | None" = None,
     ) -> None:
-        """Re-read the stored record under the lease and write ``update`` of its metadata, then
+        """Rewrite the stored record's metadata under the lease with ``update`` of what it holds, then
         run ``written`` (only when that write happened) and ``then`` (the stage's other writes
         for ``owner``) while the lease is still held. ``before`` runs under the lease ahead of the
         write, for an output that must exist before the stored record says it does.
 
-        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease, and
-        ``StoredRecordMissing`` when no stored record exists."""
+        The write is ``BlobStorage.rewrite_semantic_metadata``: one read of the mapped document, and
+        either a copy of it with only ``semantic_metadata`` changed (a shadow or read flag is on; the
+        classification is then filed through ``sidecar``) or an in-place write (both off). The layout
+        comes from one read of the settings.
+
+        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease or from the write (the mapping
+        moved under it: the stage's retry runs the job again), and ``StoredRecordMissing`` when no
+        stored record exists."""
+        from app.modules.transformers.blob_storage import StoredRecordNotFound
+
         async with self._holding(job, owner, also=still_current):
-            stored = await self._blob_storage.get_record_from_storage(job.virtual_record_id, job.org_id)
-            if stored is None:
-                raise StoredRecordMissing(f"no stored record for virtual record {job.virtual_record_id}")
-            if before is not None:
-                _ = await before()
-            current = stored.get("semantic_metadata")
-            new = update(current if isinstance(current, dict) else None)
-            if new is not None:
-                await self._blob_storage.save_semantic_metadata(job.org_id, owner, job.virtual_record_id, new)
-                stored["semantic_metadata"] = new
+            async def transform(stored: dict[str, Any]) -> StoredMetadata | None:
+                if before is not None:
+                    _ = await before()
+                current = stored.get("semantic_metadata")
+                return update(current if isinstance(current, dict) else None)
+
+            stored_write = mint_stored_write(await artifact_settings(self._blob_storage.config_service))
+            try:
+                stored = await self._blob_storage.rewrite_semantic_metadata(
+                    job.org_id, owner, job.virtual_record_id, transform, stored_write=stored_write, sidecar=sidecar,
+                )
+            except StoredRecordNotFound as exc:
+                raise StoredRecordMissing(str(exc)) from exc
+            except RunSuperseded as exc:
+                raise RecordBusy(str(exc)) from exc
+            if stored is not None:
                 self._stored, self._stored_loaded = stored, True
                 if written is not None:
                     _ = await written()

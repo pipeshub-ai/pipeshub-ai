@@ -104,7 +104,7 @@
     "electron": "^42.11.16",
     "electron-builder": "^26.18.0",
     "eslint": "^10.13.0",
-    "eslint-config-next": "^16.2.2",
+    "eslint-config-next": "^16.3.8",
     "jsdom": "^26.1.0",
     "jszip": "^3.10.2",
     "monocart-reporter": "^2.15.1",

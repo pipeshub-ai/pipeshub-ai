@@ -1,15 +1,11 @@
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
-import { IChatSessionDocument } from '../../enterprise_search/types/conversation.interfaces';
-import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
@@ -17,15 +13,16 @@ import {
   UpdateProjectInput,
 } from '../services/project.service';
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
-import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
+import { IProject, ProjectDto, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
 
-/** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
+/** A project as the caller sees it (their own pin, their role), for JSON responses. */
 function projectWithRole(
-  project: IProjectDocument,
+  project: ProjectDto,
   role: ProjectRole,
-): IProject & { role: ProjectRole } {
-  return { ...(project.toObject() as unknown as IProject), role };
+  userId: string,
+): Omit<IProject, 'pinnedBy'> & { role: ProjectRole } {
+  return { ...ProjectService.toCallerView(project, userId), role };
 }
 
 type ProjectRouteHandler = (
@@ -47,7 +44,7 @@ export const createProject = async (
       userId,
       req.body as CreateProjectInput,
     );
-    res.status(201).json({ project: projectWithRole(project, 'owner') });
+    res.status(201).json({ project: projectWithRole(project, 'owner', userId) });
   } catch (error) {
     next(error);
   }
@@ -106,7 +103,7 @@ export const getProjectById =
         'viewer',
         callerTeamIds,
       );
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -154,7 +151,7 @@ export const updateProject =
           );
         }
       }
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -206,7 +203,7 @@ export const archiveProject =
         callerTeamIds,
       );
       const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -228,7 +225,7 @@ export const unarchiveProject =
         callerTeamIds,
       );
       const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -250,7 +247,7 @@ export const pinProject =
         callerTeamIds,
       );
       const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -272,7 +269,7 @@ export const unpinProject =
         callerTeamIds,
       );
       const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
-      res.status(200).json({ project: projectWithRole(project, role) });
+      res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
     }
@@ -307,30 +304,18 @@ export const getProjectConversations =
       };
       const skip = (page - 1) * limit;
 
-      const filter = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        isDeleted: false,
-        $or: [
-          { userId: new mongoose.Types.ObjectId(userId) },
-          { projectVisibility: 'project' },
-        ],
-      };
-
-      const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(asQueryFilter<IChatSessionDocument>(filter))
-          .sort({ lastActivityAt: -1, _id: -1 })
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .lean()
-          .exec(),
-        ChatSession.countDocuments(asQueryFilter<IChatSessionDocument>(filter)),
-      ]);
+      const { rows: conversations, total: totalCount } =
+        await getConversationRepository().listByProject({
+          orgId,
+          projectId,
+          userId,
+          skip,
+          limit,
+        });
 
       res.status(200).json({
         conversations: conversations.map((c) =>
-          String(c.userId) === userId ? c : withoutOwnerOnlyFields(c),
+          c.userId === userId ? c : withoutOwnerOnlyFields(c),
         ),
         pagination: {
           page,
@@ -384,11 +369,10 @@ async function teamExists(
 }
 
 /**
- * PUT /:projectId/members — mirrors `shareConversationById`'s IAM
- * existence check (es_controller.ts) so a `user` member cannot be added
- * for a userId that doesn't exist in this org's IAM service, and a `team`
- * member cannot be added for a team id that doesn't exist in this org's
- * graph.
+ * PUT /:projectId/members — a `user` member must be a live user of this org
+ * and a `team` member a team in this org's graph. Users are checked in the
+ * store, not through the IAM API with the caller's token: an OAuth token or PAT
+ * with project:write but no user:read made every user look missing.
  */
 export const upsertProjectMembers =
   (appConfig: AppConfig): ProjectRouteHandler =>
@@ -405,35 +389,25 @@ export const upsertProjectMembers =
         }>;
       };
 
+      const userIds = members
+        .filter((member) => member.principalType !== 'team')
+        .map((member) => member.principalId);
+      const existingUserIds = await ProjectService.findExistingUserIds(
+        orgId,
+        userIds,
+      );
+      const missingUserId = userIds.find((id) => !existingUserIds.has(id));
+      if (missingUserId) {
+        throw new BadRequestError(`User not found: ${missingUserId}`);
+      }
       await Promise.all(
-        members.map(async (member) => {
-          if (member.principalType === 'team') {
-            const exists = await teamExists(
-              appConfig,
-              req,
-              member.principalId,
-            );
-            if (!exists) {
+        members
+          .filter((member) => member.principalType === 'team')
+          .map(async (member) => {
+            if (!(await teamExists(appConfig, req, member.principalId))) {
               throw new BadRequestError(`Team not found: ${member.principalId}`);
             }
-            return;
-          }
-          try {
-            const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(member.principalId)}`,
-              method: HttpMethod.GET,
-              headers: req.headers as Record<string, string>,
-            });
-            const userResponse = await iamCommand.execute();
-            if (userResponse.statusCode !== 200) {
-              throw new BadRequestError(
-                `User not found: ${member.principalId}`,
-              );
-            }
-          } catch {
-            throw new BadRequestError(`User not found: ${member.principalId}`);
-          }
-        }),
+          }),
       );
 
       const project = await ProjectService.upsertMembers(
@@ -450,12 +424,18 @@ export const upsertProjectMembers =
         );
       }
 
-      res.status(200).json({ members: project.members });
+      res.status(200).json({
+        members: await ProjectService.withMemberNames(orgId, project.members),
+      });
     } catch (error) {
       next(error);
     }
   };
 
+/**
+ * DELETE /:projectId/members/:memberUserId — the owner removes a member, or a
+ * member removes themselves to leave. `removed` is false when nothing matched.
+ */
 export const removeProjectMember =
   (appConfig: AppConfig): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
@@ -470,24 +450,28 @@ export const removeProjectMember =
         principalType?: 'user' | 'team';
       };
       const effectivePrincipalType = principalType ?? 'user';
-      const project = await ProjectService.removeMember(
+      const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
+      const { project, removed } = await ProjectService.removeMember(
         orgId,
         userId,
         projectId,
         memberUserId,
         effectivePrincipalType,
+        callerTeamIds,
+        (matched) =>
+          ProjectKnowledgeBaseService.revokePrincipalPermission(
+            appConfig,
+            req.headers as Record<string, string>,
+            matched,
+            memberUserId,
+            effectivePrincipalType,
+          ),
       );
-      if (project.linkedKnowledgeBaseId) {
-        await ProjectKnowledgeBaseService.revokePrincipalPermission(
-          appConfig,
-          req.headers as Record<string, string>,
-          project,
-          memberUserId,
-          effectivePrincipalType,
-        );
-      }
 
-      res.status(200).json({ members: project.members });
+      res.status(200).json({
+        members: await ProjectService.withMemberNames(orgId, project.members),
+        removed,
+      });
     } catch (error) {
       next(error);
     }
@@ -506,13 +490,14 @@ export const ensureProjectKnowledgeBase =
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
-      await ProjectService.assertAccess(
+      const { project } = await ProjectService.assertAccess(
         orgId,
         userId,
         projectId,
         'editor',
         callerTeamIds,
       );
+      ProjectService.assertNotArchived(project);
       const kbId = await ProjectKnowledgeBaseService.ensureLinkedKb(
         appConfig,
         req.headers as Record<string, string>,

@@ -10,4 +10,6 @@ FK_CHILD_FIELD = "fk_child_record_ids"
 
 def postgres_sync_state() -> dict[str, object]:
     """What PostgreSQLConnector keeps for the sync in progress, which its __init__ sets."""
-    return {"sync_stats": SimpleNamespace(errors=0)}
+    from app.connectors.sources.postgres.connector import SyncOutcome
+
+    return {"sync_stats": SimpleNamespace(errors=0), "sync_outcome": SyncOutcome()}

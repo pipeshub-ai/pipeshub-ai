@@ -77,6 +77,7 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordType,
+    SQLColumnRecord,
     SQLTableRecord,
     SQLViewRecord,
     TicketRecord,
@@ -122,6 +123,7 @@ from app.schema.arango.documents import (
     pull_request_record_schema,
     record_group_schema,
     record_schema,
+    sql_column_record_schema,
     sql_table_record_schema,
     sql_view_record_schema,
     stage_state_schema,
@@ -191,6 +193,7 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
+    PERSON_ENTITY_TYPE,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     STATS_REASONED_STATUSES,
@@ -205,6 +208,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    person_query_ref,
     record_status_field,
     restore_items,
     select_canonical_chain_names,
@@ -212,6 +216,7 @@ from app.services.graph_db.common.utils import (
     soft_delete_result,
     trash_purge_row,
     uploaded_document_id,
+    within_param,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -245,6 +250,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
@@ -340,6 +347,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.DEALS.value, deal_record_schema),
     (CollectionNames.ARTIFACTS.value, artifact_record_schema),
     (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
+    (CollectionNames.SQL_COLUMNS.value, sql_column_record_schema),
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
     (CollectionNames.STAGE_STATES.value, stage_state_schema),
@@ -688,6 +696,8 @@ def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
         for r in results or [] if r
     ]
 
+
+_EXISTING_KEYS_CHUNK = 20000
 
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -1489,6 +1499,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CollectionNames.PEOPLE.value,
             ["orgId", "email"],
             unique=True,
+        )
+
+        # COMPOSITE: tableFqn + orgId on SQL column records
+        # Pattern: a table's column records, or many tables' at once
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.SQL_COLUMNS.value,
+            ["tableFqn", "orgId"],
         )
         from app.modules.named_entities.graph_ops import ensure_named_entity_indexes
 
@@ -3051,6 +3068,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        after = "FILTER doc._key > @after_key" if after_key is not None else ""
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, "limit": limit,
+        }
+        if after_key is not None:
+            bind_vars["after_key"] = after_key
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                {after}
+                SORT doc._key
+                LIMIT @limit
+                RETURN {{
+                    virtualRecordId: doc._key, orgId: doc.orgId, documentId: doc.documentId,
+                    switchSeq: doc.switchSeq, lastSwitchAt: doc.lastSwitchAt,
+                    retired: IS_ARRAY(doc.retired) ? doc.retired : []
+                }}
+            """,
+            bind_vars,
+        )
+        return [dict(row) for row in rows or []]
+
+    @override
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -3152,6 +3197,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to check record existence: %s", str(e))
             return set()
+
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``. Raises on a failed read:
+        a delete may only call a collection clear when the store said so."""
+        unique = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
+        found: set[str] = set()
+        for i in range(0, len(unique), _EXISTING_KEYS_CHUNK):
+            rows = await self.http_client.execute_aql(
+                "FOR doc IN @@collection FILTER doc._key IN @keys RETURN doc._key",
+                {"@collection": collection, "keys": unique[i:i + _EXISTING_KEYS_CHUNK]},
+                transaction,
+            )
+            found.update(k for k in (rows or []) if isinstance(k, str))
+        return found
+
+    async def _assert_none_remain(self, transaction: str | None, collection: str, keys: list[str]) -> None:
+        """The success rule of a cascade step: none of the collected keys is left. A rival
+        deleter that removed some of them first does not make this step fail."""
+        if not keys:
+            return
+        left = await self.get_existing_keys(collection, keys, transaction)
+        if left:
+            raise Exception(
+                f"CRITICAL: {len(left)}/{len(keys)} {collection} documents remain after the delete. "
+                f"Transaction will be rolled back."
+            )
 
     async def reindex_single_record(
         self,
@@ -5141,6 +5217,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         external_id: str,
         transaction: str | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> Record | None:
         """Get record by external ID"""
         query = f"""
@@ -5166,6 +5244,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return Record.from_arango_base_record(record_data)
             return None
         except Exception as e:
+            if raise_on_error:
+                raise
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
@@ -6082,18 +6162,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
-        rows = await self.http_client.execute_aql(
-            f"""
+        query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
                 UPDATE doc WITH @updates IN @@collection
                 RETURN 1
-            """,
-            bind_vars=bind_vars,
-            txn_id=transaction,
+            """
+        # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
+        # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
+        # checked against the winner's write, so it applies or is refused, as a lock would have made
+        # it. Inside a transaction the owner decides, so the conflict is raised.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
+            transaction,
         )
         return bool(rows)
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        # "ignore" leaves an existing document alone and returns no NEW for it. Two creators of one
+        # key: the loser gets a write-write conflict or a key-lock timeout (errorNum 1200) while the
+        # winner's insert is in flight, and the winner may still roll back. So the insert is run
+        # again, with backoff, until it sees the key (not created here) or lands (created here). A
+        # conflict that persists is raised: it does not say that the node exists.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(
+                """
+                INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
+                RETURN NEW
+                """,
+                bind_vars={"@collection": collection, "node": {**node, "_key": key}},
+                txn_id=transaction,
+            ),
+            transaction,
+        )
+        return bool(rows and rows[0])
 
     async def update_nodes_fields_if_match(
         self,
@@ -6754,6 +6864,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return ArtifactRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.SQL_TABLES.value:
                 return SQLTableRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SQL_COLUMNS.value:
+                return SQLColumnRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.SQL_VIEWS.value:
                 return SQLViewRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.CODE_FILES.value:
@@ -11538,30 +11650,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed_collections = []
 
         for collection, keys in targets_by_collection.items():
-            expected_count = len(keys)
             deleted, failed_batches = await self._delete_nodes_by_keys(
                 transaction, keys, collection, raise_on_error=raise_on_error
             )
             total_deleted += deleted
 
-            # Check for failures: either failed batches OR incomplete deletion
             if failed_batches > 0:
                 failed_collections.append(f"{collection} (failed batches: {failed_batches})")
-            elif deleted < expected_count:
-                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+                continue
+            # Success is "none of these keys remain": a rival deleter may have removed some.
+            left = await self.get_existing_keys(collection, keys, transaction)
+            if left:
+                failed_collections.append(f"{collection} ({len(left)}/{len(keys)} remain)")
 
         # If any collection failed, raise exception to trigger rollback
         if failed_collections:
             raise Exception(
                 f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
                 f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
-            )
-
-        # Validate total deletion count matches expected
-        if total_deleted < total_expected:
-            raise Exception(
-                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
-                f"Transaction will be rolled back."
             )
 
         self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
@@ -11957,6 +12063,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.BLOCKS.value,
                 CollectionNames.ARTIFACTS.value,
                 CollectionNames.SQL_TABLES.value,
+                CollectionNames.SQL_COLUMNS.value,
                 CollectionNames.SQL_VIEWS.value,
                 CollectionNames.APPS.value,
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
@@ -11986,279 +12093,234 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Start transaction for node deletions only
             # Edge collections still included for isOfType target edge deletion
-            if transaction is None:
-                transaction = await self.begin_transaction(
-                    read=edge_collections + node_collections,
-                    write=edge_collections + node_collections
-                )
-                created_transaction = True
+            owns_transaction = transaction is None
+            cascade_retries = 0
+            for attempt in range(CASCADE_ATTEMPTS):
+                if owns_transaction:
+                    transaction = await self.begin_transaction(
+                        read=edge_collections + node_collections,
+                        write=edge_collections + node_collections
+                    )
+                    created_transaction = True
 
-            try:
+                try:
 
-                # Step 7: Delete isOfType target nodes (files, mails, etc.)
-                # This method will raise an exception if any failures occur
-                deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
-                    transaction,
-                    isoftype_targets,
-                    edge_collections
-                )
-                # Same-key type docs cover records whose isOfType edge was already gone.
-                deleted_isoftype += await self._delete_type_docs_matching_record_keys(
-                    transaction, collected["record_keys"]
-                )
-
-                # Step 8: Delete records (CRITICAL - must succeed completely)
-                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_keys"],
-                    CollectionNames.RECORDS.value
-                )
-                if len(collected["record_keys"]) > 0:
-                    if deleted_records == 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0. "
-                            f"Transaction will be rolled back."
-                        )
-                    elif deleted_records < len(collected["record_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_records}/{len(collected['record_keys'])} records. "
-                            f"Transaction will be rolled back to maintain data consistency."
-                        )
-                    if failed_record_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_record_batches} batch(es) of records. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 9: Delete record groups (CRITICAL - must succeed completely)
-                deleted_rg, failed_rg_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_group_keys"],
-                    CollectionNames.RECORD_GROUPS.value
-                )
-                if len(collected["record_group_keys"]) > 0:
-                    if deleted_rg < len(collected["record_group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_rg}/{len(collected['record_group_keys'])} record groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_rg_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_rg_batches} batch(es) of record groups. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 10: Delete roles (CRITICAL - must succeed completely)
-                deleted_roles, failed_roles_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["role_keys"],
-                    CollectionNames.ROLES.value
-                )
-                if len(collected["role_keys"]) > 0:
-                    if deleted_roles < len(collected["role_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_roles}/{len(collected['role_keys'])} roles. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_roles_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_roles_batches} batch(es) of roles. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 11: Delete groups (CRITICAL - must succeed completely)
-                deleted_groups, failed_groups_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["group_keys"],
-                    CollectionNames.GROUPS.value
-                )
-                if len(collected["group_keys"]) > 0:
-                    if deleted_groups < len(collected["group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_groups}/{len(collected['group_keys'])} groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_groups_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_groups_batches} batch(es) of groups. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 12: Delete syncPoints and blocks (CRITICAL - must succeed)
-                deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
-                    transaction,
-                    connector_id,
-                    CollectionNames.SYNC_POINTS.value
-                )
-                if not sync_success:
-                    raise Exception(
-                        "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    # Step 7: Delete isOfType target nodes (files, mails, etc.)
+                    # This method will raise an exception if any failures occur
+                    deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
+                        transaction,
+                        isoftype_targets,
+                        edge_collections,
+                        raise_on_error=True,
+                    )
+                    # Same-key type docs cover records whose isOfType edge was already gone.
+                    deleted_isoftype += await self._delete_type_docs_matching_record_keys(
+                        transaction, collected["record_keys"]
                     )
 
-                # Stage states hang off no edge, so nothing above reaches them.
-                _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
-                if not stages_success:
-                    raise Exception(
-                        "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
-                    )
-
-                # Blocks join their record by field, and their structural and
-                # cross-file edges carry no connectorId, so neither the record
-                # sweep nor the connector-scoped edge sweep above reaches them.
-                if not blocks_deleted_up_front:
-                    deleted_blocks = await self.delete_blocks_by_connector_id(
-                        connector_id, transaction
-                    )
-
-                # An agent names its sources by connectorId, not by an edge, so the
-                # sweep above never reaches them; left behind they show as a raw id.
-                agent_knowledge_keys = await self.http_client.execute_aql(
-                    f"""
-                    FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
-                        FILTER k.connectorId == @connector_id
-                        RETURN k._key
-                    """,
-                    bind_vars={"connector_id": connector_id},
-                    txn_id=transaction,
-                )
-                await self.delete_nodes_and_edges(
-                    agent_knowledge_keys or [],
-                    CollectionNames.AGENT_KNOWLEDGE.value,
-                    transaction=transaction,
-                )
-
-                # Step 13: Delete the app itself (CRITICAL - must succeed completely)
-                deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    [connector_id],
-                    CollectionNames.APPS.value
-                )
-                if deleted_app == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist. "
-                        f"Transaction will be rolled back."
-                    )
-                if failed_app_batches > 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete app in {failed_app_batches} batch(es). "
-                        f"Transaction will be rolled back."
-                    )
-
-                # All operations succeeded completely - commit the transaction
-                if created_transaction:
-                    await self.commit_transaction(transaction)
-
-                # A sync that did not stop in time can commit a record after the
-                # collect above. One more pass removes those, then the sweeps.
-                # Only after this method committed: a caller-owned transaction
-                # has not committed, and a read outside it would see rows this
-                # delete is removing.
-                orphan_types = 0
-                orphan_labels = 0
-                if created_transaction:
-                    try:
-                        late_rows = await self.http_client.execute_aql(
-                            """
-                            FOR r IN @@records
-                                FILTER r.connectorId == @connector_id
-                                RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
-                            """,
-                            bind_vars={
-                                "@records": CollectionNames.RECORDS.value,
-                                "connector_id": connector_id,
-                            },
+                    # Steps 8-11: records, record groups, roles, groups. Each is measured as
+                    # "none of the collected keys remains", so a rival deleter (the finisher,
+                    # an owner's retry) that removed some first does not fail this one.
+                    deleted_records = deleted_rg = deleted_roles = deleted_groups = 0
+                    for collection, keys_key in (
+                        (CollectionNames.RECORDS.value, "record_keys"),
+                        (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                        (CollectionNames.ROLES.value, "role_keys"),
+                        (CollectionNames.GROUPS.value, "group_keys"),
+                    ):
+                        keys = collected[keys_key]
+                        removed, failed_batches = await self._delete_nodes_by_keys(
+                            transaction, keys, collection, raise_on_error=True
                         )
-                        late_keys = [
-                            row["key"] for row in late_rows or []
-                            if isinstance(row, dict) and row.get("key")
-                        ]
-                        if late_keys:
-                            self.logger.warning(
-                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                        if failed_batches:
+                            raise Exception(f"CRITICAL: Failed to delete {failed_batches} batch(es) of {collection}.")
+                        await self._assert_none_remain(transaction, collection, keys)
+                        if collection == CollectionNames.RECORDS.value:
+                            deleted_records = removed
+                        elif collection == CollectionNames.RECORD_GROUPS.value:
+                            deleted_rg = removed
+                        elif collection == CollectionNames.ROLES.value:
+                            deleted_roles = removed
+                        else:
+                            deleted_groups = removed
+
+                    # Step 12: Delete syncPoints and blocks (CRITICAL - must succeed)
+                    deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
+                        transaction,
+                        connector_id,
+                        CollectionNames.SYNC_POINTS.value
+                    )
+                    if not sync_success:
+                        raise Exception(
+                            "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                        )
+
+                    # Stage states hang off no edge, so nothing above reaches them.
+                    _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
+                    if not stages_success:
+                        raise Exception(
+                            "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
+                        )
+
+                    # Blocks join their record by field, and their structural and
+                    # cross-file edges carry no connectorId, so neither the record
+                    # sweep nor the connector-scoped edge sweep above reaches them.
+                    if not blocks_deleted_up_front:
+                        deleted_blocks = await self.delete_blocks_by_connector_id(
+                            connector_id, transaction
+                        )
+
+                    # An agent names its sources by connectorId, not by an edge, so the
+                    # sweep above never reaches them; left behind they show as a raw id.
+                    agent_knowledge_keys = await self.http_client.execute_aql(
+                        f"""
+                        FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                            FILTER k.connectorId == @connector_id
+                            RETURN k._key
+                        """,
+                        bind_vars={"connector_id": connector_id},
+                        txn_id=transaction,
+                    )
+                    await self.delete_nodes_and_edges(
+                        agent_knowledge_keys or [],
+                        CollectionNames.AGENT_KNOWLEDGE.value,
+                        transaction=transaction,
+                    )
+
+                    # Step 13: Delete the app itself. Gone is gone, whoever removed it.
+                    _, failed_app_batches = await self._delete_nodes_by_keys(
+                        transaction, [connector_id], CollectionNames.APPS.value, raise_on_error=True
+                    )
+                    if failed_app_batches:
+                        raise Exception(f"CRITICAL: Failed to delete the app in {failed_app_batches} batch(es).")
+                    await self._assert_none_remain(transaction, CollectionNames.APPS.value, [connector_id])
+
+                    # All operations succeeded completely - commit the transaction
+                    if created_transaction:
+                        await self.commit_transaction(transaction)
+
+                    # A sync that did not stop in time can commit a record after the
+                    # collect above. One more pass removes those, then the sweeps.
+                    # Only after this method committed: a caller-owned transaction
+                    # has not committed, and a read outside it would see rows this
+                    # delete is removing.
+                    orphan_types = 0
+                    orphan_labels = 0
+                    if created_transaction:
+                        try:
+                            late_rows = await self.http_client.execute_aql(
+                                """
+                                FOR r IN @@records
+                                    FILTER r.connectorId == @connector_id
+                                    RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
+                                """,
+                                bind_vars={
+                                    "@records": CollectionNames.RECORDS.value,
+                                    "connector_id": connector_id,
+                                },
                             )
-                            await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
-                            deleted_records += len(late_keys)
-                            vrids = collected.get("virtual_record_ids")
-                            if needs_virtual_record_ids and isinstance(vrids, list):
-                                removed = set(late_keys)
-                                vrids.extend(
-                                    row["virtualRecordId"]
-                                    for row in late_rows or []
-                                    if isinstance(row, dict)
-                                    and row.get("key") in removed
-                                    and isinstance(row.get("virtualRecordId"), str)
-                                    and row["virtualRecordId"]
+                            late_keys = [
+                                row["key"] for row in late_rows or []
+                                if isinstance(row, dict) and row.get("key")
+                            ]
+                            if late_keys:
+                                self.logger.warning(
+                                    f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
                                 )
-                    except Exception as late_err:
-                        self.logger.warning(
-                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                        )
-                    try:
-                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
-                    except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
-                    try:
-                        if taxonomy_collect_success:
-                            orphan_labels = await self._delete_unlinked_taxonomy_nodes(
-                                org_id, taxonomy_targets
+                                await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
+                                deleted_records += len(late_keys)
+                                vrids = collected.get("virtual_record_ids")
+                                if needs_virtual_record_ids and isinstance(vrids, list):
+                                    removed = set(late_keys)
+                                    vrids.extend(
+                                        row["virtualRecordId"]
+                                        for row in late_rows or []
+                                        if isinstance(row, dict)
+                                        and row.get("key") in removed
+                                        and isinstance(row.get("virtualRecordId"), str)
+                                        and row["virtualRecordId"]
+                                    )
+                        except Exception as late_err:
+                            self.logger.warning(
+                                f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
-                    except Exception as sweep_err:
+                        try:
+                            orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                        except Exception as sweep_err:
+                            self.logger.warning(
+                                f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
+                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            )
+                        try:
+                            if taxonomy_collect_success:
+                                orphan_labels = await self._delete_unlinked_taxonomy_nodes(
+                                    org_id, taxonomy_targets
+                                )
+                        except Exception as sweep_err:
+                            self.logger.warning(
+                                f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
+                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            )
+
+                    self.logger.debug(
+                        f"✅ Connector instance {connector_id} deleted successfully. "
+                        f"Records: {deleted_records}/{len(collected['record_keys'])}, "
+                        f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
+                        f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
+                        f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
+                        f"Edges: {deleted_edges}, "
+                        f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
+                        f"Blocks: {deleted_blocks}, "
+                        f"isOfType targets: {deleted_isoftype}"
+                    )
+
+                    return {
+                        "success": True,
+                        "deleted_records_count": deleted_records,
+                        "deleted_record_groups_count": deleted_rg,
+                        "deleted_roles_count": deleted_roles,
+                        "deleted_groups_count": deleted_groups,
+                        "deleted_edges_count": deleted_edges,
+                        "deleted_blocks_count": deleted_blocks,
+                        "deleted_isoftype_targets_count": deleted_isoftype,
+                        "cascade_retries": cascade_retries,
+                        "deleted_orphan_type_docs_count": orphan_types,
+                        "deleted_orphan_taxonomy_count": orphan_labels,
+                        "virtual_record_ids": collected["virtual_record_ids"],
+                        # The connector's own record groups went with it. A point
+                        # shared with a live connector survives the purge, so the
+                        # cleanup needs these to strip them from recordGroupIds.
+                        "record_group_ids": collected["record_group_keys"],
+                        "vector_membership_backfilled": bool(
+                            connector.get("vectorMembershipBackfilled", False)
+                        ),
+                        "vector_membership_backfill_exhausted": bool(
+                            connector.get("vectorMembershipBackfillExhausted", False)
+                        ),
+                        "connector_id": connector_id,
+                        "connector_name": connector.get("type"),
+                    }
+
+                except Exception as tx_error:
+                    if created_transaction:
+                        try:
+                            await self.rollback_transaction(transaction)
+                        except Exception as abort_error:
+                            self.logger.error(
+                                f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
+                                f"Original error: {tx_error}"
+                            )
+                    if owns_transaction and attempt + 1 < CASCADE_ATTEMPTS and self.is_write_conflict(tx_error):
+                        # A concurrent writer (a push into the KB being deleted) won this round;
+                        # the steps are idempotent, so run them again in a fresh transaction.
+                        cascade_retries += 1
                         self.logger.warning(
-                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            "Connector %s delete lost to a concurrent write (attempt %d); retrying",
+                            connector_id, attempt + 1,
                         )
-
-                self.logger.debug(
-                    f"✅ Connector instance {connector_id} deleted successfully. "
-                    f"Records: {deleted_records}/{len(collected['record_keys'])}, "
-                    f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
-                    f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
-                    f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
-                    f"Edges: {deleted_edges}, "
-                    f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
-                    f"Blocks: {deleted_blocks}, "
-                    f"isOfType targets: {deleted_isoftype}"
-                )
-
-                return {
-                    "success": True,
-                    "deleted_records_count": deleted_records,
-                    "deleted_record_groups_count": deleted_rg,
-                    "deleted_roles_count": deleted_roles,
-                    "deleted_groups_count": deleted_groups,
-                    "deleted_edges_count": deleted_edges,
-                    "deleted_blocks_count": deleted_blocks,
-                    "deleted_isoftype_targets_count": deleted_isoftype,
-                    "deleted_orphan_type_docs_count": orphan_types,
-                    "deleted_orphan_taxonomy_count": orphan_labels,
-                    "virtual_record_ids": collected["virtual_record_ids"],
-                    # The connector's own record groups went with it. A point
-                    # shared with a live connector survives the purge, so the
-                    # cleanup needs these to strip them from recordGroupIds.
-                    "record_group_ids": collected["record_group_keys"],
-                    "vector_membership_backfilled": bool(
-                        connector.get("vectorMembershipBackfilled", False)
-                    ),
-                    "vector_membership_backfill_exhausted": bool(
-                        connector.get("vectorMembershipBackfillExhausted", False)
-                    ),
-                    "connector_id": connector_id,
-                    "connector_name": connector.get("type"),
-                }
-
-            except Exception as tx_error:
-                if created_transaction:
-                    try:
-                        await self.rollback_transaction(transaction)
-                    except Exception as abort_error:
-                        self.logger.error(
-                            f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
-                            f"Original error: {tx_error}"
-                        )
-                raise tx_error
+                        await cascade_backoff(attempt)
+                        continue
+                    raise tx_error
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
@@ -14338,6 +14400,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
                     userRole: kb_role.userRole,
+                    status: kb.status,
                     folders: folders
                 }}
             """
@@ -15264,6 +15327,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
                     userRole: user_role,
+                    status: kb.status,
                     folders: folders
                 }
             """
@@ -20972,29 +21036,68 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         fields = ", ".join(f'"{f}": {var}.{f}' for f in cls._ENTITY_CANDIDATE_RECORD_FIELDS)
         return f"{{{fields}}}"
 
+    @staticmethod
+    def _entity_within_aql(var: str) -> str:
+        """Whether record ``var`` lies in every scope of ``@within``, as
+        ``check_access`` rows are admitted by a selection: app selected whole,
+        record selected (or under a selected folder), or a direct belongsTo
+        to a selected group."""
+        return f"""(@within == null OR LENGTH(
+                    FOR s IN NOT_NULL(@within, [])
+                        FILTER NOT ({var}.connectorId IN s.apps OR {var}._key IN s.records
+                            OR LENGTH(FOR g IN 1..1 OUTBOUND {var} {CollectionNames.BELONGS_TO.value}
+                                FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", g)
+                                    AND g._key IN s.groups
+                                LIMIT 1 RETURN 1) > 0)
+                        LIMIT 1
+                        RETURN 1) == 0)"""
+
     def _entity_candidate_scan_aql(
-        self, entity_type: str, *, filter_record_types: bool
+        self, entity_type: str, *, filter_record_types: bool, filter_within: bool = False,
     ) -> tuple[str, str]:
         """``(scope, scan_expr)`` for a non-record entity type: ``scope``
         binds per-ref variables, ``scan_expr`` evaluates to at most
-        ``@scan_cap`` candidate record documents of ``ref``."""
+        ``@scan_cap`` candidate record documents of ``ref``. ``filter_within``
+        narrows by ``@within`` before the cap."""
         records = CollectionNames.RECORDS.value
-        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
-        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
         record_type_filter = (
             "FILTER rec.recordType IN @record_types" if filter_record_types else ""
         )
+        within_filter = f"FILTER {self._entity_within_aql('rec')}" if filter_within else ""
+        record_filter = f"""FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                        FILTER {aql_searchable_record("rec", "completed")}
+                        FILTER rec.connectorId IN ref.connectorIds
+                        {record_type_filter}
+                        {within_filter}
+                        LIMIT @scan_cap
+                        RETURN rec"""
+        if entity_type == PERSON_ENTITY_TYPE:
+            # Both directions, the person always at the users end: a record
+            # group is also MENTIONED_IN a record. Distinct ids first, so a
+            # record linked twice (reporter and creator) is one candidate.
+            relations = CollectionNames.ENTITY_RELATIONS.value
+            scope = f'LET people = (FOR uid IN ref.userIds RETURN CONCAT("{CollectionNames.USERS.value}/", uid))'
+            return scope, f"""(
+                    FOR rec_id IN UNION_DISTINCT(
+                        (FOR edge IN {relations}
+                            FILTER edge._to IN people AND edge.edgeType IN ref.outTypes
+                                AND STARTS_WITH(edge._from, "{records}/")
+                            RETURN edge._from),
+                        (FOR edge IN {relations}
+                            FILTER edge._from IN people AND edge.edgeType IN ref.inTypes
+                                AND STARTS_WITH(edge._to, "{records}/")
+                            RETURN edge._to))
+                        LET rec = DOCUMENT(rec_id)
+                        {record_filter}
+                )"""
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
         scan_subquery = f"""(
                     FOR edge IN {edge_collection}
                         FILTER edge._to IN targets
                         FILTER STARTS_WITH(edge._from, "{records}/")
                         LET rec = DOCUMENT(edge._from)
-                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER {aql_searchable_record("rec", "completed")}
-                        FILTER rec.connectorId IN ref.connectorIds
-                        {record_type_filter}
-                        LIMIT @scan_cap
-                        RETURN rec
+                        {record_filter}
                 )"""
         scope = f"LET targets = [{targets}]"
         if entity_type == EntityType.RECORD_GROUP.value:
@@ -21068,11 +21171,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
                     AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
-                    AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
+                    AND one.connectorId IN ref.connectorIds {record_type_check}
+                    AND {self._entity_within_aql("one")}) ? [one] : []
                 LET capped = false"""
         else:
             scope, scan_expr = self._entity_candidate_scan_aql(
-                entity_type, filter_record_types=filter_record_types
+                entity_type, filter_record_types=filter_record_types, filter_within=True,
             )
             window = f"""
                 {scope}
@@ -21124,6 +21228,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
         if not refs or not org_id or not user_key:
@@ -21131,14 +21236,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         limit = max(1, limit_per_entity)
         results: dict[tuple[str, str], PermittedEntityRows] = {}
-        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
-            for ref_id in connectors_by_id:
+        for ref_type, refs_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in refs_by_id:
                 results.setdefault((ref_type, ref_id), PermittedEntityRows())
-            query_refs = [
-                {"id": ref_id, "connectorIds": connector_ids}
-                for ref_id, connector_ids in connectors_by_id.items()
-                if connector_ids
-            ]
+            query_refs = [ref for ref in refs_by_id.values() if ref["connectorIds"]]
             if not query_refs:
                 continue
             bind_vars: dict[str, Any] = {
@@ -21148,6 +21249,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "users_col": CollectionNames.USERS.value,
                 "user_key": user_key,
                 "app_level_connector_ids": list(app_level_connector_ids),
+                "within": within_param(within),
             }
             if record_types:
                 bind_vars["record_types"] = list(record_types)
@@ -21241,24 +21343,82 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for ref_id, ref_hits in hits.items()
         }
 
-    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
-        """``{type: {id: connector_ids}}`` for supported refs, first occurrence
+    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+        """``{type: {id: query_ref}}`` for supported refs, first occurrence
         of each kept (a union would widen a ref's scope)."""
-        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        refs_by_type: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for ref in refs:
             ref_id = str(ref.get("id") or "")
             ref_type = ref.get("type")
             if not ref_id or not (
-                ref_type == EntityType.RECORD.value
+                ref_type in (EntityType.RECORD.value, PERSON_ENTITY_TYPE)
                 or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
             ):
                 continue
-            if ref_id in connectors_by_type[ref_type]:
+            if ref_id in refs_by_type[ref_type]:
                 continue
-            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
-                str(c) for c in ref.get("connectorIds") or [] if c
-            ))
-        return connectors_by_type
+            refs_by_type[ref_type][ref_id] = {
+                "id": ref_id,
+                "connectorIds": list(dict.fromkeys(str(c) for c in ref.get("connectorIds") or [] if c)),
+                **(person_query_ref(ref) if ref_type == PERSON_ENTITY_TYPE else {}),
+            }
+        return refs_by_type
+
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_users`."""
+        # lower(), not casefold(): the stored side is LOWER(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        users = CollectionNames.USERS.value
+        if "@" in wanted:
+            # An email names one person: all their nodes, no name normalising.
+            rows = await self.execute_query(
+                f"""
+                FOR u IN {users}
+                    FILTER u.orgId == @org_id AND LOWER(u.email) == @q
+                    SORT u._key
+                    RETURN {{id: u._key, fullName: u.fullName, email: u.email}}
+                """,
+                bind_vars={"org_id": org_id, "q": wanted},
+            )
+            return [dict(row) for row in rows or [] if row and row.get("id")]
+        words = 'CONCAT_SEPARATOR(" ", SPLIT(LOWER({}), " ")[* FILTER CURRENT != ""])'
+        name = words.format('NOT_NULL(u.fullName, "")')
+        parts = words.format('CONCAT(NOT_NULL(u.firstName, ""), " ", NOT_NULL(u.lastName, ""))')
+        query_aql = f"""
+            LET hits = (
+                FOR u IN {users}
+                    FILTER u.orgId == @org_id
+                    LET email = LOWER(NOT_NULL(u.email, ""))
+                    LET name = {name}
+                    LET exact = email == @q OR name == @q OR {parts} == @q
+                    FILTER exact OR (LENGTH(@q) >= 3 AND (STARTS_WITH(name, @q)
+                        OR LENGTH(SPLIT(name, " ")[* FILTER STARTS_WITH(CURRENT, @q)]) > 0
+                        OR STARTS_WITH(SPLIT(email, "@")[0], @q)))
+                    SORT name, u._key
+                    RETURN {{person: email != "" ? email : CONCAT("id:", u._key), exact: exact}}
+            )
+            LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
+            LET cands = hits[* FILTER CURRENT.exact OR NOT has_exact]
+            // The limit counts people (an email, else a node), first match first.
+            LET people = (
+                FOR i IN 0..LENGTH(cands) - 1
+                    FILTER i >= 0 AND i < LENGTH(cands)
+                    COLLECT person = cands[i].person AGGREGATE rank = MIN(i)
+                    SORT rank LIMIT @limit
+                    RETURN person
+            )
+            FOR o IN {users}
+                FILTER o.orgId == @org_id
+                    AND (LOWER(o.email) IN people OR CONCAT("id:", o._key) IN people)
+                SORT LOWER(NOT_NULL(o.fullName, o.email, "")), o._key
+                RETURN {{id: o._key, fullName: o.fullName, email: o.email}}
+        """
+        rows = await self.execute_query(
+            query_aql, bind_vars={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row and row.get("id")]
 
     async def get_entity_candidate_records(
         self,
@@ -21275,15 +21435,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
 
         results: dict[tuple[str, str], EntityCandidateRows] = {}
-        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
-            for ref_id in connectors_by_id:
+        for ref_type, refs_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in refs_by_id:
                 results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
-            query_refs = [
-                {"id": ref_id, "connectorIds": connector_ids}
-                for ref_id, connector_ids in connectors_by_id.items()
-                if connector_ids
-            ]
+            query_refs = [ref for ref in refs_by_id.values() if ref["connectorIds"]]
             if not query_refs:
                 continue
 
@@ -25335,6 +25491,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        is_org_admin: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -25382,9 +25539,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "members": team_members,
                 "memberCount": user_count,
-                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
-                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+                "canEdit": @isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]),
+                "canDelete": (@isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER")) AND team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": @isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"])
             }}
             """
 
@@ -25393,7 +25550,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     "teamId": team_id,
                     "orgId": org_id,
-                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                    "isOrgAdmin": bool(is_org_admin),
                 },
                 transaction=transaction
             )
@@ -25418,9 +25576,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        org_id: str | None = None,
+        is_org_admin: bool = False,
     ) -> tuple[list[dict], int]:
         """
-        Get all teams that a user is a member of.
+        Get all teams that a user is a member of, or every team in the
+        organisation for its administrator.
         """
         try:
             offset = (page - 1) * limit
@@ -25444,12 +25605,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 extra_filters += "\nFILTER team.createdAtTimestamp <= @createdBefore"
 
-            # Query to get all teams user is a member of with pagination
-            user_teams_query = f"""
+            list_all_org_teams = bool(is_org_admin and org_id)
+            if list_all_org_teams:
+                teams_source = """
+            FOR team IN @@teams_collection
+            FILTER team.orgId == @orgId"""
+                flags = """
+                "canEdit": true,
+                "canDelete": team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": true"""
+            else:
+                teams_source = """
             FOR permission IN @@permission_collection
             FILTER permission._from == @userId
             LET team = DOCUMENT(permission._to)
-            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)"""
+                flags = """
+                "canEdit": permission.role IN ["OWNER"],
+                "canDelete": permission.role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": permission.role IN ["OWNER"]"""
+
+            # Query to get the teams with pagination
+            user_teams_query = f"""
+            {teams_source}
             {search_filter}
             {extra_filters}
             SORT team.createdAtTimestamp DESC
@@ -25479,19 +25657,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "createdAtTimestamp": team.createdAtTimestamp,
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "members": team_members,
-                "memberCount": member_count,
-                "canEdit": permission.role IN ["OWNER"],
-                "canDelete": permission.role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
-                "canManageMembers": permission.role IN ["OWNER"]
+                "memberCount": member_count,{flags}
             }}
             """
 
             # Count query for pagination
             count_query = f"""
-            FOR permission IN @@permission_collection
-            FILTER permission._from == @userId
-            LET team = DOCUMENT(permission._to)
-            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {teams_source}
             {search_filter}
             {extra_filters}
             COLLECT WITH COUNT INTO total_count
@@ -25509,11 +25681,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 filter_vars["createdBefore"] = created_before
 
+            # Arango rejects a bind variable the query does not use.
+            if list_all_org_teams:
+                source_vars = {
+                    "@teams_collection": CollectionNames.TEAMS.value,
+                    "orgId": org_id,
+                }
+            else:
+                source_vars = {
+                    "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                    "@permission_collection": CollectionNames.PERMISSION.value,
+                    "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                }
+
             # Get total count
             count_params = {
-                "userId": f"{CollectionNames.USERS.value}/{user_key}",
-                "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                **source_vars,
                 **filter_vars,
             }
 
@@ -25522,9 +25705,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Get teams with pagination
             teams_params = {
-                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                **source_vars,
+                # the member list reads the permission collection either way
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
                 "offset": offset,
                 "limit": limit,
                 **filter_vars,
@@ -25538,6 +25721,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
+
+    async def find_team_by_name(
+        self,
+        org_id: str,
+        name: str,
+        exclude_team_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find a team in an organisation by name, ignoring case and surrounding whitespace.
+        """
+        query = f"""
+        FOR team IN {CollectionNames.TEAMS.value}
+        FILTER team.orgId == @orgId
+            AND IS_STRING(team.name)
+            AND LOWER(TRIM(team.name)) == @name
+            AND team._key != @excludeTeamId
+        LIMIT 1
+        RETURN {{ "id": team._key, "name": team.name }}
+        """
+        result_list = await self.execute_query(
+            query,
+            bind_vars={
+                "orgId": org_id,
+                "name": name.strip().lower(),
+                "excludeTeamId": exclude_team_id or "",
+            },
+            transaction=transaction,
+        )
+        return result_list[0] if result_list else None
 
     async def get_team_users(
         self,

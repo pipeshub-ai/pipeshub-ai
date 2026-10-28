@@ -12,7 +12,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import Goo
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
 from app.models.entities import RecordType
 from app.models.permission import EntityType, Permission, PermissionType
-import asyncio
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     Filter,
@@ -2294,57 +2293,17 @@ class TestProcessGmailAttachmentException:
 
 class TestConvertToPdf:
     @pytest.mark.asyncio
-    async def test_successful_conversion(self, connector_fullcov):
-        mock_process = AsyncMock()
-        mock_process.returncode = 0
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+    async def test_delegates_to_shared_libreoffice_conversion(self, connector_fullcov):
+        # The shared helper gives each run its own LibreOffice profile.
+        with patch(
+            "app.connectors.sources.google.gmail.individual.connector.libreoffice_to_pdf",
+            new_callable=AsyncMock,
+            return_value="/work/test.pdf",
+        ) as convert:
+            result = await connector_fullcov._convert_to_pdf("/work/test.docx", "/work")
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("os.path.exists", return_value=True):
-            result = await connector_fullcov._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert result == os.path.join("/tmp", "test.pdf")
-
-    @pytest.mark.asyncio
-    async def test_conversion_timeout(self, connector_fullcov):
-        mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-        mock_process.terminate = MagicMock()
-        mock_process.wait = AsyncMock(return_value=0)
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-            with pytest.raises(HTTPException) as exc_info:
-                await connector_fullcov._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-    @pytest.mark.asyncio
-    async def test_conversion_nonzero_return(self, connector_fullcov):
-        mock_process = AsyncMock()
-        mock_process.returncode = 1
-        mock_process.communicate = AsyncMock(return_value=(b"", b"error msg"))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("asyncio.wait_for", return_value=(b"", b"error msg")):
-            mock_process.returncode = 1
-            with pytest.raises(HTTPException):
-                await connector_fullcov._convert_to_pdf("/tmp/test.docx", "/tmp")
-
-    @pytest.mark.asyncio
-    async def test_conversion_output_not_found(self, connector_fullcov):
-        mock_process = AsyncMock()
-        mock_process.returncode = 0
-        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
-             patch("os.path.exists", return_value=False):
-            with pytest.raises(HTTPException):
-                await connector_fullcov._convert_to_pdf("/tmp/test.docx", "/tmp")
-
-    @pytest.mark.asyncio
-    async def test_conversion_general_exception(self, connector_fullcov):
-        with patch("asyncio.create_subprocess_exec", side_effect=RuntimeError("exec fail")):
-            with pytest.raises(HTTPException):
-                await connector_fullcov._convert_to_pdf("/tmp/test.docx", "/tmp")
+        assert result == "/work/test.pdf"
+        convert.assert_awaited_once_with("/work/test.docx", "/work")
 
 
 class TestStreamFromDrive:

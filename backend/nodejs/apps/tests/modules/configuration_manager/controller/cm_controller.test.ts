@@ -16,6 +16,9 @@ import {
   getStorageConfig,
   createSmtpConfig,
   getSmtpConfig,
+  getSmtpConfigStatus,
+  deleteSmtpConfig,
+  setSmtpConfigEnabled,
   getSlackBotConfigs,
   getInternalSlackBotConfigs,
   createSlackBotConfig,
@@ -82,6 +85,9 @@ import {
   updateModelRoles,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
+import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3041,6 +3047,90 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+
+    // The settings are tried against the server before they are stored, so a
+    // rejected login is reported on the form rather than later, by each email
+    // that fails.
+    describe('checking the settings with the mail server', () => {
+      let server: FakeSmtpServer
+
+      beforeEach(async () => {
+        server = await startFakeSmtpServer({ user: 'mailer', pass: 'right' })
+      })
+
+      afterEach(async () => {
+        await server.close()
+        nock.cleanAll()
+      })
+
+      const body = (password: string) => ({
+        host: '127.0.0.1', port: server.port, fromEmail: 'noreply@example.com', username: 'mailer', password,
+      })
+
+      it('refuses settings the server rejects, with a 400 naming the problem, and stores nothing', async () => {
+        const kvs = createMockKeyValueStore()
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(
+          'The mail (SMTP) server rejected this username or password. Check them, then save again.',
+        )
+        expect(kvs.set.called).to.be.false
+      })
+
+      it('logs the refusal by its codes, never the server text, host or username', async () => {
+        // On the prototype: the controller keeps the instance it got at load,
+        // which another test may since have replaced as the singleton.
+        const warn = sinon.stub(Logger.prototype, 'warn')
+        const handler = createSmtpConfig(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret')
+
+        await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), createMockNext())
+
+        const call = warn.getCalls().find((c) => c.args[0] === 'SMTP settings refused by the mail server')
+        expect(call?.args[1]).to.deep.equal({ problem: 'auth', code: 'EAUTH', responseCode: 535 })
+        const logged = JSON.stringify(warn.getCalls().map((c) => c.args))
+        expect(logged).to.not.include('mailer')
+        expect(logged).to.not.include('127.0.0.1')
+      })
+
+      it('stores settings the server accepts', async () => {
+        sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('token')
+        nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+        const kvs = createMockKeyValueStore()
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: body('right') }), res, next)
+
+        expect(next.called).to.be.false
+        expect(kvs.set.calledOnce).to.be.true
+        expect(res.status.calledWith(200)).to.be.true
+        expect(server.logins).to.deep.equal(['mailer:right'])
+      })
+
+      it('checks the stored password when the form sends the placeholder for it', async () => {
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves(`encrypted:${JSON.stringify(body('wrong'))}`),
+        })
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { ...body(''), password: CONFIG_SECRET_PLACEHOLDER } }),
+          createMockResponse(),
+          next,
+        )
+
+        expect(next.firstCall.args[0].statusCode).to.equal(400)
+        expect(server.logins).to.deep.equal(['mailer:wrong'])
+        expect(kvs.set.called).to.be.false
+      })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -4618,6 +4708,8 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   describe('createSmtpConfig (happy path)', () => {
     it('should encrypt and store SMTP config before calling communication backend', async () => {
+      // smtp.test.com is not a real server; the check against it has its own tests.
+      sinon.stub(smtpTransportModule, 'smtpSettingsProblem').resolves(null)
       const kvs = createMockKeyValueStore()
 
       const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
@@ -4656,7 +4748,11 @@ describe('ConfigurationManager Controller', () => {
       nock.cleanAll()
     })
 
+    let smtpCheck: sinon.SinonStub
+
     beforeEach(() => {
+      // The hosts here are not real servers; the check itself has its own tests.
+      smtpCheck = sinon.stub(smtpTransportModule, 'smtpSettingsProblem').resolves(null)
       sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('test-token')
     })
 
@@ -4699,9 +4795,10 @@ describe('ConfigurationManager Controller', () => {
         password: 'real-pass',
         fromEmail: 'real@example.com',
       })
+      expect(smtpCheck.firstCall.args[0]).to.deep.equal(stored, 'the server is asked about what is stored')
     })
 
-    it('does not look up the existing config when the body has no placeholders', async () => {
+    it('stores the body as sent when it has no placeholders', async () => {
       const kvs = createMockKeyValueStore()
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
 
@@ -4714,7 +4811,6 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(kvs.get.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
       const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
       expect(stored).to.deep.equal({
@@ -4742,6 +4838,135 @@ describe('ConfigurationManager Controller', () => {
       expect(kvs.get.calledOnce).to.be.true
       const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
       expect(stored.host).to.equal('****************')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // SMTP turned off / deleted
+  // -----------------------------------------------------------------------
+  describe('SMTP off switch and delete', () => {
+    const stored = {
+      host: 'smtp.real.com',
+      port: 587,
+      fromEmail: 'real@example.com',
+    }
+
+    beforeEach(() => {
+      sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('test-token')
+      sinon.stub(smtpTransportModule, 'smtpSettingsProblem').resolves(null)
+    })
+
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    it('keeps email turned off when the settings are saved again', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(`encrypted:${JSON.stringify({ ...stored, enabled: false })}`),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({ body: { ...stored, host: 'smtp.new.com' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved).to.include({ host: 'smtp.new.com', enabled: false })
+    })
+
+    it('saves a complete new config even when the stored one cannot be read', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:not-json'),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({ body: stored })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(JSON.parse(mockEncService.encrypt.firstCall.args[0])).to.deep.equal(stored)
+    })
+
+    it('turns email off without dropping the settings, and reloads the mail service', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`),
+      })
+      const reload = nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = setSmtpConfigEnabled(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({ body: { enabled: false } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ enabled: false })
+      expect(JSON.parse(mockEncService.encrypt.firstCall.args[0])).to.deep.equal({ ...stored, enabled: false })
+      expect(reload.isDone()).to.be.true
+    })
+
+    it('answers 404 when turning email on or off with nothing configured', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = setSmtpConfigEnabled(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({ body: { enabled: true } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 404)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('deletes the stored settings and reloads the mail service', async () => {
+      const kvs = createMockKeyValueStore()
+      const reload = nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = deleteSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(kvs.delete.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      expect(reload.isDone()).to.be.true
+    })
+
+    it('rejects delete and the off switch without a user', async () => {
+      for (const handler of [
+        deleteSmtpConfig(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret'),
+        setSmtpConfigEnabled(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret'),
+      ]) {
+        const next = createMockNext()
+        await handler(createMockRequest({ user: undefined, body: { enabled: false } }), createMockResponse(), next)
+        expect(next.calledOnce).to.be.true
+      }
+    })
+
+    it('reports SMTP as not configured while it is turned off', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(`encrypted:${JSON.stringify({ ...stored, enabled: false })}`),
+      })
+      const res = createMockResponse()
+
+      await getSmtpConfigStatus(kvs)(createMockRequest(), res, createMockNext())
+
+      expect(res.json.firstCall.args[0]).to.deep.equal({ configured: false })
     })
   })
 
@@ -6969,6 +7194,47 @@ describe('ConfigurationManager Controller', () => {
       expect(next.firstCall.args[0].statusCode).to.equal(500)
       expect(kvs.set.called).to.be.false
     })
+
+    // The settings refusals the AI service answers with 400 (an empty or rejected
+    // key) used to come back from this route as a generic 500.
+    for (const [modelType, route] of [['llm', 'llm-health-check'], ['embedding', 'embedding-health-check']] as const) {
+      it(`passes the AI service's 400 reason through for ${modelType}, saving nothing`, async () => {
+        const reason = 'The API Key for Azure OpenAI is empty. Enter it in Workspace > AI Models, then try again.'
+        stubAiService((uri) =>
+          uri.endsWith(`/${route}`)
+            ? { statusCode: 400, data: { status: 'error', message: reason } }
+            : { statusCode: 200, data: { status: 'healthy' } },
+        )
+        const kvs = createMockKeyValueStore()
+        const handler = createAIModelsConfig(kvs, createMockEventService(), appConfig)
+        const next = createMockNext()
+        const config = { provider: 'azureOpenAI', configuration: { model: 'gpt-4o', apiKey: '' } }
+
+        await handler(createMockRequest({ body: { [modelType]: [config] } }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(reason)
+        expect(kvs.set.called).to.be.false
+        expect(kvs.compareAndSet.called).to.be.false
+      })
+
+      it(`keeps a ${modelType} health check that failed on our side a 500`, async () => {
+        stubAiService((uri) =>
+          uri.endsWith(`/${route}`)
+            ? { statusCode: 500, data: { status: 'error', message: 'internal detail' } }
+            : { statusCode: 200, data: { status: 'healthy' } },
+        )
+        const handler = createAIModelsConfig(createMockKeyValueStore(), createMockEventService(), appConfig)
+        const next = createMockNext()
+        const config = { provider: 'openai', configuration: { model: 'm', apiKey: 'k' } }
+
+        await handler(createMockRequest({ body: { [modelType]: [config] } }), createMockResponse(), next)
+
+        expect(next.firstCall.args[0].statusCode).to.equal(500)
+        expect(next.firstCall.args[0].message).to.not.include('internal detail')
+      })
+    }
 
     it('does not call the endpoint check when only llm and embedding are saved', async () => {
       stubAiService(() => ({ statusCode: 200, data: { status: 'healthy' } }))

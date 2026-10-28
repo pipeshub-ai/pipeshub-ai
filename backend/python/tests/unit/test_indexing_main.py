@@ -1516,6 +1516,7 @@ class TestLifespan:
     async def test_startup_and_shutdown(self):
         """Full lifespan cycle."""
         from app.indexing_main import lifespan
+        from app.modules.parsers import parse_pool
 
         mock_container = _make_container()
         mock_gp = _make_graph_provider()
@@ -1533,9 +1534,13 @@ class TestLifespan:
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
                 assert mock_app.state.graph_provider is mock_gp
+                assert parse_pool._State.governor is not None
 
             mock_stop.assert_awaited_once()
             mock_container.config_service().close.assert_awaited()
+            # A governor left behind makes the next submit in this process start a new pool.
+            assert parse_pool._State.governor is None
+            assert parse_pool._State.pool is None
 
     async def test_graph_provider_fallback(self):
         """When _graph_provider is not set, it falls back to graph_provider()."""

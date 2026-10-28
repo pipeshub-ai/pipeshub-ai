@@ -20,7 +20,11 @@ from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.config import (
+    RESP_PROTOCOL,
+    ClientOptions,
+    RedisConnectionConfig,
+)
 from app.services.redis.connection_provider import IRedisConnectionProvider
 from app.utils.logger import create_logger
 
@@ -88,6 +92,7 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
             "port": self._config.port,
             "db": self._config.db,
             "decode_responses": options.decode_responses,
+            "protocol": RESP_PROTOCOL,
             "socket_timeout": options.socket_timeout_seconds,
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "health_check_interval": options.health_check_interval_seconds,

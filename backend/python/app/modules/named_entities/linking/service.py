@@ -12,7 +12,6 @@ whichever record first created the node.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -28,6 +27,7 @@ from app.modules.named_entities.linking.verifier import (
     VerifyItem,
     offerable,
 )
+from app.modules.retrieval.entity_permissions import readable_spellings
 
 if TYPE_CHECKING:
     from app.modules.named_entities.linking.mentions import Mention
@@ -72,20 +72,14 @@ class Linking:
 
 async def readable_names(graph: IGraphDBProvider, org_id: str, candidates: list[Candidate]) -> dict[str, str]:
     """Each candidate's most frequent spelling on the mention edges of readable
-    records it was found through; its stored name when none records one."""
+    records it was found through, else its stored name.
+
+    shortcut: the stored-name fallback is reached only when none of those edges
+    records a spelling (every writer sets one), so ``search_by_entities`` keeps it
+    rather than dropping the candidate; drop it if such edges ever appear."""
     names = {candidate.entity_id: candidate.name for candidate in candidates}
     record_ids = sorted({str(row["_key"]) for c in candidates for row in c.records if row.get("_key")})
-    if not record_ids:
-        return names
-    rows = await graph.get_named_entity_mentions_in_records(org_id, sorted(names), record_ids)
-    spellings: dict[str, Counter[str]] = {}
-    for row in rows:
-        for spelling in row.get("extractedNames") or []:
-            if isinstance(spelling, str) and spelling.strip():
-                spellings.setdefault(str(row.get("entityId")), Counter())[spelling.strip()] += 1
-    for entity_id, counter in spellings.items():
-        if entity_id in names:
-            names[entity_id] = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    names.update(await readable_spellings(graph, org_id, sorted(names), record_ids))
     return names
 
 

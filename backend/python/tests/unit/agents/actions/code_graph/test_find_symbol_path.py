@@ -39,7 +39,7 @@ class TestPath:
         assert "capped" not in result
 
     async def test_an_exhausted_search_is_a_plain_miss(self, graph) -> None:
-        assert await _path(graph, b=PANEL) == {"found": False, "hops": []}
+        assert await _path(graph, b=PANEL) == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
 
 
 class TestDepth:
@@ -67,7 +67,7 @@ class TestDepth:
 
         graph = Endless()
         result = await _path(graph, max_depth=99)
-        assert result == {"found": False, "hops": []}
+        assert result == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
         # One query per hop, capped, and once more from the far end when the
         # forward search finds nothing.
         assert graph.calls == 2 * MAX_PATH_DEPTH

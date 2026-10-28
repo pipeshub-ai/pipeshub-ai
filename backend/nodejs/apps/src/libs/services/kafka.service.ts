@@ -18,11 +18,11 @@ import { BadRequestError } from '../errors/http.errors';
 import {
   injectEnvelope,
   runWithRequestContext,
-  ENVELOPE_REQUEST_ID,
+  contextFromEnvelope,
   newSystemRoot,
-  sanitizeRootId,
 } from '../context/request-context';
 import { runWithEnvelope, signMessage } from '../context/envelope';
+import { isRetryableStoreError } from '../repositories/errors';
 import { spawnDetached } from '../context/orgContext';
 
 /** Sign (when enabled) only where the topic is known. */
@@ -292,17 +292,15 @@ export abstract class BaseKafkaConsumerConnection
                 value: parsedValue,
               };
 
-              // Carry the producer's trace id into consumer-side logs.
-              const envelope = (parsedValue ?? {}) as Record<string, unknown>;
-              const rootId =
-                sanitizeRootId(
-                  envelope[ENVELOPE_REQUEST_ID] as string | undefined,
-                ) ?? newSystemRoot();
-
-              await runWithRequestContext({ rootId }, () =>
-                runWithEnvelope<T, unknown>(topic, parsedValue as T, (value) =>
-                  handler({ ...parsedMessage, value }),
-                ),
+              // Carry the producer's trace id and org into consumer-side logs.
+              await runWithRequestContext(
+                contextFromEnvelope(parsedValue, newSystemRoot),
+                () =>
+                  runWithEnvelope<T, unknown>(
+                    topic,
+                    parsedValue as T,
+                    (value) => handler({ ...parsedMessage, value }),
+                  ),
               );
             } catch (error) {
               this.logger.error('Error processing message', {
@@ -311,6 +309,8 @@ export abstract class BaseKafkaConsumerConnection
                 messageKey: message.key?.toString(),
                 error: (error as Error).message,
               });
+              // A store that is frozen or away is not a bad message: let KafkaJS see the failure so the offset is not committed.
+              if (isRetryableStoreError(error)) throw error;
             }
           },
         }),

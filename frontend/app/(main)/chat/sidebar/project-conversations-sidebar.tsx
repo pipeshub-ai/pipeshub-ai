@@ -16,6 +16,7 @@ import type { ProjectDetail } from '@/chat/project-types';
 import type { Conversation } from '@/chat/types';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from '@/config';
+import { Link } from '@/lib/navigation';
 import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
@@ -101,9 +102,14 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
     setIsLoading(true);
     setHasError(false);
     try {
+      // The row shows its own "Failed to load"; the chat page owns the one toast.
       const [detail, conv] = await Promise.all([
-        ProjectApi.get(projectId),
-        ProjectApi.listConversations(projectId, { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE }),
+        ProjectApi.get(projectId, { suppressErrorToast: true }),
+        ProjectApi.listConversations(
+          projectId,
+          { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE },
+          { suppressErrorToast: true },
+        ),
       ]);
       setProject(detail);
       setConversations(conv.conversations);
@@ -182,7 +188,19 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
           onClick={handleBackToProject}
         />
 
-        <Flex align="center" gap="2" style={{ padding: '0 var(--space-3)' }}>
+        <Link
+          href={`/projects/?projectId=${encodeURIComponent(projectId)}`}
+          onClick={handleBackToProject}
+          className="touch-hit"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            padding: '0 var(--space-3)',
+            textDecoration: 'none',
+            minWidth: 0,
+          }}
+        >
           <MaterialIcon
             name="folder"
             size={ICON_SIZE_DEFAULT}
@@ -200,7 +218,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
           >
             {project?.name ?? '…'}
           </Text>
-        </Flex>
+        </Link>
 
         <SidebarItem
           icon={<ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />}

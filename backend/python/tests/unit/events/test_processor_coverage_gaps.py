@@ -16,7 +16,11 @@ import pytest
 
 from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import ProgressStatus
-from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    IndexingError,
+    RecordDeletedError,
+)
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -176,7 +180,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(
             side_effect=IndexingError("xls fail", record_id="r1")
         )
         proc.parsers = {ExtensionTypes.XLS.value: xls_parser}
@@ -1193,7 +1197,7 @@ class TestProcessStructuredDocument:
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio
-    async def test_record_missing_raises_dpe(self):
+    async def test_a_deleted_record_raises_record_deleted(self):
         proc = _make_processor()
         parser = MagicMock()
         parser.parse = AsyncMock(
@@ -1214,7 +1218,7 @@ class TestProcessStructuredDocument:
         proc.parsers = {"json": parser}
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with pytest.raises(DocumentProcessingError, match="Record not found"):
+        with pytest.raises(RecordDeletedError):
             await _collect(
                 proc.process_structured_document("a.json", "r1", b"{}", "vr1", "json")
             )

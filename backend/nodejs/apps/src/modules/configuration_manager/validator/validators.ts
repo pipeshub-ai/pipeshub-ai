@@ -145,6 +145,12 @@ export const smtpConfigSchema = z.object({
   }),
 });
 
+export const smtpEnabledSchema = z.object({
+  body: z.object({
+    enabled: z.boolean(),
+  }),
+});
+
 export const azureAdConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Azure client ID is required' }),

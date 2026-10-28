@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from app.agents.agent_loop.error_classification import classify_error
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
@@ -23,6 +24,7 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
     RecordStatusUpdateError,
@@ -31,6 +33,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils.api_call import ApiCallError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -681,6 +684,9 @@ def _reason(exc: BaseException | None) -> str:
     chain = list(_chain(exc))
 
     for e in chain:
+        # The source refused the item, and the connector said why in its own words.
+        if isinstance(e, ApiCallError) and e.source_reason:
+            return e.source_reason
         if isinstance(e, PasswordProtectedError):
             return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
@@ -694,6 +700,10 @@ def _reason(exc: BaseException | None) -> str:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
+        if isinstance(e, AISettingsUnavailableError):
+            return TEMPORARY_PROBLEM
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     _named_entities_enabled,
 )
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
@@ -144,7 +145,9 @@ async def execute_search_by_entities(
     _log(linking, scope, started)
 
     if not scope.virtual_record_ids:
-        return True, preamble + _nothing_to_search(linking, match_all=match_all)
+        return True, " ".join(filter(None, (
+            preamble + _nothing_to_search(linking, match_all=match_all), limited_scope_note(context),
+        )))
 
     # Every name asked, linked or not: an unlinked one may still be in the text.
     names = [result.mention.name for result in linking.results]

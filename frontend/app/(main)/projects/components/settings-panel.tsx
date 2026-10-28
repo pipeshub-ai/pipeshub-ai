@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { Box, Flex, IconButton, Text, TextArea, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -8,6 +8,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import type { AppliedFilters } from '@/chat/types';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
+import { CharCount, PROJECT_INSTRUCTIONS_MAX } from '@/chat/sidebar/dialogs/project-form-fields';
 import { ConnectorsCard } from './connectors-card';
 import { FilesCard } from './files-card';
 import { ToolsMcpCard } from './tools-mcp-card';
@@ -163,7 +164,7 @@ export interface ProjectSettingsPanelProps {
     knowledgeScope: ProjectKnowledgeScope;
     appliedFilters: AppliedFilters;
   }) => void;
-  onToolsChange: (tools: string[]) => void;
+  onToolsChange: (update: (previous: string[]) => string[]) => void;
 
   onOpenShare: () => void;
 }
@@ -196,6 +197,7 @@ export function ProjectSettingsPanel({
   onOpenShare,
 }: ProjectSettingsPanelProps) {
   const { t } = useTranslation();
+  const instructionsFieldId = useId();
 
   // `FilesCard` stays mounted regardless of `expandedSection` (see `SetupRow`)
   // so this keeps reporting a live count/size for the collapsed-row status text.
@@ -278,11 +280,16 @@ export function ProjectSettingsPanel({
                 value={instructionsDraft}
                 onChange={(e) => onInstructionsDraftChange(e.target.value)}
                 placeholder={t('chat.projects.workspace.instructionsPlaceholder')}
-                rows={5}
-                maxLength={8000}
+                aria-label={t('chat.projects.workspace.instructionsTitle')}
+                aria-describedby={`${instructionsFieldId}-count`}
+                rows={12}
+                maxLength={PROJECT_INSTRUCTIONS_MAX}
                 autoFocus
+                style={{ minHeight: 220, maxHeight: '60vh', resize: 'vertical' }}
               />
-              <Flex gap="2" justify="end">
+              <Flex gap="2" justify="between" align="center">
+                <CharCount id={`${instructionsFieldId}-count`} length={instructionsDraft.length} max={PROJECT_INSTRUCTIONS_MAX} />
+                <Flex gap="2">
                 <LoadingButton
                   size="1"
                   variant="soft"
@@ -301,6 +308,7 @@ export function ProjectSettingsPanel({
                 >
                   {t('chat.projects.workspace.save')}
                 </LoadingButton>
+                </Flex>
               </Flex>
             </Flex>
           ) : (
@@ -379,7 +387,7 @@ export function ProjectSettingsPanel({
           statusText={
             toolCount > 0
               ? t('chat.projects.workspace.toolsStatusCount', { count: toolCount, defaultValue: '{{count}} enabled' })
-              : t('chat.projects.workspace.toolsStatusDefault', { defaultValue: 'Default' })
+              : t('chat.projects.workspace.toolsStatusNone')
           }
           isFirst={false}
           isExpanded={expandedSection === 'tools'}
@@ -393,6 +401,11 @@ export function ProjectSettingsPanel({
         <SetupRow
           icon="group"
           label={t('chat.projects.workspace.membersTitle')}
+          statusText={
+            memberCount > 0
+              ? t('chat.projects.workspace.memberCount', { count: memberCount })
+              : t('chat.projects.workspace.membersStatusOnlyYou')
+          }
           isFirst={false}
           isExpanded={false}
           expandable={false}

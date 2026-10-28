@@ -21,6 +21,7 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
 from app.agents.actions.knowledge_graph.ops.results import (
     search_result_summary as _search_result_summary,
 )
+from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
 
 
 def _tool_result(content: str = "", is_error: bool = False) -> SimpleNamespace:
@@ -459,7 +460,7 @@ class TestLookupRecord:
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
 
-        scope = SimpleNamespace(app_ids=("app-1",))
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         mock_resolve_scope.return_value = scope
 
         match = SimpleNamespace(id="rec-1", name="Login bug")
@@ -490,7 +491,7 @@ class TestLookupRecord:
         catalog = MagicMock()
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
-        mock_resolve_scope.return_value = SimpleNamespace(app_ids=("app-1",))
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=("app-1",), kb_ids=())
 
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = SimpleNamespace(matches=[
@@ -554,7 +555,7 @@ class TestLookupRecord:
         catalog = MagicMock()
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
-        mock_resolve_scope.return_value = SimpleNamespace(app_ids=())
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=(), kb_ids=())
         resolver = AsyncMock()
         resolver.resolve_many.return_value = SimpleNamespace(matches=[])
         mock_resolver_cls.return_value = resolver
@@ -577,7 +578,7 @@ class TestLookupRecord:
         catalog = MagicMock()
         catalog.is_empty.return_value = False
         mock_catalog_build.return_value = catalog
-        mock_resolve_scope.return_value = SimpleNamespace(app_ids=())
+        mock_resolve_scope.return_value = KnowledgeScope(app_ids=(), kb_ids=())
         resolver = AsyncMock()
         resolver.resolve_many.side_effect = RuntimeError("resolver error")
         mock_resolver_cls.return_value = resolver
@@ -595,7 +596,7 @@ class TestLookupRecord:
     @patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result_with_ids", return_value=("OK", []))
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.remember_record_ids")
-    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock, return_value=SimpleNamespace(app_ids=()))
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock, return_value=KnowledgeScope(app_ids=(), kb_ids=()))
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver")
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")

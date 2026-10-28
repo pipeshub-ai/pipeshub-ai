@@ -166,6 +166,7 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 
 HTTP_UNAUTHORIZED = 401
 HTTP_NOT_FOUND = 404
+HTTP_TOO_MANY_REQUESTS = 429
 
 # Transient statuses worth retrying. 403 is excluded: it is a genuine
 # permission denial by the time it gets here, because the data source reports

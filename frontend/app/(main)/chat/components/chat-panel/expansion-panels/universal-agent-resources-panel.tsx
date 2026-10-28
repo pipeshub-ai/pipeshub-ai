@@ -1093,9 +1093,8 @@ export function UniversalAgentResourcesPanel({
         gap="2"
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', width: '100%' }}
       >
-        {/* Connectors + Collections share one CollectionsTab instance so the root list is
-            fetched only once. Switching between the two tabs changes filterMode (a prop),
-            which re-filters already-loaded data without any additional API call.
+        {/* Connectors + Collections share one CollectionsTab instance. Switching between the
+            two tabs changes filterMode (a prop), which refetches the roots of that origin.
             The component only unmounts when the user switches to the Actions tab. */}
         {(tab === 'connectors' || tab === 'collections') && (
           <CollectionsTab

@@ -183,7 +183,7 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiobotocore==3.9.2",
+    "aiobotocore==3.10.0",
     "aiohttp==3.14.5",
     "aiokafka==0.14.0",
     "aiolimiter==1.3.0",
@@ -228,7 +228,7 @@ dependencies = [
     "faster-whisper>=1.0.0",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
-    "html-to-markdown==2.3.0",
+    "html-to-markdown==3.18.6",
     "json_repair>=0.30.0",
     "markdownify==1.2.3",
     "httpx==0.28.1",
@@ -251,7 +251,7 @@ dependencies = [
     "langchain-experimental==0.4.2",
     "langchain-fireworks==1.7.1",
     "langchain-google-genai==4.3.7",
-    "langchain-google-vertexai==3.2.4",
+    "langchain-google-vertexai==3.2.5",
     "langchain-groq==1.1.3",
     "langchain-mistralai==1.1.6",
     "langchain-ollama==1.1.0",
@@ -273,7 +273,7 @@ dependencies = [
     "msgspec==0.22.0",
     "snowflake-connector-python",
     "clickhouse-connect",
-    "msgraph-sdk==1.64.0",
+    "msgraph-sdk==1.65.0",
     # msgraph-core 1.5.1 runs its middleware (including 429/503 retries) only when a
     # request has `request.options`, which kiota-http 1.13 stopped setting. Remove this
     # pin once a msgraph-core release supports kiota-http 1.13.
@@ -293,7 +293,7 @@ dependencies = [
     "onnxruntime==1.31.0",
     "opencv-python-headless==5.0.0.93",
     "openpyxl==3.1.5",
-    "opik==2.2.117",
+    "opik==2.2.119",
     "pagerduty>=5.0.0",
     "pandas==3.1.0",
     "phonenumbers>=8.13.0",
@@ -321,6 +321,9 @@ dependencies = [
     "PyJWT==2.15.1",
     "pyyaml>=6.0",
     "redshift_connector==2.2.0",
+    # A runtime dependency of redshift_connector and torch that neither bounds; 84.1.0 fixes
+    # GHSA-h35f-9h28-mq5c and GHSA-xmj3-9gf7-h52w.
+    "setuptools>=84.1.0",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
@@ -332,7 +335,7 @@ dependencies = [
     "pysmb==1.2.15",
     "lingua-language-detector==2.2.0",
     "qdrant-client==1.20.0",
-    "redis==5.2.1",
+    "redis==8.1.0",
     "requests-toolbelt==1.0.0",
     "requests==2.34.2",
     "selectolax>=0.3.21",

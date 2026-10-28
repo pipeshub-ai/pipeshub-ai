@@ -74,7 +74,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         isDeleted: true,
         kind: 'service',
       };
@@ -174,7 +174,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -206,7 +206,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -240,7 +240,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -299,7 +299,7 @@ describe('ServiceAccountsService', () => {
         exec: sinon.stub().resolves({
           _id: id,
           email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-          orgId: { toString: () => orgId },
+          orgId,
           kind: 'service',
           isDeleted: true,
         }),
@@ -327,7 +327,7 @@ describe('ServiceAccountsService', () => {
       const deleted = {
         _id: id,
         email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-        orgId: { toString: () => orgId },
+        orgId,
         kind: 'service',
         isDeleted: true,
       };
@@ -368,7 +368,7 @@ describe('ServiceAccountsService', () => {
         exec: sinon.stub().resolves({
           _id: id,
           email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-          orgId: { toString: () => orgId },
+          orgId,
           kind: 'service',
           isDeleted: true,
         }),
@@ -491,9 +491,11 @@ describe('ServiceAccountsService', () => {
         isDeleted: false,
         save: sinon.stub().resolvesThis(),
       };
-      sinon
-        .stub(Users, 'findOne')
-        .returns({ exec: sinon.stub().resolves(account) } as any);
+      // Read both with `.exec()` (the lookup) and by awaiting (the repository's save path).
+      sinon.stub(Users, 'findOne').callsFake((() =>
+        Object.assign(Promise.resolve(account), {
+          exec: () => Promise.resolve(account),
+        })) as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
 
       await service.remove(orgId, id);

@@ -1,0 +1,90 @@
+name: pg-stores
+
+# The document store on PostgreSQL 17 and 18 behind PgBouncer: the repository contract suites the MongoDB stores meet, what only
+# PostgreSQL has to prove (row policies, concurrency, plans), and the Mongo-versus-PostgreSQL comparison of every method. A skip is
+# a failure here: the suites skip only when a service is missing, which in CI means the workflow is broken.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/services/ttl-sweeper.service.ts'
+      - 'backend/nodejs/apps/tests/stores/**'
+      - 'backend/nodejs/apps/tests/libs/repositories/**'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/pg-stores.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-stores-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stores:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+    env:
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL ${{ matrix.pg }}, PgBouncer and the migration tool
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" pgbouncer
+          sudo systemctl stop postgresql || true
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Document store suites (test:pg-stores)
+        working-directory: backend/nodejs/apps
+        env:
+          PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin
+          PG_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          PG_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          PG_TEST_WORK: ${{ runner.temp }}
+          MONGO_IT_URI: mongodb://127.0.0.1:27017
+          REPLICA_SET_AVAILABLE: 'false'
+        run: npm run test:pg-stores -- --reporter xunit --reporter-option output="$RUNNER_TEMP/pg-stores-junit.xml"
+
+      - name: No unexpected skips
+        if: ${{ always() }}
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pg-stores-junit.xml"

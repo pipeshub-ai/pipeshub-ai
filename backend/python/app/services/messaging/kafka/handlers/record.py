@@ -78,6 +78,9 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
+    is_record_deleted,
+    is_source_refusal,
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
@@ -2020,6 +2023,13 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            known_size = doc.get("sizeInBytes")
+            if isinstance(known_size, int) and known_size > 0:
+                yield PipelineEvent(
+                    event=IndexingEvent.START_DOWNLOAD,
+                    data=PipelineEventData(record_id=record_id, size_bytes=known_size),
+                )
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -2160,7 +2170,8 @@ class RecordEventHandler(BaseEventService):
             # No traceback here: the Kafka consumer already logs the full
             # exception chain on every attempt. A traceback is logged below
             # only once, when this turns out to be the final attempt.
-            self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
+            if not is_expected_outcome(e):  # logged once, below or by the consumer
+                self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -2208,6 +2219,11 @@ class RecordEventHandler(BaseEventService):
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
                     )
+                elif is_record_deleted(last_exception):
+                    # Nothing to mark FAILED and no failure to hand its queued duplicates.
+                    self.logger.info(
+                        f"Record {record_id} was deleted while it was being indexed; nothing to do"
+                    )
                 elif is_final and await self._enrichment_still_cut_short(
                     record_id, unreadable=resuming_enrichment,
                 ):
@@ -2236,10 +2252,14 @@ class RecordEventHandler(BaseEventService):
                         # A metrics fault must not stop the record being marked FAILED.
                         with contextlib.suppress(Exception):
                             record_rejected_too_large(refusal.status)
-                    self.logger.error(
-                        f"Final failure for record {record_id}: {error_msg}",
-                        exc_info=last_exception,
-                    )
+                    if is_source_refusal(last_exception):
+                        # The source said no: an expected outcome, with its reason stored.
+                        self.logger.warning(f"Source refused record {record_id}: {error_msg}")
+                    else:
+                        self.logger.error(
+                            f"Final failure for record {record_id}: {error_msg}",
+                            exc_info=last_exception,
+                        )
                     try:
                         record = await self.__update_document_status(
                             record_id=record_id,

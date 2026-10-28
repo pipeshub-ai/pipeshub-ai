@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Coroutine
 from typing import Any, cast
 
 from dependency_injector import providers
@@ -53,6 +54,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_context import spawn_detached
 from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
@@ -85,9 +87,9 @@ def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
 def _running_here(connector_id: str) -> bool:
     """Is a sync for this connector running in *this* process?
 
-    Deliberately the local question, and deliberately synchronous: both callers
+    Deliberately the local question, and deliberately synchronous: its callers
     are protecting an in-process object (a connector's HTTP sessions) from being
-    closed underneath a running sync, and one of them is a plain `def`. The
+    closed underneath a running sync, and some of them are plain `def`s. The
     question that reaches other processes costs a round trip and would answer
     something they are not asking.
     """
@@ -98,6 +100,65 @@ def _running_here(connector_id: str) -> bool:
 def _reindexing_here(connector_id: str) -> bool:
     prefix = f"reindex:{connector_id}:"
     return any(key.startswith(prefix) for key in reindex_task_manager.active_keys())
+
+
+def _runs_holding(connector_id: str) -> list[Coroutine[Any, Any, object]]:
+    """Waits that end with the local sync and reindexes now running for this connector.
+
+    Captured at eviction so a deferred dispose waits for *those* runs only: a run
+    started later under the same id uses the rebuilt instance, not this one.
+    """
+    coordinator = get_coordinator()
+    lease = coordinator.lease_here(connector_id) if coordinator is not None else None
+    reindexes = reindex_task_manager.tasks_with_prefix(f"reindex:{connector_id}:")
+    runs: list[Coroutine[Any, Any, object]] = [lease.ended.wait()] if lease is not None else []
+    if reindexes:
+        # asyncio.wait neither raises a task's error nor cancels the task.
+        runs.append(asyncio.wait(reindexes))
+    return runs
+
+
+async def _dispose_after(
+    runs: list[Coroutine[Any, Any, object]],
+    connector_id: str,
+    connector: object,
+    logger: logging.Logger,
+) -> None:
+    for run in runs:
+        await run
+    try:
+        await dispose_connector(connector)
+        logger.info(f"Cleaned up connector instance {connector_id}")
+    except Exception as cleanup_err:
+        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
+
+async def evict_cached_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    logger: logging.Logger,
+) -> None:
+    """Drop the in-memory connector so the next lookup rebuilds it from current config.
+
+    The entry always goes, but a sync or reindex in this process may still hold
+    the instance, so its cleanup() waits until the runs live at eviction end
+    rather than closing the client under them.
+    """
+    if connector_id not in getattr(container, "connectors_map", {}):
+        return
+    logger.info(f"Removing connector {connector_id} from connectors_map")
+    existing_connector = container.connectors_map.pop(connector_id)
+    runs = _runs_holding(connector_id)
+    if not runs:
+        await _dispose_after(runs, connector_id, existing_connector, logger)
+        return
+    logger.info(f"Disposing connector {connector_id} once its running sync/reindex ends")
+    task = spawn_detached(
+        _dispose_after(runs, connector_id, existing_connector, logger),
+        name=f"dispose_connector_{connector_id}",
+    )
+    _evict_tasks.add(task)
+    task.add_done_callback(_evict_tasks.discard)
 
 
 def connector_cache_max() -> int:
