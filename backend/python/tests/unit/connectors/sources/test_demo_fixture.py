@@ -20,9 +20,9 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
-import yaml
 
 import app.connectors.sources.demo.connector as demo_connector
+from app.connectors.sources.demo.fixture_loader import load_fixture
 from app.connectors.sources.demo.harness.kb_harness import mentions, score
 
 FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-corp.yaml"
@@ -58,8 +58,9 @@ def fixture_text() -> str:
 
 
 @pytest.fixture(scope="module")
-def fx(fixture_text: str) -> dict:
-    return yaml.safe_load(fixture_text)
+def fx() -> dict:
+    # Merged with acme-corp.d, so the record checks below cover every file's records.
+    return load_fixture()
 
 
 def test_every_link_stays_on_the_reserved_demo_domain(fixture_text: str) -> None:
@@ -218,7 +219,7 @@ def test_the_chat_landing_marks_the_restricted_question_from_the_fixture(fx: dic
 
 def test_record_text_carries_no_links(fx: dict) -> None:
     # The model quotes what it reads; a made-up address in the text ends up in answers.
-    bodies = demo_connector.DemoConnector._render_bodies(fx)
+    bodies = demo_connector.render_bodies(fx)
     linked = sorted(k for k, body in bodies.items() if re.search(r"https?://|\*\*Link:\*\*", body))
     assert not linked, f"records whose text carries a link: {linked}"
 
@@ -232,7 +233,7 @@ def test_records_hide_their_made_up_address_but_keep_one(fx: dict) -> None:
     connector = demo_connector.DemoConnector.__new__(demo_connector.DemoConnector)
     connector.data_entities_processor = SimpleNamespace(org_id="org-1")
     connector.connector_id = "demo-1"
-    connector._bodies = demo_connector.DemoConnector._render_bodies(fx)
+    connector._bodies = demo_connector.render_bodies(fx)
     containers = {c["id"]: c for c in fx["containers"]}
     people = {p["id"]: p for p in fx["people"]}
     kinds = set()
@@ -250,7 +251,7 @@ def test_every_record_revision_changes_so_a_resync_reaches_it(fx: dict) -> None:
     # change like hide_weburl only reaches existing installs if every revision moves.
     import hashlib
 
-    bodies = demo_connector.DemoConnector._render_bodies(fx)
+    bodies = demo_connector.render_bodies(fx)
     unchanged = [
         k for k, body in bodies.items()
         if demo_connector._revision_of(body) == hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
