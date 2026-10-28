@@ -60,7 +60,7 @@
        "char_start": 53,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "100%"
       }
@@ -86,7 +86,7 @@
        "char_start": 23,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "redwood-instruct-2025-v2.1"
       }
@@ -112,7 +112,7 @@
        "char_start": 65,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Redwood Labs"
       }
@@ -138,7 +138,7 @@
        "char_start": 27,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Priya Raman"
       }
@@ -164,7 +164,7 @@
        "char_start": 19,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "eng-ml"
       }
@@ -180,7 +180,7 @@
      }
     }
    ],
-   "extractor_version": "ner-1",
+   "extractor_version": "ner-2",
    "key_scheme": 2,
    "reference_time_ms": null,
    "schema_version": 1,
@@ -324,7 +324,7 @@
       "extractedNames": [
        "Priya Raman"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -346,7 +346,7 @@
       "extractedNames": [
        "eng-ml"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -368,7 +368,7 @@
       "extractedNames": [
        "Redwood Labs"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -390,7 +390,7 @@
       "extractedNames": [
        "redwood-instruct-2025-v2.1"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -418,7 +418,7 @@
       "extractedNames": [
        "100%"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -560,7 +560,7 @@
        "char_start": 77,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "15 March 2027"
       }
@@ -592,7 +592,7 @@
        "char_start": 23,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "this quarter"
       }
@@ -624,7 +624,7 @@
        "char_start": 11,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "EUR 12,500"
       }
@@ -653,7 +653,7 @@
        "char_start": 12,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "last week"
       }
@@ -685,7 +685,7 @@
        "char_start": 37,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "12 April"
       }
@@ -717,7 +717,7 @@
        "char_start": 47,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "09/18-09"
       }
@@ -749,7 +749,7 @@
        "char_start": 87,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "2.5m USD"
       }
@@ -778,7 +778,7 @@
        "char_start": 64,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "30 days"
       }
@@ -806,7 +806,7 @@
        "char_start": 73,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "FY2027"
       }
@@ -838,7 +838,7 @@
        "char_start": 35,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "€50k"
       }
@@ -867,7 +867,7 @@
        "char_start": 53,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "5 km"
       }
@@ -897,7 +897,7 @@
        "char_start": 0,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Müller & Söhne GmbH"
       }
@@ -923,7 +923,7 @@
        "char_start": 31,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Zoë Café Ltd."
       }
@@ -949,7 +949,7 @@
        "char_start": 22,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "jane o'neil"
       },
@@ -960,7 +960,7 @@
        "char_start": 5410,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Jane O'Neil"
       }
@@ -986,7 +986,7 @@
        "char_start": 48,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "São Paulo"
       }
@@ -1013,7 +1013,7 @@
        "char_start": 59,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Brazil"
       }
@@ -1040,7 +1040,7 @@
        "char_start": 66,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "72 F"
       }
@@ -1070,7 +1070,7 @@
        "char_start": 13,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "CFO"
       }
@@ -1086,7 +1086,7 @@
      }
     }
    ],
-   "extractor_version": "ner-1",
+   "extractor_version": "ner-2",
    "key_scheme": 2,
    "reference_time_ms": 1780000000000,
    "schema_version": 1,
@@ -1301,7 +1301,7 @@
       "extractedNames": [
        "São Paulo"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1323,7 +1323,7 @@
       "extractedNames": [
        "CFO"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1345,7 +1345,7 @@
       "extractedNames": [
        "Zoë Café Ltd."
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1367,7 +1367,7 @@
       "extractedNames": [
        "Müller & Söhne GmbH"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1389,7 +1389,7 @@
       "extractedNames": [
        "Brazil"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1414,7 +1414,7 @@
        "jane o'neil",
        "Jane O'Neil"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1443,7 +1443,7 @@
       "extractedNames": [
        "15 March 2027"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1471,7 +1471,7 @@
       "extractedNames": [
        "this quarter"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1501,7 +1501,7 @@
       "extractedNames": [
        "EUR 12,500"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1527,7 +1527,7 @@
       "extractedNames": [
        "last week"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1554,7 +1554,7 @@
       "extractedNames": [
        "12 April"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1579,7 +1579,7 @@
       "extractedNames": [
        "09/18-09"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1609,7 +1609,7 @@
       "extractedNames": [
        "2.5m USD"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1636,7 +1636,7 @@
       "extractedNames": [
        "30 days"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1661,7 +1661,7 @@
       "extractedNames": [
        "FY2027"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1691,7 +1691,7 @@
       "extractedNames": [
        "€50k"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1717,7 +1717,7 @@
       "extractedNames": [
        "5 km"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -1745,7 +1745,7 @@
       "extractedNames": [
        "72 F"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -1907,7 +1907,7 @@
        "char_start": 6,
        "evidence_score": 0.9,
        "extractor": "pattern",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "https://docs.acmepay.example/runbooks/rollback?id=7&utm_source=mail"
       }
@@ -1934,7 +1934,7 @@
        "char_start": 123,
        "evidence_score": 0.95,
        "extractor": "pattern",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "maria.gonzalez@acmepay.example"
       }
@@ -1961,7 +1961,7 @@
        "char_start": 33,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "2026-03-04T04:12:08Z"
       }
@@ -1993,7 +1993,7 @@
        "char_start": 61,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "March 3, 2026"
       }
@@ -2025,7 +2025,7 @@
        "char_start": 44,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "next Friday"
       },
@@ -2036,7 +2036,7 @@
        "char_start": 25,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "tomorrow"
       }
@@ -2068,7 +2068,7 @@
        "char_start": 80,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "-$1,250.50"
       }
@@ -2097,7 +2097,7 @@
        "char_start": 82,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Q3 2026"
       }
@@ -2129,7 +2129,7 @@
        "char_start": 77,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "450 ms"
       }
@@ -2157,7 +2157,7 @@
        "char_start": 89,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "3 days"
       }
@@ -2185,7 +2185,7 @@
        "char_start": 95,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "($300)"
       }
@@ -2214,7 +2214,7 @@
        "char_start": 70,
        "evidence_score": 0.8,
        "extractor": "value",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "35%"
       }
@@ -2240,7 +2240,7 @@
        "char_start": 20,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "Acme Payments Inc."
       }
@@ -2266,7 +2266,7 @@
        "char_start": 0,
        "evidence_score": 0.7,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "fuzzy",
        "surface": "Maria Gonzalez"
       }
@@ -2292,7 +2292,7 @@
        "char_start": 0,
        "evidence_score": 0.7,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "fuzzy",
        "surface": "Sam Patel"
       }
@@ -2318,7 +2318,7 @@
        "char_start": 46,
        "evidence_score": 1.0,
        "extractor": "single_call",
-       "extractor_version": "ner-1",
+       "extractor_version": "ner-2",
        "grounding": "exact",
        "surface": "ticket"
       }
@@ -2334,7 +2334,7 @@
      }
     }
    ],
-   "extractor_version": "ner-1",
+   "extractor_version": "ner-2",
    "key_scheme": 2,
    "reference_time_ms": 1767225600000,
    "schema_version": 1,
@@ -2548,7 +2548,7 @@
       "extractedNames": [
        "https://docs.acmepay.example/runbooks/rollback?id=7"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "pattern"
       ],
@@ -2570,7 +2570,7 @@
       "extractedNames": [
        "ticket"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -2592,7 +2592,7 @@
       "extractedNames": [
        "maria.gonzalez@acmepay.example"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "pattern"
       ],
@@ -2614,7 +2614,7 @@
       "extractedNames": [
        "Sam Patel"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -2636,7 +2636,7 @@
       "extractedNames": [
        "Acme Payments Inc."
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -2658,7 +2658,7 @@
       "extractedNames": [
        "Maria Gonzalez"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call"
       ],
@@ -2687,7 +2687,7 @@
       "extractedNames": [
        "2026-03-04T04:12:08Z"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2715,7 +2715,7 @@
       "extractedNames": [
        "March 3, 2026"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2744,7 +2744,7 @@
        "next Friday",
        "tomorrow"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "single_call",
        "value"
@@ -2775,7 +2775,7 @@
       "extractedNames": [
        "-$1,250.50"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2801,7 +2801,7 @@
       "extractedNames": [
        "Q3 2026"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2830,7 +2830,7 @@
       "extractedNames": [
        "450 ms"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2856,7 +2856,7 @@
       "extractedNames": [
        "3 days"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2883,7 +2883,7 @@
       "extractedNames": [
        "($300)"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
@@ -2908,7 +2908,7 @@
       "extractedNames": [
        "35%"
       ],
-      "extractorVersion": "ner-1",
+      "extractorVersion": "ner-2",
       "extractors": [
        "value"
       ],
