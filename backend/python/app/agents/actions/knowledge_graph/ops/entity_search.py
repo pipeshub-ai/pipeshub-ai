@@ -38,6 +38,7 @@ from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.linking.candidates import (
     MAX_CANDIDATES,
     CandidateFinder,
+    CandidateSource,
 )
 from app.modules.named_entities.linking.mentions import parse_mentions
 from app.modules.named_entities.linking.records import (
@@ -271,10 +272,18 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
             )
         if result.rejected:
             line += f" Not the same: {_entities(result.rejected, names)}."
-        if result.unchecked:
+        longer = [c for c in result.unchecked if c.source is not CandidateSource.EXACT]
+        # The same name filed under a related kind (a product's company) is reached by asking for that kind.
+        refiled = [c for c in result.unchecked if c.source is CandidateSource.EXACT]
+        if longer:
             line += (
                 f" Longer names that may be the same could not be checked and were not used: "
-                f"{_entities(result.unchecked, names)}; call again with the full name to include one."
+                f"{_entities(longer, names)}; call again with the full name to include one."
+            )
+        if refiled:
+            line += (
+                f" Also filed under another kind, not checked and not used: {_entities(refiled, names)}; "
+                "call again with that kind to include it."
             )
         if result.more_longer_names:
             line += " Many more readable names start with it; call again with the full name to include one."

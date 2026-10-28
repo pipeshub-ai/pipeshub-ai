@@ -55,7 +55,7 @@ class Mention:
         too (any kind, when it gave none)."""
         if self.kind_hint is None:
             return True
-        return str(getattr(kind, "value", kind)) in {k.value for k in _expand(self.kind_hint)}
+        return str(getattr(kind, "value", kind)) in {k.value for k in kind_family(self.kind_hint)}
 
     def settles(self, kind: str | EntityKind) -> bool:
         """Whether an exact name match under ``kind`` answers this mention without
@@ -95,7 +95,7 @@ def parse_mentions(raw: Any) -> ParsedMentions:  # noqa: ANN401 - tool arguments
             notes.append(f"'{name}': unknown kind '{kind_text}' was ignored.")
         keys = tuple(
             (kind, identity.norm_key)
-            for kind in (_expand(hint) if hint else NAME_KINDS)
+            for kind in (kind_family(hint) if hint else NAME_KINDS)
             if (identity := _identity(kind, name)) is not None
         )
         if not keys:
@@ -145,5 +145,3 @@ def _value_kind(text: str) -> bool:
     return any(kind.value == text for kind in VALUE_KINDS)
 
 
-def _expand(hint: EntityKind) -> tuple[EntityKind, ...]:
-    return kind_family(hint)

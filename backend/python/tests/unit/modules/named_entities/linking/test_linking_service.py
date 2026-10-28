@@ -293,3 +293,14 @@ async def test_beside_an_exact_product_the_same_name_as_an_organization_goes_to_
     assert result.status is LinkStatus.MATCHED and result.accepted == [product]
     ((_, items),) = verifier.calls
     assert [c.kind for c in items[0].candidates] == ["organization"]
+
+
+
+@pytest.mark.asyncio
+async def test_an_organization_hint_checks_an_exact_product_of_the_same_name() -> None:
+    product = _c("e1", "Figma", "product", CandidateSource.EXACT)
+    verifier = _Verifier({0: []})
+    linking = await _link([([product], False)], verifier, mentions=_mentions({"name": "Figma", "kind": "organization"}))
+    (result,) = linking.results
+    assert result.status is LinkStatus.NOT_FOUND and result.rejected == [product]
+    assert len(verifier.calls) == 1

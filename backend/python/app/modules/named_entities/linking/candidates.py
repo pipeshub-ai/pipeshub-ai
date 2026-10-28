@@ -165,12 +165,12 @@ class CandidateFinder:
                 prefix_hits[index].append(row)
         for index, hits in enumerate(prefix_hits):
             # Only the asked kind can make a name ambiguous; rows of a related kind
-            # fill what is left of the cap.
+            # come after it, so the candidate cap below drops them first.
             asked = [r for r in hits if mentions[index].settles(str(r.get("kind")))]
             if len(asked) > MAX_CANDIDATES:
                 per_mention[index].ambiguous = True
                 continue
-            related = [r for r in hits if r not in asked]
+            related = [r for r in hits if not mentions[index].settles(str(r.get("kind")))]
             for row in [*sorted(asked, key=_norm_key), *sorted(related, key=_norm_key)]:
                 _add(index, row, CandidateSource.PREFIX)
         for index, hits in enumerate(near):

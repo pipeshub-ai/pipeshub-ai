@@ -224,7 +224,9 @@ async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: di
     sam = _candidate("e-sam", "Sam", kind="person")
     (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
     wired["linking"] = _linking(
-        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[_candidate("e-lee", "Sam Lee", kind="person")]),
+        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[
+            Candidate("e-lee", "person", "Sam Lee", CandidateSource.PREFIX, ({"_key": "r1"},), False),
+        ]),
         LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], more_longer_names=True),
     )
     wired["scope"] = RecordScope(per_name=[NameRecords("Sam", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
@@ -561,3 +563,17 @@ def test_a_namesake_only_answer_neither_says_absent_nor_ends_with_nothing_found(
 def test_a_resolved_name_gives_the_call_that_lists_every_record() -> None:
     text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e-acme", "Acme")]))
     assert 'Every record: knowledgegraph__find_records_by_entity(entity_id="e-acme", entity_type="named_entity").' in text
+
+
+def test_the_same_name_under_a_related_kind_left_unchecked_says_to_ask_for_that_kind() -> None:
+    product = Candidate("e1", "product", "Figma", CandidateSource.EXACT, ({"_key": "r1"},), False)
+    company = Candidate("e2", "organization", "Figma", CandidateSource.EXACT, ({"_key": "r2"},), False)
+    (mention,) = parse_mentions([{"name": "Figma", "kind": "product"}]).mentions
+    linking = Linking(
+        results=[LinkResult(mention, LinkStatus.MATCHED, accepted=[product], unchecked=[company])],
+        timed_out=False, verifier_called=False, names={"e1": "Figma", "e2": "Figma"},
+    )
+    scope = RecordScope(per_name=[NameRecords("Figma", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
+    text = entity_search.render_preamble(linking, scope, match_all=False, notes=[])
+    assert "Also filed under another kind, not checked and not used: Figma (organization); call again with that kind" in text
+    assert "Longer names" not in text
