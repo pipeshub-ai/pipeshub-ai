@@ -64,7 +64,9 @@ class PersonLink:
 
 
 class PeopleStore(Protocol):
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None: ...
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None: ...
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None: ...
@@ -187,7 +189,8 @@ async def link_record_people(
                 break
             try:
                 users_by_identity[identity] = (
-                    await store.get_user_by_email(identity[1], raise_on_error=True) if identity[0] == "email"
+                    await store.get_user_by_email(identity[1], raise_on_error=True, org_id=record.org_id)
+                    if identity[0] == "email"
                     else await store.get_user_by_source_id(identity[1], record.connector_id, raise_on_error=True)
                 )
             except Exception as exc:  # see the docstring: the existing edges stay
@@ -200,8 +203,8 @@ async def link_record_people(
             continue
         user_org = getattr(user, "org_id", None)
         if user_org is not None and user_org != record.org_id:
-            # Email lookups are not org-scoped; another org's member
-            # sharing an address is not this record's person.
+            # Lookups are org-scoped; this keeps another org's member off the
+            # record should any store answer unscoped.
             continue
         seen.add((user.id, link.edge_type.value))
         edge = {

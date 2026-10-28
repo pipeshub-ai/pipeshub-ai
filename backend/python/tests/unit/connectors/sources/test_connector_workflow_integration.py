@@ -431,9 +431,11 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
-            if doc.get("email") == email:
+            if doc.get("email") == email and (org_id is None or doc.get("orgId") == org_id):
                 return User(
                     id=doc["_key"],
                     email=doc["email"],
