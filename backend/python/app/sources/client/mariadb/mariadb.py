@@ -192,7 +192,8 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor(dictionary=True)
+                    # The driver buffers the whole result by default, so a capped read must stream.
+                    cursor = conn.cursor(dictionary=True, buffered=not max_rows)
                     if read_only:
                         await cursor.execute("START TRANSACTION READ ONLY")
                     timeout_s = timeout_s or (READ_ONLY_TIMEOUT_S if read_only else None)
@@ -251,7 +252,7 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor()
+                    cursor = conn.cursor(buffered=not max_rows)
                     if timeout_s:
                         query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
                     await cursor.execute(query, params or ())

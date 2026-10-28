@@ -148,3 +148,28 @@ async def test_mariadb_raw_query_has_a_timeout_and_reads_at_most_the_cap() -> No
     cursor.fetchmany.assert_awaited_once_with(SQL_MAX_ROWS + 1)
     assert events[0] == f"SET STATEMENT max_statement_time={SQL_QUERY_TIMEOUT_S} FOR SELECT id FROM t"
     assert events.index("close") < events.index("commit")
+    conn.cursor.assert_called_once_with(buffered=False)
+
+
+@pytest.mark.asyncio
+async def test_mariadb_capped_dict_query_streams_instead_of_buffering() -> None:
+    cursor = MagicMock()
+    cursor.description = [("id",)]
+    cursor.execute = AsyncMock()
+    cursor.fetchmany = AsyncMock(return_value=[{"id": 1}])
+    cursor.close = AsyncMock()
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.commit = AsyncMock()
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.connection.return_value = ctx
+    client = MariaDBClient(host="h", port=3306, database="d", user="u", password="p")
+    client._pool = pool
+
+    await client.execute_query("SELECT id FROM t", read_only=True, max_rows=SQL_MAX_ROWS + 1)
+
+    conn.cursor.assert_called_once_with(dictionary=True, buffered=False)
+    cursor.fetchmany.assert_awaited_once_with(SQL_MAX_ROWS + 1)

@@ -95,7 +95,7 @@ class _FakeConnection:
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
 
-    def cursor(self, dictionary: bool = False) -> _FakeCursor:
+    def cursor(self, dictionary: bool = False, buffered: bool = True) -> _FakeCursor:
         return _FakeCursor(self._pool)
 
 
