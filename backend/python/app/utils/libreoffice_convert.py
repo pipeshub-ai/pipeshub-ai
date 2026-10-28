@@ -113,23 +113,41 @@ def unreadable_file_as_parse_error(input_ext: str) -> Iterator[None]:
         ) from exc
 
 
-def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+def _leads_own_group(process: asyncio.subprocess.Process) -> bool:
+    # Group 0 is our own and group 1 is init's (a MagicMock pid indexes as 1):
+    # killpg on either takes down far more than this conversion.
+    pid = process.pid
+    return type(pid) is int and pid > 1 and pid != os.getpgrp()
+
+
+def _signal(process: asyncio.subprocess.Process, sig: signal.Signals, *, group: bool) -> None:
     with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, sig)
+        if group:
+            os.killpg(process.pid, sig)
+        elif sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
 
 
 async def stop_process(process: asyncio.subprocess.Process) -> None:
-    """Terminate, then kill, the process group of ``process`` (spawned with
-    ``start_new_session=True``), never waiting without a bound.
+    """Terminate, then kill, ``process`` and, when it was spawned with
+    ``start_new_session=True``, its whole process group, never waiting without a bound.
 
     The launcher (oosplash) is not the converter: killing it alone leaves
-    soffice.bin running, so the whole group is killed even when the launcher
-    has already exited.
+    soffice.bin running, so a group is killed even when the launcher has
+    already exited. A process without its own group is killed only if it
+    outlives the grace period.
     """
-    _signal_group(process, signal.SIGTERM)
-    with contextlib.suppress(asyncio.TimeoutError):
+    group = _leads_own_group(process)
+    _signal(process, signal.SIGTERM, group=group)
+    try:
         await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
-    _signal_group(process, signal.SIGKILL)
+        if not group:
+            return
+    except asyncio.TimeoutError:
+        pass
+    _signal(process, signal.SIGKILL, group=group)
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
 

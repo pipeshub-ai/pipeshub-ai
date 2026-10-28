@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -174,6 +175,33 @@ async def test_stop_process_kills_a_child_that_outlives_its_launcher(monkeypatch
     assert launcher.returncode == -signal.SIGTERM
     # The child holds the launcher's stdout, so EOF means it is dead too.
     assert await asyncio.wait_for(launcher.stdout.read(), timeout=5) == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pid",
+    [MagicMock(), 0, 1, "own group"],
+    ids=["mock-pid", "zero", "init", "own-group"],
+)
+@pytest.mark.parametrize(
+    ("exits_on_terminate", "killed"),
+    [(True, False), (False, True)],
+    ids=["exits", "ignores-terminate"],
+)
+async def test_stop_process_never_signals_a_group_it_does_not_lead(
+    pid: object, exits_on_terminate: bool, killed: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A MagicMock pid indexes as 1: killpg(1) signalled init's group and took down a CI worker.
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 0.01)
+    wait = AsyncMock(return_value=0) if exits_on_terminate else AsyncMock(side_effect=asyncio.TimeoutError)
+    process = MagicMock(pid=os.getpgrp() if pid == "own group" else pid, wait=wait)
+
+    with patch.object(libreoffice_convert.os, "killpg") as killpg:
+        await libreoffice_convert.stop_process(process)
+
+    killpg.assert_not_called()
+    process.terminate.assert_called_once()
+    assert process.kill.called is killed
 
 
 @pytest.mark.asyncio
