@@ -164,6 +164,18 @@ class TestFindUsers:
         assert "orgId" in query and "email" in query
         assert "split" not in query.lower() and "fullName ==" not in query
 
+    async def test_the_query_is_lowercased_like_the_stored_side(self, provider) -> None:
+        p, call = provider
+        await p.find_users("org1", "Weiß")
+        binds = call.await_args.kwargs.get("parameters") or call.await_args.kwargs["bind_vars"]
+        assert binds["q"] == "weiß"
+
+    async def test_name_matches_are_bounded_before_the_email_expansion(self, provider) -> None:
+        p, call = provider
+        await p.find_users("org1", "ann")
+        query = call.await_args.args[0]
+        assert "[0..$limit]" in query or "SLICE(" in query
+
     async def test_blank_query_makes_no_call(self, provider) -> None:
         p, call = provider
         assert await p.find_users("org1", "   ") == []

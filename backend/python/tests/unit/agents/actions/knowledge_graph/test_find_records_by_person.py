@@ -107,6 +107,12 @@ class TestResolvingThePerson:
         assert ok is True
         assert "dgodase@y.io" not in text
         assert "Ticket r1" in text
+        assert 'Other people also match "Darshan"' in text
+
+    async def test_a_single_match_has_no_namesake_note(self, listing) -> None:
+        listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, text = await execute_find_records_by_person(_state([DARSHAN]), "Darshan")
+        assert "Other people" not in text
 
     async def test_no_such_user_and_no_readable_records_read_the_same(self, listing) -> None:
         _, nobody = await execute_find_records_by_person(_state([]), "Darshan")

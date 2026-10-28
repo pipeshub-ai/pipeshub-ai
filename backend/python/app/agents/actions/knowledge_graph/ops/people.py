@@ -142,6 +142,12 @@ async def execute_find_records_by_person(
     lines = [f"Records linked to {who} as {' / '.join(wanted_roles or ROLE_EDGES)}, newest first:"]
     lines.extend(record_line(record, context, shortener, frontend_url) for record in page.records)
     lines.append("")
+    if len(people) > 1:
+        # Only this person links to a readable record; the others stay unnamed.
+        lines.append(
+            f'Other people also match "{_trunc(asked)}". If {who} is not the one meant, '
+            "call again with that person's email."
+        )
     if page.next_cursor is not None:
         again = _continue_call(
             asked, group, wanted_roles, wanted_types, page.next_cursor, is_self=is_self, limit=bounded_limit,

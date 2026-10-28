@@ -22238,7 +22238,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.find_users`."""
-        wanted = " ".join((query or "").split()).casefold()
+        # lower(), not casefold(): the stored side is toLower(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
         if not org_id or not wanted:
             return []
         if not self.client:
@@ -22270,7 +22271,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE exact OR prefix
             WITH collect({{u: u, email: email, exact: exact}}) AS hits
             WITH hits, any(h IN hits WHERE h.exact) AS has_exact
-            WITH [h IN hits WHERE h.exact OR NOT has_exact] AS kept
+            WITH [h IN hits WHERE h.exact OR NOT has_exact][0..$limit] AS kept
             WITH [h IN kept | h.u] AS matched, [h IN kept WHERE h.email <> '' | h.email] AS emails
             MATCH (o:User) WHERE o.orgId = $org_id AND (o IN matched OR toLower(o.email) IN emails)
             RETURN o.id AS id, o.fullName AS fullName, o.email AS email

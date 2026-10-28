@@ -21358,7 +21358,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.find_users`."""
-        wanted = " ".join((query or "").split()).casefold()
+        # lower(), not casefold(): the stored side is LOWER(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
         if not org_id or not wanted:
             return []
         users = CollectionNames.USERS.value
@@ -21391,7 +21392,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN {{key: u._key, email: email, exact: exact}}
             )
             LET has_exact = LENGTH(hits[* FILTER CURRENT.exact]) > 0
-            LET kept = hits[* FILTER CURRENT.exact OR NOT has_exact]
+            LET kept = SLICE(hits[* FILTER CURRENT.exact OR NOT has_exact], 0, @limit)
             LET emails = kept[* FILTER CURRENT.email != ""].email
             FOR o IN {users}
                 FILTER o.orgId == @org_id AND (o._key IN kept[*].key OR LOWER(o.email) IN emails)
