@@ -192,15 +192,23 @@ class TestRenderPageBatchToBase64:
         mock_doc.pages = [MagicMock(), MagicMock(), MagicMock()]
         strategy.doc = mock_doc
 
-        async def fake_to_thread(fn, batch):
-            return {p: f"data:image/png;base64,page{p}" for p in batch}
+        dispatched = []
+
+        async def fake_to_thread(fn, *args):
+            dispatched.append(list(args[0]))
+            return fn(*args)
 
         with patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.asyncio.to_thread",
             side_effect=fake_to_thread,
+        ), patch.object(
+            strategy,
+            "_render_page_batch_to_base64",
+            side_effect=lambda batch: {p: f"data:image/png;base64,page{p}" for p in batch},
         ):
             await strategy._preload_page_images()
 
+        assert dispatched == [[1, 2], [3]]
         assert len(strategy._page_images) == 3
         assert strategy._page_images[1] == "data:image/png;base64,page1"
         assert strategy._page_images[3] == "data:image/png;base64,page3"
