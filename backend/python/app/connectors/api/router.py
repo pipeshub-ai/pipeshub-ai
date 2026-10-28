@@ -129,6 +129,7 @@ from app.connectors.core.constants import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
@@ -8879,10 +8880,20 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
         )
 
     await check_beta_connector_access(connector_type, request)
-    if not await connector_registry.get_connector_metadata(connector_type):
+    type_metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not type_metadata:
         raise HTTPException(
             status_code=HttpStatusCode.NOT_FOUND.value,
             detail=f"Connector type '{connector_type}' not found in registry"
+        )
+    is_admin = is_request_admin(request)
+    # Creating a connector takes the same rule: a member makes personal ones, so a type
+    # without personal scope is not theirs to try.
+    supported_scopes = type_metadata.get("scope", [ConnectorScope.PERSONAL])
+    if not is_admin and ConnectorScope.PERSONAL.value not in supported_scopes:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=f"Only administrators can set up {connector_type} connectors"
         )
     connector_cls = _connection_check_class(connector_type)
     if connector_cls is None:
@@ -8905,6 +8916,8 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
 
     connector_id = body.get("connectorId")
     stored_auth: dict[str, Any] | None = None
+    # The address rule is the scope's: an admin sets up team connectors, a member personal ones.
+    scope = ConnectorScope.TEAM.value if is_admin else ConnectorScope.PERSONAL.value
     if connector_id:
         instance = await get_validated_connector_instance(connector_id, request)
         if instance.get("type", "").replace(" ", "").lower() != connector_type.replace(" ", "").lower():
@@ -8912,6 +8925,8 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="connectorId is not a connector of this type"
             )
+        # An instance keeps its own scope: a member's personal connector stays personal.
+        scope = instance.get("scope") or ConnectorScope.PERSONAL.value
         config_service = resolve_config_service(container, org_id)
         saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
         stored_auth = _auth_section(cast(object, saved))
@@ -8922,7 +8937,9 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     auth = {**(stored_auth or {}), **auth}
 
     try:
-        result = await connector_cls.check_connection(auth, logger)
+        result = await connector_cls.check_connection(
+            auth, logger, public_only=public_only_for_scope(scope)
+        )
     except Exception:
         logger.error("Connection check for %s failed", connector_type, exc_info=True)
         result = ConnectionCheckResult(

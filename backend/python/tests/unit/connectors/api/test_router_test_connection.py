@@ -21,8 +21,8 @@ class _CheckingConnector:
     check_connection = AsyncMock()
 
 
-def _make_request(body, *, saved_config=None, metadata=None):
-    user = {"userId": "u1", "orgId": "o1", "role": "member"}
+def _make_request(body, *, saved_config=None, metadata=None, role="member"):
+    user = {"userId": "u1", "orgId": "o1", "role": role}
     request = MagicMock()
     request.state.user.get = lambda key, default=None: user.get(key, default)
     request.json = AsyncMock(return_value=body)
@@ -180,3 +180,68 @@ async def test_schema_says_whether_the_check_exists(connector_type, supported):
 async def test_egress_ips_route():
     with patch(f"{_ROUTER}.get_egress_ips", AsyncMock(return_value=["203.0.113.10"])):
         assert await get_connector_egress_ips() == {"success": True, "egressIps": ["203.0.113.10"]}
+
+
+def _public_only_of_the_check(checking_connector) -> bool:
+    return checking_connector.check_connection.await_args.kwargs["public_only"]
+
+
+class TestTheAddressRuleOfTheCheck:
+    """A member sets up personal connectors, an admin team ones; each gets that scope's address rule."""
+
+    async def test_a_member_gets_the_public_only_rule(self, checking_connector) -> None:
+        request, _ = _make_request({"auth": {"host": "10.0.0.7"}})
+        await run_test_connection("PostgreSQL", request)
+        assert _public_only_of_the_check(checking_connector) is True
+
+    async def test_an_admin_follows_the_deployment_setting(self, checking_connector) -> None:
+        request, _ = _make_request({"auth": {"host": "10.0.0.7"}}, role="admin")
+        await run_test_connection("PostgreSQL", request)
+        assert _public_only_of_the_check(checking_connector) is False
+
+    async def test_a_member_cannot_check_a_type_that_has_no_personal_scope(self, checking_connector) -> None:
+        request, _ = _make_request({"auth": {"host": "x"}}, metadata={"config": {}, "scope": ["team"]})
+        with pytest.raises(HTTPException) as caught:
+            await run_test_connection("PostgreSQL", request)
+        assert caught.value.status_code == 403
+        checking_connector.check_connection.assert_not_awaited()
+
+    async def test_an_admin_can_check_a_team_only_type(self, checking_connector) -> None:
+        request, _ = _make_request(
+            {"auth": {"host": "x"}}, metadata={"config": {}, "scope": ["team"]}, role="admin"
+        )
+        await run_test_connection("PostgreSQL", request)
+        checking_connector.check_connection.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("role", "instance_scope", "public_only"),
+        [
+            ("member", "personal", True),
+            ("admin", "personal", True),  # an admin editing a personal connector keeps its scope
+            ("admin", "team", False),
+        ],
+    )
+    async def test_editing_keeps_the_scope_of_the_instance(
+        self, checking_connector, role, instance_scope, public_only
+    ) -> None:
+        request, config_service = _make_request(
+            {"auth": {"host": "10.0.0.7"}, "connectorId": "c1"}, saved_config={"auth": {}}, role=role
+        )
+        instance = {"type": "PostgreSQL", "scope": instance_scope}
+        with (
+            patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value=instance)),
+            patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+        ):
+            await run_test_connection("PostgreSQL", request)
+        assert _public_only_of_the_check(checking_connector) is public_only
+
+    async def test_an_instance_without_a_scope_gets_the_stricter_rule(self, checking_connector) -> None:
+        request, config_service = _make_request(
+            {"auth": {"host": "10.0.0.7"}, "connectorId": "c1"}, saved_config={"auth": {}}, role="admin"
+        )
+        with (
+            patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value={"type": "PostgreSQL"})),
+            patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+        ):
+            await run_test_connection("PostgreSQL", request)
+        assert _public_only_of_the_check(checking_connector) is True

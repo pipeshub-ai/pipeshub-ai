@@ -1001,6 +1001,9 @@ class TestCreateExecuteQueryTool:
         ) as create, patch(
             "app.utils.execute_query._connector_is_accessible",
             AsyncMock(return_value=True),
+        ), patch(
+            "app.utils.execute_query._connector_is_public_only",
+            AsyncMock(return_value=False),
         ):
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
@@ -1054,7 +1057,10 @@ class TestCreateExecuteQueryTool:
         ) as create, patch(
             "app.utils.execute_query._connector_is_accessible",
             AsyncMock(return_value=True),
-        ) as accessible:
+        ) as accessible, patch(
+            "app.utils.execute_query._connector_is_public_only",
+            AsyncMock(return_value=False),
+        ):
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
                 graph_provider=graph,

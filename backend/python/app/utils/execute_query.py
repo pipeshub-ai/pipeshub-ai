@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -364,6 +365,8 @@ async def _execute_postgres_query(
     query: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Execute a query against PostgreSQL.
     
@@ -371,6 +374,7 @@ async def _execute_postgres_query(
         query: SQL query to execute
         config_service: Configuration service for retrieving connection details
         connector_instance_id: Optional connector instance ID
+        public_only: Connect to public addresses only (a personal connector)
         
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
@@ -386,6 +390,7 @@ async def _execute_postgres_query(
             logger=logger,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
         
         client = client_builder.get_client()
@@ -590,6 +595,8 @@ async def _execute_query_impl(
     source_name: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Main implementation for executing SQL queries.
     
@@ -636,6 +643,7 @@ async def _execute_query_impl(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
     elif source_type == "snowflake":
         result = await _execute_snowflake_query(
@@ -700,6 +708,14 @@ async def _connector_is_accessible(
     if not app or app.get("orgId") != org_id:
         return False
     return connector_id in await accessible_node_ids(graph_provider, {connector_id}, user_id, org_id)
+
+
+async def _connector_is_public_only(graph_provider: IGraphDBProvider | None, connector_id: str) -> bool:
+    """Whether the connector may reach public addresses only: any scope but team. Unknown is."""
+    if graph_provider is None:
+        return True
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    return public_only_for_scope((app or {}).get("scope"))
 
 
 def create_execute_query_tool(
@@ -814,6 +830,7 @@ def create_execute_query_tool(
                 source_name=source_name,
                 config_service=config_service,
                 connector_instance_id=connector_id,
+                public_only=await _connector_is_public_only(graph_provider, connector_id),
             )
             
             logger.info(f"🔍 [execute_sql_query_tool] Got result: ok={result.get('ok')}, row_count={result.get('row_count')}, column_count={result.get('column_count')}")

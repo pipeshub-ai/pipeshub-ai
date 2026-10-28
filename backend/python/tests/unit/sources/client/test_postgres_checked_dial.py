@@ -56,7 +56,7 @@ async def test_the_name_is_looked_up_once_and_the_checked_address_dialled(fake_a
 async def test_the_lookup_spends_the_connections_timeout(fake_asyncpg, monkeypatch):
     seen = {}
 
-    async def vetted(host, *, lookup_timeout_s):
+    async def vetted(host, *, lookup_timeout_s, public_only):
         seen["lookup_timeout_s"] = lookup_timeout_s
         import ipaddress
 
@@ -126,4 +126,6 @@ async def test_the_dial_loop_raises_the_last_error_when_every_address_fails():
 async def test_the_pool_opens_every_connection_through_the_check(fake_asyncpg):
     client = pg.PostgreSQLClient(host="db.example.com", database="shop", user="reader", password="pw")
     await client.connect()
-    assert fake_asyncpg.create_pool.await_args.kwargs["connect"] is pg.connect_to_checked_address
+    connect = fake_asyncpg.create_pool.await_args.kwargs["connect"]
+    assert connect.func is pg.connect_to_checked_address
+    assert connect.keywords == {"public_only": False}

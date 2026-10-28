@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -73,11 +74,13 @@ async def connect_to_checked_address(
     *,
     host: str,
     loop: asyncio.AbstractEventLoop | None = None,
+    public_only: bool = False,
     **kwargs: object,
 ) -> asyncpg.Connection:
     """``asyncpg.connect`` for one pool connection, to an address of ``host`` that passes the
     deployment's address policy (``vetted_addresses``). Each new connection looks the name
-    up again, so a failover that moves the name is followed.
+    up again, so a failover that moves the name is followed. ``public_only`` (personal
+    connectors) allows public addresses only, whatever the deployment setting.
 
     Raises:
         HostCheckError: before anything is dialled, when the host is refused or doesn't resolve.
@@ -86,7 +89,7 @@ async def connect_to_checked_address(
     # The lookup spends the connection's timeout (asyncpg's default is 60 s), as asyncpg's own would.
     timeout = float(kwargs.get("timeout") or 60)
     started = real_loop.time()
-    addresses = await vetted_addresses(host, lookup_timeout_s=timeout)
+    addresses = await vetted_addresses(host, lookup_timeout_s=timeout, public_only=public_only)
     kwargs["timeout"] = max(timeout - (real_loop.time() - started), 1.0)
     dial_loop = _CheckedDialLoop(real_loop, addresses) if addresses else real_loop
     return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
@@ -107,8 +110,13 @@ class PostgreSQLClient:
         min_pool_size: int = 1,
         max_pool_size: int = 10,
         pool_acquire_timeout: float = 60.0,
+        *,
+        public_only: bool = False,
     ) -> None:
-        """Initialize PostgreSQL client."""
+        """Initialize PostgreSQL client.
+
+        ``public_only``: connect to public addresses only (a personal connector).
+        """
         if asyncpg is None:
             raise ImportError(
                 "asyncpg is required for PostgreSQL client. "
@@ -134,6 +142,7 @@ class PostgreSQLClient:
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool_acquire_timeout = pool_acquire_timeout
+        self.public_only = public_only
         self._pool: asyncpg.Pool | None = None
         self._connect_lock = asyncio.Lock() # Serialize pool creation so concurrent connect() calls create only one pool.
 
@@ -174,7 +183,7 @@ class PostgreSQLClient:
                     # where that name is another client's statement. With the
                     # cache off, asyncpg prepares unnamed statements instead.
                     statement_cache_size=0,
-                    connect=connect_to_checked_address,
+                    connect=partial(connect_to_checked_address, public_only=self.public_only),
                 )
 
                 logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
@@ -407,6 +416,10 @@ class PostgreSQLConfig(BaseModel):
         description="Seconds a caller will wait for a free pool connection",
         gt=0,
     )
+    public_only: bool = Field(
+        default=False,
+        description="Connect to public addresses only (a personal connector)",
+    )
 
     def create_client(self) -> PostgreSQLClient:
         """Create a PostgreSQL client."""
@@ -421,6 +434,7 @@ class PostgreSQLConfig(BaseModel):
             min_pool_size=self.min_pool_size,
             max_pool_size=self.max_pool_size,
             pool_acquire_timeout=self.pool_acquire_timeout,
+            public_only=self.public_only,
         )
 
 
@@ -532,6 +546,8 @@ class PostgreSQLClientBuilder(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: str | None = None,
+        *,
+        public_only: bool = False,
     ) -> PostgreSQLClientBuilder:
         """Build PostgreSQLClientBuilder using configuration service.
         
@@ -542,6 +558,7 @@ class PostgreSQLClientBuilder(IClient):
             logger: Logger instance for error reporting
             config_service: Configuration service instance
             connector_instance_id: Optional connector instance ID
+            public_only: Connect to public addresses only (a personal connector)
             
         Returns:
             PostgreSQLClientBuilder instance
@@ -575,6 +592,7 @@ class PostgreSQLClientBuilder(IClient):
                 password=config.auth.password,
                 timeout=config.timeout,
                 sslmode=config.auth.sslmode,
+                public_only=public_only,
             )
             
             logger.info(
