@@ -88,6 +88,15 @@ def test_parity_on_realistic_images() -> None:
 FAMILIES = [
     "<![CDATA[", "![", "![a", "![a[", "![x[y]", "![a](", "![a](x", "![a](x ", "![a](data:x ",
     '![a](x "', '![a](data:x   "t" ) ', '![a](data: "t" ) ', '![a](x    "t" ) ', '![a](data:"q   "t" ) ', "![a][", "[a\n", "<img ", '<img alt="', '<img alt="x" ',
+    # A failing opener followed, later in the text, by a valid image.
+    "![ ![x](u)", "![ ![x](u) ", "<img <img alt='a'>", "![a](data:x ![b](u)",
+]
+
+# Repeated opener plus a tail that looks like a title but ends ``" )``, so the
+# ``data:`` destination cannot match from any opener.
+TAILED_FAMILIES = [
+    ("![a](data:", ' "t" )'), ("![a](data:x", ' "t" )'), ('![a](data:"q', ' "t" )'),
+    ("![a](data:  ", '"t" )'), ("![a](data:", '"t"  )'),
 ]
 
 
@@ -108,9 +117,35 @@ def test_doubling_the_input_does_not_quadruple_the_time(name: str, unit: str) ->
     t_large = min(_cpu(run, large) for _ in range(3))
     # Four times the input: linear is 4x and quadratic 16x. A 2x step left too
     # little room between them on a busy two-core runner (2.6x measured once).
-    assert t_large < 0.05 or t_large <= max(t_small, 0.01) * 8, (name, unit, t_small, t_large)
+    assert t_large <= max(t_small, 0.004) * 8, (name, unit, t_small, t_large)
     # The ratio alone can miss a pattern that is already slow at the small size.
     assert t_large < 1.5, (name, unit, t_small, t_large)
+
+
+@pytest.mark.parametrize("unit,tail", TAILED_FAMILIES)
+def test_data_destination_with_unmatched_title_tail_is_linear(unit: str, tail: str) -> None:
+    ours = lis.MD_IMAGE_NESTED
+    small, large = unit * (24_000 // len(unit)) + tail, unit * (96_000 // len(unit)) + tail
+    run = lambda t: list(ours.finditer(t))  # noqa: E731
+    t_small = min(_cpu(run, small) for _ in range(3))
+    t_large = min(_cpu(run, large) for _ in range(3))
+    assert t_large <= max(t_small, 0.004) * 8, (unit, t_small, t_large)
+    assert t_large < 1.5, (unit, t_small, t_large)
+
+
+def test_one_scan_is_shared_by_searches_over_the_same_text() -> None:
+    # ``search`` called in a loop (as the segment splitter does) must not lose
+    # its caches between matches.
+    ours = lis.MD_IMAGE_NESTED
+    text = "![ ![x](u)" * 3000
+    def loop(t: str) -> None:
+        scan, pos = ours.scan(t), 0
+        while (m := ours.search(t, pos, scan)) is not None:
+            pos = m.end()
+    small, large = text, text * 4
+    t_small = min(_cpu(loop, small) for _ in range(3))
+    t_large = min(_cpu(loop, large) for _ in range(3))
+    assert t_large <= max(t_small, 0.004) * 8, (t_small, t_large)
 
 
 class _SlowMarkdownParser:

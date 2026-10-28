@@ -66,6 +66,11 @@ _TITLE_TAIL = re.compile(r'\s+"[^"]*"\)')
 _ALT = re.compile(r"alt=[\"']", re.IGNORECASE)
 _GT = re.compile(r">")
 _QUOTE = re.compile(r"[\"']")
+_DATA_STOP = re.compile(r'["\s)]')
+_DATA_QUOTE_STOP = re.compile(r'[")]')
+_NON_SPACE = re.compile(r"\S")
+_TITLE_LOOKAHEAD = re.compile(r'"[^"]*"\s*\)')
+_TITLE_CLOSED = re.compile(r'"[^"]*"\)')
 
 
 class _Scan:
@@ -79,6 +84,10 @@ class _Scan:
         self.alt = _Next(_ALT)
         self.gt = _Next(_GT)
         self.quote = _Next(_QUOTE)
+        self.data_stop = _Next(_DATA_STOP)
+        self.data_quote_stop = _Next(_DATA_QUOTE_STOP)
+        self.non_space = _Next(_NON_SPACE)
+        self._data_ok: dict[int, bool] = {}
         self._bracket = _Next(_BRACKET)
         self._alt_end: dict[int, int] = {}
         self._last_gt = -2
@@ -124,14 +133,67 @@ class _Scan:
         return end
 
 
+    def data_destination_ends(self, start: int) -> bool:
+        """Whether a ``data:`` destination whose body starts at *start* can match.
+
+        The regex reads the body left to right with no choice that changes the
+        outcome: a run of characters other than quote, whitespace and ``)``; a
+        quote with everything up to the next quote or ``)``; or a whitespace
+        run. The first ``)`` outside a quote ends it with a match. A whitespace
+        run followed by a quoted title and ``)`` ends it too, but it matches
+        only when the ``)`` comes right after the title (a space before ``)``
+        does not match). Running out of text is a failure. The outcome depends
+        only on where a step starts, so it is cached for every step visited.
+        """
+        text = self.text
+        memo = self._data_ok
+        seen: list[int] = []
+        pos = start
+        while True:
+            known = memo.get(pos)
+            if known is not None:
+                ok = known
+                break
+            seen.append(pos)
+            stop = self.data_stop(text, pos)
+            if stop < 0:
+                ok = False
+                break
+            ch = text[stop]
+            if ch == ")":
+                ok = True
+                break
+            if ch == '"':
+                q = self.data_quote_stop(text, stop + 1)
+                if q < 0:
+                    ok = False
+                    break
+                if text[q] == ")":
+                    ok = True
+                    break
+                pos = q
+                continue
+            nxt = self.non_space(text, stop)
+            if nxt < 0:
+                ok = False
+                break
+            if _TITLE_LOOKAHEAD.match(text, nxt):
+                ok = _TITLE_CLOSED.match(text, nxt) is not None
+                break
+            pos = nxt
+        for p in seen:
+            memo[p] = ok
+        return ok
+
+
 Accept = Callable[[_Scan, int], bool]
 
 
 def _md_image_accept() -> Accept:
     # ``![alt](dest "title")``. The alt text ends at one fixed ``]`` (see
     # ``nested_alt_end``). The
-    # destination is either ``data:`` followed by anything up to the first
-    # ``)``, or a run of characters other than whitespace and ``)``. A run that
+    # destination is either ``data:`` followed by a body that
+    # ``data_destination_ends`` reads, or a run of characters other than whitespace and ``)``. A run that
     # stops at ``)`` matches; one that stops at whitespace matches only when a
     # quoted title and ``)`` follow.
     def accept(scan: _Scan, i: int) -> bool:
@@ -141,7 +203,7 @@ def _md_image_accept() -> Accept:
             return False
         pos = end + 2
         if text.startswith("data:", pos):
-            return scan.paren(text, pos) >= 0
+            return scan.data_destination_ends(pos + 5)
         stop = scan.stop(text, pos)
         if stop <= pos:
             return False
@@ -179,11 +241,16 @@ class LinearImageSearch:
     def pattern(self) -> str:
         return self._pattern.pattern
 
-    def search(self, text: str, pos: int = 0) -> re.Match[str] | None:
-        return self._search(text, pos)
+    def scan(self, text: str) -> _Scan:
+        """Caches for searching *text*. Pass it to ``search`` when calling it
+        once per match, so work done for one match is reused by the next.
+        Keep it local to one text and one caller: it is not thread-safe."""
+        return _Scan(text)
 
-    def _search(self, text: str, pos: int) -> re.Match[str] | None:
-        scan = _Scan(text)
+    def search(self, text: str, pos: int = 0, scan: _Scan | None = None) -> re.Match[str] | None:
+        return self._search(text, pos, scan or _Scan(text))
+
+    def _search(self, text: str, pos: int, scan: _Scan) -> re.Match[str] | None:
         opener = self._opener
         while True:
             m = opener.search(text, pos)
@@ -198,8 +265,9 @@ class LinearImageSearch:
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:
         pos = 0
+        scan = _Scan(text)
         while True:
-            found = self._search(text, pos)
+            found = self._search(text, pos, scan)
             if found is None:
                 return
             yield found

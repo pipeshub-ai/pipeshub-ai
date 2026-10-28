@@ -83,7 +83,10 @@ def _next_image_match(
     def find(key: str, pattern: LinearImageSearch) -> re.Match[str] | None:
         found = cache.get(key, _NOT_SEARCHED)
         if found is _NOT_SEARCHED or (found is not None and found.start() < start):  # type: ignore[union-attr]
-            found = pattern.search(text, start)
+            scan = cache.get(key + ":scan")
+            if scan is None:
+                scan = cache[key + ":scan"] = pattern.scan(text)
+            found = pattern.search(text, start, scan)  # type: ignore[arg-type]
             cache[key] = found
         return found  # type: ignore[return-value]
 
