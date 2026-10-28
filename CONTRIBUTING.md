@@ -111,7 +111,7 @@ Install Python 3.12, or use WSL2 and follow the Linux steps.
 ### Application tools
 
 1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
-2. **Node.js 22** — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+2. **Node.js 24 LTS** (22 minimum) — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
 3. **Python 3.12** — FastAPI services in `backend/python`
 
 ### Environment files

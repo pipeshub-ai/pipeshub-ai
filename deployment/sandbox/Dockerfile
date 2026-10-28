@@ -22,8 +22,8 @@ RUN apt-get update && \
         iptables \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20 via nodesource
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Node.js 24 via nodesource
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 

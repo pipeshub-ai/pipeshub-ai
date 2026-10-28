@@ -1,6 +1,7 @@
 {
   "name": "pipeshub-desktop",
   "version": "0.1.0",
+  "engines": { "node": ">=22" },
   "description": "PipesHub Desktop App",
   "main": "compile/main.js",
   "author": "PipesHub",

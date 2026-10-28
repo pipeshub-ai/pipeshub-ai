@@ -61,7 +61,7 @@ These two local setups look similar and are not the same. Use the origin you act
 
 ## Build and test
 
-Python 3.12, Node 22, Docker. Full setup, including creating the venv, is in [CONTRIBUTING.md](./CONTRIBUTING.md) (around the `python3.12 -m venv venv` step). Do not invent a venv path here.
+Python 3.12, Node 24 LTS (22 is the minimum), Docker. Full setup, including creating the venv, is in [CONTRIBUTING.md](./CONTRIBUTING.md) (around the `python3.12 -m venv venv` step). Do not invent a venv path here.
 
 ```bash
 cd backend/python && source venv/bin/activate && pytest

@@ -17,7 +17,8 @@ const categoryCache = new Map();
 function pluralCategories(language, type) {
   const cacheKey = `${language}|${type}`;
   if (!categoryCache.has(cacheKey)) {
-    categoryCache.set(cacheKey, new Intl.PluralRules(language, { type }).resolvedOptions().pluralCategories);
+    // Sorted: the order ICU reports differs between Node majors, and it leaks into the error list.
+    categoryCache.set(cacheKey, [...new Intl.PluralRules(language, { type }).resolvedOptions().pluralCategories].sort());
   }
   return categoryCache.get(cacheKey);
 }
