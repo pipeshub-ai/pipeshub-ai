@@ -47,10 +47,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ATTACHMENT_DISPLAY_INLINE",
+    "EMPTY_COMMENT_ERROR",
     "DeliveryReport",
     "PreparedAttachments",
     "attachment_display_parameter",
+    "comment_would_be_empty",
     "deliver_attachments",
+    "has_text",
     "issue_result_key",
     "prepare_attachments",
     "replace_placeholders",
@@ -70,6 +73,11 @@ ATTACHMENT_DISPLAY_INLINE = "inline"
 ATTACHMENT_DISPLAY_ATTACHMENT = "attachment"
 
 _PLACEHOLDER = re.compile(r"\{\{\s*attachment\s*:\s*([^{}]+?)\s*\}\}")
+
+EMPTY_COMMENT_ERROR = json.dumps({
+    "error": "Comment text is required and cannot be empty",
+    "guidance": "To attach files without a comment, use add_attachments.",
+})
 
 
 def attachment_display_parameter(*, inline_note: str) -> ToolParameter:
@@ -93,6 +101,24 @@ def wants_inline(attachment_display: str | None) -> bool:
 
 def strip_placeholders(text: str) -> str:
     return _PLACEHOLDER.sub("", text)
+
+
+def has_text(text: str | None) -> bool:
+    """True when `text` still says something once placeholders are removed.
+
+    A description or page body that is blank, or only placeholders, is "not given": the tool
+    keeps the current one and appends the files, rather than replacing it with nothing.
+    """
+    return bool(text and strip_placeholders(text).strip())
+
+
+def comment_would_be_empty(comment: str, attachment_display: str | None) -> bool:
+    """True when a comment has no text of its own and 'inline' won't add the files to it.
+
+    Comment tools upload before they post, so they check this first: a comment that failed
+    after the upload would leave the files on the issue or page, and a retry would add them twice.
+    """
+    return not wants_inline(attachment_display) and not strip_placeholders(comment).strip()
 
 
 def split_on_placeholders(text: str) -> list[tuple[str, str | None]]:

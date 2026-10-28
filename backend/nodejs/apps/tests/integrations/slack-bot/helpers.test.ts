@@ -15,6 +15,11 @@ import {
   isSlackOversizedAttachment,
   classifySlackFiles,
   collectThreadFilesSinceLastBotReply,
+  SLACK_THREAD_REPLIES_LIMIT,
+  fetchPriorThread,
+  fetchPriorThreadMessages,
+  resolveOwnBotIdentity,
+  type TypedSlackClient,
   extractSupportedAttachments,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_MB,
@@ -281,6 +286,77 @@ describe('slack-bot/helpers', () => {
 
       it('returns nothing for an empty thread', () => {
         expect(collectThreadFilesSinceLastBotReply([], 'UBOT')).to.deep.equal([]);
+      });
+
+      it('recognises its own reply by bot id when the message has no user', () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('old')] },
+          { ts: '2', bot_id: 'BOWN', subtype: 'bot_message', text: 'answer' },
+          { ts: '3', user: 'U1', files: [png('new')] },
+        ];
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT', 'BOWN').map((f) => f.id)).to.deep.equal(['new']);
+      });
+
+      it("does not take another bot's message for its own when its bot id is known", () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('a')] },
+          { ts: '2', bot_id: 'BOTHER', subtype: 'bot_message', text: 'other bot' },
+        ];
+        expect(collectThreadFilesSinceLastBotReply(prior, undefined, 'BOWN').map((f) => f.id)).to.deep.equal(['a']);
+      });
+    });
+
+    describe('fetchPriorThread', () => {
+      const message = { ts: '9', thread_ts: '1', channel: 'C1', user: 'U1' };
+      const clientReturning = (page: Record<string, unknown>) => ({
+        apiCall: sinon.stub().resolves(page),
+      }) as unknown as TypedSlackClient;
+      const replies = [{ ts: '1', user: 'U1' }, { ts: '2', user: 'U2' }, { ts: '9', user: 'U1' }];
+
+      it('drops the message being answered and asks for one page', async () => {
+        const client = clientReturning({ messages: replies });
+        const thread = await fetchPriorThread(client, message);
+        expect(thread.messages.map((m) => m.ts)).to.deep.equal(['1', '2']);
+        expect(thread.complete).to.equal(true);
+        const [method, options] = (client.apiCall as sinon.SinonStub).firstCall.args;
+        expect(method).to.equal('conversations.replies');
+        expect(options).to.include({ channel: 'C1', ts: '1', limit: SLACK_THREAD_REPLIES_LIMIT });
+        expect(await fetchPriorThreadMessages(clientReturning({ messages: replies }), message)).to.deep.equal(thread.messages);
+      });
+
+      it('is incomplete when Slack has more, even on a short page', async () => {
+        expect((await fetchPriorThread(clientReturning({ messages: replies, has_more: true }), message)).complete).to.equal(false);
+        expect(
+          (await fetchPriorThread(clientReturning({ messages: replies, response_metadata: { next_cursor: 'abc' } }), message)).complete,
+        ).to.equal(false);
+        expect(
+          (await fetchPriorThread(clientReturning({ messages: replies, response_metadata: { next_cursor: '' } }), message)).complete,
+        ).to.equal(true);
+      });
+    });
+
+    describe('resolveOwnBotIdentity', () => {
+      it('asks auth.test once per bot', async () => {
+        const apiCall = sinon.stub().resolves({ ok: true, user_id: 'UBOT', bot_id: 'BOWN' });
+        const client = { apiCall } as unknown as TypedSlackClient;
+        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
+        expect(await resolveOwnBotIdentity(client, 'cache-test-1')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
+        expect(apiCall.callCount).to.equal(1);
+        expect(apiCall.firstCall.args[0]).to.equal('auth.test');
+      });
+
+      it('falls back to the known user id and retries after a failure', async () => {
+        const apiCall = sinon.stub();
+        apiCall.onFirstCall().rejects(new Error('ratelimited'));
+        apiCall.onSecondCall().resolves({ ok: true, user_id: 'UBOT', bot_id: 'BOWN' });
+        const client = { apiCall } as unknown as TypedSlackClient;
+        const errorStub = sinon.stub(console, 'error');
+        try {
+          expect(await resolveOwnBotIdentity(client, 'cache-test-2', 'UKNOWN')).to.deep.equal({ userId: 'UKNOWN' });
+        } finally {
+          errorStub.restore();
+        }
+        expect(await resolveOwnBotIdentity(client, 'cache-test-2', 'UKNOWN')).to.deep.equal({ userId: 'UBOT', botId: 'BOWN' });
       });
     });
 

@@ -15,7 +15,7 @@ from app.agents.actions.confluence.attachments import (
     CONFLUENCE_INLINE_NOTE,
     ConfluencePageAttachments,
 )
-from app.agents.actions.util.attachment_delivery import attachment_display_parameter
+from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
 from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
@@ -2527,12 +2527,15 @@ class Confluence:
         async def _update(content: str | None) -> tuple[bool, str]:
             return await self._update_page(page_id, page_title, content)
 
+        # Blank once placeholders are removed means "keep the body": sent as is, it would
+        # replace the page body with nothing before the files are added.
+        new_content = page_content if has_text(page_content) else None
         return await self._attachments.update_with_files(
             page_id,
             attachment_record_ids,
             attachment_display,
-            page_content,
-            _update if page_title is not None or page_content is not None else None,
+            new_content,
+            _update if page_title is not None or new_content is not None else None,
         )
 
     @tool(

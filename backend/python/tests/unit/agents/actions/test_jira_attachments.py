@@ -113,7 +113,7 @@ class TestJiraAttachmentUploader:
         assert await JiraAttachmentUploader(ds).preflight() == "Attachments are turned off on this Jira site."
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("settings", [_resp(403), RuntimeError("down")])
+    @pytest.mark.parametrize("settings", [_resp(403), RuntimeError("down"), _resp(200, ["not", "a", "dict"])])
     async def test_preflight_unknown_does_not_block(self, settings) -> None:
         mock = AsyncMock(side_effect=settings) if isinstance(settings, Exception) else AsyncMock(return_value=settings)
         assert await JiraAttachmentUploader(_datasource(get_attachment_settings=mock)).preflight() is None
@@ -385,6 +385,46 @@ class TestUpdateAndAttach:
         assert description["content"][0]["content"][0]["text"] == "keep me"
         assert description["content"][1]["content"][0]["text"] == "Attachments: "
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [_resp(503), _resp(200, {"fields": None}), RuntimeError("down")])
+    async def test_unreadable_description_is_never_overwritten(self, read) -> None:
+        get_issue = AsyncMock(side_effect=read) if isinstance(read, Exception) else AsyncMock(return_value=read)
+        jira = _jira(get_issue=get_issue, edit_issue=AsyncMock(return_value=_resp(204)))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.add_attachments("KAN-1", ["rec1"], attachment_display="inline")
+        assert ok
+        jira.client.edit_issue.assert_not_awaited()
+        data = json.loads(payload)
+        assert data["attachments"]["uploaded"][0]["record_id"] == "rec1"
+        assert "could not be added to the description" in data["warning"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("description", ["{{attachment:rec1}}", "  ", ""])
+    async def test_placeholder_only_description_still_sends_the_files(self, description) -> None:
+        jira = _jira(edit_issue=AsyncMock(return_value=_resp(204)), get_issue=AsyncMock())
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.update_issue("KAN-1", description=description, attachment_record_ids=["rec1"])
+        assert ok
+        jira.client.upload_issue_attachment.assert_awaited_once()
+        jira.client.edit_issue.assert_not_awaited()
+        assert json.loads(payload)["attachments"]["uploaded"][0]["record_id"] == "rec1"
+
+    @pytest.mark.asyncio
+    async def test_placeholder_only_description_inline_appends_to_the_current_one(self) -> None:
+        current = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "keep me"}]}]}
+        jira = _jira(
+            get_issue=AsyncMock(return_value=_resp(200, {"fields": {"description": current}})),
+            edit_issue=AsyncMock(return_value=_resp(204)),
+        )
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await jira.update_issue(
+                "KAN-1", description="{{attachment:rec1}}", attachment_record_ids=["rec1"], attachment_display="inline",
+            )
+        assert ok
+        jira.client.edit_issue.assert_awaited_once()
+        description = jira.client.edit_issue.await_args.kwargs["fields"]["description"]
+        assert description["content"][0]["content"][0]["text"] == "keep me"
+
 
 class TestCommentWithAttachments:
     @pytest.mark.asyncio
@@ -406,6 +446,74 @@ class TestCommentWithAttachments:
             await jira.add_comment("KAN-1", "Repro: {{attachment:rec1}}", attachment_record_ids=["rec1"])
         body = jira.client.add_comment.await_args.kwargs["body_body"]
         assert body["content"][0]["content"][0]["text"] == "Repro: "
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("comment", ["", "   ", "{{attachment:rec1}}"])
+    async def test_empty_comment_is_refused_before_anything_is_uploaded(self, comment) -> None:
+        jira = _jira(add_comment=AsyncMock(return_value=_resp(201, {"id": "c1"})))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.add_comment("KAN-1", comment, attachment_record_ids=["rec1"])
+        assert not ok
+        assert "add_attachments" in json.loads(payload)["guidance"]
+        jira.client.upload_issue_attachment.assert_not_awaited()
+        jira.client.add_comment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inline_comment_may_be_only_the_files(self) -> None:
+        jira = _jira(add_comment=AsyncMock(return_value=_resp(201, {"id": "c1"})))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await jira.add_comment("KAN-1", "", attachment_record_ids=["rec1"], attachment_display="inline")
+        assert ok
+        body = jira.client.add_comment.await_args.kwargs["body_body"]
+        assert body["content"][0]["content"][1]["text"] == "bug.png"
+
+
+class TestOAuthLinks:
+    _GATEWAY_URL = "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/attachment/content/10"
+
+    def _jira_over_oauth(self, **methods) -> Jira:
+        jira = _jira(
+            upload_issue_attachment=AsyncMock(
+                return_value=_resp(200, [{"id": "10", "filename": "bug.png", "content": self._GATEWAY_URL}])
+            ),
+            **methods,
+        )
+        jira._attachments = JiraIssueAttachments(
+            jira.client, STATE, flavor="cloud", site_url=AsyncMock(return_value="https://acme.atlassian.net"),
+        )
+        return jira
+
+    @pytest.mark.asyncio
+    async def test_gateway_link_points_at_the_site(self) -> None:
+        jira = self._jira_over_oauth(add_comment=AsyncMock(return_value=_resp(201, {"id": "c1"})))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.add_comment(
+                "KAN-1", "Repro: {{attachment:rec1}}", attachment_record_ids=["rec1"], attachment_display="inline",
+            )
+        assert ok
+        site_link = "https://acme.atlassian.net/rest/api/3/attachment/content/10"
+        link = jira.client.add_comment.await_args.kwargs["body_body"]["content"][0]["content"][1]["marks"][0]
+        assert link["attrs"]["href"] == site_link
+        assert json.loads(payload)["attachments"]["uploaded"][0]["url"] == site_link
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lookup", [AsyncMock(return_value=None), AsyncMock(side_effect=RuntimeError("down"))])
+    async def test_gateway_link_kept_when_the_site_is_unknown(self, lookup) -> None:
+        jira = self._jira_over_oauth()
+        jira._attachments._site_url_lookup = lookup
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.add_attachments("KAN-1", ["rec1"])
+        assert ok
+        assert json.loads(payload)["attachments"]["uploaded"][0]["url"] == self._GATEWAY_URL
+
+    @pytest.mark.asyncio
+    async def test_site_links_need_no_lookup(self) -> None:
+        jira = _jira()
+        lookup = AsyncMock(return_value="https://acme.atlassian.net")
+        jira._attachments = JiraIssueAttachments(jira.client, STATE, flavor="cloud", site_url=lookup)
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            await jira.add_attachments("KAN-1", ["rec1"])
+        lookup.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +592,33 @@ class TestJiraDataCenter:
         assert ok
         assert jira.client.add_comment_v2.await_args.kwargs["body"] == "See !bug.png|thumbnail!"
         assert json.loads(payload)["attachments"]["uploaded"][0]["record_id"] == "rec1"
+
+    @pytest.mark.asyncio
+    async def test_placeholder_only_description_still_sends_the_files(self) -> None:
+        jira = _jira_dc(edit_issue_v2=AsyncMock(return_value=_resp(204)), get_issue_v2=AsyncMock())
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await jira.update_issue("OPS-1", description="{{attachment:bug.png}}", attachment_record_ids=["rec1"])
+        assert ok
+        jira.client.upload_issue_attachment.assert_awaited_once()
+        jira.client.edit_issue_v2.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_description_is_never_overwritten(self) -> None:
+        jira = _jira_dc(get_issue_v2=AsyncMock(return_value=_resp(429)), edit_issue_v2=AsyncMock(return_value=_resp(204)))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.add_attachments("OPS-1", ["rec1"], attachment_display="inline")
+        assert ok
+        jira.client.edit_issue_v2.assert_not_awaited()
+        assert "warning" in json.loads(payload)
+
+    @pytest.mark.asyncio
+    async def test_empty_comment_is_refused_before_anything_is_uploaded(self) -> None:
+        jira = _jira_dc(add_comment_v2=AsyncMock(return_value=_resp(201, {"id": "9"})))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await jira.add_comment("OPS-1", "{{attachment:bug.png}}", attachment_record_ids=["rec1"])
+        assert not ok
+        jira.client.upload_issue_attachment.assert_not_awaited()
+        jira.client.add_comment_v2.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_audit_names_jira_data_center(self, dc_site_url) -> None:

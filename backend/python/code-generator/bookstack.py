@@ -956,7 +956,10 @@ def _generate_method(method_name: str, endpoint_info: Dict) -> str:
 
     if has_file_params:
         body_lines.append('            body=body,')
-        body_lines.append('            files=files')
+        # HTTPRequest.files takes (field, (filename, bytes, mime)) parts; None keeps a JSON body.
+        body_lines.append(
+            '            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,'
+        )
     elif has_body_params:
         body_lines.append('            body=body')
     else:

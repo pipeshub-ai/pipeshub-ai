@@ -5,7 +5,9 @@ write:attachment:confluence is requested only for apps saved with "Allow file up
 Apps saved before the setting existed, or with the form's default, ask for what they did before.
 """
 
+import sys
 from importlib import import_module
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from app.connectors.sources.atlassian.core.auth_fields import (
@@ -17,6 +19,25 @@ from app.connectors.sources.atlassian.core.auth_fields import (
 UPLOAD_SCOPE = "write:attachment:confluence"
 JIRA_USER_SCOPE = "read:jira-user"
 TOOLSET_SCOPES = ["read:confluence-content.all", "write:confluence-content"]
+
+_TOOLSETS = "app.api.routes.toolsets"
+
+
+def _real_toolsets_module() -> ModuleType:
+    """The routes module itself, even when another test file put a stub in sys.modules.
+
+    Some datasource tests stand a stub in for it to skip its heavy imports; it stays for
+    the rest of the session, so this test would otherwise run against the stub.
+    """
+    stub = sys.modules.get(_TOOLSETS)
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        del sys.modules[_TOOLSETS]
+    try:
+        import_module("app.connectors.api.router")  # first: toolsets imported alone hits an import cycle
+        return import_module(_TOOLSETS)
+    finally:
+        if stub is not None and getattr(stub, "__file__", None) is None:
+            sys.modules[_TOOLSETS] = stub
 
 
 class TestApplyConfluenceUploadScope:
@@ -59,8 +80,7 @@ class TestToolsetSignIn:
         return oauth
 
     async def _scopes(self, toolset_type: str = "confluence", **app_settings: object) -> list[str]:
-        import_module("app.connectors.api.router")  # first: toolsets imported alone hits an import cycle
-        from app.api.routes import toolsets
+        toolsets = _real_toolsets_module()
 
         app_config = {"type": "OAUTH", "clientId": "c", "clientSecret": "s", **app_settings}
         with patch.object(toolsets, "_get_oauth_config_from_registry", return_value=self._registry_oauth()):

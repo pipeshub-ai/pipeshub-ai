@@ -248,6 +248,25 @@ class TestConfluenceCloudTools:
         assert json.loads(payload)["attachments"]["uploaded"][0]["platform_id"] == "att2"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["", "{{attachment:rec2}}"])
+    async def test_blank_content_keeps_the_body_and_appends(self, content) -> None:
+        conf = _cloud(
+            get_page_by_id=AsyncMock(return_value=_current_page(4, "<p>Existing</p>")),
+            update_page=AsyncMock(return_value=_resp(200, {"id": "123"})),
+        )
+        pdf = _resolved("rec2", "spec.pdf", "application/pdf")
+        conf.client.upload_content_attachment = AsyncMock(return_value=_resp(200, _uploaded_body("att2", "spec.pdf")))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([pdf]))):
+            ok, _ = await conf.update_page(
+                "123", page_content=content, attachment_record_ids=["rec2"], attachment_display="inline",
+            )
+        assert ok
+        conf.client.update_page.assert_awaited_once()
+        assert conf.client.update_page.await_args.kwargs["body"]["body"]["storage"]["value"] == (
+            '<p>Existing</p><p><ac:link><ri:attachment ri:filename="spec.pdf" /></ac:link></p>'
+        )
+
+    @pytest.mark.asyncio
     async def test_add_attachments_default_leaves_body_alone(self) -> None:
         conf = _cloud(get_page_by_id=AsyncMock(), update_page=AsyncMock())
         with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
@@ -266,6 +285,17 @@ class TestConfluenceCloudTools:
         body = conf.client.create_footer_comment.await_args.kwargs["body_body"]["storage"]["value"]
         assert body == "<p>Updated diagram<br/><br/>Attached to this page: diagram.png</p>"
         assert json.loads(payload)["attachments"]["uploaded"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("comment", ["", "{{attachment:rec1}}"])
+    async def test_empty_comment_is_refused_before_anything_is_uploaded(self, comment) -> None:
+        conf = _cloud(create_footer_comment=AsyncMock(return_value=_resp(200, {"id": "c1"})))
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await conf.comment_on_page("123", comment, attachment_record_ids=["rec1"])
+        assert not ok
+        assert "add_attachments" in json.loads(payload)["guidance"]
+        conf.client.upload_content_attachment.assert_not_awaited()
+        conf.client.create_footer_comment.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +355,51 @@ class TestConfluenceDataCenterTools:
         assert ok
         assert "body" not in tool.client.update_content_v1.await_args.kwargs["body"]
         tool.client.upload_content_attachment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_content_inline_keeps_the_body(self) -> None:
+        tool = _dc(
+            get_page_content_v1=AsyncMock(return_value=_resp(200, {"title": "T", "version": {"number": 3}, "body": {"storage": {"value": "<p>Keep</p>"}}})),
+            update_content_v1=AsyncMock(return_value=_resp(200, {"id": "77"})),
+        )
+        with patch.object(ConfluenceDataCenter, "_get_site_url", AsyncMock(return_value=None)), \
+             patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await tool.update_page("77", page_content="", attachment_record_ids=["rec1"], attachment_display="inline")
+        assert ok
+        tool.client.update_content_v1.assert_awaited_once()
+        assert tool.client.update_content_v1.await_args.kwargs["body"]["body"]["storage"]["value"] == (
+            '<p>Keep</p><p><ac:image><ri:attachment ri:filename="diagram.png" /></ac:image></p>'
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_comment_in_storage_format_escapes_file_names(self) -> None:
+        tool = _dc(
+            upload_content_attachment=AsyncMock(return_value=_resp(200, _uploaded_body(title="R&D <plan>.pdf"))),
+            create_comment_v1=AsyncMock(return_value=_resp(200, {"id": "c1"})),
+        )
+        with patch.object(ConfluenceDataCenter, "_get_site_url", AsyncMock(return_value=None)), \
+             patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved(filename="R&D <plan>.pdf", mime="application/pdf")]))):
+            ok, _ = await tool.add_comment(
+                "77", "<p>See the plan</p>", attachment_record_ids=["rec1"], attachment_display="inline",
+            )
+        assert ok
+        assert tool.client.create_comment_v1.await_args.kwargs["body_value"] == (
+            "<p>See the plan</p><p>Attached to this page: R&amp;D &lt;plan&gt;.pdf</p>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_plain_comment_is_escaped_by_the_tool(self) -> None:
+        tool = _dc(
+            upload_content_attachment=AsyncMock(return_value=_resp(200, _uploaded_body(title="R&D.pdf"))),
+            create_comment_v1=AsyncMock(return_value=_resp(200, {"id": "c1"})),
+        )
+        with patch.object(ConfluenceDataCenter, "_get_site_url", AsyncMock(return_value=None)), \
+             patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved(filename="R&D.pdf", mime="application/pdf")]))):
+            ok, _ = await tool.add_comment("77", "See this", attachment_record_ids=["rec1"], attachment_display="inline")
+        assert ok
+        assert tool.client.create_comment_v1.await_args.kwargs["body_value"] == (
+            "<p>See this\n\nAttached to this page: R&amp;D.pdf</p>"
+        )
 
     @pytest.mark.asyncio
     async def test_audit_names_confluence_data_center(self) -> None:

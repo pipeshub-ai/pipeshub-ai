@@ -91,8 +91,10 @@ import {
   slackCallerDisplayName,
   isIgnoredSlackMessage,
   isThreadFollowUpMessage,
-  fetchPriorThreadMessages,
+  fetchPriorThread,
   collectThreadFilesSinceLastBotReply,
+  resolveOwnBotIdentity,
+  type PriorThreadMessages,
   MAX_ATTACHMENTS_PER_QUESTION,
   resolveThreadUserLabels,
   inferThreadMessageSpeaker,
@@ -159,16 +161,42 @@ async function buildThreadContextualQuery(
 async function fetchThreadContext(
   typedClient: TypedSlackClient,
   typedMessage: SlackMessagePayload,
-): Promise<SlackMessagePayload[]> {
+): Promise<PriorThreadMessages> {
   if (!isThreadFollowUpMessage(typedMessage)) {
-    return [];
+    return { messages: [], complete: true };
   }
   try {
-    return await fetchPriorThreadMessages(typedClient, typedMessage);
+    return await fetchPriorThread(typedClient, typedMessage);
   } catch (error) {
-    console.error("Failed to fetch Slack thread context:", error);
+    console.error('Failed to fetch Slack thread context:', error);
+    return { messages: [], complete: false };
+  }
+}
+
+/** Thread files for this question; none unless the whole thread was read. Never throws. */
+async function collectThreadFiles(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  thread: PriorThreadMessages,
+  botCacheKey: string,
+  knownBotUserId: string | undefined,
+): Promise<SlackFile[]> {
+  if (!thread.complete) {
     return [];
   }
+  const prior = thread.messages.filter((m) => m.ts !== typedMessage.ts);
+  const hasFiles = prior.some(
+    (m) => Array.isArray(m.files) && m.files.length > 0,
+  );
+  if (!hasFiles) {
+    return [];
+  }
+  const own = await resolveOwnBotIdentity(
+    typedClient,
+    botCacheKey,
+    knownBotUserId,
+  );
+  return collectThreadFilesSinceLastBotReply(prior, own.userId, own.botId);
 }
 
 async function buildQueryWithThreadContext(
@@ -206,14 +234,22 @@ async function uploadThreadFiles(
   agentId: string | null | undefined,
 ): Promise<AttachmentRef[]> {
   const files = threadFiles.slice(0, Math.max(slots, 0));
-  if (files.length === 0 || !botToken) {
+  if (files.length === 0 || botToken === undefined || botToken === '') {
     return [];
   }
   try {
-    const upload = await uploadSlackAttachments(files, botToken, accessToken, agentId);
+    const upload = await uploadSlackAttachments(
+      files,
+      botToken,
+      accessToken,
+      agentId,
+    );
     return upload.attachments;
   } catch (error) {
-    console.error("Error uploading Slack thread files:", error instanceof Error ? error.message : String(error));
+    console.error(
+      'Error uploading Slack thread files:',
+      error instanceof Error ? error.message : String(error),
+    );
     return [];
   }
 }
@@ -1571,11 +1607,18 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   try {
-    const priorMessages = await fetchThreadContext(typedClient, typedMessage);
+    const thread = await fetchThreadContext(typedClient, typedMessage);
     const contextualQuery = await buildQueryWithThreadContext(
       typedClient,
-      priorMessages,
+      thread.messages,
       query,
+      typedContext.botUserId,
+    );
+    const threadFiles = await collectThreadFiles(
+      typedClient,
+      typedMessage,
+      thread,
+      resolvedSlackBot?.botId ?? 'default',
       typedContext.botUserId,
     );
     await processSlackMessage(
@@ -1584,7 +1627,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedContext,
       contextualQuery,
       resolvedSlackBot,
-      collectThreadFilesSinceLastBotReply(priorMessages, typedContext.botUserId),
+      threadFiles,
     );
   } catch (error) {
     console.error("Error handling app mention:", error);

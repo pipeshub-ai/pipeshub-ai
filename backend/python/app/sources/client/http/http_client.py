@@ -1,3 +1,4 @@
+import secrets
 from typing import Optional
 
 import httpx  # type: ignore
@@ -80,11 +81,14 @@ class HTTPClient(IClient):
             **kwargs
         }
 
-        if request.files is not None:
-            # httpx writes the multipart boundary into Content-Type itself; a caller-set
-            # "multipart/form-data" without one makes the server reject the body.
+        if request.files:
+            # httpx only writes its multipart Content-Type when none is set, and a default
+            # the client was built with (often "application/json") counts as set. Naming the
+            # boundary here wins over both that default and a caller's bare "multipart/form-data";
+            # httpx encodes the body with the boundary it finds in this header.
             request_kwargs["headers"] = {
-                k: v for k, v in merged_headers.items() if k.lower() != "content-type"
+                **{k: v for k, v in merged_headers.items() if k.lower() != "content-type"},
+                "Content-Type": f"multipart/form-data; boundary={secrets.token_hex(16)}",
             }
             request_kwargs["files"] = request.files
             if isinstance(request.body, dict):

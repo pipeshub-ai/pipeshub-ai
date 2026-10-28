@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 
 from app.agents.actions.util.attachment_delivery import (
+    EMPTY_COMMENT_ERROR,
     DeliveryReport,
     PreparedAttachments,
+    comment_would_be_empty,
     deliver_attachments,
     issue_result_key,
     prepare_attachments,
@@ -57,6 +59,9 @@ Flavor = Literal["cloud", "data_center"]
 
 # Characters that end a wiki-markup image or attachment reference early.
 _WIKI_UNSAFE = re.compile(r"[|!\[\]]")
+
+# Over OAuth, Jira Cloud answers with URLs on the API gateway, which a browser can't open.
+_OAUTH_GATEWAY = re.compile(r"^https://api\.atlassian\.com/ex/jira/[^/]+")
 
 _UPLOAD_ERRORS = {
     HttpStatusCode.UNAUTHORIZED.value: "Jira did not accept the saved sign-in. Reconnect Jira, then try again.",
@@ -113,6 +118,8 @@ class JiraAttachmentUploader:
         try:
             settings = response.json()
         except Exception:
+            return None
+        if not isinstance(settings, dict):
             return None
         if settings.get("enabled") is False:
             self._preflight_error = "Attachments are turned off on this Jira site."
@@ -251,10 +258,18 @@ def wiki_with_attachments(text: str | None, report: DeliveryReport) -> str:
 class JiraIssueAttachments:
     """Attachment steps for a Jira toolset; `flavor` picks the API version and body format."""
 
-    def __init__(self, datasource: JiraDataSource, state: ChatState | None, *, flavor: Flavor) -> None:
+    def __init__(
+        self,
+        datasource: JiraDataSource,
+        state: ChatState | None,
+        *,
+        flavor: Flavor,
+        site_url: Callable[[], Awaitable[str | None]] | None = None,
+    ) -> None:
         self._ds = datasource
         self._state = state
         self._flavor = flavor
+        self._site_url_lookup = site_url
         self._target_app = "jira" if flavor == "cloud" else "jira_data_center"
         self.uploader = JiraAttachmentUploader(datasource, api_version="3" if flavor == "cloud" else "2")
 
@@ -316,6 +331,8 @@ class JiraIssueAttachments:
         add_comment: Callable[[str | dict[str, Any]], Awaitable[tuple[bool, str]]],
     ) -> tuple[bool, str]:
         """Attach files to the issue (Jira has no comment attachments), then post the comment."""
+        if not isinstance(comment, dict) and comment_would_be_empty(str(comment or ""), attachment_display):
+            return False, EMPTY_COMMENT_ERROR
         prepared = await self.prepare(refs)
         if prepared.abort_reason:
             return False, prepared.abort_payload()
@@ -334,13 +351,30 @@ class JiraIssueAttachments:
         return await prepare_attachments(self._state, refs, self.uploader)
 
     async def deliver(self, issue_key: str, prepared: PreparedAttachments) -> DeliveryReport:
-        return await deliver_attachments(
+        report = await deliver_attachments(
             self._state,
             prepared,
             self.uploader,
             AttachmentTarget(destination_id=issue_key, display_name=issue_key),
             target_app=self._target_app,
         )
+        await self._use_site_links(report)
+        return report
+
+    async def _use_site_links(self, report: DeliveryReport) -> None:
+        gateway_links = [r for r in report.uploaded if r.platform_url and _OAUTH_GATEWAY.match(r.platform_url)]
+        if not gateway_links or self._site_url_lookup is None:
+            return
+        try:
+            site = await self._site_url_lookup()
+        except Exception as exc:
+            # The files are already on the issue; a failure here must not read as a failed upload.
+            logger.warning("Jira site URL lookup failed: %s", type(exc).__name__)
+            return
+        if not site:
+            return
+        for result in gateway_links:
+            result.platform_url = _OAUTH_GATEWAY.sub(lambda _: site.rstrip("/"), result.platform_url, count=1)
 
     @staticmethod
     def without_placeholders(text: str | None) -> str | None:
@@ -380,11 +414,24 @@ class JiraIssueAttachments:
         return None
 
     async def _appended_description(self, issue_key: str, report: DeliveryReport) -> dict[str, Any] | str:
+        current = await self._current_description(issue_key)
         if self._flavor == "cloud":
-            response = await self._ds.get_issue(issueIdOrKey=issue_key, fields=["description"])
-            current = response.json().get("fields", {}).get("description") if response.status == HttpStatusCode.SUCCESS.value else None
             return adf_append_attachment_links(current, report)
-        response = await self._ds.get_issue_v2(issueIdOrKey=issue_key, fields=["description"])
-        current = response.json().get("fields", {}).get("description") if response.status == HttpStatusCode.SUCCESS.value else None
         references = "\n".join(wiki_reference(r) for r in report.uploaded)
         return f"{current}\n\n{references}" if current else references
+
+    async def _current_description(self, issue_key: str) -> object:
+        """The stored description (None when the issue has none).
+
+        Raises when it can't be read: treating a failed read as an empty description
+        would replace the real one with only the file links.
+        """
+        get_issue = self._ds.get_issue if self._flavor == "cloud" else self._ds.get_issue_v2
+        response = await get_issue(issueIdOrKey=issue_key, fields=["description"])
+        if response.status != HttpStatusCode.SUCCESS.value:
+            raise RuntimeError(f"Jira returned HTTP {response.status} reading {issue_key}")
+        body = response.json()
+        fields = body.get("fields") if isinstance(body, dict) else None
+        if not isinstance(fields, dict):
+            raise RuntimeError(f"Jira returned no fields for {issue_key}")
+        return fields.get("description")

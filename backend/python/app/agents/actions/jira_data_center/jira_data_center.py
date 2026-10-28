@@ -24,7 +24,7 @@ from app.agents.actions.jira.attachments import JiraIssueAttachments
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.actions.util.attachment_delivery import attachment_display_parameter
+from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
 from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
@@ -1393,15 +1393,20 @@ class JiraDataCenter:
         if not attachment_record_ids:
             return await self._update_issue(issue_key, *changes)
 
+        # A description that is blank once placeholders are removed is not a change: on its
+        # own it would fail the update ("No updates provided") before any file is sent.
+        new_description = self._normalize_description(description) if has_text(description) else None
+
         async def _update(text: str | None) -> tuple[bool, str]:
             return await self._update_issue(issue_key, summary, text, *changes[2:])
 
+        field_changes = (summary, new_description, *changes[2:])
         return await self._attachments.update_with_files(
             issue_key,
             attachment_record_ids,
             attachment_display,
-            self._normalize_description(description) if description else None,
-            _update if any(value is not None for value in changes) else None,
+            new_description,
+            _update if any(value is not None for value in field_changes) else None,
         )
 
     @tool(
@@ -1845,8 +1850,6 @@ class JiraDataCenter:
     ) -> tuple[bool, str]:
         if not attachment_record_ids:
             return await self._add_comment(issue_key, comment)
-        if not comment or not str(comment).strip():
-            return False, json.dumps({"error": "Comment text is required and cannot be empty"})
         return await self._attachments.comment_with_files(
             issue_key,
             attachment_record_ids,

@@ -275,7 +275,7 @@ class TestExecute:
         assert "json" not in call_args[1]
         assert "content" not in call_args[1]
         headers = call_args[1]["headers"]
-        assert "Content-Type" not in headers
+        assert headers["Content-Type"].startswith("multipart/form-data; boundary=")
         assert headers["X-Atlassian-Token"] == "no-check"
         assert headers["Authorization"] == "Bearer t"
 
@@ -323,6 +323,50 @@ class TestExecute:
         assert b'name="file"; filename="bug.png"' in seen["body"]
         assert b"PNGDATA" in seen["body"]
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_multipart_overrides_a_json_client_default(self) -> None:
+        import httpx
+
+        seen: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen["content_type"] = req.headers["content-type"]
+            seen["body"] = req.read()
+            return httpx.Response(200, json={})
+
+        client = HTTPClient(token="t")
+        client.headers["Content-Type"] = "application/json"
+        client.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), headers=client.headers,
+        )
+        request = HTTPRequest(
+            url="https://api.example.com/upload",
+            method="POST",
+            body={"name": "n"},
+            files=[("file", ("a.txt", b"hi", "text/plain"))],
+        )
+        await client.execute(request)
+
+        boundary = seen["content_type"].removeprefix("multipart/form-data; boundary=")
+        assert boundary != seen["content_type"]
+        assert f"--{boundary}".encode() in seen["body"]
+        assert b'name="name"' in seen["body"]
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_empty_files_sends_json_as_before(self) -> None:
+        client = HTTPClient(token="t")
+        mock_httpx_client = AsyncMock()
+        mock_httpx_client.request = AsyncMock(return_value=MagicMock())
+        client.client = mock_httpx_client
+
+        request = HTTPRequest(url="https://api.example.com/items", method="POST", body={"a": 1}, files=[])
+        await client.execute(request)
+
+        call_args = mock_httpx_client.request.call_args
+        assert call_args[1]["json"] == {"a": 1}
+        assert "files" not in call_args[1]
 
     def test_to_json_omits_files_when_unset(self) -> None:
         request = HTTPRequest(url="https://api.example.com/items", method="GET")

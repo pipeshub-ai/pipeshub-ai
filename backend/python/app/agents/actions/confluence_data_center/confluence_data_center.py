@@ -28,7 +28,10 @@ from app.agents.actions.confluence.attachments import (
     CONFLUENCE_INLINE_NOTE,
     ConfluencePageAttachments,
 )
-from app.agents.actions.util.attachment_delivery import attachment_display_parameter
+from app.agents.actions.util.attachment_delivery import (
+    attachment_display_parameter,
+    has_text,
+)
 from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
@@ -885,9 +888,12 @@ class ConfluenceDataCenter:
         async def _update(content: str | None) -> tuple[bool, str]:
             return await self._update_page(page_id, page_title, content, parent_page_id)
 
-        has_changes = bool(page_title or page_content or parent_page_id)
+        # Blank once placeholders are removed means "keep the body"; placing files would
+        # otherwise rebuild the page from that blank text.
+        new_content = page_content if has_text(page_content) else None
+        has_changes = bool(page_title or new_content or parent_page_id)
         return await self._attachments.update_with_files(
-            page_id, attachment_record_ids, attachment_display, page_content, _update if has_changes else None,
+            page_id, attachment_record_ids, attachment_display, new_content, _update if has_changes else None,
         )
 
     @tool(
@@ -1079,8 +1085,6 @@ class ConfluenceDataCenter:
         """Add a comment, attaching any requested files to the page."""
         if not attachment_record_ids:
             return await self._add_comment(page_id, comment_text, parent_comment_id)
-        if not comment_text or not str(comment_text).strip():
-            return False, json.dumps({"error": "Comment text is required and cannot be empty"})
         return await self._attachments.comment_with_files(
             page_id,
             attachment_record_ids,

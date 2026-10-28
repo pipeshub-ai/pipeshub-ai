@@ -20,9 +20,12 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 
 from app.agents.actions.util.attachment_delivery import (
+    EMPTY_COMMENT_ERROR,
     DeliveryReport,
     PreparedAttachments,
+    comment_would_be_empty,
     deliver_attachments,
+    has_text,
     issue_result_key,
     prepare_attachments,
     replace_placeholders,
@@ -281,23 +284,33 @@ class ConfluencePageAttachments:
         add_comment: Callable[[str], Awaitable[tuple[bool, str]]],
     ) -> tuple[bool, str]:
         """Attach files to the page, then post the comment (naming them when inline)."""
+        if comment_would_be_empty(str(comment or ""), attachment_display):
+            return False, EMPTY_COMMENT_ERROR
         prepared = await self.prepare(refs)
         if prepared.abort_reason:
             return False, prepared.abort_payload()
         report = await self.deliver(page_id, prepared)
-        text = strip_placeholders(comment).rstrip()
+        text = strip_placeholders(str(comment or "")).rstrip()
         if wants_inline(attachment_display) and report.uploaded:
-            names = ", ".join(r.display_name for r in report.uploaded)
-            text = f"{text}\n\nAttached to this page: {names}" if text else f"Attached to this page: {names}"
+            text = self._with_file_names(text, report)
         ok, result = await add_comment(text)
         # Reported even when the comment fails: the files are already on the page.
         return ok, with_attachment_outcome(result, report)
+
+    def _with_file_names(self, text: str, report: DeliveryReport) -> str:
+        line = "Attached to this page: " + ", ".join(r.display_name for r in report.uploaded)
+        # Data Center posts a comment that starts with a tag as storage XHTML as-is
+        # (`_to_storage_body`), so a bare '&' or '<' in a file name would make it invalid.
+        if self._flavor == "data_center" and text.strip().startswith("<"):
+            return text + _paragraph(html.escape(line))
+        return f"{text}\n\n{line}" if text else line
 
     async def place_in_page(self, page_id: str, report: DeliveryReport, content: str | None) -> str | None:
         """Write the uploaded files into the page body; returns a warning on failure.
 
         With `content` (what the tool just wrote, placeholders intact) the body is rebuilt from
-        it. Without, the files are appended to the current body.
+        it. Without, or when it is blank once placeholders are removed, the files are appended
+        to the current body.
         """
         if not report.uploaded:
             return None
@@ -306,7 +319,7 @@ class ConfluencePageAttachments:
                 current = await self._current_page(page_id)
                 if current is None:
                     return "Files were attached, but the page could not be read to place them."
-                if content is not None:
+                if content is not None and has_text(content):
                     body = replace_placeholders(
                         self._to_storage(content), report, storage_reference, wrap_appended=_paragraph,
                     )

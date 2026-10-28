@@ -188,7 +188,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -275,7 +275,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -414,7 +414,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -509,7 +509,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1516,7 +1516,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1595,7 +1595,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1784,7 +1784,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1879,7 +1879,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
