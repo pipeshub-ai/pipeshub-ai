@@ -12470,7 +12470,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         limit: int = 500,
     ) -> list[str]:
         """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
-        if not org_id or not record_types:
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if not org_id or not record_types or limit == 0:
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
@@ -12489,7 +12491,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT $limit
             """,
             parameters={
-                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": max(1, limit),
+                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit,
             },
         )
         return [str(row["id"]) for row in rows or [] if row.get("id")]
