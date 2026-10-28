@@ -4315,7 +4315,7 @@ class TestEventsLeavingScope:
     )])
 
     async def _apply(
-        self, folder_connector, tmp_path: Path, events, sync_filters=None
+        self, folder_connector, tmp_path: Path, events, sync_filters=None, seen_external_ids=None
     ) -> tuple[Any, list[str]]:
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
@@ -4334,7 +4334,7 @@ class TestEventsLeavingScope:
             "app.connectors.sources.local_fs.connector.load_connector_filters",
             new=AsyncMock(return_value=(sync_filters or FilterCollection(filters=[]), FilterCollection(filters=[]))),
         ):
-            stats = await apply_batch(folder_connector, events)
+            stats = await apply_batch(folder_connector, events, seen_external_ids=seen_external_ids)
         return stats, retired
 
     @staticmethod
@@ -4363,6 +4363,14 @@ class TestEventsLeavingScope:
         )
         assert stats.skipped == 1
         assert retired == []
+
+    async def test_a_file_without_a_hash_is_kept_by_a_full_run(self, folder_connector, tmp_path) -> None:
+        seen: set[str] = set()
+        await self._apply(
+            folder_connector, tmp_path, [self._event("MODIFIED", "locked.pdf", sha256=None)],
+            seen_external_ids=seen,
+        )
+        assert folder_connector._external_record_id_for_rel_path("locked.pdf") in seen
 
     async def test_a_move_without_a_hash_retires_only_the_path_it_left(self, folder_connector, tmp_path) -> None:
         _stats, retired = await self._apply(
