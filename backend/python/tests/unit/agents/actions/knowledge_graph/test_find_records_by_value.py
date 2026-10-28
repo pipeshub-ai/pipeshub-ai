@@ -23,9 +23,10 @@ APP = "app-1"
 
 
 def _context(**extra: object) -> EntityAccessContext:
+    fields = {"app_level_app_ids": frozenset({APP}), **extra}
     return EntityAccessContext(
-        org_id="org", user_key="uk", app_level_app_ids=frozenset({APP}),
-        record_level_app_ids=frozenset(), record_group_ids=frozenset(), app_names={APP: "Invoices"}, **extra,
+        org_id="org", user_key="uk", record_level_app_ids=frozenset(), record_group_ids=frozenset(),
+        app_names={APP: "Invoices"}, **fields,
     )
 
 
@@ -298,3 +299,28 @@ async def test_an_unknown_record_type_lists_the_valid_ones(env: AsyncMock) -> No
     ok, message = await values.execute_find_records_by_value(_state(graph), kinds=["date"], record_types=["invoice"])
     assert not ok and message.startswith("Unknown record type: INVOICE.") and "FILE" in message
     graph.get_records_for_named_entities.assert_not_called()
+
+
+
+async def test_source_ids_keep_one_source_and_are_repeated_in_the_continue_call(env: AsyncMock) -> None:
+    env.return_value = _context(app_level_app_ids=frozenset({APP, "kb-other"}))
+    graph = _graph([])
+    graph.get_records_for_named_entities = AsyncMock(return_value={"hits": [
+        *({"recordId": f"r{i:03}", "virtualRecordId": "v", "connectorId": APP, "sortTs": 100 - i} for i in range(25)),
+        {"recordId": "other", "virtualRecordId": "v", "connectorId": "kb-other", "sortTs": 999},
+    ], "truncated": False})
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], source_ids=[APP])
+    assert ok and "other" not in _listed(body) and len(_listed(body)) == 20
+    assert f'source_ids=["{APP}"]' in body
+
+
+async def test_a_source_outside_the_conversation_says_so(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], source_ids=["kb-hidden"])
+    assert (ok, body) == (True, values.NO_SOURCE_MSG)
+    graph.filter_accessible_record_ids.assert_not_called()
+
+
+async def test_percent_bounds_written_as_whole_numbers_get_a_hint(env: AsyncMock) -> None:
+    ok, body = await values.execute_find_records_by_value(_state(_graph([])), percent_min=15, percent_max=20)
+    assert ok and "0.15 for 15%" in body

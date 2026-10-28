@@ -70,6 +70,17 @@ NO_MATCH_MSG = "No accessible records matched."
 NO_FURTHER_RECORDS_MSG = "No further readable records match - the previous page was the last."
 _RECORD_TYPES_HINT = " To keep only some records, pass record_types=[...] (FILE, MAIL, TICKET, ...) or use search."
 _RECORD_TYPES = frozenset(record_type.value for record_type in RecordType)
+NO_SOURCE_MSG = (
+    "None of the named sources is available in this conversation; omit source_ids to look in every "
+    "source, or pass an app or knowledge base id that list_files or navigate shows."
+)
+
+
+def _percent_hint(low: float | None, high: float | None) -> str:
+    """Percentages are fractions; "15 to 20" read as 1,500% to 2,000% matches nothing."""
+    if any(bound is not None and abs(bound) > 1 for bound in (low, high)):
+        return "Percent bounds are fractions: 0.15 for 15%."
+    return ""
 
 
 async def execute_find_records_by_value(
@@ -88,6 +99,7 @@ async def execute_find_records_by_value(
     percent_min: float | None = None,
     percent_max: float | None = None,
     record_types: list[str] | None = None,
+    source_ids: list[str] | None = None,
     limit: int = _DEFAULT_LIMIT,
     cursor: str | None = None,
 ) -> tuple[bool, str]:
@@ -125,6 +137,9 @@ async def execute_find_records_by_value(
         )
     if wanted_types:
         given["record_types"] = wanted_types
+    wanted_sources = list(dict.fromkeys(str(s).strip() for s in (source_ids or []) if str(s).strip()))
+    if wanted_sources:
+        given["source_ids"] = wanted_sources
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
     try:
         resume = _parse_resume(cursor)
@@ -164,7 +179,10 @@ async def execute_find_records_by_value(
             return False, match.error + hint
         # Every page matches the filter again: the cursor is a place in the
         # ordering, not a stored result set, so nothing is held between calls.
-        hits = _ordered(match.hits, context, wanted_types)
+        sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
+        if not sources:
+            return True, NO_SOURCE_MSG
+        hits = _ordered(match.hits, sources, wanted_types)
         start = resume if isinstance(resume, int) else bisect.bisect_right([_sort_key(h) for h in hits], resume)
         page, next_cursor, budget_spent = await _readable_page(
             graph, context, hits, user_id, org_id, start, bounded_limit,
@@ -183,7 +201,9 @@ async def execute_find_records_by_value(
             )
         if cursor:
             return True, NO_FURTHER_RECORDS_MSG
-        return True, " ".join(filter(None, (NO_MATCH_MSG, limited_scope_note(context))))
+        return True, " ".join(filter(None, (
+            NO_MATCH_MSG, _percent_hint(percent_min, percent_max), limited_scope_note(context),
+        )))
 
     record_ids = [r["_key"] for r in records]
     remember_record_ids(state, record_ids, names={r["_key"]: r.get("recordName") or "" for r in records})
@@ -223,14 +243,14 @@ def _pair(low_name: str, low: object, high_name: str, high: object, **extra: obj
 
 
 def _ordered(
-    hits: tuple[EntityFilterHit, ...], context: EntityAccessContext, record_types: list[str],
+    hits: tuple[EntityFilterHit, ...], sources: set[str] | frozenset[str], record_types: list[str],
 ) -> list[EntityFilterHit]:
-    """In-scope hits of the wanted types, one per record, most recently modified first.
+    """Hits in ``sources`` of the wanted types, one per record, newest first.
     The order is what a cursor offsets into, so ties fall back to the record id."""
     unique = {
         hit.record_id: hit
         for hit in hits
-        if hit.connector_id in context.app_ids and (not record_types or hit.record_type.upper() in record_types)
+        if hit.connector_id in sources and (not record_types or hit.record_type.upper() in record_types)
     }
     return sorted(unique.values(), key=_sort_key)
 
