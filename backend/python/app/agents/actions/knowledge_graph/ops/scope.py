@@ -141,12 +141,7 @@ def browsable_app_ids(state: "ChatState", scope: KnowledgeScope) -> list[str]:
 def turn_picked_sources(state: "ChatState") -> bool:
     """Whether the turn is limited to sources the user picked (or a project's,
     under ``strictScope``), not counting the attachments chat mode adds."""
-    filters = state.get("filters") or {}
-    picked = _picked_apps(filters)
-    if picked is None:
-        return False
-    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
-    return bool(filters.get(STRICT_SCOPE_FILTER_KEY)) or bool(picked - attached)
+    return _turn_picked_apps(state) is not None
 
 
 def _clean_kb(raw: list[str]) -> tuple[str, ...]:
@@ -157,14 +152,26 @@ def _has_selection(filters: Mapping[str, object]) -> bool:
     return any(filters.get(key) for key in SELECTION_FILTER_KEYS)
 
 
-def _navigation_is_limited(filters: Mapping[str, object]) -> bool:
+def _navigation_is_limited(state: "Mapping[str, object]") -> bool:
     """Whether a navigate answer has to stay inside a selection, a picked app,
     or a saved agent's or a project's sources."""
+    filters = state.get("filters") or {}
     return (
         _has_selection(filters)
-        or _picked_apps(filters) is not None
+        or _turn_picked_apps(state) is not None
         or any(key in filters for key in ALLOWED_FILTER_KEYS)
     )
+
+
+def _turn_picked_apps(state: "Mapping[str, object]") -> frozenset[str] | None:
+    """``_picked_apps`` without the attachments chat mode adds to ``kb``: they
+    are part of the question, and as picked apps they would hide every source.
+    A project's strict scope keeps what it names."""
+    filters = state.get("filters") or {}
+    picked = _picked_apps(filters)
+    if picked is None or filters.get(STRICT_SCOPE_FILTER_KEY):
+        return picked
+    return (picked - set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())) or None
 
 
 def _picked_apps(filters: Mapping[str, object]) -> frozenset[str] | None:
@@ -289,7 +296,7 @@ async def ids_within_scope(
 
     filters = state.get("filters") or {}
     ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
-    picked = _picked_apps(filters)
+    picked = _turn_picked_apps(state)
     scoped = _has_selection(filters) or picked is not None or any(key in filters for key in ALLOWED_FILTER_KEYS)
     if not scoped or not ids:
         return set(ids)
@@ -355,8 +362,7 @@ async def navigation_nameable_ids(
     Children are always checked. The listing is not told the conversation's
     limit, and a child the user cannot read must not be offered to fetch.
     """
-    filters = state.get("filters") or {}
-    if _navigation_is_limited(filters):
+    if _navigation_is_limited(state):
         asked = list(dict.fromkeys([*ancestor_ids, *row_ids, *related_ids]))
         allowed = await ids_within_scope(state, graph_provider, user_key, org_id, asked) if asked else set()
         return allowed, allowed, allowed
@@ -376,7 +382,7 @@ async def ids_outside_scope(
     for a turn with neither, without asking the graph."""
     filters = state.get("filters") or {}
     scoped = (
-        _has_selection(filters) or _picked_apps(filters) is not None
+        _has_selection(filters) or _turn_picked_apps(state) is not None
         or any(key in filters for key in ALLOWED_FILTER_KEYS)
     )
     if not scoped:

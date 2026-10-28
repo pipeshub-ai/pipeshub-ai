@@ -1118,6 +1118,41 @@ class TestNavigateAgentScoping:
         assert captured["connector_ids"] == ["conn-jira"]
         assert "jira-1" not in str(output) and "Outside ticket" not in str(output)
 
+    @pytest.mark.asyncio
+    async def test_an_attachment_alone_does_not_limit_what_navigate_may_name(self) -> None:
+        """Chat mode puts an attachment's id in kb; read as a picked app, it
+        refused every knowledge base the user opened."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            turn_picked_sources,
+        )
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["vrid-1"]}, attachment_record_ids=["vrid-1"], has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock()
+        assert await ids_within_scope(state, gp, "user-key-1", "org-1", ["kb-a", "rec-1"]) == {"kb-a", "rec-1"}
+        gp.check_access.assert_not_awaited()
+        assert turn_picked_sources(state) is False
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_next_to_a_picked_kb_limits_to_the_kb(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["kb-a", "vrid-1"]}, attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset(), node_ids_in_scope=frozenset()))
+        with patch(
+            "app.modules.retrieval.selection_scope.resolve_request_scopes", AsyncMock(return_value=(None, [])),
+        ):
+            await ids_within_scope(state, gp, "user-key-1", "org-1", ["rec-1"])
+        scopes = gp.check_access.await_args.kwargs["scopes"]
+        assert [scope.app_ids for scope in scopes] == [frozenset({"kb-a"})]
+
 
 class TestNavigateDepthSingleQuery:
     """`depth` (1-3) on a record/folder parent is passed straight through to
