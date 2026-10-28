@@ -225,6 +225,7 @@ IT_NO_STACK = (
     "integration-tests/sdk_tests/**",
     "integration-tests/perf/**",
 )
+IT_RUNTIME_TREES = (f"{PYTHON}/app/", f"{PYTHON}/tests/evals/", "backend/nodejs/apps/src/", "frontend/", "integration-tests/")
 # The demo questions' model list, which integration-tests/connectors/demo imports.
 IT_DEMO = (f"{PYTHON}/tests/evals/**",)
 # Test folders whose tests only the core shard runs and that no other folder
@@ -299,6 +300,19 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     # Marked cifs, which no shard selects; core still collects the files.
     "cifs": (),
 }
+# Shards whose suites import a connector test folder's helpers, beyond the
+# folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
+# Teams' (which uses Jira's block parser), Gmail on Google Drive's sync helpers,
+# and the cleanup tests on core create MinIO, Postgres and S3 connectors.
+# test_pr_changes.py follows the suite's imports and fails when this misses one.
+CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
+    "github_teams": ("connectors-1",),
+    "google_drive_workspace": ("connectors-2",),
+    "jira": ("connectors-1", "connectors-3"),
+    "minio": ("core",),
+    "postgres": ("core",),
+    "s3": ("connectors-1", "core"),
+}
 
 _CONNECTOR_CODE = re.compile("(?:" + "|".join(map(re.escape, CONNECTOR_ROOTS)) + r")/([^/]+)/")
 _CONNECTOR_TEST = re.compile(re.escape(CONNECTOR_TESTS) + r"/([^/]+)/")
@@ -309,7 +323,9 @@ def _shards_of(markers: Iterable[str]) -> set[str]:
 
 
 def _integration_shards_for(path: str) -> set[str]:
-    if matches(path, DOCS):
+    # Markdown in these trees can be what the code or the tests read (the skill
+    # loader's files, the parser fixtures), so it follows its folder's rule.
+    if matches(path, DOCS) and not path.startswith(IT_RUNTIME_TREES):
         return set()
     if matches(path, IT_DEMO):
         return {"demo"}
@@ -323,7 +339,7 @@ def _integration_shards_for(path: str) -> set[str]:
         markers = CONNECTOR_TEST_MARKERS.get(name, (name,) if name in _SHARD_OF else None)
         if markers is None:
             return set(IT_SHARDS)
-        return _shards_of(markers) or {"core"}
+        return (_shards_of(markers) or {"core"}) | set(CONNECTOR_TESTS_ALSO_RUN.get(name, ()))
     if matches(path, IT_CORE):
         return {"core"}
     return set(IT_SHARDS)

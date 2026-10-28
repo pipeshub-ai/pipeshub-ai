@@ -301,11 +301,22 @@ class TestIntegrationShards(unittest.TestCase):
                 self.assertEqual(shards(path), ALL_SHARDS)
 
     def test_a_connectors_tests_run_its_shard(self) -> None:
-        self.assertEqual(shards("integration-tests/connectors/jira/test_jira_full.py"), {"connectors-2"})
+        self.assertEqual(shards("integration-tests/connectors/zendesk/test_zendesk_full.py"), {"connectors-2"})
         self.assertEqual(shards("integration-tests/connectors/sharepoint/test_x.py"), {"connectors-1", "connectors-3"})
         self.assertEqual(shards("integration-tests/connectors/demo/test_demo.py"), {"demo"})
         self.assertEqual(shards("integration-tests/connectors/cifs/test_x.py"), {"core"})
         self.assertEqual(shards("integration-tests/connectors/scenario_matrix.py"), ALL_SHARDS)
+
+    def test_a_connector_test_helper_other_suites_import_runs_their_shards_too(self) -> None:
+        # MinIO subclasses S3's storage helper, and the cleanup tests on core use MinIO's.
+        self.assertEqual(shards("integration-tests/connectors/s3/s3_storage_helper.py"), {"connectors-1", "connectors-3", "core"})
+        self.assertEqual(shards("integration-tests/connectors/jira/jira_block_utils.py"), {"connectors-1", "connectors-2", "connectors-3"})
+
+    def test_markdown_the_code_or_tests_read_is_not_docs(self) -> None:
+        self.assertEqual(shards("integration-tests/parsers/fixtures/research.md"), {"core"})
+        self.assertEqual(shards("integration-tests/connectors/zendesk/README.md"), {"connectors-2"})
+        self.assertEqual(shards("backend/python/app/agents/skills/x/SKILL.md"), ALL_SHARDS)
+        self.assertEqual(shards("docs/indexing-service.md", "changelog/1.0.0.md"), set())
 
     def test_core_only_tests_and_the_frontend_run_core(self) -> None:
         for path in (
@@ -341,7 +352,7 @@ class TestIntegrationShards(unittest.TestCase):
         self.assertEqual(set(pc.integration_shards(["README.md"] * pc.FILES_API_LIMIT)), ALL_SHARDS)
 
     def test_shards_come_out_in_the_workflows_order(self) -> None:
-        listed = list(pc.integration_shards(["frontend/app/page.tsx", "integration-tests/connectors/jira/test_x.py"]))
+        listed = list(pc.integration_shards(["frontend/app/page.tsx", "integration-tests/connectors/zendesk/test_x.py"]))
         self.assertEqual(listed, ["connectors-2", "core"])
 
 
@@ -391,55 +402,9 @@ class TestTheShardRulesMatchTheRepository(unittest.TestCase):
         self.assertIsNotNone(it_all)
         self.assertEqual(json.loads(it_all.group(1)), list(pc.IT_SHARDS))
 
-    def test_every_connector_test_file_carries_a_marker_of_its_shards(self) -> None:
-        marker = re.compile(r"pytest\.mark\.(\w+)")
-        checked = 0
-        for folder in sorted(p for p in (IT / "connectors").iterdir() if p.is_dir() and not p.name.startswith("__")):
-            expected = pc._integration_shards_for(f"integration-tests/connectors/{folder.name}/x.py")
-            for path in folder.rglob("*.py"):
-                text = path.read_text(encoding="utf-8", errors="ignore")
-                if not re.search(r"^\s*(?:async )?def test_", text, re.M):
-                    continue
-                checked += 1
-                found = {pc._SHARD_OF[m] for m in marker.findall(text) if m in pc._SHARD_OF}
-                with self.subTest(path=str(path.relative_to(ROOT))):
-                    if expected == {"core"}:
-                        self.assertEqual(found, set())
-                    else:
-                        self.assertTrue(found, "no connector marker, so core runs it")
-                        self.assertLessEqual(found, expected)
-        self.assertGreater(checked, 50)
-        for name in pc.CONNECTOR_TEST_MARKERS:
+    def test_every_connector_test_folder_named_exists(self) -> None:
+        for name in {*pc.CONNECTOR_TEST_MARKERS, *pc.CONNECTOR_TESTS_ALSO_RUN}:
             self.assertTrue((IT / "connectors" / name).is_dir(), name)
-
-    def test_core_only_folders_hold_no_shard_markers_and_neither_do_their_importers(self) -> None:
-        # A change to a core-only folder runs core alone, so every test it can
-        # reach, its own and those of any folder that imports it, must run there.
-        core_folders = {glob.split("/")[1] for glob in pc.IT_CORE if glob.startswith("integration-tests/")}
-        folders = {p.name.replace("-", "_"): p.name for p in IT.iterdir() if p.is_dir()}
-        imported_by: dict[str, set[str]] = {}
-        for path in IT.rglob("*.py"):
-            if ".venv" in path.parts or len(path.relative_to(IT).parts) < 2:
-                continue
-            here = path.relative_to(IT).parts[0]
-            for module in _imports(path, ""):
-                top = folders.get(module.split(".")[0])
-                if top and top != here:
-                    imported_by.setdefault(top, set()).add(here)
-        reach = set(core_folders)
-        todo = list(core_folders)
-        while todo:
-            for importer in imported_by.get(todo.pop(), ()):
-                if importer not in reach:
-                    reach.add(importer)
-                    todo.append(importer)
-        self.assertIn("pattern_match", reach, "the import walk found nothing, so it checked nothing")
-        marker = re.compile(r"pytest\.mark\.(\w+)")
-        for folder in sorted(reach):
-            for path in (IT / folder).rglob("*.py"):
-                found = {m for m in marker.findall(path.read_text(encoding="utf-8", errors="ignore")) if m in pc._SHARD_OF}
-                with self.subTest(path=str(path.relative_to(ROOT))):
-                    self.assertEqual(found, set())
 
     def test_a_listed_connector_folder_is_imported_only_where_its_shards_cover(self) -> None:
         allowed = ("app/agents/actions/", "app/agents/tools/", "app/connectors/core/")
@@ -464,27 +429,96 @@ class TestTheShardRulesMatchTheRepository(unittest.TestCase):
                         self.assertLessEqual({"core"} | pc._shards_of(importer), covers)
         self.assertGreater(checked, 100)
 
-    def test_a_suite_that_imports_connector_or_backend_test_code_runs_when_it_changes(self) -> None:
-        checked = 0
-        for path in IT.rglob("*.py"):
-            if ".venv" in path.parts:
-                continue
+    def test_a_change_to_any_suite_file_runs_every_shard_that_executes_it(self) -> None:
+        executing = _shards_executing_each_file()
+        self.assertGreater(sum(1 for shards in executing.values() if shards), 300)
+        # A case the walk must see: an import through another connector folder and helper/.
+        s3_helper = IT / "connectors" / "s3" / "s3_storage_helper.py"
+        self.assertEqual(executing[s3_helper], {"connectors-1", "connectors-3", "core"})
+        for path, needed in sorted(executing.items()):
             rel = path.relative_to(ROOT).as_posix()
-            needed = pc._integration_shards_for(rel)
+            with self.subTest(path=rel):
+                self.assertLessEqual(needed, pc._integration_shards_for(rel))
+
+    def test_a_change_to_connector_or_backend_test_code_runs_every_shard_whose_suites_import_it(self) -> None:
+        checked = 0
+        for path, needed in _shards_executing_each_file().items():
+            if not needed:
+                continue
             for module in _imports(path, ""):
                 if module.startswith("app."):
                     target = "backend/python/" + module.replace(".", "/") + "/x"
+                    if _connector_folder(target.removeprefix("backend/python/")) is None:
+                        continue
                 elif module.startswith("tests."):
                     target = "backend/python/" + module.replace(".", "/") + ".py"
                 else:
                     continue
-                if _connector_folder(target.removeprefix("backend/python/")) is None and not module.startswith("tests."):
-                    continue
                 checked += 1
-                with self.subTest(importer=rel, imports=module):
+                with self.subTest(importer=path.relative_to(ROOT).as_posix(), imports=module):
                     self.assertLessEqual(needed, pc._integration_shards_for(target))
-        self.assertGreater(checked, 0)
+        self.assertGreater(checked, 10)
 
+
+# conftest.py puts these folders on sys.path, so their modules import by bare name.
+_BARE_IMPORT_FOLDERS = ("helper", "sample-data")
+_TEST_FILE = re.compile(r"(?:integration_test_.*|test_.*|.*_test)\.py\Z")
+_EXECUTING: dict[Path, set[str]] = {}
+
+
+def _testpaths() -> set[str]:
+    block = (IT / "pytest.ini").read_text().split("testpaths =", 1)[1].split("\n\n", 1)[0]
+    return {line.strip() for line in block.splitlines() if line.strip() and not line.lstrip().startswith("#")}
+
+
+def _shards_executing_each_file() -> dict[Path, set[str]]:
+    """For each file in integration-tests, the shards that run a test importing it
+    (directly or through other modules), or under it when it is a conftest.py."""
+    if _EXECUTING:
+        return _EXECUTING
+    files = [p for p in IT.rglob("*.py") if ".venv" not in p.parts and "node_modules" not in p.parts]
+    modules: dict[str, Path] = {}
+    for path in files:
+        parts = [part.replace("-", "_") for part in path.relative_to(IT).with_suffix("").parts]
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            modules[".".join(parts)] = path
+            if path.relative_to(IT).parts[0] in _BARE_IMPORT_FOLDERS and len(parts) > 1:
+                modules[".".join(parts[1:])] = path
+
+    def resolve(path: Path) -> set[Path]:
+        package = ".".join(part.replace("-", "_") for part in path.relative_to(IT).parent.parts)
+        found = set()
+        for module in _imports(path, package):
+            while module:
+                if module in modules:
+                    found.add(modules[module])
+                    break
+                module = module.rpartition(".")[0]
+        return found
+
+    deps = {path: resolve(path) for path in files}
+    marker = re.compile(r"pytest\.mark\.(\w+)")
+    collected = _testpaths() - {"unit"}
+    executing: dict[Path, set[str]] = {path: set() for path in files}
+    for test in files:
+        if not _TEST_FILE.match(test.name) or test.relative_to(IT).parts[0] not in collected:
+            continue
+        text = test.read_text(encoding="utf-8", errors="ignore")
+        runs_on = {pc._SHARD_OF[m] for m in marker.findall(text) if m in pc._SHARD_OF} or {"core"}
+        todo = [test] + [folder / "conftest.py" for folder in (test.parent, *test.parent.parents) if folder == IT or IT in folder.parents]
+        seen: set[Path] = set()
+        while todo:
+            path = todo.pop()
+            if path in seen or path not in deps:
+                continue
+            seen.add(path)
+            todo.extend(deps[path])
+        for path in seen:
+            executing[path] |= runs_on
+    _EXECUTING.update(executing)
+    return _EXECUTING
 
 if __name__ == "__main__":
     unittest.main()
