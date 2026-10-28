@@ -59,8 +59,12 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} }
   }
 
+  // Where LocalStorageAdapter puts the mount on this platform.
+  const mountParent = (): string =>
+    path.join(home, process.platform === 'darwin' ? 'Library' : process.platform === 'win32' ? 'AppData' : '.local')
+
   const filesOnDisk = (): string[] => {
-    const root = path.join(home, '.local', MOUNT)
+    const root = path.join(mountParent(), MOUNT)
     if (!fs.existsSync(root)) return []
     return (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((p) => fs.statSync(path.join(root, p)).isFile())
@@ -190,8 +194,8 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
 
   it('says the file was not saved, with 503 and no document, when the storage folder cannot be made', async () => {
     // A plain file where the mount folder belongs: every attempt to make it fails.
-    fs.mkdirSync(path.join(home, '.local'), { recursive: true })
-    fs.writeFileSync(path.join(home, '.local', MOUNT), '')
+    fs.mkdirSync(mountParent(), { recursive: true })
+    fs.writeFileSync(path.join(mountParent(), MOUNT), '')
 
     const r = await upload()
 
