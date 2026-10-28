@@ -34,6 +34,7 @@ The file name and type are given with the document content. Use the file metadat
 1. **Departments**:
    - List first the department that **owns** the document: the team that wrote it, maintains it or runs the work it records. A company policy belongs to the team that issues it, even when it governs another department's spending; a market study or an event report belongs to the team that produced it, not the one that will read it.
    - Add a **second** when the document is also directly another department's work: the department it governs, serves or reports to. Do not add a department only because the document mentions its subject, or as a fallback. Use the names in the list. **At most 2.**
+   - Judge from this organization's own side: a contract or order where it sells is its sales work, one where it buys is its purchasing work; the other party's departments do not count.
    - Choose ONLY from the provided list below.
    - Each department MUST **exactly match one** of the values in the list.
    - Any unlisted or paraphrased value is INVALID.
