@@ -129,23 +129,33 @@ def _with_sign(text: str, start: int, end: int, kind: EntityKind) -> tuple[int, 
     """Take in a minus sign or accounting parentheses: a refund of "-$500" or a
     "($1,200)" loss is not the same amount as a $500 fee. A percentage in
     parentheses is negative only standing alone on its line or in a table cell
-    ("(3.2%)"); after text it is an aside ("Sales tax (CA) (8.25%)" is 8.25%). A temperature takes a minus
-    sign only."""
+    ("(3.2%)"); next to text it is an aside ("Sales tax (CA) (8.25%)", "(8.25%) sales
+    tax"). A temperature takes a minus sign only, and a doubled one ("--25 °C") is no sign."""
     if (
         kind is not EntityKind.DIMENSION
         and start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")"
-        and (kind is not EntityKind.PERCENTAGE or _stands_alone(text, start - 1))
+        and (kind is not EntityKind.PERCENTAGE or _stands_alone(text, start - 1, end + 1))
     ):
         return start - 1, end + 1
-    if start > 0 and text[start - 1] in "-−\u2012\u2013" and (start == 1 or not text[start - 2].isalnum()):
+    if start > 0 and text[start - 1] in _MINUS and (
+        # "--25" is no sign; "-10–-40" is a range dash before a minus.
+        start == 1 or not (text[start - 2].isalnum() or text[start - 2] == text[start - 1])
+    ):
         return start - 1, end
     return start, end
 
 
-def _stands_alone(text: str, at: int) -> bool:
-    """Whether nothing but a table separator precedes ``at`` on its line."""
-    before = text[:at].rpartition("\n")[2].rstrip(" ")
-    return before in ("", "|") or before.endswith(("|", "\t"))
+_MINUS = "-−\u2012\u2013"
+# Cell padding: plain and nonbreaking spaces (tables pasted from documents carry both).
+_PADDING = " \u00a0"
+
+
+def _stands_alone(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is alone on its line or in its table cell:
+    nothing but padding between it and the line's ends or a cell separator."""
+    before = text[:start].rpartition("\n")[2].rstrip(_PADDING)
+    after = text[end:].partition("\n")[0].lstrip(_PADDING)
+    return (before == "" or before.endswith(("|", "\t"))) and (after == "" or after.startswith(("|", "\t")))
 
 
 def _date_kind(surface: str) -> EntityKind:

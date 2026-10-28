@@ -427,6 +427,8 @@ def test_an_out_of_range_date_does_not_fail_the_other_spans() -> None:
         ("| Q3 margin | (3.2%) |", "(3.2%)", -0.032),
         ("Margin\n(3.2%)", "(3.2%)", -0.032),
         ("Growth\t(4%)", "(4%)", -0.04),
+        ("(8.25%) sales tax applies", "8.25%", 0.0825),
+        ("|\u00a0(3.2%)\u00a0|", "(3.2%)", -0.032),
         ("Change (-5%) on last year", "-5%", -0.05),
         ("Churn fell -1.5% this quarter.", "-1.5%", -0.015),
     ],
@@ -467,6 +469,8 @@ def test_a_dash_joining_a_quarter_to_money_is_not_a_sign() -> None:
 
 def test_a_spaced_or_doubled_minus_is_not_a_temperature_sign() -> None:
     assert normalize_quantity("- 25 °C") is None and normalize_quantity("--25 °C") is None
+    (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", "Rated --25 °C")])
+    assert mention.surface == "25 °C"
 
 
 def test_a_dash_before_a_non_temperature_is_not_a_sign() -> None:
