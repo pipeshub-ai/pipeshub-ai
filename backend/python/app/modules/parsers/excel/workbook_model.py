@@ -507,17 +507,11 @@ class _GrowthWatcher:
 
 
 def max_merged_positions(max_text_bytes: int) -> int:
-    """Positions the declared merged ranges and hyperlink ranges may add up to: as many cells as
-    the output budget could hold. openpyxl builds one ``MergedCell`` for every position of every
-    merged range and visits (and copies a hyperlink onto) every cell of every hyperlink range,
-    overlaps included, so the time grows with the sum of the areas while memory stays flat."""
+    """Positions the declared merged ranges may add up to: as many cells as the output budget could
+    hold. openpyxl builds one ``MergedCell`` for every position of every merged range, overlaps
+    included, so the time grows with the sum of the areas while memory stays flat. This is the fast
+    early refusal for that shape; the load's CPU bound covers everything else."""
     return OUTPUT_BUDGET_FACTOR * max_text_bytes // CELL_DICT_BYTES
-
-
-# openpyxl resolves a hyperlink on a merged cell by scanning every merged range of the sheet:
-# hyperlinks x merges. Allowed up to this many times the position cap (about 5 M scans, tens of
-# seconds); realistic sheets have a few thousand of each.
-_LINK_MERGE_SCAN_FACTOR = 4
 
 
 def _range_area(ref: str) -> int:
@@ -540,52 +534,34 @@ def _patterns(*tokens: str) -> tuple[bytes, ...]:
 
 
 _DOCTYPE_PATTERNS = _patterns("<!DOCTYPE", "<!ENTITY")
-_RANGE_PATTERNS = _patterns("<mergeCell", "<hyperlink")
+_RANGE_PATTERNS = _patterns("<mergeCell")
 _TAIL = max(len(p) for p in (*_DOCTYPE_PATTERNS, *_RANGE_PATTERNS))
 # A part that starts with none of these (an ASCII '<', a UTF-8 or UTF-16/32 byte-order mark, a
 # BOM-less UTF-16/32 '<') is in some other encoding the parser may still accept (EBCDIC): scan it.
 _KNOWN_STARTS = frozenset(b"<\xef\xff\xfe\x00")
 
 
-class _DeclaredRanges:
-    """What one sheet part declares: merged ranges and hyperlinks, as openpyxl will read them."""
-
-    def __init__(self) -> None:
-        self.positions = 0
-        self.merges = 0
-        self.links = 0
-
-
-def _declared_ranges(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> _DeclaredRanges:
+def _declared_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> int:
     """Stream one sheet part through expat (which decodes whatever encoding it declares), adding up
-    the areas of the ``mergeCell`` elements under ``mergeCells`` and the ``hyperlink`` elements under
-    ``hyperlinks`` (the only places openpyxl reads), and stopping once the positions pass *budget*."""
-    found = _DeclaredRanges()
-    state = {"merges": False, "links": False}
+    the areas of the ``mergeCell`` elements under ``mergeCells`` (the only place openpyxl reads
+    them), and stopping once the total passes *budget*."""
+    total = 0
+    inside = False
 
     def start(name: str, attrs: dict[str, str]) -> None:
+        nonlocal total, inside
         local = name.rpartition("}")[2]
         if local == "mergeCells":
-            state["merges"] = True
-        elif local == "hyperlinks":
-            state["links"] = True
-        elif local == "mergeCell" and state["merges"]:
-            found.merges += 1
-            found.positions += _range_area(attrs.get("ref", ""))
-        elif local == "hyperlink" and state["links"]:
-            found.links += 1
-            ref = attrs.get("ref", "")
-            if ":" in ref:
-                found.positions += _range_area(ref)
-        if found.positions > budget:
-            raise _StopScan
+            inside = True
+        elif local == "mergeCell" and inside:
+            total += _range_area(attrs.get("ref", ""))
+            if total > budget:
+                raise _StopScan
 
     def end(name: str) -> None:
-        local = name.rpartition("}")[2]
-        if local == "mergeCells":
-            state["merges"] = False
-        elif local == "hyperlinks":
-            state["links"] = False
+        nonlocal inside
+        if name.rpartition("}")[2] == "mergeCells":
+            inside = False
 
     parser = expat.ParserCreate(namespace_separator="}")
     parser.StartElementHandler = start
@@ -599,7 +575,7 @@ def _declared_ranges(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: in
         pass
     except (expat.ExpatError, zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
         pass  # the loader reports a part it cannot read
-    return found
+    return total
 
 
 class _StopScan(Exception):
@@ -608,9 +584,8 @@ class _StopScan(Exception):
 
 def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = None) -> None:
     """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere (in any encoding), a
-    total of decompressed bytes over the cap, and declared merged and hyperlink ranges that add up
-    to more than *max_merged* positions (or hyperlinks x merges past ``_LINK_MERGE_SCAN_FACTOR``
-    times it). Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
+    total of decompressed bytes over the cap, and declared merged ranges that add up to more than
+    *max_merged* positions. Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
     (the loader reads only what it needs), and never trusts the sizes the zip declares."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
@@ -641,12 +616,9 @@ def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = N
             except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
                 continue
             if has_ranges and max_merged is not None:
-                found = _declared_ranges(archive, info, max_merged - positions)
-                positions += found.positions
+                positions += _declared_positions(archive, info, max_merged - positions)
                 if positions > max_merged:
-                    raise WorkbookRefused("too_large", f"{positions} positions in merged and hyperlink ranges")
-                if found.links * found.merges > _LINK_MERGE_SCAN_FACTOR * max_merged:
-                    raise WorkbookRefused("too_large", f"{found.links} hyperlinks over {found.merges} merged ranges")
+                    raise WorkbookRefused("too_large", f"{positions} positions in merged ranges")
 
 
 def _intern(table: list[tuple], index: dict[tuple, int], style: tuple) -> int:
@@ -813,7 +785,7 @@ def load_workbook_model(
     Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
-    shared string counted, in UTF-8 bytes) passed *max_text_bytes*, the merged and hyperlink ranges
+    shared string counted, in UTF-8 bytes) passed *max_text_bytes*, the merged ranges
     declare more positions than ``max_merged_positions(max_text_bytes)``, or the load used more than
     *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that overlap,
     hyperlinks on merged cells, anything not yet known); ``unreadable`` for a DOCTYPE or

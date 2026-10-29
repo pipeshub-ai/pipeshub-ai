@@ -11,6 +11,7 @@ import pytest
 from app.modules.parsers.excel import excel_parser as module
 from app.modules.parsers.excel import limits
 from app.modules.parsers.excel.workbook_model import (
+    WorkbookModel,
     WorkbookRefused,
     load_workbook_model,
 )

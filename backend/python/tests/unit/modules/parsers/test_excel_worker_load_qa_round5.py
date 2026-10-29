@@ -12,6 +12,7 @@ The expansion is replaced by a counter, so the tests are fast.
 from __future__ import annotations
 
 import io
+import time
 import zipfile
 from typing import TYPE_CHECKING
 
@@ -109,62 +110,44 @@ def test_ordinary_merges_with_a_sheet_name_still_load() -> None:
 # areas while memory stays flat, so the worker's memory limit never trips and only the job timeout ends it.
 # ---------------------------------------------------------------------------
 
-HYPERLINK_WORK_BOUND = 50_000_000
+LOAD_SECONDS = 3
+SLACK_SECONDS = 30
 
 
-def test_hyperlinks_on_merged_cells_do_not_cost_hyperlinks_times_merges(monkeypatch: pytest.MonkeyPatch) -> None:
+def _refused_within_the_bound(body: str) -> None:
+    # Per the owner's scope for round 6, no per-path cap: the load's CPU/time bound ends it.
+    started = time.monotonic()
+    with pytest.raises(WorkbookRefused) as refused:
+        load_workbook_model(
+            workbook_zip(body),
+            module.EXCEL_LOAD_MAX_BYTES,
+            module.EXCEL_MAX_SHEET_XML_BYTES,
+            module.EXCEL_MAX_TEXT_CHARS,
+            LOAD_SECONDS,
+        )
+    assert refused.value.too_large
+    assert time.monotonic() - started < LOAD_SECONDS + SLACK_SECONDS
+
+
+def test_hyperlinks_on_merged_cells_are_refused_within_the_time_bound() -> None:
     # openpyxl resolves a hyperlink on a merged cell by scanning every merged range
-    # (WorksheetReader.normalize_merged_cell_link): H hyperlinks x M merges. Measured on this host:
-    # 1000 x 1000 took 16 s, 2000 x 2000 took 66 s (4x), so 10 000 x 10 000 (a 60 KB sheet part,
-    # 20 000 merged positions, far under the merged-range cap) holds a worker for about 27 minutes.
-    from openpyxl.worksheet._reader import WorksheetReader
-
+    # (WorksheetReader.normalize_merged_cell_link): H hyperlinks x M merges, quadratic, flat memory.
+    # 20 000 x 20 000 (a 60 KB sheet part) would hold a worker for about 27 minutes.
     merges, links = 20_000, 20_000
-    work = [0]
-
-    def counted(self: WorksheetReader, _coord: str):  # noqa: ANN202
-        work[0] += len(self.ws.merged_cells.ranges)
-        return self.ws.cell(1, 1)
-
-    monkeypatch.setattr(WorksheetReader, "normalize_merged_cell_link", counted)
-    body = (
+    _refused_within_the_bound(
         '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>'
         f'<mergeCells count="{merges}">' + "".join(f'<mergeCell ref="A{r}:B{r}"/>' for r in range(3, 3 + merges)) + "</mergeCells>"
         "<hyperlinks>" + "".join(f'<hyperlink ref="B{3 + (i % merges)}" location="S!A1"/>' for i in range(links)) + "</hyperlinks>"
     )
-    try:
-        load_workbook_model(
-            workbook_zip(body), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS
-        )
-    except WorkbookRefused as refused:
-        assert refused.too_large
-    assert work[0] <= HYPERLINK_WORK_BOUND, f"{work[0]:,} merged ranges scanned for {links} hyperlinks on {merges} merges"
 
 
-def test_overlapping_hyperlink_ranges_are_bounded_like_merged_ranges(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overlapping_hyperlink_ranges_are_refused_within_the_time_bound() -> None:
     # openpyxl visits (and copies the hyperlink onto) every cell of every hyperlink range, overlaps
-    # included; the cells exist after the first range, so memory stays flat. 200 ranges of 26 000
-    # cells (a 12 KB sheet part) are 5.2 M visits, over the 1.37 M positions the merged-range cap allows.
-    from openpyxl.worksheet import _reader
-
-    visits = [0]
-
-    def counted_copy(link):  # noqa: ANN202
-        visits[0] += 1
-        return link
-
-    monkeypatch.setattr(_reader, "copy", counted_copy)
-    body = (
+    # included; memory stays flat. 2000 ranges of 26 000 cells (a 120 KB sheet part) are 52 M visits.
+    _refused_within_the_bound(
         '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>'
-        "<hyperlinks>" + "".join('<hyperlink ref="A1:Z1000" location="S!A1"/>' for _ in range(200)) + "</hyperlinks>"
+        "<hyperlinks>" + "".join('<hyperlink ref="A1:Z1000" location="S!A1"/>' for _ in range(2000)) + "</hyperlinks>"
     )
-    try:
-        load_workbook_model(
-            workbook_zip(body), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS
-        )
-    except WorkbookRefused as refused:
-        assert refused.too_large
-    assert visits[0] <= 2_000_000, f"{visits[0]:,} cells visited for 200 overlapping hyperlink ranges"
 
 
 def test_an_operator_who_lowers_the_heavy_parse_working_set_is_still_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
