@@ -394,9 +394,69 @@ resolve_banner_dirs() {
 # Compose --progress tty|plain from a TTY flag. Keep this explicit instead of
 # `--progress auto`: auto is the same split inside Compose, but would re-detect
 # independently of the health-wait spinner. One _is_tty drives both.
-resolve_compose_progress() { # args: is_tty (true|false) -> tty|plain
-  [[ "$1" == true ]] && { echo tty; return; }
+#
+# Git Bash mintty is a TTY to bash ([[ -t 1 ]]) but not a Windows console.
+# docker.exe --progress tty then dies with "failed to get console: The handle
+# is invalid." Pass IS_WINDOWS as the second arg so that path stays plain.
+resolve_compose_progress() { # args: is_tty (true|false) [is_windows (true|false)] -> tty|plain
+  if [[ "$1" == true && "${2:-false}" != true ]]; then
+    echo tty
+    return
+  fi
   echo plain
+}
+
+# Git Bash (MSYS) rewrites arguments that look like POSIX paths when it invokes
+# docker.exe. That turns container paths such as /tmp/hc.json into
+# C:/Program Files/Git/tmp/hc.json. Disable it for every subsequent docker call,
+# and give docker.exe Windows mixed paths for host files (-f, --env-file).
+docker_cli_path() {
+  if ${IS_WINDOWS:-false} && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# Leave .env (database passwords, signing secrets) readable by its owner only.
+# Git Bash's chmod does not change an NTFS ACL, so a file that inherits a
+# shared folder's ACL stays readable by other users; replace the ACL instead.
+restrict_env_file() { # args: path -> non-zero when access could not be limited
+  if ${IS_WINDOWS:-false}; then
+    command -v icacls >/dev/null 2>&1 || return 1
+    local win_path="$1"
+    command -v cygpath >/dev/null 2>&1 && win_path="$(cygpath -w "$1")"
+    # MSYS would rewrite /reset, /inheritance:r and /grant:r as paths.
+    # /inheritance:r drops only inherited ACEs and /grant:r replaces only that
+    # user's grant, so /reset first clears explicit ACEs left for other accounts.
+    (
+      export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+      icacls "$win_path" /reset >/dev/null 2>&1 &&
+        icacls "$win_path" /inheritance:r /grant:r "${USERNAME:-$(whoami)}:F" >/dev/null 2>&1
+    )
+  else
+    chmod 600 "$1" 2>/dev/null
+  fi
+}
+
+apply_windows_docker_cli_compat() {
+  ${IS_WINDOWS:-false} || return 0
+  # Without cygpath the host paths below would reach docker.exe as /c/...,
+  # which it cannot open once MSYS conversion is off; keep MSYS converting.
+  if ! command -v cygpath >/dev/null 2>&1; then
+    warn "cygpath not found; leaving Git Bash path conversion on for docker."
+    return 0
+  fi
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL='*'
+  COMPOSE_FILE="$(docker_cli_path "$COMPOSE_FILE")"
+  ENV_FILE="$(docker_cli_path "$ENV_FILE")"
+  # COMPOSE_FILES was built from the unconverted paths before the OS was known.
+  local i
+  for i in "${!COMPOSE_FILES[@]}"; do
+    [[ "${COMPOSE_FILES[$i]}" == -f ]] && continue
+    COMPOSE_FILES[$i]="$(docker_cli_path "${COMPOSE_FILES[$i]}")"
+  done
 }
 
 # PIPESHUB_PROJECT wins. Else COMPOSE_PROJECT_NAME in this directory's .env so
@@ -594,6 +654,8 @@ case "$OS_TYPE" in
     warn "Unrecognised OS: $OS_TYPE. Proceeding; some checks may not work."
     ;;
 esac
+
+apply_windows_docker_cli_compat
 
 # Docker binary — use --version (no daemon required)
 if ! command -v docker >/dev/null 2>&1; then
@@ -1453,7 +1515,10 @@ fi  # end wizard
 
 # Reused .env files from older installs may still be 644. Always lock them
 # before we print secrets in the summary or start containers.
-if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE"; then
+if [[ -f "$ENV_FILE" ]] && ! restrict_env_file "$ENV_FILE"; then
+  if $IS_WINDOWS; then
+    die "Could not restrict permissions on $ENV_FILE. It holds secrets: in its Properties > Security > Advanced, disable inheritance, leave only your account, and re-run."
+  fi
   die "Could not restrict permissions on $ENV_FILE"
 fi
 
@@ -1775,8 +1840,10 @@ _USE_BUILD=false
 # progress is the majority install path. Forced `--progress plain` on a TTY
 # prints a new line per layer tick and floods the log. Captured stdout (CI,
 # tee, redirect) still gets plain so cursor-escape frames do not explode.
+# Git Bash: spinner can still use _is_tty; Compose progress must not (see
+# resolve_compose_progress).
 _is_tty=false; [[ -t 1 ]] && _is_tty=true
-_PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
+_PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty" "$IS_WINDOWS")")
 
 compose_up()        { docker compose "${_PROGRESS[@]}" "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
 compose_logs_tail() { docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }
