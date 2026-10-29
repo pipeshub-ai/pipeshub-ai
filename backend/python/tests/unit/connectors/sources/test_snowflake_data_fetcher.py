@@ -40,7 +40,7 @@ class FakeRunner:
             return result(rows or [])
         self.answers.append((fragment, answer))
 
-    async def run(self, statement: str, **_: Any) -> SnowflakeResult:
+    async def run(self, statement: str, **_: object) -> SnowflakeResult:
         self.statements.append(statement)
         for fragment, answer in self.answers:
             if fragment in statement:

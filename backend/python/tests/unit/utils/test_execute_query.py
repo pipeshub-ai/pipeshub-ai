@@ -483,21 +483,15 @@ class TestExecuteSnowflakeQuery:
         )
 
     @pytest.mark.asyncio
-    async def test_runs_through_the_sql_api_with_a_timeout_and_closes_the_client(self):
-        from app.utils.execute_query import (
-            _SNOWFLAKE_MAX_RESULT_ROWS,
-            _SNOWFLAKE_QUERY_TIMEOUT_S,
-            _execute_snowflake_query,
-        )
+    async def test_runs_through_the_sql_api_with_a_timeout_and_closes_the_client(self) -> None:
+        from app.utils.execute_query import _execute_snowflake_query
 
         runner, data_source, patches = self._patches(self.CONFIG)
         with patches[0], patches[1], patches[2] as runner_cls:
             result = await _execute_snowflake_query("SELECT 1", MagicMock(), "conn-sf")
 
-        assert result == {"ok": True, "columns": ["N"], "rows": [[42]], "truncated": False}
-        runner.run.assert_awaited_once_with(
-            "SELECT 1", timeout_s=_SNOWFLAKE_QUERY_TIMEOUT_S, max_rows=_SNOWFLAKE_MAX_RESULT_ROWS,
-        )
+        assert result == {"ok": True, "columns": ["N"], "rows": [[42]]}
+        runner.run.assert_awaited_once_with("SELECT 1", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["warehouse"] == "WH_1"
         assert kwargs["session_parameters"] == {"QUERY_TAG": "pipeshub:agent"}
@@ -505,7 +499,7 @@ class TestExecuteSnowflakeQuery:
         data_source.http.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_missing_warehouse_fails_before_any_call(self):
+    async def test_missing_warehouse_fails_before_any_call(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
         config = {"auth": {"accountIdentifier": "acc-1", "patToken": "pat-123"}}
@@ -518,7 +512,7 @@ class TestExecuteSnowflakeQuery:
         runner.run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missing_token_is_reported(self):
+    async def test_missing_token_is_reported(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
         config = {"auth": {"accountIdentifier": "acc-1", "warehouse": "WH"}}
@@ -530,7 +524,7 @@ class TestExecuteSnowflakeQuery:
         assert "personal access token" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_a_refused_statement_is_reported_and_the_client_closed(self):
+    async def test_a_refused_statement_is_reported_and_the_client_closed(self) -> None:
         from app.sources.external.snowflake.statements import SnowflakeFetchError
         from app.utils.execute_query import _execute_snowflake_query
 
@@ -544,7 +538,7 @@ class TestExecuteSnowflakeQuery:
         data_source.http.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_missing_config_is_reported(self):
+    async def test_missing_config_is_reported(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
         with patch(
@@ -1433,20 +1427,10 @@ async def test_mariadb_executor_asks_for_the_bounds() -> None:
 
 @pytest.mark.asyncio
 async def test_snowflake_executor_asks_for_the_bounds() -> None:
-    sdk = MagicMock()
-    sdk.execute_query_raw.return_value = (["id"], [(1,)])
-    sdk.__enter__ = MagicMock(return_value=sdk)
-    sdk.__exit__ = MagicMock(return_value=False)
-    config = MagicMock()
-    config.auth.authType.value = "PAT"
-    with patch(
-        "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-        new_callable=AsyncMock, return_value={},
-    ), patch(
-        "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate", return_value=config
-    ), patch("app.sources.client.snowflake.snowflake.SnowflakeSDKClient", return_value=sdk):
+    runner, _, patches = TestExecuteSnowflakeQuery._patches(TestExecuteSnowflakeQuery.CONFIG)
+    with patches[0], patches[1], patches[2]:
         await eq._execute_snowflake_query("SELECT 1", MagicMock(), "c")
-    assert sdk.execute_query_raw.call_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+    assert runner.run.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
 
 
 @pytest.mark.asyncio

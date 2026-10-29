@@ -75,12 +75,15 @@ from app.connectors.core.sql.column_records import (
     build_column_records,
     load_typed_columns,
 )
+from app.connectors.core.sql.permissions import database_permissions
+from app.connectors.core.sql.profiling import looks_personal
 from app.connectors.core.sql.qualified_names import (
     join_qualified_name,
     split_qualified_name,
 )
 from app.connectors.core.sql.record_moves import Moves
 from app.connectors.core.sql.sync_outcome import SyncOutcome
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.snowflake.apps import SnowflakeApp
 from app.connectors.sources.snowflake.catalog_state import SnowflakeTableState
 from app.connectors.sources.snowflake.catalog_sync import (
@@ -134,7 +137,7 @@ from app.models.entities import (
     SQLViewRecord,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.snowflake.snowflake import parse_connection_settings
 from app.sources.external.snowflake.profiling import (
     ProfilingBudget,
@@ -597,6 +600,8 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         # Tables written this sync, and renamed ones whose new name was not free.
         self._written_tables: set[str] = set()
         self._held_tables: set[str] = set()
+        # Set when this sync left part of the account unwritten; see full_sync_coverage.
+        self._skipped_part = False
         self.tables_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -675,6 +680,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
             self._profiling_budget = ProfilingBudget()
             self._dropped_columns = []
             self._written_tables = set()
+            self._skipped_part = False
 
             if not self.data_fetcher:
                 raise ConnectionError("Snowflake connector not initialized")
@@ -701,6 +707,15 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Every sync compares the catalog with the saved state; there is one path."""
         await self.run_sync()
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Incomplete when the sync wrote less than the account has.
+
+        A full sync unlinks what it did not write. A schema or stage that
+        could not be listed, a table that could not be read or must wait for
+        a rename, and an object whose write failed are still there.
+        """
+        return FullSyncCoverage(complete=not self._skipped_part)
 
     def _filter_test(self, key: str) -> Callable[[str], bool] | None:
         """Whether a name passes the ``key`` sync filter; None when the filter is not set."""
@@ -730,6 +745,8 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         self.logger.info(f"Fetched hierarchy: {hierarchy.summary()}")
         scope = Scope.of(hierarchy)
         snapshot = take_snapshot(hierarchy, self._filters(), row_limit=self._max_rows(self.sync_filters))
+        if scope.databases or scope.schemas or scope.stages or snapshot.unread_tables:
+            self._skipped_part = True
 
         # Groups first: a table renamed into a new schema moves into its group.
         await self._sync_databases(hierarchy.databases)
@@ -758,6 +775,8 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
             diff.renamed, blocked=set(diff.replaced) - replaced, checkpoint=checkpoint,
         )
         held = {new for old, new in diff.renamed.items() if old not in moved}
+        if held:
+            self._skipped_part = True
         await self._follow_renames(diff, moved, moves)
         self.sync_outcome.restructured_tables |= restructured_fqns(diff, snapshot.tables) - held
         self._held_tables = held
@@ -1000,11 +1019,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         await self._ensure_scope_app_edges()
 
     async def _get_permissions(self) -> list[Permission]:
-        """Org-level ownership: database objects belong to no single user."""
-        return [Permission(
-            type=PermissionType.OWNER,
-            entity_type=EntityType.ORG,
-        )]
+        return await database_permissions(self)
 
     async def _record_identity(self, external_id: str) -> tuple[str, Record | None]:
         """The id to save a record under: the stored record's, or a new one.
@@ -1041,6 +1056,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
             if not table.fully_read or table.fqn in self._held_tables:
                 # Unread, it would be written without its columns or foreign
                 # keys; held, its name still belongs to another table's record.
+                self._skipped_part = True
                 continue
             try:
                 fqn = table.fqn
@@ -1099,6 +1115,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
 
             except Exception as e:
                 self.sync_stats.errors += 1
+                self._skipped_part = True
                 self.logger.error(f"Error processing table {table.name}: {e}", exc_info=True)
                 continue
 
@@ -1125,6 +1142,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
             stored = await self._stored_columns(fqn)
         except Exception as e:
             self.sync_stats.errors += 1
+            self._skipped_part = True
             self.logger.warning(f"Could not look up the column records of {fqn}; keeping them: {e}")
             return []
 
@@ -1208,7 +1226,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
                 self.connector_id, table_fqn, RecordType.SQL_COLUMN.value,
             )
         return await load_typed_columns(
-            self.data_store_provider.graph_provider,
+            self.data_entities_processor,
             {child.external_record_id: child for child in existing},
         )
 
@@ -1299,6 +1317,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
 
             except Exception as e:
                 self.sync_stats.errors += 1
+                self._skipped_part = True
                 self.logger.error(f"Error processing view {view.name}: {e}", exc_info=True)
                 continue
 
@@ -1349,6 +1368,7 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
 
             except Exception as e:
                 self.sync_stats.errors += 1
+                self._skipped_part = True
                 self.logger.error(f"Error processing file {file.relative_path}: {e}", exc_info=True)
                 continue
 
@@ -1592,9 +1612,16 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
         )
         row_count = getattr(table_record, "row_count", None)
         approximate = row_count is None or row_count > ORDERED_READ_MAX_ROWS
-        value_counts = await self.data_fetcher.column_value_counts(
-            database, schema, table, column, limit=MAX_COLUMN_VALUES_STREAMED, approximate=approximate,
-        )
+        # The counts group the whole table, past the rows a table stream is
+        # capped to, so a column that looks personal gets none, as it gets no
+        # top values in its profile.
+        withheld = looks_personal(column)
+        value_counts: list[dict[str, Any]] = []
+        if not withheld:
+            # One past the limit, to tell a cut-off list from one that fits exactly.
+            value_counts = await self.data_fetcher.column_value_counts(
+                database, schema, table, column, limit=MAX_COLUMN_VALUES_STREAMED + 1, approximate=approximate,
+            )
 
         top_values = getattr(record, "top_values", None) or []
         frequencies = getattr(record, "top_value_frequencies", None) or []
@@ -1622,8 +1649,9 @@ class SnowflakeConnector(SyncLifecycleMixin, BaseConnector):
                     for value, frequency in zip(top_values, frequencies, strict=False)
                 ],
             },
-            "value_counts": value_counts,
-            "value_counts_truncated": len(value_counts) >= MAX_COLUMN_VALUES_STREAMED,
+            "value_counts": value_counts[:MAX_COLUMN_VALUES_STREAMED],
+            "value_counts_truncated": len(value_counts) > MAX_COLUMN_VALUES_STREAMED,
+            "value_counts_withheld": withheld,
             "value_counts_approximate": approximate,
             "connector_name": self.connector_name.value,
         }

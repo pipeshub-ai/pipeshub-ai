@@ -94,7 +94,7 @@ class TestKeys:
         ("", None, "missing"),
         (pem(ec.generate_private_key(ec.SECP256R1())), None, "RSA"),
         (pem(rsa.generate_private_key(public_exponent=65537, key_size=1024)), None, "2048"),
-    ])
+    ], ids=["no-passphrase", "wrong-passphrase", "unneeded-passphrase", "not-a-key", "missing", "not-rsa", "short"])
     def test_unusable_keys_say_why_and_never_echo_the_key(self, key, passphrase, says) -> None:
         with pytest.raises(ValueError) as error:
             load_private_key(key, passphrase)

@@ -39,6 +39,10 @@ def change(before: SnowflakeTable, after: SnowflakeTable, *, old="DB.S.ORDERS", 
 
 
 class TestBuild:
+    def test_keys_on_a_column_the_read_did_not_return_still_have_a_shape(self) -> None:
+        t = table()
+        t.foreign_keys.append(ForeignKey("FK2", "DB", "S", "ORDERS", "GONE", "DB", "S", "OTHER", "ID"))
+        assert state(t).shape
     def test_ordinals_key_names_and_types(self) -> None:
         s = state(table())
         assert s.columns == [(1, "ID", "NUMBER(38,0)"), (2, "STATUS", "TEXT"), (3, "CID", "NUMBER(38,0)")]

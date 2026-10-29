@@ -467,9 +467,16 @@ class TestSync:
         await connector._ensure_scope_app_edges()
         connector.data_entities_processor.on_new_app_users.assert_not_awaited()
 
-    async def test_permissions_are_org_owner(self) -> None:
+    async def test_a_team_connector_is_owned_by_the_org(self) -> None:
         (permission,) = await ready_connector()._get_permissions()
         assert (permission.type, permission.entity_type) == (PermissionType.OWNER, EntityType.ORG)
+
+    async def test_a_personal_connector_is_owned_by_its_creator_only(self) -> None:
+        connector = ready_connector(scope=ConnectorScope.PERSONAL.value, created_by="u1")
+        connector.creator_email = "owner@example.com"
+        (permission,) = await connector._get_permissions()
+        assert (permission.entity_type, permission.email, permission.external_id) == (
+            EntityType.USER, "owner@example.com", "u1")
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +600,7 @@ class TestStoredColumns:
         context.__aenter__ = AsyncMock(return_value=tx_store)
         context.__aexit__ = AsyncMock(return_value=False)
         connector.data_store_provider.transaction = MagicMock(return_value=context)
-        connector.data_store_provider.graph_provider.get_typed_records_batch = AsyncMock(return_value=typed)
+        connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(return_value=typed)
         return connector
 
     async def test_stored_columns_are_loaded_typed_with_their_profiles(self) -> None:
@@ -602,7 +609,9 @@ class TestStoredColumns:
         connector = self.connector_with([base], {"c1": typed})
         stored = await connector._stored_columns("DB.S.T")
         assert stored == {"DB.S.T.A": typed}
-        connector.data_store_provider.graph_provider.get_typed_records_batch.assert_awaited_once_with(["c1"])
+        connector.data_entities_processor.get_typed_records_by_ids.assert_awaited_once_with(
+            ["c1"], raise_on_error=True,
+        )
 
     async def test_a_column_that_cannot_be_loaded_typed_fails_the_lookup(self) -> None:
         base = [SimpleNamespace(id="c1", external_record_id="DB.S.T.A"),
@@ -883,7 +892,7 @@ class TestStreamColumn:
         connector = self.column_connector(row_count=100)
         data = await body_of(await connector.stream_record(self.column_record()))
         connector.data_fetcher.column_value_counts.assert_awaited_once_with(
-            "DB", "S", "x.y", "STATUS", limit=MAX_COLUMN_VALUES_STREAMED, approximate=False,
+            "DB", "S", "x.y", "STATUS", limit=MAX_COLUMN_VALUES_STREAMED + 1, approximate=False,
         )
         assert data["value_counts"] == [{"value": "OPEN", "count": 60}]
         assert data["value_counts_approximate"] is False and data["value_counts_truncated"] is False
@@ -899,13 +908,23 @@ class TestStreamColumn:
         assert connector.data_fetcher.column_value_counts.await_args.kwargs["approximate"] is True
         assert data["value_counts_approximate"] is True
 
-    async def test_a_full_page_of_counts_is_truncated(self) -> None:
+    @pytest.mark.parametrize(("read", "truncated"), [
+        (MAX_COLUMN_VALUES_STREAMED, False), (MAX_COLUMN_VALUES_STREAMED + 1, True),
+    ])
+    async def test_counts_are_truncated_only_when_a_value_was_cut_off(self, read, truncated) -> None:
         connector = self.column_connector(row_count=100)
         connector.data_fetcher.column_value_counts = AsyncMock(
-            return_value=[{"value": str(i), "count": 1} for i in range(MAX_COLUMN_VALUES_STREAMED)]
+            return_value=[{"value": str(i), "count": 1} for i in range(read)]
         )
         data = await body_of(await connector.stream_record(self.column_record()))
-        assert data["value_counts_truncated"] is True
+        assert data["value_counts_truncated"] is truncated
+        assert len(data["value_counts"]) == MAX_COLUMN_VALUES_STREAMED
+
+    async def test_a_column_that_looks_personal_streams_no_counts(self) -> None:
+        connector = self.column_connector(row_count=100)
+        data = await body_of(await connector.stream_record(self.column_record(record_name="EMAIL")))
+        connector.data_fetcher.column_value_counts.assert_not_awaited()
+        assert data["value_counts"] == [] and data["value_counts_withheld"] is True
 
     async def test_an_uncountable_type_is_a_400(self) -> None:
         connector = self.column_connector(row_count=100)

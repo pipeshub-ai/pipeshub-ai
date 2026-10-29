@@ -96,10 +96,11 @@ class SnowflakeTableState(BaseModel):
         )
         # The referenced column by name: its ordinal is not in this table's
         # catalog read, and a key repointed to another column must count.
-        foreign_key_shape = sorted(
+        # A column the read did not return has no ordinal (None): sort by text.
+        foreign_key_shape = sorted((
             (by_name.get(fk.source_column), identity_of(fk.target_fqn) or fk.target_fqn, fk.target_column)
             for fk in table.foreign_keys
-        )
+        ), key=repr)
         return cls(
             database=table.database_name,
             schema_name=table.schema_name,

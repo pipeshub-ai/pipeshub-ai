@@ -228,10 +228,11 @@ class World:
         config_service.get_config = AsyncMock(return_value=CONFIG)
         data_store = MagicMock()
         data_store.transaction = MagicMock(side_effect=lambda: TxStore(self.graph))
-        data_store.graph_provider.get_typed_records_batch = AsyncMock(
-            side_effect=lambda ids: {i: self.graph.records[i] for i in ids if i in self.graph.records}
-        )
         self.connector = SnowflakeConnector(MagicMock(), processor(self.graph), data_store, config_service, "conn-1")
+        self.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
+            side_effect=lambda ids, **_: {i: self.graph.records[i] for i in ids if i in self.graph.records}
+        )
+        self.connector.data_entities_processor.move_incoming_relations = AsyncMock()
         self.connector.account_identifier = "acct"
         self.connector._state_store = SnowflakeStateStore(self.sync_point)
         self.connector.data_fetcher = MagicMock()
@@ -244,8 +245,6 @@ class World:
         with patch(
             "app.connectors.sources.snowflake.connector.load_connector_filters",
             new_callable=AsyncMock, return_value=(self.filters, FilterCollection()),
-        ), patch(
-            "app.connectors.core.sql.sync_lifecycle.move_incoming_relations", new_callable=AsyncMock,
         ), patch("app.connectors.sources.snowflake.connector.LOOKUP_ATTEMPTS", 1):
             await self.connector.run_sync()
         return self.connector.sync_outcome
@@ -362,6 +361,35 @@ class TestLaterSyncs:
                                                          operator="not_in")])
         await world.sync(catalog(table("A"), table("B")))
         assert world.ids(RecordType.SQL_TABLE) == {"DB.S.A"}
+
+
+class TestFullSyncCoverage:
+    """A full sync unlinks what it did not write, unless it says it skipped something."""
+
+    async def test_a_sync_that_wrote_everything_is_complete(self, world) -> None:
+        await world.sync(catalog(table("A")))
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_an_unreadable_schema_or_table_makes_it_incomplete_until_read_again(self, world) -> None:
+        await world.sync(catalog(table("A"), unreadable_schemas=["DB.T"]))
+        assert not world.connector.full_sync_coverage().complete
+        await world.sync(catalog(table("A", read=False)))
+        assert not world.connector.full_sync_coverage().complete
+        await world.sync(catalog(table("A")))
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_a_table_whose_write_failed_makes_it_incomplete(self, world) -> None:
+        identity = world.connector._record_identity
+
+        async def failing(fqn: str) -> object:
+            if fqn == "DB.S.B":
+                raise RuntimeError("graph unavailable")
+            return await identity(fqn)
+
+        world.connector._record_identity = failing
+        await world.sync(catalog(table("A"), table("B")))
+        assert "DB.S.A" in world.ids(RecordType.SQL_TABLE)
+        assert not world.connector.full_sync_coverage().complete
 
 
 class TestUnreadable:

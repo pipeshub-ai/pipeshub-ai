@@ -263,11 +263,11 @@ def schema_key(database: str, schema: str) -> str:
     return join_qualified_name((database, schema))
 
 
-def _yes(value: Any) -> bool:
+def _yes(value: object) -> bool:
     return value is True or (isinstance(value, str) and value.upper() in ("YES", "TRUE", "Y"))
 
 
-def _int_or_none(value: Any) -> int | None:
+def _int_or_none(value: Any) -> int | None:  # noqa: ANN401 - a catalog value of any type
     try:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
