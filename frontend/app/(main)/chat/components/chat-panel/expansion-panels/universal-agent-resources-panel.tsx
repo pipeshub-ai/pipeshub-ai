@@ -21,7 +21,7 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useThemeAppearance } from '@/app/components/theme-provider';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
@@ -58,15 +58,6 @@ type ExpansionViewMode = 'inline' | 'overlay';
 const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcp'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
-/**
- * Width was a fixed 246px sized for 3 tabs — scaled per-tab so a 4th ("MCP") entry doesn't
- * crush the longer "Connectors"/"Collections" labels. Computed from the actually-rendered
- * tab count (`visibleTabValues`) so hiding the MCP tab shrinks the tablist back down.
- */
-const FIGMA_TABLIST_WIDTH_PER_TAB = 82;
-const FIGMA_TABLIST_HEIGHT = 32;
-const FIGMA_TABLIST_RADIUS = 4;
-
 function UniversalAgentFilterTablist({
   value,
   onValueChange,
@@ -81,105 +72,24 @@ function UniversalAgentFilterTablist({
   /** Tabs excluded entirely (not just disabled) — e.g. 'mcp' when ENABLE_MCP is off. */
   hiddenTabs?: TabValue[];
 }) {
-  const { appearance } = useThemeAppearance();
-  const isDark = appearance === 'dark';
-
-  const visibleTabValues = useMemo(
-    () => TAB_VALUES.filter((v) => !hiddenTabs.includes(v)),
-    [hiddenTabs]
+  const items = useMemo(
+    () =>
+      TAB_VALUES.filter((v) => !hiddenTabs.includes(v)).map((v) => ({
+        value: v,
+        label: labels[v],
+        disabled: disabledTabs.includes(v),
+      })),
+    [hiddenTabs, disabledTabs, labels]
   );
-
-  const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH_PER_TAB * visibleTabValues.length,
-    maxWidth: '100%',
-    height: FIGMA_TABLIST_HEIGHT,
-    borderRadius: FIGMA_TABLIST_RADIUS,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    boxSizing: 'border-box',
-    flexShrink: 0,
-    ...(isDark
-      ? {
-          background:
-            'linear-gradient(90deg, rgba(221, 234, 248, 0.0784314) 0%, rgba(221, 234, 248, 0.0784314) 100%), rgba(0, 0, 0, 0.25)',
-        }
-      : {
-          background:
-            'linear-gradient(90deg, rgba(0, 0, 51, 0.059) 0%, rgba(0, 0, 51, 0.059) 100%), linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%)',
-        }),
-  };
-
-  const inactiveColor = isDark ? 'rgba(252, 253, 255, 0.937255)' : 'rgba(0, 5, 9, 0.89)';
-  const selectedBorder = isDark
-    ? '1px solid rgba(211, 237, 248, 0.113725)'
-    : '1px solid rgba(0, 0, 45, 0.09)';
-  const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = visibleTabValues.indexOf(value);
-    if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      const next = visibleTabValues[(i + 1) % visibleTabValues.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const next = visibleTabValues[(i - 1 + visibleTabValues.length) % visibleTabValues.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    }
-  };
-
   return (
-    <div
-      role="tablist"
+    <SegmentedTabs
+      kind="tabs"
+      size="1"
       aria-label="Universal agent filters"
-      onKeyDown={onKeyDown}
-      style={trackStyle}
-    >
-      {visibleTabValues.map((tabValue) => {
-        const selected = value === tabValue;
-        const isDisabled = disabledTabs.includes(tabValue);
-        return (
-          <button
-            key={tabValue}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            aria-disabled={isDisabled}
-            disabled={isDisabled}
-            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
-            style={{
-              boxSizing: 'border-box',
-              flex: '1 1 0',
-              minWidth: 0,
-              height: FIGMA_TABLIST_HEIGHT,
-              padding: '0 12px',
-              gap: 4,
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: FIGMA_TABLIST_RADIUS,
-              border: selected ? selectedBorder : '1px solid transparent',
-              background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
-              fontSize: 12,
-              lineHeight: '16px',
-              letterSpacing: '0.04px',
-              fontWeight: selected ? 500 : 400,
-              fontFamily: 'inherit',
-              cursor: isDisabled ? 'not-allowed' : 'pointer',
-              opacity: isDisabled ? 0.5 : 1,
-              isolation: 'isolate',
-            }}
-          >
-            {labels[tabValue]}
-          </button>
-        );
-      })}
-    </div>
+      value={value}
+      onValueChange={onValueChange}
+      items={items}
+    />
   );
 }
 

@@ -1,9 +1,8 @@
 'use client';
 
-import { overlayWidth } from '@/app/components/ui/responsive';
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Box, Flex, Theme } from '@radix-ui/themes';
+import { Flex, Theme } from '@radix-ui/themes';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 
 interface ChatInputOverlayPanelProps {
@@ -11,10 +10,8 @@ interface ChatInputOverlayPanelProps {
   open: boolean;
   /** Called on Escape key or backdrop click — parent decides what to do */
   onCollapse: () => void;
-  /** Panel content — fills the 568×480 content area */
+  /** Panel content — fills the panel inside its 16px padding */
   children: React.ReactNode;
-  /** Whether to show the bottom gradient fade (default: true) */
-  showScrollFade?: boolean;
 }
 
 /**
@@ -38,7 +35,6 @@ export function ChatInputOverlayPanel({
   open,
   onCollapse,
   children,
-  showScrollFade = true,
 }: ChatInputOverlayPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const { appearance } = useThemeAppearance();
@@ -114,12 +110,13 @@ export function ChatInputOverlayPanel({
           direction="column"
           onClick={(e: React.MouseEvent) => e.stopPropagation()}
           style={{
-            width: overlayWidth(600),
-            height: 'min(512px, 100dvh - 80px)',
-            backdropFilter: 'blur(25px)',
-            WebkitBackdropFilter: 'blur(25px)',
-            backgroundColor: 'var(--effects-translucent)',
-            border: '1px solid var(--slate-a3)',
+            // Expanded view: larger than the inline panel (the composer's 800px x 380px)
+            width: 'min(960px, calc(100% - 32px))',
+            height: 'min(680px, 100dvh - 120px)',
+            backdropFilter: 'var(--frost-filter)',
+            WebkitBackdropFilter: 'var(--frost-filter)',
+            backgroundColor: 'var(--frost-bg)',
+            border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             boxShadow: '0px 20px 48px 0px var(--black-a6)',
             overflow: 'hidden',
@@ -138,22 +135,6 @@ export function ChatInputOverlayPanel({
             {children}
           </Flex>
 
-          {/* Bottom gradient fade (scroll indicator) */}
-          {showScrollFade && (
-            <Box
-              style={{
-                position: 'absolute',
-                bottom: 'var(--space-4)',
-                left: 'var(--space-4)',
-                right: 'var(--space-4)',
-                height: 'var(--space-8)', /* was: 44px, delta: +4px */
-                background:
-                  'linear-gradient(to bottom, transparent, var(--color-background))',
-                pointerEvents: 'none',
-                borderRadius: '0 0 var(--radius-2) var(--radius-2)',
-              }}
-            />
-          )}
         </Flex>
       </div>
     </Theme>

@@ -739,7 +739,7 @@ export function MessageActions({
                   borderRadius: 'var(--radius-1)',
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   gap: 'var(--space-1)',
                 }}
               >
