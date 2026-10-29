@@ -77,6 +77,7 @@ class TestMCPRegistry:
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
+        assert "deepwiki" in type_ids
         assert "slack" in type_ids
         assert "exa" in type_ids
         assert "box" in type_ids

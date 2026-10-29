@@ -34,4 +34,12 @@ describe('McpServerIcon', () => {
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
   });
+
+  // DeepWiki has no logo yet: its name must not match some other service's.
+  it('keeps the MCP mark for DeepWiki', () => {
+    const { container } = render(<McpServerIcon typeId="deepwiki" name="DeepWiki" />);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
+  });
 });
