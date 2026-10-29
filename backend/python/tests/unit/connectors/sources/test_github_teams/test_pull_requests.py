@@ -130,7 +130,9 @@ class TestFetchPrsBatched:
 
         assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is True
 
-        assert c.runtime.ds_call.await_args.kwargs["page"] == 3
+        # From the page before the saved one: a pull request removed from a page already
+        # read would move a later one onto it.
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
         # The newest PR was on the pages read before the stop.
         c.issues._update_sync_checkpoint.assert_awaited_once_with("10-pull-requests", 9_999_999_999_999)
         _, cleared = c.issues._write_checkpoint.await_args.args

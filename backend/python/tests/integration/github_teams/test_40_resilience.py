@@ -85,21 +85,36 @@ async def test_an_issues_listing_cut_short_by_the_hourly_limit_reads_on_where_it
     assert "Later" in await world.names("TICKET")
 
 
+async def test_an_issue_removed_from_a_page_already_read_does_not_hide_another(world, org) -> None:
+    gh, repo = world.gh, org["repo"]
+    issues = [gh.add_issue(repo, f"Issue {n:03}") for n in range(250)]
+    path = f"api.github.com/repos/{repo.full_name}/issues"
+    gh.faults.append(Fault(nth(path, 2), kind="primary", seconds=1800, times=1))
+    await world.sync(expect_error=True)
+
+    gh.delete_issue(issues[-1])  # newest first, so it was on the page already read
+    await world.sync()
+
+    assert await world.names("TICKET") == [f"Issue {n:03}" for n in range(249)]
+
+
 async def test_a_pull_request_listing_cut_short_by_the_hourly_limit_reads_on_where_it_stopped(
     world, org,
 ) -> None:
+    """Pull requests page by number, so reading on starts a page before the one that
+    failed: a pull request removed from a page already read would move one onto it."""
     gh, repo = world.gh, org["repo"]
-    for n in range(150):
+    for n in range(250):
         gh.add_pull(repo, f"PR {n:03}")
     path = f"api.github.com/repos/{repo.full_name}/pulls"
-    gh.faults.append(Fault(nth(path, 2), kind="primary", seconds=1800, times=1))
+    gh.faults.append(Fault(nth(path, 3), kind="primary", seconds=1800, times=1))
     await world.sync(expect_error=True)
 
     start = len(gh.calls)
     await world.sync()
     listing = [c for c in world.api_calls(since=start) if f"{c.host}{c.path}" == path]
     assert listing[0].query.get("page") == "2", listing[0].query
-    assert await world.names("PULL_REQUEST") == [f"PR {n:03}" for n in range(150)]
+    assert await world.names("PULL_REQUEST") == [f"PR {n:03}" for n in range(250)]
 
     start = len(gh.calls)
     await world.sync()

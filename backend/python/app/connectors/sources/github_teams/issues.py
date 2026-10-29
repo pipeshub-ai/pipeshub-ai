@@ -215,7 +215,10 @@ class IssuesSync:
         on from there instead of from the first page: a listing longer than
         one hour's rate limit would otherwise start over every hour and never
         finish. Issues changed in between move to the front, past that place,
-        and are newer than the watermark, so the sync after picks them up.
+        and are newer than the watermark, so the sync after picks them up. A
+        place without a cursor is a page number, so reading on starts a page
+        early: an issue removed from the pages already read would otherwise
+        move one onto them unread.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -227,9 +230,13 @@ class IssuesSync:
             # drop the watermark so turning issues back on reads them all again. The
             # total (0, as GitHub shows) marks the pull requests' files as settled.
             await c.issue_reconciler.remove_all(repo, group_id)
-            if (await self._read_checkpoint(group_id)).get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+            stored = await self._read_checkpoint(group_id)
+            if stored.get(GitHubLiterals.ISSUE_TOTAL.value) is None:
                 await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
-            await self._write_checkpoint(group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0})
+            # A saved listing place goes too: its earlier pages were just removed.
+            await self._write_checkpoint(
+                group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0, **resume_fields_to_clear(stored)},
+            )
             return True
 
         # Only the issues watermark: PRs page their own listing against their
@@ -264,6 +271,10 @@ class IssuesSync:
         if resume is not None:
             page = resume[GitHubLiterals.RESUME_PAGE.value]
             cursor = resume.get(GitHubLiterals.RESUME_CURSOR.value)
+            if cursor is None and page > 1:
+                # A page number is an offset: an issue removed from a page already read
+                # moves a later one onto it. Reading the page before again covers that.
+                page -= 1
             created_before = resume.get(GitHubLiterals.RESUME_CREATED.value) or 0
             if resume.get(GitHubLiterals.RESUME_WATERMARK.value):
                 watermarks[group_id] = resume[GitHubLiterals.RESUME_WATERMARK.value]
@@ -373,7 +384,10 @@ class IssuesSync:
             new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]
         if total is not None:
             new_checkpoint[GitHubLiterals.ISSUE_TOTAL.value] = total
-        new_checkpoint.update(resume_fields_to_clear(checkpoint))
+        if ok:
+            # With the watermark. A failed check leaves the old watermark, so the next
+            # sync reads on from the saved place and checks again, not from page 1.
+            new_checkpoint.update(resume_fields_to_clear(checkpoint))
         if new_checkpoint != checkpoint:
             await self._write_checkpoint(group_id, new_checkpoint)
         return ok

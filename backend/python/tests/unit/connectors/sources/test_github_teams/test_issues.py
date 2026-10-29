@@ -420,6 +420,43 @@ class TestResumeInterruptedListing:
 
         sync._write_checkpoint.assert_awaited_once_with("1-work-items", dict.fromkeys(_RESUME))
 
+    async def test_a_place_without_a_cursor_reads_the_page_before_again(self) -> None:
+        """A page number is an offset. An issue removed from a page already read moves a
+        later one onto it, so reading on starts a page early."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (3, None)
+
+    async def test_a_failed_removal_check_keeps_the_place(self) -> None:
+        """The watermark is not committed when the check fails, so the next sync must read
+        on from the place again rather than start from page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+        sync._reconcile_removed_issues = AsyncMock(return_value=(False, None))
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_not_awaited()
+
+    async def test_turning_issues_off_forgets_the_place(self) -> None:
+        c = make_mock_connector()
+        c.issue_reconciler.remove_all = AsyncMock()
+        repo = make_repo(repo_id=1)
+        repo.has_issues = False
+        sync = self._sync(c, {**_RESUME, "issue_total": 40})
+
+        await sync.fetch_issues_batched(repo)
+
+        sync._write_checkpoint.assert_awaited_once_with(
+            "1-work-items", {"issue_total": 0, **dict.fromkeys(_RESUME)},
+        )
+
     async def test_a_rate_limit_at_the_saved_place_keeps_it(self) -> None:
         c = make_mock_connector()
         c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))

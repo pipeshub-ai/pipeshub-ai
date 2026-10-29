@@ -116,7 +116,8 @@ class PullRequestsSync:
         after the listing was read, carries the checkpoint's exact value.
 
         A failure past the first page saves the page it stopped at, and the
-        next sync reads on from there, as the issue listing does.
+        next sync reads on from the page before it, which it reads again in
+        case a pull request removed meanwhile moved one onto it.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -132,10 +133,13 @@ class PullRequestsSync:
         saved = await c.issues._read_checkpoint(group_id)
         resume = resume_point(saved, since_ms)
         if resume is not None:
-            page = resume[GitHubLiterals.RESUME_PAGE.value]
+            # A page number is an offset: a pull request removed from a page already
+            # read moves a later one onto it. Reading the page before again covers that.
+            page = max(1, resume[GitHubLiterals.RESUME_PAGE.value] - 1)
             watermark = resume.get(GitHubLiterals.RESUME_WATERMARK.value) or 0
             self.logger.info("Reading on with the pull requests of %s from page %s, where the last "
                              "sync stopped", repo.full_name, page)
+        resumed_page = page if resume is not None else None
 
         async def save_place() -> None:
             if page > 1:
@@ -157,8 +161,7 @@ class PullRequestsSync:
                     "checkpoint so this page is retried next sync.",
                     repo.full_name, page, res.error,
                 )
-                if resume is not None and page == resume[GitHubLiterals.RESUME_PAGE.value] \
-                        and res.status_code in STALE_RESUME_STATUSES:
+                if page == resumed_page and res.status_code in STALE_RESUME_STATUSES:
                     self.logger.warning("GitHub no longer reads the saved place in the pull requests of "
                                         "%s; the next sync lists them from the start.", repo.full_name)
                     await c.issues._write_checkpoint(group_id, resume_fields_to_clear(saved))
