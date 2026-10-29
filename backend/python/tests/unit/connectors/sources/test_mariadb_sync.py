@@ -141,6 +141,7 @@ class Store:
         self.writes: list[tuple[str, str]] = []  # (kind, external id)
         self.deleted: list[str] = []
         self.fail_delete: set[str] = set()
+        self.fail_writes: set[str] = set()
         self.moves: list[list[str]] = []
         self.fail_moves = False
         self.crash_moves = False
@@ -153,6 +154,8 @@ class Store:
             return self.records.get(external_record_id)
 
         async def on_new_records(batch) -> None:
+            if any(record.external_record_id in self.fail_writes for record, _ in batch):
+                raise RuntimeError("graph refused")
             for record, _ in batch:
                 existing = self.records.get(record.external_record_id)
                 if existing is not None:
@@ -767,8 +770,10 @@ class TestRenames:
         assert world.store.deleted == []
         assert record_id in world.outcome.renamed and record_id in world.outcome.relations_only
         assert record_id not in world.outcome.restructured
-        # The indexed text names the table: it is published again (S5).
-        assert ("update", "shop.purchases") in world.store.writes
+        # Written again under its new name. These rows are never read, so the
+        # revision is the catalog's and does not change; with readable rows the
+        # name is part of the fingerprint, and the table is published again (S5).
+        assert ("new", "shop.purchases") in world.store.writes
         assert set(world.state()) == {"shop.purchases"} and world.state()["shop.purchases"]["renamed_from"] == ""
         world.connector.data_entities_processor.on_sql_records_renamed.assert_awaited_once_with([record_id], "c1")
         world.refreshed.assert_awaited()
@@ -922,7 +927,7 @@ class TestInterruptedMoves:
         await world.sync()
         assert world.record("purchases").id == record_id and world.record("orders") is None
         assert world.store.deleted == [] and len(world.store.moves) == 1
-        assert ("update", "shop.purchases") in world.store.writes
+        assert ("new", "shop.purchases") in world.store.writes
         assert world.state()["shop.purchases"]["renamed_from"] == ""
 
     async def test_a_move_cut_off_after_the_graph_write_is_not_done_again(self, world) -> None:
@@ -968,15 +973,13 @@ class TestInterruptedMoves:
         await world.sync()
         record_id = world.record("orders").id
         world.catalog.rename(("orders", "purchases"))
-        processor = world.connector.data_entities_processor
-        real = processor.on_record_content_update
-        processor.on_record_content_update = AsyncMock(side_effect=RuntimeError("graph refused"))
+        world.store.fail_writes = {"shop.purchases"}
         await world.sync()
         assert world.state()["shop.purchases"]["renamed_from"] == "shop.orders"
-        processor.on_record_content_update = real
+        world.store.fail_writes = set()
         world.store.writes.clear()
         await world.sync()
-        assert len(world.store.moves) == 1 and ("update", "shop.purchases") in world.store.writes
+        assert len(world.store.moves) == 1 and ("new", "shop.purchases") in world.store.writes
         assert world.state()["shop.purchases"]["renamed_from"] == ""
         assert world.record("purchases").id == record_id
 
@@ -1089,7 +1092,7 @@ class TestRemovalsAndOutcome:
         world.store.writes.clear()
         world.catalog.add("customers")
         await world.sync()
-        assert ("update", "shop.orders") in world.store.writes
+        assert ("new", "shop.orders") in world.store.writes
         assert world.record("orders").id not in world.outcome.restructured
 
 
@@ -1192,11 +1195,9 @@ class TestImplementationReview:
         await world.sync()
         record_id = world.record("orders").id
         world.catalog.rename(("orders", "purchases"))
-        processor = world.connector.data_entities_processor
-        real = processor.on_record_content_update
-        processor.on_record_content_update = AsyncMock(side_effect=RuntimeError("graph refused"))
+        world.store.fail_writes = {"shop.purchases"}
         await world.sync()
-        processor.on_record_content_update = real
+        world.store.fail_writes = set()
         await world.sync()
         assert world.record("purchases").id == record_id
         assert record_id in world.outcome.restructured and record_id not in world.outcome.relations_only

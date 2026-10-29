@@ -15,6 +15,7 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    MAX_SYNC_RETRIES,
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.registry.filters import FilterCollection
@@ -347,14 +348,44 @@ class TestChangedTablesAreQueued:
         assert await h.sync() == [("updateRecord", h.record("orders").id)]
 
     @pytest.mark.asyncio
+    async def test_an_unchanged_table_that_failed_indexing_is_retried_a_few_times(self) -> None:
+        h = await _indexed_harness()
+        customers = h.record("customers").id
+        h.record("customers").indexing_status = ProgressStatus.FAILED.value
+        # Restarts and writes that leave the rows alone move the catalog markers,
+        # so the table is looked at on every sync with the same content.
+        markers = [h.source.restart, lambda: h.source.write("customers")] * MAX_SYNC_RETRIES
+        for move_markers in markers[:MAX_SYNC_RETRIES]:
+            move_markers()
+            assert await h.sync() == [("newRecord", customers)]
+            h.record("customers").indexing_status = ProgressStatus.FAILED.value
+        # Past the cap it waits for a change at the source or a manual retry.
+        markers[MAX_SYNC_RETRIES]()
+        assert await h.sync() == []
+        assert h.record("customers").indexing_status == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     async def test_a_changed_table_that_failed_indexing_is_retried(self) -> None:
         h = await _indexed_harness()
         h.record("customers").indexing_status = ProgressStatus.FAILED.value
-        h.source.restart()
+        h.source.tables["customers"]["rows"][0]["name"] = "changed"
+        h.source.write("customers")
         assert await h.sync() == [("updateRecord", h.record("customers").id)]
 
 
 class TestIndexingDuringTheSync:
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_started_during_the_sync_is_left_to_finish(self) -> None:
+        h = await _indexed_harness()
+
+        def _reindex_started(r: Record) -> None:
+            r.indexing_status = ProgressStatus.IN_PROGRESS.value
+
+        h.while_fingerprinting("orders", _reindex_started)
+        h.source.restart()
+        assert await h.sync() == []
+        assert h.record("orders").indexing_status == ProgressStatus.IN_PROGRESS.value
 
     @pytest.mark.asyncio
     async def test_indexing_that_finishes_during_the_sync_is_kept(self) -> None:

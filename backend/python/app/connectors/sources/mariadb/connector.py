@@ -1021,14 +1021,12 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                         await self._remove_records(dropped, table_record_id=record.id)
                     # The catalog flags a change on a restart alone; the content says
                     # whether there is anything to embed.
-                    if not (
-                        existing.indexing_status == ProgressStatus.COMPLETED.value
-                        and existing.external_revision_id == record.external_revision_id
-                    ):
+                    if existing.external_revision_id != record.external_revision_id:
                         await self.data_entities_processor.on_record_content_update(record)
                     else:
-                        # Written again as it is, which queues nothing: a full sync
-                        # counts the records it writes, and unlinks the rest after.
+                        # Written again as it is: the save keeps an indexed or in-flight
+                        # record as it is and retries a failed one a few times at most.
+                        # A full sync counts the records it writes, and unlinks the rest after.
                         await self.data_entities_processor.on_new_records([(record, [])])
                     written.add(table.fqn)
                 else:
