@@ -33,6 +33,9 @@ MAX_RECONCILE_ATTEMPTS = 5
 
 _RECORDS = CollectionNames.RECORDS.value
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+_FINAL_EXTRACTION = frozenset(
+    {ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value, ProgressStatus.FAILED.value}
+)
 
 
 class DuplicateReconciler:
@@ -83,6 +86,15 @@ class DuplicateReconciler:
                             sibling_key, record_id, virtual_record_id,
                         )
                     continue
+                # A copy indexed while the primary waited for classification on first
+                # use took its NOT_STARTED; it shares the primary's outcome.
+                outcome = source_doc.get("extractionStatus")
+                if (
+                    outcome in _FINAL_EXTRACTION
+                    and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                    and sibling_doc.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+                ):
+                    await self.graph.update_node(sibling_key, _RECORDS, {"extractionStatus": outcome})
                 # The copy reports failure as False rather than raising.
                 if not await self.graph.copy_document_relationships(record_id, sibling_key):
                     self.logger.warning(

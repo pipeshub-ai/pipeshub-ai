@@ -24,9 +24,6 @@ from app.services.graph_db.interface.graph_db_provider import (
 SyncVectorMembership = Callable[[str], Awaitable[None]]
 
 _RELEASED_ON = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
-_FINAL_EXTRACTION = frozenset(
-    {ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value, ProgressStatus.FAILED.value}
-)
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_S = 1.0
 
@@ -72,8 +69,7 @@ class QueuedCopies:
         promoted = await self._graph.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
         if promoted < 0:
             raise QueuedCopiesNotReleasedError(record_id)
-        finalized = await self._finalize_deferred_copies(record_id, record, virtual_record_id)
-        if promoted > 0 or had_pending or finalized:
+        if promoted > 0 or had_pending or await self._has_copies(record_id, virtual_record_id):
             await self._reconcile(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
             await notify_record_indexed(
@@ -83,31 +79,14 @@ class QueuedCopies:
                 org_id=record.get("orgId"),
             )
 
-    async def _finalize_deferred_copies(
-        self, record_id: str, record: dict, virtual_record_id: str | None
-    ) -> int:
-        """Copies taken while this record's classification waited for first use
-        (``ENABLE_CLASSIFY_ON_FIRST_USE``) were indexed with ``extractionStatus``
-        NOT_STARTED, which reads as final, so no promotion covers them. Give the
-        same-org ones this record's outcome; the reconcile then copies its taxonomy."""
-        status = record.get("extractionStatus")
-        if not virtual_record_id or status not in _FINAL_EXTRACTION or not record.get("orgId"):
-            return 0
-        finalized = 0
-        for key in await self._graph.get_records_by_virtual_record_id(virtual_record_id) or []:
-            if not key or key == record_id:
-                continue
-            copy = await self._graph.get_document(key, CollectionNames.RECORDS.value)
-            if (
-                copy is None
-                or copy.get("orgId") != record.get("orgId")
-                or copy.get("indexingStatus") != ProgressStatus.COMPLETED.value
-                or copy.get("extractionStatus") != ProgressStatus.NOT_STARTED.value
-            ):
-                continue
-            await self._graph.update_node(key, CollectionNames.RECORDS.value, {"extractionStatus": status})
-            finalized += 1
-        return finalized
+    async def _has_copies(self, record_id: str, virtual_record_id: str | None) -> bool:
+        """Copies indexed while this record waited for first use took NOT_STARTED,
+        which reads as final, so no promotion counts them; the reconcile gives them
+        the outcome. One lookup, and only when classification has ended."""
+        if not virtual_record_id:
+            return False
+        keys = await self._graph.get_records_by_virtual_record_id(virtual_record_id) or []
+        return any(key and key != record_id for key in keys)
 
     async def _reconcile(self, record_id: str, virtual_record_id: str | None) -> None:
         reconciler = DuplicateReconciler(

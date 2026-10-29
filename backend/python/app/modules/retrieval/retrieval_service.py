@@ -1504,7 +1504,7 @@ class RetrievalService:
                         "kb_count": len(kb_ids)
                     }
 
-                classify_on_first_use_later(response_data, self.config_service, self.logger)
+                classify_on_first_use_later(response_data, org_id, self.config_service, self.logger)
                 return response_data
             else:
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)

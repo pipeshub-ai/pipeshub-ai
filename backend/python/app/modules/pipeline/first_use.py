@@ -14,6 +14,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import EventTypes, ProgressStatus
+from app.core.org_context import spawn_in_request
 from app.services.featureflag.platform_settings import is_classify_on_first_use_enabled
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -52,13 +53,13 @@ def unclassified(records: list[Any]) -> list[dict[str, Any]]:
     return found[:_MAX_PER_SEARCH]
 
 
-def first_use_event(doc: dict[str, Any]) -> dict[str, Any]:
+def first_use_event(doc: dict[str, Any], org_id: str) -> dict[str, Any]:
     return {
         "eventType": EventTypes.REINDEX_RECORD.value,
         "timestamp": get_epoch_timestamp_in_ms(),
         "payload": {
             "recordId": doc.get("_key") or doc.get("id"),
-            "orgId": doc.get("orgId"),
+            "orgId": org_id,
             "virtualRecordId": doc.get("virtualRecordId"),
             "connectorId": doc.get("connectorId"),
             "connectorName": doc.get("connectorName"),
@@ -97,13 +98,14 @@ async def _get_producer(config_service: ConfigurationService, logger: Logger) ->
 
 
 async def classify_on_first_use(
-    results: dict[str, Any], config_service: ConfigurationService, logger: Logger
+    results: dict[str, Any], org_id: str | None, config_service: ConfigurationService, logger: Logger
 ) -> int:
-    """Ask indexing to classify the records in ``results`` that wait for first
-    use. Returns how many were asked for; never raises."""
+    """Ask indexing to classify the records in ``results``, a search of
+    ``org_id``, that wait for first use. Returns how many were asked for; never
+    raises."""
     try:
         docs = unclassified(results.get("records") or [])
-        if not docs or not await is_classify_on_first_use_enabled(config_service):
+        if not org_id or not docs or not await is_classify_on_first_use_enabled(config_service):
             return 0
         docs = _not_asked_recently(docs, time.monotonic())
         if not docs:
@@ -113,7 +115,7 @@ async def classify_on_first_use(
         for doc in docs:
             record_id, rev = _asked_key(doc)
             # Marked only once the broker took it, so a failure leaves it to the next search.
-            if await producer.send_message(RECORD_EVENTS_TOPIC, first_use_event(doc), key=record_id) is not False:
+            if await producer.send_message(RECORD_EVENTS_TOPIC, first_use_event(doc, org_id), key=record_id) is not False:
                 _asked[(record_id, rev)] = time.monotonic()
                 sent += 1
         return sent
@@ -123,9 +125,10 @@ async def classify_on_first_use(
 
 
 def classify_on_first_use_later(
-    results: dict[str, Any], config_service: ConfigurationService, logger: Logger
+    results: dict[str, Any], org_id: str | None, config_service: ConfigurationService, logger: Logger
 ) -> None:
-    """``classify_on_first_use`` in the background, so the search answers first."""
-    task = asyncio.create_task(classify_on_first_use(results, config_service, logger))
+    """``classify_on_first_use`` in the background, so the search answers first.
+    It keeps the request's context: the flag is read for this search's org."""
+    task = spawn_in_request(classify_on_first_use(results, org_id, config_service, logger))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)

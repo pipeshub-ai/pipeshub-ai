@@ -115,6 +115,26 @@ class TestReconciler:
         assert await reconciler.reconcile("p1", "vr1") is True
         assert [c.args[0]["_key"] for c in sink.sync_entities_for_duplicate.await_args_list] == ["s1", "s2"]
 
+    async def test_a_copy_left_waiting_for_first_use_takes_the_outcome(self) -> None:
+        graph = FakeGraph()
+        _group(graph, siblings=("s1", "s2", "s3"), extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        graph.docs["s2"].update(indexingStatus="COMPLETED", extractionStatus="FAILED")
+        graph.docs["s3"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED", orgId="org-2")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert ("s1", {"extractionStatus": "COMPLETED"}) in graph.updates
+        assert graph.docs["s2"]["extractionStatus"] == "FAILED"
+        assert graph.docs["s3"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_primary_still_waiting_lends_no_outcome(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="NOT_STARTED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert graph.updates == []
+
     async def test_named_entity_mentions_follow_the_taxonomy_copy(self) -> None:
         graph = FakeGraph()
         _group(graph, siblings=("s1", "s2"))
