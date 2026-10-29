@@ -7,6 +7,7 @@ need both the type tables and the method index.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
 import re
 import time
@@ -249,6 +250,14 @@ async def _index_blocks(graph_provider: IGraphDBProvider, org_id: str,
 
 
 _EXPR_DEPTH = 6
+# `dict.fromkeys`, `str.maketrans`: a chain starting at a builtin is never a repo method.
+_PY_BUILTINS = frozenset(dir(builtins))
+_PY_SUPER = re.compile(r"super\(\s*([A-Za-z_]\w*)\s*,.*\)", re.S)
+# Methods of builtin values (`d.get`, `xs.count`, `s.split`): a name-only guess for one would
+# mostly land on an unrelated repo method, so these resolve only through a known receiver type.
+_PY_BUILTIN_METHODS = frozenset(
+    name for kind in (dict, list, str, set, bytes, tuple, int, float) for name in dir(kind)
+) | {"read", "readline", "readlines", "write", "close", "seek", "flush", "group", "groups", "groupdict", "span"}
 _CLASS_ARG_CALLS = frozenset({"createInstance", "get"})
 _SEGMENT = re.compile(r"[A-Za-z_$][\w$]*")
 
@@ -307,6 +316,10 @@ class _Builder:
         # `_EXTERNAL`. Calls resolve through these before any name matching.
         self.symbol_bindings: dict[str, dict[str, str]] = {}
         self.module_bindings: dict[str, dict[str, str]] = {}
+        # Python: file -> local name -> (file, name) of a module-level value it imports
+        # (`from django.apps import apps`), whose type that file's assignment gives.
+        self.value_imports: dict[str, dict[str, tuple[str, str]]] = {}
+        self._py_classes: dict[str, list[str]] | None = None
         self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
@@ -519,6 +532,10 @@ class _Builder:
                 confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
                 resolution=RESOLUTION_IMPORT,
             )
+        elif family == "py":
+            # A module-level value (`apps = Apps()`), or a name the file re-exports:
+            # calls on it are typed from that file's assignment.
+            self.value_imports.setdefault(from_file, {})[local] = (target_file, name)
         # Otherwise the file re-exports the name from elsewhere (a Python
         # `__init__`); it stays unbound and resolves by the weaker rules.
 
@@ -881,13 +898,23 @@ class _Builder:
             receiver_type = self.index.type_table_by_record.get(record_id, {}).get(receiver)
         if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
             receiver_type = None
+        family = self._family_of(block_id)
         if not receiver_type and receiver in ("self", "this"):
             owner = self._enclosing_type(block_id)
             if owner:
-                return self._resolve_self_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
-        if not receiver_type and receiver in ("super()", "super"):
+                target = self._resolve_self_method(owner, name)
+                if target or family != "py":
+                    return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+                # A mixin calling a method its concrete classes supply.
+                return self._py_unique_method(name, fact, record_id)
+        two_arg = _PY_SUPER.fullmatch(receiver or "") if family == "py" else None
+        if not receiver_type and (receiver in ("super()", "super") or two_arg):
             # `super().__init__()`, `super.save()`: the nearest base that defines it.
+            # `super(C, self).m()` starts above C, which need not be the enclosing class.
             owner = self._enclosing_type(block_id)
+            if two_arg:
+                named = self._type_candidates(two_arg.group(1), record_id, family)
+                owner = named[0] if len(named) == 1 else None
             for base in self._base_types_of(owner) if owner else ():
                 target = self._resolve_self_method(base, name)
                 if target:
@@ -897,7 +924,7 @@ class _Builder:
             bound = self._resolve_bound_receiver(receiver, name, record_id)
             if bound is not None:
                 return bound
-        if not receiver_type and fact.get("qualifiedPrefix") and self._family_of(block_id) == "js":
+        if not receiver_type and fact.get("qualifiedPrefix") and family in ("js", "py"):
             # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`.
             owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
                                     head_type=fact.get("headType"), head_type_arg=fact.get("headTypeArg"))
@@ -907,9 +934,16 @@ class _Builder:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
         if not receiver_type:
             target = self._resolve_module_qualified_call(fact, record_id)
-            return target, CONFIDENCE_INFERRED, RESOLUTION_MODULE if target else None
+            if target or family != "py":
+                return target, CONFIDENCE_INFERRED, RESOLUTION_MODULE if target else None
+            if name in _PY_BUILTIN_METHODS:
+                return None, CONFIDENCE_INFERRED, _EXTERNAL
+            last = (fact.get("qualifiedPrefix") or receiver or "").rsplit(".", 1)[-1]
+            named = self._py_named_like(last, name) if _SEGMENT.fullmatch(last) and last not in ("self", "cls") else None
+            if named:
+                return self._resolve_self_method(named, name), CONFIDENCE_INFERRED, RESOLUTION_NAME
+            return self._py_unique_method(name, fact, record_id)
 
-        family = self._family_of(block_id)
         if family == "go":
             return self._resolve_go_method(receiver_type, name, record_id)
         if "|" in receiver_type:  # `e: A | B`
@@ -975,8 +1009,11 @@ class _Builder:
         owner = None
         if segments:
             (head, called, first_arg), rest = segments[0], segments[1:]
-            if head == "this" and not called:
+            py = lang_family(None, self.index.file_by_record.get(record_id)) == "py"
+            if (head == "this" or (py and head in ("self", "cls"))) and not called:
                 owner = this_type
+            elif called and py and len(self._type_candidates(head, record_id, "py")) == 1:
+                owner = self._type_candidates(head, record_id, "py")[0]  # `Foo(...).bar()`
             elif called and head in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
                 owner = self._value_type(first_arg, record_id, this_type, depth)
             elif called:
@@ -1006,6 +1043,8 @@ class _Builder:
                 else:
                     owner, type_arg = (self._member_type(owner, name, depth),
                                        self._member_type(owner, name, depth, suffix="<>"))
+                    if owner is None and py:
+                        owner = self._py_named_like(name)  # `self.model_admin` -> ModelAdmin
         return owner
 
     def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
@@ -1015,7 +1054,98 @@ class _Builder:
             return self._declared_type(declared, record_id, this_type, depth)
         family = lang_family(None, self.index.file_by_record.get(record_id))
         candidates = self._type_candidates(name, record_id, family)
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0]
+        if family != "py":
+            return None
+        return self._py_imported_value(record_id, name, depth) or self._py_named_like(name)
+
+    def _py_imported_value(self, record_id: str, name: str, depth: int) -> str | None:
+        """The type of a module-level value a Python file imports, read from the
+        assignment in the module that defines it (through re-exporting `__init__`s)."""
+        file = self.index.file_by_record.get(record_id) or ""
+        for _ in range(_EXPR_DEPTH):
+            ref = self.value_imports.get(file, {}).get(name)
+            if ref is None:
+                return None
+            file, name = ref
+            target_record = self.index.record_by_file.get(file)
+            declared = self.index.type_table_by_record.get(target_record, {}).get(name) if target_record else None
+            if declared:
+                return self._declared_type(declared, target_record, None, depth + 1)
+        return None
+
+    def _py_named_like(self, name: str, method: str | None = None) -> str | None:
+        """The class an untyped Python name spells, or None: `queryset` is QuerySet,
+        `schema_editor` the one base of every `*SchemaEditor`, `old_field` a `*Field`.
+
+        Tried in order: the whole name as an exact class name, then (two words or more)
+        as a class-name suffix, then its last word as an exact class name. One word is
+        never matched as a suffix: `cursor` is usually a driver's object, not the one
+        repo class ending in Cursor. With *method*, only classes that have it count.
+        Subclasses fold into their base; a guess needs exactly one class left.
+        """
+        if self._py_classes is None:
+            self._py_classes = {}
+            for cid in self.index.type_blocks:
+                row = self.index.rows.get(cid)
+                if row is not None and row.name and self._family_of(cid) == "py":
+                    self._py_classes.setdefault(row.name.replace("_", "").lower(), []).append(cid)
+        memo_key = ("named", name, method)
+        if memo_key in self._expr_memo:
+            return self._expr_memo[memo_key]
+        words = [w for w in name.lower().split("_") if w]
+        tries = [("".join(words), True)] + ([("".join(words), False), (words[-1], True)] if len(words) > 1 else [])
+        found = None
+        for key, exact in tries:
+            if len(key) <= 3:
+                continue
+            hits = self._py_classes.get(key, []) if exact else [
+                cid for norm, cids in self._py_classes.items() if norm.endswith(key) for cid in cids]
+            if method:
+                hits = [cid for cid in hits if self._resolve_self_method(cid, method)]
+            roots = self._py_roots(hits)
+            if len(roots) == 1:
+                found = roots[0]
+                break
+            if roots:  # several unrelated classes: a guess would be a coin toss
+                break
+        self._expr_memo[memo_key] = found
+        return found
+
+    def _py_roots(self, classes: list[str]) -> list[str]:
+        """*classes* without those that inherit from another of them."""
+        wanted = set(classes)
+        roots = []
+        for cid in dict.fromkeys(classes):
+            seen, queue, inherits = {cid}, list(self._base_types_of(cid)), False
+            while queue and not inherits:
+                base = queue.pop()
+                if base in seen:
+                    continue
+                seen.add(base)
+                inherits = base in wanted
+                queue.extend(self._base_types_of(base))
+            if not inherits:
+                roots.append(cid)
+        return roots
+
+    def _py_unique_method(self, name: str, fact: dict, record_id: str) -> tuple[str | None, str, str | None]:
+        """An untyped Python receiver: the method if exactly one class in the repo defines
+        that name. A dunder, a name several classes share, or a chain starting at a
+        builtin or a third-party import (`os.path.splitext`) stays unresolved."""
+        if not name or name.startswith("__") or name in _PY_BUILTIN_METHODS:
+            return None, CONFIDENCE_INFERRED, None
+        head = re.split(r"[.(\[]", fact.get("qualifiedPrefix") or fact.get("receiver") or "", maxsplit=1)[0]
+        call_file = self.index.file_by_record.get(record_id) or ""
+        if head in _PY_BUILTINS or _EXTERNAL in (self.symbol_bindings.get(call_file, {}).get(head),
+                                                 self.module_bindings.get(call_file, {}).get(head)):
+            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        owners = [cid for cid in self.index.candidates(name)
+                  if self._family_of(cid) == "py" and self._parent_of(cid) in self.index.type_blocks]
+        if len(owners) != 1:
+            return None, CONFIDENCE_INFERRED, None
+        return owners[0], CONFIDENCE_INFERRED, RESOLUTION_NAME
 
     def _declared_type(self, declared: str, record_id: str, this_type: str | None, depth: int) -> str | None:
         if declared.startswith("="):
