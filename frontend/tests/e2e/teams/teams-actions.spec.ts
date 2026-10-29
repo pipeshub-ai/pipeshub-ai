@@ -130,9 +130,10 @@ test.describe('Teams Actions', () => {
     const name = await createTeam(apiContext, 'delete');
     await openTeam(page, name);
 
-    // Delete is offered only in edit mode.
+    // Delete is offered only in edit mode, and asks for confirmation.
     await page.getByRole('button', { name: 'Edit team' }).click();
     await page.getByRole('button', { name: 'Delete team' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete team' }).click();
 
     await expect(page.getByText('Team deleted').first()).toBeVisible({ timeout: 10_000 });
     await page.goto('/workspace/teams/');
