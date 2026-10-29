@@ -5989,7 +5989,7 @@ class DropboxDataSource:
     async def sharing_list_file_members_continue(
         self,
         cursor: str,
-        team_member_id: Optional[str] = None,
+        team_member_id: str | None = None,
     ) -> DropboxResponse:
         """Once a cursor has been retrieved from :meth:`sharing_list_file_members`
 
@@ -6338,9 +6338,9 @@ class DropboxDataSource:
         self,
         path: Optional[str] = None,
         cursor: Optional[str] = None,
-        direct_only: Optional[str] = None,
-        team_member_id: Optional[str] = None,
-        team_folder_id: Optional[str] = None,
+        direct_only: str | None = None,
+        team_member_id: str | None = None,
+        team_folder_id: str | None = None,
     ) -> DropboxResponse:
         """List shared links of this user. If no path is given, returns a list of
 

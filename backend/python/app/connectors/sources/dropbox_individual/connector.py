@@ -296,7 +296,7 @@ class DropboxIndividualConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
         self._health = SyncHealth()
         self._owed = OwedDeletes(self.dropbox_cursor_sync_point)
-        self._web_links: Optional[WebLinks] = None
+        self._web_links: WebLinks | None = None
         self._moved_folders: list[tuple[str, str, str]] = []
 
     async def init(self) -> bool:
@@ -428,9 +428,9 @@ class DropboxIndividualConnector(BaseConnector):
         modified_after: Optional[datetime] = None,
         modified_before: Optional[datetime] = None,
         created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None,
+        created_before: datetime | None = None,
         *,
-        parents: Optional[ParentResolver] = None,
+        parents: ParentResolver | None = None,
     ) -> Optional[RecordUpdate]:
         """
         Turn one listed entry into the record to write, and say what changed. A delete is applied here and gives
@@ -552,13 +552,13 @@ class DropboxIndividualConnector(BaseConnector):
             self._web_links = WebLinks(self.data_source, self.logger)
         return self._web_links
 
-    async def _stored_id_at(self, path_lower: str, record_group_id: str) -> Optional[str]:
+    async def _stored_id_at(self, path_lower: str, record_group_id: str) -> str | None:
         for record in await self.data_entities_processor.get_records_by_file_path(self.connector_id, path_lower):
             if record.external_record_group_id == record_group_id:
                 return record.external_record_id
         return None
 
-    async def _ask_parent_id(self, parent_path: Optional[str]) -> Optional[str]:
+    async def _ask_parent_id(self, parent_path: str | None) -> str | None:
         if not parent_path or parent_path == "/":
             return None
         metadata = await self.data_source.files_get_metadata(parent_path)
@@ -577,9 +577,9 @@ class DropboxIndividualConnector(BaseConnector):
         modified_after: Optional[datetime] = None,
         modified_before: Optional[datetime] = None,
         created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None,
+        created_before: datetime | None = None,
         *,
-        parents: Optional[ParentResolver] = None,
+        parents: ParentResolver | None = None,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.

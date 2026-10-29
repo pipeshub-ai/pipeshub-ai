@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from dropbox.files import DeletedMetadata, FileMetadata
 
-from app.connectors.core.registry.filters import Filter, FilterCollection, FilterOperator, FilterType
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterOperator,
+    FilterType,
+)
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox.deletes import (
     apply_deleted_entry,

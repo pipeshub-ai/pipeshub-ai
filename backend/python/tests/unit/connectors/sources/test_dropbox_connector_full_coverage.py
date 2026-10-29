@@ -13,7 +13,6 @@ import pytest
 from dropbox.exceptions import ApiError
 from fastapi import HTTPException
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
-from dropbox.sharing import AccessLevel
 from dropbox.team_log import EventCategory
 
 from app.config.constants.arangodb import (
@@ -45,7 +44,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission, PermissionType
 
 
 # ---------------------------------------------------------------------------

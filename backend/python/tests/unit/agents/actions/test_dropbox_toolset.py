@@ -61,7 +61,7 @@ def _tool_with(data_source: MagicMock) -> Dropbox:
 class TestAnswersAreJson:
     def test_a_real_sdk_result_is_written_as_json(self) -> None:
         """to_json of an SDK object raised TypeError, so every successful call reported an error."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from dropbox.files import FileMetadata, ListFolderResult
 
@@ -69,7 +69,7 @@ class TestAnswersAreJson:
 
         listing = ListFolderResult(entries=[FileMetadata(
             name="a.txt", id="id:a", path_lower="/a.txt", path_display="/a.txt", rev="0123456789",
-            client_modified=datetime(2026, 1, 1), server_modified=datetime(2026, 1, 1), size=3)],
+            client_modified=datetime(2026, 1, 1, tzinfo=timezone.utc), server_modified=datetime(2026, 1, 1, tzinfo=timezone.utc), size=3)],
             cursor="c", has_more=False)
         data_source = MagicMock()
         data_source.files_list_folder = AsyncMock(return_value=DropboxResponse(success=True, data=listing))

@@ -37,7 +37,7 @@ def to_plain(value: Any) -> Any:  # noqa: ANN401 - any SDK value
     if isinstance(value, dict):
         return {str(k): to_plain(v) for k, v in value.items()}
     if hasattr(value, "_tag") and hasattr(value, "_value"):
-        out: Dict[str, Any] = {".tag": value._tag}
+        out: dict[str, Any] = {".tag": value._tag}
         if value._value is not None:
             out[value._tag] = to_plain(value._value)
         return out

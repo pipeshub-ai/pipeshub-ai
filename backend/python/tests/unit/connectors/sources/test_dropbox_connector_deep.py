@@ -41,7 +41,6 @@ from app.connectors.sources.dropbox.connector import (
     get_parent_path_from_path,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 # ===========================================================================
