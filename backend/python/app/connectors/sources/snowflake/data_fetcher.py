@@ -59,6 +59,8 @@ _SKIPPED_DATABASE_KINDS = frozenset({"APPLICATION", "APPLICATION PACKAGE", "PERS
 # Column added to a row sample to order it by, and removed again.
 _ROW_HASH = "_pipeshub_row_hash"
 _VALUE_COUNTS_TIMEOUT_S = 60
+# Snowflake's error code for DIRECTORY() on a stage created without a directory table.
+_DIRECTORY_NOT_ENABLED = "393901"
 # Tables with rows and columns to read. Views come from INFORMATION_SCHEMA.VIEWS;
 # temporary tables die with their session; event tables hold telemetry.
 _TABLE_TYPES = "('BASE TABLE', 'EXTERNAL TABLE')"
@@ -352,8 +354,12 @@ class SnowflakeDataFetcher:
                 try:
                     hierarchy.files[stage.fqn] = await self.list_stage_files(database, schema, stage.name)
                 except SnowflakeFetchError as e:
-                    # A stage without a directory table refuses DIRECTORY(); the
-                    # schema's tables and views are still worth syncing.
+                    if e.code == _DIRECTORY_NOT_ENABLED:
+                        # Its files are listed nowhere: none to sync, and none skipped.
+                        hierarchy.files[stage.fqn] = []
+                        logger.info("Stage %s has no directory table; its files are not synced", stage.fqn)
+                        continue
+                    # The schema's tables and views are still worth syncing.
                     hierarchy.errors += 1
                     hierarchy.unreadable_stages.add(stage.fqn)
                     logger.warning("Could not list the files of stage %s: %s", stage.fqn, e)

@@ -314,6 +314,8 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "sharepoint": ("sharepoint", "sharepoint_sim"),
     # Marked cifs, which no shard selects; core still collects the files.
     "cifs": (),
+    # Marked snowflake, which no shard selects: it needs a live account.
+    "snowflake": (),
 }
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub

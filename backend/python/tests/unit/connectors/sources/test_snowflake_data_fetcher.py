@@ -346,7 +346,9 @@ class TestFetchAll:
             {"STAGE_NAME": "NODIR", "STAGE_TYPE": "Internal Named", "STAGE_URL": "",
              "STAGE_OWNER": "", "COMMENT": None, "CREATED": None},
         ])
-        runner.on("DIRECTORY(", error=SnowflakeFetchError("directory table is not enabled", sqlstate="02000"))
+        runner.on("DIRECTORY(", error=SnowflakeFetchError(
+            'DIRECTORY not enabled for the stage "DB"."GOOD"."NODIR"', sqlstate="55000", code="393901",
+        ))
         runner.on("INFORMATION_SCHEMA.TABLES", [{
             "TABLE_NAME": "T", "TABLE_TYPE": "BASE TABLE", "ROW_COUNT": 1, "BYTES": 1,
             "TABLE_OWNER": "", "COMMENT": None, "CREATED": None, "LAST_ALTERED": None, "LAST_DDL": None,
@@ -357,9 +359,26 @@ class TestFetchAll:
             include_relationships=False,
         )
         assert [t.name for t in hierarchy.tables[schema_key("DB", "GOOD")]] == ["T"]
+        # No files to list is not a failed listing: nothing is kept back, and a full sync is complete.
+        assert hierarchy.files == {"DB.GOOD.NODIR": []}
+        assert hierarchy.errors == 0
+        assert hierarchy.unreadable_stages == set()
+
+    async def test_a_stage_whose_files_could_not_be_listed_is_unreadable(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        runner.on("INFORMATION_SCHEMA.STAGES", [
+            {"STAGE_NAME": "DOCS", "STAGE_TYPE": "Internal Named", "STAGE_URL": "",
+             "STAGE_OWNER": "", "COMMENT": None, "CREATED": None},
+        ])
+        runner.on("DIRECTORY(", error=REFUSED)
+        hierarchy = await fetcher.fetch_all(
+            include_database=lambda d: d == "DB",
+            include_schema=lambda key: key == schema_key("DB", "GOOD"),
+            include_relationships=False,
+        )
         assert hierarchy.files == {}
         assert hierarchy.errors == 1
-        assert hierarchy.unreadable_stages == {"DB.GOOD.NODIR"}
+        assert hierarchy.unreadable_stages == {"DB.GOOD.DOCS"}
 
     async def test_schema_filter_skips_reading_other_schemas(self, runner, fetcher) -> None:
         self.catalog(runner)
