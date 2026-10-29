@@ -2705,12 +2705,16 @@ async def attach_connector_instance_names(
     to_fetch = [cid for cid in connector_ids if cid not in names]
     if to_fetch:
         try:
-            apps = await asyncio.wait_for(
-                asyncio.gather(
-                    *(graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
-                    return_exceptions=True,
+            # Each lookup has its own timeout: one slow app must not cost the others their names.
+            apps = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        graph_provider.get_document(cid, CollectionNames.APPS.value),
+                        timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                    )
+                    for cid in to_fetch
                 ),
-                timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                return_exceptions=True,
             )
         except Exception as e:
             # Labels only: results stay correct, the UI shows the type code.

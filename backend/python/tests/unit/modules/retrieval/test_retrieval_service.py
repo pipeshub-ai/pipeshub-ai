@@ -257,6 +257,22 @@ class TestAttachConnectorInstanceNames:
 
         assert "connectorInstanceName" not in records[0]
 
+    @pytest.mark.asyncio
+    async def test_a_slow_app_does_not_cost_a_fast_one_its_name(self, retrieval_service, mock_graph_provider) -> None:
+        async def lookup(key: str, _collection: str) -> dict | None:
+            if key == "c-slow":
+                await asyncio.Event().wait()
+            return {"name": "Contracts"}
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=lookup)
+        records = [{"_key": "r1", "connectorId": "c-slow"}, {"_key": "r2", "connectorId": "c-fast"}]
+
+        with patch("app.utils.chat_helpers.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
+            await attach_connector_instance_names(mock_graph_provider, records, None)
+
+        assert "connectorInstanceName" not in records[0]
+        assert records[1]["connectorInstanceName"] == "Contracts"
+
 
 # ============================================================================
 # to_qdrant_sparse (static method)
