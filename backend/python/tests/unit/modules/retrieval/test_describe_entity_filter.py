@@ -33,12 +33,19 @@ from app.modules.retrieval.entity_filters import describe_entity_filter
     ({"amount": {"max": 5}}, "an amount of at most 5"),
     ({"amount": {"min": -1e308}}, "any amount"),
     ({"amount": {"currency": "EUR"}}, "an amount in EUR"),
-    ({"mentionedDate": {"from": "2025-01-01", "to": "2025-12-31"}}, "a date from 2025-01-01 to 2025-12-31"),
+    # The graph's date end is exclusive.
+    (
+        {"mentionedDate": {"from": "2025-01-01", "to": "2026-01-01"}},
+        "a date from 2025-01-01 up to but not including 2026-01-01",
+    ),
+    ({"mentionedDate": {"from": "2025-12-31T15:30:00Z"}}, "a date on or after 2025-12-31T15:30:00Z"),
+    ({"amount": {"min": 1234567, "max": 1234568}}, "an amount from 1,234,567 to 1,234,568"),
+    ({"amount": {"min": 50000.5}}, "an amount of at least 50,000.5"),
     ({"quantity": {"min": 5, "dimension": "kg"}}, 'a quantity of at least 5 "kg"'),
     # The API takes percentages as fractions.
     ({"percent": {"min": 0.1, "max": 0.5}}, "a percentage from 10% to 50%"),
     ({"percent": {"max": 0.125}}, "a percentage of at most 12.5%"),
-    ({"mentionedDate": {"to": "2025-12-31"}}, "a date on or before 2025-12-31"),
+    ({"mentionedDate": {"to": "2025-12-31"}}, "a date before 2025-12-31"),
     (
         {"kinds": ["person"], "name": "Maya", "amount": {"min": 1000, "currency": "USD"}},
         'an entity (person) whose name starts with "Maya" and an amount of at least 1,000 USD',

@@ -137,15 +137,21 @@ def _render_entity_filter(filters: object, search: str | None) -> str | None:
     """The request's entity filter, which narrows content search only. Without it the
     model asks "which customer?" for a request already scoped to one. ``search`` is the
     granted retrieval surface: the flat search tool or the exploration delegate."""
-    described = describe_entity_filter((filters or {}).get(ENTITY_FILTERS_KEY)) if isinstance(filters, dict) else None
+    raw = filters.get(ENTITY_FILTERS_KEY) if isinstance(filters, dict) else None
+    described = describe_entity_filter(raw)
     if not (search and described):
         return None
+    # Only a picked entity or a name tells the model who "this customer" is; a date
+    # or amount bound alone does not.
+    names_one = bool(raw.get("entityIds") or str(raw.get("name") or "").strip())
+    refers = (
+        "A request that refers to it without naming it (\"this customer\", \"them\") means it: "
+        "search instead of asking which one. " if names_one else ""
+    )
     return (
         "## Entity filter\n"
         f"Searches through `{search}` for this request return only records that mention {described}. "
-        "A request that refers to it without naming it (\"this customer\", \"them\") means it: search "
-        "instead of asking which one. Listing, browsing, fetching and the find_records_by_* lookups "
-        "are not limited by it."
+        f"{refers}Listing, browsing, fetching and the find_records_by_* lookups are not limited by it."
     )
 
 

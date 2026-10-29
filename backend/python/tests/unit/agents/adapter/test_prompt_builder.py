@@ -1188,6 +1188,12 @@ class TestEntityFilterInBandC:
         without, _ = self._blocks(None, ["knowledgegraph__search"])
         assert with_filter == without
 
+    def test_a_filter_naming_no_entity_does_not_say_who_this_customer_is(self) -> None:
+        _, volatile = self._blocks({"entityFilters": {"amount": {"min": 50000}}}, ["knowledgegraph__search"])
+        assert "an amount of at least 50,000" in volatile and "this customer" not in volatile
+        _, named = self._blocks(self.FILTER, ["knowledgegraph__search"])
+        assert "this customer" in named
+
     def test_no_section_without_a_content_search(self) -> None:
         _, volatile = self._blocks(self.FILTER, ["knowledgegraph__navigate"])
         assert "## Entity filter" not in volatile

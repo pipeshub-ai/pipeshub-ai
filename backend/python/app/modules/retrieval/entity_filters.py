@@ -231,39 +231,49 @@ def _part(part: Any, name: str) -> str:  # noqa: ANN401
         named = f" whose name starts with {_quoted(name or prefix)}" if prefix else ""
         return f"{subject}{f' ({kinds})' if kinds else ''}{named}"
     if binds.get("dateStart") is not None:
-        return f"a date {_span(binds['dateStart'], binds['dateEnd'], _iso_date, 'on or after', 'on or before')}"
+        # The graph matches a mention overlapping [start, end): the end is exclusive.
+        span = _span(binds["dateStart"], binds["dateEnd"], _iso_date, "on or after", "before", "up to but not including")
+        return f"a date {span}"
     if binds.get("amountMin") is not None:
         cur = f" {binds['currency']}" if binds.get("currency") else ""
-        span = _span(binds["amountMin"], binds["amountMax"], lambda v: f"{v:,g}{cur}")
+        span = _span(binds["amountMin"], binds["amountMax"], lambda v: f"{_digits(v)}{cur}")
         return f"an amount {span}" if span else f"an amount in{cur}" if cur else "any amount"
     if binds.get("quantityMin") is not None:
         unit = f" {_quoted(binds['dimension'])}" if binds.get("dimension") else ""
-        span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{v:,g}{unit}")
+        span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{_digits(v)}{unit}")
         return f"a quantity {span}" if span else f"a quantity in{unit}" if unit else "any quantity"
     if binds.get("percentMin") is not None:
         # The API takes percentages as fractions: 0.125 is 12.5%.
-        span = _span(binds["percentMin"], binds["percentMax"], lambda v: f"{v * 100:g}%")
+        span = _span(binds["percentMin"], binds["percentMax"], lambda v: f"{_digits(round(v * 100, 10))}%")
         return f"a percentage {span}" if span else "any percentage"
     return f"any {kinds} value" if kinds else ""
 
 
 def _span(
     low: float, high: float | None, show: Callable[[float], str],
-    at_least: str = "of at least", at_most: str = "of at most",
+    at_least: str = "of at least", at_most: str = "of at most", to: str = "to",
 ) -> str:
     has_low, has_high = low > _LOW, high is not None and high < _HIGH
     if has_low and has_high:
-        return f"from {show(low)} to {show(high)}"
+        return f"from {show(low)} {to} {show(high)}"
     if has_low:
         return f"{at_least} {show(low)}"
     return f"{at_most} {show(high)}" if has_high else ""
 
 
+def _digits(value: float) -> str:
+    """Every digit the graph compares: ``:g`` would round 1234567 to 1.23457e+06."""
+    return f"{int(value):,}" if float(value).is_integer() else f"{value:,}"
+
+
 def _iso_date(ms: float) -> str:
+    """The date alone at UTC midnight, else the full UTC time the graph compares."""
     try:
-        return datetime.fromtimestamp(ms / 1000, tz=UTC).date().isoformat()
+        moment = datetime.fromtimestamp(ms / 1000, tz=UTC)
     except (ValueError, OverflowError, OSError):
         return f"{ms:.0f} ms since 1970"
+    return moment.date().isoformat() if moment == moment.replace(hour=0, minute=0, second=0, microsecond=0) \
+        else moment.isoformat().replace("+00:00", "Z")
 
 
 def _quoted(text: str) -> str:
