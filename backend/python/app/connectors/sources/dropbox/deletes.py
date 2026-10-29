@@ -80,6 +80,8 @@ async def _remove_gone(
         if not (result or {}).get("success", False):
             logger.warning(f"Failed to remove the records deleted at {what}: {(result or {}).get('reason')}")
             outcome.failed = True
+            # Dropbox lists the delete once: kept as owed, it is written on the next run.
+            outcome.unsure_external_ids.extend(r.external_record_id for r in candidates if r.id in set(gone))
         else:
             outcome.removed.extend(gone)
     return outcome

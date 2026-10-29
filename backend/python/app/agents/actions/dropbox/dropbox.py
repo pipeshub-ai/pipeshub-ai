@@ -356,11 +356,13 @@ class Dropbox:
             metadata, http_response = response.data
             # The body is read up to a bound, so a large file cannot fill the agent's memory or context.
             data = b""
-            for chunk in http_response.iter_content(chunk_size=64 * 1024):
-                data += chunk
-                if len(data) > _MAX_DOWNLOAD_BYTES:
-                    break
-            http_response.close()
+            try:
+                for chunk in http_response.iter_content(chunk_size=64 * 1024):
+                    data += chunk
+                    if len(data) > _MAX_DOWNLOAD_BYTES:
+                        break
+            finally:
+                http_response.close()
             truncated = len(data) > _MAX_DOWNLOAD_BYTES
             return True, json.dumps({
                 "metadata": to_plain(metadata),

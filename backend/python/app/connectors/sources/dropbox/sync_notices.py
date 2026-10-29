@@ -42,7 +42,7 @@ class SyncNotices:
             await c.notify(type=NotificationType.CONNECTOR_SYNC_ERROR, severity=NotificationSeverity.WARNING,
                            title=c._notification_title("Part of Dropbox could not be synced"),
                            message=(f"{len(health.problems)} part(s) of Dropbox could not be read, so this sync did "
-                                    "not finish and nothing was removed. It will be tried again on the next sync. "
+                                    "not finish, and nothing was removed from them. It will be tried again on the next sync. "
                                     f"First: {health.problems[0][:300]}"))
         if health.relisted:
             await c.notify(type=NotificationType.CONNECTOR_INFO, severity=NotificationSeverity.INFO,

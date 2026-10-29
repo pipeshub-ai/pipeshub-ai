@@ -35,6 +35,7 @@ from app.connectors.sources.dropbox.weblinks import HOME_URL, WebLinks
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import AppUser
 from app.sources.client.dropbox.dropbox_ import DropboxResponse
 
@@ -261,6 +262,49 @@ class TestTeamListing:
         team._team_item_still_exists.assert_awaited_once()
         team.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
             ["r-down"], "dbx-1", include_trashed_roots=True)
+
+    @pytest.mark.asyncio
+    async def test_the_saved_cursor_stays_before_a_page_with_a_failed_entry(self, team) -> None:
+        """Dropbox lists a change once: a cursor saved past a failed entry would lose it. The pages after it are
+        still written, and the next run reads again from the last page that went through whole."""
+        good, bad, later = file_entry("a.txt", "id:a", "/a.txt"), file_entry("b.txt", "id:b", "/b.txt"), \
+            file_entry("c.txt", "id:c", "/c.txt")
+        team.data_source.files_list_folder = AsyncMock(return_value=page([good], cursor="c1", has_more=True))
+        team.data_source.files_list_folder_continue = AsyncMock(side_effect=[
+            page([bad], cursor="c2", has_more=True), page([later], cursor="c3")])
+        real = team._process_dropbox_entry
+
+        async def process(entry: FileMetadata, *args: object, **kwargs: object) -> RecordUpdate | None:
+            if entry.id == "id:b":
+                team._health.skipped("entry /b.txt", "boom")
+                return None
+            return await real(entry, *args, **kwargs)
+        team._process_dropbox_entry = process
+
+        await team._sync_namespace("dbmid:a", "a@x.com", None, frozenset())
+
+        saved = [call.kwargs["sync_point_data"]["cursor"]
+                 for call in team.dropbox_cursor_sync_point.update_sync_point.await_args_list]
+        assert saved == ["c1"]
+        written = [r.external_record_id for call in team.data_entities_processor.on_new_records.await_args_list
+                   for r, _ in call.args[0]]
+        assert written == ["id:a", "id:c"]
+
+    @pytest.mark.asyncio
+    async def test_owed_deletes_are_saved_when_the_run_stops_part_way(self, team) -> None:
+        team._owed.load = AsyncMock(return_value=[])
+        team._owed.save = AsyncMock()
+        team._process_users_in_batches = AsyncMock(side_effect=RuntimeError("graph down"))
+        steps = ("_register_authenticated_identity", "_sync_members", "_initialize_event_cursor",
+                 "_sync_user_groups", "sync_personal_record_groups")
+        for name in steps:
+            setattr(team, name, AsyncMock(return_value=[]))
+
+        with patch("app.connectors.sources.dropbox.connector.load_connector_filters",
+                   AsyncMock(return_value=(FilterCollection(), FilterCollection()))), pytest.raises(RuntimeError):
+            await team._sync_steps()
+
+        team._owed.save.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_failed_page_is_recorded_and_nothing_is_reconciled(self, team) -> None:

@@ -818,8 +818,11 @@ class DropboxIndividualConnector(BaseConnector):
             ask_dropbox=self._ask_parent_id,
         )
         problems_before = len(self._health.problems)
-        relisting = older
+        # A listing from the start (a full sync) shows what exists, not what was deleted since the last cursor,
+        # which Dropbox reports only once: what it does not show is checked once it ends.
+        relisting = older or cursor is None
         listed: set[str] = set()
+        held = False
 
         while True:
             try:
@@ -846,6 +849,7 @@ class DropboxIndividualConnector(BaseConnector):
                 return
 
             entries = result.data.entries
+            page_problems = len(self._health.problems)
             updates = []
             async for _record, _perms, update in self._process_dropbox_items_generator(
                 entries,
@@ -870,7 +874,11 @@ class DropboxIndividualConnector(BaseConnector):
                                          new_path, self.logger)
 
             cursor = result.data.cursor
-            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': cursor})
+            # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
+            # the next run reads it again (its writes are idempotent). The pages after it are still written.
+            held = held or len(self._health.problems) > page_problems
+            if not held:
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': cursor})
             if result.data.has_more is not True:
                 break
 
@@ -944,8 +952,11 @@ class DropboxIndividualConnector(BaseConnector):
 
         # 3. The files.
         self.logger.info("Starting file traversal...")
-        await self._run_sync_with_cursor(user_id, user_email)
-        await self._owed.save()
+        try:
+            await self._run_sync_with_cursor(user_id, user_email)
+        finally:
+            # Deletes owed so far are kept even when this run stops part way.
+            await self._owed.save()
         self.logger.info("✅ Dropbox Individual Sync Completed")
 
     async def _grant_creator(self, account_data: FullAccount) -> None:

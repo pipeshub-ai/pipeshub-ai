@@ -3790,6 +3790,20 @@ class TestReindexRecords:
         connector.data_entities_processor.on_new_records.assert_called_once()
         connector.data_entities_processor.reindex_existing_records.assert_called_once()
 
+    async def test_a_sharing_only_change_is_written_and_still_reindexed(self, connector):
+        """Members changed with name, revision and path unchanged: the new grants are written, and the record is
+        re-indexed, as writing unchanged content raises no index event."""
+        shared, edited = MagicMock(id="r1"), MagicMock(id="r2")
+        connector._check_and_fetch_updated_record = AsyncMock(side_effect=[
+            MagicMock(record=MagicMock(), new_permissions=[MagicMock()], is_new=False, content_changed=False),
+            MagicMock(record=MagicMock(), new_permissions=[], is_new=False, content_changed=True),
+        ])
+
+        await connector.reindex_records([shared, edited])
+
+        assert len(connector.data_entities_processor.on_new_records.await_args.args[0]) == 2
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([shared])
+
     async def test_record_check_exception(self, connector):
         record = MagicMock(id="r1")
         connector._check_and_fetch_updated_record = AsyncMock(side_effect=Exception("error"))
@@ -3909,12 +3923,13 @@ class TestCheckAndFetchUpdatedRecord:
         connector.data_source.files_get_metadata = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=entry)
         )
-        connector._process_dropbox_entry = AsyncMock()
+        update = MagicMock(content_changed=False)
+        connector._process_dropbox_entry = AsyncMock(return_value=update)
 
         result = await connector._check_and_fetch_updated_record("org1", record)
-        # Same name, revision and place: the record is only re-indexed, not rewritten.
-        assert result is None
-        connector._process_dropbox_entry.assert_not_awaited()
+        # Same name, revision and place: still read with its members, which may have changed alone.
+        assert result is update
+        assert connector._process_dropbox_entry.await_args.kwargs["force_members"] is True
 
     async def test_metadata_failure(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")

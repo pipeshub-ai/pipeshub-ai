@@ -1464,6 +1464,7 @@ class DropboxConnector(BaseConnector):
         # since the last cursor, which Dropbox reports only once: what it does not show is checked once it ends.
         relisting = older or cursor is None
         listed: set[str] = set()
+        held = False
         self.logger.info(f"Starting sync loop for: {sync_log_name} (cursor: {bool(cursor)})")
         while True:
             try:
@@ -1495,6 +1496,7 @@ class DropboxConnector(BaseConnector):
 
             entries = result.data.entries
             self.logger.info(f"[{sync_log_name}] Got {len(entries)} entries. Has_more: {result.data.has_more}")
+            page_problems = len(self._health.problems)
             updates = []
             async for _record, _permissions, record_update in self._process_dropbox_items_generator(
                 entries, user_id, user_email, record_group_id, folder_id is None,
@@ -1509,7 +1511,11 @@ class DropboxConnector(BaseConnector):
             await self._repath_moved_folders()
 
             cursor = result.data.cursor
-            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": cursor})
+            # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
+            # the next run reads it again (its writes are idempotent). The pages after it are still written.
+            held = held or len(self._health.problems) > page_problems
+            if not held:
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": cursor})
             if result.data.has_more is not True:
                 break
 
@@ -1703,36 +1709,39 @@ class DropboxConnector(BaseConnector):
 
         # Deletes earlier runs could not confirm.
         owed = await self._owed.load()
-        if owed:
-            self._owed.settle(await recheck_owed_deletes(
-                self.data_entities_processor, self.connector_id, owed,
-                lambda record: self._team_item_still_exists(record, None), self.logger,
-            ))
+        try:
+            if owed:
+                self._owed.settle(await recheck_owed_deletes(
+                    self.data_entities_processor, self.connector_id, owed,
+                    lambda record: self._team_item_still_exists(record, None), self.logger,
+                ))
 
-        # Step 4: fetch and sync all user drives (shared and team folders are record groups, written first).
-        self.logger.info("Syncing User Drives")
-        await self._process_users_in_batches(app_users)
-        if self._health.auth_error is not None:
-            return
+            # Step 4: fetch and sync all user drives (shared and team folders are record groups, written first).
+            self.logger.info("Syncing User Drives")
+            await self._process_users_in_batches(app_users)
+            if self._health.auth_error is not None:
+                return
 
-        # Step 4.5 sync for permissions changes
-        sharing_sync_key = generate_record_sync_point_key("sharing_events", "team_events", "global")
-        sharing_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sharing_sync_key)
+            # Step 4.5 sync for permissions changes
+            sharing_sync_key = generate_record_sync_point_key("sharing_events", "team_events", "global")
+            sharing_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sharing_sync_key)
 
-        if not sharing_sync_point.get('cursor'):
-            self.logger.info("Initializing cursor for sharing events...")
-            activity_log_missing = await self._initialize_event_cursor(sharing_sync_key, EventCategory.sharing) \
-                or activity_log_missing
-        else:
-            self.logger.info("Running an INCREMENTAL sync for sharing events...")
-            await self._sync_sharing_changes_with_cursor(sharing_sync_key, sharing_sync_point.get('cursor'))
+            if not sharing_sync_point.get('cursor'):
+                self.logger.info("Initializing cursor for sharing events...")
+                activity_log_missing = await self._initialize_event_cursor(sharing_sync_key, EventCategory.sharing) \
+                    or activity_log_missing
+            else:
+                self.logger.info("Running an INCREMENTAL sync for sharing events...")
+                await self._sync_sharing_changes_with_cursor(sharing_sync_key, sharing_sync_point.get('cursor'))
 
-        # People outside the team that something is shared with reach the app only through this membership.
-        if self._external_emails:
-            await self.data_entities_processor.on_external_app_users(sorted(self._external_emails), self.connector_id)
-        if self._health.complete:
-            await self.data_entities_processor.reap_external_app_users(self.connector_id)
-        await self._owed.save()
+            # People outside the team that something is shared with reach the app only through this membership.
+            if self._external_emails:
+                await self.data_entities_processor.on_external_app_users(sorted(self._external_emails), self.connector_id)
+            if self._health.complete:
+                await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        finally:
+            # Deletes owed so far are kept even when this run stops part way.
+            await self._owed.save()
         self._activity_log_missing = activity_log_missing
 
         self.logger.info("Dropbox full sync completed.")
@@ -3096,7 +3105,8 @@ class DropboxConnector(BaseConnector):
                     update = await self._check_and_fetch_updated_record(org_id, record)
                     if update is not None:
                         updated.append(update)
-                    else:
+                    if update is None or not update.content_changed:
+                        # Unchanged content raises no index event when written, so it is re-indexed here.
                         non_updated_records.append(record)
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
@@ -3179,11 +3189,7 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Record {record.id} has been deleted at source")
                 return None
 
-            # Unchanged content and place: only a re-index is wanted.
-            if entry.name == record.record_name and getattr(entry, "rev", None) == record.external_revision_id \
-                    and entry.path_lower == file_record.path:
-                return None
-
+            # Written even when name, revision and place are unchanged: its members may have changed alone.
             record_update = await self._process_dropbox_entry(
                 entry=entry,
                 user_id=team_member_id,

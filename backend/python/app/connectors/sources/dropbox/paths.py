@@ -48,6 +48,9 @@ async def repath_descendants(
             path = getattr(stored, "path", None) or ""
             if path.startswith(old_prefix + "/"):
                 updates.append({"id": child.id, "path": new_prefix + path[len(old_prefix):]})
+    if todo:
+        logger.warning(f"Stopped moving stored paths under {folder_external_id} at {_MAX_NODES} items; "
+                       f"{len(todo)} folder(s) below keep their old paths until the next full sync")
     if updates:
         await processor.batch_update_nodes(updates, CollectionNames.FILES.value)
         logger.info(f"Moved the stored paths of {len(updates)} item(s) from {old_prefix} to {new_prefix}")

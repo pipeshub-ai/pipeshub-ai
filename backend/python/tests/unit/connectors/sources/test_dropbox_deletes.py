@@ -108,6 +108,8 @@ class TestApplyDeletedEntry:
 
         outcome = await apply_deleted_entry(processor, CONNECTOR_ID, "/a", AsyncMock(return_value=False), LOGGER)
         assert outcome.failed and not outcome.done
+        # Dropbox lists the delete once: the record is owed, and written on the next run.
+        assert outcome.unsure_external_ids == ["id:a"]
 
     @pytest.mark.asyncio
     async def test_a_path_nothing_was_synced_at_is_a_no_op(self) -> None:
