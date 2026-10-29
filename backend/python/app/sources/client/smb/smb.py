@@ -19,6 +19,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
+from app.sources.client.smb.errors import describe, is_sign_in_refusal
 from app.sources.client.smb.share_enum import enumerate_shares
 from app.utils.url_fetcher import (
     HostCheckError,
@@ -189,15 +190,23 @@ class SmbClient(IClient):
                 return
             self.host = dial_address(self.server)
             smbclient = self._smbclient()
-            smbclient.register_session(
-                self.host,
-                username=self.username,
-                password=self.password,
-                port=self.port,
-                connection_timeout=CONNECTION_TIMEOUT_SECONDS,
-                connection_cache=self._connection_cache,
-            )
+            try:
+                smbclient.register_session(
+                    self.host,
+                    username=self.username,
+                    password=self.password,
+                    port=self.port,
+                    connection_timeout=CONNECTION_TIMEOUT_SECONDS,
+                    connection_cache=self._connection_cache,
+                )
+            except Exception as exc:
+                if is_sign_in_refusal(exc):
+                    raise NetworkShareAuthError(self._describe(exc)) from exc
+                raise
             self._registered = True
+
+    def _describe(self, exc: BaseException) -> str:
+        return describe(exc, server=self.server, share=self.default_share, port=self.port)
 
     def close(self) -> None:
         with self._io_lock:
@@ -234,6 +243,9 @@ class SmbClient(IClient):
         except Exception as exc:
             # smbclient raises SMBOSError (ntstatus), smbprotocol SMBResponseException (status). The
             # message reads "Unknown NtStatus error returned 'STATUS_ACCESS_DENIED'", not "access denied".
+            # A refused sign-in also arrives here when smbclient reconnects a dropped session.
+            if is_sign_in_refusal(exc):
+                raise NetworkShareAuthError(self._describe(exc)) from exc
             if STATUS_ACCESS_DENIED in (getattr(exc, "ntstatus", None), getattr(exc, "status", None)):
                 raise AccessDeniedError(share, path, str(exc)) from exc
             message = str(exc).lower()
@@ -257,6 +269,8 @@ class SmbClient(IClient):
         except FileNotFoundError:
             return None
         except Exception as exc:
+            if is_sign_in_refusal(exc):
+                raise NetworkShareAuthError(self._describe(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 return None
