@@ -5819,6 +5819,14 @@ class TestStageRedrive:
                 "extension": "pptx", "stages": ["classify"], **extra}
 
     @pytest.mark.asyncio
+    async def test_a_first_use_of_a_revision_never_seen_does_not_reindex(self) -> None:
+        handler, _gp, ingress = self._handler(None)
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_awaited_once()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_records_first_use_redrives_without_forcing(self) -> None:
         handler, _gp, ingress = self._handler(["vr1:rev-1:classify@1"])
         await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(firstUse=True))

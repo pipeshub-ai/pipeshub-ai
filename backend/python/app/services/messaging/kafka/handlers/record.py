@@ -1705,6 +1705,16 @@ class RecordEventHandler(BaseEventService):
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
+                if payload.get("firstUse"):
+                    # A search is no reason to re-parse and re-embed a record; one the
+                    # runtime never saw is left to an explicit reindex.
+                    self.logger.info(
+                        f"Not classifying record {record_id} on first use: no stage state for revision "
+                        f"{record.get('contentRev')}"
+                    )
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
 

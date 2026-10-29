@@ -70,16 +70,14 @@ def first_use_event(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _asked_key(doc: dict[str, Any]) -> tuple[str, str]:
+    return str(doc.get("_key") or doc.get("id")), str(doc.get("contentRev"))
+
+
 def _not_asked_recently(docs: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
     for key in [k for k, at in _asked.items() if now - at > _ASKED_TTL_SECONDS]:
         del _asked[key]
-    fresh = []
-    for doc in docs:
-        key = (str(doc.get("_key") or doc.get("id")), str(doc.get("contentRev")))
-        if key not in _asked:
-            _asked[key] = now
-            fresh.append(doc)
-    return fresh
+    return [doc for doc in docs if _asked_key(doc) not in _asked]
 
 
 async def _get_producer(config_service: ConfigurationService, logger: Logger) -> IMessagingProducer:
@@ -113,11 +111,10 @@ async def classify_on_first_use(
         producer = await _get_producer(config_service, logger)
         sent = 0
         for doc in docs:
-            record_id = str(doc.get("_key") or doc.get("id"))
-            if await producer.send_message(RECORD_EVENTS_TOPIC, first_use_event(doc), key=record_id) is False:
-                # The next search that returns it asks again.
-                _asked.pop((record_id, str(doc.get("contentRev"))), None)
-            else:
+            record_id, rev = _asked_key(doc)
+            # Marked only once the broker took it, so a failure leaves it to the next search.
+            if await producer.send_message(RECORD_EVENTS_TOPIC, first_use_event(doc), key=record_id) is not False:
+                _asked[(record_id, rev)] = time.monotonic()
                 sent += 1
         return sent
     except Exception as e:

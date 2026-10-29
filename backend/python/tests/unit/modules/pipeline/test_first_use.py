@@ -92,6 +92,19 @@ async def test_a_refused_send_is_asked_again_by_the_next_search(producer: AsyncM
         assert await first_use.classify_on_first_use(results, object(), _LOG) == 1
 
 
-async def test_a_broken_broker_never_reaches_the_search() -> None:
-    with _on(True), patch.object(first_use, "_get_producer", AsyncMock(side_effect=ConnectionError("down"))):
-        assert await first_use.classify_on_first_use({"records": [_doc("a")]}, object(), _LOG) == 0
+async def test_a_broken_broker_never_reaches_the_search_and_marks_nothing(producer: AsyncMock) -> None:
+    results = {"records": [_doc("a")]}
+    with _on(True):
+        with patch.object(first_use, "_get_producer", AsyncMock(side_effect=ConnectionError("down"))):
+            assert await first_use.classify_on_first_use(results, object(), _LOG) == 0
+        assert await first_use.classify_on_first_use(results, object(), _LOG) == 1
+
+
+async def test_a_send_that_raises_leaves_the_rest_to_the_next_search(producer: AsyncMock) -> None:
+    producer.send_message = AsyncMock(side_effect=[True, ConnectionError("down"), True, True])
+    results = {"records": [_doc("a"), _doc("b"), _doc("c")]}
+    with _on(True):
+        await first_use.classify_on_first_use(results, object(), _LOG)
+        # "a" went out and is not asked again; "b" and "c" are.
+        assert await first_use.classify_on_first_use(results, object(), _LOG) == 2
+    assert [c.args[1]["payload"]["recordId"] for c in producer.send_message.await_args_list] == ["a", "b", "b", "c"]

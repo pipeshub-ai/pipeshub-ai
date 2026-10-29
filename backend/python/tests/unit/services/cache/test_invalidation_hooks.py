@@ -211,10 +211,14 @@ class TestIndexingCompletionSite:
         record.org_id = "org-1"
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {"enrichment_follows": True}
 
         notify = AsyncMock()
         with patch(
             "app.modules.transformers.sink_orchestrator.notify_record_indexed", new=notify
+        ), patch(
+            "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+            AsyncMock(return_value=False),
         ):
             await orchestrator._update_indexing_status(ctx)
 
