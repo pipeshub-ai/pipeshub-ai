@@ -4,6 +4,7 @@ the access re-read pass only when access changed, rendered wiki bodies, the
 out-of-box "Has a role" criterion and a least-privilege integration user.
 """
 
+import asyncio
 import logging
 import time
 from types import SimpleNamespace
@@ -111,6 +112,21 @@ async def test_access_error_names_the_table(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
+async def test_unreadable_org_table_names_the_table(servicenow_connector) -> None:
+    inst = Instance()
+    _people(inst)
+    sc = servicenow_connector
+    _connector(sc, inst)
+    sent = _notices(sc)
+    inst.fake.fail = lambda table, q: status_error(403, "User Not Authorized") if table == "core_company" else None
+
+    with pytest.raises(ServiceNowAccessError):
+        await _sync(sc, inst)
+
+    assert sent[0]["title"] == f"{NAME}: cannot read core_company"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
@@ -122,8 +138,15 @@ async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:
 
     assert len(sent) == 2
     assert sent[0]["title"] == f"{NAME}: sync paused, ServiceNow rate limit reached"
-    assert sent[0]["message"].startswith("A ServiceNow rate limit rule (rule-1) is used up until ")
+    # The rule's sys_id means nothing to a reader; the time is the reset minute.
+    until = time.strftime("%H:%M", time.gmtime(reset))
+    assert sent[0]["message"].startswith(f"A ServiceNow rate limit rule is used up until {until} UTC")
     assert sent[0]["message"].endswith("the next sync after that time continues where this one stopped.")
+
+
+def test_rate_limit_reset_shown_as_the_reset_minute() -> None:
+    reset = 1793307600  # 21:00:00 UTC; Retry-After lands a second or so before or after it
+    assert {connector_module.rate_limit_reset_label(reset + d) for d in (-1.4, 0, 2)} == {"21:00"}
 
 
 @pytest.mark.asyncio
@@ -387,6 +410,8 @@ async def test_401_message_has_vendor_text(servicenow_connector) -> None:
      "REST API. Enter the instance's own address, such as https://<instance>.service-now.com."),
     (ServiceNowAPIError(503, "Service Unavailable"),
      "ServiceNow at acme.service-now.com answered HTTP 503: Service Unavailable. Try again later."),
+    (ServiceNowAPIError(404, "Not Found"),
+     "ServiceNow at acme.service-now.com answered HTTP 404: Not Found. Check the instance URL."),
 ])
 async def test_connection_failures_say_why(servicenow_connector, error, message) -> None:
     fake = _readable_instance()
@@ -395,6 +420,19 @@ async def test_connection_failures_say_why(servicenow_connector, error, message)
     with pytest.raises(ConnectorInitError) as raised:
         await servicenow_connector.test_connection_and_access()
     assert str(raised.value) == message
+
+
+@pytest.mark.asyncio
+async def test_an_address_that_never_answers_fails_the_test_quickly(servicenow_connector, monkeypatch) -> None:
+    _wire(servicenow_connector, _readable_instance())
+    monkeypatch.setattr(ServiceNowDefaults, "CONNECTION_TEST_TIMEOUT_SECONDS", 0.05)
+
+    async def hang(*_a: object, **_k: object) -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(servicenow_connector, "_table_get", hang)
+    with pytest.raises(ConnectorInitError, match="Could not reach ServiceNow at acme.service-now.com"):
+        await asyncio.wait_for(servicenow_connector.test_connection_and_access(), 5)
 
 
 @pytest.mark.asyncio

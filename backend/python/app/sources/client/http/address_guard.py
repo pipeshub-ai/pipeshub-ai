@@ -115,6 +115,9 @@ class AddressGuardTransport(httpx.AsyncBaseTransport):
         try:
             return await self._guard_for(request).handle_async_request(request)
         except MCPUrlBlockedError as e:
+            if isinstance(e.__cause__, UnresolvableHostError):
+                # A name that doesn't resolve is a server not reached, not an address refused.
+                raise httpx.ConnectError(str(e.__cause__), request=request) from e
             # The guard's message names MCP servers; this client isn't one.
             raise AddressNotAllowedError(
                 f"The address {request.url.host} isn't allowed: {address_rule(allow_private=self._allow_private)}."

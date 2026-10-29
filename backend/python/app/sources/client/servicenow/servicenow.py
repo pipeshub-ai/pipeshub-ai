@@ -81,14 +81,21 @@ def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | Non
 _FIRST_REDIRECT_STATUS = 300
 
 
+def rate_limit_reset_label(reset_at: float) -> str:
+    """``HH:MM`` UTC of a reset, to the nearest minute: limits reset on the minute, and a reset
+    worked out from Retry-After lands a second or so off it (truncating showed 20:59 for 21:00)."""
+    return datetime.fromtimestamp(round(reset_at / 60) * 60, tz=timezone.utc).strftime("%H:%M")
+
+
 class ServiceNowRateLimited(Exception):
     """ServiceNow asked for a longer wait than a sync should hold: a rate limit rule is spent until ``reset_at``."""
 
     def __init__(self, reset_at: float, rule: str | None = None) -> None:
         self.reset_at = reset_at
         self.rule = rule
-        until = datetime.fromtimestamp(reset_at, tz=timezone.utc).strftime("%H:%M UTC")
-        super().__init__(f"ServiceNow rate limit reached until {until}" + (f" (rule {rule})" if rule else ""))
+        super().__init__(
+            f"ServiceNow rate limit reached until {rate_limit_reset_label(reset_at)} UTC" + (f" (rule {rule})" if rule else "")
+        )
 
 
 class ServiceNowRateLimitPolicy(ResiliencePolicy):

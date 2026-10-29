@@ -14,6 +14,7 @@ Synced Entities:
 - Attachments (files)
 """
 
+import asyncio
 import base64
 import hashlib
 import html
@@ -131,6 +132,7 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowRESTClientViaOAuthClientCredentials,
     ServiceNowRESTClientViaUsernamePassword,
     check_servicenow_instance_url,
+    rate_limit_reset_label,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 from app.sources.external.servicenow.models import (
@@ -209,6 +211,10 @@ _ACCESS_TABLES = frozenset({
     ServiceNowTables.SYS_USER_GRMEMBER,
     ServiceNowTables.SYS_USER_ROLE,
     ServiceNowTables.SYS_USER_HAS_ROLE,
+    # Companies, departments and locations decide criteria matches too.
+    ServiceNowTables.CORE_COMPANY,
+    ServiceNowTables.CMN_DEPARTMENT,
+    ServiceNowTables.CMN_LOCATION,
 })
 
 # The tables a sync reads: the connection test fails, naming them, when the account may not read
@@ -572,6 +578,8 @@ class ServiceNowConnector(BaseConnector):
         self._kb_mtom: dict[str, dict[str, list[str]]] | None = None
         # source user ids the out-of-box "Has a role" criterion matches, per run (see _has_role_users)
         self._has_role_users_cache: set[str] | None = None
+        # sys_id of the user named guest, per run (see _guest_ids)
+        self._guest_cache: set[str] | None = None
         # KB sys_id -> the READ grants that stand for its contributors (see _kb_contributor_grants)
         self._kb_contributor_cache: dict[str, list[Permission]] = {}
         # (criteria sys_id, deny) -> the source user ids it matches, per run (see _users_matching_criteria)
@@ -1186,10 +1194,12 @@ class ServiceNowConnector(BaseConnector):
         host = urlsplit(self.instance_url or "").hostname or "the instance"
         self.logger.info("🔍 Testing the ServiceNow connection and the integration user's access...")
         try:
-            me = await self._table_get(
-                ServiceNowTables.SYS_USER, sysparm_query=ServiceNowQueryValues.CURRENT_USER,
-                sysparm_fields=ServiceNowFields.SYS_ID, sysparm_limit="2",
-            )
+            # An address that never answers would otherwise take every retry's connect timeout.
+            async with asyncio.timeout(ServiceNowDefaults.CONNECTION_TEST_TIMEOUT_SECONDS):
+                me = await self._table_get(
+                    ServiceNowTables.SYS_USER, sysparm_query=ServiceNowQueryValues.CURRENT_USER,
+                    sysparm_fields=ServiceNowFields.SYS_ID, sysparm_limit="2",
+                )
             missing = []
             for table, query in _REQUIRED_TABLES:
                 try:
@@ -1237,11 +1247,13 @@ class ServiceNowConnector(BaseConnector):
                     "Wake it up, then try again."
                 ) from e
             raise ConnectorInitError(
-                f"ServiceNow at {host} answered HTTP {e.status_code}: {e.message[:200]}. Try again later."
+                f"ServiceNow at {host} answered HTTP {e.status_code}: {e.message[:200]}. "
+                + ("Try again later." if e.status_code >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+                   else "Check the instance URL.")
             ) from e
         except (ServiceNowRateLimited, AddressNotAllowedError) as e:
             raise ConnectorInitError(str(e)) from e
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, TimeoutError) as e:
             raise ConnectorInitError(f"Could not reach ServiceNow at {host}. Check the instance URL.") from e
         self.logger.info("✅ ServiceNow connection test passed")
         return True
@@ -1350,8 +1362,7 @@ class ServiceNowConnector(BaseConnector):
             )
             raise
         except ServiceNowRateLimited as e:
-            until = datetime.fromtimestamp(e.reset_at, tz=timezone.utc).strftime("%H:%M")
-            rule = f" ({e.rule})" if e.rule else ""
+            until = rate_limit_reset_label(e.reset_at)
             # The platform clears every sync point before a full sync, the resume point too.
             again = "runs the full sync again" if self.data_entities_processor.full_sync_running(
                 self.connector_id) else "continues where this one stopped"
@@ -1359,7 +1370,7 @@ class ServiceNowConnector(BaseConnector):
             await self._notify(
                 NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR,
                 "sync paused, ServiceNow rate limit reached",
-                f"A ServiceNow rate limit rule{rule} is used up until {until} UTC, so the sync stopped. Nothing "
+                f"A ServiceNow rate limit rule is used up until {until} UTC, so the sync stopped. Nothing "
                 f"it did not read was removed; the next sync after that time {again}.",
             )
             raise
@@ -1483,7 +1494,7 @@ class ServiceNowConnector(BaseConnector):
             # A knowledge base with no user criteria may be open to every user (see _kb_criteria).
             self._criteria_rows = {_EVERYONE: TableAPIRecord(sys_id=_EVERYONE, active="true")}
             self._kb_criteria_cache, self._kb_contributor_cache, self._criteria_users = {}, {}, {}
-            self._kb_mtom, self._has_role_users_cache = None, None
+            self._kb_mtom, self._has_role_users_cache, self._guest_cache = None, None, None
             self._groups, self._group_members = {}, {}
             self._held, self._role_names = {}, None
             self._admin_source_ids = None
@@ -3888,28 +3899,41 @@ class ServiceNowConnector(BaseConnector):
 
     async def _fetch_deny_records(self, deny_ids: list[str]) -> list[TableAPIRecord]:
         """Active Cannot Read / Cannot Contribute user_criteria rows. A failed read raises
-        _CriteriaUnreadable. The out-of-box Guest User row, unedited, denies only the guest user,
-        who cannot sign in to PipesHub, so it is left out; read as a script it would deny everyone."""
+        _CriteriaUnreadable. An unedited Guest User row that names no synced user changes nobody's
+        access here, so it is left out (the KB can then stay one org grant)."""
         try:
             return [
                 r for r in await self._fetch_user_criteria(deny_ids)
-                if self._criteria_is_active(r) and not await self._is_guest_only(r)
+                if self._criteria_is_active(r) and not (
+                    self._is_guest(r)
+                    and not await self._users_matching_criteria(r, deny=True) & set(await self._emails_by_source_id())
+                )
             ]
         except Exception as e:
             raise _CriteriaUnreadable(str(e)) from e
 
-    async def _is_guest_only(self, record: TableAPIRecord) -> bool:
-        """The out-of-box Guest User row, unedited: its own script, and one user who has no app user
-        here. Any edit (the script, another field, a synced user) takes the normal path."""
-        users = self._split_ids(getattr(record, ServiceNowFields.USER, None))
+    def _is_guest(self, record: TableAPIRecord) -> bool:
+        """The out-of-box Guest User script, unedited, with no field but the user: the script
+        matches exactly the user named guest, so it is evaluated here (see _guest_ids). An edited
+        script, or another field, takes the normal path."""
         return (
-            record.sys_id == ServiceNowDefaults.GUEST_USER_CRITERIA
-            and " ".join(str(getattr(record, ServiceNowFields.SCRIPT, None) or "").split())
+            " ".join(str(getattr(record, ServiceNowFields.SCRIPT, None) or "").split())
             == " ".join(ServiceNowDefaults.GUEST_USER_CRITERIA_SCRIPT.split())
-            and self._dims(record) == [ServiceNowFields.USER]
-            and len(users) == 1
-            and users[0] not in await self._emails_by_source_id()
+            and set(self._dims(record)) <= {ServiceNowFields.USER}
         )
+
+    async def _guest_ids(self) -> set[str]:
+        """The sys_id of the user named guest (``GlideUser.getUser("guest")``), read once per run.
+        Raises if the read fails."""
+        if self._guest_cache is None:
+            ids: set[str] = set()
+            async for rows in self._iter_table(
+                ServiceNowTables.SYS_USER, f"{ServiceNowFields.USER_NAME}={ServiceNowDefaults.GUEST_USER_NAME}",
+                [ServiceNowFields.SYS_ID], narrow=True,
+            ):
+                ids.update(r.sys_id for r in rows if getattr(r, "sys_id", None))
+            self._guest_cache = ids
+        return self._guest_cache
 
     async def _users_allowed_by(self, can_records: list[TableAPIRecord], deny_records: list[TableAPIRecord]) -> set[str]:
         """Users matching any allow row minus users matching any deny row. A deny whose reach is
@@ -4100,7 +4124,7 @@ class ServiceNowConnector(BaseConnector):
         )
 
     def _has_unevaluated_script(self, record: TableAPIRecord) -> bool:
-        return self._has_script(record) and not self._is_has_role(record)
+        return self._has_script(record) and not self._is_has_role(record) and not self._is_guest(record)
 
     def _has_unevaluable_condition(self, record: TableAPIRecord) -> bool:
         """A script, or a row that could not be read: conditions not evaluated here."""
@@ -4133,7 +4157,10 @@ class ServiceNowConnector(BaseConnector):
         ]
 
     def _needs_user_resolution(self, record: TableAPIRecord) -> bool:
-        return (self._match_all(record) and len(self._dims(record)) > 1) or self._is_has_role(record)
+        return (
+            (self._match_all(record) and len(self._dims(record)) > 1)
+            or self._is_has_role(record) or self._is_guest(record)
+        )
 
     async def _fetch_user_criteria(self, criteria_ids: list[str]) -> list[TableAPIRecord]:
         """user_criteria rows by sys_id, each read once per sync run. Raises on an API error.
@@ -4168,7 +4195,7 @@ class ServiceNowConnector(BaseConnector):
                     ) if hidden else r
         for c in missing:
             row = self._criteria_rows.get(c)
-            if row is not None and self._has_unevaluated_script(row) and not await self._is_guest_only(row):
+            if row is not None and self._has_unevaluated_script(row):
                 self._note_criteria("scripted", c)
             if c in self._criteria_rows:
                 continue
@@ -4239,6 +4266,8 @@ class ServiceNowConnector(BaseConnector):
             users, hidden = await self._members_of(dim, ids)
             partial |= hidden
             per_dimension.append(users)
+        if self._is_guest(record):
+            per_dimension.append(await self._guest_ids())  # its script, OR'd or AND'd like a field
         if not per_dimension:
             matched: set[str] = set()  # a script and no field: not evaluated here, so nobody
         elif self._match_all(record):

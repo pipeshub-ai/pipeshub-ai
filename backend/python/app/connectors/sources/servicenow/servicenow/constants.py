@@ -155,6 +155,8 @@ class ServiceNowDefaults:
     # Page size of the listings that read ids only
     ID_PAGE_SIZE = 1000
     DEFAULT_LIMIT = "1"
+    # Seconds the connection test waits for the instance's first answer
+    CONNECTION_TEST_TIMEOUT_SECONDS = 20
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
     DATE_FORMAT = "%Y-%m-%d"
     # Stored articles are checked against the full list of current ones at least this often
@@ -185,10 +187,10 @@ class ServiceNowDefaults:
     # is readable only by its owner, managers and knowledge admins.
     BLOCK_NO_CRITERIA_PROPERTY = "glide.knowman.block_access_with_no_user_criteria"
     # The out-of-box "Guest User" criterion every new knowledge base gets as Cannot Read and
-    # Cannot Contribute: it denies only the guest user, who has no PipesHub account. Its script,
-    # trusted only while it reads exactly so (see ServiceNowConnector._is_guest_only):
-    GUEST_USER_CRITERIA = "76f09af6cb1200108ad442fcf7076dbf"
+    # Cannot Contribute: it denies only the user named guest. Its script, evaluated as that user
+    # only while it reads exactly so (see ServiceNowConnector._is_guest):
     GUEST_USER_CRITERIA_SCRIPT = 'answer = user_id == GlideUser.getUser("guest").getID();'
+    GUEST_USER_NAME = "guest"
     # The out-of-box "Has atleast one role apart from snc_internal KB" criterion every new
     # knowledge base gets as Can Contribute. Its script, evaluated only while it reads exactly so:
     HAS_ROLE_CRITERIA = "f9397919f79d52507787d3e543bfd6cd"

@@ -662,7 +662,7 @@ async def test_inactive_child_group_not_flattened(servicenow_connector) -> None:
 
 def _defaults_kb(inst: Instance) -> None:
     _people(inst)
-    inst.user("guest", email=False)  # the out-of-box guest user has no email, so no app user
+    inst.user("guest", email=False)  # the out-of-box guest user; some instances give it an email
     inst.crit("any-user")  # Can Read "Any User": no field
     inst.crit(GUEST, advanced="true", user="guest", script=GUEST_SCRIPT)
     inst.crit("has-role", advanced="true", script="answer = gs.getUser().getUserByID(user_id).getRoles().size() > 1;")
@@ -1116,6 +1116,24 @@ async def test_guest_criterion_naming_a_synced_user_denies_them(servicenow_conne
     graph = _connector(servicenow_connector, inst)
     await _sync(servicenow_connector, inst)
     assert "plain" not in graph.readers("KB-1") | graph.kb_readers("kb-defaults")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guest_email", [True, False])
+async def test_unedited_guest_criterion_denies_only_the_guest(servicenow_connector, guest_email) -> None:
+    # Its script matches exactly the user named guest, whether that user is synced (has an email) or not.
+    inst = Instance()
+    _defaults_kb(inst)
+    inst.users["guest"]["email"] = "guest@x.com" if guest_email else ""
+    inst.kb("kb-main", can=(inst.crit("c-hr", group="g-hr"),), contribute=(inst.crit("c-contrib", user="contrib"),),
+            cannot_contribute=(GUEST,))
+    inst.article("KB-2", "kb-main")
+    inst.article("KB-3", "kb-main", cannot_read_user_criteria=GUEST)
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert graph.readers("KB-1") == EVERYONE
+    assert "guest" not in graph.kb_readers("kb-defaults") and graph.kb_readers("kb-defaults") >= EVERYONE
+    assert graph.readers("KB-2") == graph.readers("KB-3") == {"hr", "contrib"} | PRIV
 
 
 @pytest.mark.asyncio
