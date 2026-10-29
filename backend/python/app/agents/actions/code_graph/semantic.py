@@ -1,6 +1,6 @@
 """search_semantic: find code by what it does, not by its name.
 
-A user names a feature ("the popup that shows docs on hover"), not a symbol.
+A user names a feature ("where a failed job is retried"), not a symbol.
 Identifier search needs the name and text search a guessed word; this runs the
 knowledge search's hybrid query (dense + the symbols' subtokens) over the
 repo's code and answers with symbol addresses, so the graph tools can take

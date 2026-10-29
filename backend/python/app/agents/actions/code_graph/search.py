@@ -216,7 +216,7 @@ async def _scoped_files(
     """``(path searched, record id -> path, record id -> record, scan_capped)``.
 
     The records are the readable ones in this connector (and ``repo``). A path
-    written for the caller's checkout (``src/vs/base``, ``repo/src/**``) can
+    written for the caller's checkout (``src/app/models``, ``repo/src/**``) can
     carry a leading directory the repo was indexed without, so on a miss the
     longest suffix that selects such records answers instead. Only a prefix may
     go: a suffix never starts with a wildcard, so ``src/**`` or ``src/x/**`` is

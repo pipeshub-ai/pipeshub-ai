@@ -838,8 +838,8 @@ class CodeGraph:
         short_description="Find code by what it does, described in plain words",
         description=(
             "Find the code behind a feature, a behaviour or something on screen when you "
-            "do not know its names: 'the popup that shows docs when hovering a word', "
-            "'where unsaved files are restored after a restart'. Ranks symbols by meaning, "
+            "do not know its names: 'where a failed job is retried', "
+            "'what decides which config value wins'. Ranks symbols by meaning, "
             "so near-synonyms match.\n\n"
             "Results are addresses, best first: read_code reads one, get_neighbour and "
             "impact walk from one. For a name you already know, search_code is exact."

@@ -446,8 +446,8 @@ export function registerCodeGraphToolDefinitions(
     {
       description:
         'Find the code behind a feature, a behaviour or something on screen when you do not ' +
-        "know its names: 'the popup that shows docs when hovering a word', 'where unsaved " +
-        "files are restored after a restart'. Ranks symbols by meaning, so near-synonyms " +
+        "know its names: 'where a failed job is retried', 'what decides which config value " +
+        "wins'. Ranks symbols by meaning, so near-synonyms " +
         'match. Results are addresses for pipeshub_code_read, pipeshub_code_neighbours and ' +
         'pipeshub_code_impact. For a name you already know, pipeshub_code_search is exact.',
       inputSchema: {
