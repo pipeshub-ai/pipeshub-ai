@@ -3366,7 +3366,10 @@ class DataSourceEntitiesProcessor:
         re-index, but this path publishes no event and nothing consumes
         NOT_STARTED, which strands the record permanently.
         """
-        record.indexing_status = existing_record.indexing_status
+        # A stub is never indexed, so the AUTO_INDEX_OFF _process_record gave it
+        # wins over a stale stored status (such as an old QUEUED).
+        if not record.is_placeholder:
+            record.indexing_status = existing_record.indexing_status
         record.parsing_status = existing_record.parsing_status
         record.extraction_status = existing_record.extraction_status
         record.processing_started_at = existing_record.processing_started_at

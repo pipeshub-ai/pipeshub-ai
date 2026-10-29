@@ -7676,6 +7676,34 @@ class TestPlaceholderFlag:
         proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_metadata_update_of_a_queued_stub_stores_auto_index_off(self) -> None:
+        """The metadata path copies the stored lifecycle back, which must not
+        restore a stub's stale QUEUED."""
+        existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.QUEUED.value
+        proc, tx_store = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+
+        await proc.on_record_metadata_update(incoming)
+
+        ((upserted,), _) = tx_store.batch_upsert_records.await_args
+        assert [r.indexing_status for r in upserted] == [ProgressStatus.AUTO_INDEX_OFF.value]
+        assert upserted[0].queued_at is None
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_of_a_real_record_keeps_its_stored_status(self) -> None:
+        existing = _make_record(external_revision_id="v1", version=1)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        proc, tx_store = self._sync_with(existing)
+
+        await proc.on_record_metadata_update(_make_record(external_revision_id="v1", version=1))
+
+        ((upserted,), _) = tx_store.batch_upsert_records.await_args
+        assert [r.indexing_status for r in upserted] == [ProgressStatus.COMPLETED.value]
+
+    @pytest.mark.asyncio
     async def test_new_stub_at_the_default_is_stored_auto_index_off(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
