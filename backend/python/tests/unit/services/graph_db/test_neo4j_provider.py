@@ -2238,6 +2238,18 @@ class TestGetGroupsWithPermissionToNode:
 
 class TestUserAndOrganizationLookups:
     @pytest.mark.asyncio
+    async def test_get_user_by_email_in_an_org_reads_only_that_orgs_users(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_user_by_email("a@x.com", org_id="org-1")
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "u.orgId = $org_id" in query
+        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com", "org_id": "org-1"}
+
+        await neo4j_provider.get_user_by_email("a@x.com")
+        assert "orgId" not in neo4j_provider.client.execute_query.await_args.args[0]
+        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com"}
+
+    @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"u": {"id": "u1", "email": "a@x.com"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "u1", "email": "a@x.com"})  # type: ignore[method-assign]

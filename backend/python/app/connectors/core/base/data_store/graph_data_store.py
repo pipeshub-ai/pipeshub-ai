@@ -358,15 +358,18 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
         # transaction, so the answer cannot go stale within it.
-        key = ("user_email", email)
+        key = ("user_email", email, org_id)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
+        scope = {"org_id": org_id} if org_id is not None else {}
         value = await self.graph_provider.get_user_by_email(
-            email, transaction=self.txn, raise_on_error=raise_on_error
+            email, transaction=self.txn, raise_on_error=raise_on_error, **scope
         )
         self._memo_put(key, value)
         return value

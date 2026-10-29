@@ -646,6 +646,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
+        ``record_types``, in key order, after ``after_key``, at most ``limit``.
+        For operator backfills that page through one org's records. A zero
+        ``limit`` returns no ids.
+
+        Raises:
+            ValueError: if ``limit`` is negative.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
@@ -3127,13 +3147,15 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> Optional['User']:
         """
         Get a user by email address.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say).
+        user" (replacing a record's permissions without them, say). With ``org_id``,
+        only that org's users are read: an address is not unique across orgs.
 
         Args:
             email (str): User email

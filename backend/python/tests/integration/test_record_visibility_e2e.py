@@ -504,6 +504,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
+    "page_record_ids_by_type": "test_record_ids_by_type",
     "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_connector_page_v3": "test_knowledge_hub_listing",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -757,6 +758,11 @@ async def test_entity_candidate_records(world: _World) -> None:
     got = await world.graph.get_entity_candidate_records(refs, world.org_id)
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert got[("record", world.ids["trashed"])] == []
+
+
+async def test_record_ids_by_type(world: _World) -> None:
+    got = await world.graph.page_record_ids_by_type(world.org_id, [RecordType.FILE.value], limit=1000)
+    assert set(got) & {world.ids["live"], world.ids["trashed"]} == {world.ids["live"]}
 
 
 async def test_permitted_entity_records(world: _World) -> None:
