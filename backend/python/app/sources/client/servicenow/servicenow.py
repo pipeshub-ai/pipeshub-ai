@@ -149,16 +149,19 @@ class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
         instance_url: The ServiceNow instance URL (e.g., https://dev12345.service-now.com)
         username: The username to use for authentication
         password: The password to use for authentication
+        resilience: Rate limit and retry policy applied below every request
     """
-    def __init__(self, instance_url: str, username: str, password: str) -> None:
+    def __init__(
+        self, instance_url: str, username: str, password: str, resilience: ResiliencePolicy | None = None,
+    ) -> None:
         # Encode credentials for Basic auth
         credentials = f"{username}:{password}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
         # Initialize with empty token and override headers
-        super().__init__("", "")
+        super().__init__("", "", resilience=resilience)
         self.instance_url = instance_url.rstrip('/')
-        self.base_url = f"{self.instance_url}"
+        self.base_url = f"{self.instance_url}/api/now"
         self.username = username
 
         self.headers = {
@@ -207,9 +210,13 @@ class ServiceNowRESTClientViaAPIKey(HTTPClient):
         instance_url: The ServiceNow instance URL
         api_key: The API key to use for authentication
         header_name: The header name for the API key (default: x-sn-apikey)
+        resilience: Rate limit and retry policy applied below every request
     """
-    def __init__(self, instance_url: str, api_key: str, header_name: str = "x-sn-apikey") -> None:
-        super().__init__("", "")
+    def __init__(
+        self, instance_url: str, api_key: str, header_name: str = "x-sn-apikey",
+        resilience: ResiliencePolicy | None = None,
+    ) -> None:
+        super().__init__("", "", resilience=resilience)
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
         self.api_key = api_key
@@ -237,15 +244,17 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         client_id: The OAuth client ID
         client_secret: The OAuth client secret
         access_token: Optional existing access token
+        resilience: Rate limit and retry policy applied below every request
     """
     def __init__(
         self,
         instance_url: str,
         client_id: str,
         client_secret: str,
-        access_token: Optional[str] = None
+        access_token: Optional[str] = None,
+        resilience: ResiliencePolicy | None = None,
     ) -> None:
-        super().__init__(access_token or "", "Bearer")
+        super().__init__(access_token or "", "Bearer", resilience=resilience)
 
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
@@ -253,6 +262,11 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         self.client_id = client_id
         self.client_secret = client_secret
         self.access_token = access_token
+        # time.time() when the current token expires; None until fetch_token reads expires_in
+        self.expires_at: float | None = None
+        if not access_token:
+            # "Bearer " with no token is not a legal header value; fetch_token sets it
+            self.headers.pop("Authorization", None)
 
         self.headers.update({
             "Content-Type": "application/json",
@@ -295,7 +309,7 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         response = await self.execute(request)
 
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise BadRequestError(f"Token request failed with status {response.status}: {response.text()}")
+            raise BadRequestError(f"Token request failed with status {response.status}: {response.text()[:300]}")
 
         token_data = response.json()
 
@@ -304,6 +318,10 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         if self.access_token:
             self.headers["Authorization"] = f"Bearer {self.access_token}"
             self._oauth_completed = True
+            try:
+                self.expires_at = time.time() + float(token_data["expires_in"])
+            except (KeyError, TypeError, ValueError):
+                self.expires_at = None
 
         return self.access_token
 

@@ -2,9 +2,15 @@
 
 import base64
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs
 
+import httpx
 import pytest
+
+from app.sources.client.resilience import ResiliencePolicy
+from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 
 from app.sources.client.servicenow.servicenow import (
     ServiceNowAPIKeyConfig,
@@ -72,7 +78,7 @@ class TestServiceNowRESTClientViaUsernamePassword:
     def test_init(self):
         client = ServiceNowRESTClientViaUsernamePassword(INSTANCE_URL, "user", "pass")
         assert client.instance_url == INSTANCE_URL
-        assert client.base_url == INSTANCE_URL
+        assert client.base_url == f"{INSTANCE_URL}/api/now"
         assert client.username == "user"
         expected_cred = base64.b64encode(b"user:pass").decode()
         assert client.headers["Authorization"] == f"Basic {expected_cred}"
@@ -83,7 +89,7 @@ class TestServiceNowRESTClientViaUsernamePassword:
 
     def test_get_base_url(self):
         client = ServiceNowRESTClientViaUsernamePassword(INSTANCE_URL, "u", "p")
-        assert client.get_base_url() == INSTANCE_URL
+        assert client.get_base_url() == f"{INSTANCE_URL}/api/now"
 
     def test_get_instance_url(self):
         client = ServiceNowRESTClientViaUsernamePassword(INSTANCE_URL, "u", "p")
@@ -430,3 +436,77 @@ class TestServiceNowClient:
             await ServiceNowClient._get_connector_config(
                 logger, mock_config_service, "inst-1"
             )
+
+
+# ---------------------------------------------------------------------------
+# What each client sends (SN-60)
+# ---------------------------------------------------------------------------
+
+
+def _capture(client) -> list[httpx.Request]:
+    """Route the client's requests to a recorder that answers like the Table API."""
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if request.url.path == "/oauth_token.do":
+            return httpx.Response(200, json={"access_token": "minted", "expires_in": 1799, "token_type": "Bearer"})
+        return httpx.Response(200, json={"result": []})
+
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(answer), headers=client.headers)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_basic_client_requests_api_now_table() -> None:
+    client = ServiceNowRESTClientViaUsernamePassword(INSTANCE_URL, "user", "pass")
+    sent = _capture(client)
+    await ServiceNowDataSource(client).get_now_table_tableName(tableName="sys_user", sysparm_limit="1")
+    assert str(sent[0].url).startswith(f"{INSTANCE_URL}/api/now/table/sys_user?")
+    assert sent[0].headers["Authorization"] == "Basic " + base64.b64encode(b"user:pass").decode()
+
+
+@pytest.mark.asyncio
+async def test_api_key_header() -> None:
+    client = ServiceNowRESTClientViaAPIKey(INSTANCE_URL, "key-1")
+    sent = _capture(client)
+    await ServiceNowDataSource(client).get_now_table_tableName(tableName="kb_knowledge", sysparm_limit="1")
+    assert sent[0].url.path == "/api/now/table/kb_knowledge"
+    assert sent[0].headers["x-sn-apikey"] == "key-1"
+    assert "Authorization" not in sent[0].headers  # the key is the only credential
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_token_post() -> None:
+    client = ServiceNowRESTClientViaOAuthClientCredentials(INSTANCE_URL, "cid", "csec")
+    sent = _capture(client)
+    before = time.time()
+    assert await client.fetch_token() == "minted"
+    form = parse_qs(sent[0].content.decode())
+    assert sent[0].method == "POST" and str(sent[0].url) == f"{INSTANCE_URL}/oauth_token.do"
+    assert form == {"grant_type": ["client_credentials"], "client_id": ["cid"], "client_secret": ["csec"]}
+    assert "Authorization" not in sent[0].headers  # an empty "Bearer " is an illegal header value
+    assert before + 1799 <= client.expires_at <= time.time() + 1799
+    await ServiceNowDataSource(client).get_now_table_tableName(tableName="sys_user")
+    assert sent[1].headers["Authorization"] == "Bearer minted"
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_refusal_carries_the_vendor_text() -> None:
+    client = ServiceNowRESTClientViaOAuthClientCredentials(INSTANCE_URL, "cid", "csec")
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(
+        401, json={"error_description": "access_denied", "error": "server_error"})))
+    with pytest.raises(Exception, match="401.*access_denied") as error:
+        await client.fetch_token()
+    assert "csec" not in str(error.value)
+    assert client.expires_at is None
+
+
+@pytest.mark.parametrize("make", [
+    lambda r: ServiceNowRESTClientViaUsernamePassword(INSTANCE_URL, "u", "p", resilience=r),
+    lambda r: ServiceNowRESTClientViaAPIKey(INSTANCE_URL, "k", resilience=r),
+    lambda r: ServiceNowRESTClientViaOAuthClientCredentials(INSTANCE_URL, "c", "s", resilience=r),
+])
+def test_clients_take_the_connector_resilience(make) -> None:
+    policy = ResiliencePolicy()
+    assert make(policy).resilience is policy

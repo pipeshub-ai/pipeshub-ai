@@ -607,6 +607,16 @@ async def test_daily_backstop_rereads(servicenow_connector) -> None:  # noqa: F8
 
 
 @pytest.mark.asyncio
+async def test_access_fingerprint_is_storable_in_a_graph_store(servicenow_connector) -> None:  # noqa: F811
+    # Neo4j rejects a map as a property value (seen live: Neo.ClientError.Statement.TypeError)
+    sc = servicenow_connector
+    inst, _ = _criteria_model(sc)
+    await _sync(sc, inst)
+    stored = sc.article_sync_point.data["access_fingerprint"]
+    assert all(isinstance(v, (str, int, float, bool)) for v in stored.values())
+
+
+@pytest.mark.asyncio
 async def test_failed_run_keeps_the_pass_due(servicenow_connector) -> None:  # noqa: F811
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)

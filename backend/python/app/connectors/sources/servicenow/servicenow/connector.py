@@ -20,6 +20,7 @@ import html
 import json
 import mimetypes
 import re
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
@@ -121,10 +122,15 @@ from app.services.notification.types import (
     NotificationType,
 )
 from app.sources.client.http.address_guard import AddressNotAllowedError
+from app.sources.client.http.exception.exception import BadRequestError
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.servicenow.servicenow import (
     ServiceNowRateLimited,
     ServiceNowRateLimitPolicy,
+    ServiceNowRESTClientViaAPIKey,
     ServiceNowRESTClientViaOAuthAuthorizationCode,
+    ServiceNowRESTClientViaOAuthClientCredentials,
+    ServiceNowRESTClientViaUsernamePassword,
     check_servicenow_instance_url,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
@@ -320,6 +326,27 @@ def _raise_if_run_stop(error: BaseException | None) -> None:
         error = error.__cause__
 
 
+def _instance_url_field() -> AuthField:
+    return AuthField(
+        name=AuthFieldKeys.INSTANCE_URL,
+        display_name="ServiceNow Instance URL",
+        placeholder="https://your-instance.service-now.com",
+        description="Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)",
+        field_type=FieldType.URL.value,
+        required=True,
+        max_length=OAuthDefaults.MAX_URL_LENGTH,
+    )
+
+
+# The client-credentials grant, as AuthType.CUSTOM: the platform refreshes and authorizes only
+# OAUTH types, and this grant has no refresh token or consent; the connector mints its own tokens.
+_CLIENT_CREDENTIALS = "the ServiceNow OAuth application whose OAuth application user the connector acts as"
+_API_KEY_FIELD = "apiKey"
+# A client-credentials token this close to expiry is replaced before the next request.
+_TOKEN_RENEW_MARGIN_S = 60
+_MISSING_CREDENTIALS = "The ServiceNow connector needs {what}. Enter them on the connector's Authenticate Instance tab."
+
+
 @ConnectorBuilder(ServiceNowConnectorMetadata.NAME)\
     .in_group(ServiceNowConnectorMetadata.NAME)\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
@@ -340,15 +367,7 @@ def _raise_if_run_stop(error: BaseException | None) -> None:
                 agent=[]
             ),
             fields=[
-                AuthField(
-                    name=AuthFieldKeys.INSTANCE_URL,
-                    display_name="ServiceNow Instance URL",
-                    placeholder="https://your-instance.service-now.com",
-                    description="Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)",
-                    field_type=FieldType.URL.value,
-                    required=True,
-                    max_length=OAuthDefaults.MAX_URL_LENGTH,
-                ),
+                _instance_url_field(),
                 AuthField(
                     name=AuthFieldKeys.AUTHORIZE_URL,
                     display_name="ServiceNow Authorize URL",
@@ -374,7 +393,19 @@ def _raise_if_run_stop(error: BaseException | None) -> None:
             app_group=ServiceNowConnectorMetadata.NAME,
             app_description=f"OAuth application for accessing {ServiceNowConnectorMetadata.NAME} API and knowledge base services",
             app_categories=[ConnectorRegistryCategories.KNOWLEDGE_MANAGEMENT]
-        )
+        ),
+        AuthBuilder.type(AuthType.BASIC_AUTH).fields([
+            _instance_url_field(), CommonFields.username(), CommonFields.password(),
+        ]),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            _instance_url_field(),
+            CommonFields.api_token("ServiceNow API key", field_name=_API_KEY_FIELD),
+        ]),
+        AuthBuilder.type(AuthType.CUSTOM).fields([
+            _instance_url_field(),
+            CommonFields.client_id(_CLIENT_CREDENTIALS),
+            CommonFields.client_secret(_CLIENT_CREDENTIALS),
+        ]),
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
@@ -491,7 +522,9 @@ class ServiceNowConnector(BaseConnector):
         self._resilience_loaded = True
 
         # ServiceNow API client instances
-        self.servicenow_client: Optional[ServiceNowRESTClientViaOAuthAuthorizationCode] = None
+        self.servicenow_client: Optional[HTTPClient] = None
+        # The saved auth type (OAUTH, BASIC_AUTH, API_TOKEN, or CUSTOM for client credentials), set by init
+        self.auth_type: str = AuthType.OAUTH
         self.servicenow_datasource: Optional[ServiceNowDataSource] = None
         self.connector_id = connector_id
 
@@ -597,7 +630,7 @@ class ServiceNowConnector(BaseConnector):
                 the integration user's access do not allow a sync
         """
         try:
-            self.logger.info("🔧 Initializing ServiceNow KB Connector (OAuth)...")
+            self.logger.info("🔧 Initializing ServiceNow KB Connector...")
             self._setup_warnings = []
             connector_id = self.connector_id
             # Load configuration
@@ -612,6 +645,11 @@ class ServiceNowConnector(BaseConnector):
 
             # Extract OAuth configuration
             auth_config = config.get(OAuthConfigKeys.AUTH, {})
+            self.auth_type = str(auth_config.get("authType") or AuthType.OAUTH).upper()
+            if self.auth_type != AuthType.OAUTH:
+                await self._close_client()
+                self.servicenow_client = await self._build_client(auth_config)
+                return await self._connect()
             oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
             if not oauth_config_id:
@@ -691,26 +729,85 @@ class ServiceNowConnector(BaseConnector):
             if self.refresh_token:
                 self.servicenow_client.refresh_token = self.refresh_token
 
-            # Initialize data source wrapper
-            self.servicenow_datasource = ServiceNowDataSource(self.servicenow_client)
-
-            # Raises ConnectorInitError with the reason
-            await self.test_connection_and_access()
-
-            self.kb_portal_suffix = await self._resolve_kb_portal_suffix()
-
-            self.apply_article_read_criteria = await self._resolve_article_read_criteria()
-            self.block_kb_without_criteria = await self._resolve_block_no_criteria()
-            await self._notify_setup_warnings()
-
-            self.logger.info("✅ ServiceNow KB Connector initialized successfully")
-            return True
+            return await self._connect()
 
         except ConnectorInitError:
             raise
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize connector: {e}", exc_info=True)
             return False
+
+    async def _connect(self) -> bool:
+        """The part of init after the client is built, the same for every auth type."""
+        self.servicenow_datasource = ServiceNowDataSource(self.servicenow_client)
+
+        # Raises ConnectorInitError with the reason
+        await self.test_connection_and_access()
+
+        self.kb_portal_suffix = await self._resolve_kb_portal_suffix()
+
+        self.apply_article_read_criteria = await self._resolve_article_read_criteria()
+        self.block_kb_without_criteria = await self._resolve_block_no_criteria()
+        await self._notify_setup_warnings()
+
+        self.logger.info("✅ ServiceNow KB Connector initialized successfully")
+        return True
+
+    async def _build_client(self, auth_config: dict) -> HTTPClient:
+        """The client for basic auth, an API key or client credentials, from the fields saved on
+        the connector (OAuth authorization code is built in init, from the linked OAuth app). A
+        client-credentials client comes back holding a token.
+
+        Raises:
+            ConnectorInitError: a field is missing or not allowed, or ServiceNow refused the token request
+        """
+        try:
+            self.instance_url = check_servicenow_instance_url(auth_config.get(AuthFieldKeys.INSTANCE_URL) or "")
+        except ValueError as e:
+            raise ConnectorInitError(str(e)) from e
+        if self.auth_type == AuthType.BASIC_AUTH:
+            username, password = auth_config.get("username"), auth_config.get("password")
+            if not (username and password):
+                raise ConnectorInitError(_MISSING_CREDENTIALS.format(what="a username and password"))
+            return ServiceNowRESTClientViaUsernamePassword(
+                self.instance_url, username, password, resilience=self.resilience
+            )
+        if self.auth_type == AuthType.API_TOKEN:
+            api_key = auth_config.get(_API_KEY_FIELD)
+            if not api_key:
+                raise ConnectorInitError(_MISSING_CREDENTIALS.format(what="an API key"))
+            return ServiceNowRESTClientViaAPIKey(self.instance_url, api_key, resilience=self.resilience)
+        if self.auth_type == AuthType.CUSTOM:
+            client_id, client_secret = auth_config.get(AuthFieldKeys.CLIENT_ID), auth_config.get(AuthFieldKeys.CLIENT_SECRET)
+            if not (client_id and client_secret):
+                raise ConnectorInitError(_MISSING_CREDENTIALS.format(what="a client ID and client secret"))
+            client = ServiceNowRESTClientViaOAuthClientCredentials(
+                self.instance_url, client_id, client_secret, resilience=self.resilience
+            )
+            host = urlsplit(self.instance_url).hostname
+            try:
+                token = await client.fetch_token()
+            except BadRequestError as e:
+                await client.close()
+                raise ConnectorInitError(
+                    f"ServiceNow at {host} refused the client-credentials token request ({e}). Check the client ID "
+                    "and secret, that the OAuth application has an OAuth application user, and that the system "
+                    "property glide.oauth.inbound.client.credential.grant_type.enabled is true."
+                ) from e
+            except (httpx.HTTPError, AddressNotAllowedError, ServiceNowRateLimited) as e:
+                await client.close()
+                raise ConnectorInitError(f"Could not get a token from ServiceNow at {host}: {e}") from e
+            if not token:
+                await client.close()
+                raise ConnectorInitError(f"ServiceNow at {host} answered the token request without an access token.")
+            return client
+        raise ConnectorInitError(f"ServiceNow does not support the auth type {self.auth_type}.")
+
+    def _sign_in_fix(self) -> str:
+        """What the user does when ServiceNow refuses the connector's sign-in."""
+        if self.auth_type == AuthType.OAUTH:
+            return "Re-authorize the connector on its Authorize tab."
+        return "Check the credentials on the connector's Authenticate Instance tab."
 
     async def _get_fresh_datasource(self) -> ServiceNowDataSource:
         """
@@ -726,6 +823,12 @@ class ServiceNowConnector(BaseConnector):
         """
         if not self.servicenow_client:
             raise connector_not_ready(self.display_name)
+        if self.auth_type != AuthType.OAUTH:
+            client = self.servicenow_client
+            if isinstance(client, ServiceNowRESTClientViaOAuthClientCredentials) and client.expires_at is not None \
+                    and client.expires_at - time.time() < _TOKEN_RENEW_MARGIN_S:
+                await self._renew_client_credentials_token(client)
+            return ServiceNowDataSource(client)
 
         connector_id = self.connector_id
 
@@ -771,6 +874,12 @@ class ServiceNowConnector(BaseConnector):
         client = self.servicenow_client
         if client is None:
             return False
+        if self.auth_type != AuthType.OAUTH:
+            # Basic and API key: the same credentials would fail again, and spend the
+            # instance's failed-login lockout budget. Client credentials: mint a new token.
+            if not isinstance(client, ServiceNowRESTClientViaOAuthClientCredentials):
+                return False
+            return await self._renew_client_credentials_token(client)
         try:
             config = await self.config_service.get_config(
                 ServiceNowConfigPaths.CONNECTOR_CONFIG.format(connector_id=self.connector_id), use_cache=False
@@ -792,6 +901,18 @@ class ServiceNowConnector(BaseConnector):
         client.set_access_token(token.access_token)
         self.logger.info("Refreshed the ServiceNow access token after a 401")
         return True
+
+    async def _renew_client_credentials_token(self, client: ServiceNowRESTClientViaOAuthClientCredentials) -> bool:
+        """A new client-credentials token on ``client``; False when ServiceNow refused it. The token
+        stays in memory only: nothing else uses it, and a new one is a request away."""
+        try:
+            renewed = bool(await client.fetch_token())
+        except Exception as e:
+            self.logger.error(f"Could not get a new ServiceNow client-credentials token: {e}")
+            return False
+        if renewed:
+            self.logger.info("Got a new ServiceNow client-credentials token")
+        return renewed
 
     async def _table_get(self, table: str, **params: str | None) -> TableAPIResponse:
         """The one place the connector reads the Table API, with the options every read uses."""
@@ -1044,7 +1165,7 @@ class ServiceNowConnector(BaseConnector):
         except ServiceNowAuthError as e:
             raise ConnectorInitError(
                 f"ServiceNow at {host} refused the connector's sign-in (HTTP 401: {e.message[:200]}). "
-                "Re-authorize the connector on its Authorize tab."
+                + self._sign_in_fix()
             ) from e
         except ServiceNowAPIError as e:
             if e.message == "Failed to parse API response":
@@ -1141,16 +1262,20 @@ class ServiceNowConnector(BaseConnector):
         try:
             await self._run_sync()
         except ServiceNowAuthError as e:
+            oauth = self.auth_type == AuthType.OAUTH
             self.last_action_items = [ActionItem(
-                code="servicenow_reauthorize", severity="error", title="Re-authorize ServiceNow",
-                message="ServiceNow refused the connector's sign-in. Sign in again on the Authorize tab.",
+                code="servicenow_reauthorize", severity="error",
+                title="Re-authorize ServiceNow" if oauth else "Check the ServiceNow credentials",
+                message="ServiceNow refused the connector's sign-in. "
+                        + ("Sign in again on the Authorize tab." if oauth else "Update them on the Authenticate Instance tab."),
                 action="authenticate",
             )]
+            retried = ", also after a token refresh" if oauth else (
+                ", also with a new token" if self.auth_type == AuthType.CUSTOM else "")
             await self._notify(
                 NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR, "needs to be re-authorized",
-                f"ServiceNow refused the connector's sign-in (HTTP 401: {e.message[:200]}), also after a token "
-                "refresh. The sync stopped; what it did not read stays as it was. Re-authorize the connector on "
-                "its Authorize tab.",
+                f"ServiceNow refused the connector's sign-in (HTTP 401: {e.message[:200]}){retried}. The sync "
+                f"stopped; what it did not read stays as it was. {self._sign_in_fix()}",
             )
             raise
         except ServiceNowAccessError as e:
@@ -3055,6 +3180,8 @@ class ServiceNowConnector(BaseConnector):
                 tables[table] = [response.total_count,
                                  str(response.result[0].get(ServiceNowFields.SYS_UPDATED_ON) or "") if response.result else ""]
             tables["properties"] = [self.apply_article_read_criteria, self.block_kb_without_criteria]
+            # A string: a graph store keeps only primitive values and lists of them, not maps
+            fingerprint = json.dumps(tables, sort_keys=True)
         except ServiceNowAPIError as e:
             _raise_if_run_stop(e)
             self.logger.warning(f"Could not tell whether article access changed; re-reading those articles: {e}")
@@ -3063,12 +3190,12 @@ class ServiceNowConnector(BaseConnector):
         last = stored.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME)
         due = full or not last or now - datetime.strptime(last, ServiceNowDefaults.DATETIME_FORMAT).replace(
             tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
-        reread = due or stored.get(ServiceNowDictKeys.FINGERPRINT) != tables
+        reread = due or stored.get(ServiceNowDictKeys.FINGERPRINT) != fingerprint
         if not reread:
             self.logger.info("No table behind article access changed; not re-reading the articles with criteria")
             return None, False
         return {
-            ServiceNowDictKeys.FINGERPRINT: tables,
+            ServiceNowDictKeys.FINGERPRINT: fingerprint,
             ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT) if due else last,
         }, True
 
