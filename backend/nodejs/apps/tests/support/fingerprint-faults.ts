@@ -36,8 +36,8 @@ function deferred<T = void>(): Deferred<T> {
 }
 
 export class Gate {
-  private readonly arrived = deferred<void>();
-  private readonly go = deferred<void>();
+  private readonly arrived = deferred();
+  private readonly go = deferred();
   /** Test side: resolves when the code reached the gate. */
   reached(): Promise<void> {
     return this.arrived.promise;
@@ -72,13 +72,13 @@ export class Gates {
   expectSignal(actor: string, point: string): Promise<void> {
     const key = `${actor}/${point}`;
     let d = this.signals.get(key);
-    if (!d) this.signals.set(key, (d = deferred<void>()));
+    if (!d) this.signals.set(key, (d = deferred()));
     return d.promise;
   }
   signal(point: string): void {
     const key = `${actorOf()}/${point}`;
     let d = this.signals.get(key);
-    if (!d) this.signals.set(key, (d = deferred<void>()));
+    if (!d) this.signals.set(key, (d = deferred()));
     d.resolve();
   }
   /** Releases every gate still closed (cleanup after a schedule); the abandoned code fails there. */

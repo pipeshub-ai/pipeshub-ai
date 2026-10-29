@@ -524,7 +524,9 @@ export class StorageController {
       res.setHeader('Cache-Control', 'no-store');
       const repo = getDocumentRepository();
       // The object store is asked only for a verified read; the adapter is built only then.
-      const adapter = verify ? await this.initializeStorageAdapter(req) : undefined;
+      const adapter = verify
+        ? await this.initializeStorageAdapter(req)
+        : undefined;
       const read = await readDocumentWithFingerprint(
         {
           repo,
@@ -544,9 +546,10 @@ export class StorageController {
         throw new NotFoundError('Document not found');
       }
 
-      res
-        .status(HTTP_STATUS.OK)
-        .json({ ...read.document, storageFingerprint: read.storageFingerprint });
+      res.status(HTTP_STATUS.OK).json({
+        ...read.document,
+        storageFingerprint: read.storageFingerprint,
+      });
     } catch (error) {
       next(error);
     }
@@ -2325,7 +2328,7 @@ export class StorageController {
         addedVersions.push(version);
       };
 
-      if (document.isVersionedFile === false) {
+      if (!document.isVersionedFile) {
         throw new BadRequestError('This document cannot be versioned');
       }
 
@@ -2425,7 +2428,7 @@ export class StorageController {
         ));
 
         // If current document was modified since last version, save it as a new version first
-        if (isDocumentChanged === true) {
+        if (isDocumentChanged) {
           const versionToSave = document.versionHistory?.length ?? 0;
           const versionFilePath = getVersionFilePath(
             basePath,
@@ -2565,7 +2568,6 @@ export class StorageController {
           },
           addedVersions,
         );
-
       });
 
       res.status(HTTP_STATUS.OK).json(saved);
@@ -2708,7 +2710,6 @@ export class StorageController {
             },
           ],
         );
-
       });
 
       res.status(HTTP_STATUS.OK).json(saved);
@@ -2850,9 +2851,9 @@ export class StorageController {
         adapter,
       ));
 
-      if (isDocumentChanged === true) {
+      if (isDocumentChanged) {
         res.status(HTTP_STATUS.OK).json(true);
-      } else if (isDocumentChanged === false) {
+      } else if (!isDocumentChanged) {
         res.status(HTTP_STATUS.OK).json(false);
       } else {
         throw new InternalServerError(

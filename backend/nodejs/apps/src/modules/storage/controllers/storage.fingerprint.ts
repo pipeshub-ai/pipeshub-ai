@@ -41,7 +41,9 @@ export interface FingerprintDeps {
   stat: (document: Document) => Promise<ObjectStat | null>;
   logger: FingerprintLogger;
   /** Test seam: awaited at the named points of a pass (gates in the interleaving tests). */
-  point?: (name: 'R:afterRow' | 'R:afterStat' | 'R:afterReread') => Promise<void>;
+  point?: (
+    name: 'R:afterRow' | 'R:afterStat' | 'R:afterReread',
+  ) => Promise<void>;
 }
 
 interface Pass {
@@ -102,7 +104,8 @@ function build(p: Pass, verified: boolean): StorageFingerprint {
   const row = p.row;
   const stat = verified ? p.stat : null;
   const settledNow =
-    isSettled(p.writers, p.serverNow) && isSettled(p.again.writers, p.serverNow);
+    isSettled(p.writers, p.serverNow) &&
+    isSettled(p.again.writers, p.serverNow);
   const stable = p.writeSeq === p.again.writeSeq && settledNow;
   const awaiting = row.awaitingDirectUpload === true;
   const artifactSet = isArtifactSet(row);
@@ -129,7 +132,11 @@ function build(p: Pass, verified: boolean): StorageFingerprint {
     verified,
     object: stat,
     objectMissing:
-      verified && p.stat === null && !p.unverifiable && !artifactSet && !awaiting,
+      verified &&
+      p.stat === null &&
+      !p.unverifiable &&
+      !artifactSet &&
+      !awaiting,
     objectUnverifiable: verified && p.unverifiable,
     ...(verified && p.unverifiable
       ? { reason: 'unparseable_storage_url' }
@@ -139,7 +146,11 @@ function build(p: Pass, verified: boolean): StorageFingerprint {
 }
 
 /** A fingerprint that names no counter state: nothing can match it, and it is never trusted. */
-function withoutState(row: Document, verified: boolean, reason: string): StorageFingerprint {
+function withoutState(
+  row: Document,
+  verified: boolean,
+  reason: string,
+): StorageFingerprint {
   return {
     version: FINGERPRINT_VERSION,
     value: fingerprintValue({
@@ -202,7 +213,14 @@ export async function readDocumentWithFingerprint(
       if (!(error instanceof ServerClockUnavailable)) throw error;
       const row = await deps.repo.get(orgId, id);
       return row
-        ? { document: row, storageFingerprint: withoutState(row, false, 'server_clock_unavailable') }
+        ? {
+            document: row,
+            storageFingerprint: withoutState(
+              row,
+              false,
+              'server_clock_unavailable',
+            ),
+          }
         : null;
     }
   }
@@ -223,7 +241,12 @@ export async function readDocumentWithFingerprint(
       if (fp.trusted && p.row.sizeInBytes !== p.stat.size) {
         // The stored size follows the object (best effort, compare-and-set, no sequence change).
         try {
-          await deps.repo.correctSize(orgId, id, p.row.sizeInBytes, p.stat.size);
+          await deps.repo.correctSize(
+            orgId,
+            id,
+            p.row.sizeInBytes,
+            p.stat.size,
+          );
         } catch (error) {
           deps.logger.warn('Could not correct the stored size of a document', {
             documentId: id,

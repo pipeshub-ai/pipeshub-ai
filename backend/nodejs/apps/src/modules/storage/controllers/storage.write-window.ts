@@ -23,7 +23,11 @@ export function writeWindowMs(): number {
 export const writeWindowHooks: {
   heartbeat: 'auto' | 'manual';
   repo?: () => DocumentRepository;
-  onBegin?: (info: { documentId: string; orgId: string; token: string }) => void;
+  onBegin?: (info: {
+    documentId: string;
+    orgId: string;
+    token: string;
+  }) => void;
 } = { heartbeat: 'auto' };
 
 const logger = Logger.getInstance({ service: 'StorageWriteWindow' });
@@ -51,10 +55,9 @@ async function boundedEnd(
     await Promise.race([
       attempts,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('endWrite did not finish in time')),
-          END_BUDGET_MS,
-        );
+        timer = setTimeout(() => {
+          reject(new Error('endWrite did not finish in time'));
+        }, END_BUDGET_MS);
         timer.unref();
       }),
     ]);
@@ -79,8 +82,8 @@ export async function withWriteWindow<T>(
   write: () => Promise<T>,
 ): Promise<T> {
   const repo = writeWindowHooks.repo?.() ?? getDocumentRepository();
-  const orgId = String(document.orgId);
-  const id = String(document._id);
+  const orgId = document.orgId;
+  const id = document._id;
   const window = writeWindowMs();
   const token = randomBytes(16).toString('hex');
   if (!(await repo.beginWrite(orgId, id, token, window)))
@@ -88,14 +91,17 @@ export async function withWriteWindow<T>(
   writeWindowHooks.onBegin?.({ documentId: id, orgId, token });
   let beat: NodeJS.Timeout | undefined;
   if (writeWindowHooks.heartbeat === 'auto') {
-    beat = setInterval(() => {
-      repo.renewWrite(orgId, id, token, window).catch((error: unknown) => {
-        logger.warn('Could not renew a write window', {
-          documentId: id,
-          error: error instanceof Error ? error.message : String(error),
+    beat = setInterval(
+      () => {
+        repo.renewWrite(orgId, id, token, window).catch((error: unknown) => {
+          logger.warn('Could not renew a write window', {
+            documentId: id,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
-    }, Math.max(10, Math.floor(window / 3)));
+      },
+      Math.max(10, Math.floor(window / 3)),
+    );
     beat.unref();
   }
   try {
