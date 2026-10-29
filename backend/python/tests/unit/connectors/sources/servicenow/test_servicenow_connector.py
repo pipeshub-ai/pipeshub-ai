@@ -7,14 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
-    MemorySyncPoint,
+    make_tx_store,
     block_groups,
     file_response,
     keyset_page,
     migrated_sync_point,
 )
 
-from app.config.constants.arangodb import AccessRule, Connectors, MimeTypes
+from app.config.constants.arangodb import AccessRule, MimeTypes
 from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector, _CriteriaUnreadable
 from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordGroupType, RecordType, WebpageRecord
@@ -110,106 +110,6 @@ def _sys_user_row(**fields: object) -> dict:
     }
     base.update(fields)
     return base
-
-
-def _make_mock_tx_store(existing_record=None, app_users=None):
-    tx = AsyncMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
-    tx.get_user_by_source_id = AsyncMock(return_value=None)
-    tx.get_app_users = AsyncMock(return_value=app_users or [])
-    tx.get_user_groups = AsyncMock(return_value=[])
-    tx.create_user_group_membership = AsyncMock()
-    tx.batch_upsert_user_groups = AsyncMock()
-    tx.batch_upsert_record_groups = AsyncMock()
-    tx.batch_upsert_record_group_permissions = AsyncMock()
-    tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-    return tx
-
-
-def _make_mock_data_store_provider(existing_record=None, app_users=None):
-    tx = _make_mock_tx_store(existing_record, app_users)
-    provider = MagicMock()
-
-    @asynccontextmanager
-    async def _transaction():
-        yield tx
-
-    provider.transaction = _transaction
-    provider._tx_store = tx
-    return provider
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-@pytest.fixture()
-def mock_logger():
-    return logging.getLogger("test.servicenow")
-
-
-@pytest.fixture()
-def mock_data_entities_processor():
-    class _Proc:
-        org_id = "org-sn-1"
-
-    proc = _Proc()
-    proc.on_new_app_users = AsyncMock()
-    proc.on_new_record_groups = AsyncMock()
-    proc.on_new_records = AsyncMock()
-    proc.on_new_user_groups = AsyncMock()
-    proc.on_record_deleted = AsyncMock()
-    proc.get_all_app_users = AsyncMock(return_value=[])
-    proc.batch_upsert_user_groups = AsyncMock()
-    proc.create_user_group_membership = AsyncMock()
-    proc.get_user_by_source_id = AsyncMock(return_value=None)
-    proc.get_record_by_external_id = AsyncMock(return_value=None)
-    proc.full_sync_running = MagicMock(return_value=False)
-    proc.reindex_existing_records = AsyncMock()
-    proc.on_record_group_deleted = AsyncMock(return_value=True)
-    proc.delete_record_by_external_id = AsyncMock()
-    proc.get_records_by_parent = AsyncMock(return_value=[])
-    proc.get_records_by_record_type = AsyncMock(return_value=[])
-    proc.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())  # stored
-    return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "oauthConfigId": "oauth-sn-1",
-        },
-        "credentials": {
-            "access_token": "sn-access-token",
-            "refresh_token": "sn-refresh-token",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def servicenow_connector(mock_logger, mock_data_entities_processor,
-                          mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"):
-        connector = ServiceNowConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="sn-conn-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
-    connector.connector_name = Connectors.SERVICENOW
-    # The knowledge base and category steps keep their last listed scope here.
-    connector.category_sync_point = MemorySyncPoint()
-    return connector
 
 
 # ===========================================================================
@@ -367,7 +267,7 @@ class TestGetFreshDatasource:
     async def test_returns_datasource_with_fresh_token(self, servicenow_connector):
         """A real client, because the transport sends headers, not the attribute."""
         client = ServiceNowRESTClientViaOAuthAuthorizationCode(
-            instance_url="https://dev194883.service-now.com",
+            instance_url="https://example.service-now.com",
             client_id="cid", client_secret="secret",
             redirect_uri="http://localhost/cb", access_token="old-token",
         )
@@ -689,7 +589,7 @@ class TestGetAdminUsers:
             )
             mock_ds.return_value = mock_datasource
 
-            tx = _make_mock_tx_store()
+            tx = make_tx_store()
             tx.get_user_by_source_id = AsyncMock(return_value=None)
 
             @asynccontextmanager
@@ -1318,7 +1218,7 @@ class TestSyncKnowledgeBases:
         assert "sys_updated_on>" not in query
 
     async def test_syncs_knowledge_bases(self, servicenow_connector):
-        tx = _make_mock_tx_store()
+        tx = make_tx_store()
         tx.get_record_group_by_external_id = AsyncMock(return_value=None)
         tx.batch_upsert_record_groups = AsyncMock()
         tx.batch_upsert_record_group_permissions = AsyncMock()
@@ -1391,7 +1291,7 @@ class TestSyncKnowledgeBases:
         assert servicenow_connector.data_entities_processor.on_new_record_groups.await_args.args[0] == []
 
     async def test_adds_admin_permissions(self, servicenow_connector):
-        tx = _make_mock_tx_store()
+        tx = make_tx_store()
         tx.get_record_group_by_external_id = AsyncMock(return_value=None)
         tx.batch_upsert_record_groups = AsyncMock()
         tx.batch_upsert_record_group_permissions = AsyncMock()
@@ -1748,7 +1648,7 @@ class TestGetAdminUsersDeep:
             )
             mock_ds.return_value = mock_datasource
 
-            tx = _make_mock_tx_store()
+            tx = make_tx_store()
 
             @asynccontextmanager
             async def _tx():
@@ -3119,7 +3019,7 @@ class TestResolveKbPortalSuffix:
 
 class TestArticleWebUrl:
     def test_article_url_uses_the_resolved_portal(self, servicenow_connector):
-        servicenow_connector.instance_url = "https://dev194883.service-now.com"
+        servicenow_connector.instance_url = "https://example.service-now.com"
         servicenow_connector.kb_portal_suffix = "esc"
 
         record = servicenow_connector._transform_to_article_webpage_record(
@@ -3127,7 +3027,7 @@ class TestArticleWebUrl:
         )
 
         assert record.weburl == (
-            "https://dev194883.service-now.com/esc?id=kb_article_view&sysparm_article=KB-art1"
+            "https://example.service-now.com/esc?id=kb_article_view&sysparm_article=KB-art1"
         )
 
 
@@ -3337,7 +3237,7 @@ class TestAccessTokenRefresh:
     def test_set_access_token_rewrites_the_authorization_header(self):
         """The transport sends headers, so a token written anywhere else is inert."""
         client = ServiceNowRESTClientViaOAuthAuthorizationCode(
-            instance_url="https://dev194883.service-now.com",
+            instance_url="https://example.service-now.com",
             client_id="cid",
             client_secret="secret",
             redirect_uri="http://localhost/cb",

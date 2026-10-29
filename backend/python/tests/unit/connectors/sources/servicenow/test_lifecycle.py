@@ -12,21 +12,25 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
-    FakeRecordStore,
+    EARLIER,
+    INSTANCE,
+    KB1,
+    LATER,
+    T0,
+    V1,
+    V2,
     FakeServiceNow,
     MemorySyncPoint,
+    article_row,
+    attachment_row,
     block_groups,
+    category_row,
+    groups_written,
+    kb_row,
     migrated_sync_point,
     status_error,
     stored_record,
-)
-from test_servicenow_batch_a import INSTANCE, T0, _article, _attachment
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
+    wire_store,
 )
 
 from app.config.constants.arangodb import Connectors
@@ -37,21 +41,9 @@ from app.sources.external.servicenow.models import (
     TableAPIRecord,
 )
 
-KB1 = "KB0000001"
-LATER = "2024-06-02 00:00:00"  # after the checkpoint T0
-EARLIER = "2024-05-01 00:00:00"
-V1, V2 = f"{1:032x}", f"{2:032x}"  # sys_ids of two versions, as an instance makes them
-
 
 def _today(days: int = 0) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
-
-
-def _wire(sc, fake: FakeServiceNow, *records: SimpleNamespace, sync_point: MemorySyncPoint | None = None) -> FakeRecordStore:
-    sc._get_fresh_datasource = AsyncMock(return_value=fake)
-    sc.instance_url = INSTANCE
-    sc.article_sync_point = sync_point if sync_point is not None else migrated_sync_point()
-    return FakeRecordStore(*records).attach(sc.data_entities_processor)
 
 
 def _users_by_source_id(sc) -> None:
@@ -63,57 +55,43 @@ def _users_by_source_id(sc) -> None:
 def _row(n: int = 1, **fields: str) -> TableAPIRecord:
     """An article row with every field the sync reads."""
     return TableAPIRecord(**{"author": "", "can_read_user_criteria": "", "cannot_read_user_criteria": "",
-                             **_article(n, **fields)})
-
-
-def _kb(sys_id: str, **fields: str) -> dict:
-    return {"sys_id": sys_id, "title": sys_id.upper(), "description": "", "owner": "", "kb_managers": "",
-            "active": "true", "sys_created_on": T0, "sys_updated_on": T0, **fields}
-
-
-def _category(sys_id: str, parent: str, **fields: str) -> dict:
-    return {"sys_id": sys_id, "label": sys_id.upper(), "parent_id": parent, "sys_updated_on": T0, **fields}
-
-
-def _groups_written(sc) -> list[str]:
-    return sorted(g.external_group_id for c in sc.data_entities_processor.on_new_record_groups.await_args_list
-                  for g, _ in c.args[0])
+                             **article_row(n, **fields)})
 
 
 # --- the rule: only the rows ServiceNow search shows ---------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_only_rows_search_shows_are_indexed(servicenow_connector) -> None:  # noqa: F811
+async def test_only_rows_search_shows_are_indexed(servicenow_connector) -> None:
     fake = FakeServiceNow({"kb_knowledge": [
-        _article(1),
-        _article(2, valid_to=_today()),  # expires at the end of today
-        _article(3, workflow_state="retired"),
-        _article(4, workflow_state="outdated"),
-        _article(5, workflow_state="draft"),
-        _article(6, workflow_state="review"),
-        _article(7, active="false"),
-        _article(8, valid_to=_today(-1)),
-        _article(9, **{"kb_knowledge_base.active": "false"}),
+        article_row(1),
+        article_row(2, valid_to=_today()),  # expires at the end of today
+        article_row(3, workflow_state="retired"),
+        article_row(4, workflow_state="outdated"),
+        article_row(5, workflow_state="draft"),
+        article_row(6, workflow_state="review"),
+        article_row(7, active="false"),
+        article_row(8, valid_to=_today(-1)),
+        article_row(9, **{"kb_knowledge_base.active": "false"}),
     ]})
-    store = _wire(servicenow_connector, fake)
+    store = wire_store(servicenow_connector, fake)
 
     await servicenow_connector._sync_articles()
 
     assert store.keys() == ["KB0000001", "KB0000002"]
 
 
-# --- SN-18: one record per number ------------------------------------------------------------
+# --- one record per number -------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_two_versions_one_record_with_published_content(servicenow_connector) -> None:  # noqa: F811
+async def test_two_versions_one_record_with_published_content(servicenow_connector) -> None:
     sc = servicenow_connector
     fake = FakeServiceNow({"kb_knowledge": [
-        _article(1, EARLIER, sys_id=V1, workflow_state="outdated", text="<p>v1</p>"),
-        _article(1, LATER, sys_id=V2, text="<p>v2</p>"),
+        article_row(1, EARLIER, sys_id=V1, workflow_state="outdated", text="<p>v1</p>"),
+        article_row(1, LATER, sys_id=V2, text="<p>v2</p>"),
     ]})
-    store = _wire(sc, fake)
+    store = wire_store(sc, fake)
 
     await sc._sync_articles()
 
@@ -123,18 +101,18 @@ async def test_two_versions_one_record_with_published_content(servicenow_connect
 
 
 @pytest.mark.asyncio
-async def test_new_version_narrowing_criteria_leaves_no_old_grants(servicenow_connector) -> None:  # noqa: F811
+async def test_new_version_narrowing_criteria_leaves_no_old_grants(servicenow_connector) -> None:
     # v1 goes outdated without its sys_updated_on changing: only v2 is in the delta.
     sc = servicenow_connector
     fake = FakeServiceNow({
         "kb_knowledge": [
-            _article(1, EARLIER, sys_id=V1, workflow_state="outdated", can_read_user_criteria="wide"),
-            _article(1, LATER, sys_id=V2, can_read_user_criteria="narrow"),
+            article_row(1, EARLIER, sys_id=V1, workflow_state="outdated", can_read_user_criteria="wide"),
+            article_row(1, LATER, sys_id=V2, can_read_user_criteria="narrow"),
         ],
         "user_criteria": [{"sys_id": "wide", "user": "u1,u2", "sys_updated_on": T0},
                           {"sys_id": "narrow", "user": "u1", "sys_updated_on": T0}],
     })
-    store = _wire(sc, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
+    store = wire_store(sc, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
     _users_by_source_id(sc)
 
     await sc._sync_articles()
@@ -144,14 +122,14 @@ async def test_new_version_narrowing_criteria_leaves_no_old_grants(servicenow_co
 
 
 @pytest.mark.asyncio
-async def test_draft_of_next_version_keeps_published_record(servicenow_connector) -> None:  # noqa: F811
+async def test_draft_of_next_version_keeps_published_record(servicenow_connector) -> None:
     # During an edit the draft is the latest row; the published one is still the article.
     sc = servicenow_connector
     fake = FakeServiceNow({"kb_knowledge": [
-        _article(1, EARLIER, sys_id=V1, latest="false", text="<p>published</p>"),
-        _article(1, LATER, sys_id=V2, workflow_state="draft", latest="true", text="<p>draft</p>"),
+        article_row(1, EARLIER, sys_id=V1, latest="false", text="<p>published</p>"),
+        article_row(1, LATER, sys_id=V2, workflow_state="draft", latest="true", text="<p>draft</p>"),
     ]})
-    store = _wire(sc, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
+    store = wire_store(sc, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
 
     await sc._sync_articles()
 
@@ -161,7 +139,7 @@ async def test_draft_of_next_version_keeps_published_record(servicenow_connector
     assert sc.article_sync_point.data["articles"]["last_sync_time"] == LATER
 
 
-def test_weburl_uses_number(servicenow_connector) -> None:  # noqa: F811
+def test_weburl_uses_number(servicenow_connector) -> None:
     servicenow_connector.instance_url = INSTANCE
     record = servicenow_connector._transform_to_article_webpage_record(_row())
 
@@ -169,14 +147,14 @@ def test_weburl_uses_number(servicenow_connector) -> None:  # noqa: F811
     assert record.external_record_id == KB1
 
 
-# --- SN-19: retired, unpublished and inactive articles go ------------------------------------
+# --- retired, unpublished and inactive articles go -------------------------------------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [{"workflow_state": "retired"}, {"workflow_state": "pending_retirement"}])
-async def test_retired_article_deleted_on_incremental(servicenow_connector, change) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, LATER, **change)]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("f1", "FILE", parent=KB1),
+async def test_retired_article_deleted_on_incremental(servicenow_connector, change) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, LATER, **change)]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("f1", "FILE", parent=KB1),
                   sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
@@ -186,9 +164,9 @@ async def test_retired_article_deleted_on_incremental(servicenow_connector, chan
 
 
 @pytest.mark.asyncio
-async def test_inactive_article_deleted(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, LATER, active="false")]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
+async def test_inactive_article_deleted(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, LATER, active="false")]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
 
@@ -196,9 +174,9 @@ async def test_inactive_article_deleted(servicenow_connector) -> None:  # noqa: 
 
 
 @pytest.mark.asyncio
-async def test_draft_of_a_new_article_deletes_nothing(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(2, LATER, workflow_state="draft")]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
+async def test_draft_of_a_new_article_deletes_nothing(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(2, LATER, workflow_state="draft")]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
 
@@ -207,8 +185,8 @@ async def test_draft_of_a_new_article_deletes_nothing(servicenow_connector) -> N
 
 
 @pytest.mark.asyncio
-async def test_stream_retired_article_is_404(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, workflow_state="retired")]}))
+async def test_stream_retired_article_is_404(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1, workflow_state="retired")]}))
 
     with pytest.raises(HTTPException) as raised:
         await servicenow_connector._fetch_article_content(KB1)
@@ -216,7 +194,7 @@ async def test_stream_retired_article_is_404(servicenow_connector) -> None:  # n
     assert raised.value.status_code == 404
 
 
-# --- SN-20: the reconcile ----------------------------------------------------------------------
+# --- the reconcile -----------------------------------------------------------------------------
 
 
 def _stale_reconcile(checkpoint: str | None = None) -> MemorySyncPoint:
@@ -224,9 +202,9 @@ def _stale_reconcile(checkpoint: str | None = None) -> MemorySyncPoint:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_deletes_missing_article(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1)]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"),
+async def test_reconcile_deletes_missing_article(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"),
                   stored_record("f2", "FILE", parent="KB0000002"), sync_point=_stale_reconcile(T0))
 
     await servicenow_connector._sync_articles()
@@ -237,9 +215,9 @@ async def test_reconcile_deletes_missing_article(servicenow_connector) -> None: 
 
 
 @pytest.mark.asyncio
-async def test_reconcile_waits_a_day(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1)]})
-    store = _wire(servicenow_connector, fake, stored_record("KB0000002"), sync_point=migrated_sync_point(T0))
+async def test_reconcile_waits_a_day(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)]})
+    store = wire_store(servicenow_connector, fake, stored_record("KB0000002"), sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
 
@@ -248,12 +226,12 @@ async def test_reconcile_waits_a_day(servicenow_connector) -> None:  # noqa: F81
 
 
 @pytest.mark.asyncio
-async def test_reconcile_skipped_after_partial_listing(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(i) for i in range(1, 1500)]})
+async def test_reconcile_skipped_after_partial_listing(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(i) for i in range(1, 1500)]})
     # page 2 of the reconcile's listing (1,000 ids a page) fails
     fake.fail = lambda table, q: status_error(503) if table == "kb_knowledge" and "^NQ" in q and \
         fake.calls[-1][2] == 1000 else None
-    store = _wire(servicenow_connector, fake, stored_record("KB9999999"), sync_point=_stale_reconcile())
+    store = wire_store(servicenow_connector, fake, stored_record("KB9999999"), sync_point=_stale_reconcile())
 
     await servicenow_connector._sync_articles()
 
@@ -262,8 +240,8 @@ async def test_reconcile_skipped_after_partial_listing(servicenow_connector) -> 
 
 
 @pytest.mark.asyncio
-async def test_reconcile_skipped_on_empty_listing(servicenow_connector) -> None:  # noqa: F811
-    store = _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": []}), stored_record(KB1),
+async def test_reconcile_skipped_on_empty_listing(servicenow_connector) -> None:
+    store = wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": []}), stored_record(KB1),
                   sync_point=_stale_reconcile())
 
     await servicenow_connector._sync_articles()
@@ -272,11 +250,11 @@ async def test_reconcile_skipped_on_empty_listing(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_article_does_not_block_the_reconcile(servicenow_connector) -> None:  # noqa: F811
+async def test_failed_article_does_not_block_the_reconcile(servicenow_connector) -> None:
     # One article failing every run must not keep deleted ones searchable for good.
-    fake = FakeServiceNow({"kb_knowledge": [_article(1)]},
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)]},
                           fail=lambda table, q: status_error(503) if table == "sys_attachment" else None)
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"),
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"),
                   sync_point=_stale_reconcile())
 
     await servicenow_connector._sync_articles()
@@ -284,13 +262,13 @@ async def test_failed_article_does_not_block_the_reconcile(servicenow_connector)
     assert store.keys() == [KB1]  # the failed article keeps its stored record
 
 
-# --- SN-21: expiry ---------------------------------------------------------------------------
+# --- expiry ----------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_expired_article_deleted(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, LATER, valid_to="2024-01-01")]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
+async def test_expired_article_deleted(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, LATER, valid_to="2024-01-01")]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
 
@@ -298,13 +276,13 @@ async def test_expired_article_deleted(servicenow_connector) -> None:  # noqa: F
 
 
 @pytest.mark.asyncio
-async def test_article_expiring_without_update_deleted_next_day(servicenow_connector) -> None:  # noqa: F811
+async def test_article_expiring_without_update_deleted_next_day(servicenow_connector) -> None:
     fake = FakeServiceNow({"kb_knowledge": [
-        _article(1, EARLIER, valid_to=_today(-1)),  # passed since the last check, its row unchanged
-        _article(2, EARLIER, valid_to=_today()),
+        article_row(1, EARLIER, valid_to=_today(-1)),  # passed since the last check, its row unchanged
+        article_row(2, EARLIER, valid_to=_today()),
     ]})
     sync_point = migrated_sync_point(T0, articles_expiry={"last_sync_time": _today(-1)})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"), sync_point=sync_point)
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("KB0000002"), sync_point=sync_point)
 
     await servicenow_connector._sync_articles()
 
@@ -312,21 +290,21 @@ async def test_article_expiring_without_update_deleted_next_day(servicenow_conne
     assert sync_point.data["articles_expiry"] == {"last_sync_time": _today()}
 
 
-# --- SN-22: attachments and inline images ----------------------------------------------------
+# --- attachments and inline images -----------------------------------------------------------
 
 
 def _inline_image(n: int, article: str, updated: str) -> dict:
-    return {**_attachment(n, article), "table_name": "ZZ_YYkb_knowledge", "sys_updated_on": updated}
+    return {**attachment_row(n, article), "table_name": "ZZ_YYkb_knowledge", "sys_updated_on": updated}
 
 
 @pytest.mark.asyncio
-async def test_inline_image_added_without_article_edit_reprocesses_article(servicenow_connector) -> None:  # noqa: F811
+async def test_inline_image_added_without_article_edit_reprocesses_article(servicenow_connector) -> None:
     fake = FakeServiceNow({
-        "kb_knowledge": [_article(1, EARLIER), _article(2, EARLIER)],
+        "kb_knowledge": [article_row(1, EARLIER), article_row(2, EARLIER)],
         "sys_attachment": [_inline_image(9, "a0001", LATER)],
     })
     sync_point = migrated_sync_point(T0, attachments={"last_sync_time": T0})
-    store = _wire(servicenow_connector, fake, sync_point=sync_point)
+    store = wire_store(servicenow_connector, fake, sync_point=sync_point)
 
     await servicenow_connector._sync_articles()
 
@@ -337,10 +315,10 @@ async def test_inline_image_added_without_article_edit_reprocesses_article(servi
 
 
 @pytest.mark.asyncio
-async def test_removed_attachment_deleted(servicenow_connector) -> None:  # noqa: F811
+async def test_removed_attachment_deleted(servicenow_connector) -> None:
     # Removing a file attachment updates the article row, so the delta has it.
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, LATER)], "sys_attachment": [_attachment(2, "a0001")]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("f0001", "FILE", parent=KB1),
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, LATER)], "sys_attachment": [attachment_row(2, "a0001")]})
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("f0001", "FILE", parent=KB1),
                   sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
@@ -349,10 +327,10 @@ async def test_removed_attachment_deleted(servicenow_connector) -> None:  # noqa
 
 
 @pytest.mark.asyncio
-async def test_no_prune_after_failed_listing(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, LATER)]},
+async def test_no_prune_after_failed_listing(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, LATER)]},
                           fail=lambda table, q: status_error(503) if table == "sys_attachment" else None)
-    store = _wire(servicenow_connector, fake, stored_record(KB1), stored_record("f0001", "FILE", parent=KB1),
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), stored_record("f0001", "FILE", parent=KB1),
                   sync_point=migrated_sync_point(T0))
 
     await servicenow_connector._sync_articles()
@@ -361,14 +339,14 @@ async def test_no_prune_after_failed_listing(servicenow_connector) -> None:  # n
     assert servicenow_connector.full_sync_coverage().complete is False
 
 
-# --- SN-23: knowledge bases and categories that are gone or inactive -------------------------
+# --- knowledge bases and categories that are gone or inactive --------------------------------
 
 
 @pytest.mark.asyncio
-async def test_deleted_kb_removed_with_children(servicenow_connector) -> None:  # noqa: F811
+async def test_deleted_kb_removed_with_children(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1", "kb2"]}})
-    store = _wire(sc, FakeServiceNow({"kb_knowledge_base": [_kb("kb1")]}),
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row("kb1")]}),
                   stored_record(KB1, group="kb2"))
 
     await sc._sync_knowledge_bases([])
@@ -379,22 +357,22 @@ async def test_deleted_kb_removed_with_children(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_inactive_kb_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_kb_removed(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1", "kb2"]}})
-    store = _wire(sc, FakeServiceNow({"kb_knowledge_base": [_kb("kb1"), _kb("kb2", active="false")]}))
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row("kb1"), kb_row("kb2", active="false")]}))
 
     await sc._sync_knowledge_bases([])
 
     assert store.deleted_groups == ["kb2"]
-    assert _groups_written(sc) == ["kb1"]
+    assert groups_written(sc) == ["kb1"]
     assert sc._live_kb_ids == {"kb1"}
 
 
 @pytest.mark.asyncio
-async def test_inactive_kb_stored_before_the_first_listing_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_kb_stored_before_the_first_listing_removed(servicenow_connector) -> None:
     sc = servicenow_connector  # no stored scope yet: the first run after the upgrade
-    store = _wire(sc, FakeServiceNow({"kb_knowledge_base": [_kb("kb1"), _kb("kb2", active="false")]}))
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row("kb1"), kb_row("kb2", active="false")]}))
 
     await sc._sync_knowledge_bases([])
 
@@ -402,12 +380,12 @@ async def test_inactive_kb_stored_before_the_first_listing_removed(servicenow_co
 
 
 @pytest.mark.asyncio
-async def test_no_removal_after_partial_kb_walk(servicenow_connector) -> None:  # noqa: F811
+async def test_no_removal_after_partial_kb_walk(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb-gone"]}})
-    fake = FakeServiceNow({"kb_knowledge_base": [_kb(f"kb{i:03d}") for i in range(150)]},
+    fake = FakeServiceNow({"kb_knowledge_base": [kb_row(f"kb{i:03d}") for i in range(150)]},
                           fail=lambda table, q: status_error(503) if "^NQ" in (q or "") else None)
-    store = _wire(sc, fake)
+    store = wire_store(sc, fake)
 
     with pytest.raises(Exception, match="503|error"):
         await sc._sync_knowledge_bases([])
@@ -417,24 +395,24 @@ async def test_no_removal_after_partial_kb_walk(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_empty_kb_listing_removes_no_category(servicenow_connector) -> None:  # noqa: F811
+async def test_empty_kb_listing_removes_no_category(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1"]}, "category_scope": {"ids": ["c1"]}})
-    store = _wire(sc, FakeServiceNow({"kb_knowledge_base": [], "kb_category": [_category("c1", "kb1")]}))
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [], "kb_category": [category_row("c1", "kb1")]}))
 
     await sc._sync_knowledge_bases([])
     await sc._sync_categories()
 
     assert store.deleted_groups == []
-    assert _groups_written(sc) == ["c1"]
+    assert groups_written(sc) == ["c1"]
 
 
 @pytest.mark.asyncio
-async def test_deleted_category_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_deleted_category_removed(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"category_scope": {"ids": ["c1", "c2"]}})
     sc._live_kb_ids = {"kb1"}
-    store = _wire(sc, FakeServiceNow({"kb_category": [_category("c1", "kb1")]}))
+    store = wire_store(sc, FakeServiceNow({"kb_category": [category_row("c1", "kb1")]}))
 
     await sc._sync_categories()
 
@@ -443,63 +421,63 @@ async def test_deleted_category_removed(servicenow_connector) -> None:  # noqa: 
 
 
 @pytest.mark.asyncio
-async def test_categories_of_an_inactive_kb_are_not_written(servicenow_connector) -> None:  # noqa: F811
+async def test_categories_of_an_inactive_kb_are_not_written(servicenow_connector) -> None:
     # Written, their parents would come back as stub groups named by their sys_id.
     sc = servicenow_connector
     sc._live_kb_ids = {"kb1"}
-    _wire(sc, FakeServiceNow({"kb_category": [
-        _category("c1", "kb1"), _category("c1a", "c1", active="false"),  # an inactive category stays
-        _category("c2", "kb2"), _category("c2a", "c2"),
+    wire_store(sc, FakeServiceNow({"kb_category": [
+        category_row("c1", "kb1"), category_row("c1a", "c1", active="false"),  # an inactive category stays
+        category_row("c2", "kb2"), category_row("c2a", "c2"),
     ]}))
 
     await sc._sync_categories()
 
-    assert _groups_written(sc) == ["c1", "c1a"]
+    assert groups_written(sc) == ["c1", "c1a"]
     assert sc._category_ids == {"c1", "c1a"}
 
 
 @pytest.mark.asyncio
-async def test_kb_back_in_scope_rereads_its_categories_and_articles(servicenow_connector) -> None:  # noqa: F811
+async def test_kb_back_in_scope_rereads_its_categories_and_articles(servicenow_connector) -> None:
     # Its categories and articles were removed with it and have not changed since.
     sc = servicenow_connector
     sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1"]}, "category_scope": {"ids": ["c1"]},
                                               "categories": {"last_sync_time": T0}})
     fake = FakeServiceNow({
-        "kb_knowledge_base": [_kb("kb1"), _kb("kb2")],
-        "kb_category": [_category("c1", "kb1"), _category("c2", "kb2")],
-        "kb_knowledge": [_article(1, EARLIER), _article(2, EARLIER, kb_knowledge_base="kb2", kb_category="c2")],
+        "kb_knowledge_base": [kb_row("kb1"), kb_row("kb2")],
+        "kb_category": [category_row("c1", "kb1"), category_row("c2", "kb2")],
+        "kb_knowledge": [article_row(1, EARLIER), article_row(2, EARLIER, kb_knowledge_base="kb2", kb_category="c2")],
     })
-    store = _wire(sc, fake, sync_point=migrated_sync_point(T0))
+    store = wire_store(sc, fake, sync_point=migrated_sync_point(T0))
 
     await sc._sync_knowledge_bases([])
     await sc._sync_categories()
     await sc._sync_articles()
 
     assert sc._kbs_back_in_scope == {"kb2"}
-    assert _groups_written(sc) == ["c1", "c2", "kb1", "kb2"]
+    assert groups_written(sc) == ["c1", "c2", "kb1", "kb2"]
     assert store.keys() == ["KB0000002"]
 
 
-# --- SN-24: untitled articles and knowledge bases ---------------------------------------------
+# --- untitled articles and knowledge bases ----------------------------------------------------
 
 
-def test_untitled_article_named_by_number(servicenow_connector) -> None:  # noqa: F811
+def test_untitled_article_named_by_number(servicenow_connector) -> None:
     record = servicenow_connector._transform_to_article_webpage_record(_row(short_description=""))
 
     assert record.record_name == KB1
 
 
-def test_untitled_kb_still_written(servicenow_connector) -> None:  # noqa: F811
-    group = servicenow_connector._transform_to_kb_record_group(TableAPIRecord(**_kb("kb1", title="")))
+def test_untitled_kb_still_written(servicenow_connector) -> None:
+    group = servicenow_connector._transform_to_kb_record_group(TableAPIRecord(**kb_row("kb1", title="")))
 
     assert (group.external_group_id, group.name) == ("kb1", "kb1")
 
 
-# --- SN-25: placeholders and stub groups ------------------------------------------------------
+# --- placeholders and stub groups -------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stream_placeholder_is_404(servicenow_connector) -> None:  # noqa: F811
+async def test_stream_placeholder_is_404(servicenow_connector) -> None:
     stub = SimpleNamespace(**vars(stored_record(KB1)), record_name=KB1)
     stub.is_placeholder = True
     servicenow_connector._fetch_article_content = AsyncMock(side_effect=AssertionError("a stub is not fetched"))
@@ -510,7 +488,7 @@ async def test_stream_placeholder_is_404(servicenow_connector) -> None:  # noqa:
     assert raised.value.status_code == 404
 
 
-def test_article_in_an_unsynced_category_hangs_under_its_kb(servicenow_connector) -> None:  # noqa: F811
+def test_article_in_an_unsynced_category_hangs_under_its_kb(servicenow_connector) -> None:
     # Under a stub group named by the category's sys_id the article would reach nobody.
     servicenow_connector._category_ids = {"cat1"}
     record = servicenow_connector._transform_to_article_webpage_record(
@@ -519,21 +497,21 @@ def test_article_in_an_unsynced_category_hangs_under_its_kb(servicenow_connector
     assert (record.external_record_group_id, record.record_group_type) == ("kb1", RecordGroupType.SERVICENOWKB)
 
 
-# --- SN-26: the attachment link --------------------------------------------------------------
+# --- the attachment link ---------------------------------------------------------------------
 
 
-def test_attachment_weburl_is_article_url(servicenow_connector) -> None:  # noqa: F811
+def test_attachment_weburl_is_article_url(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.instance_url = INSTANCE
     article = sc._transform_to_article_webpage_record(_row())
 
-    record = sc._transform_to_attachment_file_record(AttachmentMetadata(**_attachment(1, "a0001")), article=article)
+    record = sc._transform_to_attachment_file_record(AttachmentMetadata(**attachment_row(1, "a0001")), article=article)
 
     assert record.weburl == article.weburl
     assert record.parent_external_record_id == KB1
 
 
-# --- SN-70: sys_audit_delete, for an admin account -------------------------------------------
+# --- sys_audit_delete, for an admin account --------------------------------------------------
 
 
 def _audited(display_value: str) -> dict:
@@ -542,10 +520,10 @@ def _audited(display_value: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_audit_delete_of_published_article_deletes_record(servicenow_connector) -> None:  # noqa: F811
+async def test_audit_delete_of_published_article_deletes_record(servicenow_connector) -> None:
     fake = FakeServiceNow({"kb_knowledge": [], "sys_audit_delete": [_audited(f"{KB1} v1.0")]})
     sync_point = migrated_sync_point(T0, audit_delete={"last_sync_time": T0})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), sync_point=sync_point)
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), sync_point=sync_point)
 
     await servicenow_connector._sync_articles()
 
@@ -554,10 +532,10 @@ async def test_audit_delete_of_published_article_deletes_record(servicenow_conne
 
 
 @pytest.mark.asyncio
-async def test_audit_delete_of_old_version_keeps_record(servicenow_connector) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, EARLIER, sys_id=V2)],
+async def test_audit_delete_of_old_version_keeps_record(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, EARLIER, sys_id=V2)],
                            "sys_audit_delete": [_audited(f"{KB1} v1.0")]})
-    store = _wire(servicenow_connector, fake, stored_record(KB1),
+    store = wire_store(servicenow_connector, fake, stored_record(KB1),
                   sync_point=migrated_sync_point(T0, audit_delete={"last_sync_time": T0}))
 
     await servicenow_connector._sync_articles()
@@ -566,11 +544,11 @@ async def test_audit_delete_of_old_version_keeps_record(servicenow_connector) ->
 
 
 @pytest.mark.asyncio
-async def test_audit_delete_403_falls_back_to_reconcile(servicenow_connector) -> None:  # noqa: F811
+async def test_audit_delete_403_falls_back_to_reconcile(servicenow_connector) -> None:
     fake = FakeServiceNow({"kb_knowledge": [], "sys_audit_delete": [_audited(f"{KB1} v1.0")]},
                           fail=lambda table, q: status_error(403) if table == "sys_audit_delete" else None)
     sync_point = migrated_sync_point(T0, audit_delete={"last_sync_time": T0})
-    store = _wire(servicenow_connector, fake, stored_record(KB1), sync_point=sync_point)
+    store = wire_store(servicenow_connector, fake, stored_record(KB1), sync_point=sync_point)
 
     await servicenow_connector._sync_articles()
 
@@ -588,10 +566,10 @@ def _installed_before_the_upgrade(fail_criteria: bool = False) -> tuple[FakeServ
     fake = FakeServiceNow(
         {
             "kb_knowledge": [
-                _article(1, EARLIER, sys_id=V1, workflow_state="outdated"),
-                _article(1, EARLIER, sys_id=V2, can_read_user_criteria="uc1"),
+                article_row(1, EARLIER, sys_id=V1, workflow_state="outdated"),
+                article_row(1, EARLIER, sys_id=V2, can_read_user_criteria="uc1"),
             ],
-            "sys_attachment": [_attachment(2, V2)],
+            "sys_attachment": [attachment_row(2, V2)],
             "user_criteria": [{"sys_id": "uc1", "user": "u1", "sys_updated_on": T0}],
         },
         fail=lambda table, q: status_error(503) if fail_criteria and table == "user_criteria" else None,
@@ -604,10 +582,10 @@ def _installed_before_the_upgrade(fail_criteria: bool = False) -> tuple[FakeServ
 
 
 @pytest.mark.asyncio
-async def test_migration_replaces_sys_id_records_with_number_record(servicenow_connector) -> None:  # noqa: F811
+async def test_migration_replaces_sys_id_records_with_number_record(servicenow_connector) -> None:
     sc = servicenow_connector
     fake, stored = _installed_before_the_upgrade()
-    store = _wire(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
+    store = wire_store(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
     _users_by_source_id(sc)
 
     await sc._sync_articles()
@@ -618,10 +596,10 @@ async def test_migration_replaces_sys_id_records_with_number_record(servicenow_c
 
 
 @pytest.mark.asyncio
-async def test_migration_keeps_current_version_attachments(servicenow_connector) -> None:  # noqa: F811
+async def test_migration_keeps_current_version_attachments(servicenow_connector) -> None:
     sc = servicenow_connector
     fake, stored = _installed_before_the_upgrade()
-    store = _wire(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
+    store = wire_store(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
     _users_by_source_id(sc)
 
     await sc._sync_articles()
@@ -632,10 +610,10 @@ async def test_migration_keeps_current_version_attachments(servicenow_connector)
 
 
 @pytest.mark.asyncio
-async def test_migration_keeps_the_record_of_an_article_that_failed(servicenow_connector) -> None:  # noqa: F811
+async def test_migration_keeps_the_record_of_an_article_that_failed(servicenow_connector) -> None:
     sc = servicenow_connector
     fake, stored = _installed_before_the_upgrade(fail_criteria=True)
-    store = _wire(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
+    store = wire_store(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
 
     await sc._sync_articles()
 
@@ -656,12 +634,12 @@ async def test_migration_keeps_the_record_of_an_article_that_failed(servicenow_c
 
 
 @pytest.mark.asyncio
-async def test_migration_repeats_after_a_failed_listing(servicenow_connector) -> None:  # noqa: F811
+async def test_migration_repeats_after_a_failed_listing(servicenow_connector) -> None:
     sc = servicenow_connector
     fake, stored = _installed_before_the_upgrade()
     # the reconcile's listing (1,000 ids a page) fails
     fake.fail = lambda table, q: status_error(503) if table == "kb_knowledge" and fake.calls[-1][2] == 1000 else None
-    store = _wire(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
+    store = wire_store(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
     _users_by_source_id(sc)
 
     await sc._sync_articles()
@@ -679,10 +657,10 @@ async def test_migration_repeats_after_a_failed_listing(servicenow_connector) ->
 
 
 @pytest.mark.asyncio
-async def test_second_run_after_migration_is_incremental(servicenow_connector) -> None:  # noqa: F811
+async def test_second_run_after_migration_is_incremental(servicenow_connector) -> None:
     sc = servicenow_connector
     fake, stored = _installed_before_the_upgrade()
-    _wire(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
+    wire_store(sc, fake, *stored, sync_point=MemorySyncPoint({"articles": {"last_sync_time": T0}}))
     _users_by_source_id(sc)
     await sc._sync_articles()
 
@@ -694,13 +672,13 @@ async def test_second_run_after_migration_is_incremental(servicenow_connector) -
 
 
 @pytest.mark.asyncio
-async def test_record_stored_under_a_sys_id_still_streams_until_migrated(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, sys_id=V2, text="<p>v2</p>")]}))
+async def test_record_stored_under_a_sys_id_still_streams_until_migrated(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1, sys_id=V2, text="<p>v2</p>")]}))
 
     assert block_groups(await servicenow_connector._fetch_article_content(V2))[0]["data"].endswith("v2")
 
 
-def test_kb_knowledge_model_carries_number(servicenow_connector) -> None:  # noqa: F811
+def test_kb_knowledge_model_carries_number(servicenow_connector) -> None:
     servicenow_connector.instance_url = INSTANCE
     record = servicenow_connector._transform_to_article_webpage_record(
         KBKnowledge(sys_id=V2, number=KB1, short_description="t", kb_knowledge_base="kb1"))

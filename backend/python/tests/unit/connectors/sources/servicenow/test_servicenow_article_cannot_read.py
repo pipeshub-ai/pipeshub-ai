@@ -6,13 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from servicenow_fakes import migrated_sync_point
 from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
-)
 
 from app.config.constants.arangodb import AccessRule, Connectors
 from app.models.entities import AppUser
@@ -31,7 +24,7 @@ async def _grants(sc, article: KBKnowledge) -> list:
 
 
 @pytest.mark.asyncio
-async def test_the_kbs_own_cannot_read_still_applies_to_an_article_with_a_deny(servicenow_connector) -> None:  # noqa: F811
+async def test_the_kbs_own_cannot_read_still_applies_to_an_article_with_a_deny(servicenow_connector) -> None:
     sc = servicenow_connector
     T._wire(sc, {"kbcan": {"sys_id": "kbcan", "user": "u1,u2,u3"}, "kbdeny": {"sys_id": "kbdeny", "user": "u1"},
                  "deny1": {"sys_id": "deny1", "user": "u3"}}, {})
@@ -42,7 +35,7 @@ async def test_the_kbs_own_cannot_read_still_applies_to_an_article_with_a_deny(s
 
 
 @pytest.mark.asyncio
-async def test_with_the_override_property_readers_still_need_the_kb(servicenow_connector) -> None:  # noqa: F811
+async def test_with_the_override_property_readers_still_need_the_kb(servicenow_connector) -> None:
     # The property never makes an article's Can Read replace its KB's: u4 is not a KB reader.
     sc = servicenow_connector
     sc.apply_article_read_criteria = True
@@ -55,7 +48,7 @@ async def test_with_the_override_property_readers_still_need_the_kb(servicenow_c
 
 
 @pytest.mark.asyncio
-async def test_admin_owner_and_manager_keep_an_article_with_its_own_cannot_read(servicenow_connector) -> None:  # noqa: F811
+async def test_admin_owner_and_manager_keep_an_article_with_its_own_cannot_read(servicenow_connector) -> None:
     sc = servicenow_connector
     T._wire(sc, {"kbcan": {"sys_id": "kbcan", "user": "u1,u2,u3,adm,own,mgr"},
                  "deny1": {"sys_id": "deny1", "user": "u3,adm,own,mgr"}}, {})
@@ -83,7 +76,7 @@ def _kb_row_then(real) -> Callable[..., Awaitable[TableAPIResponse]]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("deny", ["deny1", None])
-async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_connector, deny) -> None:  # noqa: F811
+async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_connector, deny) -> None:
     # Not only Cannot Read articles: a criterion removed from any article must take its grant away.
     from types import SimpleNamespace
 
@@ -101,7 +94,7 @@ async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_
 
 
 @pytest.mark.asyncio
-async def test_a_rewrite_with_no_grants_is_still_written_so_stored_grants_go(servicenow_connector) -> None:  # noqa: F811
+async def test_a_rewrite_with_no_grants_is_still_written_so_stored_grants_go(servicenow_connector) -> None:
     from types import SimpleNamespace
 
     sc = servicenow_connector
@@ -117,7 +110,7 @@ async def test_a_rewrite_with_no_grants_is_still_written_so_stored_grants_go(ser
 
 
 @pytest.mark.asyncio
-async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_checkpoint_back(servicenow_connector) -> None:  # noqa: F811
+async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_checkpoint_back(servicenow_connector) -> None:
     from test_servicenow_connector import _table_api_response
 
     sc = servicenow_connector
@@ -149,7 +142,7 @@ async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_c
 
 
 @pytest.mark.asyncio
-async def test_a_failed_admin_read_skips_the_article_so_its_stored_admin_grants_stay(servicenow_connector) -> None:  # noqa: F811
+async def test_a_failed_admin_read_skips_the_article_so_its_stored_admin_grants_stay(servicenow_connector) -> None:
     from types import SimpleNamespace
 
     from app.sources.external.servicenow.models import ServiceNowAPIError

@@ -13,6 +13,9 @@ error to raise for a (table, query).
 ``FakeRecordStore`` keeps the records a sync writes, by external id, and answers the processor calls the
 connector makes to read and delete them. ``migrated_sync_point`` is the article sync point of an install
 whose articles are already keyed by number and were reconciled just now.
+
+The end of the file holds the rows, wiring and data store mocks the test files share; the fixtures are in
+``conftest.py``.
 """
 
 from __future__ import annotations
@@ -20,11 +23,12 @@ from __future__ import annotations
 import json
 import random
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
@@ -246,3 +250,90 @@ class FakeRecordStore:
                 del self.records[key]
                 self.deleted.append(key)
         return True
+
+
+# --- rows and wiring shared by the test files ---------------------------------------------------
+
+T0 = "2024-06-01 00:00:00"
+INSTANCE = "https://dev00000.service-now.com"
+
+
+def article_row(n: int, updated: str = T0, **fields: str) -> dict:
+    return {
+        "sys_id": f"a{n:04d}", "number": f"KB{n:07d}", "short_description": f"Article {n}", "text": "<p>body</p>",
+        "kb_knowledge_base": "kb1", "kb_knowledge_base.active": "true", "kb_category": "cat1",
+        "workflow_state": "published", "active": "true",
+        "sys_created_on": "2024-01-01 00:00:00", "sys_updated_on": updated, **fields,
+    }
+
+
+def attachment_row(n: int, article: str) -> dict:
+    return {
+        "sys_id": f"f{n:04d}", "file_name": f"file{n}.pdf", "content_type": "application/pdf", "size_bytes": "10",
+        "table_name": "kb_knowledge", "table_sys_id": article,
+        "sys_created_on": "2024-01-01 00:00:00", "sys_updated_on": "2024-01-01 00:00:00",
+    }
+
+
+def wire_listing(sc, fake: FakeServiceNow, checkpoint: str | None = None) -> None:
+    sc._get_fresh_datasource = AsyncMock(return_value=fake)
+    sc.instance_url = INSTANCE
+    sc.article_sync_point = migrated_sync_point(checkpoint)
+
+
+def written_ids(sc) -> list[str]:
+    return [r.external_record_id for c in sc.data_entities_processor.on_new_records.await_args_list for r, _ in c.args[0]]
+
+
+KB1 = "KB0000001"
+LATER = "2024-06-02 00:00:00"  # after the checkpoint T0
+EARLIER = "2024-05-01 00:00:00"
+V1, V2 = f"{1:032x}", f"{2:032x}"  # sys_ids of two versions, as an instance makes them
+
+
+def wire_store(sc, fake: FakeServiceNow, *records: SimpleNamespace, sync_point: MemorySyncPoint | None = None) -> FakeRecordStore:
+    sc._get_fresh_datasource = AsyncMock(return_value=fake)
+    sc.instance_url = INSTANCE
+    sc.article_sync_point = sync_point if sync_point is not None else migrated_sync_point()
+    return FakeRecordStore(*records).attach(sc.data_entities_processor)
+
+
+def kb_row(sys_id: str, **fields: str) -> dict:
+    return {"sys_id": sys_id, "title": sys_id.upper(), "description": "", "owner": "", "kb_managers": "",
+            "active": "true", "sys_created_on": T0, "sys_updated_on": T0, **fields}
+
+
+def category_row(sys_id: str, parent: str, **fields: str) -> dict:
+    return {"sys_id": sys_id, "label": sys_id.upper(), "parent_id": parent, "sys_updated_on": T0, **fields}
+
+
+def groups_written(sc) -> list[str]:
+    return sorted(g.external_group_id for c in sc.data_entities_processor.on_new_record_groups.await_args_list
+                  for g, _ in c.args[0])
+
+
+def make_tx_store(existing_record=None, app_users=None) -> AsyncMock:
+    tx = AsyncMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    tx.get_user_by_source_id = AsyncMock(return_value=None)
+    tx.get_app_users = AsyncMock(return_value=app_users or [])
+    tx.get_user_groups = AsyncMock(return_value=[])
+    tx.create_user_group_membership = AsyncMock()
+    tx.batch_upsert_user_groups = AsyncMock()
+    tx.batch_upsert_record_groups = AsyncMock()
+    tx.batch_upsert_record_group_permissions = AsyncMock()
+    tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    return tx
+
+
+def make_data_store_provider(existing_record=None, app_users=None) -> MagicMock:
+    tx = make_tx_store(existing_record, app_users)
+    provider = MagicMock()
+
+    @asynccontextmanager
+    async def _transaction():
+        yield tx
+
+    provider.transaction = _transaction
+    provider._tx_store = tx
+    return provider

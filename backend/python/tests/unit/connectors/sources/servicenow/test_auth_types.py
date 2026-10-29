@@ -6,21 +6,12 @@ test; a 401 stops a basic or API-key sync at once and makes client credentials m
 
 import logging
 import time
-from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from servicenow_fakes import status_error
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
-)
 
 from app.connectors.core.base.connector.connector_service import (
-    BaseConnector,
     ConnectorInitError,
 )
 from app.connectors.core.registry.auth_builder import AuthType
@@ -49,15 +40,6 @@ CLIENT = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _fresh_notice_state() -> Iterator[None]:
-    BaseConnector._notification_cache.clear()
-    ServiceNowConnector._persistent_noticed.clear()
-    yield
-    BaseConnector._notification_cache.clear()
-    ServiceNowConnector._persistent_noticed.clear()
-
-
 @pytest.fixture()
 def minted(monkeypatch) -> list[str]:
     """fetch_token answers like ServiceNow: a token valid for 1,800 s. Lists the instance URLs asked."""
@@ -75,7 +57,7 @@ def minted(monkeypatch) -> list[str]:
 
 def _saved(sc, auth_type: str, **changes: str) -> None:
     sc.config_service.get_config = AsyncMock(return_value={"auth": {"authType": auth_type, **AUTH[auth_type], **changes}})
-    sc._connect = AsyncMock(return_value=True)  # the connection test has its own tests (batch G)
+    sc._connect = AsyncMock(return_value=True)  # the connection test has its own tests (test_notices_and_access_gating.py)
     sc._fetch_oauth_config_by_id = AsyncMock()
 
 
@@ -108,11 +90,11 @@ def test_registry_offers_oauth_first_then_basic_api_key_and_client_credentials()
     assert set(meta["config"]["auth"].get("oauthConfigs", {})) <= {"OAUTH"}
 
 
-# --- SN-60..63: init builds the client for the saved type -----------------------------------------
+# --- init builds the client for the saved type ----------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_basic_auth_init_builds_basic_client(servicenow_connector) -> None:  # noqa: F811
+async def test_basic_auth_init_builds_basic_client(servicenow_connector) -> None:
     sc = servicenow_connector
     _saved(sc, AuthType.BASIC_AUTH)
     assert await sc.init() is True
@@ -125,7 +107,7 @@ async def test_basic_auth_init_builds_basic_client(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_api_key_init(servicenow_connector) -> None:  # noqa: F811
+async def test_api_key_init(servicenow_connector) -> None:
     sc = servicenow_connector
     _saved(sc, AuthType.API_TOKEN)
     assert await sc.init() is True
@@ -137,7 +119,7 @@ async def test_api_key_init(servicenow_connector) -> None:  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_client_credentials_init_mints_a_token_and_writes_nothing(servicenow_connector, minted) -> None:  # noqa: F811
+async def test_client_credentials_init_mints_a_token_and_writes_nothing(servicenow_connector, minted) -> None:
     sc = servicenow_connector
     _saved(sc, AuthType.CUSTOM)
     assert await sc.init() is True
@@ -150,7 +132,7 @@ async def test_client_credentials_init_mints_a_token_and_writes_nothing(servicen
 
 
 @pytest.mark.asyncio
-async def test_client_credentials_refused_names_the_vendor_reason(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_client_credentials_refused_names_the_vendor_reason(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     _saved(sc, AuthType.CUSTOM)
     monkeypatch.setattr(ServiceNowRESTClientViaOAuthClientCredentials, "fetch_token", AsyncMock(side_effect=BadRequestError(
@@ -167,7 +149,7 @@ async def test_client_credentials_refused_names_the_vendor_reason(servicenow_con
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth_type", list(AUTH))
-async def test_every_type_checks_the_instance_url(servicenow_connector, auth_type, minted) -> None:  # noqa: F811
+async def test_every_type_checks_the_instance_url(servicenow_connector, auth_type, minted) -> None:
     sc = servicenow_connector
     _saved(sc, auth_type, instanceUrl="http://acme.service-now.com")
     with pytest.raises(ConnectorInitError, match="must use https"):
@@ -179,7 +161,7 @@ async def test_every_type_checks_the_instance_url(servicenow_connector, auth_typ
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("auth_type", "field"), [
     (AuthType.BASIC_AUTH, "password"), (AuthType.API_TOKEN, "apiKey"), (AuthType.CUSTOM, "clientSecret")])
-async def test_a_missing_secret_is_named(servicenow_connector, auth_type, field) -> None:  # noqa: F811
+async def test_a_missing_secret_is_named(servicenow_connector, auth_type, field) -> None:
     sc = servicenow_connector
     _saved(sc, auth_type, **{field: ""})
     with pytest.raises(ConnectorInitError, match="Authenticate Instance tab"):
@@ -188,7 +170,7 @@ async def test_a_missing_secret_is_named(servicenow_connector, auth_type, field)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth_type", list(AUTH))
-async def test_init_logs_no_secret(servicenow_connector, auth_type, minted, caplog) -> None:  # noqa: F811
+async def test_init_logs_no_secret(servicenow_connector, auth_type, minted, caplog) -> None:
     sc = servicenow_connector
     sc.logger = logging.getLogger("servicenow-batch-h")
     caplog.set_level(logging.DEBUG)
@@ -198,8 +180,8 @@ async def test_init_logs_no_secret(servicenow_connector, auth_type, minted, capl
 
 
 @pytest.mark.asyncio
-async def test_oauth_init_still_reads_the_linked_app_with_auth_config(servicenow_connector) -> None:  # noqa: F811
-    # The EE subclass overrides _fetch_oauth_config_by_id and needs the auth_config= keyword.
+async def test_oauth_init_still_reads_the_linked_app_with_auth_config(servicenow_connector) -> None:
+    # A subclass may override _fetch_oauth_config_by_id; it is called with auth_config=.
     sc = servicenow_connector
     sc._connect = AsyncMock(return_value=True)
     sc._fetch_oauth_config_by_id = AsyncMock(return_value={
@@ -221,7 +203,7 @@ def _client(sc, auth_type: str) -> MagicMock:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth_type", [AuthType.BASIC_AUTH, AuthType.API_TOKEN])
-async def test_basic_and_api_key_401_stops_without_a_retry(servicenow_connector, auth_type) -> None:  # noqa: F811
+async def test_basic_and_api_key_401_stops_without_a_retry(servicenow_connector, auth_type) -> None:
     sc = servicenow_connector
     _client(sc, auth_type)
     call = AsyncMock(side_effect=status_error(401, "User is not authenticated"))
@@ -232,7 +214,7 @@ async def test_basic_and_api_key_401_stops_without_a_retry(servicenow_connector,
 
 
 @pytest.mark.asyncio
-async def test_client_credentials_401_remints_once(servicenow_connector) -> None:  # noqa: F811
+async def test_client_credentials_401_remints_once(servicenow_connector) -> None:
     sc = servicenow_connector
     client = _client(sc, AuthType.CUSTOM)
     client.fetch_token = AsyncMock(return_value="t2")
@@ -248,7 +230,7 @@ async def test_client_credentials_401_remints_once(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_client_credentials_reminted_near_expiry(servicenow_connector) -> None:  # noqa: F811
+async def test_client_credentials_reminted_near_expiry(servicenow_connector) -> None:
     sc = servicenow_connector
     client = _client(sc, AuthType.CUSTOM)
     client.fetch_token = AsyncMock(return_value="t2")
@@ -263,7 +245,7 @@ async def test_client_credentials_reminted_near_expiry(servicenow_connector) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth_type", [AuthType.BASIC_AUTH, AuthType.API_TOKEN, AuthType.CUSTOM])
-async def test_401_stops_and_notifies_with_the_credentials_fix(servicenow_connector, auth_type) -> None:  # noqa: F811
+async def test_401_stops_and_notifies_with_the_credentials_fix(servicenow_connector, auth_type) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     sc.auth_type = auth_type
@@ -277,7 +259,7 @@ async def test_401_stops_and_notifies_with_the_credentials_fix(servicenow_connec
 
 
 @pytest.mark.asyncio
-async def test_connection_test_401_names_the_credentials_fix(servicenow_connector) -> None:  # noqa: F811
+async def test_connection_test_401_names_the_credentials_fix(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.auth_type, sc.instance_url = AuthType.BASIC_AUTH, URL
     sc._with_token_retry = AsyncMock(side_effect=ServiceNowAuthError("User is not authenticated"))

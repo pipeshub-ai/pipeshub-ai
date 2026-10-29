@@ -24,13 +24,6 @@ from servicenow_fakes import (
     migrated_sync_point,
     status_error,
 )
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
-)
 
 from app.config.constants.arangodb import AccessRule, Connectors
 from app.models.entities import AppUser, AppUserGroup
@@ -278,7 +271,7 @@ def _incremental(sc) -> None:
     sc.article_sync_point.data["articles"] = {"last_sync_time": T0}
 
 
-# --- the truth table (instance: PHQA-KB-Art, under both values of apply_article_read_criteria) ---
+# --- the truth table (under both values of apply_article_read_criteria) ---
 
 
 def _kb_art(inst: Instance) -> None:
@@ -315,7 +308,7 @@ TRUTH = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("apply_article_criteria", [False, True])
-async def test_article_criteria_truth_table(servicenow_connector, apply_article_criteria) -> None:  # noqa: F811
+async def test_article_criteria_truth_table(servicenow_connector, apply_article_criteria) -> None:
     # T1, T2, T4, T7, T8, T10 (eng reads through the child group), T12 (admin, knowledge_admin)
     inst = Instance()
     _kb_art(inst)
@@ -330,7 +323,7 @@ async def test_article_criteria_truth_table(servicenow_connector, apply_article_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("apply_article_criteria", [False, True])
-async def test_truth_table_holds_on_the_incremental_run_too(servicenow_connector, apply_article_criteria) -> None:  # noqa: F811
+async def test_truth_table_holds_on_the_incremental_run_too(servicenow_connector, apply_article_criteria) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst, apply_article_criteria=apply_article_criteria)
@@ -344,7 +337,7 @@ async def test_truth_table_holds_on_the_incremental_run_too(servicenow_connector
 
 
 @pytest.mark.asyncio
-async def test_article_can_read_never_widens_kb_audience(servicenow_connector) -> None:  # noqa: F811
+async def test_article_can_read_never_widens_kb_audience(servicenow_connector) -> None:
     # plain is named by the article's Can Read but is no KB reader: ServiceNow shows it to nobody but PRIV.
     inst = Instance()
     _kb_art(inst)
@@ -356,7 +349,7 @@ async def test_article_can_read_never_widens_kb_audience(servicenow_connector) -
 
 
 @pytest.mark.asyncio
-async def test_restricted_article_keeps_privileged_readers(servicenow_connector) -> None:  # noqa: F811
+async def test_restricted_article_keeps_privileged_readers(servicenow_connector) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst, apply_article_criteria=True)
@@ -368,7 +361,7 @@ async def test_restricted_article_keeps_privileged_readers(servicenow_connector)
 
 
 @pytest.mark.asyncio
-async def test_knowledge_admin_reads_all_kbs_and_knowledge_manager_role_alone_grants_nothing(servicenow_connector) -> None:  # noqa: F811
+async def test_knowledge_admin_reads_all_kbs_and_knowledge_manager_role_alone_grants_nothing(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb-none")  # no criteria (block=true): T6
@@ -385,7 +378,7 @@ async def test_knowledge_admin_reads_all_kbs_and_knowledge_manager_role_alone_gr
 
 
 @pytest.mark.asyncio
-async def test_author_without_criteria_match_has_no_access(servicenow_connector) -> None:  # noqa: F811
+async def test_author_without_criteria_match_has_no_access(servicenow_connector) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst)
@@ -394,7 +387,7 @@ async def test_author_without_criteria_match_has_no_access(servicenow_connector)
 
 
 @pytest.mark.asyncio
-async def test_author_in_cannot_read_has_no_access(servicenow_connector) -> None:  # noqa: F811
+async def test_author_in_cannot_read_has_no_access(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.group("g-all", "author", "hr")
@@ -406,7 +399,7 @@ async def test_author_in_cannot_read_has_no_access(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_kb_manager_can_read_kb(servicenow_connector) -> None:  # noqa: F811
+async def test_kb_manager_can_read_kb(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),), managers="kbmgr,eng")
@@ -429,7 +422,7 @@ def _owned(inst: Instance, **article: str) -> Graph | None:
 
 
 @pytest.mark.asyncio
-async def test_ownership_group_member_and_manager_read_article_not_kb(servicenow_connector) -> None:  # noqa: F811
+async def test_ownership_group_member_and_manager_read_article_not_kb(servicenow_connector) -> None:
     inst = Instance()
     _owned(inst)
     graph = _connector(servicenow_connector, inst)
@@ -439,7 +432,7 @@ async def test_ownership_group_member_and_manager_read_article_not_kb(servicenow
 
 
 @pytest.mark.asyncio
-async def test_ownership_group_with_article_can_read_uses_explicit_path(servicenow_connector) -> None:  # noqa: F811
+async def test_ownership_group_with_article_can_read_uses_explicit_path(servicenow_connector) -> None:
     inst = Instance()
     _owned(inst, can_read_user_criteria="c-nobody")
     inst.crit("c-nobody", user="plain")  # plain is no KB reader: only PRIV and the ownership group read it
@@ -450,7 +443,7 @@ async def test_ownership_group_with_article_can_read_uses_explicit_path(servicen
 
 
 @pytest.mark.asyncio
-async def test_inactive_ownership_group_grants_nothing(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_ownership_group_grants_nothing(servicenow_connector) -> None:
     inst = Instance()
     _owned(inst, og_active="false")
     graph = _connector(servicenow_connector, inst)
@@ -463,7 +456,7 @@ async def test_inactive_ownership_group_grants_nothing(servicenow_connector) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("apply_article_criteria", [False, True])
-async def test_kb_cannot_read_does_not_deny_contributor(servicenow_connector, apply_article_criteria) -> None:  # noqa: F811
+async def test_kb_cannot_read_does_not_deny_contributor(servicenow_connector, apply_article_criteria) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", contribute=(inst.crit("c-contrib", user="contrib"),), cannot=("c-contrib",))
@@ -474,8 +467,8 @@ async def test_kb_cannot_read_does_not_deny_contributor(servicenow_connector, ap
 
 
 @pytest.mark.asyncio
-async def test_kb_cannot_read_denies_reader_named_in_article_can_read(servicenow_connector) -> None:  # noqa: F811
-    # audit-2 leak 2: the article's direct grant must not let a KB-denied contractor in.
+async def test_kb_cannot_read_denies_reader_named_in_article_can_read(servicenow_connector) -> None:
+    # The article's direct grant must not let a KB-denied contractor in.
     inst = Instance()
     _people(inst)
     inst.group("g-emp", "hr", "eng", "plain")
@@ -487,7 +480,7 @@ async def test_kb_cannot_read_denies_reader_named_in_article_can_read(servicenow
 
 
 @pytest.mark.asyncio
-async def test_contributor_in_explicit_path_when_property_false(servicenow_connector) -> None:  # noqa: F811
+async def test_contributor_in_explicit_path_when_property_false(servicenow_connector) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst)
@@ -496,7 +489,7 @@ async def test_contributor_in_explicit_path_when_property_false(servicenow_conne
 
 
 @pytest.mark.asyncio
-async def test_contributor_subject_to_article_cannot_read_when_property_true(servicenow_connector) -> None:  # noqa: F811
+async def test_contributor_subject_to_article_cannot_read_when_property_true(servicenow_connector) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst, apply_article_criteria=True)
@@ -506,7 +499,7 @@ async def test_contributor_subject_to_article_cannot_read_when_property_true(ser
 
 
 @pytest.mark.asyncio
-async def test_cannot_contribute_subtracted(servicenow_connector) -> None:  # noqa: F811
+async def test_cannot_contribute_subtracted(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", contribute=(inst.crit("c-two", user="contrib,eng"),), cannot_contribute=(inst.crit("c-eng", user="eng"),))
@@ -516,11 +509,11 @@ async def test_cannot_contribute_subtracted(servicenow_connector) -> None:  # no
     assert graph.readers("KB-1") == {"contrib"} | PRIV
 
 
-# --- T6, SN-68: a KB with no criteria -------------------------------------------------------------
+# --- T6: a KB with no criteria -------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_block_property_true_keeps_kb_without_criteria_closed(servicenow_connector) -> None:  # noqa: F811
+async def test_block_property_true_keeps_kb_without_criteria_closed(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb")
@@ -531,7 +524,7 @@ async def test_block_property_true_keeps_kb_without_criteria_closed(servicenow_c
 
 
 @pytest.mark.asyncio
-async def test_block_property_false_opens_kb_without_criteria(servicenow_connector) -> None:  # noqa: F811
+async def test_block_property_false_opens_kb_without_criteria(servicenow_connector) -> None:
     # Documented behaviour; not seen on an instance with the property false.
     inst = Instance()
     _people(inst)
@@ -547,7 +540,7 @@ async def test_block_property_false_opens_kb_without_criteria(servicenow_connect
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("value", "blocked"), [("true", True), ("false", False), (None, True), ("", True)])
-async def test_block_property_read(servicenow_connector, value, blocked) -> None:  # noqa: F811
+async def test_block_property_read(servicenow_connector, value, blocked) -> None:
     servicenow_connector._read_instance_property = AsyncMock(return_value=value)
     assert await servicenow_connector._resolve_block_no_criteria() is blocked
     servicenow_connector._read_instance_property = AsyncMock(side_effect=status_error(403))
@@ -591,7 +584,7 @@ def _dim(inst: Instance) -> None:
     ({"user": "plain", "advanced": "true", "script": "answer = true;", "match_all": "true"}, set()),
     ({"advanced": "true", "script": "answer = gs.hasRole('x');"}, set()),  # scripted, no field: unevaluable
 ])
-async def test_criterion_matching(servicenow_connector, criterion, readers) -> None:  # noqa: F811
+async def test_criterion_matching(servicenow_connector, criterion, readers) -> None:
     inst = Instance()
     _dim(inst)
     assert await _readers_of(servicenow_connector, inst, **criterion) == readers
@@ -599,7 +592,7 @@ async def test_criterion_matching(servicenow_connector, criterion, readers) -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dimension", ["department", "location", "company"])
-async def test_org_criterion_excludes_child_entity(servicenow_connector, dimension) -> None:  # noqa: F811
+async def test_org_criterion_excludes_child_entity(servicenow_connector, dimension) -> None:
     inst = Instance()
     _dim(inst)
     value = {"department": "d-eng", "location": "l-pune", "company": "co"}[dimension]
@@ -607,7 +600,7 @@ async def test_org_criterion_excludes_child_entity(servicenow_connector, dimensi
 
 
 @pytest.mark.asyncio
-async def test_criteria_role_matches_inherited_assignment(servicenow_connector) -> None:  # noqa: F811
+async def test_criteria_role_matches_inherited_assignment(servicenow_connector) -> None:
     # T12: a role from a group or a containing role arrives as an inherited sys_user_has_role row.
     inst = Instance()
     _people(inst)
@@ -616,7 +609,7 @@ async def test_criteria_role_matches_inherited_assignment(servicenow_connector) 
 
 
 @pytest.mark.asyncio
-async def test_role_with_two_parents_keeps_both(servicenow_connector) -> None:  # noqa: F811
+async def test_role_with_two_parents_keeps_both(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.role("reader")
@@ -627,7 +620,7 @@ async def test_role_with_two_parents_keeps_both(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_inactive_role_assignment_ignored(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_role_assignment_ignored(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.role("reader", "plain", "hr")
@@ -636,7 +629,7 @@ async def test_inactive_role_assignment_ignored(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_inactive_group_criterion_matches_nobody(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_group_criterion_matches_nobody(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.user("dormant")
@@ -645,7 +638,7 @@ async def test_inactive_group_criterion_matches_nobody(servicenow_connector) -> 
 
 
 @pytest.mark.asyncio
-async def test_inactive_child_group_not_flattened(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_child_group_not_flattened(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.group("g-child", "plain", parent="g-hr", active=False)
@@ -666,7 +659,7 @@ def _defaults_kb(inst: Instance) -> None:
 
 
 @pytest.mark.asyncio
-async def test_default_kb_published_readable_by_plain_user(servicenow_connector) -> None:  # noqa: F811
+async def test_default_kb_published_readable_by_plain_user(servicenow_connector) -> None:
     inst = Instance()
     _defaults_kb(inst)
     graph = _connector(servicenow_connector, inst)
@@ -675,7 +668,7 @@ async def test_default_kb_published_readable_by_plain_user(servicenow_connector)
 
 
 @pytest.mark.asyncio
-async def test_default_kb_open_to_org(servicenow_connector) -> None:  # noqa: F811
+async def test_default_kb_open_to_org(servicenow_connector) -> None:
     inst = Instance()
     _defaults_kb(inst)
     graph = _connector(servicenow_connector, inst)
@@ -685,7 +678,7 @@ async def test_default_kb_open_to_org(servicenow_connector) -> None:  # noqa: F8
 
 
 @pytest.mark.asyncio
-async def test_guest_user_cannot_read_denies_no_synced_user(servicenow_connector) -> None:  # noqa: F811
+async def test_guest_user_cannot_read_denies_no_synced_user(servicenow_connector) -> None:
     inst = Instance()
     _defaults_kb(inst)
     graph = _connector(servicenow_connector, inst)
@@ -694,7 +687,7 @@ async def test_guest_user_cannot_read_denies_no_synced_user(servicenow_connector
 
 
 @pytest.mark.asyncio
-async def test_edited_guest_criterion_handled_normally(servicenow_connector) -> None:  # noqa: F811
+async def test_edited_guest_criterion_handled_normally(servicenow_connector) -> None:
     inst = Instance()
     _defaults_kb(inst)
     inst.criteria[GUEST]["group"] = "g-hr"  # edited: no longer the out-of-box row, and scripted: denies everyone
@@ -704,7 +697,7 @@ async def test_edited_guest_criterion_handled_normally(servicenow_connector) -> 
 
 
 @pytest.mark.asyncio
-async def test_empty_cannot_read_denies_everyone(servicenow_connector) -> None:  # noqa: F811
+async def test_empty_cannot_read_denies_everyone(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("any-user"),), cannot=(inst.crit("all-denied"),))
@@ -715,7 +708,7 @@ async def test_empty_cannot_read_denies_everyone(servicenow_connector) -> None: 
 
 
 @pytest.mark.asyncio
-async def test_any_user_in_resolved_path_is_all_users(servicenow_connector) -> None:  # noqa: F811
+async def test_any_user_in_resolved_path_is_all_users(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("any-user"),), cannot=(inst.crit("c-hr", user="hr"),))
@@ -726,7 +719,7 @@ async def test_any_user_in_resolved_path_is_all_users(servicenow_connector) -> N
 
 
 @pytest.mark.asyncio
-async def test_match_all_deny_with_script_denies_field_matches_only(servicenow_connector) -> None:  # noqa: F811
+async def test_match_all_deny_with_script_denies_field_matches_only(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("any-user"),),
@@ -741,15 +734,15 @@ async def test_match_all_deny_with_script_denies_field_matches_only(servicenow_c
     (TEMPLATE, False), ("", False), (None, False), ("  // only a comment\n", False),
     ("answer = true;", True), ("/* x */ answer = user_id == 'a';", True), ("var a = 1;", True),
 ])
-def test_has_script(servicenow_connector, script, scripted) -> None:  # noqa: F811
+def test_has_script(servicenow_connector, script, scripted) -> None:
     assert servicenow_connector._has_script(SimpleNamespace(script=script)) is scripted
 
 
-# --- audit-2 leaks and wrong removals, across full and incremental runs ----------------------------
+# --- leaks and wrong removals, across full and incremental runs ----------------------------
 
 
 @pytest.mark.asyncio
-async def test_article_restricted_inside_open_kb(servicenow_connector) -> None:  # noqa: F811
+async def test_article_restricted_inside_open_kb(servicenow_connector) -> None:
     # leak 1: KB open to Employees, article Can Read = HR: only HR members who are Employees read it.
     inst = Instance()
     _people(inst)
@@ -762,7 +755,7 @@ async def test_article_restricted_inside_open_kb(servicenow_connector) -> None: 
 
 
 @pytest.mark.asyncio
-async def test_department_move_removes_old_org_membership(servicenow_connector) -> None:  # noqa: F811
+async def test_department_move_removes_old_org_membership(servicenow_connector) -> None:
     # leak 3: Alice moves from HR to Sales; the incremental run takes HR away.
     inst = Instance()
     _people(inst)
@@ -783,7 +776,7 @@ async def test_department_move_removes_old_org_membership(servicenow_connector) 
 
 
 @pytest.mark.asyncio
-async def test_removed_article_criterion_removes_grant_on_incremental(servicenow_connector) -> None:  # noqa: F811
+async def test_removed_article_criterion_removes_grant_on_incremental(servicenow_connector) -> None:
     # leak 4: Can Read changes from Finance to Finance-Leads; Finance loses it on the next run.
     inst = Instance()
     _people(inst)
@@ -804,7 +797,7 @@ async def test_removed_article_criterion_removes_grant_on_incremental(servicenow
 
 
 @pytest.mark.asyncio
-async def test_moved_article_drops_old_direct_grants(servicenow_connector) -> None:  # noqa: F811
+async def test_moved_article_drops_old_direct_grants(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.user("ogmember")
@@ -823,7 +816,7 @@ async def test_moved_article_drops_old_direct_grants(servicenow_connector) -> No
 
 
 @pytest.mark.asyncio
-async def test_match_all_user_removed_from_group_loses_grant_next_run(servicenow_connector) -> None:  # noqa: F811
+async def test_match_all_user_removed_from_group_loses_grant_next_run(servicenow_connector) -> None:
     # leak 5: Carol is resolved by Match All (group AND location); she leaves the group, the article does not change.
     inst = Instance()
     _dim(inst)
@@ -843,7 +836,7 @@ async def test_match_all_user_removed_from_group_loses_grant_next_run(servicenow
 
 
 @pytest.mark.asyncio
-async def test_criteria_row_edit_reevaluates_article(servicenow_connector) -> None:  # noqa: F811
+async def test_criteria_row_edit_reevaluates_article(servicenow_connector) -> None:
     # A user_criteria row edit changes no article row: the article is re-read anyway.
     inst = Instance()
     _people(inst)
@@ -861,7 +854,7 @@ async def test_criteria_row_edit_reevaluates_article(servicenow_connector) -> No
 
 
 @pytest.mark.asyncio
-async def test_deactivated_user_loses_group_access_and_reactivated_regains(servicenow_connector) -> None:  # noqa: F811
+async def test_deactivated_user_loses_group_access_and_reactivated_regains(servicenow_connector) -> None:
     # leak 7: Dave is deactivated; his SSO login works, his ServiceNow access is gone.
     inst = Instance()
     _people(inst)
@@ -884,7 +877,7 @@ async def test_deactivated_user_loses_group_access_and_reactivated_regains(servi
 
 
 @pytest.mark.asyncio
-async def test_users_deactivated_before_the_upgrade_lose_access_on_the_first_run(servicenow_connector) -> None:  # noqa: F811
+async def test_users_deactivated_before_the_upgrade_lose_access_on_the_first_run(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.users["hr"]["active"] = "false"
@@ -899,7 +892,7 @@ async def test_users_deactivated_before_the_upgrade_lose_access_on_the_first_run
 
 
 @pytest.mark.asyncio
-async def test_missing_deny_row_fails_closed(servicenow_connector) -> None:  # noqa: F811
+async def test_missing_deny_row_fails_closed(servicenow_connector) -> None:
     # leak 8: a Cannot Read row hidden from the integration user is not "no deny".
     inst = Instance()
     _people(inst)
@@ -914,7 +907,7 @@ async def test_missing_deny_row_fails_closed(servicenow_connector) -> None:  # n
 
 
 @pytest.mark.asyncio
-async def test_deleted_deny_row_ignored(servicenow_connector) -> None:  # noqa: F811
+async def test_deleted_deny_row_ignored(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
@@ -926,7 +919,7 @@ async def test_deleted_deny_row_ignored(servicenow_connector) -> None:  # noqa: 
 
 
 @pytest.mark.asyncio
-async def test_partly_hidden_deny_members_fail_closed(servicenow_connector) -> None:  # noqa: F811
+async def test_partly_hidden_deny_members_fail_closed(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.group("g-ctr", "hr", "eng")
@@ -941,7 +934,7 @@ async def test_partly_hidden_deny_members_fail_closed(servicenow_connector) -> N
 
 
 @pytest.mark.asyncio
-async def test_deleted_group_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_deleted_group_removed(servicenow_connector) -> None:
     # leak 11: a deleted group keeps no node and no members.
     inst = Instance()
     _people(inst)
@@ -960,7 +953,7 @@ async def test_deleted_group_removed(servicenow_connector) -> None:  # noqa: F81
 
 
 @pytest.mark.asyncio
-async def test_inactive_group_grants_nothing_and_reactivated_group_regains_members(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_group_grants_nothing_and_reactivated_group_regains_members(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
@@ -984,7 +977,7 @@ async def test_inactive_group_grants_nothing_and_reactivated_group_regains_membe
 @pytest.mark.parametrize("table", [
     "sys_user_grmember", "sys_user_has_role", "sys_user_group", "sys_user_role", "kb_uc_can_read_mtom", "user_criteria",
 ])
-async def test_all_hidden_access_table_is_unreadable_not_empty(servicenow_connector, table) -> None:  # noqa: F811
+async def test_all_hidden_access_table_is_unreadable_not_empty(servicenow_connector, table) -> None:
     # The instance answers 200 with X-Total-Count > 0 and no rows: nothing may be written as "none".
     inst = Instance()
     _kb_art(inst)
@@ -1005,7 +998,7 @@ async def test_all_hidden_access_table_is_unreadable_not_empty(servicenow_connec
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("table", ["kb_uc_cannot_read_mtom", "sys_user_has_role", "user_criteria", "sys_user_grmember"])
-async def test_403_on_access_table_stops_the_run_naming_it(servicenow_connector, table) -> None:  # noqa: F811
+async def test_403_on_access_table_stops_the_run_naming_it(servicenow_connector, table) -> None:
     inst = Instance()
     _kb_art(inst)
     graph = _connector(servicenow_connector, inst)
@@ -1019,7 +1012,7 @@ async def test_403_on_access_table_stops_the_run_naming_it(servicenow_connector,
 
 
 @pytest.mark.asyncio
-async def test_hidden_kb_in_partial_listing_is_kept_and_deleted_one_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_hidden_kb_in_partial_listing_is_kept_and_deleted_one_removed(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     for kb in ("kb-a", "kb-b", "kb-c"):
@@ -1036,7 +1029,7 @@ async def test_hidden_kb_in_partial_listing_is_kept_and_deleted_one_removed(serv
 
 
 @pytest.mark.asyncio
-async def test_reconcile_with_partial_listing_keeps_hidden_article(servicenow_connector) -> None:  # noqa: F811
+async def test_reconcile_with_partial_listing_keeps_hidden_article(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb")
@@ -1057,7 +1050,7 @@ async def test_reconcile_with_partial_listing_keeps_hidden_article(servicenow_co
 
 
 @pytest.mark.asyncio
-async def test_partially_hidden_members_under_share_only(servicenow_connector) -> None:  # noqa: F811
+async def test_partially_hidden_members_under_share_only(servicenow_connector) -> None:
     # Some membership rows hidden (some shown): the visible ones are written, nothing is denied wrongly.
     inst = Instance()
     _people(inst)

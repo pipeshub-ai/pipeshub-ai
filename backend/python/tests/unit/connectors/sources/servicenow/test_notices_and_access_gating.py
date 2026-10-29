@@ -1,29 +1,20 @@
 """ServiceNow tells people what went wrong: notices for stops and skipped items, a connection test
 that names what the integration user cannot read, a checked instance URL, logs without content,
-the access re-read pass only when access changed (SN-71), rendered wiki bodies (SN-72), the
-out-of-box "Has a role" criterion (SN-73) and a least-privilege integration user (SN-74).
+the access re-read pass only when access changed, rendered wiki bodies, the
+out-of-box "Has a role" criterion and a least-privilege integration user.
 """
 
 import logging
 import time
-from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 from servicenow_fakes import FakeServiceNow, block_groups, status_error
-from test_servicenow_batch_b import Instance, _connector, _people, _sync
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
-)
+from test_permissions import Instance, _connector, _people, _sync
 
 from app.connectors.core.base.connector.connector_service import (
-    BaseConnector,
     ConnectorInitError,
 )
 from app.connectors.sources.servicenow.servicenow import connector as connector_module
@@ -49,16 +40,6 @@ NAME = "IT Knowledge"
 ME = "javascript:gs.getUserID()"  # the fake has no script: the current user is the row with this sys_id
 
 
-@pytest.fixture(autouse=True)
-def _fresh_notice_state() -> Iterator[None]:
-    # Both are process-wide, as on a server.
-    BaseConnector._notification_cache.clear()
-    ServiceNowConnector._persistent_noticed.clear()
-    yield
-    BaseConnector._notification_cache.clear()
-    ServiceNowConnector._persistent_noticed.clear()
-
-
 def _notices(sc) -> list[dict]:
     if not hasattr(sc, "_published"):
         sc._published = []
@@ -76,11 +57,11 @@ def _failing_run(sc, error: BaseException) -> None:
     sc._run_sync = AsyncMock(side_effect=error)
 
 
-# --- SN-56: notices ----------------------------------------------------------------------------
+# --- notices -----------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_auth_error_notifies_once_with_display_name(servicenow_connector) -> None:  # noqa: F811
+async def test_auth_error_notifies_once_with_display_name(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     _failing_run(sc, ServiceNowAuthError("User is not authenticated: Required to provide Auth information"))
@@ -100,7 +81,7 @@ async def test_auth_error_notifies_once_with_display_name(servicenow_connector) 
 
 
 @pytest.mark.asyncio
-async def test_repeat_within_backoff_suppressed_and_other_errors_still_sent(servicenow_connector) -> None:  # noqa: F811
+async def test_repeat_within_backoff_suppressed_and_other_errors_still_sent(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     _failing_run(sc, RuntimeError("boom"))
@@ -116,7 +97,7 @@ async def test_repeat_within_backoff_suppressed_and_other_errors_still_sent(serv
 
 
 @pytest.mark.asyncio
-async def test_access_error_names_the_table(servicenow_connector) -> None:  # noqa: F811
+async def test_access_error_names_the_table(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     _failing_run(sc, ServiceNowAccessError("kb_uc_cannot_read_mtom", "User Not Authorized"))
@@ -130,7 +111,7 @@ async def test_access_error_names_the_table(servicenow_connector) -> None:  # no
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:  # noqa: F811
+async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     reset = (int(time.time()) // 3600 + 1) * 3600
@@ -145,7 +126,7 @@ async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_failure_notice_carries_no_secret(servicenow_connector) -> None:  # noqa: F811
+async def test_failure_notice_carries_no_secret(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     _failing_run(sc, RuntimeError("GET https://x.service-now.com/api?access_token=s3cr3t failed"))
@@ -155,7 +136,7 @@ async def test_failure_notice_carries_no_secret(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_summary_lists_two_skipped_kbs_once(servicenow_connector) -> None:  # noqa: F811
+async def test_summary_lists_two_skipped_kbs_once(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
 
@@ -174,7 +155,7 @@ async def test_summary_lists_two_skipped_kbs_once(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
-async def test_clean_run_sends_nothing(servicenow_connector) -> None:  # noqa: F811
+async def test_clean_run_sends_nothing(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     sc._run_sync = AsyncMock()
@@ -183,7 +164,7 @@ async def test_clean_run_sends_nothing(servicenow_connector) -> None:  # noqa: F
 
 
 @pytest.mark.asyncio
-async def test_kb_whose_criteria_fail_is_named_in_the_summary(servicenow_connector) -> None:  # noqa: F811
+async def test_kb_whose_criteria_fail_is_named_in_the_summary(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb-ok", can=(inst.crit("c-hr", group="g-hr"),))
@@ -202,7 +183,7 @@ async def test_kb_whose_criteria_fail_is_named_in_the_summary(servicenow_connect
 
 
 @pytest.mark.asyncio
-async def test_scripted_criteria_counted_in_summary_once(servicenow_connector) -> None:  # noqa: F811
+async def test_scripted_criteria_counted_in_summary_once(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-script", script="answer = gs.getUser().isMemberOf('x');"),
@@ -219,7 +200,7 @@ async def test_scripted_criteria_counted_in_summary_once(servicenow_connector) -
 
 
 @pytest.mark.asyncio
-async def test_hidden_criteria_and_users_without_email_reported(servicenow_connector) -> None:  # noqa: F811
+async def test_hidden_criteria_and_users_without_email_reported(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.user("noemail", email=False)
@@ -240,7 +221,7 @@ async def test_hidden_criteria_and_users_without_email_reported(servicenow_conne
 
 
 @pytest.mark.asyncio
-async def test_article_nobody_can_read_reported(servicenow_connector) -> None:  # noqa: F811
+async def test_article_nobody_can_read_reported(servicenow_connector) -> None:
     inst = Instance()
     inst.user("hr")
     inst.group("g-hr", "hr")
@@ -258,7 +239,7 @@ async def test_article_nobody_can_read_reported(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_failed_articles_counted_in_summary(servicenow_connector) -> None:  # noqa: F811
+async def test_failed_articles_counted_in_summary(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
@@ -282,7 +263,7 @@ async def test_failed_articles_counted_in_summary(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_init_failure_notifies_the_reason(servicenow_connector) -> None:  # noqa: F811
+async def test_background_init_failure_notifies_the_reason(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
     await sc.on_background_init_failed(ConnectorInitError("The connector is not authorized yet."))
@@ -293,7 +274,7 @@ async def test_background_init_failure_notifies_the_reason(servicenow_connector)
     assert "s3cr3t" not in sent[1]["message"]
 
 
-# --- SN-57 / SN-74: the connection test --------------------------------------------------------
+# --- the connection test -----------------------------------------------------------------------
 
 
 def _readable_instance(**overrides: list) -> FakeServiceNow:
@@ -312,7 +293,7 @@ def _wire(sc, fake: FakeServiceNow) -> None:
 
 
 @pytest.mark.asyncio
-async def test_connection_test_reads_one_row_of_every_required_table(servicenow_connector) -> None:  # noqa: F811
+async def test_connection_test_reads_one_row_of_every_required_table(servicenow_connector) -> None:
     fake = _readable_instance()
     _wire(servicenow_connector, fake)
     assert await servicenow_connector.test_connection_and_access() is True
@@ -322,7 +303,7 @@ async def test_connection_test_reads_one_row_of_every_required_table(servicenow_
 
 
 @pytest.mark.asyncio
-async def test_403_on_cannot_read_mtom_names_table(servicenow_connector) -> None:  # noqa: F811
+async def test_403_on_cannot_read_mtom_names_table(servicenow_connector) -> None:
     fake = _readable_instance()
     fake.fail = lambda table, q: status_error(403, "User Not Authorized") if table in (
         "kb_uc_cannot_read_mtom", "sys_user_grmember") else None
@@ -336,7 +317,7 @@ async def test_403_on_cannot_read_mtom_names_table(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_403_on_optional_tables_does_not_fail(servicenow_connector) -> None:  # noqa: F811
+async def test_403_on_optional_tables_does_not_fail(servicenow_connector) -> None:
     fake = _readable_instance()
     fake.fail = lambda table, q: status_error(403) if table in (
         "sys_user_role_contains", "sys_properties", "sp_portal", "sys_audit_delete") else None
@@ -345,7 +326,7 @@ async def test_403_on_optional_tables_does_not_fail(servicenow_connector) -> Non
 
 
 @pytest.mark.asyncio
-async def test_401_message_has_vendor_text(servicenow_connector) -> None:  # noqa: F811
+async def test_401_message_has_vendor_text(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire(sc, _readable_instance())
     sc._with_token_retry = AsyncMock(side_effect=ServiceNowAuthError("User is not authenticated"))
@@ -366,7 +347,7 @@ async def test_401_message_has_vendor_text(servicenow_connector) -> None:  # noq
     (ServiceNowAPIError(503, "Service Unavailable"),
      "ServiceNow at acme.service-now.com answered HTTP 503: Service Unavailable. Try again later."),
 ])
-async def test_connection_failures_say_why(servicenow_connector, error, message) -> None:  # noqa: F811
+async def test_connection_failures_say_why(servicenow_connector, error, message) -> None:
     fake = _readable_instance()
     fake.fail = lambda table, q: error
     _wire(servicenow_connector, fake)
@@ -376,7 +357,7 @@ async def test_connection_failures_say_why(servicenow_connector, error, message)
 
 
 @pytest.mark.asyncio
-async def test_non_admin_warns(servicenow_connector) -> None:  # noqa: F811
+async def test_non_admin_warns(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire(sc, _readable_instance(sys_user_has_role=[
         {"sys_id": "h1", "user": ME, "role.name": "knowledge_admin", "state": "active", "sys_updated_on": T0}]))
@@ -394,7 +375,7 @@ async def test_non_admin_warns(servicenow_connector) -> None:  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_hidden_properties_and_portal_warn_and_grant_less(servicenow_connector) -> None:  # noqa: F811
+async def test_hidden_properties_and_portal_warn_and_grant_less(servicenow_connector) -> None:
     sc = servicenow_connector
     hidden = {"_acl_hidden": True, "sys_updated_on": T0}
     fake = FakeServiceNow({
@@ -413,7 +394,7 @@ async def test_hidden_properties_and_portal_warn_and_grant_less(servicenow_conne
 
 
 @pytest.mark.asyncio
-async def test_role_contains_403_is_read_as_empty(servicenow_connector) -> None:  # noqa: F811
+async def test_role_contains_403_is_read_as_empty(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire(sc, FakeServiceNow({}, fail=lambda table, q: status_error(403) if table == "sys_user_role_contains" else None))
     assert await sc._fetch_role_hierarchy() == []
@@ -421,7 +402,7 @@ async def test_role_contains_403_is_read_as_empty(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
-async def test_least_privileged_user_syncs_without_role_contains(servicenow_connector) -> None:  # noqa: F811
+async def test_least_privileged_user_syncs_without_role_contains(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
@@ -436,7 +417,7 @@ async def test_least_privileged_user_syncs_without_role_contains(servicenow_conn
     assert sc.full_sync_coverage().complete is True
 
 
-# --- SN-58: the instance URL ---------------------------------------------------------------------
+# --- the instance URL ----------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("url", "message"), [
@@ -479,7 +460,7 @@ def test_auth_config_problems_refuses_a_bad_url() -> None:
 
 
 @pytest.mark.asyncio
-async def test_init_rejects_a_token_url_on_another_host(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_init_rejects_a_token_url_on_another_host(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     sc._fetch_oauth_config_by_id = AsyncMock(return_value={
         "config": {"instanceUrl": "https://acme.service-now.com", "clientId": "id", "clientSecret": "secret",
@@ -491,17 +472,17 @@ async def test_init_rejects_a_token_url_on_another_host(servicenow_connector, mo
     assert sc.servicenow_client is None  # no client, so no request was sent
 
 
-# --- SN-59: logs -----------------------------------------------------------------------------------
+# --- logs ------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_webhook_is_a_no_op_that_logs_nothing(servicenow_connector, caplog) -> None:  # noqa: F811
+async def test_webhook_is_a_no_op_that_logs_nothing(servicenow_connector, caplog) -> None:
     caplog.set_level(logging.DEBUG)
     assert await servicenow_connector.handle_webhook_notification({"body": "SECRET-BODY"}) is None
     assert "SECRET-BODY" not in caplog.text
 
 
-def test_transform_failure_does_not_log_body(servicenow_connector, caplog) -> None:  # noqa: F811
+def test_transform_failure_does_not_log_body(servicenow_connector, caplog) -> None:
     sc = servicenow_connector
     caplog.set_level(logging.DEBUG)
     sc._transform_to_category_record_group(TableAPIRecord(sys_id="c1", label="", value="SECRET-BODY"))
@@ -522,7 +503,7 @@ async def test_expected_401_and_403_not_logged_at_error(status, caplog) -> None:
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-# --- SN-71: the access re-read pass runs only when access may have changed ---------------------------
+# --- the access re-read pass runs only when access may have changed ----------------------------------
 
 
 def _criteria_model(sc) -> tuple[Instance, object]:
@@ -547,7 +528,7 @@ def _reread(fake: FakeServiceNow) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_no_change_no_reread_and_kb_criteria_read_once(servicenow_connector) -> None:  # noqa: F811
+async def test_no_change_no_reread_and_kb_criteria_read_once(servicenow_connector) -> None:
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)
     await _sync(sc, inst)  # full: stores what the access tables look like
@@ -565,7 +546,7 @@ async def test_no_change_no_reread_and_kb_criteria_read_once(servicenow_connecto
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["criterion", "membership_removed", "member_added", "kb_owner", "property"])
-async def test_each_access_change_rereads(servicenow_connector, change) -> None:  # noqa: F811
+async def test_each_access_change_rereads(servicenow_connector, change) -> None:
     sc = servicenow_connector
     inst, graph = _criteria_model(sc)
     await _sync(sc, inst)
@@ -591,7 +572,7 @@ async def test_each_access_change_rereads(servicenow_connector, change) -> None:
 
 
 @pytest.mark.asyncio
-async def test_daily_backstop_rereads(servicenow_connector) -> None:  # noqa: F811
+async def test_daily_backstop_rereads(servicenow_connector) -> None:
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)
     await _sync(sc, inst)
@@ -607,7 +588,7 @@ async def test_daily_backstop_rereads(servicenow_connector) -> None:  # noqa: F8
 
 
 @pytest.mark.asyncio
-async def test_access_fingerprint_is_storable_in_a_graph_store(servicenow_connector) -> None:  # noqa: F811
+async def test_access_fingerprint_is_storable_in_a_graph_store(servicenow_connector) -> None:
     # Neo4j rejects a map as a property value (seen live: Neo.ClientError.Statement.TypeError)
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)
@@ -617,7 +598,7 @@ async def test_access_fingerprint_is_storable_in_a_graph_store(servicenow_connec
 
 
 @pytest.mark.asyncio
-async def test_failed_run_keeps_the_pass_due(servicenow_connector) -> None:  # noqa: F811
+async def test_failed_run_keeps_the_pass_due(servicenow_connector) -> None:
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)
     await _sync(sc, inst)
@@ -641,8 +622,8 @@ async def test_failed_run_keeps_the_pass_due(servicenow_connector) -> None:  # n
 
 
 @pytest.mark.asyncio
-async def test_no_change_incremental_call_count(servicenow_connector) -> None:  # noqa: F811
-    """The model behind the SN-71 numbers: 5 KBs, 10 articles (5 with Cannot Read)."""
+async def test_no_change_incremental_call_count(servicenow_connector) -> None:
+    """The model behind the call counts: 5 KBs, 10 articles (5 with Cannot Read)."""
     sc = servicenow_connector
     inst, _ = _criteria_model(sc)
     await _sync(sc, inst)
@@ -660,7 +641,7 @@ async def test_no_change_incremental_call_count(servicenow_connector) -> None:  
     assert gated < with_pass
 
 
-# --- SN-72: wiki articles stream their rendered body ------------------------------------------------
+# --- wiki articles stream their rendered body -------------------------------------------------------
 
 
 class _RenderingFake(FakeServiceNow):
@@ -675,7 +656,7 @@ class _RenderingFake(FakeServiceNow):
 
 
 @pytest.mark.asyncio
-async def test_wiki_article_streams_rendered_markdown(servicenow_connector) -> None:  # noqa: F811
+async def test_wiki_article_streams_rendered_markdown(servicenow_connector) -> None:
     sc = servicenow_connector
     fake = _RenderingFake({"kb_knowledge": [{
         "sys_id": "w1", "number": "KB0000009", "short_description": "Wiki", "article_type": "wiki",
@@ -691,7 +672,7 @@ async def test_wiki_article_streams_rendered_markdown(servicenow_connector) -> N
     assert any(p.get("sysparm_display_value") == "true" for p in fake.params)
 
 
-# --- SN-73: the out-of-box "Has a role" criterion -------------------------------------------------
+# --- the out-of-box "Has a role" criterion --------------------------------------------------------
 
 
 def _has_role_model(sc, *, script: str = ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT,
@@ -715,7 +696,7 @@ def _has_role_model(sc, *, script: str = ServiceNowDefaults.HAS_ROLE_CRITERIA_SC
 
 
 @pytest.mark.asyncio
-async def test_has_role_exact_script_grants_role_holders(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_exact_script_grants_role_holders(servicenow_connector) -> None:
     inst, graph = _has_role_model(servicenow_connector)
     await _sync(servicenow_connector, inst)
     # Contributors read every article of the KB: here everyone holding a role reads KB1.
@@ -724,7 +705,7 @@ async def test_has_role_exact_script_grants_role_holders(servicenow_connector) -
 
 
 @pytest.mark.asyncio
-async def test_has_role_edited_script_grants_nobody(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_edited_script_grants_nobody(servicenow_connector) -> None:
     edited = ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT.replace(">=1", ">=0")
     inst, graph = _has_role_model(servicenow_connector, script=edited)
     await _sync(servicenow_connector, inst)
@@ -732,7 +713,7 @@ async def test_has_role_edited_script_grants_nobody(servicenow_connector) -> Non
 
 
 @pytest.mark.asyncio
-async def test_has_role_whitespace_is_normalised(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_whitespace_is_normalised(servicenow_connector) -> None:
     spaced = ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT.replace("\n", "\r\n  ")
     inst, graph = _has_role_model(servicenow_connector, script=spaced)
     await _sync(servicenow_connector, inst)
@@ -740,7 +721,7 @@ async def test_has_role_whitespace_is_normalised(servicenow_connector) -> None: 
 
 
 @pytest.mark.asyncio
-async def test_has_role_with_explicit_roles_plugin_needs_snc_internal_and_two_roles(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_with_explicit_roles_plugin_needs_snc_internal_and_two_roles(servicenow_connector) -> None:
     inst, graph = _has_role_model(servicenow_connector, plugin=[
         {"sys_id": "p", "id": "com.glide.explicit_roles", "active": "active", "sys_updated_on": T0}])
     inst.role("knowledge", "plain")  # plain: snc_internal + knowledge; contrib: snc_internal only
@@ -751,7 +732,7 @@ async def test_has_role_with_explicit_roles_plugin_needs_snc_internal_and_two_ro
 
 
 @pytest.mark.asyncio
-async def test_has_role_plugin_unreadable_grants_nobody(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_plugin_unreadable_grants_nobody(servicenow_connector) -> None:
     inst, graph = _has_role_model(servicenow_connector, plugin=[
         {"sys_id": "p", "id": "com.glide.explicit_roles", "active": "active", "sys_updated_on": T0, "_acl_hidden": True}])
     await _sync(servicenow_connector, inst)
@@ -759,7 +740,7 @@ async def test_has_role_plugin_unreadable_grants_nobody(servicenow_connector) ->
 
 
 @pytest.mark.asyncio
-async def test_has_role_contributors_get_write_on_the_kb(servicenow_connector) -> None:  # noqa: F811
+async def test_has_role_contributors_get_write_on_the_kb(servicenow_connector) -> None:
     sc = servicenow_connector
     inst, graph = _has_role_model(sc)
     await _sync(sc, inst)
@@ -767,11 +748,11 @@ async def test_has_role_contributors_get_write_on_the_kb(servicenow_connector) -
     assert "knowledge@x.com" in writers and "hr@x.com" not in writers
 
 
-# --- dev stack findings: no deletes of groups never stored; inactive groups are not written ----------
+# --- no deletes of groups never stored; inactive groups are not written ----------
 
 
 @pytest.mark.asyncio
-async def test_first_sync_deletes_no_kb_that_was_never_stored(servicenow_connector) -> None:  # noqa: F811
+async def test_first_sync_deletes_no_kb_that_was_never_stored(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
@@ -787,7 +768,7 @@ async def test_first_sync_deletes_no_kb_that_was_never_stored(servicenow_connect
 
 
 @pytest.mark.asyncio
-async def test_inactive_group_not_written_and_stored_one_removed(servicenow_connector) -> None:  # noqa: F811
+async def test_inactive_group_not_written_and_stored_one_removed(servicenow_connector) -> None:
     inst = Instance()
     _people(inst)
     inst.group("g-dormant", "hr", active=False)

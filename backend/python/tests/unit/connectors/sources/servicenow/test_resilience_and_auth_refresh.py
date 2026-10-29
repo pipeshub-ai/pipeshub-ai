@@ -12,18 +12,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from servicenow_fakes import (
+    INSTANCE,
+    T0,
     FakeServiceNow,
+    article_row,
+    attachment_row,
     file_response,
     migrated_sync_point,
     status_error,
-)
-from test_servicenow_batch_a import INSTANCE, T0, _article, _attachment, _wire, _written
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
+    wire_listing,
+    written_ids,
 )
 
 from app.config.constants.arangodb import Connectors
@@ -112,10 +110,10 @@ async def _list(ds: ServiceNowDataSource, table: str = "kb_knowledge") -> TableA
     return await ds.get_now_table_tableName(tableName=table, sysparm_query="active=true", sysparm_limit="100")
 
 
-# --- SN-12: retries of 429, 5xx and timeouts -------------------------------------------------
+# --- retries of 429, 5xx and timeouts --------------------------------------------------------
 
 
-def test_connector_declares_resilience(servicenow_connector) -> None:  # noqa: F811
+def test_connector_declares_resilience(servicenow_connector) -> None:
     policy = servicenow_connector.resilience
 
     assert isinstance(policy, ServiceNowRateLimitPolicy)
@@ -150,7 +148,7 @@ async def test_timeout_retried(monkeypatch, slept) -> None:
     assert len(sent) == 2
 
 
-# --- SN-13: an hourly rate limit stops the run ------------------------------------------------
+# --- an hourly rate limit stops the run -------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -184,11 +182,11 @@ async def test_reset_header_used_when_retry_after_missing(monkeypatch, slept) ->
 
 
 @pytest.mark.asyncio
-async def test_retry_after_over_cap_stops_without_advancing_checkpoint(servicenow_connector, monkeypatch, slept) -> None:  # noqa: F811
+async def test_retry_after_over_cap_stops_without_advancing_checkpoint(servicenow_connector, monkeypatch, slept) -> None:
     sc = servicenow_connector
     # a page of articles, then the page's attachment listing hits the hourly limit
-    ds, sent = _datasource([_ok([_article(1, "2024-06-01 10:00:00")]), _rate_limited()], monkeypatch, _policy())
-    _wire(sc, FakeServiceNow(), checkpoint=T0)
+    ds, sent = _datasource([_ok([article_row(1, "2024-06-01 10:00:00")]), _rate_limited()], monkeypatch, _policy())
+    wire_listing(sc, FakeServiceNow(), checkpoint=T0)
     sc._get_fresh_datasource = AsyncMock(return_value=ds)
 
     with pytest.raises(ServiceNowRateLimited):
@@ -200,13 +198,13 @@ async def test_retry_after_over_cap_stops_without_advancing_checkpoint(serviceno
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_inside_article_grants_stops_the_run(servicenow_connector) -> None:  # noqa: F811
+async def test_rate_limit_inside_article_grants_stops_the_run(servicenow_connector) -> None:
     # The criteria read wraps errors in _CriteriaUnreadable; the stop must still end the run, not one article.
     fake = FakeServiceNow(
-        {"kb_knowledge": [_article(1, can_read_user_criteria="uc1"), _article(2)]},
+        {"kb_knowledge": [article_row(1, can_read_user_criteria="uc1"), article_row(2)]},
         fail=lambda table, q: ServiceNowRateLimited(time.time() + 600, RULE) if table == "user_criteria" else None,
     )
-    _wire(servicenow_connector, fake)
+    wire_listing(servicenow_connector, fake)
 
     with pytest.raises(ServiceNowRateLimited):
         await servicenow_connector._sync_articles()
@@ -215,7 +213,7 @@ async def test_rate_limit_inside_article_grants_stops_the_run(servicenow_connect
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_in_kb_criteria_stops_the_run(servicenow_connector) -> None:  # noqa: F811
+async def test_rate_limit_in_kb_criteria_stops_the_run(servicenow_connector) -> None:
     fake = FakeServiceNow(
         {"kb_knowledge_base": [{"sys_id": "kb1", "title": "KB", "sys_updated_on": T0}],
          "kb_uc_can_read_mtom": [{"sys_id": "m1", "kb_knowledge_base": "kb1", "user_criteria": "uc1", "sys_updated_on": T0}]},
@@ -230,7 +228,7 @@ async def test_rate_limit_in_kb_criteria_stops_the_run(servicenow_connector) -> 
     servicenow_connector.data_entities_processor.note_kept_record_group.assert_not_awaited()
 
 
-# --- SN-14: a 401 refreshes the token once ---------------------------------------------------
+# --- a 401 refreshes the token once ----------------------------------------------------------
 
 
 def _token_wiring(sc, monkeypatch, *, always_401: bool = False) -> tuple[FakeServiceNow, AsyncMock, dict]:
@@ -249,7 +247,7 @@ def _token_wiring(sc, monkeypatch, *, always_401: bool = False) -> tuple[FakeSer
     monkeypatch.setattr(connector_module.startup_service, "get_token_refresh_service",
                         lambda: SimpleNamespace(refresh_now=refresh_now))
     fake = FakeServiceNow(
-        {"kb_knowledge": [_article(1)]},
+        {"kb_knowledge": [article_row(1)]},
         fail=lambda table, q: status_error(401, "User is not authenticated")
         if always_401 or client.access_token == "old" else None,
     )
@@ -260,7 +258,7 @@ def _token_wiring(sc, monkeypatch, *, always_401: bool = False) -> tuple[FakeSer
 
 
 @pytest.mark.asyncio
-async def test_401_refreshes_once_and_continues(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_401_refreshes_once_and_continues(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     fake, refresh_now, _ = _token_wiring(sc, monkeypatch)
 
@@ -269,11 +267,11 @@ async def test_401_refreshes_once_and_continues(servicenow_connector, monkeypatc
     refresh_now.assert_awaited_once_with("sn-conn-1", "SERVICENOW", "rt-old")  # the refresh token held before the call
     assert sc.servicenow_client.access_token == "new"
     assert sc.servicenow_client.headers["Authorization"] == "Bearer new"
-    assert _written(sc) == ["KB0000001"]
+    assert written_ids(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio
-async def test_401_adopts_a_token_stored_meanwhile(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_401_adopts_a_token_stored_meanwhile(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     fake, refresh_now, creds = _token_wiring(sc, monkeypatch)
     real_fail = fake.fail
@@ -290,11 +288,11 @@ async def test_401_adopts_a_token_stored_meanwhile(servicenow_connector, monkeyp
 
     refresh_now.assert_not_awaited()
     assert sc.servicenow_client.access_token == "rotated"
-    assert _written(sc) == ["KB0000001"]
+    assert written_ids(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio
-async def test_second_401_raises_auth_error_and_unlinks_nothing(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_second_401_raises_auth_error_and_unlinks_nothing(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     fake, refresh_now, _ = _token_wiring(sc, monkeypatch, always_401=True)
 
@@ -307,7 +305,7 @@ async def test_second_401_raises_auth_error_and_unlinks_nothing(servicenow_conne
 
 
 @pytest.mark.asyncio
-async def test_401_in_the_attachment_listing_is_not_a_failed_page(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_401_in_the_attachment_listing_is_not_a_failed_page(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     fake, _, _ = _token_wiring(sc, monkeypatch)
     fake.fail = lambda table, q: status_error(401) if table == "sys_attachment" else None
@@ -317,7 +315,7 @@ async def test_401_in_the_attachment_listing_is_not_a_failed_page(servicenow_con
 
 
 @pytest.mark.asyncio
-async def test_stream_401_refreshes_once(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_stream_401_refreshes_once(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     _, refresh_now, _ = _token_wiring(sc, monkeypatch)
     client = sc.servicenow_client
@@ -336,7 +334,7 @@ async def test_stream_401_refreshes_once(servicenow_connector, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_401_without_a_refresh_token_raises_auth_error(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_401_without_a_refresh_token_raises_auth_error(servicenow_connector, monkeypatch) -> None:
     sc = servicenow_connector
     _, refresh_now, creds = _token_wiring(sc, monkeypatch)
     creds.pop("refresh_token")
@@ -347,7 +345,7 @@ async def test_401_without_a_refresh_token_raises_auth_error(servicenow_connecto
     refresh_now.assert_not_awaited()
 
 
-# --- SN-15: the vendor's reason is kept, the body is redacted in the log ---------------------
+# --- the vendor's reason is kept, the body is redacted in the log ----------------------------
 
 
 @pytest.mark.asyncio
@@ -373,11 +371,11 @@ async def test_api_error_without_json_body_keeps_the_status(monkeypatch) -> None
         await _list(ds)
 
 
-# --- SN-16: the HTTP pool is closed -----------------------------------------------------------
+# --- the HTTP pool is closed ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_init_twice_then_cleanup_closes_both_clients(servicenow_connector) -> None:  # noqa: F811
+async def test_init_twice_then_cleanup_closes_both_clients(servicenow_connector) -> None:
     sc = servicenow_connector
     sc._fetch_oauth_config_by_id = AsyncMock(return_value={
         "config": {"instanceUrl": INSTANCE, "clientId": "id", "clientSecret": "secret"},
@@ -402,18 +400,18 @@ async def test_init_twice_then_cleanup_closes_both_clients(servicenow_connector)
     assert sc.servicenow_client is None and sc.servicenow_datasource is None
 
 
-# --- SN-17: fewer calls per page and per run --------------------------------------------------
+# --- fewer calls per page and per run ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_call_count_per_100_article_page(servicenow_connector) -> None:  # noqa: F811
+async def test_call_count_per_100_article_page(servicenow_connector) -> None:
     sc = servicenow_connector
     # 32-character sys_ids, as on an instance: they decide how many fit in one IN list
-    articles = [_article(i, sys_id=f"{i:032x}", can_read_user_criteria="ucA" if i % 2 else "ucB") for i in range(100)]
-    attachments = [_attachment(3 * i + k, a["sys_id"]) for i, a in enumerate(articles) for k in range(3)]
+    articles = [article_row(i, sys_id=f"{i:032x}", can_read_user_criteria="ucA" if i % 2 else "ucB") for i in range(100)]
+    attachments = [attachment_row(3 * i + k, a["sys_id"]) for i, a in enumerate(articles) for k in range(3)]
     criteria = [{"sys_id": c, "user": "u1", "sys_updated_on": T0} for c in ("ucA", "ucB")]
     fake = FakeServiceNow({"kb_knowledge": articles, "sys_attachment": attachments, "user_criteria": criteria})
-    _wire(sc, fake)
+    wire_listing(sc, fake)
     sc.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lambda source_id, connector_id: AppUser(
         app_name=Connectors.SERVICENOW, connector_id=connector_id, source_user_id=source_id,
         email=f"{source_id}@x.com", full_name=source_id))
@@ -425,16 +423,16 @@ async def test_call_count_per_100_article_page(servicenow_connector) -> None:  #
     # one listing per IN chunk the URL limit allows (it was one listing per article)
     assert len(fake.calls_to("sys_attachment")) == len(chunks) == 8
     assert len(fake.calls_to("user_criteria")) == 2  # one per distinct set, then the run's cache
-    assert len(_written(sc)) == 400
+    assert len(written_ids(sc)) == 400
 
 
 @pytest.mark.asyncio
-async def test_failed_attachment_page_fails_its_articles(servicenow_connector) -> None:  # noqa: F811
+async def test_failed_attachment_page_fails_its_articles(servicenow_connector) -> None:
     fake = FakeServiceNow(
-        {"kb_knowledge": [_article(1, "2024-06-01 01:00:00"), _article(2, "2024-06-01 02:00:00")]},
+        {"kb_knowledge": [article_row(1, "2024-06-01 01:00:00"), article_row(2, "2024-06-01 02:00:00")]},
         fail=lambda table, q: status_error(503) if table == "sys_attachment" else None,
     )
-    _wire(servicenow_connector, fake, checkpoint=T0)
+    wire_listing(servicenow_connector, fake, checkpoint=T0)
 
     await servicenow_connector._sync_articles()
 
@@ -444,16 +442,16 @@ async def test_failed_attachment_page_fails_its_articles(servicenow_connector) -
 
 
 @pytest.mark.asyncio
-async def test_admins_read_once_per_run(servicenow_connector) -> None:  # noqa: F811
+async def test_admins_read_once_per_run(servicenow_connector) -> None:
     sc = servicenow_connector
     fake = FakeServiceNow({
-        "kb_knowledge": [_article(1, cannot_read_user_criteria="d1")],
+        "kb_knowledge": [article_row(1, cannot_read_user_criteria="d1")],
         "sys_user_has_role": [{"sys_id": "r1", "user": "u1", "role.name": "admin", "user.active": "true",
                                "sys_updated_on": T0}],
         "kb_knowledge_base": [{"sys_id": "kb1", "owner": "", "kb_managers": "", "sys_updated_on": T0}],
         "user_criteria": [{"sys_id": "d1", "user": "u2", "sys_updated_on": T0}],
     })
-    _wire(sc, fake)
+    wire_listing(sc, fake)
     sc.servicenow_client = MagicMock()
     sc.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=MagicMock(source_user_id="u1", email="u1@x.com"))
     with patch.object(sc, "_register_authenticated_identity", new_callable=AsyncMock), \
@@ -463,11 +461,11 @@ async def test_admins_read_once_per_run(servicenow_connector) -> None:  # noqa: 
         await sc.run_sync()
 
     assert len([q for q in fake.calls_to("sys_user_has_role") if not q.startswith("ORDERBYDESC")]) == 1
-    assert _written(sc) == ["KB0000001"]
+    assert written_ids(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio
-async def test_app_users_read_once_per_run(servicenow_connector) -> None:  # noqa: F811
+async def test_app_users_read_once_per_run(servicenow_connector) -> None:
     sc = servicenow_connector
     sc.data_entities_processor.get_all_app_users = AsyncMock(return_value=[MagicMock(source_user_id="u1", email="u1@x.com")])
 
@@ -478,7 +476,7 @@ async def test_app_users_read_once_per_run(servicenow_connector) -> None:  # noq
     sc.data_entities_processor.get_all_app_users.assert_awaited_once()
 
 
-# --- SN-69: X-Total-Count ends a listing, never a short or empty page --------------------------
+# --- X-Total-Count ends a listing, never a short or empty page ---------------------------------
 
 
 def _visible_at(total: int, page: int, rows_per_page: list[int]) -> list[dict]:
@@ -495,7 +493,7 @@ def _visible_at(total: int, page: int, rows_per_page: list[int]) -> list[dict]:
     (90, 10, [0, 0, 3, 2, 1, 2, 2, 1, 0]),  # non-admin persona, limit 10: pages empty in the middle
     (82, 5, [0] * 10 + [1, 0, 1, 0, 0, 0, 1]),  # persona on kb_knowledge, limit 5: rows only at offsets 50, 60, 80
 ])
-async def test_empty_pages_mid_list_continue(servicenow_connector, total, page, rows_per_page) -> None:  # noqa: F811
+async def test_empty_pages_mid_list_continue(servicenow_connector, total, page, rows_per_page) -> None:
     rows = _visible_at(total, page, rows_per_page)
     fake = FakeServiceNow({"kb_knowledge": rows})
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)
@@ -508,7 +506,7 @@ async def test_empty_pages_mid_list_continue(servicenow_connector, total, page, 
 
 
 @pytest.mark.asyncio
-async def test_stops_when_offset_reaches_total_count(servicenow_connector) -> None:  # noqa: F811
+async def test_stops_when_offset_reaches_total_count(servicenow_connector) -> None:
     fake = FakeServiceNow({"kb_knowledge": _visible_at(25, 10, [])})  # every row hidden
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)
 
@@ -520,18 +518,18 @@ async def test_stops_when_offset_reaches_total_count(servicenow_connector) -> No
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [0, 1, 100, 150])
-async def test_a_listing_reads_no_extra_page(servicenow_connector, count) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(i) for i in range(count)]})
-    _wire(servicenow_connector, fake)
+async def test_a_listing_reads_no_extra_page(servicenow_connector, count) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(i) for i in range(count)]})
+    wire_listing(servicenow_connector, fake)
 
     await servicenow_connector._sync_articles()
 
     assert len(fake.calls_to("kb_knowledge")) == max(1, -(-count // 100))
-    assert len(set(_written(servicenow_connector))) == count
+    assert len(set(written_ids(servicenow_connector))) == count
 
 
 @pytest.mark.asyncio
-async def test_short_admin_page_continues(servicenow_connector) -> None:  # noqa: F811
+async def test_short_admin_page_continues(servicenow_connector) -> None:
     roles = [{"sys_id": f"r{i:03d}", "name": f"role{i}", "sys_updated_on": T0} for i in range(618)]
     for i in range(0, 618, 57):  # 11 rows an ACL hides even from admin: 618 roles list as 607
         roles[i]["_acl_hidden"] = True
@@ -545,7 +543,7 @@ async def test_short_admin_page_continues(servicenow_connector) -> None:  # noqa
 
 
 @pytest.mark.asyncio
-async def test_missing_total_count_raises(servicenow_connector) -> None:  # noqa: F811
+async def test_missing_total_count_raises(servicenow_connector) -> None:
     response = TableAPIResponse(result=[{"sys_id": "g1", "sys_updated_on": T0}])
     servicenow_connector._get_fresh_datasource = AsyncMock(
         return_value=MagicMock(get_now_table_tableName=AsyncMock(return_value=response)))
@@ -555,7 +553,7 @@ async def test_missing_total_count_raises(servicenow_connector) -> None:  # noqa
 
 
 @pytest.mark.asyncio
-async def test_no_count_param_not_sent(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_no_count_param_not_sent(servicenow_connector, monkeypatch) -> None:
     rows = [{"sys_id": "g1", "name": "G", "sys_updated_on": T0}]
     ds, sent = _datasource([_ok(rows, total=1)], monkeypatch, None)
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=ds)

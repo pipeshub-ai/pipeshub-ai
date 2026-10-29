@@ -13,20 +13,20 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
+    EARLIER,
+    INSTANCE,
+    KB1,
+    LATER,
+    T0,
+    V1,
+    V2,
     FakeServiceNow,
+    article_row,
     block_groups,
     file_response,
     migrated_sync_point,
     status_error,
-)
-from test_servicenow_batch_a import INSTANCE, T0, _article
-from test_servicenow_batch_c import EARLIER, KB1, LATER, V1, V2, _wire
-from test_servicenow_connector import (  # noqa: F401
-    mock_config_service,
-    mock_data_entities_processor,
-    mock_data_store_provider,
-    mock_logger,
-    servicenow_connector,
+    wire_store,
 )
 
 from app.config.constants.arangodb import MimeTypes
@@ -52,52 +52,52 @@ def _feedback(n: int, article: str = "a0001", number: str = KB1, **fields: str) 
 
 async def _revision(sc, fake: FakeServiceNow) -> str:
     """The revision a full read writes for KB1."""
-    store = _wire(sc, fake)
+    store = wire_store(sc, fake)
     await sc._sync_articles()
     return store.records[KB1].external_revision_id
 
 
-# --- SN-44: the revision is what the article streams ---------------------------------------------
+# --- the revision is what the article streams ----------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_title_only_change_keeps_revision(servicenow_connector) -> None:  # noqa: F811
-    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)]}))
+async def test_title_only_change_keeps_revision(servicenow_connector) -> None:
+    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
     after = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [
-        _article(1, LATER, short_description="Renamed")]}))
+        article_row(1, LATER, short_description="Renamed")]}))
 
     assert before == after
 
 
 @pytest.mark.asyncio
-async def test_move_keeps_revision(servicenow_connector) -> None:  # noqa: F811
+async def test_move_keeps_revision(servicenow_connector) -> None:
     # The processor refreshes the vectors' groups on a move (syncVectorMembership), so no re-index.
-    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)]}))
+    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
     after = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [
-        _article(1, LATER, kb_category="cat2")]}))
+        article_row(1, LATER, kb_category="cat2")]}))
 
     assert before == after
 
 
 @pytest.mark.asyncio
-async def test_body_change_changes_revision(servicenow_connector) -> None:  # noqa: F811
-    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)]}))
+async def test_body_change_changes_revision(servicenow_connector) -> None:
+    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
     after = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [
-        _article(1, LATER, text="<p>edited</p>")]}))
+        article_row(1, LATER, text="<p>edited</p>")]}))
 
     assert before != after
 
 
 @pytest.mark.asyncio
-async def test_new_version_same_body_keeps_revision(servicenow_connector) -> None:  # noqa: F811
-    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, EARLIER, sys_id=V1)]}))
+async def test_new_version_same_body_keeps_revision(servicenow_connector) -> None:
+    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1, EARLIER, sys_id=V1)]}))
     after = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [
-        _article(1, EARLIER, sys_id=V1, workflow_state="outdated"), _article(1, LATER, sys_id=V2)]}))
+        article_row(1, EARLIER, sys_id=V1, workflow_state="outdated"), article_row(1, LATER, sys_id=V2)]}))
 
     assert before == after
 
 
-def test_attachment_revision_is_size_and_creation(servicenow_connector) -> None:  # noqa: F811
+def test_attachment_revision_is_size_and_creation(servicenow_connector) -> None:
     from app.sources.external.servicenow.models import AttachmentMetadata
 
     def build(updated: str) -> FileRecord | None:
@@ -108,12 +108,12 @@ def test_attachment_revision_is_size_and_creation(servicenow_connector) -> None:
     assert build("2015-01-01 00:00:00").external_revision_id == build("2026-01-01 00:00:00").external_revision_id
 
 
-# --- SN-45, SN-46, SN-47: the article as blocks ------------------------------------------------
+# --- the article as blocks ---------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_article_blocks_has_title_and_number(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, text="<p>How to <b>reset</b></p>")]}))
+async def test_article_blocks_has_title_and_number(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1, text="<p>How to <b>reset</b></p>")]}))
 
     groups = block_groups(await servicenow_connector._fetch_article_content(KB1))
 
@@ -121,15 +121,15 @@ async def test_article_blocks_has_title_and_number(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_article_record_is_blocks(servicenow_connector) -> None:  # noqa: F811
-    record = servicenow_connector._transform_to_article_webpage_record(TableAPIRecord(**_article(1)))
+async def test_article_record_is_blocks(servicenow_connector) -> None:
+    record = servicenow_connector._transform_to_article_webpage_record(TableAPIRecord(**article_row(1)))
 
     assert record.mime_type == MimeTypes.BLOCKS.value
 
 
 @pytest.mark.asyncio
-async def test_stream_article_is_blocks(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)]}))
+async def test_stream_article_is_blocks(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
     record = MagicMock(record_type=RecordType.WEBPAGE, external_record_id=KB1, weburl="https://x/kb", is_placeholder=False)
 
     response = await servicenow_connector.stream_record(record)
@@ -140,8 +140,8 @@ async def test_stream_article_is_blocks(servicenow_connector) -> None:  # noqa: 
 
 
 @pytest.mark.asyncio
-async def test_empty_article_streams_no_text(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, text="")]}))
+async def test_empty_article_streams_no_text(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1, text="")]}))
 
     content = await servicenow_connector._fetch_article_content(KB1)
 
@@ -150,23 +150,23 @@ async def test_empty_article_streams_no_text(servicenow_connector) -> None:  # n
 
 
 @pytest.mark.asyncio
-async def test_wiki_article_streams_wiki_body(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [
-        _article(1, article_type="wiki", text="", wiki="== Reset ==\n'''Hold''' the button")]}))
+async def test_wiki_article_streams_wiki_body(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [
+        article_row(1, article_type="wiki", text="", wiki="== Reset ==\n'''Hold''' the button")]}))
 
     groups = block_groups(await servicenow_connector._fetch_article_content(KB1))
 
     assert groups[0]["data"] == "# Article 1\n\nKB0000001\n\n== Reset ==\n'''Hold''' the button"
-    record = servicenow_connector._transform_to_article_webpage_record(TableAPIRecord(**_article(
+    record = servicenow_connector._transform_to_article_webpage_record(TableAPIRecord(**article_row(
         1, article_type="wiki", text="", wiki="== Reset ==")))
     assert record.external_revision_id != servicenow_connector._transform_to_article_webpage_record(
-        TableAPIRecord(**_article(1, article_type="wiki", text="", wiki="== Other =="))).external_revision_id
+        TableAPIRecord(**article_row(1, article_type="wiki", text="", wiki="== Other =="))).external_revision_id
 
 
 @pytest.mark.asyncio
-async def test_two_threaded_comments_stream_two_comment_groups(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({
-        "kb_knowledge": [_article(1)],
+async def test_two_threaded_comments_stream_two_comment_groups(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({
+        "kb_knowledge": [article_row(1)],
         "kb_feedback": [_feedback(2, parent_comment="fb01", root_feedback="fb01", comments="a reply"),
                         _feedback(1, comments="a question")],
     }))
@@ -179,10 +179,10 @@ async def test_two_threaded_comments_stream_two_comment_groups(servicenow_connec
 
 
 @pytest.mark.asyncio
-async def test_feedback_on_old_version_included(servicenow_connector) -> None:  # noqa: F811
+async def test_feedback_on_old_version_included(servicenow_connector) -> None:
     # Feedback stays on the version it was given to; the article is the current version.
-    _wire(servicenow_connector, FakeServiceNow({
-        "kb_knowledge": [_article(1, EARLIER, sys_id=V1, workflow_state="outdated"), _article(1, LATER, sys_id=V2)],
+    wire_store(servicenow_connector, FakeServiceNow({
+        "kb_knowledge": [article_row(1, EARLIER, sys_id=V1, workflow_state="outdated"), article_row(1, LATER, sys_id=V2)],
         "kb_feedback": [_feedback(1, article=V1, comments="on v1"), _feedback(2, article=V2, comments="on v2"),
                         _feedback(3, article="other", number="KB0000002", comments="another article")],
     }))
@@ -193,8 +193,8 @@ async def test_feedback_on_old_version_included(servicenow_connector) -> None:  
 
 
 @pytest.mark.asyncio
-async def test_feedback_summary_counts_helpful_and_ratings(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)], "kb_feedback": [
+async def test_feedback_summary_counts_helpful_and_ratings(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)], "kb_feedback": [
         _feedback(1, useful="yes", rating="5", comments=""), _feedback(2, useful="yes", rating="3", comments=""),
         _feedback(3, useful="no", rating="0", comments=""),
     ]}))
@@ -205,8 +205,8 @@ async def test_feedback_summary_counts_helpful_and_ratings(servicenow_connector)
 
 
 @pytest.mark.asyncio
-async def test_flagged_feedback_not_indexed(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)], "kb_feedback": [
+async def test_flagged_feedback_not_indexed(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)], "kb_feedback": [
         _feedback(1, flagged="true", comments="rude words", useful="no", rating="1"), _feedback(2, comments="fine")]}))
 
     content = await servicenow_connector._fetch_article_content(KB1)
@@ -217,8 +217,8 @@ async def test_flagged_feedback_not_indexed(servicenow_connector) -> None:  # no
 
 
 @pytest.mark.asyncio
-async def test_work_notes_not_indexed(servicenow_connector) -> None:  # noqa: F811
-    _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)], "kb_feedback": [
+async def test_work_notes_not_indexed(servicenow_connector) -> None:
+    wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)], "kb_feedback": [
         _feedback(1, reason="inaccurate: names a customer", work_notes="internal note")]}))
 
     content = await servicenow_connector._fetch_article_content(KB1)
@@ -228,25 +228,25 @@ async def test_work_notes_not_indexed(servicenow_connector) -> None:  # noqa: F8
 
 
 @pytest.mark.asyncio
-async def test_new_feedback_changes_revision(servicenow_connector) -> None:  # noqa: F811
-    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1)]}))
+async def test_new_feedback_changes_revision(servicenow_connector) -> None:
+    before = await _revision(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
     after = await _revision(servicenow_connector, FakeServiceNow({
-        "kb_knowledge": [_article(1)], "kb_feedback": [_feedback(1, article=V1)]}))
+        "kb_knowledge": [article_row(1)], "kb_feedback": [_feedback(1, article=V1)]}))
     edited = await _revision(servicenow_connector, FakeServiceNow({
-        "kb_knowledge": [_article(1)], "kb_feedback": [_feedback(1, article=V1, sys_updated_on=LATER)]}))
+        "kb_knowledge": [article_row(1)], "kb_feedback": [_feedback(1, article=V1, sys_updated_on=LATER)]}))
 
     assert len({before, after, edited}) == 3
 
 
 @pytest.mark.asyncio
-async def test_feedback_without_article_bump_reprocesses_article(servicenow_connector) -> None:  # noqa: F811
+async def test_feedback_without_article_bump_reprocesses_article(servicenow_connector) -> None:
     # The article row is older than the checkpoint; only its (old version's) feedback is new.
     sc = servicenow_connector
     fake = FakeServiceNow({
-        "kb_knowledge": [_article(1, EARLIER, sys_id=V1, workflow_state="outdated"), _article(1, EARLIER, sys_id=V2)],
+        "kb_knowledge": [article_row(1, EARLIER, sys_id=V1, workflow_state="outdated"), article_row(1, EARLIER, sys_id=V2)],
         "kb_feedback": [_feedback(1, article=V1, sys_updated_on=LATER)],
     })
-    store = _wire(sc, fake, sync_point=migrated_sync_point(T0, feedback={"last_sync_time": T0}))
+    store = wire_store(sc, fake, sync_point=migrated_sync_point(T0, feedback={"last_sync_time": T0}))
 
     await sc._sync_articles()
 
@@ -257,11 +257,11 @@ async def test_feedback_without_article_bump_reprocesses_article(servicenow_conn
 
 
 @pytest.mark.asyncio
-async def test_failed_feedback_listing_skips_the_page(servicenow_connector) -> None:  # noqa: F811
+async def test_failed_feedback_listing_skips_the_page(servicenow_connector) -> None:
     sc = servicenow_connector
-    fake = FakeServiceNow({"kb_knowledge": [_article(1)]},
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)]},
                           fail=lambda table, q: status_error(500) if table == "kb_feedback" else None)
-    store = _wire(sc, fake)
+    store = wire_store(sc, fake)
 
     await sc._sync_articles()
 
@@ -269,16 +269,16 @@ async def test_failed_feedback_listing_skips_the_page(servicenow_connector) -> N
     assert sc.full_sync_coverage().complete is False
 
 
-# --- SN-48: inline images ---------------------------------------------------------------------
+# --- inline images ----------------------------------------------------------------------------
 
 
 def _with_image(sc, src: str, response: httpx.Response | Exception | None = None) -> AsyncMock:
-    fake = FakeServiceNow({"kb_knowledge": [_article(1, text=f'<p>See <img src="{src}" alt="x"></p>')]})
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, text=f'<p>See <img src="{src}" alt="x"></p>')]})
     fake.stream_attachment = AsyncMock(
         side_effect=response if isinstance(response, Exception) else None,
         return_value=response or file_response(PNG, "image/png"),
     )
-    _wire(sc, fake)
+    wire_store(sc, fake)
     return fake.stream_attachment
 
 
@@ -287,7 +287,7 @@ def _with_image(sc, src: str, response: httpx.Response | Exception | None = None
     f"/sys_attachment.do?sys_id={IMG}",
     f"{INSTANCE}/sys_attachment.do?sys_id={IMG}&amp;view=true",
 ])
-async def test_inline_sys_attachment_image_becomes_data_uri(servicenow_connector, src) -> None:  # noqa: F811
+async def test_inline_sys_attachment_image_becomes_data_uri(servicenow_connector, src) -> None:
     fetch = _with_image(servicenow_connector, src)
 
     data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
@@ -297,7 +297,7 @@ async def test_inline_sys_attachment_image_becomes_data_uri(servicenow_connector
 
 
 @pytest.mark.asyncio
-async def test_html_escaped_sys_id_src_matched(servicenow_connector) -> None:  # noqa: F811
+async def test_html_escaped_sys_id_src_matched(servicenow_connector) -> None:
     # As the instance stores it: the "=" escaped
     fetch = _with_image(servicenow_connector, f"/sys_attachment.do?sys_id&#61;{IMG}")
 
@@ -308,7 +308,7 @@ async def test_html_escaped_sys_id_src_matched(servicenow_connector) -> None:  #
 
 
 @pytest.mark.asyncio
-async def test_oversize_image_left_as_link(servicenow_connector, monkeypatch) -> None:  # noqa: F811
+async def test_oversize_image_left_as_link(servicenow_connector, monkeypatch) -> None:
     monkeypatch.setattr(ServiceNowDefaults, "MAX_INLINE_IMAGE_BYTES", len(PNG) - 1)
     _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}")
 
@@ -318,7 +318,7 @@ async def test_oversize_image_left_as_link(servicenow_connector, monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_external_image_not_fetched(servicenow_connector) -> None:  # noqa: F811
+async def test_external_image_not_fetched(servicenow_connector) -> None:
     fetch = _with_image(servicenow_connector, "https://cdn.example.com/sys_attachment.do?sys_id=" + IMG)
 
     data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
@@ -328,7 +328,7 @@ async def test_external_image_not_fetched(servicenow_connector) -> None:  # noqa
 
 
 @pytest.mark.asyncio
-async def test_unreadable_image_left_as_link(servicenow_connector) -> None:  # noqa: F811
+async def test_unreadable_image_left_as_link(servicenow_connector) -> None:
     _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", status_error(404))
 
     data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
@@ -337,7 +337,7 @@ async def test_unreadable_image_left_as_link(servicenow_connector) -> None:  # n
 
 
 @pytest.mark.asyncio
-async def test_rate_limited_image_fails_the_stream(servicenow_connector) -> None:  # noqa: F811
+async def test_rate_limited_image_fails_the_stream(servicenow_connector) -> None:
     # Indexing tries the article again later rather than index it without the image.
     _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", ServiceNowRateLimited(0.0))
 
@@ -346,20 +346,20 @@ async def test_rate_limited_image_fails_the_stream(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-async def test_inline_images_get_no_file_record(servicenow_connector) -> None:  # noqa: F811
+async def test_inline_images_get_no_file_record(servicenow_connector) -> None:
     # One home: the image is in the article's body, not a file of its own, so the attachment prune
     # (which compares with the kb_knowledge attachment listing) has nothing of it to remove.
-    fake = FakeServiceNow({"kb_knowledge": [_article(1)], "sys_attachment": [
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)], "sys_attachment": [
         {"sys_id": IMG, "file_name": "image.png", "content_type": "image/png", "size_bytes": "9",
          "table_name": "ZZ_YYkb_knowledge", "table_sys_id": "a0001", "sys_created_on": T0, "sys_updated_on": T0}]})
-    store = _wire(servicenow_connector, fake)
+    store = wire_store(servicenow_connector, fake)
 
     await servicenow_connector._sync_articles()
 
     assert store.keys() == [KB1]
 
 
-# --- SN-49: attachments stream in chunks -------------------------------------------------------
+# --- attachments stream in chunks --------------------------------------------------------------
 
 
 def _datasource(handler) -> ServiceNowDataSource:
@@ -369,7 +369,7 @@ def _datasource(handler) -> ServiceNowDataSource:
 
 
 @pytest.mark.asyncio
-async def test_attachment_streams_in_chunks(servicenow_connector) -> None:  # noqa: F811
+async def test_attachment_streams_in_chunks(servicenow_connector) -> None:
     body = b"x" * (3 * 64 * 1024 + 5)
     seen: list[str] = []
 
@@ -385,7 +385,7 @@ async def test_attachment_streams_in_chunks(servicenow_connector) -> None:  # no
 
 
 @pytest.mark.asyncio
-async def test_404_raised_before_response(servicenow_connector) -> None:  # noqa: F811
+async def test_404_raised_before_response(servicenow_connector) -> None:
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(404, json={"error": {"message": "No Record found"}})))
     record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="application/pdf",
@@ -398,7 +398,7 @@ async def test_404_raised_before_response(servicenow_connector) -> None:  # noqa
 
 
 @pytest.mark.asyncio
-async def test_zero_byte_attachment_streams_200(servicenow_connector) -> None:  # noqa: F811
+async def test_zero_byte_attachment_streams_200(servicenow_connector) -> None:
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(200, content=b"", headers={"content-type": "text/plain"})))
     record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="text/plain",
@@ -412,7 +412,7 @@ async def test_zero_byte_attachment_streams_200(servicenow_connector) -> None:  
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("mime", "rejected"), [("application/pdf", True), (MimeTypes.HTML.value, False)])
-async def test_html_body_for_pdf_rejected(servicenow_connector, mime, rejected) -> None:  # noqa: F811
+async def test_html_body_for_pdf_rejected(servicenow_connector, mime, rejected) -> None:
     # A hibernating instance answers every URL with its own HTML page.
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(200, content=b"<html>Your instance is hibernating</html>",
