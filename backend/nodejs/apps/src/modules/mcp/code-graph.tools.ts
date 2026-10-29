@@ -314,7 +314,9 @@ export function registerCodeGraphToolDefinitions(
       description:
         'Callers, callees, imports and inheritance of a file or symbol: what ' +
         'reaches it (`direction: "inbound"`) and what it reaches (`"outbound"`). Each row ' +
-        `has repo, file_path, line range and qualified name. ${COVERAGE}`,
+        'has repo, file_path, line range and qualified name. For "who calls X" this is more ' +
+        'exact than grep: calls are resolved to the definition they reach, so a same-named ' +
+        `method on another type is left out and a renamed import is followed. ${COVERAGE}`,
       inputSchema: {
         repo,
         file_path: filePath,
@@ -414,7 +416,8 @@ export function registerCodeGraphToolDefinitions(
       description:
         'Find code without knowing its file. `mode: "identifier"` (default) lists every ' +
         'definition with that name. `mode: "text"` or `"regex"` finds lines in file bodies ' +
-        '(a string, a call site, a config key); these need `path` and read at most 100 files.',
+        '(a string, a call site, a config key); these need a repo-relative `path` and read ' +
+        'at most 400 files.',
       inputSchema: {
         repo: repoRequired,
         pattern: z
@@ -490,7 +493,8 @@ export function registerCodeGraphToolDefinitions(
     {
       description:
         'What changing a symbol can break: everything that calls, imports or builds on it, ' +
-        `followed backwards up to \`depth\` hops, grouped by file. ${COVERAGE}`,
+        'followed backwards up to `depth` hops, grouped by file, in one call instead of a ' +
+        `grep per caller. ${COVERAGE}`,
       inputSchema: {
         repo,
         file_path: filePath,
