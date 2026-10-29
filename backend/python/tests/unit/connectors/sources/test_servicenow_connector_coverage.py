@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from servicenow_fakes import block_groups, file_response
 
+from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.servicenow.servicenow.connector import (
     ORGANIZATIONAL_ENTITIES,
     ServiceNowConnector,
@@ -279,7 +281,7 @@ class TestServiceNowTestConnection:
 class TestServiceNowStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self, connector):
-        connector._fetch_article_content = AsyncMock(return_value="<h1>Test</h1>")
+        connector._fetch_article_content = AsyncMock(return_value=b'{"block_groups": []}')
         record = MagicMock()
         record.record_type = RecordType.WEBPAGE
         record.record_name = "Test Article"
@@ -287,11 +289,11 @@ class TestServiceNowStreamRecord:
         record.mime_type = "text/html"
         record.id = "r-1"
         response = await connector.stream_record(record)
-        assert response.media_type == "text/html"
+        assert response.media_type == MimeTypes.BLOCKS.value
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
-        connector._fetch_attachment_content = AsyncMock(return_value=b"file-bytes")
+        connector._open_attachment = AsyncMock(return_value=iter([b"file-bytes"]))
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.record_name = "attachment.pdf"
@@ -338,7 +340,8 @@ class TestFetchArticleContent:
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
-        assert "<p>Hello</p>" in content
+        assert block_groups(content)[0]["data"].startswith("# Test\n\n")
+        assert block_groups(content)[0]["data"].endswith("Hello")
 
     @pytest.mark.asyncio
     async def test_empty_content(self, connector):
@@ -349,7 +352,7 @@ class TestFetchArticleContent:
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
-        assert "No content" in content
+        assert b"No content" not in content
 
     @pytest.mark.asyncio
     async def test_no_result(self, connector):
@@ -384,29 +387,30 @@ class TestFetchAttachmentContent:
     async def test_success(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=b"file-content")
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"file-content"))
         connector._get_fresh_datasource.return_value = mock_ds
-        content = await connector._fetch_attachment_content("att-1")
-        assert content == b"file-content"
+        chunks = await connector._open_attachment("att-1")
+        assert b"".join([c async for c in chunks]) == b"file-content"
 
     @pytest.mark.asyncio
-    async def test_empty_content(self, connector):
+    async def test_html_page_for_a_pdf_is_rejected(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=None)
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"<html>sign in</html>", "text/html"))
         connector._get_fresh_datasource.return_value = mock_ds
         with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-missing")
-        assert exc_info.value.status_code == 404
+            await connector._open_attachment("att-1")  # a PDF answered with an HTML page
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(side_effect=RuntimeError("net"))
+        mock_ds.stream_attachment = AsyncMock(side_effect=RuntimeError("net"))
         connector._get_fresh_datasource.return_value = mock_ds
+        record = MagicMock(record_type=RecordType.FILE, external_record_id="att-1", mime_type="application/pdf")
         with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-1")
+            await connector.stream_record(record)
         assert exc_info.value.status_code == 500
 
 

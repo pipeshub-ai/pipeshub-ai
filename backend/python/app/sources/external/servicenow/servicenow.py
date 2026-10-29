@@ -2,6 +2,8 @@ import json
 import logging
 from typing import Any
 
+import httpx
+
 from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.servicenow.servicenow import (
@@ -11799,32 +11801,31 @@ class ServiceNowDataSource:
                 success=False, error=str(e), message="Failed to parse response"
             )
 
-    async def download_attachment(self, attachment_sys_id: str) -> bytes:
+    async def stream_attachment(self, attachment_sys_id: str) -> httpx.Response:
         """
-        Download attachment file content from ServiceNow.
+        Open an attachment's file for streaming: GET /api/now/attachment/{sys_id}/file.
 
-        Args:
-            attachment_sys_id: The sys_id of the attachment
-
-        Returns:
-            bytes: Binary file content
+        The status is checked before this returns, so a failed download raises before the
+        caller has sent anything. The body is not read: the caller reads it in chunks
+        (``aiter_bytes``), with a long read timeout, and closes the response.
 
         Raises:
-            ServiceNowAPIError: If download fails
+            ServiceNowAPIError: If the download fails
         """
-        url = self._build_url(f"/attachment/{attachment_sys_id}/file")
-
-        request = HTTPRequest(
-            method="GET", url=url, headers=self.client.headers, query_params={}
+        client = await self.client._ensure_client()
+        request = client.build_request(
+            "GET",
+            self._build_url(f"/attachment/{attachment_sys_id}/file"),
+            headers=self.client.headers,
+            timeout=httpx.Timeout(30.0, read=600.0),
         )
-        response = await self.client.execute(request)
-
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        response = await client.send(request, stream=True)
+        if response.status_code >= HttpStatusCode.BAD_REQUEST.value:
+            body = (await response.aread()).decode("utf-8", "replace")
+            await response.aclose()
             raise ServiceNowAPIError(
-                status_code=response.status,
+                status_code=response.status_code,
                 message=f"Failed to download attachment {attachment_sys_id}",
-                details=response.text()
+                details=body,
             )
-
-        # Return binary content
-        return response.response.content
+        return response

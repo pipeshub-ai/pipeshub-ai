@@ -13,6 +13,7 @@ import httpx
 import pytest
 from servicenow_fakes import (
     FakeServiceNow,
+    file_response,
     migrated_sync_point,
     status_error,
 )
@@ -321,15 +322,15 @@ async def test_stream_401_refreshes_once(servicenow_connector, monkeypatch) -> N
     _, refresh_now, _ = _token_wiring(sc, monkeypatch)
     client = sc.servicenow_client
 
-    async def answer(_attachment_id: str) -> bytes:
+    async def answer(_attachment_id: str) -> httpx.Response:
         if client.access_token == "old":
             raise status_error(401)
-        return b"file bytes"
+        return file_response(b"file bytes")
 
     download = AsyncMock(side_effect=answer)
-    monkeypatch.setattr(connector_module, "ServiceNowDataSource", lambda _client: SimpleNamespace(download_attachment=download))
+    monkeypatch.setattr(connector_module, "ServiceNowDataSource", lambda _client: SimpleNamespace(stream_attachment=download))
 
-    assert await sc._fetch_attachment_content("att1") == b"file bytes"
+    assert b"".join([c async for c in await sc._open_attachment("att1")]) == b"file bytes"
     refresh_now.assert_awaited_once()
     assert download.await_count == 2
 

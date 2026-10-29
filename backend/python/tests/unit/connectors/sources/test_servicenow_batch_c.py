@@ -15,6 +15,7 @@ from servicenow_fakes import (
     FakeRecordStore,
     FakeServiceNow,
     MemorySyncPoint,
+    block_groups,
     migrated_sync_point,
     status_error,
     stored_record,
@@ -117,8 +118,8 @@ async def test_two_versions_one_record_with_published_content(servicenow_connect
     await sc._sync_articles()
 
     assert store.keys() == [KB1]
-    assert store.records[KB1].external_revision_id == LATER
-    assert await sc._fetch_article_content(KB1) == "<p>v2</p>"
+    assert store.records[KB1].external_revision_id == sc._content_revision("<p>v2</p>", [])
+    assert block_groups(await sc._fetch_article_content(KB1))[0]["data"].endswith("v2")
 
 
 @pytest.mark.asyncio
@@ -147,15 +148,16 @@ async def test_draft_of_next_version_keeps_published_record(servicenow_connector
     # During an edit the draft is the latest row; the published one is still the article.
     sc = servicenow_connector
     fake = FakeServiceNow({"kb_knowledge": [
-        _article(1, EARLIER, sys_id=V1, latest="false"),
-        _article(1, LATER, sys_id=V2, workflow_state="draft", latest="true"),
+        _article(1, EARLIER, sys_id=V1, latest="false", text="<p>published</p>"),
+        _article(1, LATER, sys_id=V2, workflow_state="draft", latest="true", text="<p>draft</p>"),
     ]})
     store = _wire(sc, fake, stored_record(KB1), sync_point=migrated_sync_point(T0))
 
     await sc._sync_articles()
 
     assert store.deleted == []
-    assert store.records[KB1].external_revision_id == EARLIER  # written from the published row
+    # written from the published row
+    assert store.records[KB1].external_revision_id == sc._content_revision("<p>published</p>", [])
     assert sc.article_sync_point.data["articles"]["last_sync_time"] == LATER
 
 
@@ -695,7 +697,7 @@ async def test_second_run_after_migration_is_incremental(servicenow_connector) -
 async def test_record_stored_under_a_sys_id_still_streams_until_migrated(servicenow_connector) -> None:  # noqa: F811
     _wire(servicenow_connector, FakeServiceNow({"kb_knowledge": [_article(1, sys_id=V2, text="<p>v2</p>")]}))
 
-    assert await servicenow_connector._fetch_article_content(V2) == "<p>v2</p>"
+    assert block_groups(await servicenow_connector._fetch_article_content(V2))[0]["data"].endswith("v2")
 
 
 def test_kb_knowledge_model_carries_number(servicenow_connector) -> None:  # noqa: F811

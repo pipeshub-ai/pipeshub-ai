@@ -91,7 +91,7 @@ async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_
     article = SimpleNamespace(rewrite_permissions=False, inherit_permissions=not deny,
                               record_group_type=None, external_record_group_id="kb1", external_record_id="KB-a1")
     attachment = SimpleNamespace(rewrite_permissions=False)
-    sc._transform_to_article_webpage_record = lambda _: article
+    sc._transform_to_article_webpage_record = lambda *_: article
     sc._transform_to_attachment_file_record = lambda *_a, **_k: attachment
     sc._article_access = AsyncMock(return_value=(True, AccessRule.OPEN, []))
 
@@ -157,7 +157,7 @@ async def test_a_failed_admin_read_skips_the_article_so_its_stored_admin_grants_
     sc._fetch_kb_permissions_from_criteria = AsyncMock(return_value={"read": ["kbcan"], "cannot_read": [], "write": []})
     sc._kb_privileged_users = type(sc)._kb_privileged_users.__get__(sc)  # the real one
     sc._get_admin_users = AsyncMock(side_effect=ServiceNowAPIError(500, "fail", None))
-    sc._transform_to_article_webpage_record = lambda _: SimpleNamespace(
+    sc._transform_to_article_webpage_record = lambda *_: SimpleNamespace(
         rewrite_permissions=False, inherit_permissions=False, record_group_type=None, external_record_group_id="kb1")
 
     # It raises, so _sync_articles skips the article (stored grants stay) and retries it next run.

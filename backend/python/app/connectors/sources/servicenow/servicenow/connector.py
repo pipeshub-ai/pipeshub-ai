@@ -14,11 +14,15 @@ Synced Entities:
 - Attachments (files)
 """
 
+import base64
+import hashlib
+import html
+import json
 import mimetypes
 import re
 import uuid
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
@@ -74,6 +78,14 @@ from app.connectors.core.registry.types import FieldType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.servicenow.common.apps import ServicenowApp
+from app.models.blocks import (
+    BlockGroup,
+    BlockGroupChildren,
+    BlocksContainer,
+    DataFormat,
+    GroupSubType,
+    GroupType,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -105,6 +117,7 @@ from app.sources.external.servicenow.models import (
     TableAPIRecord,
     TableAPIResponse,
 )
+from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
 from app.connectors.sources.servicenow.servicenow.constants import (
@@ -136,6 +149,8 @@ _ARTICLE_FIELDS = [
     ServiceNowFields.NUMBER,
     ServiceNowFields.SHORT_DESCRIPTION,
     ServiceNowFields.TEXT,
+    ServiceNowFields.WIKI,
+    ServiceNowFields.ARTICLE_TYPE,
     ServiceNowFields.KB_KNOWLEDGE_BASE,
     ServiceNowFields.KB_CATEGORY,
     ServiceNowFields.WORKFLOW_STATE,
@@ -176,6 +191,22 @@ _ORG_GROUP_PREFIXES = {
 _EVERYONE = "everyone"
 
 _SCRIPT_COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+_IMG_SRC = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.I)
+# An image stored on the instance (the editor's inline images); the text escapes its "=" as "&#61;"
+_INSTANCE_IMAGE = re.compile(r"/?sys_attachment\.do\?sys_id=([0-9a-f]{32})(?:&|$)", re.I)
+
+# The kb_feedback fields an article streams: never reason or work_notes
+_FEEDBACK_FIELDS = [
+    ServiceNowFields.COMMENTS,
+    ServiceNowFields.USEFUL,
+    ServiceNowFields.RATING,
+    ServiceNowFields.FLAGGED,
+    ServiceNowFields.PARENT_COMMENT,
+    ServiceNowFields.ROOT_FEEDBACK,
+    ServiceNowFields.USER_DISPLAY_NAME,
+    ServiceNowFields.SYS_CREATED_ON,
+]
 
 
 @dataclass
@@ -892,16 +923,16 @@ class ServiceNowConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
-        Stream record content (article HTML or attachment file) from ServiceNow.
+        Stream record content from ServiceNow.
 
-        For articles (WebpageRecord): Fetches HTML content from kb_knowledge table
-        For attachments (FileRecord): Downloads file from attachment API
+        For articles (WebpageRecord): the article's blocks (see _fetch_article_content)
+        For attachments (FileRecord): the file, streamed from the attachment API
 
         Args:
             record: The record to stream (article or attachment)
 
         Returns:
-            StreamingResponse: Streaming response with article HTML or file content
+            StreamingResponse: the article's BlocksContainer, or the file
         """
         # A stub for a parent that never synced: there is nothing behind it to serve.
         if getattr(record, "is_placeholder", False) is True:
@@ -910,28 +941,18 @@ class ServiceNowConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if record.record_type == RecordType.WEBPAGE:
-                # Article - fetch HTML content from kb_knowledge table
-                html_content = await self._fetch_article_content(record.external_record_id)
-
-                async def generate_article() -> AsyncGenerator[bytes, None]:
-                    yield html_content.encode('utf-8')
-
-                return StreamingResponse(
-                    generate_article(),
-                    media_type='text/html',
-                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
+                content = await self._fetch_article_content(
+                    record.external_record_id, weburl=getattr(record, "weburl", None)
                 )
+                return StreamingResponse(iter([content]), media_type=MimeTypes.BLOCKS.value)
 
             elif record.record_type == RecordType.FILE:
-                # Attachment - download file from ServiceNow
-                file_content = await self._fetch_attachment_content(record.external_record_id)
-
-                async def generate_attachment() -> AsyncGenerator[bytes, None]:
-                    yield file_content
-
+                chunks = await self._open_attachment(
+                    record.external_record_id, is_html=record.mime_type == MimeTypes.HTML.value
+                )
                 filename = record.record_name or f"{record.external_record_id}"
                 return create_stream_record_response(
-                    generate_attachment(),
+                    chunks,
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}"
@@ -1048,57 +1069,102 @@ class ServiceNowConnector(BaseConnector):
         )
         return ServiceNowDefaults.KB_PORTAL_SUFFIX
 
-    async def _fetch_article_content(self, article_sys_id: str) -> str:
+    async def _fetch_article_content(self, article_sys_id: str, weburl: str | None = None) -> bytes:
         """
-        Fetch the HTML of an article's current version (see _current_article_query).
+        The current version (see _current_article_query) of an article as a BlocksContainer:
+        its body headed by its title and number, then one COMMENT group per feedback comment
+        (a reply under the comment it answers) and a summary of the helpful votes and ratings.
+
+        Feedback is read on every version of the article (it stays on the version it was given
+        to). Every reader of an article reads all of its feedback, so it carries the article's
+        access. Flagged feedback is left out, as ServiceNow shows it only to knowledge admins and
+        managers, and so are its reason and work notes.
 
         Args:
             article_sys_id: The record's key: the article number, or a version's sys_id for a
                 record stored before articles were keyed by number
-
-        Returns:
-            str: HTML content of the article
+            weburl: The article's page, for the blocks
 
         Raises:
             HTTPException: not found when the article has no current version (retired, expired, ...)
         """
         key_field = ServiceNowFields.SYS_ID if _LEGACY_ARTICLE_KEY.match(article_sys_id) else ServiceNowFields.NUMBER
         try:
-            # Fetch article using ServiceNow Table API
             try:
                 response = await self._table_get(
                     ServiceNowTables.KB_KNOWLEDGE,
                     sysparm_query=f"{key_field}={article_sys_id}^{self._current_article_query()}",
-                    sysparm_fields=CommonStrings.COMMA.join(
-                        [
-                            ServiceNowFields.SYS_ID,
-                            ServiceNowFields.SHORT_DESCRIPTION,
-                            ServiceNowFields.TEXT,
-                            ServiceNowFields.NUMBER,
-                        ]
-                    ),
+                    sysparm_fields=CommonStrings.COMMA.join([
+                        ServiceNowFields.SYS_ID,
+                        ServiceNowFields.NUMBER,
+                        ServiceNowFields.SHORT_DESCRIPTION,
+                        ServiceNowFields.TEXT,
+                        ServiceNowFields.WIKI,
+                        ServiceNowFields.ARTICLE_TYPE,
+                    ]),
                     sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
                 )
             except ServiceNowAPIError as e:
                 self.logger.error(f"Failed to fetch article {article_sys_id}: {e.message}")
                 raise map_source_status(e.status_code, connector=self.display_name) from e
-
-            # Extract article from result array
-            articles = response.result
-            if not articles or len(articles) == 0:
+            if not response.result:
                 raise not_found_at_source(self.display_name)
+            article = response.result[0]
+            number = article.get(ServiceNowFields.NUMBER) or article_sys_id
+            title = article.get(ServiceNowFields.SHORT_DESCRIPTION) or number
 
-            article = articles[0]
+            body = self._article_body(article)
+            if body and article.get(ServiceNowFields.ARTICLE_TYPE) != ServiceNowFields.WIKI:
+                body = await html_to_markdown_async(await self._inline_images_as_data_uris(body))
+            # A wiki body is the raw wiki markup (read with display values off), indexed as text.
+            groups = [BlockGroup(
+                id=str(uuid.uuid4()), index=0, name=title,
+                type=GroupType.TEXT_SECTION, sub_type=GroupSubType.CONTENT, description="Article body",
+                source_group_id=number, data=f"# {title}\n\n{number}\n\n{body}".rstrip(),
+                format=DataFormat.MARKDOWN, weburl=weburl, requires_processing=True,
+            )]
 
-            # Get raw HTML content from text field
-            html_content = article.text or ""
-
-            if not html_content:
-                # If no content, return empty HTML
-                self.logger.warning(f"Article {article_sys_id} has no content")
-                html_content = "<p>No content available</p>"
-
-            return html_content
+            feedback = sorted(
+                (row for row in (await self._feedback([number], _FEEDBACK_FIELDS)).get(number, [])
+                 if str(row.get(ServiceNowFields.FLAGGED)).lower() != "true"),
+                key=lambda row: (row.get(ServiceNowFields.SYS_CREATED_ON) or "", row.sys_id),
+            )
+            group_of: dict[str, int] = {}
+            for row in feedback:
+                comment = (row.get(ServiceNowFields.COMMENTS) or "").strip()
+                if not comment:
+                    continue
+                parent = group_of.get(row.get(ServiceNowFields.PARENT_COMMENT)) \
+                    or group_of.get(row.get(ServiceNowFields.ROOT_FEEDBACK)) or 0
+                group_of[row.sys_id] = len(groups)
+                groups.append(BlockGroup(
+                    id=str(uuid.uuid4()), index=len(groups), parent_index=parent,
+                    name=f"Comment by {row.get(ServiceNowFields.USER_DISPLAY_NAME) or 'a reader'}",
+                    type=GroupType.TEXT_SECTION, sub_type=GroupSubType.COMMENT, description="Article feedback",
+                    source_group_id=row.sys_id, data=comment, format=DataFormat.MARKDOWN,
+                    weburl=weburl, requires_processing=True,
+                ))
+            votes = [str(row.get(ServiceNowFields.USEFUL) or "").lower() for row in feedback]
+            ratings = [int(r) for r in (str(row.get(ServiceNowFields.RATING) or "") for row in feedback)
+                       if r.isdigit() and int(r) > 0]
+            summary = []
+            if votes.count("yes") or votes.count("no"):
+                summary.append(f"{votes.count('yes')} of {votes.count('yes') + votes.count('no')} readers "
+                               "found this article helpful.")
+            if ratings:
+                summary.append(f"Rated {sum(ratings) / len(ratings):.1f} of 5 by {len(ratings)} readers.")
+            if summary:
+                groups.append(BlockGroup(
+                    id=str(uuid.uuid4()), index=len(groups), parent_index=0, name="Feedback summary",
+                    type=GroupType.TEXT_SECTION, sub_type=GroupSubType.CONTENT, description="Article feedback",
+                    source_group_id=f"{number}_feedback", data=" ".join(summary), format=DataFormat.MARKDOWN,
+                    weburl=weburl, requires_processing=True,
+                ))
+            for group in groups:
+                children = [g.index for g in groups if g.parent_index == group.index]
+                if children:
+                    group.children = BlockGroupChildren.from_indices(block_group_indices=children)
+            return BlocksContainer(blocks=[], block_groups=groups).model_dump_json().encode("utf-8")
 
         except HTTPException:
             raise  # Re-raise HTTP exceptions
@@ -1106,40 +1172,110 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Failed to fetch article content: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e
 
-    async def _fetch_attachment_content(self, attachment_sys_id: str) -> bytes:
-        """
-        Fetch attachment file content from ServiceNow.
+    @staticmethod
+    def _article_body(article: TableAPIRecord) -> str:
+        """The article's body: HTML in ``text``, or wiki markup in ``wiki`` for a wiki article."""
+        wiki = getattr(article, ServiceNowFields.ARTICLE_TYPE, None) == ServiceNowFields.WIKI
+        return (getattr(article, ServiceNowFields.WIKI, None) if wiki else None) \
+            or getattr(article, ServiceNowFields.TEXT, None) or ""
 
-        Uses the attachment download API: GET /api/now/attachment/{sys_id}/file
+    @staticmethod
+    def _content_revision(*parts: object) -> str:
+        """A hash of what a record streams. The title and place are left out: a rename or a move
+        updates the record without indexing it again."""
+        return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+    async def _feedback(self, numbers: list[str], fields: list[str]) -> dict[str, list[TableAPIRecord]]:
+        """The kb_feedback rows on every version of the articles ``numbers``, by article number.
+
+        Raises:
+            ServiceNowAPIError: a failed listing is not "no feedback"
+        """
+        rows: dict[str, list[TableAPIRecord]] = defaultdict(list)
+        for chunk in self._chunk_ids(numbers):
+            async for page in self._iter_table(
+                ServiceNowTables.KB_FEEDBACK,
+                f"{ServiceNowFields.ARTICLE_NUMBER}IN{CommonStrings.COMMA.join(chunk)}",
+                [ServiceNowFields.ARTICLE_NUMBER, *fields],
+            ):
+                for row in page:
+                    rows[row.get(ServiceNowFields.ARTICLE_NUMBER)].append(row)
+        return rows
+
+    async def _inline_images_as_data_uris(self, body: str) -> str:
+        """The article HTML with each image stored on this instance embedded as a data: URI, so
+        the indexer, which cannot sign in to ServiceNow, sees it. An image on another host, one
+        larger than MAX_INLINE_IMAGE_BYTES, or one that cannot be read stays a link."""
+        resolved: dict[str, str | None] = {}
+        for match in _IMG_SRC.finditer(body):
+            if match.group(2) not in resolved:
+                resolved[match.group(2)] = await self._image_data_uri(match.group(2))
+        return _IMG_SRC.sub(lambda m: f"{m.group(1)}{resolved.get(m.group(2)) or m.group(2)}{m.group(3)}", body)
+
+    async def _image_data_uri(self, src: str) -> str | None:
+        url = html.unescape(src)
+        if self.instance_url and url.startswith(self.instance_url):
+            url = url[len(self.instance_url):]
+        match = _INSTANCE_IMAGE.match(url)
+        if not match:
+            return None
+        try:
+            response = await self._with_token_retry(lambda datasource: datasource.stream_attachment(match.group(1)))
+            data = bytearray()
+            try:
+                async for chunk in response.aiter_bytes():
+                    data += chunk
+                    if len(data) > ServiceNowDefaults.MAX_INLINE_IMAGE_BYTES:
+                        self.logger.warning(f"Inline image {match.group(1)} is too large to embed; it stays a link")
+                        return None
+            finally:
+                await response.aclose()
+        except Exception as e:
+            # A rate limit or a lost sign-in fails the stream, so indexing tries again later.
+            _raise_if_run_stop(e)
+            self.logger.warning(f"Could not read inline image {match.group(1)}; it stays a link: {e}")
+            return None
+        mime = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if not mime.startswith("image/"):
+            return None
+        return f"data:{mime};base64,{base64.b64encode(bytes(data)).decode('ascii')}"
+
+    async def _open_attachment(self, attachment_sys_id: str, *, is_html: bool = False) -> AsyncGenerator[bytes, None]:
+        """
+        An attachment's file, in chunks: GET /api/now/attachment/{sys_id}/file.
+
+        The download is opened before this returns, so a failure is raised (mapped) before any
+        response goes out. An empty file streams empty.
 
         Args:
             attachment_sys_id: The sys_id of the attachment
-
-        Returns:
-            bytes: Binary file content
+            is_html: Whether the file is HTML. Otherwise an HTML answer is not the file but a page
+                of the instance's own (a hibernating instance answers every URL with one).
 
         Raises:
-            HTTPException: If attachment not found or download fails
+            HTTPException: the mapped ServiceNow failure
         """
         try:
-            # Download using REST client (returns bytes directly)
-            file_content = await self._with_token_retry(
-                lambda datasource: datasource.download_attachment(attachment_sys_id)
+            response = await self._with_token_retry(
+                lambda datasource: datasource.stream_attachment(attachment_sys_id)
             )
-
-            if not file_content:
-                raise not_found_at_source(self.display_name)
-
-            return file_content
-
-        except HTTPException:
-            raise  # Re-raise HTTP exceptions
         except ServiceNowAPIError as e:
             self.logger.error(f"ServiceNow API error downloading attachment: {e.message}")
             raise map_source_status(e.status_code, connector=self.display_name) from e
-        except Exception as e:
-            self.logger.error(f"Failed to download attachment: {e}", exc_info=True)
-            raise to_stream_error(e, connector=self.display_name) from e
+        content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if content_type == MimeTypes.HTML.value and not is_html:
+            await response.aclose()
+            self.logger.error(f"ServiceNow answered attachment {attachment_sys_id} with an HTML page, not the file")
+            raise map_source_status(HttpStatusCode.SERVICE_UNAVAILABLE.value, connector=self.display_name)
+
+        async def chunks() -> AsyncGenerator[bytes, None]:
+            try:
+                async for chunk in response.aiter_bytes(64 * 1024):
+                    yield chunk
+            finally:
+                await response.aclose()
+
+        return chunks()
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -2160,6 +2296,7 @@ class ServiceNowConnector(BaseConnector):
         - /api/now/table/kb_knowledge - Articles
         - /api/now/table/user_criteria - Permissions
         - /api/now/table/sys_attachment - Attachments
+        - /api/now/table/kb_feedback - Feedback (for the revision; see _fetch_article_content)
         """
         try:
             migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2))
@@ -2167,7 +2304,14 @@ class ServiceNowConnector(BaseConnector):
                 await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES) if migrated else None
             )
             current = self._current_article_query()
-            inline_changed, inline_checkpoint = await self._inline_image_changes()
+            # Inline images and feedback change without their article row changing.
+            inline_changed, inline_checkpoint = await self._changed_articles(
+                ServiceNowTables.SYS_ATTACHMENT, ServiceNowFields.TABLE_SYS_ID, ServiceNowSyncPointKeys.INLINE_IMAGES,
+                f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.INLINE_IMAGE}^",
+            )
+            feedback_changed, feedback_checkpoint = await self._changed_articles(
+                ServiceNowTables.KB_FEEDBACK, ServiceNowFields.ARTICLE, ServiceNowSyncPointKeys.FEEDBACK
+            )
 
             # (query, whether its rows move the checkpoint, whether its rows are versions to resolve)
             queries = [(current, True, False)]
@@ -2189,9 +2333,9 @@ class ServiceNowConnector(BaseConnector):
                         False,
                         False,
                     ),
-                    # An inline image changes without its article row changing.
+                    # The rows whose inline images or feedback changed (feedback may be on an old version).
                     *[(f"{ServiceNowFields.SYS_ID}IN{CommonStrings.COMMA.join(c)}", False, True)
-                      for c in self._chunk_ids(inline_changed)],
+                      for c in self._chunk_ids(sorted({*inline_changed, *feedback_changed}))],
                     # A knowledge base back in scope: its articles left with it and did not change since.
                     *[(f"{current}^{ServiceNowFields.KB_KNOWLEDGE_BASE}IN{CommonStrings.COMMA.join(c)}", False, False)
                       for c in self._chunk_ids(sorted(self._kbs_back_in_scope))],
@@ -2247,9 +2391,15 @@ class ServiceNowConnector(BaseConnector):
 
                     try:
                         attachments = await self._fetch_attachments_for_articles([a.sys_id for a in articles_data])
+                        # Only what the revision needs: the rows and when each last changed
+                        feedback = await self._feedback(
+                            [n for a in articles_data if (n := a.get(ServiceNowFields.NUMBER))], []
+                        )
                     except Exception as e:
                         _raise_if_run_stop(e)
-                        self.logger.error(f"❌ Failed to list the attachments of {len(articles_data)} articles: {e}")
+                        self.logger.error(
+                            f"❌ Failed to list the attachments or feedback of {len(articles_data)} articles: {e}"
+                        )
                         for article_data in articles_data:
                             note_failed(article_data, moves_checkpoint=moves_checkpoint)
                         continue
@@ -2261,7 +2411,8 @@ class ServiceNowConnector(BaseConnector):
                     for article_data in articles_data:
                         try:
                             updates = await self._process_single_article(
-                                article_data, attachments.get(article_data.sys_id, [])
+                                article_data, attachments.get(article_data.sys_id, []),
+                                feedback.get(article_data.get(ServiceNowFields.NUMBER), []),
                             )
                         except Exception as e:
                             _raise_if_run_stop(e)
@@ -2306,11 +2457,11 @@ class ServiceNowConnector(BaseConnector):
                         ServiceNowSyncPointKeys.ARTICLES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint}
                     )
 
-            # Its articles are not held by the article checkpoint, so a failure reads them again.
+            # Their articles are not held by the article checkpoint, so a failure reads them again.
             if not failed.count:
-                await self.article_sync_point.update_sync_point(
-                    ServiceNowSyncPointKeys.INLINE_IMAGES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: inline_checkpoint}
-                )
+                for key, stamp in ((ServiceNowSyncPointKeys.INLINE_IMAGES, inline_checkpoint),
+                                   (ServiceNowSyncPointKeys.FEEDBACK, feedback_checkpoint)):
+                    await self.article_sync_point.update_sync_point(key, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: stamp})
             for removal in (self._remove_expired_articles, self._apply_audited_deletes):
                 try:
                     await removal()
@@ -2362,21 +2513,19 @@ class ServiceNowConnector(BaseConnector):
             if child.external_record_id not in listed:
                 await self.data_entities_processor.on_record_deleted(child.id)
 
-    async def _inline_image_changes(self) -> tuple[list[str], str]:
-        """The sys_ids of the article rows whose inline images changed since the last run, and the
-        checkpoint to store once those are synced. Before there is a checkpoint nothing is read:
-        that run reads every article."""
-        checkpoint = await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.INLINE_IMAGES)
+    async def _changed_articles(self, table: str, article_field: str, key: str, scope: str = "") -> tuple[list[str], str]:
+        """The sys_ids of the article rows that the rows of ``table`` (matching ``scope``) changed
+        since the last run point at through ``article_field``, and the checkpoint ``key`` to store
+        once those are synced. Before there is a checkpoint nothing is read: that run reads every
+        article."""
+        checkpoint = await self._read_checkpoint(self.article_sync_point, key)
         if not checkpoint:
             return [], self._utc_now()
         changed: set[str] = set()
         async for rows in self._iter_table(
-            ServiceNowTables.SYS_ATTACHMENT,
-            f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.INLINE_IMAGE}"
-            f"^{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}",
-            [ServiceNowFields.TABLE_SYS_ID],
+            table, f"{scope}{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}", [article_field],
         ):
-            changed.update(r.table_sys_id for r in rows if r.table_sys_id)
+            changed.update(str(r.get(article_field)) for r in rows if r.get(article_field))
             checkpoint = rows[-1].sys_updated_on
         return sorted(changed), checkpoint
 
@@ -2490,7 +2639,8 @@ class ServiceNowConnector(BaseConnector):
         )
 
     async def _process_single_article(
-        self, article_data: TableAPIRecord, attachments_data: list[AttachmentMetadata]
+        self, article_data: TableAPIRecord, attachments_data: list[AttachmentMetadata],
+        feedback: Sequence[TableAPIRecord] = (),
     ) -> List[RecordUpdate]:
         """
         Process a single article and return RecordUpdate objects for article + attachments.
@@ -2498,6 +2648,7 @@ class ServiceNowConnector(BaseConnector):
         Args:
             article_data: ServiceNow kb_knowledge TableAPIRecord
             attachments_data: its attachments, listed for the whole page (_fetch_attachments_for_articles)
+            feedback: its kb_feedback rows, listed for the whole page (_feedback)
 
         Returns:
             List[RecordUpdate]: RecordUpdate for article + RecordUpdates for attachments
@@ -2511,7 +2662,7 @@ class ServiceNowConnector(BaseConnector):
         record_updates = []
 
         # Transform article to WebpageRecord
-        article_record = self._transform_to_article_webpage_record(article_data)
+        article_record = self._transform_to_article_webpage_record(article_data, feedback)
         if not article_record:
             self.logger.warning(f"Failed to transform article {article_sys_id}")
             return []
@@ -3499,13 +3650,14 @@ class ServiceNowConnector(BaseConnector):
             return None
 
     def _transform_to_article_webpage_record(
-        self, article_data: TableAPIRecord
+        self, article_data: TableAPIRecord, feedback: Sequence[TableAPIRecord] = ()
     ) -> Optional[WebpageRecord]:
         """
         Transform ServiceNow kb_knowledge article to WebpageRecord entity.
 
         Args:
             article_data: ServiceNow kb_knowledge TableAPIRecord
+            feedback: the article's kb_feedback rows (any fields), for the revision
 
         Returns:
             WebpageRecord: Transformed article or None if invalid
@@ -3566,10 +3718,13 @@ class ServiceNowConnector(BaseConnector):
             article_record = WebpageRecord(
                 id=record_id,
                 external_record_id=number,
-                # The processor rewrites a stored record, and re-queues it for
-                # indexing, only when this differs from what it holds. Leaving it
-                # unset froze every record at its first index.
-                external_revision_id=article_data.sys_updated_on,
+                # The processor re-queues a stored record for indexing only when this differs
+                # from what it holds: a hash of what the article streams (_fetch_article_content).
+                # Inline images are in the body by their sys_id; attachments are records of their own.
+                external_revision_id=self._content_revision(
+                    self._article_body(article_data),
+                    sorted((row.sys_id, row.get(ServiceNowFields.SYS_UPDATED_ON)) for row in feedback),
+                ),
                 version=0,
                 record_name=short_description,
                 record_type=RecordType.WEBPAGE,
@@ -3580,9 +3735,10 @@ class ServiceNowConnector(BaseConnector):
                 external_record_group_id=external_record_group_id,  # Category or KB sys_id
                 parent_external_record_id=None,
                 weburl=web_url,
-                mime_type=MimeTypes.HTML.value,
+                mime_type=MimeTypes.BLOCKS.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                preview_renderable=False,
             )
             return article_record
 
@@ -3649,7 +3805,8 @@ class ServiceNowConnector(BaseConnector):
             attachment_record = FileRecord(
                 id=attachment_record_id,
                 inherit_permissions=inherit_permissions,
-                external_revision_id=attachment_data.sys_updated_on,
+                # A file's sys_updated_on moves with no change to its bytes, which never change.
+                external_revision_id=f"{attachment_data.size_bytes}:{attachment_data.sys_created_on}",
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,

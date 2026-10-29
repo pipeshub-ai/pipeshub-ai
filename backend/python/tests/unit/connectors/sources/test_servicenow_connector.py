@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from servicenow_fakes import MemorySyncPoint, keyset_page, migrated_sync_point
+from servicenow_fakes import (
+    MemorySyncPoint,
+    block_groups,
+    file_response,
+    keyset_page,
+    migrated_sync_point,
+)
 
 from app.config.constants.arangodb import AccessRule, Connectors, MimeTypes
 from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
@@ -441,9 +447,9 @@ class TestStreamRecord:
         record.external_record_id = "art-1"
 
         with patch.object(servicenow_connector, "_fetch_article_content",
-                          new_callable=AsyncMock, return_value="<h1>Hello</h1>"):
+                          new_callable=AsyncMock, return_value=b'{"block_groups": []}'):
             response = await servicenow_connector.stream_record(record)
-            assert response is not None
+            assert response.media_type == MimeTypes.BLOCKS.value
 
     async def test_stream_attachment(self, servicenow_connector):
         record = MagicMock()
@@ -453,10 +459,13 @@ class TestStreamRecord:
         record.id = "rec-1"
         record.mime_type = "application/pdf"
 
-        with patch.object(servicenow_connector, "_fetch_attachment_content",
-                          new_callable=AsyncMock, return_value=b"PDF content"):
+        async def chunks():
+            yield b"PDF content"
+
+        with patch.object(servicenow_connector, "_open_attachment",
+                          new_callable=AsyncMock, return_value=chunks()):
             response = await servicenow_connector.stream_record(record)
-            assert response is not None
+            assert response.media_type == "application/pdf"
 
     async def test_unsupported_type_raises(self, servicenow_connector):
         record = MagicMock()
@@ -496,7 +505,7 @@ class TestFetchArticleContent:
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_article_content("art-1")
-            assert result == "<p>Content</p>"
+            assert block_groups(result)[0]["data"] == "# KB001\n\nKB001\n\nContent"
 
     async def test_not_found(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
@@ -519,7 +528,8 @@ class TestFetchArticleContent:
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_article_content("art-1")
-            assert result == "<p>No content available</p>"
+            # Only the title and number: a placeholder phrase would be indexed and cited.
+            assert block_groups(result)[0]["data"] == "# KB001\n\nKB001"
 
     async def test_api_failure(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
@@ -549,27 +559,28 @@ class TestFetchAttachmentContent:
     async def test_success(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
-            mock_datasource.download_attachment = AsyncMock(return_value=b"file content")
+            mock_datasource.stream_attachment = AsyncMock(return_value=file_response(b"file content"))
             mock_ds.return_value = mock_datasource
-            result = await servicenow_connector._fetch_attachment_content("att-1")
-            assert result == b"file content"
+            chunks = await servicenow_connector._open_attachment("att-1")
+            assert b"".join([c async for c in chunks]) == b"file content"
 
     async def test_not_found(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
-            mock_datasource.download_attachment = AsyncMock(return_value=None)
+            mock_datasource.stream_attachment = AsyncMock(side_effect=ServiceNowAPIError(404, "No Record found", None))
             mock_ds.return_value = mock_datasource
             with pytest.raises(HTTPException) as exc_info:
-                await servicenow_connector._fetch_attachment_content("nonexistent")
+                await servicenow_connector._open_attachment("nonexistent")
             assert exc_info.value.status_code == 404
 
     async def test_exception(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
-            mock_datasource.download_attachment = AsyncMock(side_effect=Exception("Download failed"))
+            mock_datasource.stream_attachment = AsyncMock(side_effect=Exception("Download failed"))
             mock_ds.return_value = mock_datasource
+            record = MagicMock(record_type=RecordType.FILE, external_record_id="att-1", mime_type="application/pdf")
             with pytest.raises(HTTPException) as exc_info:
-                await servicenow_connector._fetch_attachment_content("att-1")
+                await servicenow_connector.stream_record(record)
             assert exc_info.value.status_code == 500
 
 
@@ -580,24 +591,24 @@ class TestFetchAttachmentContent:
     @pytest.mark.asyncio
     async def test_fetch_attachment_content_api_error(self, servicenow_connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(
+        mock_ds.stream_attachment = AsyncMock(
             side_effect=ServiceNowAPIError(503, "unavailable", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         with pytest.raises(HTTPException) as exc_info:
-            await servicenow_connector._fetch_attachment_content("att-1")
+            await servicenow_connector._open_attachment("att-1")
         # ServiceNow's raw status is mapped, never forwarded: a source 401 must not
         # reach the frontend as a 401 and log the user out of PipesHub.
         assert exc_info.value.status_code == 502
 
     async def test_fetch_attachment_content_401_maps_to_reconnect(self, servicenow_connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(
+        mock_ds.stream_attachment = AsyncMock(
             side_effect=ServiceNowAPIError(401, "unauthorized", None)
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         with pytest.raises(HTTPException) as exc_info:
-            await servicenow_connector._fetch_attachment_content("att-1")
+            await servicenow_connector._open_attachment("att-1")
         assert exc_info.value.status_code == 409
 
 
@@ -2896,7 +2907,7 @@ class TestProcessSingleArticle:
 class TestStreamRecordGenerators:
     @pytest.mark.asyncio
     async def test_stream_article_generator_yields_content(self, servicenow_connector):
-        servicenow_connector._fetch_article_content = AsyncMock(return_value="<p>Hello</p>")
+        servicenow_connector._fetch_article_content = AsyncMock(return_value=b'{"block_groups": ["Hello"]}')
         record = MagicMock()
         record.record_type = RecordType.WEBPAGE
         record.record_name = "Article"
@@ -2904,11 +2915,14 @@ class TestStreamRecordGenerators:
 
         response = await servicenow_connector.stream_record(record)
         body = b"".join([chunk async for chunk in response.body_iterator])
-        assert b"Hello" in body
+        assert body == b'{"block_groups": ["Hello"]}'
+        assert response.media_type == MimeTypes.BLOCKS.value
 
     @pytest.mark.asyncio
     async def test_stream_attachment_generator_yields_bytes(self, servicenow_connector):
-        servicenow_connector._fetch_attachment_content = AsyncMock(return_value=b"file-bytes")
+        datasource = AsyncMock()
+        datasource.stream_attachment = AsyncMock(return_value=file_response(b"file-bytes" * 10000))
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=datasource)
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.record_name = "file.pdf"
@@ -2917,8 +2931,9 @@ class TestStreamRecordGenerators:
         record.id = "rec-1"
 
         response = await servicenow_connector.stream_record(record)
-        body = b"".join([chunk async for chunk in response.body_iterator])
-        assert b"file-bytes" in body
+        chunks = [chunk async for chunk in response.body_iterator]
+        assert len(chunks) > 1  # streamed, not held whole
+        assert b"".join(chunks) == b"file-bytes" * 10000
 
 
 # ===========================================================================
@@ -2947,7 +2962,8 @@ class TestSyncArticles:
 
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock,
                           return_value=[_record_update(record=MagicMock(record_type=RecordType.WEBPAGE))]), \
-             patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}):
+             patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}), \
+             patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}):
             await servicenow_connector._sync_articles()
 
         assert mock_ds.get_now_table_tableName.call_count == 2  # X-Total-Count ends it, no empty page
@@ -2994,7 +3010,8 @@ class TestSyncArticles:
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}):
+             patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}), \
+             patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}):
             await servicenow_connector._sync_articles()
 
         checkpoint = servicenow_connector.article_sync_point.data["articles"]
@@ -3028,6 +3045,7 @@ class TestSyncArticles:
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock,
                           return_value=[article_update, file_update]) as mock_process_single, \
              patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}), \
+             patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}), \
              patch.object(servicenow_connector, "_process_record_updates_batch", new_callable=AsyncMock) as mock_batch:
             await servicenow_connector._sync_articles()
             
@@ -3116,22 +3134,24 @@ class TestRecordRevision:
                 sys_updated_on="2026-08-26 09:15:00",
             )
         )
-        assert record.external_revision_id == "2026-08-26 09:15:00"
+        assert record.external_revision_id
 
-    def test_a_changed_article_gets_a_different_revision_id(self, servicenow_connector):
-        def build(updated_on):
+    def test_a_changed_body_gets_a_different_revision_id(self, servicenow_connector):
+        def build(text, updated_on):
             return servicenow_connector._transform_to_article_webpage_record(
                 KBKnowledge(
                     sys_id="art1", number="KB-art1",
                     short_description="Title",
+                    text=text,
                     kb_category="cat1",
                     sys_updated_on=updated_on,
                 )
             )
 
-        before = build("2026-08-26 09:15:00")
-        after = build("2026-08-26 11:42:00")
-        assert before.external_revision_id != after.external_revision_id
+        assert build("<p>a</p>", "2026-08-26 09:15:00").external_revision_id \
+            == build("<p>a</p>", "2026-08-26 11:42:00").external_revision_id  # a touch is no change
+        assert build("<p>a</p>", "2026-08-26 09:15:00").external_revision_id \
+            != build("<p>b</p>", "2026-08-26 09:15:00").external_revision_id
 
     def test_attachment_carries_a_revision_id(self, servicenow_connector):
         record = servicenow_connector._transform_to_attachment_file_record(
@@ -3147,7 +3167,8 @@ class TestRecordRevision:
             parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
             parent_external_record_group_id="cat1",
         )
-        assert record.external_revision_id == "2026-08-26 11:42:00"
+        # sys_updated_on moves with no change to the bytes, which never change
+        assert record.external_revision_id == "1024:2026-08-01 10:00:00"
 
 
 class TestArticleReadCriteriaResolution:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from servicenow_fakes import block_groups, file_response
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
@@ -821,9 +822,9 @@ class TestStreamRecord:
         record.record_name = "Test Article"
         record.mime_type = "text/html"
 
-        connector._fetch_article_content = AsyncMock(return_value="<p>Content</p>")
+        connector._fetch_article_content = AsyncMock(return_value=b'{"block_groups": []}')
         response = await connector.stream_record(record)
-        assert response is not None
+        assert response.media_type == MimeTypes.BLOCKS.value
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
@@ -834,7 +835,7 @@ class TestStreamRecord:
         record.mime_type = "application/pdf"
         record.id = "rec-1"
 
-        connector._fetch_attachment_content = AsyncMock(return_value=b"file bytes")
+        connector._open_attachment = AsyncMock(return_value=iter([b"file bytes"]))
         with patch("app.connectors.sources.servicenow.servicenow.connector.create_stream_record_response") as mock_stream:
             mock_stream.return_value = MagicMock()
             response = await connector.stream_record(record)
@@ -861,7 +862,7 @@ class TestFetchContent:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
-        assert "<p>Article content</p>" in content
+        assert block_groups(content)[0]["data"].endswith("Article content")
 
     @pytest.mark.asyncio
     async def test_fetch_article_empty_content(self, connector):
@@ -871,7 +872,7 @@ class TestFetchContent:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
-        assert "No content" in content
+        assert b"No content" not in content
 
     @pytest.mark.asyncio
     async def test_fetch_article_not_found(self, connector):
@@ -885,19 +886,18 @@ class TestFetchContent:
     @pytest.mark.asyncio
     async def test_fetch_attachment_success(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=b"file data")
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"file data"))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        content = await connector._fetch_attachment_content("att-1")
-        assert content == b"file data"
+        chunks = await connector._open_attachment("att-1")
+        assert b"".join([c async for c in chunks]) == b"file data"
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_empty(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=None)
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b""))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-missing")
-        assert exc_info.value.status_code == 404
+        chunks = await connector._open_attachment("att-empty")
+        assert [c async for c in chunks] == []  # an empty file streams empty, not 404
 
 
 # ===========================================================================

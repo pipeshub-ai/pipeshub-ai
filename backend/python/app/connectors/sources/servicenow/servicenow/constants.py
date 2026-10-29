@@ -40,6 +40,7 @@ class ServiceNowTables:
     CMN_DEPARTMENT = "cmn_department"
     CMN_LOCATION = "cmn_location"
     KB_UC_CANNOT_CONTRIBUTE_MTOM = "kb_uc_cannot_contribute_mtom"
+    KB_FEEDBACK = "kb_feedback"
 
 
 class ServiceNowFields:
@@ -67,6 +68,19 @@ class ServiceNowFields:
     KB_CATEGORY = "kb_category"
     SHORT_DESCRIPTION = "short_description"
     TEXT = "text"
+    # A wiki article (article_type=wiki) keeps its body in wiki, not text
+    WIKI = "wiki"
+    ARTICLE_TYPE = "article_type"
+    # kb_feedback
+    ARTICLE = "article"
+    ARTICLE_NUMBER = "article.number"
+    USER_DISPLAY_NAME = "user.name"
+    COMMENTS = "comments"
+    USEFUL = "useful"
+    RATING = "rating"
+    FLAGGED = "flagged"
+    PARENT_COMMENT = "parent_comment"
+    ROOT_FEEDBACK = "root_feedback"
     NUMBER = "number"
     AUTHOR = "author"
     CAN_READ_USER_CRITERIA = "can_read_user_criteria"
@@ -158,6 +172,8 @@ class ServiceNowDefaults:
     # skipped for good; reading them again is an idempotent upsert.
     DELTA_OVERLAP_SECONDS = 120
     CONNECTOR_TYPE = "SERVICENOW"
+    # An inline image is embedded as a data: URI (a third larger) in the streamed article.
+    MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
     # Content types that say nothing about the file, so its name decides.
     UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
     # The out-of-box Knowledge Portal. Used only when the instance tells us nothing.
@@ -197,6 +213,7 @@ class ServiceNowSyncPointKeys:
     ARTICLES_RECONCILE = "articles_reconcile/last"
     ARTICLES_EXPIRY = "articles_expiry"
     INLINE_IMAGES = "attachments"
+    FEEDBACK = "feedback"
     AUDIT_DELETE = "audit_delete"
     KB_SCOPE = "kb_scope"
     # Set once a run has read every user, so the users deactivated before it lose access too

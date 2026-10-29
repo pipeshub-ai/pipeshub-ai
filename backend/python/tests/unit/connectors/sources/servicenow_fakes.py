@@ -17,6 +17,7 @@ whose articles are already keyed by number and were reconciled just now.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
+
+import httpx
 
 from app.sources.external.servicenow.models import (
     ServiceNowAPIError,
@@ -129,6 +132,16 @@ def keyset_page(rows: list[dict[str, Any]], sysparm_query: str | None, sysparm_l
 
 def status_error(status: int, message: str = "error") -> ServiceNowAPIError:
     return ServiceNowAPIError(status_code=status, message=message, details=None)
+
+
+def file_response(content: bytes, content_type: str = "application/pdf") -> httpx.Response:
+    """An opened attachment download, as ``ServiceNowDataSource.stream_attachment`` returns it."""
+    return httpx.Response(200, content=content, headers={"content-type": f"{content_type};charset=UTF-8"})
+
+
+def block_groups(content: bytes) -> list[dict[str, Any]]:
+    """The block groups of a streamed article."""
+    return json.loads(content)["block_groups"]
 
 
 class MemorySyncPoint:
