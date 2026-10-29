@@ -20,6 +20,7 @@ person: the instance's personas (README) and the throw-away users this module cr
   order 1  search                  search finds an article for a reader, not for anyone else
   order 2  TC-PERM-20..30, 32, 36  criteria, memberships, roles, departments and users change; one incremental sync
   order 3  TC-PERM-31              a re-activated user gets their access back
+  order 1/3 TC-NOTIF-05/07         the scripted criterion is reported once, in one run summary
 """
 
 from __future__ import annotations
@@ -39,12 +40,15 @@ from connectors.servicenow.servicenow_helpers import (
     add_account,
     assert_same_access,
     can_open,
+    connector_title,
     kb_filter,
     kh_record_ids,
+    notices,
     poll,
     record,
     servicenow_connector,
     sync,
+    wait_file,
     wait_present,
 )
 from connectors.servicenow.servicenow_seed import (
@@ -306,9 +310,9 @@ async def test_tc_perm_33_user_without_email_is_not_synced(world: World, graph_p
 @pytest.mark.order(1)
 async def test_tc_perm_34_attachment_has_its_articles_access(world: World, graph_provider: GraphProviderProtocol) -> None:
     art = world.art("g-att")
-    att_id = next(iter(art.attachments.values()))
     article = await wait_present(graph_provider, world.connector_id, art.number)
-    attachment = await wait_present(graph_provider, world.connector_id, att_id)
+    file_id, _ = await wait_file(graph_provider, world.connector_id, art.number, next(iter(art.attachments)))
+    attachment = await wait_present(graph_provider, world.connector_id, file_id)
     await world.check(graph_provider, {art.number}, "article with an attachment")
     differs = {}
     for who, user in world.accounts.items():
@@ -448,3 +452,29 @@ async def test_tc_perm_31_reactivated_user_gets_access_back(
     oracle = await world.check(graph_provider, world.kb_numbers("m-user-deact"), "re-activated user")
     assert "phit-deact" in _readers(oracle, world.art("m-user-deact-1").number)
 
+
+
+# -- TC-NOTIF-05/07: one run summary names the scripted criterion, once ----------------------------
+
+
+def _script_summaries(client: PipeshubClient, world: World) -> list[dict[str, Any]]:
+    title = f"{connector_title(client, world.connector_id)}: sync finished with problems"
+    return [n for n in notices(client, title) if n.get("title") == title and "use a script" in str(n.get("message"))]
+
+
+@pytest.mark.order(1)
+async def test_tc_notif_05_07_scripted_criterion_is_in_the_run_summary(world: World,
+                                                                       pipeshub_client: PipeshubClient) -> None:
+    async def _sent() -> list:
+        return _script_summaries(pipeshub_client, world)
+    sent = await poll(_sent, "a 'sync finished with problems' notice naming the scripted criterion", 180)
+    assert len(sent) == 1, f"{len(sent)} summaries name the scripted criterion"
+
+
+@pytest.mark.order(3)
+async def test_tc_notif_05_scripted_criterion_is_not_repeated_by_later_runs(
+    world: World, round1: dict[str, Any], pipeshub_client: PipeshubClient,
+) -> None:
+    """Two more syncs ran (round 1, re-activation): the unchanged scripted criterion is not reported again."""
+    sent = _script_summaries(pipeshub_client, world)
+    assert len(sent) == 1, f"the unchanged scripted criterion was reported {len(sent)} times"

@@ -8,7 +8,7 @@ syncs them with its own connectors, changes them, and removes everything at the 
 | --- | --- |
 | `servicenow_integration_test.py` | sync, hierarchy, versions, deletes, attachments, content, lifecycle, filters |
 | `servicenow_permissions_test.py` | each kind of user criterion, and a per-person oracle (below) |
-| `servicenow_regression_test.py` | paging, current versions only, token refresh, revoked token, delete during sync, https-only URL, auth types |
+| `servicenow_regression_test.py` | paging, current versions only, token refresh, revoked token, delete during sync, https-only URL, sign-in methods, notices |
 | `servicenow_scenario_matrix_test.py` | the shared scenario matrix (`connectors/scenario_matrix.py`), with moves |
 | `servicenow_seed.py` | the seeder; also runs on its own (`smoke`, `sweep`) |
 
@@ -72,9 +72,19 @@ SERVICENOW_TEST_CLIENT_SECRET=<OAuth app client secret>
 SERVICENOW_TEST_PERSONA_<NAME>_PASSWORD=<one per user above, e.g. SERVICENOW_TEST_PERSONA_HR_PASSWORD>
 ```
 
-Optional: `SERVICENOW_TEST_API_KEY` (an instance REST API key) and
-`SERVICENOW_TEST_CLIENT_CREDENTIALS=1` (once the OAuth app allows that grant) enable the auth-type
-cases when the connector offers them; `SERVICENOW_TEST_SYNC_TIMEOUT` (seconds, default 900).
+For the other sign-in methods (each case skips without its values):
+
+```text
+SERVICENOW_TEST_INTEGRATION_USERNAME=<integration user, for basic auth>
+SERVICENOW_TEST_INTEGRATION_PASSWORD=<its password>
+SERVICENOW_TEST_API_KEY=<a REST API key of that user, sent as x-sn-apikey>
+```
+
+Client credentials (AuthType `CUSTOM`) reuse the OAuth app above: the instance needs the
+client-credentials grant enabled (`glide.oauth.inbound.client.credential.grant_type.enabled`) and an
+OAuth application user on the app, whom the token acts as. API keys also need an API access policy
+on the Table and Attachment APIs that maps the key header profile. Optional:
+`SERVICENOW_TEST_SYNC_TIMEOUT` (seconds, default 900).
 
 The PipesHub side needs what every connector suite needs (`PIPESHUB_BASE_URL`, the API client or
 test login, graph settings, AI models for indexing), plus:
@@ -131,6 +141,8 @@ From the manual catalogue (`TC-…`). Automated:
 | Attachments, content | ATT-01 (PDF, DOCX, XLSX, TXT, PNG), 02..05; CONT-01..08, 10 (link shape), 11 |
 | Filters | FILT-01..11, 14 (skip until registered) |
 | Resilience | RES-05, 06 |
+| Notices | NOTIF-01, 02 (refused at enable, with the reason), 03, 06, 08 (one sign-in notice, admins only), 05, 07 (scripted criterion in one run summary, not repeated) |
+| Sign-in methods | OAuth, basic auth, API key, client credentials |
 | Lifecycle | LIFE-01..07 |
 | Security | SEC-01 (http URL refused), SEC-04 (as CONT-07; the instance itself already strips `<script>`) |
 
@@ -155,7 +167,7 @@ Manual or unit-only, and why:
 | RES-07 | an instance that hibernates or cannot be reached |
 | RES-08, 09 | removing read ACLs on `sys_user_group` or `sys_properties` changes the instance for everyone |
 | RES-10 | concurrency is read from the logs |
-| NOTIF-01..08 | not covered yet: the notices and the connection test landed after this suite was written; reading in-app notices needs a notifications helper the suite does not have |
+| NOTIF-04 | a sync that fails part way for a reason other than sign-in, access or rate limit cannot be caused from outside: unit tests (`test_servicenow_batch_g.py`) |
 | LIFE-08 | the scheduler test runs on one connector only (the Nextcloud matrix) |
 | SEC-02 | secrets in logs: a log scan |
 | SEC-03 | the address policy: unit tests |

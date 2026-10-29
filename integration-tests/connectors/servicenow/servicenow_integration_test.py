@@ -43,6 +43,7 @@ from connectors.servicenow.constants import (
 from connectors.servicenow.servicenow_helpers import (
     Persona,
     can_open,
+    files_of,
     instance_host,
     kb_filter,
     merge_filters,
@@ -52,6 +53,7 @@ from connectors.servicenow.servicenow_helpers import (
     stream_text,
     sync,
     wait_absent,
+    wait_file,
     wait_present,
 )
 from connectors.servicenow.servicenow_seed import (
@@ -93,12 +95,6 @@ class World:
 
     def art(self, key: str) -> Article:
         return self.seed.articles[key]
-
-
-async def _files_of(graph: GraphProviderProtocol, connector_id: str, number: str) -> dict[str, str]:
-    """File records under an article: name -> external id (the attachment's sys_id)."""
-    rows = await graph.fetch_records_by_type(connector_id, "FILE")
-    return {r.get("recordName"): r.get("externalRecordId") for r in rows if r.get("externalParentId") == number}
 
 
 def _build(seed: ServiceNowSeed, p: dict[str, Persona]) -> None:
@@ -217,14 +213,14 @@ async def test_tc_hier_01_02_08_tree_matches_the_instance(world: World, graph_pr
 async def test_tc_att_01_attachments_are_files_under_their_article(world: World, graph_provider: GraphProviderProtocol) -> None:
     art = world.art("a")
 
-    async def _all() -> dict[str, str] | None:
-        got = await _files_of(graph_provider, world.connector_id, art.number)
+    async def _all() -> dict[str, tuple[str, str]] | None:
+        got = await files_of(graph_provider, world.connector_id, art.number)
         return got if set(art.attachments) <= set(got) else None
     files = await poll(_all, f"every attachment of {art.number} should be a file record under it", 300)
-    assert {files[n] for n in art.attachments} == set(art.attachments.values())
+    assert set(files) == set(art.attachments), f"file records {sorted(files)}, attachments {sorted(art.attachments)}"
     for name in ("board-pack.pdf", "phit-note.txt"):
         rec = await wait_until_record_indexing_completed(
-            graph_provider, world.connector_id, art.attachments[name], timeout=INDEX_TIMEOUT)
+            graph_provider, world.connector_id, files[name][0], timeout=INDEX_TIMEOUT)
         assert rec.indexing_status == "COMPLETED", f"{name}: {rec.indexing_status}"
 
 
@@ -264,11 +260,12 @@ async def test_tc_cont_05_inline_image_is_not_a_file_record(world: World, graph_
     img = world.art("inline").attachments["__inline__"]
     await wait_present(graph_provider, world.connector_id, world.art("inline").number)
     assert await record(graph_provider, world.connector_id, img) is None
+    assert not await files_of(graph_provider, world.connector_id, world.art("inline").number)
 
 
 @pytest.mark.order(1)
 async def test_tc_cont_08_unknown_mime_attachment_is_kept(world: World, graph_provider: GraphProviderProtocol) -> None:
-    await wait_present(graph_provider, world.connector_id, world.art("a").attachments["phit-data.phitx"])
+    await wait_file(graph_provider, world.connector_id, world.art("a").number, "phit-data.phitx")
 
 
 @pytest.mark.order(1)
@@ -351,8 +348,11 @@ async def round1(world: World, pipeshub_client: PipeshubClient, graph_provider: 
     keys = ("m-body", "m-title", "m-move-cat", "m-move-kb", "m-ver-draft", "m-att-add", "m-att-rm", "m-att-replace",
             "in-cat-deact", "in-cat-del")
     before = {k: await wait_present(graph_provider, cid, world.art(k).number) for k in keys}
-    old_files = {k: dict(world.art(k).attachments) for k in ("m-att-add", "m-att-rm", "m-att-replace")}
-    old_body = {"m-body": world.art("m-body").token}
+    # File records by name before the new versions: an unchanged file must keep its record.
+    old_files = {k: {n: await wait_file(graph_provider, cid, world.art(k).number, n) for n in world.art(k).attachments}
+                 for k in ("m-att-add", "m-att-rm", "m-att-replace")}
+    # The whole old sentence: the new token ("...mbodyv2") contains the old one ("...mbody").
+    old_body = {"m-body": f"The {world.art('m-body').token} note"}
 
     await asyncio.to_thread(_mutate, s)
     await sync(pipeshub_client, graph_provider, cid)
@@ -457,23 +457,33 @@ async def test_tc_del_01_to_05_07_article_that_search_no_longer_shows_is_removed
 
 
 @pytest.mark.order(3)
-@pytest.mark.parametrize("key,gone,present", [
-    ("m-att-add", (), ("m-att-add.txt", "m-att-added.txt")),   # TC-ATT-03
-    ("m-att-rm", ("m-att-rm.txt",), ()),                        # TC-ATT-04
-    ("m-att-replace", (), ("m-att-replace.txt",)),              # TC-ATT-05
+@pytest.mark.parametrize("key,kept,new,gone", [
+    ("m-att-add", ("m-att-add.txt",), ("m-att-added.txt",), ()),  # TC-ATT-03: added; the copied file keeps its record
+    ("m-att-rm", (), (), ("m-att-rm.txt",)),                       # TC-ATT-04: removed
+    ("m-att-replace", (), ("m-att-replace.txt",), ()),             # TC-ATT-05: same name, new bytes: a new record
 ])
 async def test_tc_att_03_04_05_attachment_changes_follow_the_new_version(
-    world: World, round1: dict, graph_provider: GraphProviderProtocol, key: str, gone: tuple, present: tuple,
+    world: World, round1: dict, graph_provider: GraphProviderProtocol,
+    key: str, kept: tuple, new: tuple, gone: tuple,
 ) -> None:
-    art = world.art(key)
+    """A new version copies its files with new sys_ids; a file record follows the file (name and
+    bytes), so an unchanged file keeps its record and a changed one gets a new one."""
+    art, old = world.art(key), round1["old_files"][key]
+    old_ids = {rid for _, rid in old.values()}
 
-    async def _settled() -> dict[str, str] | None:
-        files = await _files_of(graph_provider, world.connector_id, art.number)
-        ok = all(files.get(n) == art.attachments.get(n) for n in present) and not set(gone) & set(files)
-        return files if ok else None
-    files = await poll(_settled, f"{key}: file records should be the published version's {sorted(art.attachments)}", 300)
-    stale = set(round1["old_files"][key].values()) & set(files.values())
-    assert not stale, f"{key}: file records of the old version remain: {stale}"
+    async def _settled() -> tuple[dict[str, tuple[str, str]]] | None:
+        files = await files_of(graph_provider, world.connector_id, art.number)
+        ok = set(files) == set(kept) | set(new) and all(files[n][1] not in old_ids for n in new)
+        return (files,) if ok else None  # a tuple: no files at all is a valid answer
+    try:
+        (files,) = await poll(_settled, "", 300)
+    except AssertionError:
+        files = await files_of(graph_provider, world.connector_id, art.number)
+        raise AssertionError(f"{key}: expected files {sorted(set(kept) | set(new))} (new records for {list(new)}), "
+                             f"got {files}; before {old}") from None
+    for name in kept:
+        assert files[name][1] == old[name][1], f"{key}: the unchanged {name} got a new record"
+    assert not set(gone) & set(files)
 
 
 # -- order 4: revert -----------------------------------------------------------------------------------
@@ -485,10 +495,15 @@ async def test_tc_ver_04_revert_to_an_older_version(world: World, round1: dict, 
     s, art = world.seed, world.art("m-revert")
     first = art.sys_id
     before = await wait_present(graph_provider, world.connector_id, art.number)
-    await asyncio.to_thread(lambda: (s.checkout(art, text=f"<p>{s.token('revert-v2')}</p>"), s.revert(art, first)))
+    # Two syncs: a revert made before the edit is synced restores the same body, so nothing would change.
+    await asyncio.to_thread(s.checkout, art, text=f"<p>{s.token('revert-v2')}</p>")
+    await sync(pipeshub_client, graph_provider, world.connector_id)
+    v2 = await wait_present(graph_provider, world.connector_id, art.number,
+                            lambda r: r.external_revision_id != before.external_revision_id, "m-revert at version 2")
+    await asyncio.to_thread(s.revert, art, first)
     await sync(pipeshub_client, graph_provider, world.connector_id)
     rec = await wait_present(graph_provider, world.connector_id, art.number,
-                             lambda r: r.external_revision_id != before.external_revision_id, "m-revert reverted")
+                             lambda r: r.external_revision_id != v2.external_revision_id, "m-revert reverted")
     assert rec.id == before.id
     rec = await wait_until_record_indexing_completed(graph_provider, world.connector_id, art.number, timeout=INDEX_TIMEOUT)
     text = stream_text(pipeshub_client, world.reader.account, rec.id)
@@ -521,10 +536,16 @@ async def test_tc_life_06_reindex_one_record(world: World, pipeshub_client: Pipe
                                              graph_provider: GraphProviderProtocol) -> None:
     rec = await wait_until_record_indexing_completed(graph_provider, world.connector_id, world.art("root").number,
                                                      timeout=INDEX_TIMEOUT)
+    number, title = world.art("root").number, world.art("root").title
+    stamp = ((await graph_provider.get_record_by_name(world.connector_id, title)) or {}).get("lastIndexTimestamp") or 0
     pipeshub_client.reindex_record(rec.id)
-    await asyncio.sleep(5)
-    rec = await wait_until_record_indexing_completed(graph_provider, world.connector_id, world.art("root").number,
-                                                     timeout=INDEX_TIMEOUT)
+
+    async def _reindexed() -> bool:
+        now = (await graph_provider.get_record_by_name(world.connector_id, title)) or {}
+        return (now.get("lastIndexTimestamp") or 0) > stamp
+    # A reindex that queues nothing leaves the record as it was; the status alone stays COMPLETED.
+    await poll(_reindexed, f"reindexing {number} should index it again", 300)
+    rec = await wait_until_record_indexing_completed(graph_provider, world.connector_id, number, timeout=INDEX_TIMEOUT)
     assert rec.indexing_status == "COMPLETED"
 
 
@@ -626,7 +647,7 @@ async def test_tc_filt_03_options_are_paged_and_searchable(fworld: FilterWorld, 
     assert first.get("hasMore"), f"one of two matches per page should leave more: {first}"
     ids = {o.get("id") for o in first.get("options") or []}
     second = pipeshub_client.get_filter_options(fworld.connector_id, "knowledge_bases", limit=1, search=s.name("f"),
-                                                cursor=first.get("cursor"))
+                                                page=2)  # the connector pages by number, with no cursor
     ids |= {o.get("id") for o in second.get("options") or []}
     assert ids == {s.kbs["fa"], s.kbs["fb"]}, ids
     if CATEGORY_FILTER:
@@ -723,7 +744,8 @@ async def test_tc_filt_09_10_11_indexing_toggles(fworld: FilterWorld, pipeshub_c
         await wait_for_sync_completion(pipeshub_client, graph_provider, cid, timeout=SYNC_TIMEOUT)
         art = await asyncio.to_thread(add, key)
         await sync(pipeshub_client, graph_provider, cid)
-        for external_id, on in ((art.number, articles_on), (next(iter(art.attachments.values())), files_on)):
+        file_id, _ = await wait_file(graph_provider, cid, art.number, f"{key}.txt")
+        for external_id, on in ((art.number, articles_on), (file_id, files_on)):
             await wait_present(graph_provider, cid, external_id)
             if on:
                 rec = await wait_until_record_indexing_completed(graph_provider, cid, external_id, timeout=INDEX_TIMEOUT)

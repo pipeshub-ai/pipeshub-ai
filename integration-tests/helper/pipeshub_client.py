@@ -468,15 +468,19 @@ class PipeshubClient:
         limit: int = 20,
         cursor: Optional[str] = None,
         search: Optional[str] = None,
+        page: int | None = None,
     ) -> Dict[str, Any]:
         """One page of a dynamic filter's options (``options``, ``hasMore``, ``cursor``).
 
         The same call the filter picker in the UI makes, e.g. ``filter_key="drive_ids"``
-        for Drive Workspace's Shared Drive list.
+        for Drive Workspace's Shared Drive list. ``page`` is for connectors that page by
+        number instead of by cursor.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
             params["cursor"] = cursor
+        if page is not None:
+            params["page"] = page
         if search:
             params["search"] = search
         data = self._request_json(

@@ -254,3 +254,49 @@ def stream_text(client: PipeshubClient, user: SecondUser, record_id: str) -> str
 
 def instance_host() -> str:
     return os.environ[ENV_INSTANCE_URL].strip().rstrip("/")
+
+
+def connector_title(client: PipeshubClient, connector_id: str) -> str:
+    """The name notices start with: the connector instance's name."""
+    c = client.get_connector(connector_id)
+    return str(c.get("name") or c.get("instanceName") or "")
+
+
+def notices(client: PipeshubClient, prefix: str, user: SecondUser | None = None) -> list[dict[str, Any]]:
+    """In-app notices whose title starts with ``prefix``, in the admin's inbox or ``user``'s."""
+    out: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(20):
+        params: dict[str, Any] = {"limit": 50, **({"cursor": cursor} if cursor else {})}
+        if user is None:
+            resp = client.request("GET", "/api/v1/notifications", params=params)
+        else:
+            resp = user.get("/api/v1/notifications?" + urlencode(params))
+        assert resp.status_code == 200, f"GET /api/v1/notifications: HTTP {resp.status_code} {resp.text[:200]}"
+        body = resp.json()
+        out += [n for n in body.get("notifications", []) if str(n.get("title", "")).startswith(prefix)]
+        cursor = body.get("cursor")
+        if not body.get("hasMore") or not cursor:
+            return out
+    return out
+
+
+async def files_of(graph: GraphProviderProtocol, connector_id: str, number: str) -> dict[str, tuple[str, str]]:
+    """File records under article ``number``: file name -> (external id, record id).
+
+    Files are keyed by article number, file name and content hash, not by the attachment's
+    sys_id (a new version copies its files with new sys_ids), so tests find them by name.
+    """
+    rows = await graph.fetch_records_by_type(connector_id, "FILE")
+    return {
+        str(r.get("recordName")): (str(r.get("externalRecordId")), str(r.get("_key") or r.get("id")))
+        for r in rows if r.get("externalParentId") == number
+    }
+
+
+async def wait_file(graph: GraphProviderProtocol, connector_id: str, number: str, name: str,
+                    timeout: float = 300) -> tuple[str, str]:
+    """(external id, record id) of the file ``name`` under article ``number``, once it is synced."""
+    async def _check() -> tuple[str, str] | None:
+        return (await files_of(graph, connector_id, number)).get(name)
+    return await poll(_check, f"{name} should be a file record under {number}", timeout)

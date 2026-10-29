@@ -98,6 +98,8 @@ class ServiceNowAdapter(ScenarioAdapter):
         category = s.articles[item.key].category
         label = s.name(f"mx-folder-renamed-{item.token}")
         await asyncio.to_thread(s.rest.patch, "kb_category", category, {"label": label})
+        # ServiceNow cuts kb_category.label to its field length: name the folder as stored.
+        label = await asyncio.to_thread(lambda: s.rest.row("kb_category", category, "label")["label"])
         return self._item(item.key, item.role, item.text, item.token, folder=label)
 
     async def exclusion_filter(self, excluded: SourceItem, kept: list[SourceItem]) -> dict[str, Any]:
