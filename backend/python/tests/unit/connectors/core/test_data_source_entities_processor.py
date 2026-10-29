@@ -24,6 +24,7 @@ import pytest
 from app.config.constants.arangodb import (
     AccessRule,
     CollectionNames,
+    DeleteSource,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -7642,6 +7643,130 @@ class TestPlaceholderFlag:
 
         assert incoming.is_placeholder is True
         assert incoming.version == 0
+
+    @staticmethod
+    def _sync_with(existing: Record) -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = existing
+        tx_store.restore_records = AsyncMock(return_value=[existing.id])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        for name in ("_handle_record_group", "_handle_new_record", "_handle_updated_record",
+                     "_link_record_to_group", "_handle_parent_record", "_handle_record_permissions"):
+            setattr(proc, name, AsyncMock(return_value=None))
+        proc._handle_updated_record.return_value = []
+        proc._handle_parent_record.return_value = MagicMock(permissions_from_group=False, parent_outside_group=False)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_sweep_backfill_of_a_stuck_stub_turns_auto_index_off(self) -> None:
+        """A stub re-sent at the model's QUEUED default is never published, so it
+        must not be stored QUEUED: it would show as queued forever."""
+        existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.QUEUED.value
+        proc, _ = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="placeholder:2", version=0, is_placeholder=True)
+        assert incoming.indexing_status == ProgressStatus.QUEUED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert incoming.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert incoming.queued_at is None
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_stub_at_the_default_is_stored_auto_index_off(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert incoming.queued_at is None
+
+    @pytest.mark.asyncio
+    async def test_stub_restored_from_the_trash_is_not_queued(self) -> None:
+        existing = _make_record(
+            external_revision_id="placeholder:1", version=0, is_placeholder=True,
+            is_deleted=True, delete_source=DeleteSource.CONNECTOR, delete_batch_id="b-1",
+        )
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.QUEUED.value
+        proc, tx_store = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+
+        processed, _ = await proc._process_record(incoming, [], tx_store)
+
+        tx_store.restore_records.assert_awaited_once_with([{"id": "rec-1"}], "b-1")
+        assert processed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert processed.queued_at is None
+
+    @pytest.mark.asyncio
+    async def test_real_record_replacing_an_auto_index_off_stub_is_queued(self) -> None:
+        existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc, _ = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="v1", version=0)
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert incoming.is_placeholder is False
+        assert incoming.indexing_status in (ProgressStatus.QUEUED.value, ProgressStatus.NOT_STARTED.value)
+        assert incoming.queued_at is not None
+        ((_, messages), _) = proc.messaging_producer.send_messages.await_args
+        assert len(messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_stub_over_a_completed_real_record_leaves_it_indexed(self) -> None:
+        existing = _make_record(external_revision_id="v1", version=3, md5_hash="md5-1")
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.access_rule = AccessRule.OPEN
+        proc, _ = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert incoming.is_placeholder is False
+        assert incoming.indexing_status == ProgressStatus.COMPLETED.value
+        assert incoming.external_revision_id == "v1"
+        assert incoming.version == 3
+        assert incoming.md5_hash == "md5-1"
+        assert incoming.access_rule == AccessRule.OPEN
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stub_over_a_queued_real_record_keeps_it_queued_and_published(self) -> None:
+        existing = _make_record(external_revision_id="v1", version=1)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.QUEUED.value
+        proc, _ = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert incoming.is_placeholder is False
+        assert incoming.indexing_status == ProgressStatus.QUEUED.value
+        assert incoming.external_revision_id == "v1"
+        ((_, messages), _) = proc.messaging_producer.send_messages.await_args
+        assert len(messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_real_record_keeps_the_connectors_auto_index_off(self) -> None:
+        existing = _make_record(external_revision_id="v1", version=1)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.NOT_STARTED.value
+        proc, tx_store = self._sync_with(existing)
+        incoming = _make_record(external_revision_id="v2", version=0)
+        incoming.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.is_placeholder is False
+        assert incoming.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
     async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self) -> None:
