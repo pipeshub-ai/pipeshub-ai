@@ -1712,8 +1712,8 @@ class RecordEventHandler(BaseEventService):
                         f"Not classifying record {record_id} on first use: no stage state for revision "
                         f"{record.get('contentRev')}"
                     )
-                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    for done in (IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE):
+                        yield PipelineEvent(event=done, data=PipelineEventData(record_id=record_id))
                     return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
