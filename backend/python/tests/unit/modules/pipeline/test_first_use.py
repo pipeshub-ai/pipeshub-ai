@@ -1,5 +1,6 @@
 """Classify on first use: a search asks indexing to classify the records it returned."""
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -107,3 +108,30 @@ async def test_a_send_that_raises_leaves_the_rest_to_the_next_search(producer: A
         # "a" went out and is not asked again; "b" and "c" are.
         assert await first_use.classify_on_first_use(results, "org-1", object(), _LOG) == 2
     assert [c.args[1]["payload"]["recordId"] for c in producer.send_message.await_args_list] == ["a", "b", "b", "c"]
+
+
+async def test_two_searches_at_once_ask_once(producer: AsyncMock) -> None:
+    gate = asyncio.Event()
+
+    async def slow_send(*_args: object, **_kwargs: object) -> bool:
+        await gate.wait()
+        return True
+
+    producer.send_message = AsyncMock(side_effect=slow_send)
+    results = {"records": [_doc("a")]}
+    with _on(True):
+        both = asyncio.gather(
+            first_use.classify_on_first_use(results, "org-1", object(), _LOG),
+            first_use.classify_on_first_use(results, "org-1", object(), _LOG),
+        )
+        await asyncio.sleep(0)
+        gate.set()
+        assert sorted(await both) == [0, 1]
+    assert producer.send_message.await_count == 1
+
+
+async def test_the_cap_applies_after_records_already_asked_for(producer: AsyncMock) -> None:
+    results = {"records": [_doc(f"r{i}") for i in range(first_use._MAX_PER_SEARCH + 5)]}
+    with _on(True):
+        assert await first_use.classify_on_first_use(results, "org-1", object(), _LOG) == first_use._MAX_PER_SEARCH
+        assert await first_use.classify_on_first_use(results, "org-1", object(), _LOG) == 5

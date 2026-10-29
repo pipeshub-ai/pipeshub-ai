@@ -4102,14 +4102,14 @@ class TestReconcilePromotedDuplicates:
             "sib-1": {"_key": "sib-1", "orgId": "org-1"},
             "sib-2": {"_key": "sib-2", "orgId": "org-1"},
         }
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: sib_docs[key])
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: sib_docs[key])
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await handler._reconcile_promoted_duplicates("r1", "vr1")
 
-        gp.get_records_by_virtual_record_id.assert_awaited_once_with("vr1")
+        gp.get_records_by_virtual_record_id.assert_awaited_once_with("vr1", raise_on_error=True)
         assert [c.args for c in gp.copy_document_relationships.await_args_list] == [
             ("r1", "sib-1"),
             ("r1", "sib-2"),
@@ -4127,7 +4127,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
         gp.copy_document_relationships = AsyncMock(return_value=True)
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key, "orgId": "org-1"})
         handler.event_processor.sync_vector_membership = AsyncMock()
         assert handler.event_processor.sink_orchestrator is None
 
@@ -4152,7 +4152,7 @@ class TestReconcilePromotedDuplicates:
             "other-org": {"_key": "other-org", "orgId": "org-2"},
             "gone": None,
         }
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: docs[key])
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
@@ -4168,7 +4168,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
         gp.copy_document_relationships = AsyncMock()
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key})
         handler.event_processor.sync_vector_membership = AsyncMock()
 
         await handler._reconcile_promoted_duplicates("r1", "vr1")
@@ -4197,7 +4197,7 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1", "sib-2"])
         gp.copy_document_relationships = AsyncMock(side_effect=[False, True])
-        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll, **_: {"_key": key, "orgId": "org-1"})
         handler.event_processor.sync_vector_membership = AsyncMock()
         sink = AsyncMock()
         handler.event_processor.sink_orchestrator = sink

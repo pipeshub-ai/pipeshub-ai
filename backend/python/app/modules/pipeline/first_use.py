@@ -50,7 +50,7 @@ def unclassified(records: list[Any]) -> list[dict[str, Any]]:
             and (doc.get("_key") or doc.get("id"))
         ):
             found.append(doc)
-    return found[:_MAX_PER_SEARCH]
+    return found
 
 
 def first_use_event(doc: dict[str, Any], org_id: str) -> dict[str, Any]:
@@ -107,17 +107,28 @@ async def classify_on_first_use(
         docs = unclassified(results.get("records") or [])
         if not org_id or not docs or not await is_classify_on_first_use_enabled(config_service):
             return 0
-        docs = _not_asked_recently(docs, time.monotonic())
+        # Capped after the repeat filter, so records past the first page are asked for too.
+        docs = _not_asked_recently(docs, time.monotonic())[:_MAX_PER_SEARCH]
         if not docs:
             return 0
         producer = await _get_producer(config_service, logger)
         sent = 0
         for doc in docs:
             record_id, rev = _asked_key(doc)
-            # Marked only once the broker took it, so a failure leaves it to the next search.
-            if await producer.send_message(RECORD_EVENTS_TOPIC, first_use_event(doc, org_id), key=record_id) is not False:
-                _asked[(record_id, rev)] = time.monotonic()
+            # Reserved before the send, so a search running alongside does not ask
+            # too; released if the broker refuses, so the next search asks again.
+            _asked[(record_id, rev)] = time.monotonic()
+            try:
+                accepted = await producer.send_message(
+                    RECORD_EVENTS_TOPIC, first_use_event(doc, org_id), key=record_id
+                ) is not False
+            except Exception:
+                _asked.pop((record_id, rev), None)
+                raise
+            if accepted:
                 sent += 1
+            else:
+                _asked.pop((record_id, rev), None)
         return sent
     except Exception as e:
         logger.warning("Could not ask for classification of searched records: %s", e)
