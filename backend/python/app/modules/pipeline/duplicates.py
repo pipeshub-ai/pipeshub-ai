@@ -17,9 +17,13 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import (
+    DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
+    DUPLICATE_RECONCILE_DUE_AT_FIELD,
+    DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     IGraphDBProvider,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 SyncVectorMembership = Callable[[str], Awaitable[None]]
 
@@ -69,7 +73,16 @@ class QueuedCopies:
         promoted = await self._graph.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
         if promoted < 0:
             raise QueuedCopiesNotReleasedError(record_id)
-        if promoted > 0 or had_pending or await self._has_copies(record_id, virtual_record_id):
+        if promoted > 0 or had_pending:
+            await self._reconcile(record_id, virtual_record_id)
+        elif await self._has_copies(record_id, virtual_record_id):
+            # As the promotion does in its own write: if the reconcile fails or the
+            # process dies, the retry sweep finishes the copies.
+            await self._graph.update_node(record_id, CollectionNames.RECORDS.value, {
+                DUPLICATE_RECONCILE_PENDING_FIELD: True,
+                DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+                DUPLICATE_RECONCILE_DUE_AT_FIELD: get_epoch_timestamp_in_ms() + DUPLICATE_RECONCILE_GRACE_MS,
+            })
             await self._reconcile(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
             await notify_record_indexed(

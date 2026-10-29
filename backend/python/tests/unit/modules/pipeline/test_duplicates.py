@@ -59,6 +59,9 @@ async def test_copies_of_a_record_that_waited_for_first_use_are_reconciled() -> 
         reconciler.return_value.reconcile = AsyncMock(return_value=True)
         await QueuedCopies(graph, None, logging.getLogger("t")).release(["rec-1"])
     reconciler.return_value.reconcile.assert_awaited_once_with("rec-1", "vr-1")
+    # Pending before the copies change, so the recovery sweep finishes a failed reconcile.
+    key, _collection, fields = graph.update_node.await_args_list[0].args
+    assert key == "rec-1" and fields["duplicateReconcilePending"] is True
 
 
 @pytest.mark.asyncio

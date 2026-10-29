@@ -135,6 +135,16 @@ async def test_a_retry_without_a_revision_falls_back_to_a_reindex() -> None:
     coordinator.redrive_revision.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_a_deferred_record_whose_hand_off_was_lost_is_recovered() -> None:
+    ingress, coordinator, _ = _ingress(None)
+    coordinator.has_seen_revision = AsyncMock(return_value=False)
+    waiting = {"indexingStatus": "COMPLETED", "extractionStatus": "NOT_STARTED", "virtualRecordId": "vr-1", "contentRev": "abc"}
+    assert await ingress.handoff_lost({**waiting, "extractionDeferred": True}) is True
+    # NOT_STARTED without the marker is a cut-short enrichment or an older record: final.
+    assert await ingress.handoff_lost(waiting) is False
+
+
 _INDEXED_QUEUED = {
     "indexingStatus": "COMPLETED", "extractionStatus": "QUEUED", "virtualRecordId": "vr-1", "contentRev": "abc",
 }

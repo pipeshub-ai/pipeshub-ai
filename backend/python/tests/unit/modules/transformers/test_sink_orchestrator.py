@@ -625,6 +625,7 @@ class TestIndexedWriteWhenEnrichmentFollows:
 
         (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
         assert row["extractionStatus"] == "NOT_STARTED"
+        assert row["extractionDeferred"] is True
         # The dispatch reads the same decision, so it cannot queue what this left unqueued.
         assert ctx.settings["enrichment_deferred"] is True
         assert not ctx.settings["enrichment_follows"]

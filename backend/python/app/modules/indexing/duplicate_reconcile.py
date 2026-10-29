@@ -33,9 +33,9 @@ MAX_RECONCILE_ATTEMPTS = 5
 
 _RECORDS = CollectionNames.RECORDS.value
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
-_FINAL_EXTRACTION = frozenset(
-    {ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value, ProgressStatus.FAILED.value}
-)
+# FAILED is left out: the copy stays NOT_STARTED and takes the outcome of a later
+# successful redrive, which a FAILED copy would never be offered.
+_FINAL_EXTRACTION = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value})
 
 
 class DuplicateReconciler:
@@ -86,15 +86,6 @@ class DuplicateReconciler:
                             sibling_key, record_id, virtual_record_id,
                         )
                     continue
-                # A copy indexed while the primary waited for classification on first
-                # use took its NOT_STARTED; it shares the primary's outcome.
-                outcome = source_doc.get("extractionStatus")
-                if (
-                    outcome in _FINAL_EXTRACTION
-                    and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
-                    and sibling_doc.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
-                ):
-                    await self.graph.update_node(sibling_key, _RECORDS, {"extractionStatus": outcome})
                 # The copy reports failure as False rather than raising.
                 if not await self.graph.copy_document_relationships(record_id, sibling_key):
                     self.logger.warning(
@@ -102,6 +93,20 @@ class DuplicateReconciler:
                     )
                     complete = False
                     continue
+                # A copy indexed while the primary waited for classification on first
+                # use took its NOT_STARTED; it shares the primary's outcome, set once
+                # the taxonomy is there so the status never claims what is missing.
+                outcome = source_doc.get("extractionStatus")
+                if (
+                    outcome in _FINAL_EXTRACTION
+                    and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                    and sibling_doc.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+                    and not await self.graph.update_node(sibling_key, _RECORDS, {"extractionStatus": outcome})
+                ):
+                    self.logger.warning(
+                        "Extraction status of duplicate %s of record %s not written", sibling_key, record_id,
+                    )
+                    complete = False
                 # Separate from the taxonomy copy, which skips mentionsEntity. A
                 # failure still lets the entity sync run, and keeps the reconcile
                 # pending so a retry copies the mentions; the copy is an upsert.

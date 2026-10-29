@@ -15,6 +15,7 @@ from app.models.entities import Record
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
+from app.modules.transformers.transformer import EXTRACTION_DEFERRED_FIELD
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.resource_governor.tiers import classify as classify_tier
@@ -66,7 +67,10 @@ class StageIngress:
         and only re-running the record path dispatches its stages."""
         if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
             return False
-        if record.get("extractionStatus") != ProgressStatus.QUEUED.value:
+        extraction = record.get("extractionStatus")
+        # NOT_STARTED is final unless the indexed write deferred classification.
+        deferred = extraction == ProgressStatus.NOT_STARTED.value and record.get(EXTRACTION_DEFERRED_FIELD) is True
+        if extraction != ProgressStatus.QUEUED.value and not deferred:
             return False
         vrid, rev = record.get("virtualRecordId"), record.get("contentRev")
         if not vrid or not rev:

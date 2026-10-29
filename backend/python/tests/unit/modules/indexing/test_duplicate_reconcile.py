@@ -127,6 +127,23 @@ class TestReconciler:
         assert graph.docs["s2"]["extractionStatus"] == "FAILED"
         assert graph.docs["s3"]["extractionStatus"] == "NOT_STARTED"
 
+    async def test_a_failed_taxonomy_copy_leaves_the_copy_waiting(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        graph.copy_ok["s1"] = False
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_failed_primary_leaves_copies_for_its_next_try(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="FAILED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
     async def test_a_primary_still_waiting_lends_no_outcome(self) -> None:
         graph = FakeGraph()
         _group(graph, extractionStatus="NOT_STARTED")

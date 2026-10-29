@@ -43,6 +43,7 @@ from app.modules.transformers.stored_write import (
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
+    EXTRACTION_DEFERRED_FIELD,
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
     Transformer,
@@ -710,6 +711,7 @@ class SinkOrchestrator(Transformer):
                 # Decided here, once, so the status and the dispatch agree.
                 ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: False, ENRICHMENT_DEFERRED: True}
                 status["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+                status[EXTRACTION_DEFERRED_FIELD] = True
             else:
                 status["extractionStatus"] = ProgressStatus.QUEUED.value
         if getattr(record, "is_vlm_ocr_processed", False) is True:
