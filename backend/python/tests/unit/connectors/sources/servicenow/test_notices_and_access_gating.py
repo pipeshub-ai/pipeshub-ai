@@ -485,11 +485,12 @@ async def test_webhook_is_a_no_op_that_logs_nothing(servicenow_connector, caplog
 def test_transform_failure_does_not_log_body(servicenow_connector, caplog) -> None:
     sc = servicenow_connector
     caplog.set_level(logging.DEBUG)
-    sc._transform_to_category_record_group(TableAPIRecord(sys_id="c1", label="", value="SECRET-BODY"))
-    sc._transform_to_article_webpage_record(TableAPIRecord(sys_id="a1", text="<p>SECRET-BODY</p>"))
+    # An article transform that fails raises: the sync logs the error, which names no body.
+    with pytest.raises(AttributeError) as raised:
+        sc._transform_to_article_webpage_record(TableAPIRecord(sys_id="a1", text="<p>SECRET-BODY</p>"))
     sc._transform_to_attachment_file_record(SimpleNamespace(sys_id="f1", file_name="", content_type="SECRET-BODY"))
-    assert "SECRET-BODY" not in caplog.text
-    assert "c1" in caplog.text and "f1" in caplog.text
+    assert "SECRET-BODY" not in caplog.text and "SECRET-BODY" not in str(raised.value)
+    assert "f1" in caplog.text
 
 
 @pytest.mark.asyncio

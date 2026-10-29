@@ -15,8 +15,11 @@ from servicenow_fakes import (
     MemorySyncPoint,
     article_row,
     attachment_row,
+    kb_row,
     status_error,
+    stored_record,
     wire_listing,
+    wire_store,
     written_ids,
 )
 
@@ -29,6 +32,7 @@ from app.models.entities import AppUser
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
     ServiceNowAPIError,
+    TableAPIRecord,
     TableAPIResponse,
 )
 
@@ -337,3 +341,62 @@ async def test_inherit_only_article_without_author_is_written(servicenow_connect
 
     [(record, permissions)] = servicenow_connector.data_entities_processor.on_new_records.await_args.args[0]
     assert (record.external_record_id, record.inherit_permissions, permissions) == ("KB0000001", True, [])
+
+
+# --- what a full sync did not see, it does not unlink --------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("count", "hidden"), [(500, set(range(1, 501))), (3, {2})])
+async def test_articles_an_acl_hides_make_the_full_sync_incomplete(servicenow_connector, count, hidden) -> None:
+    # ServiceNow counts every row but shows the account none of them, or not all.
+    fake = FakeServiceNow({"kb_knowledge": [article_row(i, _acl_hidden=i in hidden) for i in range(1, count + 1)]})
+    store = wire_store(servicenow_connector, fake, stored_record("KB0000002"))
+
+    await servicenow_connector._sync_articles()
+
+    assert servicenow_connector.full_sync_coverage().complete is False
+    assert "KB0000002" in store.records
+
+
+@pytest.mark.asyncio
+async def test_hidden_kb_that_is_kept_makes_the_full_sync_incomplete(servicenow_connector) -> None:
+    sc = servicenow_connector
+    sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1", "kb2"]}})
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row("kb1"), kb_row("kb2", _acl_hidden=True)]}))
+
+    await sc._sync_knowledge_bases([])
+
+    assert store.deleted_groups == []
+    assert sc.full_sync_coverage().complete is False
+
+
+@pytest.mark.asyncio
+async def test_attachment_an_acl_hides_is_not_pruned(servicenow_connector) -> None:
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1)], "sys_attachment": [
+        attachment_row(1, "a0001"), {**attachment_row(2, "a0001"), "_acl_hidden": True}]})
+    store = wire_store(servicenow_connector, fake, stored_record("f0002", "FILE", parent="KB0000001"))
+
+    await servicenow_connector._sync_articles()
+
+    assert store.keys() == ["KB0000001", "f0001", "f0002"]
+    assert servicenow_connector.full_sync_coverage().complete is False
+
+
+@pytest.mark.asyncio
+async def test_article_whose_transform_raises_is_failed_not_dropped(servicenow_connector) -> None:
+    sc = servicenow_connector
+    wire_listing(sc, _three_articles_second_fails(fail=False))
+    body = sc._article_body
+
+    def broken_second(row: TableAPIRecord) -> str:
+        if row.number == "KB0000002":
+            raise ValueError("bad row")
+        return body(row)
+
+    with patch.object(sc, "_article_body", side_effect=broken_second):
+        await sc._sync_articles()
+
+    assert sorted(written_ids(sc)) == ["KB0000001", "KB0000003"]
+    assert sc.article_sync_point.data["articles"]["last_sync_time"] == "2024-06-01 01:59:59"
+    assert sc.full_sync_coverage().complete is False

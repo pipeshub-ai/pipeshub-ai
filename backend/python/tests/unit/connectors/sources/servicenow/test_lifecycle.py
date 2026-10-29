@@ -35,6 +35,7 @@ from servicenow_fakes import (
 
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppUser, RecordGroupType
+from app.sources.client.servicenow.servicenow import ServiceNowRateLimited
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
     KBKnowledge,
@@ -353,7 +354,7 @@ async def test_deleted_kb_removed_with_children(servicenow_connector) -> None:
 
     assert store.deleted_groups == ["kb2"]
     assert store.keys() == []
-    assert sc.category_sync_point.data["kb_scope"] == {"ids": ["kb1"]}
+    assert sc._scopes_to_store == {"kb_scope": ["kb1"]}  # stored once the articles are synced
 
 
 @pytest.mark.asyncio
@@ -417,7 +418,7 @@ async def test_deleted_category_removed(servicenow_connector) -> None:
     await sc._sync_categories()
 
     assert store.deleted_groups == ["c2"]
-    assert sc.category_sync_point.data["category_scope"] == {"ids": ["c1"]}
+    assert sc._scopes_to_store == {"category_scope": ["c1"]}  # stored once the articles are synced
 
 
 @pytest.mark.asyncio
@@ -456,6 +457,84 @@ async def test_kb_back_in_scope_rereads_its_categories_and_articles(servicenow_c
     assert sc._kbs_back_in_scope == {"kb2"}
     assert groups_written(sc) == ["c1", "c2", "kb1", "kb2"]
     assert store.keys() == ["KB0000002"]
+
+
+@pytest.mark.asyncio
+async def test_kb_back_in_scope_is_read_again_after_a_run_that_stopped(servicenow_connector) -> None:
+    # Run N stops before its articles are written: run N+1 still sees kb2 as back in scope.
+    sc = servicenow_connector
+    sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1"]}, "category_scope": {"ids": ["c1"]},
+                                              "categories": {"last_sync_time": T0}})
+    fake = FakeServiceNow({
+        "kb_knowledge_base": [kb_row("kb1"), kb_row("kb2")],
+        "kb_category": [category_row("c1", "kb1"), category_row("c2", "kb2")],
+        "kb_knowledge": [article_row(1, EARLIER), article_row(2, EARLIER, kb_knowledge_base="kb2", kb_category="c2")],
+    }, fail=lambda table, q: ServiceNowRateLimited(0, "rule") if table == "kb_knowledge" else None)
+    store = wire_store(sc, fake, sync_point=migrated_sync_point(T0))
+    await sc._sync_knowledge_bases([])
+    await sc._sync_categories()
+    with pytest.raises(ServiceNowRateLimited):
+        await sc._sync_articles()
+
+    fake.fail = None
+    await sc._sync_knowledge_bases([])
+    await sc._sync_categories()
+    await sc._sync_articles()
+
+    assert sc._kbs_back_in_scope == {"kb2"}
+    assert store.keys() == ["KB0000002"]
+    assert sc.category_sync_point.data["kb_scope"] == {"ids": ["kb1", "kb2"]}
+
+
+@pytest.mark.asyncio
+async def test_article_of_a_deleted_category_is_kept_under_its_kb(servicenow_connector) -> None:
+    # ServiceNow clears the article's kb_category without changing its row; the category's group took it along.
+    sc = servicenow_connector
+    sc.category_sync_point = MemorySyncPoint({"category_scope": {"ids": ["c1", "c2"]}, "categories": {"last_sync_time": T0}})
+    sc._live_kb_ids = {"kb1"}
+    fake = FakeServiceNow({
+        "kb_category": [category_row("c1", "kb1")],
+        "kb_knowledge": [article_row(1, EARLIER), article_row(2, EARLIER, kb_category="")],
+    })
+    store = wire_store(sc, fake, stored_record(KB1, group="c1"), stored_record("KB0000002", group="c2"),
+                       sync_point=migrated_sync_point(T0))
+
+    await sc._sync_categories()
+    await sc._sync_articles()
+
+    assert store.deleted_groups == ["c2"]
+    assert store.records["KB0000002"].external_record_group_id == "kb1"
+    assert sc.category_sync_point.data["category_scope"] == {"ids": ["c1"]}
+
+
+@pytest.mark.asyncio
+async def test_unlabelled_category_is_written_under_its_parent(servicenow_connector) -> None:
+    sc = servicenow_connector
+    sc._live_kb_ids = {"kb1"}
+    store = wire_store(sc, FakeServiceNow({"kb_category": [category_row("cat1", "kb1", label="")],
+                                           "kb_knowledge": [article_row(1)]}))
+
+    await sc._sync_categories()
+    await sc._sync_articles()
+
+    [(group, _)] = sc.data_entities_processor.on_new_record_groups.await_args.args[0]
+    assert (group.external_group_id, group.name, group.parent_external_group_id) == ("cat1", "cat1", "kb1")
+    assert store.records[KB1].external_record_group_id == "cat1"
+
+
+@pytest.mark.asyncio
+async def test_failed_cleanup_is_reported(servicenow_connector, caplog) -> None:
+    sc = servicenow_connector
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge": [article_row(1)]}), stored_record("KB0000002"),
+                       sync_point=_stale_reconcile())
+    sc.data_entities_processor.delete_record_by_external_id = AsyncMock(side_effect=RuntimeError("store down"))
+
+    await sc._sync_articles()
+    await sc._report_sync_problems()
+
+    assert "KB0000002" in store.records
+    assert ("- Some articles or knowledge bases that ServiceNow no longer shows, or the filters leave out, could "
+            "not be removed; this is retried on the next sync") in caplog.text
 
 
 # --- untitled articles and knowledge bases ----------------------------------------------------

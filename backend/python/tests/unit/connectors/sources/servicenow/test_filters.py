@@ -300,7 +300,7 @@ async def test_narrowed_kb_filter_deletes_kb_records(servicenow_connector) -> No
 
     assert store.deleted_groups == ["kb2"]
     assert store.keys() == [_number(1)]
-    assert sc.category_sync_point.data["kb_scope"] == {"ids": ["kb1"]}
+    assert sc._scopes_to_store == {"kb_scope": ["kb1"]}  # stored once the articles are synced
 
 
 @pytest.mark.asyncio

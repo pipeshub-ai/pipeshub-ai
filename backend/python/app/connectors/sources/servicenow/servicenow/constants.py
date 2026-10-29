@@ -267,6 +267,7 @@ class ServiceNowDictKeys:
     DONE = "done"
     KEPT = "kept"
     FINGERPRINT = "fingerprint"
+    COUNT = "count"
 
 
 class OrganizationalEntityConfig(TypedDict):

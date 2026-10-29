@@ -367,7 +367,7 @@ class TestTransformToArticleWebpageRecord:
         assert result is None
 
     def test_article_missing_sys_id(self, connector):
-        data = {"short_description": "No ID"}
+        data = KBKnowledge(sys_id="", number="KB1", short_description="No ID", kb_knowledge_base="kb-1")
         result = connector._transform_to_article_webpage_record(data)
         assert result is None
 

@@ -1312,3 +1312,22 @@ async def test_hidden_allow_criterion_keeps_the_stored_kb_grants(servicenow_conn
     assert graph.group_grants["kb-a"] is stored
     assert "eng" in graph.kb_readers("kb-a")
     assert servicenow_connector.full_sync_coverage().complete is False
+
+
+@pytest.mark.asyncio
+async def test_hidden_group_that_is_kept_makes_the_full_sync_incomplete(servicenow_connector) -> None:
+    inst = Instance()
+    _people(inst)
+    inst.group("g-other", "plain")
+    inst.kb("kb-a", can=(inst.crit("c-hr", group="g-hr"),))
+    inst.article("KB-a", "kb-a")
+    sc = servicenow_connector
+    graph = _connector(sc, inst)
+    await _sync(sc, inst)
+    assert sc.full_sync_coverage().complete is True
+
+    inst.hidden.add("g-other")  # an ACL hides it now; it is still there
+    await _sync(sc, inst)
+
+    assert "g-other" in graph.group_nodes
+    assert sc.full_sync_coverage().complete is False

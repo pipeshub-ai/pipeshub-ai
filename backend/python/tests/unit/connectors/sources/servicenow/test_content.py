@@ -26,6 +26,7 @@ from servicenow_fakes import (
     file_response,
     migrated_sync_point,
     status_error,
+    stored_record,
     wire_store,
 )
 
@@ -252,8 +253,23 @@ async def test_feedback_without_article_bump_reprocesses_article(servicenow_conn
 
     assert store.keys() == [KB1]
     assert store.records[KB1].external_revision_id == sc._content_revision("<p>body</p>", [["fb01", LATER]])
-    assert sc.article_sync_point.data["feedback"] == {"last_sync_time": LATER}
+    assert sc.article_sync_point.data["feedback"] == {"last_sync_time": LATER, "count": 1}
     assert sc.article_sync_point.data["articles"]["last_sync_time"] == T0  # not moved by feedback
+
+
+@pytest.mark.asyncio
+async def test_deleted_feedback_reindexes_its_article(servicenow_connector) -> None:
+    # A deleted row leaves nothing a delta could see; the article row did not change.
+    sc = servicenow_connector
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, EARLIER)], "kb_feedback": [_feedback(1)]})
+    sync_point = migrated_sync_point(T0, feedback={"last_sync_time": LATER, "count": 2})
+    store = wire_store(sc, fake, stored_record(KB1), sync_point=sync_point)
+
+    await sc._sync_articles()
+
+    assert store.records[KB1].external_revision_id == sc._content_revision("<p>body</p>", [["fb01", T0]])
+    assert sync_point.data["feedback"]["count"] == 1
+    assert sync_point.data["articles"]["last_sync_time"] == T0  # not moved by the re-read
 
 
 @pytest.mark.asyncio

@@ -1503,7 +1503,7 @@ class TestSyncCategories:
         servicenow_connector.category_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_categories_skips_invalid_transform(self, servicenow_connector, mock_data_entities_processor):
+    async def test_sync_categories_writes_unlabelled_category(self, servicenow_connector, mock_data_entities_processor):
         servicenow_connector.category_sync_point = AsyncMock()
         servicenow_connector.category_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.category_sync_point.update_sync_point = AsyncMock()
@@ -1515,7 +1515,9 @@ class TestSyncCategories:
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await servicenow_connector._sync_categories()
-        mock_data_entities_processor.on_new_record_groups.assert_not_called()
+        # Named by its sys_id: its articles hang under it (see _category_ids)
+        written = [g for c in mock_data_entities_processor.on_new_record_groups.await_args_list for g, _ in c.args[0]]
+        assert [(g.external_group_id, g.name) for g in written] == [("cat1", "cat1")]
 
 
 # ===========================================================================
@@ -2846,8 +2848,10 @@ class TestStreamRecordGenerators:
 class TestSyncArticles:
     @pytest.fixture(autouse=True)
     def _reread_due(self, servicenow_connector) -> None:
-        # These tests script the datasource call by call: the access check is not one of the calls.
+        # These tests script the datasource call by call: the access check and the feedback
+        # count are not among the calls.
         servicenow_connector._access_reread_due = AsyncMock(return_value=(None, True))
+        servicenow_connector._feedback_count = AsyncMock(return_value=None)
 
     @pytest.mark.asyncio
     async def test_sync_articles_full_sync_with_pagination(self, servicenow_connector, mock_data_entities_processor):

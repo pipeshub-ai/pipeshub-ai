@@ -115,8 +115,9 @@ async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_c
     sc.article_sync_point = migrated_sync_point("2024-06-01 00:00:00")
     queries: list[str] = []
 
-    async def table(tableName, sysparm_query, **_) -> TableAPIResponse:
-        if sysparm_query.startswith("ORDERBYDESC"):  # the access check (no stored state: the pass runs)
+    async def table(tableName, sysparm_query="", **_) -> TableAPIResponse:
+        # the access check (no stored state: the pass runs), and the feedback count
+        if not sysparm_query or sysparm_query.startswith("ORDERBYDESC"):
             return _table_api_response([])
         queries.append(sysparm_query)
         # the re-read pass: an old article with Cannot Read, on its first page only
