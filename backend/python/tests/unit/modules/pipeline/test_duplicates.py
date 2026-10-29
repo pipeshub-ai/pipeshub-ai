@@ -65,6 +65,16 @@ async def test_copies_of_a_record_that_waited_for_first_use_are_reconciled() -> 
 
 
 @pytest.mark.asyncio
+async def test_copies_that_cannot_be_listed_are_left_to_the_sweep_and_the_delivery_fails() -> None:
+    graph = _graph({"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
+    graph.get_records_by_virtual_record_id = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+    with pytest.raises(ConnectionError):
+        await QueuedCopies(graph, None, logging.getLogger("t")).release(["rec-1"])
+    key, _collection, fields = graph.update_node.await_args.args
+    assert key == "rec-1" and fields["duplicateReconcilePending"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_record_without_copies_reconciles_nothing() -> None:
     graph = _graph({"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])

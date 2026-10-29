@@ -76,13 +76,7 @@ class QueuedCopies:
         if promoted > 0 or had_pending:
             await self._reconcile(record_id, virtual_record_id)
         elif await self._has_copies(record_id, virtual_record_id):
-            # As the promotion does in its own write: if the reconcile fails or the
-            # process dies, the retry sweep finishes the copies.
-            await self._graph.update_node(record_id, CollectionNames.RECORDS.value, {
-                DUPLICATE_RECONCILE_PENDING_FIELD: True,
-                DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
-                DUPLICATE_RECONCILE_DUE_AT_FIELD: get_epoch_timestamp_in_ms() + DUPLICATE_RECONCILE_GRACE_MS,
-            })
+            await self._arm_pending(record_id)
             await self._reconcile(record_id, virtual_record_id)
         if promoted > 0 and indexing_status == ProgressStatus.COMPLETED.value:
             await notify_record_indexed(
@@ -98,8 +92,23 @@ class QueuedCopies:
         the outcome. One lookup, and only when classification has ended."""
         if not virtual_record_id:
             return False
-        keys = await self._graph.get_records_by_virtual_record_id(virtual_record_id) or []
+        try:
+            keys = await self._graph.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True) or []
+        except Exception:
+            # Unknown is not "none": leave it to the retry sweep, which outlives this
+            # delivery, and fail the delivery so the stage runs release again.
+            await self._arm_pending(record_id)
+            raise
         return any(key and key != record_id for key in keys)
+
+    async def _arm_pending(self, record_id: str) -> None:
+        """The fields the promotion sets in its own write, so a reconcile that fails
+        or never runs is finished by the retry sweep."""
+        await self._graph.update_node(record_id, CollectionNames.RECORDS.value, {
+            DUPLICATE_RECONCILE_PENDING_FIELD: True,
+            DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+            DUPLICATE_RECONCILE_DUE_AT_FIELD: get_epoch_timestamp_in_ms() + DUPLICATE_RECONCILE_GRACE_MS,
+        })
 
     async def _reconcile(self, record_id: str, virtual_record_id: str | None) -> None:
         reconciler = DuplicateReconciler(
