@@ -109,7 +109,9 @@ export async function withWriteWindow<T>(
           kind: 'service',
           source: 'storage_write_window',
         });
-        void runWithOrgContext(ctx, () => repo.renewWrite(orgId, id, token, window))
+        void runWithOrgContext(ctx, () =>
+          repo.renewWrite(orgId, id, token, window),
+        )
           .catch((error: unknown) => {
             logger.warn('Could not renew a write window', {
               documentId: id,

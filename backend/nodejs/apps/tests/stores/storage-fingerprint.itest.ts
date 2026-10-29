@@ -634,7 +634,7 @@ suite('document fingerprint', function () {
     expect(id, 'the keyed upload created its row').to.be.a('string');
     await expireLease(id);
     const winner = await startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'N');
-    if (winner.status !== 200 && winner.status !== 301) throw new Error('winner ' + winner.status + ' ' + winner.text.slice(0, 300));
+    if (winner.status !== 200 && winner.status !== 301) throw new Error(`winner ${String(winner.status)} ${winner.text.slice(0, 300)}`);
     if (winner.status === 301) expect(await putTo(winner.link as string, 'same bytes')).to.be.within(200, 201);
     else expect(winner.status).to.equal(200);
     const mid = await fp(id);
