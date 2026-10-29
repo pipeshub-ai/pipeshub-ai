@@ -388,7 +388,10 @@
     "sources": "स्रोत",
     "sizes": "आकार",
     "clearFilter": "फ़िल्टर हटाएं",
-    "applyFilters": "फ़िल्टर लागू करें"
+    "applyFilters": "फ़िल्टर लागू करें",
+    "sort": "क्रम",
+    "sortAscending": "आरोही",
+    "sortDescending": "अवरोही"
   },
   "form": {
     "leaveBlankToKeep": "मौजूदा मान बनाए रखने के लिए खाली छोड़ें।",
@@ -433,6 +436,7 @@
   },
   "table": {
     "fileName": "फ़ाइल नाम",
+    "resizeColumn": "{{column}} कॉलम का आकार बदलें",
     "name": "नाम",
     "status": "स्थिति",
     "size": "आकार",
@@ -2660,8 +2664,8 @@
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
-      "backToCredentials": "← Back to credentials",
-      "backFromConfigure": "← Back",
+      "backToCredentials": "Back to credentials",
+      "backFromConfigure": "Back",
       "configPanelTitle": "{{name}} सेट अप करें",
       "instance": "Instance",
       "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",

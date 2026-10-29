@@ -472,7 +472,10 @@
     "sources": "来源",
     "sizes": "大小",
     "clearFilter": "清除筛选",
-    "applyFilters": "应用筛选"
+    "applyFilters": "应用筛选",
+    "sort": "排序",
+    "sortAscending": "升序",
+    "sortDescending": "降序"
   },
   "form": {
     "leaveBlankToKeep": "留空则保留现有值。",
@@ -517,6 +520,7 @@
   },
   "table": {
     "fileName": "文件名",
+    "resizeColumn": "调整“{{column}}”列宽",
     "name": "名称",
     "status": "状态",
     "size": "大小",
@@ -2796,8 +2800,8 @@
       "continueToConfiguration": "继续进行配置 →",
       "oauthSigningIn": "请完成您的提供商登录…",
       "authRequiredBeforeConfig": "请先完成 OAuth 授权，再配置同步和筛选条件",
-      "backToCredentials": "← 返回凭证",
-      "backFromConfigure": "← 返回",
+      "backToCredentials": "返回凭证",
+      "backFromConfigure": "返回",
       "configPanelTitle": "{{name}} 配置",
       "instance": "实例",
       "emailVisibilityDocLink": "电子邮件可见性设置指南 →",

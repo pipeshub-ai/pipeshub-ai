@@ -388,7 +388,10 @@
     "sources": "Quellen",
     "sizes": "Größen",
     "clearFilter": "Filter löschen",
-    "applyFilters": "Filter anwenden"
+    "applyFilters": "Filter anwenden",
+    "sort": "Sortieren",
+    "sortAscending": "Aufsteigend",
+    "sortDescending": "Absteigend"
   },
   "form": {
     "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
@@ -433,6 +436,7 @@
   },
   "table": {
     "fileName": "Dateiname",
+    "resizeColumn": "Breite der Spalte {{column}} ändern",
     "name": "Name",
     "status": "Status",
     "size": "Größe",
@@ -2665,8 +2669,8 @@
       "continueToConfiguration": "Weiter zur Konfiguration →",
       "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
       "authRequiredBeforeConfig": "Schließen Sie die OAuth-Autorisierung ab, bevor Sie Synchronisierung und Filter konfigurieren",
-      "backToCredentials": "← Zurück zu den Anmeldedaten",
-      "backFromConfigure": "← Zurück",
+      "backToCredentials": "Zurück zu den Anmeldedaten",
+      "backFromConfigure": "Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
       "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",

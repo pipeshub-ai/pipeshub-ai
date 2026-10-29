@@ -44,6 +44,7 @@ import {
   getReindexNodeForTableItem,
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
+import { ColumnResizeHandle, kbCol, useKbColumnWidths, type KbColumn } from './kb-column-widths';
 
 /** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
 function humanizeStatus(status: string): string {
@@ -239,6 +240,9 @@ const ACTIONS_WIDTH = '104px';
 /** Phones keep only the 40px menu button (Open in the menu previews), plus go-to-parent on search results. */
 const actionsWidth = (isMobile: boolean, hasGoToParent: boolean): string =>
   !isMobile ? ACTIONS_WIDTH : hasGoToParent ? '88px' : '56px';
+/** Size and date values stay on one line; a column narrower than its value ends in an ellipsis. */
+const ONE_LINE: React.CSSProperties = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 };
+
 const ACTION_SLOT: React.CSSProperties = { width: 24, display: 'flex', justifyContent: 'center', flexShrink: 0 };
 export const ROW_ACTION_BUTTON: React.CSSProperties = {
   cursor: 'pointer',
@@ -255,6 +259,8 @@ interface TableHeaderCellProps {
   sortable?: boolean;
   width?: string;
   flex?: number;
+  /** 'center' for every column except File name. */
+  align?: 'start' | 'center';
   sort?: SortConfig | AllRecordsSortConfig;
   onSort?: (config: SortConfig | AllRecordsSortConfig) => void;
 }
@@ -265,6 +271,7 @@ export function TableHeaderCell({
   sortable,
   width,
   flex,
+  align = 'start',
   sort,
   onSort,
 }: TableHeaderCellProps) {
@@ -288,8 +295,13 @@ export function TableHeaderCell({
         style={{
           width,
           flex,
-          justifyContent: 'flex-start',
+          justifyContent: align === 'center' ? 'center' : 'flex-start',
           height: 36,
+          // Radix ghost buttons pull out by their padding, which made neighbouring labels touch
+          margin: 0,
+          flexShrink: 0,
+          // Radix buttons are content-box; the padding must sit inside the column width
+          boxSizing: 'border-box',
           padding: '0 var(--space-2)',
           cursor: 'pointer',
           backgroundColor: 'transparent',
@@ -316,10 +328,12 @@ export function TableHeaderCell({
   return (
     <Flex
       align="center"
+      justify={align === 'center' ? 'center' : 'start'}
       gap="1"
       style={{
         width,
         flex,
+        flexShrink: flex ? undefined : 0,
         height: 36,
         padding: '0 var(--space-2)',
       }}
@@ -531,7 +545,7 @@ function TableRow({
         cursor: 'pointer',
         userSelect: 'none',
         outline: 'none',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
         // transition: 'all 0.15s ease',
       }}
       onMouseEnter={() => setIsHovered(true)}
@@ -669,7 +683,7 @@ function TableRow({
 
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
       {!isMobile && (
-      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
+      <Flex align="center" justify="center" style={{ width: kbCol('status'), flexShrink: 0, padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -694,7 +708,7 @@ function TableRow({
 
       {/* Source — All Records rows only; icon + source name on hover */}
       {!isMobile && showSourceColumn && isAllRecordDisplayRow(item) && (
-        <Flex align="center" justify="start" gap="2" style={{ width: '60px', padding: '0 var(--space-2)' }}>
+        <Flex align="center" justify="center" gap="2" style={{ width: kbCol('source'), flexShrink: 0, padding: '0 var(--space-2)' }}>
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
               {item.sourceType === 'collection' ? (
@@ -709,8 +723,8 @@ function TableRow({
 
       {/* Size — hidden on mobile to keep the row readable */}
       {!belowDesktop && (
-        <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
+        <Flex align="center" justify="center" style={{ width: kbCol('size'), flexShrink: 0, padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? formatSize(item.sizeInBytes ?? undefined)
               : formatSize(item.size)
@@ -721,8 +735,8 @@ function TableRow({
 
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!belowDesktop && (
-        <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
+        <Flex align="center" justify="center" style={{ width: kbCol('created'), flexShrink: 0, padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.createdAt ? formatDate(item.createdAt) : '-')
               : (item.createdAt ? formatDate(item.createdAt) : '-')
@@ -733,8 +747,8 @@ function TableRow({
 
       {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
-        <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
+        <Flex align="center" justify="center" style={{ width: kbCol('updated'), flexShrink: 0, padding: '0 var(--space-2)', overflow: 'hidden' }}>
+          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
               : (item.updatedAt ? formatDate(item.updatedAt) : '-')
@@ -899,8 +913,35 @@ export function KbListView({
     setRevealing(wasLoading && !loading);
   }
 
+  // Columns in screen order; each header boundary can be dragged (not on phones).
+  const { style: columnWidthStyle, startResize, reset: resetColumns } = useKbColumnWidths();
+  const visibleColumns: KbColumn[] = [
+    ...(!isMobile ? (['status'] as const) : []),
+    ...(showSourceColumn && !isMobile ? (['source'] as const) : []),
+    ...(!belowDesktop ? (['size', 'created'] as const) : []),
+    ...(!isMobile ? (['updated'] as const) : []),
+  ];
+  const resizeHandle = (left: KbColumn | 'name') => {
+    if (isMobile) return null;
+    const i = left === 'name' ? -1 : visibleColumns.indexOf(left);
+    const right = visibleColumns[i + 1] ?? null;
+    const label = left === 'name' ? t('table.fileName') : headerLabel(left);
+    return (
+      <ColumnResizeHandle
+        label={t('table.resizeColumn', { column: label })}
+        onPointerDown={(e) => startResize(e, left, right)}
+        onReset={() => resetColumns([...(left === 'name' ? [] : [left]), ...(right ? [right] : [])])}
+      />
+    );
+  };
+  function headerLabel(c: KbColumn) {
+    return { status: t('table.status'), source: t('table.source'), size: t('table.size'), created: t('table.created'), updated: t('table.updated') }[c];
+  }
+
   return (
-    <>
+    // display: contents keeps the header and body as the parent's flex children while the
+    // column-width variables reach every cell inside.
+    <div style={{ display: 'contents', ...columnWidthStyle }}>
       {/* Table Header */}
       <Flex
         align="center"
@@ -908,7 +949,7 @@ export function KbListView({
           height: 36,
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           flexShrink: 0,
         }}
       >
@@ -931,29 +972,35 @@ export function KbListView({
 
         {/* File Name */}
         <TableHeaderCell label={t('table.fileName')} field="name" flex={1} sort={sort} onSort={onSort} />
+        {resizeHandle('name')}
 
         {/* Status — on phones it moves under the name */}
-        {!isMobile && <TableHeaderCell label={t('table.status')} width="60px" sort={sort} onSort={onSort} />}
+        {!isMobile && <TableHeaderCell label={t('table.status')} width={kbCol('status')} align="center" sort={sort} onSort={onSort} />}
+        {!isMobile && resizeHandle('status')}
 
         {/* Source - Only shown in All Records mode, under the name on phones */}
         {showSourceColumn && !isMobile && (
-          <TableHeaderCell label={t('table.source')} width="60px" sort={sort} onSort={onSort} />
+          <TableHeaderCell label={t('table.source')} width={kbCol('source')} align="center" sort={sort} onSort={onSort} />
         )}
+        {showSourceColumn && !isMobile && resizeHandle('source')}
 
         {/* Size — hidden below desktop */}
         {!belowDesktop && (
-          <TableHeaderCell label={t('table.size')} field="size" sortable width="89px" sort={sort} onSort={onSort} />
+          <TableHeaderCell label={t('table.size')} field="size" sortable width={kbCol('size')} align="center" sort={sort} onSort={onSort} />
         )}
+        {!belowDesktop && resizeHandle('size')}
 
         {/* Created — hidden below desktop */}
         {!belowDesktop && (
-          <TableHeaderCell label={t('table.created')} field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+          <TableHeaderCell label={t('table.created')} field="createdAt" sortable width={kbCol('created')} align="center" sort={sort} onSort={onSort} />
         )}
+        {!belowDesktop && resizeHandle('created')}
 
         {/* Updated — hidden on mobile */}
         {!isMobile && (
-          <TableHeaderCell label={t('table.updated')} field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+          <TableHeaderCell label={t('table.updated')} field="updatedAt" sortable width={kbCol('updated')} align="center" sort={sort} onSort={onSort} />
         )}
+        {!isMobile && resizeHandle('updated')}
 
         {!belowDesktop && extraColumns ? extraColumns.header : null}
 
@@ -987,10 +1034,10 @@ export function KbListView({
             actionsWidth={parseInt(actionsWidth(isMobile, !!onGoToParent), 10)}
             columns={[
               { barWidth: 0.62 },
-              ...(!isMobile ? [{ width: '60px', barWidth: 0.45 }] : []),
-              ...(showSourceColumn && !isMobile ? [{ width: '60px', barWidth: 0.45 }] : []),
-              ...(!belowDesktop ? [{ width: '89px', barWidth: 0.55 }, { width: '147px', barWidth: 0.7 }] : []),
-              ...(!isMobile ? [{ width: '146px', barWidth: 0.7 }] : []),
+              ...(!isMobile ? [{ width: kbCol('status'), barWidth: 0.45 }] : []),
+              ...(showSourceColumn && !isMobile ? [{ width: kbCol('source'), barWidth: 0.45 }] : []),
+              ...(!belowDesktop ? [{ width: kbCol('size'), barWidth: 0.55 }, { width: kbCol('created'), barWidth: 0.7 }] : []),
+              ...(!isMobile ? [{ width: kbCol('updated'), barWidth: 0.7 }] : []),
             ]}
           />
         </Box>
@@ -1033,6 +1080,6 @@ export function KbListView({
       {pagination && (
         <KbPaginationFooter pagination={pagination} onCursorChange={onCursorChange} onLimitChange={onLimitChange} />
       )}
-    </>
+    </div>
   );
 }

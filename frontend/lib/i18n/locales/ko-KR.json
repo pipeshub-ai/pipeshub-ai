@@ -472,7 +472,10 @@
     "sources": "소스",
     "sizes": "크기",
     "clearFilter": "필터 초기화",
-    "applyFilters": "필터 적용"
+    "applyFilters": "필터 적용",
+    "sort": "정렬",
+    "sortAscending": "오름차순",
+    "sortDescending": "내림차순"
   },
   "form": {
     "leaveBlankToKeep": "기존 값을 유지하려면 비워 두세요.",
@@ -517,6 +520,7 @@
   },
   "table": {
     "fileName": "파일 이름",
+    "resizeColumn": "{{column}} 열 크기 조정",
     "name": "이름",
     "status": "상태",
     "size": "크기",
@@ -2796,8 +2800,8 @@
       "continueToConfiguration": "설정으로 계속 →",
       "oauthSigningIn": "공급자를 통한 로그인을 완료해 주세요…",
       "authRequiredBeforeConfig": "동기화 및 필터를 구성하기 전에 OAuth 인증을 완료하세요",
-      "backToCredentials": "← 자격 증명으로 돌아가기",
-      "backFromConfigure": "← 뒤로",
+      "backToCredentials": "자격 증명으로 돌아가기",
+      "backFromConfigure": "뒤로",
       "configPanelTitle": "{{name}} 설정",
       "instance": "인스턴스",
       "emailVisibilityDocLink": "이메일 표시 설정 가이드 →",

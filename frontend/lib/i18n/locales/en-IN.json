@@ -388,7 +388,10 @@
     "sources": "Sources",
     "sizes": "Sizes",
     "clearFilter": "Clear filter",
-    "applyFilters": "Apply filters"
+    "applyFilters": "Apply filters",
+    "sort": "Sort",
+    "sortAscending": "Ascending",
+    "sortDescending": "Descending"
   },
   "form": {
     "leaveBlankToKeep": "Leave blank to keep the existing value.",
@@ -433,6 +436,7 @@
   },
   "table": {
     "fileName": "File name",
+    "resizeColumn": "Resize {{column}} column",
     "name": "Name",
     "status": "Status",
     "size": "Size",
@@ -2656,8 +2660,8 @@
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
-      "backToCredentials": "← Back to credentials",
-      "backFromConfigure": "← Back",
+      "backToCredentials": "Back to credentials",
+      "backFromConfigure": "Back",
       "configPanelTitle": "Set up {{name}}",
       "instance": "Instance",
       "emailVisibilityDocLink": "Email visibility setup guide →",

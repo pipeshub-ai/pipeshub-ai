@@ -472,7 +472,10 @@
     "sources": "來源",
     "sizes": "大小",
     "clearFilter": "清除篩選",
-    "applyFilters": "套用篩選"
+    "applyFilters": "套用篩選",
+    "sort": "排序",
+    "sortAscending": "升冪",
+    "sortDescending": "降冪"
   },
   "form": {
     "leaveBlankToKeep": "留白即保留現有的值。",
@@ -517,6 +520,7 @@
   },
   "table": {
     "fileName": "檔案名稱",
+    "resizeColumn": "調整「{{column}}」欄寬",
     "name": "名稱",
     "status": "狀態",
     "size": "大小",
@@ -2796,8 +2800,8 @@
       "continueToConfiguration": "繼續進行設定 →",
       "oauthSigningIn": "請完成透過您的提供者登入…",
       "authRequiredBeforeConfig": "請先完成 OAuth 授權，再設定同步與篩選條件",
-      "backToCredentials": "← 返回憑證",
-      "backFromConfigure": "← 返回",
+      "backToCredentials": "返回憑證",
+      "backFromConfigure": "返回",
       "configPanelTitle": "{{name}} 設定",
       "instance": "執行個體",
       "emailVisibilityDocLink": "電子郵件可見性設定指南 →",
