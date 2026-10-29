@@ -1448,7 +1448,9 @@ class DropboxConnector(BaseConnector):
             ask_dropbox=lambda path: self._ask_parent_id(path, user_id, folder_id),
         )
         problems_before = len(self._health.problems)
-        relisting = older
+        # A listing from the start (a full sync, a new or restored folder) shows what exists, not what was deleted
+        # since the last cursor, which Dropbox reports only once: what it does not show is checked once it ends.
+        relisting = older or cursor is None
         listed: set[str] = set()
         self.logger.info(f"Starting sync loop for: {sync_log_name} (cursor: {bool(cursor)})")
         while True:

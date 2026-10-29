@@ -248,6 +248,21 @@ class TestTeamListing:
             ["r-old"], "dbx-1", include_trashed_roots=True)
 
     @pytest.mark.asyncio
+    async def test_a_full_sync_removes_what_was_deleted_before_it(self, team) -> None:
+        """Live, 2026-10-29: 'Down under' was deleted, then a full sync listed the team folder from the start; the
+        delete was never listed again, so its records stayed in All Records through every later sync."""
+        team.data_source.files_list_folder = AsyncMock(return_value=page([file_entry()]))
+        team.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[
+            MagicMock(id="r-down", external_record_id="id:down"), MagicMock(id="r-a", external_record_id="id:a")])
+        team._team_item_still_exists = AsyncMock(return_value=False)
+
+        await team._sync_namespace("dbmid:a", "a@x.com", "tf-1", frozenset())
+
+        team._team_item_still_exists.assert_awaited_once()
+        team.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r-down"], "dbx-1", include_trashed_roots=True)
+
+    @pytest.mark.asyncio
     async def test_a_failed_page_is_recorded_and_nothing_is_reconciled(self, team) -> None:
         team.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={"cursor": "old"})
         team.data_source.files_list_folder_continue = AsyncMock(side_effect=[fail(RESET)])
