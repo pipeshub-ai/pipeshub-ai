@@ -86,9 +86,12 @@ async def _resolve_anchors(
         )
         return [anchor] if anchor else []
 
-    record_ids = await _choose_records(
-        graph_provider, org_id, await _records_for_path(graph_provider, org_id, file_path),
-        connector_id, file_path=file_path, repo=repo, access=access,
+    record_ids, _ = await _records_for_path(
+        graph_provider, org_id, file_path,
+        choose=lambda ids: _choose_records(
+            graph_provider, org_id, ids, connector_id,
+            file_path=file_path, repo=repo, access=access,
+        ),
     )
     if not record_ids:
         return []

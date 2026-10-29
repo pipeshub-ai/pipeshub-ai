@@ -123,6 +123,12 @@ function reachesCodeTools(body: unknown): boolean {
   );
 }
 
+/** Whether a JSON-RPC message or batch calls a tool. */
+function callsATool(body: unknown): boolean {
+  if (Array.isArray(body)) return body.some(callsATool);
+  return (body as { method?: unknown } | undefined)?.method === 'tools/call';
+}
+
 /** Session users pass, as in requireScopes; an OAuth token or PAT needs code:read. */
 function mayReadCode(user: Record<string, unknown> | undefined): boolean {
   if (!user?.isOAuth) return true;
@@ -216,7 +222,8 @@ export const handleMCPRequest =
         // A client asking for code only (`/mcp?tools=code`) is not sent the
         // document tools or their instructions, which it would re-read every turn.
         const codeOnly = req.query.tools === 'code';
-        if (codeOnly) {
+        // Only listings are narrowed: a batch that also calls a document tool keeps it.
+        if (codeOnly && !callsATool(req.body)) {
           const tools = (
             mcpServer as unknown as {
               _registeredTools?: Record<string, { remove(): void }>;

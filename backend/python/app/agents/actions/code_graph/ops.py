@@ -194,7 +194,7 @@ async def resolve_symbol(
     A storage failure raises: returning None would tell the caller the symbol
     does not exist.
     """
-    record_ids = await _records_for_path(
+    record_ids, file_path = await _records_for_path(
         graph_provider, org_id, file_path,
         choose=None if access is None else lambda ids: _choose_records(
             graph_provider, org_id, ids, connector_id,
@@ -232,8 +232,8 @@ async def resolve_symbol(
 async def _records_for_path(
     graph_provider: IGraphDBProvider, org_id: str, file_path: str,
     choose: "Callable[[list[str]], Awaitable[list[str]]] | None" = None,
-) -> list[str]:
-    """Record ids for a repo-relative path.
+) -> tuple[list[str], str]:
+    """Record ids for a repo-relative path, and the indexed path they were found under.
 
     The path is a property of the file, not of its symbols, so it is stored once
     on ``codeFiles`` (keyed by record id) rather than on every block. Normally one
@@ -245,6 +245,7 @@ async def _records_for_path(
     miss the longest indexed suffix of at least two parts answers instead.
     ``choose`` narrows each candidate's records (to the caller's connector, repo
     and access), so a suffix only another connector holds does not stop the search.
+    The path comes back so a result names the file it read, not the one asked for.
     """
     parts = [p for p in file_path.split("/") if p and p != "."]
     candidates = [file_path] + ["/".join(parts[i:]) for i in range(len(parts) - 1)]
@@ -259,8 +260,8 @@ async def _records_for_path(
         if keys and choose is not None:
             keys = await choose(keys)
         if keys:
-            return keys
-    return []
+            return keys, candidate
+    return [], file_path
 
 
 async def _choose_records(
