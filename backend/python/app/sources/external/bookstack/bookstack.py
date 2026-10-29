@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Union
 
 from app.sources.client.bookstack.bookstack import BookStackClient, BookStackResponse
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 
 HTTP_ERROR_THRESHOLD = 400
 
@@ -59,6 +60,43 @@ class BookStackDataSource:
         """Return the data source instance."""
         return self
 
+    @staticmethod
+    def _error_message(data: object, status: int) -> str:
+        """BookStack's own message from its `{"error": {"message", "code"}}` body, else the status."""
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            message = data["error"].get("message")
+            if isinstance(message, str) and message:
+                return message
+        return f"HTTP {status}"
+
+    @classmethod
+    def _json_response(cls, response: HTTPResponse) -> BookStackResponse:
+        """BookStack's answer, with its status. BookStack answers every error (401, 403, 404, 422, 429, 5xx)
+        with a JSON body; that body is a failure, never data, so no caller can read it as a listing or as
+        permissions. An empty body (204 after a delete) is a success with no data. A proxy in front of BookStack
+        can answer an error with an HTML page: that is still a failure with its status."""
+        status = response.status
+        raw = response.bytes()
+        try:
+            data = response.json() if raw and raw.strip() else {}
+        except ValueError:
+            if status < HTTP_ERROR_THRESHOLD:
+                raise
+            return BookStackResponse(success=False, data=None, error=f"HTTP {status}", status_code=status)
+        if status >= HTTP_ERROR_THRESHOLD:
+            return BookStackResponse(success=False, data=data if isinstance(data, dict) else None,
+                                     error=cls._error_message(data, status), status_code=status)
+        return BookStackResponse(success=True, data=data if isinstance(data, dict) else {"data": data},
+                                 status_code=status)
+
+    @staticmethod
+    def _text_response(response: HTTPResponse, data: dict[str, str]) -> BookStackResponse:
+        """A text or file answer (exports, the page listing the connector decodes itself), with its status."""
+        status = response.status
+        if status >= HTTP_ERROR_THRESHOLD:
+            return BookStackResponse(success=False, data=data, error=f"HTTP {status}", status_code=status)
+        return BookStackResponse(success=True, data=data, status_code=status)
+
     async def list_attachments(
         self,
         count: Optional[int] = None,
@@ -102,7 +140,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -155,7 +193,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -187,7 +225,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -242,7 +280,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -274,7 +312,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -320,7 +358,7 @@ class BookStackDataSource:
         )
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -381,7 +419,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -413,7 +451,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -476,7 +514,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -508,7 +546,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -540,7 +578,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -573,7 +611,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # PDF exports return binary data, not JSON
-            return BookStackResponse(success=True, data={"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
+            return self._text_response(response, {"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -605,7 +643,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -638,7 +676,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # Markdown exports return text content, not JSON
-            return BookStackResponse(success=True, data={"content": response.text(), "content_type": response.content_type})
+            return self._text_response(response, {"content": response.text(), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -685,7 +723,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -746,7 +784,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -778,7 +816,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -841,7 +879,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -873,7 +911,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -905,7 +943,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -937,7 +975,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -970,7 +1008,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # PDF exports return binary data, not JSON
-            return BookStackResponse(success=True, data={"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
+            return self._text_response(response, {"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1003,7 +1041,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # Markdown exports return text content, not JSON
-            return BookStackResponse(success=True, data={"content": response.text(), "content_type": response.content_type})
+            return self._text_response(response, {"content": response.text(), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1051,7 +1089,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # Markdown exports return text content, not JSON
-            return BookStackResponse(success=True, data={"content": response.text(), "content_type": response.content_type})
+            return self._text_response(response, {"content": response.text(), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1112,7 +1150,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1144,7 +1182,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1207,7 +1245,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1239,7 +1277,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1271,7 +1309,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1303,7 +1341,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1336,7 +1374,7 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             # PDF exports return binary data, not JSON
-            return BookStackResponse(success=True, data={"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
+            return self._text_response(response, {"content": base64.b64encode(response.bytes()).decode('utf-8'), "content_type": response.content_type})
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1430,7 +1468,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1483,7 +1521,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1515,7 +1553,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1562,7 +1600,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1594,7 +1632,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1643,7 +1681,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1690,7 +1728,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1751,7 +1789,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1783,7 +1821,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1846,7 +1884,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1878,7 +1916,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1925,7 +1963,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1986,7 +2024,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2018,7 +2056,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2077,7 +2115,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2115,7 +2153,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2162,7 +2200,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2215,7 +2253,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2308,7 +2346,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2340,7 +2378,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2387,7 +2425,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2419,7 +2457,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2451,7 +2489,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2485,7 +2523,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2534,7 +2572,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2581,7 +2619,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return self._json_response(response)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 

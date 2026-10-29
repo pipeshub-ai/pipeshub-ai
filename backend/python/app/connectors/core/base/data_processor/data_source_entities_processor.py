@@ -2085,8 +2085,12 @@ class DataSourceEntitiesProcessor:
 
         It is even when unchanged, since the delete took its vectors. A
         manual-only item that was never indexed stays so. Decided before the
-        restore's write from the status the upsert would otherwise store.
+        restore's write from the status the upsert would otherwise store. A
+        stub is never indexed, so it is not queued even when the trashed copy
+        was an indexed real record.
         """
+        if record.is_placeholder:
+            return False
         status = record.indexing_status
         if (
             record.origin == OriginTypes.UPLOAD
@@ -2605,6 +2609,11 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return None, []
+        if record.is_placeholder:
+            # Stubs are never published, so a stub left at the model's QUEUED
+            # default (connector placeholder sweeps) would stay QUEUED forever.
+            # Set before the trash restore, which decides from this status.
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         stored_under_its_id = False
         same_id: dict | None = None
         if existing_record is None:
@@ -2775,7 +2784,9 @@ class DataSourceEntitiesProcessor:
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                # A stub (also a real record a narrowed filter turns back into one) is
+                # never indexed: it keeps the AUTO_INDEX_OFF set above, not re-queued.
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and not record.is_placeholder:
                     if record.external_revision_id != existing_record.external_revision_id:
                         # Real content change on an already-indexed record: re-queue it,
                         # even when the connector stamped AUTO_INDEX_OFF for a manual-only
@@ -3372,7 +3383,10 @@ class DataSourceEntitiesProcessor:
         re-index, but this path publishes no event and nothing consumes
         NOT_STARTED, which strands the record permanently.
         """
-        record.indexing_status = existing_record.indexing_status
+        # A stub is never indexed, so the AUTO_INDEX_OFF _process_record gave it
+        # wins over a stale stored status (such as an old QUEUED).
+        if not record.is_placeholder:
+            record.indexing_status = existing_record.indexing_status
         record.parsing_status = existing_record.parsing_status
         record.extraction_status = existing_record.extraction_status
         record.processing_started_at = existing_record.processing_started_at

@@ -30,6 +30,7 @@ on:
             - minio
             - sharepoint
             - sharepoint_sim
+            - bookstack_sim
             - confluence
             - jira
             - zendesk
@@ -388,6 +389,13 @@ jobs:
       # connectors-simulator's main with the Local FS harness (#9).
       CONNSIM_LOCALFS_REF: c36cf2a33d1f0db73211ab529781ad03a42bbfa6
       NEEDS_LOCAL_FS_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'local_fs_sim')) && 'true' || 'false' }}
+      # The bookstack_sim suite runs against the BookStack simulator on shard 1, beside the live bookstack suite
+      # (the connector reaches it by service name; nothing else changes). CONNSIM_BOOKSTACK_REF is a
+      # connectors-simulator commit with connsim/sources/bookstack (sim/bookstack, pipeshub-ai/connectors-simulator#10,
+      # until it merges).
+      CONNSIM_BOOKSTACK_REF: d7369757c0272ca4bfc706ecfe039c404b5584f8
+      BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
+      NEEDS_BOOKSTACK_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'bookstack_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -468,7 +476,7 @@ jobs:
       # Gmail suites are on shard 2 too: they need the simulator image Jira's
       # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
@@ -643,6 +651,24 @@ jobs:
           [ -d frontend/node_modules ] || (cd frontend && npm ci --no-audit --no-fund)
           echo "LOCAL_FS_DESKTOP_AGENT=$GITHUB_WORKSPACE/connectors-simulator-localfs/harness/local_fs/node/desktop_agent.ts" >> "$GITHUB_ENV"
 
+      - name: Check out the BookStack simulator
+        if: env.NEEDS_BOOKSTACK_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_BOOKSTACK_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-bookstack
+          persist-credentials: false
+
+      # No dataset: each test loads its own instance.
+      - name: Use the BookStack simulator
+        if: env.NEEDS_BOOKSTACK_SIM == 'true'
+        run: |
+          docker build -q -t "$BOOKSTACK_SIM_IMAGE" connectors-simulator-bookstack
+          echo "BOOKSTACK_SIM_COMPOSE=-f docker-compose.integration.bookstack-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/bookstack_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -721,7 +747,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -890,10 +916,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -913,13 +939,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1063,10 +1089,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1086,7 +1112,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'

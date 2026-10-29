@@ -78,6 +78,34 @@ async def test_regex_search_and_its_guards() -> None:
                                              mode="text"))["error"]
 
 
+async def test_text_search_drops_a_checkout_prefix_the_index_lacks() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/**")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert out["path"] == "src/**"
+
+
+async def test_text_search_on_a_missing_path_is_an_error_naming_what_exists() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern="x", mode="text", path="src/nope/")
+    assert "nothing was searched" in out["error"]
+    assert "src/ holds: " in out["error"] and "b.py" in out["error"]
+    for wide in ("repo/nope/**", "nope/**"):  # never widened to `**`, the whole repo
+        out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                     pattern="x", mode="text", path=wide)
+        assert "nothing was searched" in out["error"], wide
+
+
+async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None:
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "repo/src/b.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/b.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+
+
 async def test_impact_groups_what_reaches_a_symbol_by_file() -> None:
     out = without_marker(await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/b.py",
                                            qualified_name="function:target"))

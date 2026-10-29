@@ -33,7 +33,9 @@ import re
 import sys
 from pathlib import Path
 
-from shard_balance import HELD_OUT_CONNECTORS
+# Loaded by path too (deployment/docker-compose/tests/release_tooling_test.sh), so scripts/ may not be on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shard_balance import HELD_OUT_CONNECTORS  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FACTORY = REPO / "backend/python/app/connectors/core/factory/connector_factory.py"

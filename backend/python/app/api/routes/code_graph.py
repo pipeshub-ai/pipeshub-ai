@@ -16,7 +16,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.agents.actions.code_graph.code_graph import CodeGraph
-from app.agents.actions.code_graph.neighbours import DEFAULT_NEIGHBOR_LIMIT
+from app.agents.actions.code_graph.neighbours import (
+    DEFAULT_IMPACT_DEPTH,
+    DEFAULT_NEIGHBOR_LIMIT,
+    MAX_IMPACT_DEPTH,
+)
 from app.agents.actions.code_graph.path import DEFAULT_MAX_DEPTH
 from app.agents.actions.code_graph.query import DEFAULT_QUERY_LIMIT
 from app.agents.actions.code_graph.repos import (
@@ -96,6 +100,11 @@ class SearchBody(RepoRef):
     limit: int = Field(default=50, ge=1, le=200)
 
 
+class SemanticSearchBody(RepoRef):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=15, ge=1, le=50)
+
+
 class OutlineBody(RepoRef):
     file_path: str | None = None
     record_id: str | None = None
@@ -105,7 +114,7 @@ class ImpactBody(RepoRef):
     file_path: str | None = None
     record_id: str | None = None
     qualified_name: str | None = None
-    depth: int = Field(default=2, ge=1, le=3)
+    depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
 
 
 class EntryPointsBody(RepoRef):
@@ -183,7 +192,7 @@ async def _target(
 
 def _toolset(
     container: "QueryAppContainer", graph_provider: "IGraphDBProvider",
-    org_id: str, user_id: str, repo: CodeRepo,
+    org_id: str, user_id: str, repo: CodeRepo, retrieval_service: object = None,
 ) -> CodeGraph:
     logger = container.logger()
     return CodeGraph({  # type: ignore[arg-type]
@@ -195,10 +204,12 @@ def _toolset(
         "blob_store": BlobStorage(
             logger=logger, config_service=container.config_service(), graph_provider=graph_provider,
         ),
+        "retrieval_service": retrieval_service,
     })
 
 
-async def _run(request: Request, body: RepoRef, record_id: str | None, call: ToolCall) -> JSONResponse:
+async def _run(request: Request, body: RepoRef, record_id: str | None, call: ToolCall,
+               *, semantic: bool = False) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
         repo = await _target(graph_provider, org_id, user_id, body.repo, record_id)
@@ -208,7 +219,9 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
     if isinstance(repo, JSONResponse):
         return repo
     try:
-        toolset = _toolset(container, graph_provider, org_id, user_id, repo)
+        # Only the semantic search needs it, and building it costs an embedding-model lookup.
+        retrieval_service = await container.retrieval_service() if semantic else None
+        toolset = _toolset(container, graph_provider, org_id, user_id, repo, retrieval_service)
         _ok, raw = await call(toolset, repo)
         result = json.loads(raw)
     except Exception:
@@ -297,6 +310,14 @@ async def code_search(request: Request, body: SearchBody) -> JSONResponse:
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
         limit=body.limit, include_tests=body.include_tests, repo=repo.group_id,
     ))
+
+
+@router.post("/semantic-search")
+async def code_semantic_search(request: Request, body: SemanticSearchBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.search_semantic(
+        connector_id=repo.connector_id, query=body.query, limit=body.limit,
+        include_tests=body.include_tests, repo=repo.group_id,
+    ), semantic=True)
 
 
 @router.post("/outline")

@@ -62,6 +62,7 @@ from .query import (
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
 from .results import as_untrusted, attach_graph_status, without_marker
 from .search import DEFAULT_SEARCH_LIMIT, search_code_impl
+from .semantic import DEFAULT_SEMANTIC_LIMIT, search_semantic_impl
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -827,6 +828,52 @@ class CodeGraph:
                 org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
                 pattern=pattern, mode=mode, path=path, limit=limit,
                 include_tests=include_tests, repo=repo,
+            ),
+            "Failed to search the code",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/search_semantic",
+        short_description="Find code by what it does, described in plain words",
+        description=(
+            "Find the code behind a feature, a behaviour or something on screen when you "
+            "do not know its names: 'where a failed job is retried', "
+            "'what decides which config value wins'. Ranks symbols by meaning, "
+            "so near-synonyms match.\n\n"
+            "Results are addresses, best first: read_code reads one, get_neighbour and "
+            "impact walk from one. For a name you already know, search_code is exact."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="query", type=ParameterType.STRING,
+                          description="What the code does, in plain words."),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_SEMANTIC_LIMIT, description="Maximum symbols."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_SEARCH_TAGS,
+    )
+    async def search_semantic(
+        self,
+        connector_id: str,
+        query: str,
+        limit: int = DEFAULT_SEMANTIC_LIMIT,
+        *,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        result = await self._run(
+            "search_semantic",
+            connector_id,
+            lambda: search_semantic_impl(
+                graph_provider=self._graph_provider, retrieval_service=self._state.get("retrieval_service"),
+                org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
+                query=query, limit=limit, include_tests=include_tests, repo=repo,
             ),
             "Failed to search the code",
         )

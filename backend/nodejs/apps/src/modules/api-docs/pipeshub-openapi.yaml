@@ -70364,6 +70364,18 @@ paths:
           schema:
             type: string
             enum: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
+        - name: tools
+          in: query
+          required: false
+          description: |
+            `code` lists only the code-graph tools and sends only their instructions, for an agent
+            working in a code checkout. It narrows what is listed, not what may be called: a
+            `tools/call` for any other tool the caller may use still runs. It is ignored when the
+            caller cannot use the code-graph tools (see above): every other tool the caller may
+            use is served, as without it.
+          schema:
+            type: string
+            enum: ["code"]
       requestBody:
         required: true
         description: One JSON-RPC 2.0 message, or a batch (array) of them. An empty batch is accepted with `202`. The body can be at most 5 MB.
