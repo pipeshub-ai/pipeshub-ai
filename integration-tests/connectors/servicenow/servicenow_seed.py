@@ -281,7 +281,7 @@ class SeedUser:
     sys_id: str
     user_name: str
     email: str
-    password: str
+    password: str = field(repr=False)  # never in a failure report
 
 
 class ServiceNowSeed:

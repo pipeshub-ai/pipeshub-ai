@@ -130,7 +130,7 @@ so it fails closed (only the owner, managers and admins keep access).
 
 ## TC ids
 
-From the manual catalogue (`TC-…`). Automated:
+Test case ids are `TC-<area>-<n>`; test names carry the ids they cover. Automated:
 
 | Area | Ids |
 | --- | --- |
@@ -150,14 +150,14 @@ Manual or unit-only, and why:
 
 | Id | Why not here |
 | --- | --- |
-| SYNC-07, 08 | needs one article to fail (500 or ACL) while the rest read: unit tests with a fake transport (`test_servicenow_batch_a.py`) |
+| SYNC-07, 08 | needs one article to fail (500 or ACL) while the rest read: unit tests with a fake transport (`backend/python/tests/unit/connectors/sources/servicenow/test_paging_and_checkpoints.py`) |
 | SYNC-09 | timing of a change during the first sync is not reproducible |
 | SYNC-10 | the order of reads inside a run: unit tests |
 | SYNC-11 | needs the integration user's time zone changed, which affects the whole instance |
 | PERM-02, 19c (other value) | flip instance-wide properties (`block_access_with_no_user_criteria`, `apply_article_read_criteria`) |
 | PERM-03 | public/guest KBs: the guest user has no PipesHub account |
 | PERM-16 | child departments: needs a test user's department rewritten in a tree the suite does not own |
-| PERM-37, 38 | a 403 on one criteria or member table: unit tests (`test_servicenow_batch_b.py`) |
+| PERM-37, 38 | a 403 on one criteria or member table: unit tests (`backend/python/tests/unit/connectors/sources/servicenow/test_notices_and_access_gating.py`, `test_permissions.py`) |
 | ATT-01 (PPTX) | no PPTX generator in the suite's dependencies |
 | CONT-09 | a 200 MB attachment: instance size limits and run time |
 | CONT-10 (open) | opening the link as a normal user in a browser |
@@ -167,7 +167,7 @@ Manual or unit-only, and why:
 | RES-07 | an instance that hibernates or cannot be reached |
 | RES-08, 09 | removing read ACLs on `sys_user_group` or `sys_properties` changes the instance for everyone |
 | RES-10 | concurrency is read from the logs |
-| NOTIF-04 | a sync that fails part way for a reason other than sign-in, access or rate limit cannot be caused from outside: unit tests (`test_servicenow_batch_g.py`) |
+| NOTIF-04 | a sync that fails part way for a reason other than sign-in, access or rate limit cannot be caused from outside: unit tests (`backend/python/tests/unit/connectors/sources/servicenow/test_notices_and_access_gating.py`) |
 | LIFE-08 | the scheduler test runs on one connector only (the Nextcloud matrix) |
 | SEC-02 | secrets in logs: a log scan |
 | SEC-03 | the address policy: unit tests |

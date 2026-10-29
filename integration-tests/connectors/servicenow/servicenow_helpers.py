@@ -10,7 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
@@ -44,8 +44,8 @@ class Persona:
     name: str
     sys_id: str
     email: str
-    rest: ServiceNowRest | None
-    account: SecondUser | None
+    rest: ServiceNowRest | None = field(repr=False)  # holds the password
+    account: SecondUser | None = field(repr=False)  # holds a session token
 
 
 def add_account(client: PipeshubClient, accounts: dict[str, SecondUser], key: str, email: str) -> SecondUser:

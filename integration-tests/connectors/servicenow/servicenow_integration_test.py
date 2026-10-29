@@ -7,7 +7,7 @@ The module seeds its own knowledge bases (``PHIT-<run>-...``), syncs them with o
 changes them in rounds (every change of a round at once, one incremental sync) and checks each
 change by external id: the article number for articles, the sys_id for attachments and groups.
 Content is read as ``hr``, the persona the seeded KBs let read (an org admin is not a ServiceNow
-reader, so PipesHub rightly shows them nothing). The TC ids are the manual catalogue's.
+reader, so PipesHub rightly shows them nothing). The TC ids are the ones README.md lists.
 
   order 1  TC-SYNC-01/02, TC-HIER-01/02/08, TC-ATT-01, TC-CONT-01..08/10/11   first full sync
   order 2  TC-SYNC-06                second full sync of unchanged data changes nothing

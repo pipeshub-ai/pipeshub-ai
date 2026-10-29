@@ -73,9 +73,9 @@ pytestmark = [
 class World:
     seed: ServiceNowSeed
     connector_id: str
-    rest: dict[str, ServiceNowRest]  # person -> the instance as them
-    accounts: dict[str, SecondUser]  # person -> their PipesHub account
-    personas: dict[str, Persona]
+    rest: dict[str, ServiceNowRest] = field(repr=False)  # person -> the instance as them
+    accounts: dict[str, SecondUser] = field(repr=False)  # person -> their PipesHub account (holds tokens)
+    personas: dict[str, Persona] = field(repr=False)
     rounds: dict[str, Any] = field(default_factory=dict)
 
     def art(self, key: str) -> Article:
@@ -459,7 +459,9 @@ async def test_tc_perm_31_reactivated_user_gets_access_back(
 
 def _script_summaries(client: PipeshubClient, world: World) -> list[dict[str, Any]]:
     title = f"{connector_title(client, world.connector_id)}: sync finished with problems"
-    return [n for n in notices(client, title) if n.get("title") == title and "use a script" in str(n.get("message"))]
+    # "1 user criterion uses a script, which ..." / "2 user criteria use a script, which ..."
+    return [n for n in notices(client, title)
+            if n.get("title") == title and "a script, which PipesHub does not run" in str(n.get("message"))]
 
 
 @pytest.mark.order(1)
