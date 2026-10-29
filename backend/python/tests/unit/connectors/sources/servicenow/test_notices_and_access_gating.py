@@ -545,6 +545,28 @@ async def test_no_change_no_reread_and_kb_criteria_read_once(servicenow_connecto
 
 
 @pytest.mark.asyncio
+async def test_membership_change_during_a_run_rereads_next_run(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst, _graph = _criteria_model(sc)
+
+    def join_while_categories_are_read(fake: FakeServiceNow) -> None:
+        # After step 1 read the memberships, before the articles: the run that sees this is the next one.
+        if fake.calls[-1][0] == "kb_category" and ("plain", "g-hr") not in inst.members:
+            inst.members.append(("plain", "g-hr"))
+            fake.tables["sys_user_grmember"] = inst.tables()["sys_user_grmember"]
+
+    inst.fake.after_call = join_while_categories_are_read
+    await _sync(sc, inst)
+    inst.fake.after_call = None
+    _later(sc)
+    inst.fake.calls.clear()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["criterion", "membership_removed", "member_added", "kb_owner", "property"])
 async def test_each_access_change_rereads(servicenow_connector, change) -> None:
     sc = servicenow_connector
@@ -561,7 +583,7 @@ async def test_each_access_change_rereads(servicenow_connector, change) -> None:
     elif change == "kb_owner":
         inst.kbs["kb0"].update(owner="plain", sys_updated_on=later)
     else:
-        sc.apply_article_read_criteria = True
+        inst.properties["glide.knowman.apply_article_read_criteria"] = "true"
     inst.fake.calls.clear()
 
     await _sync(sc, inst)

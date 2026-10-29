@@ -7,8 +7,7 @@ import pytest
 from servicenow_fakes import migrated_sync_point
 from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
-from app.config.constants.arangodb import AccessRule, Connectors
-from app.models.entities import AppUser
+from app.config.constants.arangodb import AccessRule
 from app.models.permission import PermissionType
 from app.sources.external.servicenow.models import KBKnowledge, TableAPIResponse
 
@@ -54,8 +53,7 @@ async def test_admin_owner_and_manager_keep_an_article_with_its_own_cannot_read(
                  "deny1": {"sys_id": "deny1", "user": "u3,adm,own,mgr"}}, {})
     sc._fetch_kb_permissions_from_criteria = AsyncMock(return_value={"read": ["kbcan"], "cannot_read": [], "write": []})
     sc._kb_privileged_users = type(sc)._kb_privileged_users.__get__(sc)  # the real one
-    sc._get_admin_users = AsyncMock(return_value=[AppUser(
-        app_name=Connectors.SERVICENOW, connector_id="c", source_user_id="adm", email="adm@x.com", full_name="Admin")])
+    sc._get_admin_users = AsyncMock(return_value={"adm"})
     sc._get_fresh_datasource.return_value.get_now_table_tableName.side_effect = _kb_row_then(
         sc._get_fresh_datasource.return_value.get_now_table_tableName.side_effect)
     perms = await _grants(sc, _art(cannot_read_user_criteria="deny1"))

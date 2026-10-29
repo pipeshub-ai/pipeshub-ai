@@ -23,7 +23,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
@@ -278,6 +278,7 @@ _ORG_GROUP_PREFIXES = {
 _EVERYONE = "everyone"
 
 _SCRIPT_COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_SYS_ID = re.compile(r"[0-9a-f]{32}")
 
 _IMG_SRC = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.I)
 # An image stored on the instance (the editor's inline images); the text escapes its "=" as "&#61;"
@@ -310,6 +311,11 @@ class _Listing:
 class _CriteriaUnreadable(Exception):
     """A user criteria (Can Read or Cannot Read) could not be read or resolved to users;
     the grants it governs are left as stored."""
+
+
+class _CriteriaHidden(_CriteriaUnreadable):
+    """An ACL hides an allow criterion, or a knowledge base's criteria rows, from this account:
+    unknown until the account may read them, not a failure the next run would get past."""
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -928,12 +934,14 @@ class ServiceNowConnector(BaseConnector):
 
     async def _iter_table(
         self, table: str, query: str | None, fields: list[str], page: int = ServiceNowDefaults.BATCH_SIZE,
-        listing: _Listing | None = None,
+        listing: _Listing | None = None, *, narrow: bool = False,
     ) -> AsyncGenerator[list[TableAPIRecord], None]:
         """Every row of ``table`` that ``query`` matches (see _iter_rows). ``listing`` gets how many
         rows ServiceNow counted and how many it showed: fewer shown means an ACL hid some, so what
         the listing lacks may still be there. On a table in _ACCESS_TABLES, a 403, or a listing
-        that shows none of the rows it counts, raises ServiceNowAccessError."""
+        that shows none of the rows it counts, raises ServiceNowAccessError. ``narrow``: the caller
+        reads some rows by a condition and handles a partial listing itself, so a few hidden rows
+        do not stop the run; a 403 still does."""
         listing = listing if listing is not None else _Listing()
         try:
             async for rows in self._iter_rows(table, query, fields, page, listing):
@@ -944,7 +952,7 @@ class ServiceNowConnector(BaseConnector):
                 self._sync_read_incomplete = True
                 raise ServiceNowAccessError(table, e.message, e.details) from e
             raise
-        if table in _ACCESS_TABLES and listing.total and not listing.seen:
+        if table in _ACCESS_TABLES and not narrow and listing.total and not listing.seen:
             self._sync_read_incomplete = True
             raise ServiceNowAccessError(table, f"ServiceNow counts {listing.total} rows but shows this account none")
 
@@ -1078,8 +1086,15 @@ class ServiceNowConnector(BaseConnector):
         kbs = self.sync_filters.get(SyncFilterKey.KNOWLEDGE_BASES)
         if kbs is None or kbs.is_empty():
             return ""
+        # Only sys_ids go into the query: other text could carry conditions of its own (^NQ...).
+        values = [str(v) for v in kbs.as_list()]
+        ids = [v for v in values if _SYS_ID.fullmatch(v)]
+        if len(ids) < len(values):
+            self.logger.warning(f"Ignoring {len(values) - len(ids)} knowledge base filter values that are not sys_ids")
+        if not ids:
+            return ""
         operator = "NOT IN" if kbs.operator_value == FilterOperator.NOT_IN else "IN"
-        clause = f"^{field}{operator}{CommonStrings.COMMA.join(kbs.as_list())}"
+        clause = f"^{field}{operator}{CommonStrings.COMMA.join(ids)}"
         return clause if len(clause) <= ServiceNowDefaults.MAX_URL_LENGTH // 4 else ""
 
     def _article_in_scope(self, row: TableAPIRecord) -> bool:
@@ -1423,25 +1438,23 @@ class ServiceNowConnector(BaseConnector):
             await self._load_filters()
             await self._register_authenticated_identity()
 
+            access = await self._read_access_state()
+
             # Step 1: Sync users and groups globally
             self.logger.info("Step 1/5: Syncing users and groups...")
             await self._sync_users_and_groups()
 
             # Step 2: Get admin users from ServiceNow
             self.logger.info("Step 2/5: Fetching admin users from ServiceNow...")
-            admin_users = await self._get_admin_users()
-
-            if not admin_users:
-                self.logger.warning("No admin users found, proceeding without explicit admin permissions")
-                admin_users = []
             # The article grants need the same set (_kb_privileged_users): read once per run.
-            self._admin_source_ids = {a.source_user_id for a in admin_users if a.source_user_id}
-
-            self.logger.info(f"✅ Found {len(admin_users)} admin users")
+            self._admin_source_ids = await self._get_admin_users()
+            if not self._admin_source_ids:
+                self.logger.warning("No admin users found, proceeding without explicit admin permissions")
+            self.logger.info(f"✅ Found {len(self._admin_source_ids)} admin users")
 
             # Step 3: Knowledge Bases
             self.logger.info("Step 3/5: Syncing Knowledge Bases...")
-            await self._sync_knowledge_bases(admin_users)
+            await self._sync_knowledge_bases(self._admin_source_ids)
 
             # Step 4: Categories
             self.logger.info("Step 4/5: Syncing Categories...")
@@ -1449,7 +1462,7 @@ class ServiceNowConnector(BaseConnector):
 
             # Step 5: Articles & Attachments
             self.logger.info("Step 5/5: Syncing Articles & Attachments...")
-            await self._sync_articles()
+            await self._sync_articles(access)
 
             self.logger.info("🎉 ServiceNow KB sync completed successfully")
 
@@ -1983,46 +1996,42 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing users/groups: {e}", exc_info=True)
             raise
 
-    async def _get_admin_users(self) -> List[AppUser]:
+    async def _get_admin_users(self) -> set[str]:
         """
-        The users who read every knowledge base and article without user criteria: active
-        holders of the admin or knowledge_admin role (not knowledge_manager, which the platform
-        gives every KB owner and manager and which grants nothing by itself), matched with
-        platform users. A failed read or lookup raises: an empty list would be written as
-        "no admins" and remove their grants.
-
-        Returns:
-            List[AppUser]: List of admin users from platform
+        The sys_ids of the users who read every knowledge base and article without user criteria:
+        active holders of the admin or knowledge_admin role (not knowledge_manager, which the
+        platform gives every KB owner and manager and which grants nothing by itself). They are
+        granted through _users_to_permissions, so one with no synced app user gets nothing. A
+        failed read raises: an empty set would be written as "no admins" and remove their grants.
+        When an ACL hides some of the rows, the admins of the last full listing are kept as well.
         """
         role_assignments: list[TableAPIRecord] = []
+        listing = _Listing()
         try:
             async for rows in self._iter_table(
                 ServiceNowTables.SYS_USER_HAS_ROLE,
                 f"{ServiceNowFields.ROLE}.{ServiceNowFields.NAME}IN{ServiceNowRoles.ADMIN},{ServiceNowRoles.KNOWLEDGE_ADMIN}"
                 f"^{ServiceNowFields.STATE}={ServiceNowFields.ACTIVE}^{ServiceNowFields.USER}.{ServiceNowFields.ACTIVE}=true",
-                [ServiceNowFields.USER],
+                [ServiceNowFields.USER], listing=listing, narrow=True,
             ):
                 role_assignments.extend(rows)
         except ServiceNowAPIError as e:
             self.logger.error(f"Failed to fetch admin users from ServiceNow: {e.message}")
             raise
-        self.logger.info(f"Found {len(role_assignments)} admin role assignments")
 
-        admin_sys_ids = {a.user for a in role_assignments if getattr(a, "user", None)}
-        self.logger.info(f"Found {len(admin_sys_ids)} unique admin users")
-
-        # Match with platform users using source_user_id; an admin with no platform account is skipped.
-        admin_users = []
-        for sys_id in admin_sys_ids:
-            app_user = await self.data_entities_processor.get_user_by_source_id(
-                source_user_id=sys_id,
-                connector_id=self.connector_id
+        admin_sys_ids = {str(a.user) for a in role_assignments if getattr(a, "user", None)}
+        if listing.partial:
+            stored = await self.user_sync_point.read_sync_point(ServiceNowSyncPointKeys.ADMINS) or {}
+            admin_sys_ids |= set(stored.get(ServiceNowDictKeys.IDS) or [])
+            self.logger.warning("Some admin role assignments are hidden from this account; keeping the admins read last")
+            self._sync_read_incomplete = True
+        else:
+            await self.user_sync_point.update_sync_point(
+                ServiceNowSyncPointKeys.ADMINS, {ServiceNowDictKeys.IDS: sorted(admin_sys_ids)}
             )
-            if app_user:
-                admin_users.append(app_user)
+        self.logger.info(f"Found {len(admin_sys_ids)} unique admin users")
+        return admin_sys_ids
 
-        self.logger.info(f"✅ Matched {len(admin_users)} admin users with platform accounts")
-        return admin_users
 
     async def _sync_users(self) -> None:
         """
@@ -2070,6 +2079,7 @@ class ServiceNowConnector(BaseConnector):
                     ServiceNowFields.SYS_CREATED_ON,
                     ServiceNowFields.SYS_UPDATED_ON,
                 ],
+                narrow=query is not None,  # a delta of hidden users only moves on
             ):
                 # Pages come oldest first, so the last row is the newest seen
                 latest_update_time = users_data[-1].sys_updated_on
@@ -2080,7 +2090,9 @@ class ServiceNowConnector(BaseConnector):
                         inactive.add(user_data.sys_id)
                         continue
                     if not (user_data.email or "").strip():
+                        # Signs in as no PipesHub user: one stored with the email it had loses access too.
                         no_email += 1
+                        inactive.add(user_data.sys_id)
                         continue
                     app_user = await self._transform_to_app_user(user_data)
                     if app_user:
@@ -2090,12 +2102,29 @@ class ServiceNowConnector(BaseConnector):
                     await self.data_entities_processor.on_new_app_users(app_users)
                     total_synced += len(app_users)
 
-            if inactive:
-                stored = [u for u in await self.data_entities_processor.get_all_app_users(
+            # A deleted user leaves no row a delta could see: the stored users are checked against
+            # the active ones with an email on every full read, and at least once per
+            # RECONCILE_INTERVAL_SECONDS.
+            now = datetime.now(timezone.utc)
+            checked = await self._read_checkpoint(self.user_sync_point, ServiceNowSyncPointKeys.USERS_RECONCILE)
+            reconcile = query is None or not checked or now - datetime.strptime(
+                checked, ServiceNowDefaults.DATETIME_FORMAT
+            ).replace(tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
+            if inactive or reconcile:
+                stored_users = await self.data_entities_processor.get_all_app_users(
                     connector_id=self.connector_id, raise_on_error=True
-                ) if u.source_user_id in inactive]
+                )
+                gone = {u.source_user_id for u in stored_users if u.source_user_id in inactive}
+                if reconcile:
+                    gone |= await self._users_gone({u.source_user_id for u in stored_users if u.source_user_id} - gone)
+                stored = [u for u in stored_users if u.source_user_id in gone]
                 if stored:
                     await self.data_entities_processor.withdraw_app_user_access(self.connector_id, stored)
+                if reconcile:
+                    await self.user_sync_point.update_sync_point(
+                        ServiceNowSyncPointKeys.USERS_RECONCILE,
+                        {ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT)},
+                    )
 
             # Save checkpoint for next sync
             if latest_update_time:
@@ -2115,6 +2144,25 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
+
+    async def _users_gone(self, stored: set[str]) -> set[str]:
+        """The ``stored`` user sys_ids that are no active user with an email at the source: deleted,
+        or changed without a delta seeing it. Under an ACL that hides some users, only those
+        ServiceNow counts no such row for."""
+        live_query = f"{ServiceNowFields.ACTIVE}=true^{ServiceNowFields.EMAIL}ISNOTEMPTY"
+        live: set[str] = set()
+        listing = _Listing()
+        async for rows in self._iter_table(
+            ServiceNowTables.SYS_USER, live_query, [ServiceNowFields.SYS_ID],
+            page=ServiceNowDefaults.ID_PAGE_SIZE, listing=listing,
+        ):
+            live.update(str(r.sys_id) for r in rows if r.sys_id)
+        gone = stored - live
+        if listing.partial:
+            gone = {u for u in gone if await self._gone_at_source(
+                ServiceNowTables.SYS_USER, f"{ServiceNowFields.SYS_ID}={u}^{live_query}"
+            )}
+        return gone
 
     @staticmethod
     def _is_active(row: object) -> bool:
@@ -2618,7 +2666,7 @@ class ServiceNowConnector(BaseConnector):
             )
             raise
 
-    async def _sync_knowledge_bases(self, admin_users: List[AppUser]) -> None:
+    async def _sync_knowledge_bases(self, admin_source_ids: Iterable[str]) -> None:
         """
         Sync knowledge bases from ServiceNow kb_knowledge_base table.
 
@@ -2635,7 +2683,7 @@ class ServiceNowConnector(BaseConnector):
         Every run reads every KB (see the comment in the body).
 
         Args:
-            admin_users: List of admin users to grant explicit READ permissions
+            admin_source_ids: sys_ids of the admins and knowledge admins (_get_admin_users)
         """
         try:
             # This read stays full. A knowledge base holds its read grants in
@@ -2705,6 +2753,7 @@ class ServiceNowConnector(BaseConnector):
                                 deny_criteria_ids=criteria[ServiceNowDictKeys.CANNOT_WRITE],
                             )
                             manager_permissions = await self._users_to_permissions(managers, PermissionType.READ)
+                            admin_permissions = await self._users_to_permissions(set(admin_source_ids), PermissionType.READ)
                         except (_CriteriaUnreadable, ServiceNowAPIError) as e:
                             _raise_if_run_stop(e)
                             # Unknown is not empty: write no grants for this KB, keep what is stored.
@@ -2714,7 +2763,8 @@ class ServiceNowConnector(BaseConnector):
                             self._sync_read_incomplete = True
                             continue
 
-                        permission_objects = read_permissions + write_permissions + manager_permissions
+                        # Admins and knowledge admins read every knowledge base
+                        permission_objects = read_permissions + write_permissions + manager_permissions + admin_permissions
 
                         owner_sys_id = kb_data.owner
                         if owner_sys_id:
@@ -2728,15 +2778,6 @@ class ServiceNowConnector(BaseConnector):
                                 ],
                             )
                             permission_objects.extend(owner_perms)
-
-                        # Admins and knowledge admins read every knowledge base
-                        for admin_user in admin_users:
-                            admin_permission = Permission(
-                                email=admin_user.email,
-                                type=PermissionType.READ,
-                                entity_type=EntityType.USER,
-                            )
-                            permission_objects.append(admin_permission)
 
                         kb_list_with_permissions.append((kb_record_group, permission_objects))
 
@@ -2936,7 +2977,24 @@ class ServiceNowConnector(BaseConnector):
             await self.category_sync_point.update_sync_point(key, {ServiceNowDictKeys.IDS: sorted(in_scope | kept)})
         return in_scope - previous, kept
 
-    async def _sync_articles(self) -> None:
+    async def _article_checkpoint(self) -> tuple[bool, str | None]:
+        """(whether articles are stored under their number, the article checkpoint): no checkpoint
+        until they are, so every run reads every article."""
+        migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2))
+        return migrated, (
+            await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES) if migrated else None
+        )
+
+    async def _read_access_state(self) -> tuple[dict | None, bool]:
+        """The instance properties, then _access_reread_due, before the steps read what it guards:
+        a change made while they run is then seen by the next run. The properties change without
+        a restart, and the fingerprint includes them."""
+        self.apply_article_read_criteria = await self._resolve_article_read_criteria()
+        self.block_kb_without_criteria = await self._resolve_block_no_criteria()
+        _, last_sync_time = await self._article_checkpoint()
+        return await self._access_reread_due(full=not last_sync_time)
+
+    async def _sync_articles(self, access: tuple[dict | None, bool] | None = None) -> None:
         """
         Sync KB articles and attachments from ServiceNow using batch processing.
 
@@ -2953,12 +3011,11 @@ class ServiceNowConnector(BaseConnector):
         - /api/now/table/user_criteria - Permissions
         - /api/now/table/sys_attachment - Attachments
         - /api/now/table/kb_feedback - Feedback (for the revision; see _fetch_article_content)
+
+        ``access``: _access_reread_due, taken by _run_sync before the steps that read what it guards.
         """
         try:
-            migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2))
-            last_sync_time = (
-                await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES) if migrated else None
-            )
+            migrated, last_sync_time = await self._article_checkpoint()
             current = self._current_article_query()
             # Inline images and feedback change without their article row changing.
             inline_changed, inline_checkpoint = await self._changed_articles(
@@ -2971,7 +3028,7 @@ class ServiceNowConnector(BaseConnector):
 
             # (query, whether its rows move the checkpoint, whether its rows are versions to resolve)
             queries = [(current, True, False)]
-            fingerprint, reread = await self._access_reread_due(full=not last_sync_time)
+            fingerprint, reread = access or await self._access_reread_due(full=not last_sync_time)
             if last_sync_time:
                 since = self._delta_since(last_sync_time)
                 self.logger.info(f"🔄 Delta sync: Fetching articles updated after {since}")
@@ -3084,6 +3141,12 @@ class ServiceNowConnector(BaseConnector):
                                 article_data, attachments.get(article_data.sys_id, []),
                                 feedback.get(article_data.get(ServiceNowFields.NUMBER), []),
                             )
+                        except _CriteriaHidden as e:
+                            # Its stored grants stay. A criterion that stays hidden does not hold the
+                            # checkpoint: the re-read pass lists the articles with criteria.
+                            self.logger.error(f"❌ Skipping article {article_data.sys_id}, its user criteria were not read in full: {e}")
+                            note_failed(article_data, moves_checkpoint=False, what="Articles whose user criteria could not be read in full, kept as they were: {n}")
+                            continue
                         except Exception as e:
                             _raise_if_run_stop(e)
                             self.logger.error(
@@ -3595,12 +3658,17 @@ class ServiceNowConnector(BaseConnector):
             # and an empty Cannot Read list would grant the KB to users it denies.
             for key, table in _KB_MTOM:
                 try:
+                    listing = _Listing()
                     async for rows in self._iter_table(
-                        table, f"{ServiceNowFields.KB_KNOWLEDGE_BASE}={kb_sys_id}", [ServiceNowFields.USER_CRITERIA]
+                        table, f"{ServiceNowFields.KB_KNOWLEDGE_BASE}={kb_sys_id}", [ServiceNowFields.USER_CRITERIA],
+                        listing=listing, narrow=True,
                     ):
                         criteria_map[key].extend(
                             r.user_criteria for r in rows if getattr(r, ServiceNowFields.USER_CRITERIA, None)
                         )
+                    if listing.partial:
+                        self._sync_read_incomplete = True
+                        raise _CriteriaHidden(f"{table} rows of knowledge base {kb_sys_id} are hidden from this account")
                 except ServiceNowAPIError as e:
                     self.logger.error(f"Failed to fetch {table} for KB {kb_sys_id}: {e.message}")
                     raise
@@ -3698,17 +3766,22 @@ class ServiceNowConnector(BaseConnector):
         try:
             return [
                 r for r in await self._fetch_user_criteria(deny_ids)
-                if self._criteria_is_active(r) and not self._is_guest_only(r)
+                if self._criteria_is_active(r) and not await self._is_guest_only(r)
             ]
         except Exception as e:
             raise _CriteriaUnreadable(str(e)) from e
 
-    def _is_guest_only(self, record: TableAPIRecord) -> bool:
-        dims = self._dims(record)
+    async def _is_guest_only(self, record: TableAPIRecord) -> bool:
+        """The out-of-box Guest User row, unedited: its own script, and one user who has no app user
+        here. Any edit (the script, another field, a synced user) takes the normal path."""
+        users = self._split_ids(getattr(record, ServiceNowFields.USER, None))
         return (
             record.sys_id == ServiceNowDefaults.GUEST_USER_CRITERIA
-            and dims == [ServiceNowFields.USER]
-            and len(self._split_ids(getattr(record, ServiceNowFields.USER, None))) == 1
+            and " ".join(str(getattr(record, ServiceNowFields.SCRIPT, None) or "").split())
+            == " ".join(ServiceNowDefaults.GUEST_USER_CRITERIA_SCRIPT.split())
+            and self._dims(record) == [ServiceNowFields.USER]
+            and len(users) == 1
+            and users[0] not in await self._emails_by_source_id()
         )
 
     async def _users_allowed_by(self, can_records: list[TableAPIRecord], deny_records: list[TableAPIRecord]) -> set[str]:
@@ -3840,7 +3913,7 @@ class ServiceNowConnector(BaseConnector):
         _sync_knowledge_bases, else here). Raises if unreadable, so nothing is cached and the
         article keeps its stored grants."""
         if self._admin_source_ids is None:
-            self._admin_source_ids = {a.source_user_id for a in await self._get_admin_users() if a.source_user_id}
+            self._admin_source_ids = await self._get_admin_users()
         people = set(self._admin_source_ids)
         if kb_id and kb_id not in self._kb_owner_cache:
             ids: set[str] = set()
@@ -3888,12 +3961,12 @@ class ServiceNowConnector(BaseConnector):
         comments and whitespace is no script; anything else counts as one."""
         return bool(_SCRIPT_COMMENTS.sub("", str(getattr(record, ServiceNowFields.SCRIPT, None) or "")).strip())
 
-    @staticmethod
-    def _is_has_role(record: TableAPIRecord) -> bool:
-        """The out-of-box "Has atleast one role apart from snc_internal KB" criterion, unedited: its
-        script is evaluated here (see _has_role_users). Any other script is not."""
+    def _is_has_role(self, record: TableAPIRecord) -> bool:
+        """The out-of-box "Has atleast one role apart from snc_internal KB" criterion, unedited (its
+        script, no field): the script is evaluated here (see _has_role_users). Any other is not."""
         return (
             record.sys_id == ServiceNowDefaults.HAS_ROLE_CRITERIA
+            and not self._dims(record)
             and " ".join(str(getattr(record, ServiceNowFields.SCRIPT, None) or "").split())
             == " ".join(ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT.split())
         )
@@ -3920,11 +3993,14 @@ class ServiceNowConnector(BaseConnector):
     def _allow_rows(self, records: list[TableAPIRecord]) -> list[TableAPIRecord]:
         """The active Can Read / Can Contribute rows that may grant. A condition not evaluated here
         counts as not met: under Match All the row grants nobody, under Match Any only its
-        evaluated fields grant (they are all the evaluation below reads)."""
+        evaluated fields grant (they are all the evaluation below reads). A row that could not be
+        read raises _CriteriaHidden: whom it grants is unknown, which is not "nobody"."""
+        hidden = [r.sys_id for r in records if self._criteria_is_active(r) and self._unreadable(r)]
+        if hidden:
+            raise _CriteriaHidden(f"user criteria {', '.join(hidden)} could not be read")
         return [
             r for r in records
             if self._criteria_is_active(r)
-            and not self._unreadable(r)
             and not (self._match_all(r) and self._has_unevaluated_script(r))
         ]
 
@@ -3939,19 +4015,32 @@ class ServiceNowConnector(BaseConnector):
         nobody and, as a deny, denies everyone it may cover; the full sync unlinks nothing.
         """
         missing = [c for c in dict.fromkeys(criteria_ids) if c not in self._criteria_rows]
+        fields = [
+            ServiceNowFields.SYS_ID, ServiceNowFields.ACTIVE, ServiceNowFields.MATCH_ALL,
+            ServiceNowFields.ADVANCED, ServiceNowFields.SCRIPT, *self._CRITERIA_DIMENSIONS,
+        ]
         for chunk in self._chunk_ids(missing):
             async for page in self._iter_table(
                 ServiceNowTables.USER_CRITERIA,
                 f"{ServiceNowFields.SYS_ID}IN{CommonStrings.COMMA.join(chunk)}",
-                [
-                    ServiceNowFields.SYS_ID, ServiceNowFields.ACTIVE, ServiceNowFields.MATCH_ALL,
-                    ServiceNowFields.ADVANCED, ServiceNowFields.SCRIPT, *self._CRITERIA_DIMENSIONS,
-                ],
+                fields,
+                narrow=True,
             ):
-                self._criteria_rows.update((r.sys_id, r) for r in page)
+                for r in page:
+                    # A field ACL leaves the key out (an empty field it shows is ""): read without
+                    # it, the row could pass for "Any User".
+                    shown = r.model_dump()
+                    hidden = any(f not in shown for f in fields)
+                    if hidden:
+                        self.logger.warning(f"User criteria {r.sys_id} has fields hidden from this account; it grants nobody and denies everyone")
+                        self._note_criteria("hidden", r.sys_id)
+                        self._sync_read_incomplete = True
+                    self._criteria_rows[r.sys_id] = TableAPIRecord(
+                        sys_id=r.sys_id, active=shown.get(ServiceNowFields.ACTIVE, "true"), unreadable="true"
+                    ) if hidden else r
         for c in missing:
             row = self._criteria_rows.get(c)
-            if row is not None and self._has_script(row) and not self._is_has_role(row):
+            if row is not None and self._has_unevaluated_script(row) and not await self._is_guest_only(row):
                 self._note_criteria("scripted", c)
             if c in self._criteria_rows:
                 continue
@@ -3968,6 +4057,9 @@ class ServiceNowConnector(BaseConnector):
         """The groups and all their active descendants (sys_user_group.parent): ServiceNow group
         criteria match the members of child groups, and an inactive group matches nobody.
         Raises on any read error. ``listings`` gets how each read went."""
+        # Not from a group known to be inactive: its active children would match through it. An
+        # unknown one is kept, so a deny that names a hidden group still fails closed.
+        group_ids = [g for g in group_ids if g not in self._groups or self._is_active(self._groups[g])]
         seen = set(group_ids)
         frontier = list(group_ids)
         while frontier:
@@ -3978,7 +4070,7 @@ class ServiceNowConnector(BaseConnector):
                     ServiceNowTables.SYS_USER_GROUP,
                     f"{ServiceNowFields.PARENT}IN{CommonStrings.COMMA.join(chunk)}^{ServiceNowFields.ACTIVE}=true",
                     [ServiceNowFields.SYS_ID],
-                    listing=listing,
+                    listing=listing, narrow=True,
                 ):
                     children.extend(r.sys_id for r in rows if getattr(r, "sys_id", None))
                 if listings is not None:
@@ -4037,7 +4129,8 @@ class ServiceNowConnector(BaseConnector):
             for chunk in self._chunk_ids(ids):
                 listing = _Listing()
                 async for rows in self._iter_table(
-                    table, f"{filter_field}IN{CommonStrings.COMMA.join(chunk)}^{condition}", [user_field], listing=listing
+                    table, f"{filter_field}IN{CommonStrings.COMMA.join(chunk)}^{condition}", [user_field],
+                    listing=listing, narrow=True,
                 ):
                     users.update(str(getattr(r, user_field)) for r in rows if getattr(r, user_field, None))
                 listings.append(listing)

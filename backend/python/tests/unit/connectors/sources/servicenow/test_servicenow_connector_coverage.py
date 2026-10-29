@@ -467,8 +467,9 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_orchestration(self, connector):
         connector.servicenow_client = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, False))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[])
+        connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()
@@ -481,9 +482,9 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_with_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
-        admin_user = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, False))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[admin_user])
+        connector._get_admin_users = AsyncMock(return_value={"admin-1"})
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()

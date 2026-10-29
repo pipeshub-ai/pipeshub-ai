@@ -150,8 +150,9 @@ async def test_sn_run_sync_resets_the_user_listing_cache(servicenow_connector) -
     sc = servicenow_connector
     sc.servicenow_client = MagicMock()
     sc._email_by_source_id = {"stale": "stale@x.com"}
-    with patch.object(sc, "_sync_users_and_groups", new_callable=AsyncMock), \
-         patch.object(sc, "_get_admin_users", new_callable=AsyncMock, return_value=[]), \
+    with patch.object(sc, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+         patch.object(sc, "_sync_users_and_groups", new_callable=AsyncMock), \
+         patch.object(sc, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
          patch.object(sc, "_sync_knowledge_bases", new_callable=AsyncMock), \
          patch.object(sc, "_sync_categories", new_callable=AsyncMock), \
          patch.object(sc, "_sync_articles", new_callable=AsyncMock):

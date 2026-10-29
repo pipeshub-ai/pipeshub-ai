@@ -605,6 +605,7 @@ class TestSyncUsers:
             return_value={"last_sync_time": "2023-06-01 00:00:00"}
         )
         connector.user_sync_point.update_sync_point = AsyncMock()
+        connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
@@ -726,7 +727,7 @@ class TestGetAdminUsers:
         connector.data_store_provider.transaction = _transaction
 
         admins = await connector._get_admin_users()
-        assert len(admins) == 0
+        assert admins == {"u1-str"}  # granted only if synced (_users_to_permissions)
 
     @pytest.mark.asyncio
     async def test_admin_users_api_failure(self, connector) -> None:
@@ -752,8 +753,9 @@ class TestRunSyncComprehensive:
     @pytest.mark.asyncio
     async def test_run_sync_with_no_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, False))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[])
+        connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()
@@ -761,7 +763,7 @@ class TestRunSyncComprehensive:
         await connector.run_sync()
 
         connector._sync_users_and_groups.assert_awaited_once()
-        connector._sync_knowledge_bases.assert_awaited_once_with([])
+        connector._sync_knowledge_bases.assert_awaited_once_with(set())
         connector._sync_categories.assert_awaited_once()
         connector._sync_articles.assert_awaited_once()
 

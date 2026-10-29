@@ -567,8 +567,8 @@ class TestGetAdminUsers:
             servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
 
             result = await servicenow_connector._get_admin_users()
-            assert len(result) == 1
-            assert result[0].email == "admin@example.com"
+            assert result == {"sys-admin-1"}
+            servicenow_connector.data_entities_processor.get_user_by_source_id.assert_not_awaited()
 
     async def test_failed_admin_read_raises(self, servicenow_connector) -> None:
         # An empty list would be written as "no admins" and remove their grants.
@@ -600,7 +600,7 @@ class TestGetAdminUsers:
             servicenow_connector.data_store_provider.transaction = _tx
 
             result = await servicenow_connector._get_admin_users()
-            assert result == []
+            assert result == {"sys-admin-1"}  # granted only if synced (_users_to_permissions)
 
     async def test_exception_raises(self, servicenow_connector) -> None:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
@@ -852,6 +852,7 @@ class TestSyncUsers:
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock) as mock_transform:
@@ -881,6 +882,7 @@ class TestSyncUsers:
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
@@ -905,8 +907,9 @@ class TestRunSync:
 
     async def test_full_sync_flow(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
-             patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=[]), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+             patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
+             patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
              patch.object(servicenow_connector, "_sync_knowledge_bases", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_sync_categories", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_sync_articles", new_callable=AsyncMock):
@@ -914,17 +917,19 @@ class TestRunSync:
 
     async def test_sync_continues_without_admin_users(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
-             patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=[]), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+             patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
+             patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
              patch.object(servicenow_connector, "_sync_knowledge_bases", new_callable=AsyncMock) as mock_kb, \
              patch.object(servicenow_connector, "_sync_categories", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_sync_articles", new_callable=AsyncMock):
             await servicenow_connector.run_sync()
-            mock_kb.assert_called_once_with([])
+            mock_kb.assert_called_once_with(set())
 
     async def test_a_failed_admin_read_writes_no_kb_so_stored_admin_grants_stay(self, servicenow_connector) -> None:
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+             patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock,
                           side_effect=ServiceNowAPIError(500, "fail", None)), \
              patch.object(servicenow_connector, "_sync_knowledge_bases", new_callable=AsyncMock) as mock_kb, \
@@ -937,7 +942,8 @@ class TestRunSync:
 
     async def test_sync_propagates_exceptions(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock,
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+             patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock,
                           side_effect=Exception("sync error")):
             with pytest.raises(Exception, match="sync error"):
                 await servicenow_connector.run_sync()
@@ -1343,6 +1349,7 @@ class TestSyncUsersDeep:
         servicenow_connector.user_sync_point = AsyncMock()
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         page1 = [
             _sys_user_row(
@@ -1368,6 +1375,7 @@ class TestSyncUsersDeep:
             return_value={"last_sync_time": "2024-01-01 00:00:00"}
         )
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=MagicMock(spec=AppUser)):
@@ -1658,22 +1666,7 @@ class TestGetAdminUsersDeep:
             servicenow_connector.data_store_provider.transaction = _tx
 
             result = await servicenow_connector._get_admin_users()
-            assert result == []
-
-    @pytest.mark.asyncio
-    async def test_match_exception_raises(self, servicenow_connector) -> None:
-        mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(
-            side_effect=_listing([{"user": "admin-1"}])
-        )
-        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(
-            side_effect=RuntimeError("lookup fail")
-        )
-
-        with pytest.raises(RuntimeError, match="lookup fail"):
-            await servicenow_connector._get_admin_users()
+            assert result == set()
 
 
 # ===========================================================================
@@ -2087,8 +2080,8 @@ class TestCriteriaDenyAndMatchAll:
             ids = sysparm_query.split("IN", 1)[1].split("^")[0].split(",")
             if tableName == "sys_user_group":
                 rows = [{"sys_id": c} for i in ids for c in (children or {}).get(i, [])]
-            elif tableName == "user_criteria":
-                rows = [criteria[i] for i in sorted(ids) if i in criteria]
+            elif tableName == "user_criteria":  # every requested field, "" when empty, as the Table API answers
+                rows = [{f: criteria[i].get(f, "") for f in sysparm_fields.split(",")} for i in sorted(ids) if i in criteria]
             else:
                 user_field = sysparm_fields.split(",")[0]
                 users = [u for i in ids for u in members.get((tableName, i), [])]
@@ -2584,8 +2577,7 @@ class TestProcessCriteriaPermissions:
     async def test_process_criteria_permissions_batch_fetch_success(self, servicenow_connector):
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
-            {"sys_id": "crit1", "user": "u1", "group": "", "role": "",
-             "department": "", "location": "", "company": "", "cost_center": ""},
+            {"sys_id": "crit1", "active": "true", "match_all": "false", "advanced": "false", "script": "", "user": "u1", "group": "", "role": "", "department": "", "location": "", "company": ""},
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -2621,7 +2613,7 @@ class TestProcessCriteriaPermissions:
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
-            {"sys_id": "crit1", "user": "u1"},
+            {"sys_id": "crit1", "active": "true", "match_all": "false", "advanced": "false", "script": "", "user": "u1", "group": "", "role": "", "department": "", "location": "", "company": ""},
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 

@@ -191,8 +191,10 @@ class ServiceNowDefaults:
     # is readable only by its owner, managers and knowledge admins.
     BLOCK_NO_CRITERIA_PROPERTY = "glide.knowman.block_access_with_no_user_criteria"
     # The out-of-box "Guest User" criterion every new knowledge base gets as Cannot Read and
-    # Cannot Contribute: it denies only the guest user, who has no PipesHub account.
+    # Cannot Contribute: it denies only the guest user, who has no PipesHub account. Its script,
+    # trusted only while it reads exactly so (see ServiceNowConnector._is_guest_only):
     GUEST_USER_CRITERIA = "76f09af6cb1200108ad442fcf7076dbf"
+    GUEST_USER_CRITERIA_SCRIPT = 'answer = user_id == GlideUser.getUser("guest").getID();'
     # The out-of-box "Has atleast one role apart from snc_internal KB" criterion every new
     # knowledge base gets as Can Contribute. Its script, evaluated only while it reads exactly so:
     HAS_ROLE_CRITERIA = "f9397919f79d52507787d3e543bfd6cd"
@@ -242,6 +244,10 @@ class ServiceNowSyncPointKeys:
     # What the tables behind article grants looked like when the re-read pass last ran (see
     # ServiceNowConnector._access_reread_due)
     ACCESS_FINGERPRINT = "access_fingerprint"
+    # When the stored users were last checked against the active ones with an email (see _sync_users)
+    USERS_RECONCILE = "users_reconcile/last"
+    # The admins and knowledge admins of the last listing ServiceNow showed in full (see _get_admin_users)
+    ADMINS = "admins"
 
 
 class ServiceNowDictKeys:

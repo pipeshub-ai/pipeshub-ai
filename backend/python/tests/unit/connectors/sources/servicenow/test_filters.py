@@ -81,32 +81,50 @@ def test_builder_declares_the_filters_once() -> None:
 
 
 _TWO_KBS = {"kb_knowledge": [article_row(1), article_row(2, kb_knowledge_base="kb2")]}
+# Knowledge base sys_ids as an instance makes them: only such values reach a query.
+K1, K2 = f"{0xB1:032x}", f"{0xB2:032x}"
+_TWO_HEX_KBS = {"kb_knowledge": [article_row(1, kb_knowledge_base=K1), article_row(2, kb_knowledge_base=K2)]}
 
 
 @pytest.mark.asyncio
 async def test_kb_in_filter_query(servicenow_connector) -> None:
     sc = servicenow_connector
-    _filters(sc, kbs=("in", ["kb1"]))
-    fake = FakeServiceNow(_TWO_KBS)
+    _filters(sc, kbs=("in", [K1]))
+    fake = FakeServiceNow(_TWO_HEX_KBS)
     store = wire_store(sc, fake)
 
     await sc._sync_articles()
 
     assert store.keys() == [_number(1)]
-    assert all("^kb_knowledge_baseINkb1" in q for q in fake.calls_to("kb_knowledge"))
+    assert all(f"^kb_knowledge_baseIN{K1}" in q for q in fake.calls_to("kb_knowledge"))
 
 
 @pytest.mark.asyncio
 async def test_kb_not_in_filter_query(servicenow_connector) -> None:
     sc = servicenow_connector
-    _filters(sc, kbs=("not_in", ["kb1"]))
-    fake = FakeServiceNow(_TWO_KBS)
+    _filters(sc, kbs=("not_in", [K1]))
+    fake = FakeServiceNow(_TWO_HEX_KBS)
     store = wire_store(sc, fake)
 
     await sc._sync_articles()
 
     assert store.keys() == [_number(2)]
-    assert all("^kb_knowledge_baseNOT INkb1" in q for q in fake.calls_to("kb_knowledge"))
+    assert all(f"^kb_knowledge_baseNOT IN{K1}" in q for q in fake.calls_to("kb_knowledge"))
+
+
+@pytest.mark.asyncio
+async def test_kb_filter_value_that_is_no_sys_id_is_dropped(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _filters(sc, kbs=("in", [K1, "x^NQworkflow_state=draft"]))
+    fake = FakeServiceNow(_TWO_HEX_KBS)
+    store = wire_store(sc, fake)
+
+    await sc._sync_articles()
+
+    assert store.keys() == [_number(1)]
+    queries = fake.calls_to("kb_knowledge")
+    assert all(f"^kb_knowledge_baseIN{K1}^" in q for q in queries)
+    assert not any("workflow_state=draft" in q for q in queries)
 
 
 @pytest.mark.asyncio
@@ -237,17 +255,17 @@ async def test_edit_that_leaves_the_window_deletes_on_incremental(servicenow_con
 async def test_filters_apply_to_the_reread_pass(servicenow_connector) -> None:
     # The articles with their own criteria are re-read every run: only those in scope.
     sc = servicenow_connector
-    _filters(sc, kbs=("in", ["kb1"]))
+    _filters(sc, kbs=("in", [K1]))
     fake = FakeServiceNow({"kb_knowledge": [
-        article_row(1, "2024-05-01 00:00:00", can_read_user_criteria="uc1"),
-        article_row(2, "2024-05-01 00:00:00", kb_knowledge_base="kb2", can_read_user_criteria="uc1"),
+        article_row(1, "2024-05-01 00:00:00", kb_knowledge_base=K1, can_read_user_criteria="uc1"),
+        article_row(2, "2024-05-01 00:00:00", kb_knowledge_base=K2, can_read_user_criteria="uc1"),
     ], "user_criteria": [{"sys_id": "uc1", "user": "u1", "active": "true", "sys_updated_on": T0}]})
     store = wire_store(sc, fake, sync_point=migrated_sync_point(T0))
 
     await sc._sync_articles()
 
     reread = [q for q in fake.calls_to("kb_knowledge") if "can_read_user_criteriaISNOTEMPTY" in q]
-    assert reread and all("^kb_knowledge_baseINkb1" in q for q in reread)
+    assert reread and all(f"^kb_knowledge_baseIN{K1}" in q for q in reread)
     assert store.keys() == [_number(1)]
 
 
@@ -289,13 +307,13 @@ async def test_narrowed_kb_filter_deletes_kb_records(servicenow_connector) -> No
 async def test_hidden_kb_the_filter_leaves_out_is_removed(servicenow_connector) -> None:
     # An ACL hides kb2 from the listing; it still exists, but the filter leaves it out.
     sc = servicenow_connector
-    _filters(sc, kbs=("not_in", ["kb2"]))
-    sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": ["kb1", "kb2"]}})
-    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row("kb1"), kb_row("kb2", _acl_hidden=True)]}))
+    _filters(sc, kbs=("not_in", [K2]))
+    sc.category_sync_point = MemorySyncPoint({"kb_scope": {"ids": [K1, K2]}})
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge_base": [kb_row(K1), kb_row(K2, _acl_hidden=True)]}))
 
     await sc._sync_knowledge_bases([])
 
-    assert store.deleted_groups == ["kb2"]
+    assert store.deleted_groups == [K2]
 
 
 @pytest.mark.asyncio

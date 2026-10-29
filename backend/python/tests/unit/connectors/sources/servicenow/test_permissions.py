@@ -26,13 +26,15 @@ from servicenow_fakes import (
 )
 
 from app.config.constants.arangodb import AccessRule, Connectors
-from app.models.entities import AppUser, AppUserGroup
+from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
+from app.models.entities import AppUser, AppUserGroup, User
 from app.models.permission import EntityType
 from app.sources.external.servicenow.models import ServiceNowAccessError
 
 T0 = "2024-06-01 00:00:00"
 T1 = "2024-06-02 00:00:00"  # after the first run
 GUEST = "76f09af6cb1200108ad442fcf7076dbf"
+GUEST_SCRIPT = 'answer = user_id == GlideUser.getUser("guest").getID();'  # the out-of-box text
 # The default of user_criteria.script is a comment that sets no answer (stand-in text: not recorded verbatim).
 TEMPLATE = ("// Set the variable 'answer' to true or false to decide whether the user matches.\n"
             "/* 'user_id' holds the sys_id of the user being checked. */\n")
@@ -59,6 +61,7 @@ class Instance:
         self.attachments: list[dict] = []
         self.departments: dict[str, str] = {}
         self.hidden: set[str] = set()  # sys_ids an ACL hides from the integration user
+        self.properties: dict[str, str] = {}  # sys_properties name -> value; read at the start of every run
         self.fake = FakeServiceNow({})
 
     def user(self, name: str, *, active: bool = True, email: bool = True, **fields: str) -> str:
@@ -131,6 +134,8 @@ class Instance:
             "kb_knowledge": [{**a, "kb_knowledge_base.active": self.kbs[a["kb_knowledge_base"]]["active"]}
                              for a in self.articles.values()],
             "sys_attachment": self.attachments,
+            "sys_properties": [{"sys_id": f"p-{name}", "name": name, "value": value, "sys_updated_on": T0}
+                               for name, value in self.properties.items()],
         }
 
 
@@ -159,8 +164,10 @@ class Graph:
         p.on_new_app_users = AsyncMock(side_effect=self._users)
         p.get_all_app_users = AsyncMock(side_effect=lambda connector_id, **_: [
             u for s, u in self.app_users.items() if s not in self.withdrawn])
+        # As the platform answers it (User.from_arango_user): no source_user_id.
         p.get_user_by_source_id = AsyncMock(side_effect=lambda source_user_id=None, connector_id=None, *a: (
-            None if source_user_id in self.withdrawn else self.app_users.get(source_user_id)))
+            None if source_user_id in self.withdrawn or source_user_id not in self.app_users
+            else User.from_arango_user({"_key": f"node-{source_user_id}", "email": self.app_users[source_user_id].email})))
         p.withdraw_app_user_access = AsyncMock(side_effect=lambda c, users: self.withdrawn.update(
             u.source_user_id for u in users))
         p.batch_upsert_user_groups = AsyncMock(side_effect=lambda groups: self.group_nodes.update(
@@ -255,8 +262,8 @@ def _connector(sc, inst: Instance, *, apply_article_criteria: bool = False, bloc
     sc.user_sync_point = MemorySyncPoint()
     sc.org_entity_sync_points = {k: MemorySyncPoint() for k in sc.org_entity_sync_points}
     sc.article_sync_point = migrated_sync_point()
-    sc.apply_article_read_criteria = apply_article_criteria
-    sc.block_kb_without_criteria = block
+    inst.properties["glide.knowman.apply_article_read_criteria"] = str(apply_article_criteria).lower()
+    inst.properties["glide.knowman.block_access_with_no_user_criteria"] = str(block).lower()
     return graph
 
 
@@ -367,6 +374,9 @@ async def test_knowledge_admin_reads_all_kbs_and_knowledge_manager_role_alone_gr
     inst.kb("kb-none")  # no criteria (block=true): T6
     inst.kb("kb-other", can=(inst.crit("c-hr", group="g-hr"),), owner="hr", managers="")
     inst.article("KB-1", "kb-none")
+    # Articles with criteria of their own carry the admins as user grants (_kb_privileged_users).
+    inst.article("KB-own-read", "kb-other", can_read_user_criteria=inst.crit("c-u-plain", user="plain"))
+    inst.article("KB-own-deny", "kb-other", cannot_read_user_criteria=inst.crit("c-u-kadmin", user="kadmin,admin"))
     graph = _connector(servicenow_connector, inst)
 
     await _sync(servicenow_connector, inst)
@@ -374,6 +384,7 @@ async def test_knowledge_admin_reads_all_kbs_and_knowledge_manager_role_alone_gr
     assert graph.kb_readers("kb-none") == PRIV
     assert graph.readers("KB-1") == PRIV
     assert {"kadmin", "admin"} <= graph.kb_readers("kb-other")
+    assert {"kadmin", "admin"} <= graph.readers("KB-own-read") & graph.readers("KB-own-deny")
     assert "kmanager" not in graph.kb_readers("kb-other") | graph.readers("KB-1")
 
 
@@ -650,9 +661,9 @@ async def test_inactive_child_group_not_flattened(servicenow_connector) -> None:
 
 def _defaults_kb(inst: Instance) -> None:
     _people(inst)
-    inst.user("guest")
+    inst.user("guest", email=False)  # the out-of-box guest user has no email, so no app user
     inst.crit("any-user")  # Can Read "Any User": no field
-    inst.crit(GUEST, advanced="true", user="guest", script="answer = (user_id == 'guest');")
+    inst.crit(GUEST, advanced="true", user="guest", script=GUEST_SCRIPT)
     inst.crit("has-role", advanced="true", script="answer = gs.getUser().getUserByID(user_id).getRoles().size() > 1;")
     inst.kb("kb-defaults", can=("any-user",), cannot=(GUEST,), contribute=("has-role",), cannot_contribute=(GUEST,))
     inst.article("KB-1", "kb-defaults")
@@ -975,7 +986,7 @@ async def test_inactive_group_grants_nothing_and_reactivated_group_regains_membe
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("table", [
-    "sys_user_grmember", "sys_user_has_role", "sys_user_group", "sys_user_role", "kb_uc_can_read_mtom", "user_criteria",
+    "sys_user_grmember", "sys_user_has_role", "sys_user_group", "sys_user_role", "kb_uc_can_read_mtom",
 ])
 async def test_all_hidden_access_table_is_unreadable_not_empty(servicenow_connector, table) -> None:
     # The instance answers 200 with X-Total-Count > 0 and no rows: nothing may be written as "none".
@@ -992,8 +1003,25 @@ async def test_all_hidden_access_table_is_unreadable_not_empty(servicenow_connec
     assert raised.value.table == table
     assert servicenow_connector.full_sync_coverage().complete is False
     assert not graph.store.records  # no article written with what the run could not read
-    if table in ("sys_user_has_role", "kb_uc_can_read_mtom", "user_criteria"):
+    if table in ("sys_user_has_role", "kb_uc_can_read_mtom"):
         assert "kb-art" not in graph.group_grants
+
+
+@pytest.mark.asyncio
+async def test_all_hidden_criteria_grant_nothing_and_the_run_completes(servicenow_connector) -> None:
+    # Criteria are read by id, so a hidden one is unknown, not a table the account cannot read.
+    inst = Instance()
+    _kb_art(inst)
+    graph = _connector(servicenow_connector, inst)
+    tables = inst.tables()
+    tables["user_criteria"] = [{**r, "_acl_hidden": True} for r in tables["user_criteria"]]
+    inst.fake.tables = tables
+
+    await servicenow_connector.run_sync()
+
+    assert "kb-art" not in graph.group_grants
+    assert all(graph.readers(n) == set() for n in TRUTH[False])
+    assert servicenow_connector.full_sync_coverage().complete is False
 
 
 @pytest.mark.asyncio
@@ -1062,3 +1090,225 @@ async def test_partially_hidden_members_under_share_only(servicenow_connector) -
     inst.fake.tables = tables
     await servicenow_connector.run_sync()
     assert graph.kb_readers("kb") == {"hr"} | PRIV
+
+
+# --- out-of-box criteria are trusted only while unedited ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guest_criterion_with_an_edited_script_denies_everyone(servicenow_connector) -> None:
+    # The script is not evaluated here, so whom the edited row denies is unknown: it may deny anyone.
+    inst = Instance()
+    _defaults_kb(inst)
+    inst.criteria[GUEST]["script"] = GUEST_SCRIPT[:-1] + " || gs.getUser().isMemberOf('Contractors');"
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert graph.readers("KB-1") == PRIV
+    assert "plain" not in graph.kb_readers("kb-defaults")
+
+
+@pytest.mark.asyncio
+async def test_guest_criterion_naming_a_synced_user_denies_them(servicenow_connector) -> None:
+    inst = Instance()
+    _defaults_kb(inst)
+    inst.criteria[GUEST]["user"] = "plain"
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "plain" not in graph.readers("KB-1") | graph.kb_readers("kb-defaults")
+
+
+@pytest.mark.asyncio
+async def test_unedited_guest_criterion_is_not_reported_as_scripted(servicenow_connector) -> None:
+    inst = Instance()
+    _defaults_kb(inst)
+    _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert GUEST not in servicenow_connector._criteria_noted["scripted"]
+    assert "has-role" in servicenow_connector._criteria_noted["scripted"]  # a script that is not out-of-box
+
+
+@pytest.mark.asyncio
+async def test_has_role_criterion_with_a_field_added_takes_the_normal_path(servicenow_connector) -> None:
+    # Under Match All its script is AND'd with the group and not evaluated here: it grants nobody,
+    # not every user with a role.
+    inst = Instance()
+    _people(inst)
+    has_role = inst.crit(ServiceNowDefaults.HAS_ROLE_CRITERIA, advanced="true", group="g-hr", match_all="true",
+                         script=ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT)
+    inst.kb("kb", can=(has_role,), owner="", managers="")
+    inst.article("KB-1", "kb")
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert graph.readers("KB-1") == {"kadmin", "admin"}
+
+
+# --- users ServiceNow no longer has, or that lost their email ----------------------------------
+
+
+def _users_kb(inst: Instance) -> None:
+    _people(inst)
+    inst.kb("kb-org", can=(inst.crit("c-any"),))  # an ORG grant
+    inst.kb("kb-hr", can=(inst.crit("c-u-hr", user="hr"),))  # a USER grant
+    inst.article("KB-1", "kb-hr", cannot_read_user_criteria=inst.crit("c-u-plain", user="plain"))
+
+
+@pytest.mark.asyncio
+async def test_deleted_user_loses_org_and_user_grants(servicenow_connector) -> None:
+    inst = Instance()
+    _users_kb(inst)
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "hr" in graph.kb_readers("kb-org") & graph.kb_readers("kb-hr") & graph.readers("KB-1")
+    _incremental(servicenow_connector)
+    # A day later: deleted at the source, which leaves no row a delta could see.
+    servicenow_connector.user_sync_point.data["users_reconcile/last"] = {"last_sync_time": T0}
+    del inst.users["hr"]
+    inst.members.remove(("hr", "g-hr"))
+
+    await _sync(servicenow_connector, inst)
+
+    assert "hr" in graph.withdrawn
+    assert "hr" not in graph.kb_readers("kb-org") | graph.kb_readers("kb-hr") | graph.readers("KB-1")
+
+
+@pytest.mark.asyncio
+async def test_email_cleared_user_loses_access(servicenow_connector) -> None:
+    inst = Instance()
+    _users_kb(inst)
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    _incremental(servicenow_connector)
+    inst.users["hr"].update(email="", sys_updated_on=T1)
+
+    await _sync(servicenow_connector, inst)
+
+    assert "hr" in graph.withdrawn
+    assert "hr" not in graph.kb_readers("kb-org") | graph.readers("KB-1")
+
+
+@pytest.mark.asyncio
+async def test_user_an_acl_hides_from_the_user_check_keeps_access(servicenow_connector) -> None:
+    inst = Instance()
+    _users_kb(inst)
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    _incremental(servicenow_connector)
+    servicenow_connector.user_sync_point.data["users_reconcile/last"] = {"last_sync_time": T0}
+    inst.hidden.add("hr")  # still there, ServiceNow counts it
+
+    await _sync(servicenow_connector, inst)
+
+    assert "hr" not in graph.withdrawn
+    assert "hr" in graph.kb_readers("kb-org")
+
+
+# --- instance properties, groups, ownership groups ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_property_change_between_runs_applies_without_a_restart(servicenow_connector) -> None:
+    inst = Instance()
+    _kb_art(inst)
+    graph = _connector(servicenow_connector, inst, apply_article_criteria=False)
+    await _sync(servicenow_connector, inst)
+    assert "contrib" in graph.readers("KB-read-plain")
+    _incremental(servicenow_connector)
+    inst.properties["glide.knowman.apply_article_read_criteria"] = "true"
+
+    await _sync(servicenow_connector, inst)
+
+    assert servicenow_connector.apply_article_read_criteria is True
+    assert graph.readers("KB-read-plain") == PRIV  # its own Can Read now holds the contributor too
+
+
+@pytest.mark.asyncio
+async def test_inactive_parent_group_matches_no_member_of_its_active_child(servicenow_connector) -> None:
+    inst = Instance()
+    _people(inst)
+    inst.group("g-old", active=False)
+    inst.group("g-kid", "plain", parent="g-old")
+    old = inst.crit("c-old", group="g-old")
+    inst.kb("kb-deny", can=(inst.crit("c-any"),), cannot=(old,))  # resolved path, as a deny
+    inst.kb("kb-allow", can=(old,), cannot=(inst.crit("c-u-hr", user="hr"),))  # resolved path, as an allow
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "plain" in graph.kb_readers("kb-deny")
+    assert "plain" not in graph.kb_readers("kb-allow")
+
+
+@pytest.mark.asyncio
+async def test_ownership_group_child_group_member_reads_the_article(servicenow_connector) -> None:
+    # As ServiceNow grants it: members of a child group of the ownership group read the article too.
+    inst = Instance()
+    _owned(inst)
+    inst.group("g-own-kid", "plain", parent="g-own")
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "plain" in graph.readers("KB-1")
+    assert "plain" not in graph.kb_readers("kb")
+
+
+# --- criteria this account cannot read in full ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_criterion_with_a_hidden_field_gives_no_org_grant(servicenow_connector) -> None:
+    # A field ACL leaves the key out: read without its script, the row would pass for "Any User".
+    inst = Instance()
+    _people(inst)
+    inst.criteria["c-x"] = {**inst.criteria[inst.crit("c-x")], "_hidden_fields": ("script",)}
+    inst.kb("kb", can=("c-x",))
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert not any(p.entity_type == EntityType.ORG for p in graph.group_grants.get("kb", []))
+    assert "c-x" in servicenow_connector._criteria_noted["hidden"]
+    assert servicenow_connector.full_sync_coverage().complete is False
+
+
+@pytest.mark.asyncio
+async def test_hidden_deny_criterion_alone_does_not_stop_the_run(servicenow_connector) -> None:
+    inst = Instance()
+    _people(inst)
+    inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
+    inst.article("KB-1", "kb", cannot_read_user_criteria=inst.crit("c-d", user="hr"))
+    inst.hidden.add("c-d")  # the only row of its read: ServiceNow counts it and shows none
+    graph = _connector(servicenow_connector, inst)
+
+    await _sync(servicenow_connector, inst)
+
+    assert graph.readers("KB-1") == PRIV
+    assert "c-d" in servicenow_connector._criteria_noted["hidden"]
+
+
+@pytest.mark.asyncio
+async def test_delta_of_hidden_users_only_does_not_stop_the_run(servicenow_connector) -> None:
+    inst = Instance()
+    _users_kb(inst)
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    _incremental(servicenow_connector)
+    servicenow_connector.user_sync_point.data["users"] = {"last_sync_time": T1}
+    inst.users["hr"].update(title="changed", sys_updated_on="2024-06-03 00:00:00")  # the only row of the delta
+    inst.hidden.add("hr")
+
+    await _sync(servicenow_connector, inst)
+
+    assert "hr" not in graph.withdrawn
+
+
+@pytest.mark.asyncio
+async def test_hidden_allow_criterion_keeps_the_stored_kb_grants(servicenow_connector) -> None:
+    inst = Instance()
+    _people(inst)
+    inst.kb("kb-a", can=(inst.crit("c-hr", group="g-hr"), inst.crit("c-eng", user="eng")))
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    stored = graph.group_grants["kb-a"]
+    assert "eng" in graph.kb_readers("kb-a")
+
+    inst.hidden.add("c-eng")  # unknown is not "grants nobody"
+    await _sync(servicenow_connector, inst)
+
+    assert graph.group_grants["kb-a"] is stored
+    assert "eng" in graph.kb_readers("kb-a")
+    assert servicenow_connector.full_sync_coverage().complete is False

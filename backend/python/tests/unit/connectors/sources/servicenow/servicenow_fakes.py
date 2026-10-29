@@ -8,7 +8,8 @@ while more rows follow. ``total_count`` (X-Total-Count) counts the matching rows
 ServiceNow does. With ``shuffle_ties`` rows that the ORDERBY does not tell apart come back in a
 different order on every call, as a database without a total order returns them. Every call is logged
 in ``calls`` (and its parameters in ``params``); ``after_call`` runs after each one (to change rows mid-walk); ``fail`` may return an
-error to raise for a (table, query).
+error to raise for a (table, query). A row's ``_hidden_fields`` are left out of what it returns, as a
+field ACL leaves a key out.
 
 ``FakeRecordStore`` keeps the records a sync writes, by external id, and answers the processor calls the
 connector makes to read and delete them. ``migrated_sync_point`` is the article sync point of an install
@@ -122,7 +123,7 @@ class FakeServiceNow:
         visible = [r for r in matched[offset:offset + limit] if not r.get("_acl_hidden")]
         names = sysparm_fields.split(",") if sysparm_fields else None
         response = TableAPIResponse(result=[
-            TableAPIRecord(**({n: r.get(n, "") for n in names} if names else
+            TableAPIRecord(**({n: r.get(n, "") for n in names if n not in r.get("_hidden_fields", ())} if names else
                               {k: v for k, v in r.items() if not k.startswith("_")}))
             for r in visible
         ], total_count=len(matched))
