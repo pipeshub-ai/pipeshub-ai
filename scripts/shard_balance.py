@@ -33,8 +33,7 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 MAX_OVER_MEAN = 1.35
 
 # CIFS is not registered yet, so it stays out of nightly shards and core.
-# local_fs_sim needs connectors-simulator's headless desktop, which no job sets up yet.
-HELD_OUT_CONNECTORS = frozenset({"cifs", "local_fs_sim"})
+HELD_OUT_CONNECTORS = frozenset({"cifs"})
 
 # Suites with a job of their own, named after their marker. "demo" must start on
 # a stack no other suite has touched; "ai_agents" costs model calls, so its job

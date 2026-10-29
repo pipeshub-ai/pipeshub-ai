@@ -199,7 +199,7 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 # The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_4 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
-    "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "github", "sharepoint"),
+    "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "local_fs_sim", "github", "sharepoint"),
     "connectors-2": (
         "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
     ),
@@ -245,6 +245,8 @@ IT_CORE = tuple(
         "resilience", "storage", "ai_agents", "named_entities",
     )
 ) + ("frontend/**",)
+# The desktop app's Local FS code, which the local_fs_sim suite runs headless.
+IT_LOCAL_SYNC = ("frontend/electron/local-sync/**",)
 
 # Connector code: a folder under one of these is that connector's.
 CONNECTOR_ROOTS = (
@@ -302,6 +304,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
+    "local_fs": ("local_fs", "local_fs_sim"),
     "sharepoint": ("sharepoint", "sharepoint_sim"),
     # Marked cifs, which no shard selects; core still collects the files.
     "cifs": (),
@@ -318,8 +321,6 @@ CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),
-    # local_fs_sim is held out of every shard, so core collects (and deselects) its files.
-    "local_fs": ("core",),
 }
 
 _CONNECTOR_CODE = re.compile("(?:" + "|".join(map(re.escape, CONNECTOR_ROOTS)) + r")/([^/]+)/")
@@ -348,6 +349,8 @@ def _integration_shards_for(path: str) -> set[str]:
         if markers is None:
             return set(IT_SHARDS)
         return (_shards_of(markers) or {"core"}) | set(CONNECTOR_TESTS_ALSO_RUN.get(name, ()))
+    if matches(path, IT_LOCAL_SYNC):
+        return {"core"} | _shards_of(("local_fs_sim",))
     if matches(path, IT_CORE) and not path.startswith("integration-tests/response-validation/helper/"):
         return {"core"}
     return set(IT_SHARDS)

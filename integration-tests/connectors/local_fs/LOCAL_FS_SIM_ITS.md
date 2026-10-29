@@ -39,9 +39,15 @@ since graph writes land a little after the run's end is recorded.
 4. `pytest -m local_fs_sim connectors/local_fs`. Folders go under `integration-tests/local_fs_root`.
    `TC-LFSSIM-SYNC-007` (3,000 files) and `TC-LFSSIM-ERR-002` (two runs of three 65 s timeouts) are slow.
 
+## In CI
+
+The suite runs on the `connectors-1` shard next to `local_fs`, and alone through a manual dispatch with
+`connectors: local_fs_sim`. The job checks out connectors-simulator at `CONNSIM_LOCALFS_REF`, sets up Node 22,
+runs `npm ci` in `backend/nodejs/apps` (and in `frontend` unless the Playwright step already did) and sets
+`LOCAL_FS_DESKTOP_AGENT`. In CI a missing agent fails the suite instead of skipping it.
+
 ## Status
 
-Written during the Local FS audit (2026-10-26) and **not run**: no stack built from this checkout was
-available. The same cases run in the audit harness against the real connector, relay and desktop code;
-see the audit report for those results. Expect to adjust API details (response envelopes of
-`/api/v1/connectors/`, `/api/v1/notifications`) on the first run.
+All 22 tests passed three times in a row on fresh stacks, on both Neo4j (about 9.6 min) and ArangoDB (about
+13.3 min), on 2026-10-29. Those runs used a local copy of the CI job: the same compose file and image,
+Redis as the broker, Azure OpenAI as the model and two pytest workers.
