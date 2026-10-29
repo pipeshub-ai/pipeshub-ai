@@ -838,6 +838,50 @@ async def test_failed_run_keeps_the_pass_due(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unread_kb_keeps_the_pass_due(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst = Instance()
+    _people(inst)
+    inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
+    inst.article("KB1", "kb")  # inherits: no article fails
+    _connector(sc, inst)
+    await _sync(sc, inst)
+    _later(sc)
+    inst.members.append(("plain", "g-hr"))  # access changed: the next run reads the KB grants
+    inst.fake.fail = lambda table, q: (
+        status_error(503) if table == "user_criteria" and not q.startswith("ORDERBYDESC") else None)
+    await _sync(sc, inst)
+    assert sc._kbs_unread == ["kb"]
+    inst.fake.fail = None
+    inst.fake.calls.clear()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake)  # not quiet: the KB kept its old grants
+    assert len(_listings(inst.fake, "kb_uc_can_read_mtom")) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_article_with_a_hidden_criterion_does_not_keep_runs_from_being_quiet(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst = Instance()
+    _people(inst)
+    inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
+    inst.article("KB1", "kb", can_read_user_criteria=inst.crit("c-hidden", user="hr"))
+    inst.article("KB2", "kb", can_read_user_criteria=inst.crit("c-shown", user="hr"))
+    inst.hidden.add("c-hidden")  # fails every run, kept as stored
+    _connector(sc, inst)
+    await _sync(sc, inst)
+    assert {"access_fingerprint", "attachments", "feedback"} <= set(sc.article_sync_point.data)
+    _later(sc)
+    inst.fake.calls.clear()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake) == []
+
+
+@pytest.mark.asyncio
 async def test_no_change_incremental_call_count(servicenow_connector) -> None:
     """The model behind the call counts: 5 KBs, 10 articles (5 with Cannot Read)."""
     sc = servicenow_connector

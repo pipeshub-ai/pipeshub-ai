@@ -117,6 +117,24 @@ async def test_delta_reads_with_overlap_window(servicenow_connector) -> None:
     assert saved == "2024-06-01 10:00:00"
 
 
+@pytest.mark.asyncio
+async def test_a_second_edit_in_the_same_second_is_synced(servicenow_connector) -> None:
+    sc = servicenow_connector
+    row = article_row(3, T0, sys_mod_count="4")
+    fake = FakeServiceNow({"kb_knowledge": [row]})
+    wire_listing(sc, fake, checkpoint=T0)
+    await sc._sync_articles()
+    await sc._sync_articles()  # the overlap reads it again, unchanged: skipped
+    sc.data_entities_processor.on_new_records.reset_mock()
+    await sc._sync_articles()
+    assert written_ids(sc) == []
+
+    row.update(sys_mod_count="5", short_description="edited again")  # sys_updated_on keeps its second
+    await sc._sync_articles()
+
+    assert written_ids(sc) == ["KB0000003"]
+
+
 # --- paged single reads and chunked IN lists ------------------------------------------------
 
 

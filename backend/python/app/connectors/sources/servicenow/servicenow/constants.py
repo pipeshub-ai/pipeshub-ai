@@ -50,6 +50,7 @@ class ServiceNowFields:
     SYS_ID = "sys_id"
     SYS_CREATED_ON = "sys_created_on"
     SYS_UPDATED_ON = "sys_updated_on"
+    SYS_MOD_COUNT = "sys_mod_count"
     NAME = "name"
     TITLE = "title"
     DESCRIPTION = "description"

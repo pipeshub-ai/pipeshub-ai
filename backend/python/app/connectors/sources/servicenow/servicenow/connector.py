@@ -195,6 +195,7 @@ _ARTICLE_FIELDS = [
     ServiceNowFields.OWNERSHIP_GROUP,
     ServiceNowFields.SYS_CREATED_ON,
     ServiceNowFields.SYS_UPDATED_ON,
+    ServiceNowFields.SYS_MOD_COUNT,  # for _row_key
 ]
 
 # Tables that say who may read what. A listing of one that ServiceNow counts rows for but shows
@@ -1089,8 +1090,12 @@ class ServiceNowConnector(BaseConnector):
 
     @staticmethod
     def _row_key(row: TableAPIRecord) -> str:
-        """A row as it was when read: a change gives it another sys_updated_on, so another key."""
-        return f"{row.sys_updated_on}|{row.sys_id}"
+        """A row as it was when read: every change raises its sys_mod_count, so a second change
+        within the second sys_updated_on keeps still gives another key. A key stored before the
+        count was in it matches no row with a count, which is then synced once more."""
+        key = f"{row.sys_updated_on}|{row.sys_id}"
+        count = row.get(ServiceNowFields.SYS_MOD_COUNT)
+        return f"{key}|{count}" if count else key
 
     @classmethod
     def _overlap_keys(cls, keys: Iterable[str], checkpoint: str) -> list[str]:
@@ -2232,7 +2237,9 @@ class ServiceNowConnector(BaseConnector):
 
             app_users = []
             for user_data in users_data:
-                if not self._is_active(user_data):
+                # The anonymous guest signs in to no PipesHub account. Synced, it would turn the
+                # default knowledge bases' Guest User deny into a grant per user (_fetch_deny_records).
+                if not self._is_active(user_data) or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME:
                     inactive.add(user_data.sys_id)
                     continue
                 if not (user_data.email or "").strip():
@@ -2288,10 +2295,11 @@ class ServiceNowConnector(BaseConnector):
         )
 
     async def _users_gone(self, stored: set[str]) -> set[str]:
-        """The ``stored`` user sys_ids that are no active user with an email at the source: deleted,
+        """The ``stored`` user sys_ids that are no active user with an email at the source (nor the guest): deleted,
         or changed without a delta seeing it. Under an ACL that hides some users, only those
         ServiceNow counts no such row for."""
-        live_query = f"{ServiceNowFields.ACTIVE}=true^{ServiceNowFields.EMAIL}ISNOTEMPTY"
+        live_query = (f"{ServiceNowFields.ACTIVE}=true^{ServiceNowFields.EMAIL}ISNOTEMPTY"
+                      f"^{ServiceNowFields.USER_NAME}!={ServiceNowDefaults.GUEST_USER_NAME}")
         live: set[str] = set()
         listing = _Listing()
         async for rows in self._iter_table(
@@ -3151,8 +3159,8 @@ class ServiceNowConnector(BaseConnector):
         fingerprint, reread = access or await self._access_reread_due(full=not last_sync_time)
         # Where a full read that stopped got to: it continues from there instead of starting over
         # (its pages are a keyset on (sys_updated_on, sys_id), so a row changed since comes again).
-        # Only a full read writes it, so a full sync of the platform continues from it too: the
-        # run then unlinks nothing (below), and the platform runs one more full sync to the end.
+        # Only a full read writes it. A full sync of the platform clears every sync point first, so
+        # it starts over; a full read without one (the first run, an upgrade) continues from it.
         resume = {} if last_sync_time else (
             await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLES) or {})
         resume_after = tuple(resume.get(ServiceNowSyncPointKeys.FULL_RESUME_AFTER) or ()) or None
@@ -3210,11 +3218,14 @@ class ServiceNowConnector(BaseConnector):
         latest_update_time = resume_after[0] if resume_after else None
         failed = FailedItems()
         failed_ids: set[str] = set()  # kept by the reconcile (see _reconcile_articles)
+        # The ones a later run may get past. An article whose criteria an ACL hides fails every
+        # run; it must not hold the checkpoints below, or no run would be quiet again.
+        retry_ids: set[str] = set()
         brought_by: dict[str, TableAPIRecord] = {}  # number -> the changed row that brought it, this page
         # A full read lists every attachment and feedback row once, not by IN chunks per page.
         everything: tuple[dict, dict, _Listing] | Exception | None = None
 
-        def note_failed(article_data: TableAPIRecord, *, moves_checkpoint: bool, what: str) -> None:
+        def note_failed(article_data: TableAPIRecord, *, moves_checkpoint: bool, what: str, retry: bool = True) -> None:
             # The checkpoint stays before the row that brought it, so the next run retries it.
             # The re-read pass lists its articles every run, so its failures do not hold it.
             row = brought_by.get(getattr(article_data, ServiceNowFields.NUMBER, None) or "", article_data)
@@ -3224,6 +3235,8 @@ class ServiceNowConnector(BaseConnector):
                 if moves_checkpoint else None
             )
             failed_ids.add(article_data.sys_id)
+            if retry:
+                retry_ids.add(article_data.sys_id)
             self._sync_read_incomplete = True
             self._note_skipped(what)
 
@@ -3237,7 +3250,8 @@ class ServiceNowConnector(BaseConnector):
             # everything downstream, so the sync would report success over what it missed.
             full_read = not last_sync_time and moves_checkpoint
             async for page in self._iter_table(
-                ServiceNowTables.KB_KNOWLEDGE, query, [ServiceNowFields.NUMBER] if resolve else _ARTICLE_FIELDS,
+                ServiceNowTables.KB_KNOWLEDGE, query,
+                [ServiceNowFields.NUMBER, ServiceNowFields.SYS_MOD_COUNT] if resolve else _ARTICLE_FIELDS,
                 listing=listing, after=resume_after if full_read else None,
             ):
                 rows = page
@@ -3253,8 +3267,7 @@ class ServiceNowConnector(BaseConnector):
                 brought_by = {r.number: r for r in rows if r.number} if resolve else {}
                 if resolve:
                     numbers = set(brought_by)
-                    articles_data = await self._current_versions(sorted(numbers), _ARTICLE_FIELDS)
-                    gone = numbers - {a.number for a in articles_data}
+                    articles_data, gone = await self._current_versions(sorted(numbers), _ARTICLE_FIELDS)
                     try:
                         await self._delete_articles(gone)
                     except Exception as e:
@@ -3327,7 +3340,7 @@ class ServiceNowConnector(BaseConnector):
                         # Its stored grants stay. A criterion that stays hidden does not hold the
                         # checkpoint: the re-read pass lists the articles with criteria.
                         self.logger.error(f"❌ Skipping article {article_data.sys_id}, its user criteria were not read in full: {e}")
-                        note_failed(article_data, moves_checkpoint=False, what="Articles whose user criteria could not be read in full, kept as they were: {n}")
+                        note_failed(article_data, moves_checkpoint=False, what="Articles whose user criteria could not be read in full, kept as they were: {n}", retry=False)
                         continue
                     except Exception as e:
                         _raise_if_run_stop(e)
@@ -3360,7 +3373,7 @@ class ServiceNowConnector(BaseConnector):
                         _raise_if_run_stop(e)
                         self.logger.error(f"❌ Failed to remove the deleted attachments of {article_data.sys_id}: {e}")
                         note_failed(article_data, moves_checkpoint=moves_checkpoint, what="Articles whose deleted attachments could not be removed, retried on the next sync: {n}")
-                if full_read and not failed.count:
+                if full_read and not retry_ids:
                     # Never past a row that failed: a run that stops later continues before it.
                     await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ARTICLES, {
                         ServiceNowSyncPointKeys.FULL_RESUME_AFTER: [rows[-1].sys_updated_on, rows[-1].sys_id],
@@ -3388,10 +3401,11 @@ class ServiceNowConnector(BaseConnector):
                 })
 
         # Their articles are not held by the article checkpoint, so a failure reads them again.
-        if not failed.count:
+        if not retry_ids:
             for key, ids in self._scopes_to_store.items():
                 await self.category_sync_point.update_sync_point(key, {ServiceNowDictKeys.IDS: ids})
-            if fingerprint is not None:
+            # A knowledge base whose criteria were not read kept its old grants: the next run reads them again.
+            if fingerprint is not None and not self._kbs_unread:
                 await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ACCESS_FINGERPRINT, fingerprint)
             await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.INLINE_IMAGES, {
                 ServiceNowSyncPointKeys.LAST_SYNC_TIME: inline_checkpoint,
@@ -3408,9 +3422,9 @@ class ServiceNowConnector(BaseConnector):
                 _raise_if_run_stop(e)
                 self.logger.error(f"❌ {removal.__name__} failed; it runs again next sync: {e}")
                 self._note_problem(_CLEANUP_FAILED)
-        if not migrated:
+        if not migrated and not retry_ids:
             # This full read wrote every article's files under their key and removed the ones
-            # under a sys_id; an article it failed to write moves its files the next time it is.
+            # under a sys_id. After a failure the next run reads every article again and re-keys.
             await self.article_sync_point.update_sync_point(
                 ServiceNowSyncPointKeys.ATTACHMENT_KEY_V2, {ServiceNowDictKeys.DONE: True}
             )
@@ -3481,17 +3495,28 @@ class ServiceNowConnector(BaseConnector):
             return None
         return response.total_count
 
-    async def _current_versions(self, numbers: list[str], fields: list[str]) -> list[TableAPIRecord]:
-        """The current row (see _current_article_query) of each of ``numbers`` that has one in scope."""
+    async def _current_versions(self, numbers: list[str], fields: list[str]) -> tuple[list[TableAPIRecord], set[str]]:
+        """The current row (see _current_article_query) of each of ``numbers`` that has one in
+        scope, and the numbers that have none. A current row an ACL hides is not none: under a
+        partial listing a number is gone only once ServiceNow counts no current row for it."""
         rows: list[TableAPIRecord] = []
+        partial = False
         for chunk in self._chunk_ids(numbers):
+            listing = _Listing()
             async for page in self._iter_table(
                 ServiceNowTables.KB_KNOWLEDGE,
                 f"{ServiceNowFields.NUMBER}IN{CommonStrings.COMMA.join(chunk)}^{self._current_article_query()}",
-                [*fields, ServiceNowFields.KB_KNOWLEDGE_BASE, ServiceNowFields.KB_CATEGORY],
+                [*fields, ServiceNowFields.KB_KNOWLEDGE_BASE, ServiceNowFields.KB_CATEGORY], listing=listing,
             ):
                 rows.extend(r for r in page if self._article_in_scope(r))
-        return rows
+            partial = partial or listing.partial
+        gone = set(numbers) - {r.number for r in rows}
+        if partial:
+            # shortcut: a listed row out of scope then counts as there, and the reconcile removes it.
+            gone = {n for n in gone if await self._gone_at_source(
+                ServiceNowTables.KB_KNOWLEDGE, f"{ServiceNowFields.NUMBER}={n}^{self._current_article_query()}"
+            )}
+        return rows, gone
 
     async def _delete_articles(self, numbers: set[str]) -> None:
         """Delete the stored articles among ``numbers``, with their attachments."""
@@ -3550,7 +3575,8 @@ class ServiceNowConnector(BaseConnector):
         seen = set(synced)
         changed: set[str] = set()
         async for rows in self._iter_table(
-            table, f"{scope}{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}", [article_field],
+            table, f"{scope}{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}",
+            [article_field, ServiceNowFields.SYS_MOD_COUNT],
         ):
             # A row the last run synced already is read again by the overlap only.
             changed.update(str(r.get(article_field)) for r in rows
@@ -3673,8 +3699,7 @@ class ServiceNowConnector(BaseConnector):
                     return
                 raise
             # A deleted old version of an article that still has a current one deletes nothing.
-            live = {r.number for r in await self._current_versions(sorted(numbers), [ServiceNowFields.NUMBER])}
-            await self._delete_articles(numbers - live)
+            await self._delete_articles((await self._current_versions(sorted(numbers), [ServiceNowFields.NUMBER]))[1])
         await self.article_sync_point.update_sync_point(
             ServiceNowSyncPointKeys.AUDIT_DELETE, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint or self._utc_now()}
         )

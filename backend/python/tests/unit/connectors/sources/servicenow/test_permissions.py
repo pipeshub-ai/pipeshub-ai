@@ -1137,6 +1137,22 @@ async def test_unedited_guest_criterion_denies_only_the_guest(servicenow_connect
 
 
 @pytest.mark.asyncio
+async def test_guest_is_not_synced_so_a_default_kb_stays_one_org_grant(servicenow_connector) -> None:
+    # Some instances give the anonymous guest an email; nobody signs in to PipesHub as it.
+    inst = Instance()
+    _defaults_kb(inst)
+    inst.users["guest"]["email"] = "guest@x.com"
+    graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "guest" not in graph.app_users
+    read = [p for p in graph.group_grants["kb-defaults"] if p.type.value == "READER"]
+    assert EntityType.ORG in {p.entity_type for p in read}  # not one grant per user
+    assert {p.email for p in read if p.entity_type == EntityType.USER} <= {f"{u}@x.com" for u in PRIV}
+    # A guest synced before is withdrawn by the user reconcile
+    assert await servicenow_connector._users_gone({"guest", "plain"}) == {"guest"}
+
+
+@pytest.mark.asyncio
 async def test_unedited_guest_criterion_is_not_reported_as_scripted(servicenow_connector) -> None:
     inst = Instance()
     _defaults_kb(inst)

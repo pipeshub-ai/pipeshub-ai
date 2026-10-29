@@ -711,17 +711,21 @@ async def test_migration_keeps_the_record_of_an_article_that_failed(servicenow_c
     # v2 was not rewritten, so its record still holds its file; v1 is an old version and goes
     assert store.keys() == sorted([V2, "f0002"])
     assert sc.article_sync_point.data["articles_reconcile/last"]["kept"] == [V2]
-    assert sc.article_sync_point.data["article_key/v2"] == {"done": True}  # no full read every run
+    # A failed article keeps the attachments unmigrated: the next run reads every article again
+    # and re-keys their files in place instead of giving them new records.
+    assert "attachment_key/v2" not in sc.article_sync_point.data
 
     fixed, _ = _installed_before_the_upgrade()
     sc._get_fresh_datasource = AsyncMock(return_value=fixed)
     _users_by_source_id(sc)
     await sc._sync_articles()
 
-    assert "sys_updated_on>" in fixed.calls_to("kb_knowledge")[0]  # the checkpoint held before v2
+    assert "sys_updated_on>" not in fixed.calls_to("kb_knowledge")[0]  # read in full again
     assert store.keys() == [KB1, file_key(2)]  # reconciled again at once, not a day later
     assert store.records[file_key(2)].parent_external_record_id == KB1
     assert sc.article_sync_point.data["articles_reconcile/last"]["kept"] == []
+    assert store.records[file_key(2)].id == "id-f0002"  # re-keyed in place, so its citations still open
+    assert sc.article_sync_point.data["attachment_key/v2"] == {"done": True}
 
 
 @pytest.mark.asyncio
@@ -775,3 +779,20 @@ def test_kb_knowledge_model_carries_number(servicenow_connector) -> None:
         KBKnowledge(sys_id=V2, number=KB1, short_description="t", kb_knowledge_base="kb1"))
 
     assert record.external_record_id == KB1
+
+
+@pytest.mark.asyncio
+async def test_delta_keeps_an_article_whose_current_version_is_hidden(servicenow_connector) -> None:
+    # An old version changed; the current one is there, but an ACL hides it from this account.
+    sc = servicenow_connector
+    fake = FakeServiceNow({"kb_knowledge": [
+        article_row(1, LATER, sys_id=V1, workflow_state="outdated"),
+        {**article_row(1, EARLIER, sys_id=V2), "_acl_hidden": True},
+        article_row(2, LATER, workflow_state="retired"),  # no current version at all
+    ]})
+    store = wire_store(sc, fake, stored_record(KB1), stored_record("KB0000002"), sync_point=migrated_sync_point(T0))
+
+    await sc._sync_articles()
+
+    assert store.deleted == ["KB0000002"]
+    assert KB1 in store.keys("WEBPAGE")
