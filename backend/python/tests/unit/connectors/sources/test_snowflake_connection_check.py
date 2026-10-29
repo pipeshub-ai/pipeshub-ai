@@ -1,6 +1,7 @@
 """SnowflakeConnector.check_connection: the setup form's one-statement check."""
 
 import logging
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -100,7 +101,7 @@ def settings(auth=PAT) -> object:
 class TestMessages:
     def test_unknown_account(self) -> None:
         message = describe_failure(failure(404, "<html>"), settings())
-        assert "acme-prod.snowflakecomputing.com" in message and "orgname-accountname" in message
+        assert re.search(r"\bacme-prod\.snowflakecomputing\.com\b", message) and "orgname-accountname" in message
 
     def test_rejected_pat(self) -> None:
         assert "personal access token" in describe_failure(failure(401, "Invalid OAuth access token"), settings())

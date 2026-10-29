@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.snowflake import keypair
 from app.sources.client.snowflake.keypair import (
     REFRESH_MARGIN_S,
     TOKEN_LIFETIME_S,
@@ -93,13 +94,18 @@ class TestKeys:
         ("not a key", None, "whole PEM"),
         ("", None, "missing"),
         (pem(ec.generate_private_key(ec.SECP256R1())), None, "RSA"),
-        (pem(rsa.generate_private_key(public_exponent=65537, key_size=1024)), None, "2048"),
-    ], ids=["no-passphrase", "wrong-passphrase", "unneeded-passphrase", "not-a-key", "missing", "not-rsa", "short"])
+    ], ids=["no-passphrase", "wrong-passphrase", "unneeded-passphrase", "not-a-key", "missing", "not-rsa"])
     def test_unusable_keys_say_why_and_never_echo_the_key(self, key, passphrase, says) -> None:
         with pytest.raises(ValueError) as error:
             load_private_key(key, passphrase)
         assert says in str(error.value)
         assert "MII" not in str(error.value) and error.value.__cause__ is None
+
+    def test_a_short_key_says_how_many_bits_snowflake_needs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A higher floor, not a weaker key: no test generates a key below 2048 bits.
+        monkeypatch.setattr(keypair, "MIN_KEY_BITS", 4096)
+        with pytest.raises(ValueError, match="2048 bits; Snowflake needs at least 4096"):
+            load_private_key(PEM)
 
     def test_fingerprint_is_sha256_of_the_public_key(self) -> None:
         der = _KEY.public_key().public_bytes(
