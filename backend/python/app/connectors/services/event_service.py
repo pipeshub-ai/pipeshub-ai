@@ -12,6 +12,7 @@ from dependency_injector import providers
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     AppStatus,
     CollectionNames,
     Connectors,
@@ -58,6 +59,7 @@ from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
+from app.models.entities import FileRecord
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
@@ -94,6 +96,13 @@ def _running_here(connector_id: str) -> bool:
     """
     coordinator = get_coordinator()
     return coordinator is not None and coordinator.is_running_here(connector_id)
+
+
+def _is_folder(record: object) -> bool:
+    """Same folder rule the indexing service applies to record events."""
+    return (isinstance(record, FileRecord) and record.is_file is False) or (
+        getattr(record, "mime_type", None) in FOLDER_MIME_TYPES
+    )
 
 
 def _reindexing_here(connector_id: str) -> bool:
@@ -1543,16 +1552,19 @@ class EventService:
                     break
                 continue
 
-            record_ids_to_update = [r.id for r in records if r.id]
-            if record_ids_to_update:
-                await self.graph_provider.update_indexing_status_for_record_ids(
-                    record_ids_to_update, ProgressStatus.NOT_STARTED.value
-                )
-
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.
+            # A folder has nothing to index: indexing marks it COMPLETED, and some
+            # connectors never publish it at all, so NOT_STARTED would stick forever.
             for record in records:
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
+                record.indexing_status = (
+                    ProgressStatus.COMPLETED.value if _is_folder(record)
+                    else ProgressStatus.NOT_STARTED.value
+                )
+            for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
+                ids = [r.id for r in records if r.id and r.indexing_status == status]
+                if ids:
+                    await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
 
             await connector.reindex_records(records)
 
