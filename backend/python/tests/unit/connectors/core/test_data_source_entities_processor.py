@@ -7687,19 +7687,30 @@ class TestPlaceholderFlag:
         assert incoming.queued_at is None
 
     @pytest.mark.asyncio
-    async def test_stub_restored_from_the_trash_is_not_queued(self) -> None:
+    @pytest.mark.parametrize(
+        ("stored_revision", "stored_placeholder", "stored_status"),
+        [
+            ("placeholder:1", True, ProgressStatus.QUEUED.value),
+            # A real, indexed record trashed and later sent back as a stub.
+            ("v1", False, ProgressStatus.COMPLETED.value),
+        ],
+    )
+    async def test_stub_restored_from_the_trash_is_not_queued(
+        self, stored_revision: str, stored_placeholder: bool, stored_status: str
+    ) -> None:
         existing = _make_record(
-            external_revision_id="placeholder:1", version=0, is_placeholder=True,
+            external_revision_id=stored_revision, version=0, is_placeholder=stored_placeholder,
             is_deleted=True, delete_source=DeleteSource.CONNECTOR, delete_batch_id="b-1",
         )
         existing.id = "rec-1"
-        existing.indexing_status = ProgressStatus.QUEUED.value
+        existing.indexing_status = stored_status
         proc, tx_store = self._sync_with(existing)
         incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
 
         processed, _ = await proc._process_record(incoming, [], tx_store)
 
         tx_store.restore_records.assert_awaited_once_with([{"id": "rec-1"}], "b-1")
+        proc.messaging_producer.send_messages.assert_not_awaited()
         assert processed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert processed.queued_at is None
 

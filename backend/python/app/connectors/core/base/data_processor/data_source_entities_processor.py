@@ -2068,8 +2068,12 @@ class DataSourceEntitiesProcessor:
 
         It is even when unchanged, since the delete took its vectors. A
         manual-only item that was never indexed stays so. Decided before the
-        restore's write from the status the upsert would otherwise store.
+        restore's write from the status the upsert would otherwise store. A
+        stub is never indexed, so it is not queued even when the trashed copy
+        was an indexed real record.
         """
+        if record.is_placeholder:
+            return False
         status = record.indexing_status
         if (
             record.origin == OriginTypes.UPLOAD
