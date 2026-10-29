@@ -116,6 +116,7 @@ class TestLifespan:
         from unittest.mock import AsyncMock
 
         from app.modules.parsers import parse_pool
+        from app.modules.parsers.pdf import docling_processor, pdf_rasterizer
         from app.parsing_main import lifespan
 
         container = MagicMock()
@@ -125,7 +126,13 @@ class TestLifespan:
         app = MagicMock()
         pool = MagicMock()
 
-        saved = (parse_pool._State.governor, parse_pool._State.pool)
+        # The lifespan also hands the governor to these two; a later test expects them unset.
+        saved = (
+            parse_pool._State.governor,
+            parse_pool._State.pool,
+            docling_processor._resource_governor,
+            pdf_rasterizer._resource_governor,
+        )
         try:
             with (
                 patch("app.parsing_main._get_initialized_container", new=AsyncMock(return_value=container)),
@@ -140,4 +147,9 @@ class TestLifespan:
             assert parse_pool._State.pool is None
             pool.shutdown.assert_called_once()
         finally:
-            parse_pool._State.governor, parse_pool._State.pool = saved
+            (
+                parse_pool._State.governor,
+                parse_pool._State.pool,
+                docling_processor._resource_governor,
+                pdf_rasterizer._resource_governor,
+            ) = saved
