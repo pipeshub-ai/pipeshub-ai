@@ -885,13 +885,16 @@ class ConfluenceDataCenter:
         if not attachment_record_ids:
             return await self._update_page(page_id, page_title, page_content, parent_page_id)
 
+        # A blank title keeps the current one, as a blank body does.
+        new_title = page_title if has_text(page_title) else None
+
         async def _update(content: str | None) -> tuple[bool, str]:
-            return await self._update_page(page_id, page_title, content, parent_page_id)
+            return await self._update_page(page_id, new_title, content, parent_page_id)
 
         # Blank once placeholders are removed means "keep the body"; placing files would
         # otherwise rebuild the page from that blank text.
         new_content = page_content if has_text(page_content) else None
-        has_changes = bool(page_title or new_content or parent_page_id)
+        has_changes = bool(new_title or new_content or parent_page_id)
         return await self._attachments.update_with_files(
             page_id, attachment_record_ids, attachment_display, new_content, _update if has_changes else None,
         )

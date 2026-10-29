@@ -17,6 +17,8 @@ def _datasource() -> tuple[BookStackDataSource, MagicMock]:
     http = MagicMock()
     http.headers = {"Authorization": "Token a:b", "Content-Type": "application/json"}
     response = MagicMock()
+    response.status = 200
+    response.bytes = MagicMock(return_value=b'{"id": 1}')
     response.json = MagicMock(return_value={"id": 1})
     http.execute = AsyncMock(return_value=response)
     ds = BookStackDataSource.__new__(BookStackDataSource)

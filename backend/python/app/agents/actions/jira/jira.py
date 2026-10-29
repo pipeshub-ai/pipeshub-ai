@@ -2095,13 +2095,15 @@ class Jira:
         async def _update(text: str | None) -> tuple[bool, str]:
             return await self._update_issue(issue_key, summary, text, *changes[2:])
 
+        # Empty values ("", [], {}) are skipped by `_update_issue` the same way, so they are
+        # not changes either.
         field_changes = (summary, new_description, *changes[2:])
         return await self._attachments.update_with_files(
             issue_key,
             attachment_record_ids,
             attachment_display,
             new_description,
-            _update if any(value is not None for value in field_changes) else None,
+            _update if any(field_changes) else None,
         )
 
     async def _update_issue(

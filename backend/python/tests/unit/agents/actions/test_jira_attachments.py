@@ -410,6 +410,17 @@ class TestUpdateAndAttach:
         assert json.loads(payload)["attachments"]["uploaded"][0]["record_id"] == "rec1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty", [{"summary": ""}, {"labels": []}, {"components": []}, {"custom_fields": {}}])
+    async def test_empty_field_values_still_send_the_files(self, empty) -> None:
+        jira = _jira(edit_issue=AsyncMock(return_value=_resp(204)), get_issue=AsyncMock())
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, payload = await jira.update_issue("KAN-1", attachment_record_ids=["rec1"], **empty)
+        assert ok
+        jira.client.upload_issue_attachment.assert_awaited_once()
+        jira.client.edit_issue.assert_not_awaited()
+        assert json.loads(payload)["attachments"]["uploaded"][0]["record_id"] == "rec1"
+
+    @pytest.mark.asyncio
     async def test_placeholder_only_description_inline_appends_to_the_current_one(self) -> None:
         current = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "keep me"}]}]}
         jira = _jira(
@@ -598,6 +609,16 @@ class TestJiraDataCenter:
         jira = _jira_dc(edit_issue_v2=AsyncMock(return_value=_resp(204)), get_issue_v2=AsyncMock())
         with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
             ok, _ = await jira.update_issue("OPS-1", description="{{attachment:bug.png}}", attachment_record_ids=["rec1"])
+        assert ok
+        jira.client.upload_issue_attachment.assert_awaited_once()
+        jira.client.edit_issue_v2.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty", [{"summary": ""}, {"labels": []}, {"custom_fields": {}}])
+    async def test_empty_field_values_still_send_the_files(self, empty) -> None:
+        jira = _jira_dc(edit_issue_v2=AsyncMock(return_value=_resp(204)), get_issue_v2=AsyncMock())
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await jira.update_issue("OPS-1", attachment_record_ids=["rec1"], **empty)
         assert ok
         jira.client.upload_issue_attachment.assert_awaited_once()
         jira.client.edit_issue_v2.assert_not_awaited()

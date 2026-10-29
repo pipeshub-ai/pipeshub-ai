@@ -267,6 +267,30 @@ class TestConfluenceCloudTools:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", ["", "  "])
+    async def test_blank_title_keeps_the_current_title(self, title) -> None:
+        conf = _cloud(
+            get_page_by_id=AsyncMock(return_value=_current_page(4, "<p>Existing</p>")),
+            update_page=AsyncMock(return_value=_resp(200, {"id": "123"})),
+        )
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await conf.update_page(
+                "123", page_title=title, page_content="<p>New</p>", attachment_record_ids=["rec1"],
+            )
+        assert ok
+        assert conf.client.update_page.await_args.kwargs["body"]["title"] == "Runbook"
+        conf.client.upload_content_attachment.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_blank_title_alone_only_attaches(self) -> None:
+        conf = _cloud(get_page_by_id=AsyncMock(), update_page=AsyncMock())
+        with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await conf.update_page("123", page_title="", attachment_record_ids=["rec1"])
+        assert ok
+        conf.client.update_page.assert_not_awaited()
+        conf.client.upload_content_attachment.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_add_attachments_default_leaves_body_alone(self) -> None:
         conf = _cloud(get_page_by_id=AsyncMock(), update_page=AsyncMock())
         with patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
@@ -370,6 +394,19 @@ class TestConfluenceDataCenterTools:
         assert tool.client.update_content_v1.await_args.kwargs["body"]["body"]["storage"]["value"] == (
             '<p>Keep</p><p><ac:image><ri:attachment ri:filename="diagram.png" /></ac:image></p>'
         )
+
+    @pytest.mark.asyncio
+    async def test_blank_title_keeps_the_current_title(self) -> None:
+        tool = _dc(
+            get_page_content_v1=AsyncMock(return_value=_resp(200, {"title": "T", "version": {"number": 3}})),
+            update_content_v1=AsyncMock(return_value=_resp(200, {"id": "77"})),
+        )
+        with patch.object(ConfluenceDataCenter, "_get_site_url", AsyncMock(return_value=None)), \
+             patch(_RESOLVE, new=AsyncMock(return_value=_bundle([_resolved()]))):
+            ok, _ = await tool.update_page("77", page_title="  ", page_content="<p>New</p>", attachment_record_ids=["rec1"])
+        assert ok
+        assert tool.client.update_content_v1.await_args.kwargs["body"]["title"] == "T"
+        tool.client.upload_content_attachment.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_inline_comment_in_storage_format_escapes_file_names(self) -> None:

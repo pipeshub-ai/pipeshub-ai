@@ -2524,8 +2524,12 @@ class Confluence:
         if not attachment_record_ids:
             return await self._update_page(page_id, page_title, page_content)
 
+        # A blank title keeps the current one: sent as is, Confluence rejects the
+        # update and none of the files are added.
+        new_title = page_title if has_text(page_title) else None
+
         async def _update(content: str | None) -> tuple[bool, str]:
-            return await self._update_page(page_id, page_title, content)
+            return await self._update_page(page_id, new_title, content)
 
         # Blank once placeholders are removed means "keep the body": sent as is, it would
         # replace the page body with nothing before the files are added.
@@ -2535,7 +2539,7 @@ class Confluence:
             attachment_record_ids,
             attachment_display,
             new_content,
-            _update if page_title is not None or new_content is not None else None,
+            _update if new_title is not None or new_content is not None else None,
         )
 
     @tool(
