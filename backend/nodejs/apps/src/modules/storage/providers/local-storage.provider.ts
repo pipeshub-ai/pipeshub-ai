@@ -22,6 +22,7 @@ import {
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
+import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 
 // Local filesystems cap one name at 255 bytes; object stores do not, so their
 // keys keep the full name. Names that fit are kept byte for byte.
@@ -197,6 +198,33 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') {
         return false;
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Size and synthetic ETag (`dev:ino:size:mtimeNs`) of the document's current file, through the same path guard as a read. Null
+   * when the file or its recorded location is absent.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    const relative = this.getLocalPathFromUrl(
+      document.local?.localPath ?? document.local?.url,
+    );
+    if (relative === null || relative === '') return null;
+    const located = await this.locateInsideRealMount(
+      this.objectPathInMount(relative),
+    );
+    if (located === null) return null;
+    try {
+      const st = await fs.stat(located.target, { bigint: true });
+      if (!st.isFile()) return null;
+      return {
+        size: Number(st.size),
+        etag: localEtagOf(st),
+        lastModified: new Date(Number(st.mtimeMs)).toISOString(),
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return null;
       throw error;
     }
   }

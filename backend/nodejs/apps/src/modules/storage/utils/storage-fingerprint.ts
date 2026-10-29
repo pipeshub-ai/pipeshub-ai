@@ -6,6 +6,21 @@ import { createHash } from 'crypto';
 
 export const FINGERPRINT_VERSION = 1;
 
+/**
+ * The identity of a local file, synthetic because a file system has no ETag: `dev:ino:size:mtimeNs` hashed. Taken from a stat of
+ * the path (`statObject`) or of an open descriptor (the download), so both compare the same thing.
+ */
+export function localEtagOf(st: {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+}): string {
+  return createHash('sha1')
+    .update(`${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}`, 'utf8')
+    .digest('hex');
+}
+
 /** What a stat of the stored object returns (the ETag has no quotes and no weak marker). */
 export interface ObjectStat {
   size: number;

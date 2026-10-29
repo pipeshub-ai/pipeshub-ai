@@ -9,7 +9,8 @@ redirect to a presigned URL, which is followed as a PUT of the raw bytes.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from yarl import URL
@@ -35,6 +36,93 @@ _TIMEOUT = aiohttp.ClientTimeout(total=90)
 
 class StorageUploadError(Exception):
     """The storage service did not store the document."""
+
+
+_FINGERPRINT_VERSION = 1
+
+
+def _strip_etag(raw: str | None) -> str:
+    """An ETag without its weak marker and outer quotes (the form the storage service reports)."""
+    tag = (raw or "").strip()
+    if tag.startswith("W/"):
+        tag = tag[2:]
+    if len(tag) >= 2 and tag.startswith('"') and tag.endswith('"'):
+        tag = tag[1:-1]
+    return tag
+
+
+@dataclass(frozen=True)
+class StorageDocumentInfo:
+    """What the storage service says about one document.
+
+    ``trusted`` is the only flag that may justify skipping a re-read: it is True only for a verified answer
+    (``verify=True``) whose fingerprint the service marked trusted. ``fingerprint`` is comparable only between
+    trusted answers. Without ``storageFingerprint`` in the answer (an older service) nothing is trusted.
+    """
+
+    document_id: str
+    is_deleted: bool
+    awaiting_direct_upload: bool
+    declared_size: int | None
+    fingerprint: str | None
+    trusted: bool
+    object_size: int | None
+    object_etag: str | None
+    object_unverifiable: bool
+    reason: str | None
+    is_artifact_set: bool
+    storage_vendor: str | None = None
+
+    @property
+    def if_match_header(self) -> str | None:
+        """The ``If-Match`` value for a signed GET of an S3 or Azure object (None for local files and unverified answers).
+
+        A local document is checked through the ``ifMatch`` query parameter of the download route instead, which
+        carries the bare digest (``object_etag``).
+        """
+        if self.object_etag is None or self.storage_vendor == "local":
+            return None
+        return f'"{self.object_etag}"'
+
+    def matches_download(self, etag_header: str | None) -> bool:
+        """Whether the ``ETag`` of a download response is the object this answer was verified against."""
+        if self.object_etag is None or not etag_header or etag_header.strip().startswith("W/"):
+            return False
+        return _strip_etag(etag_header) == self.object_etag
+
+
+def _as_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | None:
+    """Parse the body of ``GET /internal/:id``; None when it holds no document."""
+    document: Any = body.get("document", body) if isinstance(body, dict) else None
+    if not isinstance(document, dict):
+        return None
+    doc_id = document.get("_id") or document.get("id")
+    if not doc_id:
+        return None
+    fp = body.get("storageFingerprint", document.get("storageFingerprint")) if isinstance(body, dict) else None
+    fp = fp if isinstance(fp, dict) and fp.get("version") == _FINGERPRINT_VERSION else None
+    obj = fp.get("object") if fp else None
+    obj = obj if isinstance(obj, dict) else None
+    vendor = document.get("storageVendor")
+    trusted = bool(verify and fp and fp.get("verified") is True and fp.get("trusted") is True and obj)
+    return StorageDocumentInfo(
+        document_id=str(doc_id),
+        is_deleted=document.get("isDeleted") is True,
+        awaiting_direct_upload=document.get("awaitingDirectUpload") is True,
+        declared_size=_as_int(document.get("sizeInBytes")),
+        fingerprint=fp.get("value") if fp and isinstance(fp.get("value"), str) else None,
+        trusted=trusted,
+        object_size=_as_int(obj.get("size")) if obj else None,
+        object_etag=_strip_etag(obj.get("etag")) if obj and isinstance(obj.get("etag"), str) else None,
+        object_unverifiable=bool(fp and fp.get("objectUnverifiable") is True),
+        reason=fp.get("reason") if fp and isinstance(fp.get("reason"), str) else None,
+        is_artifact_set=bool(document.get("artifactSet")),
+        storage_vendor=vendor if isinstance(vendor, str) else None,
+    )
 
 
 def document_id_from_upload(headers: Mapping[str, str], data: object) -> str | None:
@@ -125,6 +213,34 @@ class StorageDocuments:
             raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
         document = body.get("document", body) if isinstance(body, dict) else {}
         return not (isinstance(document, dict) and document.get("isDeleted") is True)
+
+    async def info(self, org_id: str, document_id: str, *, verify: bool = False) -> StorageDocumentInfo | None:
+        """The document as the storage service sees it; None when it is absent (404/410).
+
+        With ``verify=True`` the service stats the stored object (real size and ETag) and answers a fingerprint whose
+        ``trusted`` flag is the only thing that may justify skipping a re-read. Raises ``StorageUploadError`` for any
+        other answer or a transport failure.
+        """
+        token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+        base = await self._storage_url()
+        params = {"verify": "1"} if verify else None
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session, session.get(
+                f"{base}/api/v1/document/internal/{document_id}",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status in (404, 410):
+                    return None
+                if resp.status != 200:
+                    raise StorageUploadError(f"the storage service answered {resp.status}")
+                body = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+        info = parse_document_info(body, verify=verify)
+        if info is None:
+            raise StorageUploadError("the storage service answered without a document")
+        return info
 
     async def _put_presigned(
         self, session: aiohttp.ClientSession, resp: aiohttp.ClientResponse, file_path: str, size: int

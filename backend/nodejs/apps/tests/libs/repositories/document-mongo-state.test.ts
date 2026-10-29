@@ -37,6 +37,7 @@ describe('MongoDocumentRepository write state (queries)', () => {
   let sent: Sent[];
   let repo: MongoDocumentRepository;
   let results: Record<string, unknown[]>;
+  const at = (i: number): Sent => sent[i] as Sent;
   const next = (op: string): unknown => (results[op] ?? []).shift();
 
   beforeEach(() => {
@@ -57,7 +58,7 @@ describe('MongoDocumentRepository write state (queries)', () => {
     results.findOneAndUpdate = [{ writeSeq: 7 }];
     const out = await repo.beginWrite(org, id, 'tok', 300_000);
     expect(out).to.deep.equal({ writeSeq: 7 });
-    const [prune, begin] = sent;
+    const [prune, begin] = sent as [Sent, Sent];
     expect(prune.update).to.deep.equal({ $pull: { writers: { until: { $lt: 1_000_000 } } } });
     expect(begin.filter).to.deep.equal({ _id: id, orgId: org, 'writers.63': { $exists: false } });
     expect(begin.update).to.deep.equal({ $inc: { writeSeq: 1 }, $push: { writers: { t: 'tok', until: 1_300_000 } } });
@@ -78,23 +79,23 @@ describe('MongoDocumentRepository write state (queries)', () => {
 
   it('renewWrite only moves a present token later ($max on the positional entry) and bumps nothing', async () => {
     await repo.renewWrite(org, id, 'tok', 60_000);
-    expect(sent[0].filter).to.deep.equal({ _id: id, orgId: org, 'writers.t': 'tok' });
-    expect(sent[0].update).to.deep.equal({ $max: { 'writers.$.until': 1_060_000 } });
-    expect(sent[0].options).to.deep.include({ timestamps: false });
+    expect(at(0).filter).to.deep.equal({ _id: id, orgId: org, 'writers.t': 'tok' });
+    expect(at(0).update).to.deep.equal({ $max: { 'writers.$.until': 1_060_000 } });
+    expect(at(0).options).to.deep.include({ timestamps: false });
   });
 
   it('endWrite removes this token only and bumps, without touching updatedAt', async () => {
     await repo.endWrite(org, id, 'tok');
-    expect(sent[0].filter).to.deep.equal({ _id: id, orgId: org });
-    expect(sent[0].update).to.deep.equal({ $pull: { writers: { t: 'tok' } }, $inc: { writeSeq: 1 } });
-    expect(sent[0].options).to.deep.include({ timestamps: false });
-    expect(sent[0].maxTimeMS).to.equal(1000);
+    expect(at(0).filter).to.deep.equal({ _id: id, orgId: org });
+    expect(at(0).update).to.deep.equal({ $pull: { writers: { t: 'tok' } }, $inc: { writeSeq: 1 } });
+    expect(at(0).options).to.deep.include({ timestamps: false });
+    expect(at(0).maxTimeMS).to.equal(1000);
   });
 
   it('bumpSeq returns the post-update sequence', async () => {
     results.findOneAndUpdate = [{ writeSeq: 3 }, null];
     expect(await repo.bumpSeq(org, id)).to.deep.equal({ writeSeq: 3 });
-    expect(sent[0].select).to.equal('+writeSeq');
+    expect(at(0).select).to.equal('+writeSeq');
     expect(await repo.bumpSeq(org, id)).to.equal(null);
   });
 
@@ -102,15 +103,15 @@ describe('MongoDocumentRepository write state (queries)', () => {
     results.findOneAndUpdate = [{}, null];
     expect(await repo.adoptDirectUpload(org, id, 5)).to.equal(true);
     expect(await repo.adoptDirectUpload(org, id, 5)).to.equal(false);
-    expect(sent[0].filter).to.deep.equal({ _id: id, orgId: org, awaitingDirectUpload: true });
-    expect(sent[0].update).to.deep.equal({ $unset: { awaitingDirectUpload: '' }, $set: { sizeInBytes: 5 }, $inc: { writeSeq: 1 } });
-    expect(sent[0].options).to.deep.include({ timestamps: false });
+    expect(at(0).filter).to.deep.equal({ _id: id, orgId: org, awaitingDirectUpload: true });
+    expect(at(0).update).to.deep.equal({ $unset: { awaitingDirectUpload: '' }, $set: { sizeInBytes: 5 }, $inc: { writeSeq: 1 } });
+    expect(at(0).options).to.deep.include({ timestamps: false });
   });
 
   it('correctSize is compare-and-set on the old size', async () => {
     await repo.correctSize(org, id, 5, 7);
-    expect(sent[0].filter).to.deep.equal({ _id: id, orgId: org, sizeInBytes: 5 });
-    expect(sent[0].update).to.deep.equal({ $set: { sizeInBytes: 7 } });
+    expect(at(0).filter).to.deep.equal({ _id: id, orgId: org, sizeInBytes: 5 });
+    expect(at(0).update).to.deep.equal({ $set: { sizeInBytes: 7 } });
   });
 
   it('markAwaitingDirectUpload sets the patch and bumps in one write and returns the post-update sequence, not on the row', async () => {
@@ -119,9 +120,9 @@ describe('MongoDocumentRepository write state (queries)', () => {
     const out = await repo.markAwaitingDirectUpload(org, id, { documentPath: 'p', awaitingDirectUpload: true, s3: { url: 'u' } });
     expect(out?.writeSeq).to.equal(4);
     expect(out?.row).to.not.have.property('writeSeq');
-    expect(sent[0].update).to.deep.equal({ $set: { documentPath: 'p', awaitingDirectUpload: true, s3: { url: 'u' } }, $inc: { writeSeq: 1 } });
-    expect(sent[0].options).to.deep.include({ new: true });
-    expect(sent[0].select).to.equal('+writeSeq');
+    expect(at(0).update).to.deep.equal({ $set: { documentPath: 'p', awaitingDirectUpload: true, s3: { url: 'u' } }, $inc: { writeSeq: 1 } });
+    expect(at(0).options).to.deep.include({ new: true });
+    expect(at(0).select).to.equal('+writeSeq');
   });
 
   it('getWithFingerprintState reads the clock first, selects the state by name, and returns the row without it', async () => {
@@ -133,14 +134,14 @@ describe('MongoDocumentRepository write state (queries)', () => {
     expect(out?.serverNow).to.equal(1_000_000);
     expect(out?.row).to.not.have.property('writeSeq');
     expect(out?.row).to.not.have.property('writers');
-    expect(sent[0].select).to.equal('+writeSeq +writers');
+    expect(at(0).select).to.equal('+writeSeq +writers');
   });
 
   it('peekWriteState is a lean projection of the two fields; an absent state reads as zero and no writers', async () => {
     results.findOne = [{ _id: id }];
     expect(await repo.peekWriteState(org, id)).to.deep.equal({ writeSeq: 0, writers: [] });
-    expect(sent[0].select).to.equal('writeSeq writers');
-    expect(sent[0].lean).to.equal(true);
+    expect(at(0).select).to.equal('writeSeq writers');
+    expect(at(0).lean).to.equal(true);
   });
 });
 

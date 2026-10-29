@@ -28,7 +28,11 @@ export interface S3Service {
     ContentType?: string;
   }): { promise: () => Promise<{ Key?: string }> };
   headObject(params: { Bucket: string; Key: string }): {
-    promise: () => Promise<unknown>;
+    promise: () => Promise<{
+      ContentLength?: number;
+      ETag?: string;
+      LastModified?: Date;
+    }>;
   };
   deleteObject(params: { Bucket: string; Key: string }): {
     promise: () => Promise<unknown>;

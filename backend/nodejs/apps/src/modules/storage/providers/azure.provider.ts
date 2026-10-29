@@ -27,6 +27,7 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
+import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 
 @injectable()
 class AzureBlobStorageAdapter implements StorageServiceInterface {
@@ -289,6 +290,34 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     }
     await this.waitForContainer();
     return this.blobAt(this.getBlobPath(document.azureBlob.url)).exists();
+  }
+
+  /**
+   * Size and ETag of the current blob (properties). Null when the blob or the stored URL is absent; any other failure rejects.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    if (!document.azureBlob?.url) return null;
+    await this.waitForContainer();
+    try {
+      const props = await this.blobAt(
+        this.getBlobPath(document.azureBlob.url),
+      ).getProperties();
+      const etag = normalizeEtag(props.etag);
+      if (etag === '' || typeof props.contentLength !== 'number')
+        throw new StorageDownloadError(
+          'Storage returned no size or ETag for the object',
+        );
+      return {
+        size: props.contentLength,
+        etag,
+        lastModified: props.lastModified
+          ? props.lastModified.toISOString()
+          : null,
+      };
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 404) return null;
+      throw error;
+    }
   }
 
   /**

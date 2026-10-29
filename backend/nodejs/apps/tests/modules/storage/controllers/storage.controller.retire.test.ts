@@ -11,6 +11,7 @@ import { getDocumentRepository } from '../../../../src/libs/repositories/documen
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 type Row = Record<string, any>
 
@@ -31,6 +32,7 @@ function makeRes(): any {
 }
 
 describe('StorageController retire mark', () => {
+  useInertWriteState()
   let controller: StorageController
   let rows: Row[]
   const orgId = new mongoose.Types.ObjectId()

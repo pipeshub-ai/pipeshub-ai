@@ -13,6 +13,7 @@ import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimet
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
 import { NotFoundError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
 import { StorageConfigurationError } from '../../../../src/libs/errors/storage.errors'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -89,6 +90,7 @@ function makeDocument(overrides: any = {}): any {
 const withStringId = <T extends { _id: unknown }>(row: T) => ({ ...row, _id: String(row._id) })
 
 describe('StorageController', () => {
+  useInertWriteState()
   let controller: StorageController
   let mockKvs: any
   let mockConfig: any
@@ -266,8 +268,11 @@ describe('StorageController', () => {
 
       await controller.getDocumentById(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
-      // The repository hands back plain rows: ids are strings, which serialise the same.
-      expect(JSON.parse(JSON.stringify(res.body))).to.deep.equal(JSON.parse(JSON.stringify(doc)))
+      // The repository hands back plain rows: ids are strings, which serialise the same. The fingerprint is the one added field.
+      const { storageFingerprint, ...row } = JSON.parse(JSON.stringify(res.body))
+      expect(row).to.deep.equal(JSON.parse(JSON.stringify(doc)))
+      expect(storageFingerprint).to.include({ version: 1, verified: false, trusted: false, objectMissing: false })
+      expect(storageFingerprint.object).to.equal(null)
     })
 
     it('should call next with BadRequestError when documentId is missing', async () => {

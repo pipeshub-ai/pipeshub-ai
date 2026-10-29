@@ -18,11 +18,13 @@ import {
   StorageDownloadError,
   StorageNotFoundError,
   StorageValidationError,
+  StorageUrlParseError,
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { encodeRFC5987 } from '../utils/utils';
+import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
@@ -254,6 +256,36 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (code === 'NotFound' || code === 'NoSuchKey') {
         return false;
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Size and ETag of the current object (HEAD). Null when the object or the stored URL is absent. A stored URL that cannot be
+   * turned into a key rejects with `StorageUrlParseError`; any other failure rejects.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    if (!document.s3?.url) return null;
+    const key = this.extractKeyFromUrl(document.s3.url);
+    try {
+      const head = await this.s3
+        .headObject({ Bucket: this.bucketName, Key: key })
+        .promise();
+      const etag = normalizeEtag(head.ETag);
+      if (etag === '' || typeof head.ContentLength !== 'number')
+        throw new StorageDownloadError(
+          'Storage returned no size or ETag for the object',
+        );
+      return {
+        size: head.ContentLength,
+        etag,
+        lastModified: head.LastModified
+          ? new Date(head.LastModified).toISOString()
+          : null,
+      };
+    } catch (error) {
+      const { code } = error as { code?: string };
+      if (code === 'NotFound' || code === 'NoSuchKey') return null;
       throw error;
     }
   }
@@ -803,7 +835,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // Remove any trailing slashes
       return decodedKey.replace(/\/$/, '');
     } catch (error) {
-      throw new StorageValidationError('Invalid S3 URL format', {
+      throw new StorageUrlParseError('Invalid S3 URL format', {
         url,
         bucket: this.bucketName,
         region: this.region,

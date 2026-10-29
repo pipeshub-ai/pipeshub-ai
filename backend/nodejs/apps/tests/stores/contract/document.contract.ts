@@ -735,12 +735,13 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         const org = fx.newId();
         const r = await row(org);
         const t = { A: TOK('a'), B: TOK('b') } as Record<string, string>;
-        await repo.beginWrite(org, r._id, t.A, 60_000);
-        await repo.beginWrite(org, r._id, t.B, 60_000);
-        await repo.endWrite(org, r._id, t[order[0]]);
+        const [first, second] = order as [string, string];
+        await repo.beginWrite(org, r._id, t.A!, 60_000);
+        await repo.beginWrite(org, r._id, t.B!, 60_000);
+        await repo.endWrite(org, r._id, t[first]!);
         const mid = await stateOf(org, r._id);
-        expect(isSettled(mid.writers, await repo.serverClockMs()), `after ${order[0]} ended`).to.equal(false);
-        await repo.endWrite(org, r._id, t[order[1]]);
+        expect(isSettled(mid.writers, await repo.serverClockMs()), `after ${first} ended`).to.equal(false);
+        await repo.endWrite(org, r._id, t[second]!);
         const end = await stateOf(org, r._id);
         expect(isSettled(end.writers, await repo.serverClockMs())).to.equal(true);
         expect(end.writeSeq).to.equal(4);
@@ -781,7 +782,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       await repo.beginWrite(org, r._id, crashed, 300);
       const live = await stateOf(org, r._id);
       expect(isSettled(live.writers, await repo.serverClockMs())).to.equal(false);
-      await pastExpiry(live.writers[0].until);
+      await pastExpiry(live.writers[0]!.until);
       expect(isSettled((await stateOf(org, r._id)).writers, await repo.serverClockMs())).to.equal(true);
       const next = TOK('n');
       await repo.beginWrite(org, r._id, next, 60_000);
@@ -793,7 +794,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const r = await row(org);
       const gone = TOK('gone');
       await repo.beginWrite(org, r._id, gone, 200);
-      await pastExpiry((await stateOf(org, r._id)).writers[0].until);
+      await pastExpiry((await stateOf(org, r._id)).writers[0]!.until);
       await repo.beginWrite(org, r._id, TOK('later'), 60_000); // prunes `gone`
       const before = (await stateOf(org, r._id)).writeSeq;
       await repo.endWrite(org, r._id, gone);
@@ -864,7 +865,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       } finally {
         Date.now = realNow;
       }
-      const until = (await stateOf(org, r._id)).writers[0].until;
+      const until = (await stateOf(org, r._id)).writers[0]!.until;
       expect(until - t0, 'the token lapses a window after the STORE time').to.be.within(55_000, 65_000);
     });
 
@@ -901,9 +902,9 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const a = TOK('a');
       await repo.beginWrite(org, r._id, a, 1000);
       await repo.renewWrite(org, r._id, a, 120_000);
-      const longer = (await stateOf(org, r._id)).writers[0].until;
+      const longer = (await stateOf(org, r._id)).writers[0]!.until;
       await repo.renewWrite(org, r._id, a, 100);
-      expect((await stateOf(org, r._id)).writers[0].until).to.equal(longer);
+      expect((await stateOf(org, r._id)).writers[0]!.until).to.equal(longer);
     });
 
     it('C13: a token begun while the caller\'s unit is open is visible at once and survives that unit\'s rollback', async function () {

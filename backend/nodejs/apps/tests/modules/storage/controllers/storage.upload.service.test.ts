@@ -8,6 +8,7 @@ import { BadRequestError, InternalServerError, NotFoundError } from '../../../..
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 // The repository reloads the row it updates, so create and findOne answer with the same object.
 const stubDocumentStore = (doc: any) => {
@@ -16,6 +17,7 @@ const stubDocumentStore = (doc: any) => {
 }
 
 describe('UploadDocumentService', () => {
+  useInertWriteState()
   let mockAdapter: any
   let mockKeyValueStoreService: any
   let mockDefaultConfig: any
