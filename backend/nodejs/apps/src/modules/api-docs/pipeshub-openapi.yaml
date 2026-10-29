@@ -54253,8 +54253,10 @@ paths:
         <b>Merging:</b><br>
         `sync` is merged key by key into the saved sync settings. Each of
         `filters.sync` and `filters.indexing` that is sent replaces the saved
-        one. A `sync` or `filters` value that is not an object is skipped
-        without an error. Fields other than `sync` and `filters`, `baseUrl`
+        one. A `sync` value that is not an object, and an empty `filters`
+        value such as `null` or `[]`, is skipped without an error; any other
+        `filters` value that is not an object, such as `[null]` or a string,
+        is answered `500`. Fields other than `sync` and `filters`, `baseUrl`
         included, are dropped without an error.<br><br>
         The connector must be disabled (`400` otherwise).
       operationId: updateConnectorFiltersSyncConfig
@@ -54332,7 +54334,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            Internal error, for example when `filters` is neither an object nor empty, such as `[null]` or a string. A body the app-wide parsers refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413` and an unsupported encoding a `415` (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/toggle:
     post:
       tags:
