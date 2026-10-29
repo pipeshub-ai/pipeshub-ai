@@ -4,6 +4,7 @@ authorize route leave it alone). Every way checks the instance URL and runs the 
 test; a 401 stops a basic or API-key sync at once and makes client credentials mint one new token.
 """
 
+import json
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -143,6 +144,21 @@ async def test_client_credentials_refused_names_the_vendor_reason(servicenow_con
         await sc.init()
     assert "access_denied" in str(error.value) and "OAuth application user" in str(error.value)
     assert SECRETS["clientSecret"] not in str(error.value)
+    close.assert_awaited_once()
+    sc._connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_client_credentials_answer_that_is_not_json_names_the_host(servicenow_connector, monkeypatch) -> None:
+    # A hibernating instance answers the token request with an HTML page.
+    sc = servicenow_connector
+    _saved(sc, AuthType.CUSTOM)
+    monkeypatch.setattr(ServiceNowRESTClientViaOAuthClientCredentials, "fetch_token", AsyncMock(
+        side_effect=json.JSONDecodeError("Expecting value", "<html>", 0)))
+    close = AsyncMock()
+    monkeypatch.setattr(ServiceNowRESTClientViaOAuthClientCredentials, "close", close)
+    with pytest.raises(ConnectorInitError, match=r"Could not get a token from ServiceNow at acme\.service-now\.com"):
+        await sc.init()
     close.assert_awaited_once()
     sc._connect.assert_not_awaited()
 

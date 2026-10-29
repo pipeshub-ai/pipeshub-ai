@@ -27,8 +27,8 @@ async def test_sn_an_article_cannot_read_denies_users_the_knowledge_base_grants(
     )
     sc._fetch_kb_permissions_from_criteria = AsyncMock(return_value={"read": ["kbcan"], "cannot_read": [], "write": []})
     updates = await sc._process_single_article(art, [])
-    assert updates[0].record.inherit_permissions is False
-    assert [p.email for p in updates[0].new_permissions if p.email] == ["u1@x.com"]
+    assert updates[0][0].inherit_permissions is False
+    assert [p.email for p in updates[0][1] if p.email] == ["u1@x.com"]
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_sn_an_article_with_cannot_read_takes_the_explicit_grant_path(serv
     sc._effective_users = AsyncMock(return_value=set())
     sc._kb_privileged_users = AsyncMock(return_value=set())
     updates = await sc._process_single_article(art, [])
-    assert updates[0].record.inherit_permissions is False
+    assert updates[0][0].inherit_permissions is False
     # KB readers minus both article denies, narrowed by the article's own Can Read
     assert sc._effective_users.await_args_list[0].args == (["k"], ["d1", "d2"])
     assert sc._effective_users.await_args_list[2].args == (["c"], [])
@@ -150,7 +150,7 @@ async def test_sn_run_sync_resets_the_user_listing_cache(servicenow_connector) -
     sc = servicenow_connector
     sc.servicenow_client = MagicMock()
     sc._email_by_source_id = {"stale": "stale@x.com"}
-    with patch.object(sc, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+    with patch.object(sc, "_read_access_state", new_callable=AsyncMock, return_value=(None, True)), \
          patch.object(sc, "_sync_users_and_groups", new_callable=AsyncMock), \
          patch.object(sc, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
          patch.object(sc, "_sync_knowledge_bases", new_callable=AsyncMock), \

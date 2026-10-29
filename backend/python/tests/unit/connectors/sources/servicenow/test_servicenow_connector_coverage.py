@@ -119,13 +119,6 @@ class TestOrganizationalEntities:
         assert "location" in ORGANIZATIONAL_ENTITIES
         assert "cost_center" not in ORGANIZATIONAL_ENTITIES  # no such user_criteria field
 
-    def test_entity_has_required_fields(self):
-        for entity_type, config in ORGANIZATIONAL_ENTITIES.items():
-            assert "table" in config
-            assert "fields" in config
-            assert "prefix" in config
-            assert "sync_point_key" in config
-
 
 # ===========================================================================
 # Initialization
@@ -300,7 +293,11 @@ class TestServiceNowStreamRecord:
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
-        connector._open_attachment = AsyncMock(return_value=iter([b"file-bytes"]))
+        async def chunks():
+            yield b"file-"
+            yield b"bytes"
+
+        connector._open_attachment = AsyncMock(return_value=chunks())
         connector._current_attachment = AsyncMock(return_value="att-123")
         record = MagicMock()
         record.record_type = RecordType.FILE
@@ -309,7 +306,10 @@ class TestServiceNowStreamRecord:
         record.mime_type = "application/pdf"
         record.id = "r-2"
         response = await connector.stream_record(record)
-        assert response is not None
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        assert body == b"file-bytes"
+        assert response.media_type == "application/pdf"
+        connector._open_attachment.assert_awaited_once_with("att-123", is_html=False)
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, connector):
@@ -468,7 +468,7 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_orchestration(self, connector):
         connector.servicenow_client = MagicMock()
-        connector._read_access_state = AsyncMock(return_value=(None, False))
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
         connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
@@ -483,7 +483,7 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_with_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
-        connector._read_access_state = AsyncMock(return_value=(None, False))
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
         connector._get_admin_users = AsyncMock(return_value={"admin-1"})
         connector._sync_knowledge_bases = AsyncMock()

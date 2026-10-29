@@ -4,6 +4,7 @@ The connector's listings run against ``FakeServiceNow``, which answers encoded q
 Table API does, including pages that come back short because an ACL hid rows after the page was cut.
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ from servicenow_fakes import (
     attachment_row,
     file_key,
     kb_row,
+    migrated_sync_point,
     status_error,
     stored_record,
     wire_listing,
@@ -30,6 +32,7 @@ from app.connectors.sources.servicenow.servicenow.constants import (
     ServiceNowDefaults,
 )
 from app.models.entities import AppUser
+from app.sources.client.servicenow.servicenow import ServiceNowRateLimited
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
     ServiceNowAPIError,
@@ -57,7 +60,7 @@ async def test_acl_short_page_does_not_end_listing(servicenow_connector) -> None
 @pytest.mark.asyncio
 async def test_listing_that_does_not_advance_raises(servicenow_connector) -> None:
     # An instance that ignores the keyset condition answers every page with the first one.
-    same = TableAPIResponse(result=[{"sys_id": "g1", "sys_updated_on": T0}], total_count=1000)
+    same = TableAPIResponse(result=[{"sys_id": "g1", "sys_updated_on": T0}], total_count=2000)
     servicenow_connector._get_fresh_datasource = AsyncMock(
         return_value=MagicMock(get_now_table_tableName=AsyncMock(return_value=same)))
 
@@ -243,7 +246,7 @@ async def test_failed_article_retried_next_run(servicenow_connector) -> None:
 
 @pytest.mark.asyncio
 async def test_attachment_listing_503_fails_the_article_not_the_attachments(servicenow_connector) -> None:
-    # Attachments are listed per page of articles, so a failed listing fails that page.
+    # An incremental lists attachments per page of articles, so a failed listing fails that page.
     fake = FakeServiceNow(
         {
             "kb_knowledge": [article_row(i, f"2024-06-01 00:{i // 100:02d}:00") for i in range(101)],
@@ -251,13 +254,30 @@ async def test_attachment_listing_503_fails_the_article_not_the_attachments(serv
         },
         fail=lambda table, query: status_error(503) if table == "sys_attachment" and "a0001" in query else None,
     )
-    wire_listing(servicenow_connector, fake)
+    wire_listing(servicenow_connector, fake, checkpoint="2024-05-31 00:00:00")
 
     await servicenow_connector._sync_articles()
 
     # page 1 and a0001's stored attachment are left as they are, not rewritten with "no attachments"
     assert sorted(written_ids(servicenow_connector)) == ["KB0000100", file_key(100, "KB0000100")]
     assert servicenow_connector.full_sync_coverage().complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_full_attachment_listing_fails_every_article(servicenow_connector) -> None:
+    fake = FakeServiceNow(
+        {"kb_knowledge": [article_row(i, f"2024-06-01 00:{i // 100:02d}:00") for i in range(150)],
+         "sys_attachment": [attachment_row(1, "a0001")]},
+        fail=lambda table, query: status_error(503) if table == "sys_attachment" else None,
+    )
+    wire_listing(servicenow_connector, fake)
+
+    await servicenow_connector._sync_articles()
+
+    assert written_ids(servicenow_connector) == []
+    assert len(fake.calls_to("sys_attachment")) == 1  # not tried again for every page
+    assert servicenow_connector.full_sync_coverage().complete is False
+    assert servicenow_connector.article_sync_point.data["articles"]["last_sync_time"] == "2024-05-31 23:59:59"
 
 
 # --- attachment MIME types -------------------------------------------------------------------
@@ -401,3 +421,127 @@ async def test_article_whose_transform_raises_is_failed_not_dropped(servicenow_c
     assert sorted(written_ids(sc)) == ["KB0000001", "KB0000003"]
     assert sc.article_sync_point.data["articles"]["last_sync_time"] == "2024-06-01 01:59:59"
     assert sc.full_sync_coverage().complete is False
+
+
+# --- a full read that stops continues where it stopped ----------------------------------------------
+
+
+def _timed_articles(count: int) -> list[dict]:
+    return [article_row(i, f"2024-06-01 00:{i // 60:02d}:{i % 60:02d}") for i in range(1, count + 1)]
+
+
+def _stop_on_listing_call(n: int) -> tuple[dict, object]:
+    """A fail hook that spends the rate limit on the n-th call listing current articles, while ``stop["on"]``."""
+    stop = {"on": True, "calls": 0}
+
+    def fail(table: str, query: str | None) -> Exception | None:
+        if table == "kb_knowledge" and (query or "").startswith("workflow_state=published") and stop["on"]:
+            stop["calls"] += 1
+            if stop["calls"] == n:
+                return ServiceNowRateLimited(time.time() + 600)
+        return None
+
+    return stop, fail
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_full_read_resumes_where_it_stopped_and_unlinks_only_after_the_whole_pass(servicenow_connector) -> None:
+    sc = servicenow_connector
+    rows = _timed_articles(250)  # three pages of 100
+    stop, fail = _stop_on_listing_call(2)
+    fake = FakeServiceNow({"kb_knowledge": rows}, fail=fail)
+    point = migrated_sync_point(**{"articles_reconcile/last": {"last_sync_time": "2000-01-01 00:00:00"}})
+    store = wire_store(sc, fake, stored_record("KB9999999"), sync_point=point)
+
+    with pytest.raises(ServiceNowRateLimited):
+        await sc._sync_articles()
+
+    # The first page is written; nothing is unlinked; the next run starts after its last row.
+    assert store.keys("WEBPAGE") == sorted([f"KB{i:07d}" for i in range(1, 101)] + ["KB9999999"])
+    assert store.deleted == []
+    saved = point.data["articles"]
+    assert saved["full_resume_after"] == [rows[99]["sys_updated_on"], rows[99]["sys_id"]]
+    assert "last_sync_time" not in saved
+
+    stop["on"] = False
+    fake.calls.clear()
+    sc._sync_read_incomplete = False
+
+    await sc._sync_articles()
+
+    listed = [q for q in fake.calls_to("kb_knowledge") if q.startswith("workflow_state=published")]
+    assert f"sys_updated_on>{rows[99]['sys_updated_on']}^NQ" in listed[0]  # not from the start
+    assert len(listed) == 2 + 1  # pages 101-200 and 201-250, then the reconcile's id listing
+    assert store.keys("WEBPAGE") == [f"KB{i:07d}" for i in range(1, 251)]
+    # The reconcile, after the whole pass, removes the article gone at the source; a full sync of
+    # the platform unlinks nothing after a resumed run, which did not see the first part.
+    assert store.deleted == ["KB9999999"]
+    assert sc.full_sync_coverage().complete is False
+    assert point.data["articles"] == {"last_sync_time": rows[-1]["sys_updated_on"], "full_resume_after": []}
+
+
+@pytest.mark.asyncio
+async def test_a_resume_point_is_never_past_a_failed_article(servicenow_connector) -> None:
+    sc = servicenow_connector
+    rows = _timed_articles(250)
+    _, fail = _stop_on_listing_call(3)
+    fake = FakeServiceNow({"kb_knowledge": rows}, fail=fail)
+    wire_store(sc, fake)
+    real = sc._process_single_article
+
+    async def first_page_fails_once(article: TableAPIRecord, *args: object) -> list:
+        if article.number == "KB0000050":
+            raise RuntimeError("write failed")
+        return await real(article, *args)
+
+    sc._process_single_article = first_page_fails_once
+
+    with pytest.raises(ServiceNowRateLimited):
+        await sc._sync_articles()
+
+    assert "articles" not in sc.article_sync_point.data  # the next run reads from the start again
+
+
+@pytest.mark.asyncio
+async def test_a_platform_full_sync_reads_from_the_start_and_sees_everything(servicenow_connector) -> None:
+    sc = servicenow_connector
+    rows = _timed_articles(150)
+    fake = FakeServiceNow({"kb_knowledge": rows})
+    point = migrated_sync_point(articles={"full_resume_after": [rows[99]["sys_updated_on"], rows[99]["sys_id"]]})
+    wire_store(sc, fake, sync_point=point)
+    sc.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+
+    await sc._sync_articles()
+
+    assert "^NQ" not in fake.calls_to("kb_knowledge")[0]
+    assert len(written_ids(sc)) == 150
+    assert sc.full_sync_coverage().complete is True
+
+
+@pytest.mark.asyncio
+async def test_the_resumed_run_keeps_the_first_parts_change_checkpoints(servicenow_connector) -> None:
+    sc = servicenow_connector
+    rows = _timed_articles(150)
+    _, fail = _stop_on_listing_call(2)
+    fake = FakeServiceNow({"kb_knowledge": rows, "kb_feedback": [{"sys_id": "fb1", "article": "a0001", "sys_updated_on": T0}]},
+                          fail=fail)
+    wire_store(sc, fake)
+    with pytest.raises(ServiceNowRateLimited):
+        await sc._sync_articles()
+    first = dict(sc.article_sync_point.data["articles"])
+    fake.fail = None
+
+    await sc._sync_articles()
+
+    # Feedback and inline images that changed while the first part's pages were read are looked for next run.
+    assert sc.article_sync_point.data["feedback"] == {"last_sync_time": first["feedback"], "count": first["count"]}
+    assert sc.article_sync_point.data["attachments"] == {"last_sync_time": first["attachments"]}
+    assert "access_fingerprint" not in sc.article_sync_point.data  # so the next run re-reads the articles with criteria
+
+
+@pytest.mark.asyncio
+async def test_a_keyset_query_may_not_hold_nq_or_orderby(servicenow_connector) -> None:
+    servicenow_connector._get_fresh_datasource = AsyncMock(return_value=FakeServiceNow({}))
+    for query in ("active=true^NQactive=false", "active=true^ORDERBYname"):
+        with pytest.raises(AssertionError):
+            [p async for p in servicenow_connector._iter_table("kb_knowledge", query, ["sys_id"])]

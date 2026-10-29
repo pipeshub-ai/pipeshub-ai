@@ -262,6 +262,8 @@ class FakeRecordStore:
 # --- rows and wiring shared by the test files ---------------------------------------------------
 
 T0 = "2024-06-01 00:00:00"
+# The connector's clock under the frozen_now fixture (conftest.py): noon, so no test races the end of the UTC day.
+FROZEN_NOW = datetime(2026, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
 INSTANCE = "https://dev00000.service-now.com"
 
 

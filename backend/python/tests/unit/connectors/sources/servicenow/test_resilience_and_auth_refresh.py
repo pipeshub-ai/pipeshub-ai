@@ -15,6 +15,7 @@ from servicenow_fakes import (
     INSTANCE,
     T0,
     FakeServiceNow,
+    MemorySyncPoint,
     article_row,
     attachment_row,
     file_response,
@@ -24,9 +25,7 @@ from servicenow_fakes import (
     written_ids,
 )
 
-from app.config.constants.arangodb import Connectors
 from app.connectors.sources.servicenow.servicenow import connector as connector_module
-from app.models.entities import AppUser
 from app.models.permission import PermissionType
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.servicenow.servicenow import (
@@ -403,26 +402,43 @@ async def test_init_twice_then_cleanup_closes_both_clients(servicenow_connector)
 # --- fewer calls per page and per run ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_call_count_per_100_article_page(servicenow_connector) -> None:
-    sc = servicenow_connector
+def _hundred_articles(updated: str = T0) -> tuple[list[dict], FakeServiceNow]:
     # 32-character sys_ids, as on an instance: they decide how many fit in one IN list
-    articles = [article_row(i, sys_id=f"{i:032x}", can_read_user_criteria="ucA" if i % 2 else "ucB") for i in range(100)]
+    articles = [article_row(i, updated, sys_id=f"{i:032x}", can_read_user_criteria="ucA" if i % 2 else "ucB")
+                for i in range(100)]
     attachments = [attachment_row(3 * i + k, a["sys_id"]) for i, a in enumerate(articles) for k in range(3)]
     criteria = [{"sys_id": c, "user": "u1", "sys_updated_on": T0} for c in ("ucA", "ucB")]
-    fake = FakeServiceNow({"kb_knowledge": articles, "sys_attachment": attachments, "user_criteria": criteria})
+    return articles, FakeServiceNow({"kb_knowledge": articles, "sys_attachment": attachments, "user_criteria": criteria})
+
+
+@pytest.mark.asyncio
+async def test_a_full_read_lists_attachments_and_feedback_once(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _, fake = _hundred_articles()
     wire_listing(sc, fake)
-    sc.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lambda source_id, connector_id: AppUser(
-        app_name=Connectors.SERVICENOW, connector_id=connector_id, source_user_id=source_id,
-        email=f"{source_id}@x.com", full_name=source_id))
+
+    await sc._sync_articles()
+
+    assert len(fake.calls_to("kb_knowledge")) == 1
+    # one listing for the whole run, not one per IN chunk of each page
+    assert fake.calls_to("sys_attachment") == ["table_nameINkb_knowledge,ZZ_YYkb_knowledge^ORDERBYsys_updated_on^ORDERBYsys_id"]
+    assert len(fake.calls_to("kb_feedback")) == 1
+    assert len(fake.calls_to("user_criteria")) == 2  # one per distinct set, then the run's cache
+    assert len(written_ids(sc)) == 400
+
+
+@pytest.mark.asyncio
+async def test_an_incremental_page_lists_attachments_per_in_chunk(servicenow_connector) -> None:
+    sc = servicenow_connector
+    articles, fake = _hundred_articles("2024-06-02 00:00:00")
+    wire_listing(sc, fake, checkpoint=T0)
 
     await sc._sync_articles()
 
     chunks = sc._chunk_ids([a["sys_id"] for a in articles])
-    assert len(fake.calls_to("kb_knowledge")) == 1
     # one listing per IN chunk the URL limit allows (it was one listing per article)
-    assert len(fake.calls_to("sys_attachment")) == len(chunks) == 8
-    assert len(fake.calls_to("user_criteria")) == 2  # one per distinct set, then the run's cache
+    assert len(fake.calls_to("sys_attachment")) == len(chunks)
+    assert len(chunks) < 100
     assert len(written_ids(sc)) == 400
 
 
@@ -530,16 +546,31 @@ async def test_a_listing_reads_no_extra_page(servicenow_connector, count) -> Non
 
 @pytest.mark.asyncio
 async def test_short_admin_page_continues(servicenow_connector) -> None:
-    roles = [{"sys_id": f"r{i:03d}", "name": f"role{i}", "sys_updated_on": T0} for i in range(618)]
-    for i in range(0, 618, 57):  # 11 rows an ACL hides even from admin: 618 roles list as 607
+    # Rows an ACL hides even from admin (seen live: 618 roles list as 607), over pages of 1000
+    roles = [{"sys_id": f"r{i:04d}", "name": f"role{i}", "sys_updated_on": T0} for i in range(2618)]
+    for i in range(0, 2618, 57):
         roles[i]["_acl_hidden"] = True
     fake = FakeServiceNow({"sys_user_role": roles})
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)
 
     result = await servicenow_connector._fetch_all_roles()
 
-    assert len(result) == 607
-    assert len(fake.calls) == 7
+    assert len(result) == 2618 - 46
+    assert [limit for _, _, limit in fake.calls] == [1000] * 3  # short pages, and no extra one
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 1, 1000, 1001])
+async def test_an_id_listing_reads_pages_of_1000_and_no_extra_page(servicenow_connector, count) -> None:
+    rows = [{"sys_id": f"m{i:05d}", "user": f"u{i}", "group": "g1", "user.active": "true",
+             "sys_updated_on": T0} for i in range(count)]
+    fake = FakeServiceNow({"sys_user_grmember": rows})
+    servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)
+
+    memberships = await servicenow_connector._fetch_all_memberships()
+
+    assert len(memberships) == count
+    assert [limit for _, _, limit in fake.calls] == [1000] * max(1, -(-count // 1000))
 
 
 @pytest.mark.asyncio
@@ -573,3 +604,17 @@ async def test_datasource_reads_x_total_count(monkeypatch) -> None:
     response = await _list(ds)
 
     assert (response.total_count, len(response.result)) == (82, 1)
+
+
+@pytest.mark.asyncio
+async def test_admins_granted_are_stored_for_a_run_whose_roles_did_not_change(servicenow_connector) -> None:
+    sc = servicenow_connector
+    row = {"role.name": "admin", "state": "active", "user.active": "true", "sys_updated_on": T0}
+    fake = FakeServiceNow({"sys_user_has_role": [{**row, "sys_id": "r1", "user": "u1"},
+                                                 {**row, "sys_id": "r2", "user": "u2", "_acl_hidden": True}]})
+    sc._get_fresh_datasource = AsyncMock(return_value=fake)
+    sc.user_sync_point = MemorySyncPoint({"admins": {"ids": ["u3"]}})  # the last listing shown in full
+
+    assert await sc._get_admin_users() == {"u1", "u3"}  # partly hidden: what it shows and the last full set
+
+    assert sc.user_sync_point.data["admins"] == {"ids": ["u3"], "granted": ["u1", "u3"]}

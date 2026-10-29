@@ -11,7 +11,7 @@ Note: All reference fields are returned as strings (sys_ids) because the connect
 This ensures consistent, simple string types for all references.
 """
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -376,19 +376,3 @@ class KBPermissionMapping(BaseModel):
     user_criteria: str = Field(description="User criteria sys_id reference (user_criteria)")
 
     model_config = ConfigDict(extra="allow")
-
-
-# Internal connector models (not from ServiceNow API directly)
-
-class RawPermission(BaseModel):
-    """Internal model for raw permission data extracted from user_criteria.
-
-    This represents a single permission assignment before conversion to the app's Permission model.
-    Used as an intermediate format between ServiceNow data and application Permission objects.
-    """
-
-    entity_type: Literal["USER", "GROUP"] = Field(description="Type of entity: USER or GROUP")
-    source_sys_id: str = Field(description="ServiceNow sys_id of the user or group")
-    role: Literal["READER", "WRITER", "OWNER"] = Field(description="Permission role type")
-
-    model_config = ConfigDict(extra="forbid")

@@ -31,7 +31,6 @@ from app.sources.external.servicenow.models import (
     KBKnowledge,
     KBKnowledgeBase,
     KBCategory,
-    RawPermission,
     SysUser,
     UserCriteria,
     TableAPIRecord,
@@ -81,23 +80,6 @@ def _category_api_row(**fields: object) -> dict:
     }
     base.update(fields)
     return base
-
-
-def _record_update(**kwargs):
-    """Lightweight RecordUpdate stand-in for ServiceNow tests."""
-    defaults = {
-        "record": None,
-        "is_new": True,
-        "is_updated": False,
-        "is_deleted": False,
-        "metadata_changed": False,
-        "content_changed": False,
-        "permissions_changed": True,
-        "new_permissions": [],
-        "external_record_id": None,
-    }
-    defaults.update(kwargs)
-    return type("RecordUpdate", (), defaults)()
 
 
 def _sys_user_row(**fields: object) -> dict:
@@ -909,7 +891,7 @@ class TestRunSync:
 
     async def test_full_sync_flow(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, True)), \
              patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
              patch.object(servicenow_connector, "_sync_knowledge_bases", new_callable=AsyncMock), \
@@ -919,18 +901,18 @@ class TestRunSync:
 
     async def test_sync_continues_without_admin_users(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, True)), \
              patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock, return_value=set()), \
              patch.object(servicenow_connector, "_sync_knowledge_bases", new_callable=AsyncMock) as mock_kb, \
              patch.object(servicenow_connector, "_sync_categories", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_sync_articles", new_callable=AsyncMock):
             await servicenow_connector.run_sync()
-            mock_kb.assert_called_once_with(set())
+            mock_kb.assert_called_once_with(set(), grants=True)
 
     async def test_a_failed_admin_read_writes_no_kb_so_stored_admin_grants_stay(self, servicenow_connector) -> None:
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, True)), \
              patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock), \
              patch.object(servicenow_connector, "_get_admin_users", new_callable=AsyncMock,
                           side_effect=ServiceNowAPIError(500, "fail", None)), \
@@ -944,7 +926,7 @@ class TestRunSync:
 
     async def test_sync_propagates_exceptions(self, servicenow_connector):
         servicenow_connector.servicenow_client = MagicMock()
-        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, False)), \
+        with patch.object(servicenow_connector, "_read_access_state", new_callable=AsyncMock, return_value=(None, True)), \
              patch.object(servicenow_connector, "_sync_users_and_groups", new_callable=AsyncMock,
                           side_effect=Exception("sync error")):
             with pytest.raises(Exception, match="sync error"):
@@ -1042,6 +1024,7 @@ class TestSyncRoles:
         hierarchy = []
         mock_group = MagicMock(spec=AppUserGroup)
         mock_group.name = "admin"
+        mock_group.source_user_group_id = "r1"
         mock_result = [(mock_group, [MagicMock()])]
         with patch.object(servicenow_connector, "_fetch_all_role_assignments",
                           new_callable=AsyncMock, return_value=assignments), \
@@ -1071,6 +1054,7 @@ class TestSyncRoles:
         hierarchy = [SysUserRoleContains(sys_id="h1", role="child", contains="parent")]
         mock_group = MagicMock(spec=AppUserGroup)
         mock_group.name = "ChildRole"
+        mock_group.source_user_group_id = "child"
 
         with patch.object(servicenow_connector, "_fetch_all_role_assignments", new_callable=AsyncMock, return_value=assignments), \
              patch.object(servicenow_connector, "_fetch_all_roles", new_callable=AsyncMock, return_value=roles), \
@@ -1151,8 +1135,8 @@ class TestSyncSingleOrganizationalEntity:
         sync_point.update_sync_point = AsyncMock()
         servicenow_connector.org_entity_sync_points = {"location": sync_point}
 
-        page1_data = [{"sys_id": f"l{i}", "name": f"Location {i}", "sys_updated_on": "2024-01-01"} for i in range(100)]
-        page2_data = [{"sys_id": "l100", "name": "Location 100", "sys_updated_on": "2024-01-02"}]
+        page1_data = [{"sys_id": f"l{i}", "name": f"Location {i}", "sys_updated_on": "2024-01-01"} for i in range(1000)]
+        page2_data = [{"sys_id": "l1000", "name": "Location 100", "sys_updated_on": "2024-01-02"}]
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_organizational_group", return_value=MagicMock()):
@@ -1182,7 +1166,7 @@ class TestSyncSingleOrganizationalEntity:
             await servicenow_connector._sync_single_organizational_entity(
                 "company", ORGANIZATIONAL_ENTITIES["company"]
             )
-        mock_error.assert_called()
+        mock_error.assert_not_called()  # logged once, with its traceback, where the run ends (_run_sync)
         # A page that failed must not leave a checkpoint claiming it was read.
         sync_point.update_sync_point.assert_not_awaited()
 
@@ -1243,8 +1227,6 @@ class TestSyncKnowledgeBases:
              patch.object(servicenow_connector, "_fetch_kb_permissions_from_criteria", new_callable=AsyncMock,
                           return_value={"read": [], "write": []}), \
              patch.object(servicenow_connector, "_process_criteria_permissions", new_callable=AsyncMock,
-                          return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects", new_callable=AsyncMock,
                           return_value=[]):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
@@ -1319,8 +1301,6 @@ class TestSyncKnowledgeBases:
              patch.object(servicenow_connector, "_fetch_kb_permissions_from_criteria", new_callable=AsyncMock,
                           return_value={"read": [], "write": []}), \
              patch.object(servicenow_connector, "_process_criteria_permissions", new_callable=AsyncMock,
-                          return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects", new_callable=AsyncMock,
                           return_value=[]):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
@@ -1359,9 +1339,9 @@ class TestSyncUsersDeep:
                 email=f"user{i}@example.com",
                 sys_updated_on="2024-01-01",
             )
-            for i in range(100)
+            for i in range(1000)
         ]
-        page2 = [_sys_user_row(sys_id="u100", email="user100@example.com", sys_updated_on="2024-01-02")]
+        page2 = [_sys_user_row(sys_id="u1000", email="user100@example.com", sys_updated_on="2024-01-02")]
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=MagicMock(spec=AppUser)):
@@ -1475,17 +1455,18 @@ class TestSyncCategories:
 
         page1 = [
             _category_api_row(sys_id=f"cat{i}", label=f"Cat {i}", value=f"cat-{i}", sys_updated_on="2024-01-01")
-            for i in range(100)
+            for i in range(1000)
         ]
-        page2 = [_category_api_row(sys_id="cat100", label="Cat 100", value="cat-100", sys_updated_on="2024-01-02")]
+        page2 = [_category_api_row(sys_id="cat1000", label="Cat 100", value="cat-100", sys_updated_on="2024-01-02")]
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_category_listing(page1, page2))
+        # the id listing, then the rows: two pages of 1000 each
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=[*_listing(page1, page2), *_listing(page1, page2)])
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await servicenow_connector._sync_categories()
-        # the id listing, then two pages: X-Total-Count ends it, no empty page
-        assert mock_ds.get_now_table_tableName.call_count == 3
+        # X-Total-Count ends each listing, no empty page
+        assert mock_ds.get_now_table_tableName.call_count == 4
         assert mock_data_entities_processor.on_new_record_groups.call_count == 2
 
     @pytest.mark.asyncio
@@ -1522,10 +1503,6 @@ class TestSyncCategories:
         assert [(g.external_group_id, g.name) for g in written] == [("cat1", "cat1")]
 
 
-# ===========================================================================
-# _process_record_updates_batch
-# ===========================================================================
-
     @pytest.mark.asyncio
     async def test_sync_categories_delta_sync(self, servicenow_connector):
         servicenow_connector.category_sync_point = AsyncMock()
@@ -1557,15 +1534,15 @@ class TestSyncCategories:
 
 class TestFetchAllGroupsDeep:
     async def test_paginates_groups(self, servicenow_connector):
-        page1 = [{"sys_id": f"g{i:03d}", "name": f"Group {i}"} for i in range(100)]
-        page2 = [{"sys_id": "g100", "name": "Group 100"}]
+        page1 = [{"sys_id": f"g{i:03d}", "name": f"Group {i}"} for i in range(1000)]
+        page2 = [{"sys_id": "g9999", "name": "Group 1000"}]
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, page2))
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_groups()
-            assert len(result) == 101
+            assert len(result) == 1001
 
     async def test_handles_exception(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
@@ -1589,8 +1566,8 @@ class TestFetchAllMembershipsDeep:
 
         full_page = _table_api_response([
             {"sys_id": f"m{i}", "user": f"u{i}", "group": "g1", "sys_updated_on": "2026-08-01 10:00:00"}
-            for i in range(100)
-        ], total=150)
+            for i in range(1000)
+        ], total=1500)
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=[full_page, ServiceNowAPIError(500, "page two failed", None)]
@@ -1601,15 +1578,15 @@ class TestFetchAllMembershipsDeep:
             await servicenow_connector._fetch_all_memberships()
 
     async def test_paginates_memberships(self, servicenow_connector):
-        page1 = [{"sys_id": f"m{i}", "user": f"u{i}", "group": "g1", "sys_updated_on": "2024-01-01"} for i in range(100)]
-        page2 = [{"sys_id": "m100", "user": "u100", "group": "g1", "sys_updated_on": "2024-01-02"}]
+        page1 = [{"sys_id": f"m{i}", "user": f"u{i}", "group": "g1", "sys_updated_on": "2024-01-01"} for i in range(1000)]
+        page2 = [{"sys_id": "m1000", "user": "u1000", "group": "g1", "sys_updated_on": "2024-01-02"}]
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, page2))
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_memberships()
-            assert len(result) == 101
+            assert len(result) == 1001
 
     async def test_handles_exception(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
@@ -1756,8 +1733,6 @@ class TestSyncKnowledgeBasesDeep:
         with patch.object(servicenow_connector, "_fetch_kb_permissions_from_criteria",
                           new_callable=AsyncMock, return_value={"read": [], "write": []}), \
              patch.object(servicenow_connector, "_process_criteria_permissions",
-                          new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
                           new_callable=AsyncMock, return_value=[]):
             await servicenow_connector._sync_knowledge_bases([])
 
@@ -1772,15 +1747,16 @@ class TestSyncKnowledgeBasesDeep:
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        owner_perm = Permission(email="owner@test.com", type=PermissionType.OWNER, entity_type=EntityType.USER)
+        servicenow_connector._email_by_source_id = {"owner1": "owner@test.com"}
 
         with patch.object(servicenow_connector, "_fetch_kb_permissions_from_criteria",
                           new_callable=AsyncMock, return_value={"read": [], "write": []}), \
              patch.object(servicenow_connector, "_process_criteria_permissions",
-                          new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
-                          new_callable=AsyncMock, return_value=[owner_perm]):
+                          new_callable=AsyncMock, return_value=[]):
             await servicenow_connector._sync_knowledge_bases([])
+
+        ((_, permissions),) = servicenow_connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert [(p.email, p.type, p.entity_type) for p in permissions] == [("owner@test.com", PermissionType.OWNER, EntityType.USER)]
 
     @pytest.mark.asyncio
     async def test_sync_knowledge_bases_transform_returns_none_skipped(self, servicenow_connector, mock_data_entities_processor):
@@ -1799,166 +1775,39 @@ class TestSyncKnowledgeBasesDeep:
 # ===========================================================================
 
 
-class TestConvertPermissionsToObjects:
-    @pytest.mark.asyncio
-    async def test_convert_permissions_user_type(self, servicenow_connector):
-        mock_user = MagicMock(spec=AppUser)
-        mock_user.email = "user@test.com"
-        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
+class TestCriteriaGrants:
+    """A criterion that needs no user resolution becomes grants: its users by email (one with no app
+    user gets none), its groups, roles, departments, locations and companies as group grants."""
 
-        perms = await servicenow_connector._convert_permissions_to_objects(
-            [RawPermission(entity_type="USER", source_sys_id="u1", role="READER")],
-        )
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
-        assert perms[0].type == PermissionType.READ
+    @staticmethod
+    def _grants(sc, row: dict, permission_type: PermissionType = PermissionType.READ):
+        sc._criteria_rows["c1"] = TableAPIRecord(sys_id="c1", active="true", **row)
+        sc._email_by_source_id = {"u1": "u1@x.com", "u2": "u2@x.com"}
+        return sc._process_criteria_permissions(["c1"], permission_type)
 
     @pytest.mark.asyncio
-    async def test_convert_permissions_user_not_found(self, servicenow_connector):
-        perms = await servicenow_connector._convert_permissions_to_objects(
-            [RawPermission(entity_type="USER", source_sys_id="missing", role="READER")],
-        )
-        assert perms == []
+    @pytest.mark.parametrize("field", ["group", "role", "department", "location", "company"])
+    async def test_each_group_field_is_a_group_grant(self, servicenow_connector, field):
+        perms = await self._grants(servicenow_connector, {field: "x1, x2"}, PermissionType.WRITE)
+        assert [(p.entity_type, p.external_id, p.type) for p in perms] == [
+            (EntityType.GROUP, "x1", PermissionType.WRITE), (EntityType.GROUP, "x2", PermissionType.WRITE)]
 
     @pytest.mark.asyncio
-    async def test_convert_permissions_group_type(self, servicenow_connector):
-        perms = await servicenow_connector._convert_permissions_to_objects(
-            [RawPermission(entity_type="GROUP", source_sys_id="g1", role="WRITER")],
-        )
-        assert len(perms) == 1
-        assert perms[0].external_id == "g1"
-        assert perms[0].type == PermissionType.WRITE
+    async def test_users_by_email_and_unknown_users_get_nothing(self, servicenow_connector):
+        perms = await self._grants(servicenow_connector, {"user": "u2,missing, u1"})
+        assert [(p.entity_type, p.email) for p in perms] == [(EntityType.USER, "u1@x.com"), (EntityType.USER, "u2@x.com")]
+        servicenow_connector.data_entities_processor.get_user_by_source_id.assert_not_awaited()  # no lookup per user
 
     @pytest.mark.asyncio
-    async def test_convert_permissions_unknown_entity_type(self, servicenow_connector):
-        bad_perm = MagicMock()
-        bad_perm.entity_type = "ROLE"
-        bad_perm.source_sys_id = "r1"
-        bad_perm.role = "READER"
-
-        perms = await servicenow_connector._convert_permissions_to_objects([bad_perm])
-        assert perms == []
+    async def test_mixed_fields(self, servicenow_connector):
+        perms = await self._grants(servicenow_connector, {"user": "u1", "group": "g1", "company": "co1"})
+        assert {(p.entity_type, p.email or p.external_id) for p in perms} == {
+            (EntityType.USER, "u1@x.com"), (EntityType.GROUP, "g1"), (EntityType.GROUP, "co1")}
 
     @pytest.mark.asyncio
-    async def test_convert_permissions_exception_handling(self, servicenow_connector):
-        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db error"))
-
-        perms = await servicenow_connector._convert_permissions_to_objects(
-            [RawPermission(entity_type="USER", source_sys_id="u1", role="READER")],
-        )
-        assert perms == []
-
-    @pytest.mark.asyncio
-    async def test_convert_permissions_mixed_types(self, servicenow_connector):
-        mock_user = MagicMock(spec=AppUser)
-        mock_user.email = "user@test.com"
-        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
-
-        perms = await servicenow_connector._convert_permissions_to_objects(
-            [
-                RawPermission(entity_type="USER", source_sys_id="u1", role="READER"),
-                RawPermission(entity_type="GROUP", source_sys_id="g1", role="WRITER"),
-            ],
-        )
-        assert len(perms) == 2
-
-    @pytest.mark.asyncio
-    async def test_convert_permissions_empty_list(self, servicenow_connector):
-        perms = await servicenow_connector._convert_permissions_to_objects([])
-        assert perms == []
-
-
-class TestExtractPermissionsFromUserCriteria:
-    @pytest.mark.asyncio
-    async def test_extract_permissions_user_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", user="u1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert len(perms) == 1
-        assert perms[0].entity_type == "USER"
-        assert perms[0].source_sys_id == "u1"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_group_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", group="g1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.WRITE
-        )
-        assert perms[0].entity_type == "GROUP"
-        assert perms[0].role == "WRITER"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_role_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", role="r1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert perms[0].entity_type == "GROUP"
-        assert perms[0].source_sys_id == "r1"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_department_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", department="dept1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert perms[0].source_sys_id == "dept1"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_location_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", location="loc1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert perms[0].source_sys_id == "loc1"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_company_field(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", company="comp1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert perms[0].source_sys_id == "comp1"
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_multiple_comma_separated(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", user="u1,u2, u3")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert len(perms) == 3
-        assert {p.source_sys_id for p in perms} == {"u1", "u2", "u3"}
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_empty_fields(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert perms == []
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_mixed_fields(self, servicenow_connector):
-        criteria = UserCriteria(sys_id="c1", user="u1", group="g1", company="c1")
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            criteria, PermissionType.READ
-        )
-        assert len(perms) == 3
-
-    @pytest.mark.asyncio
-    async def test_extract_permissions_exception_handling(self, servicenow_connector):
-        class BadCriteria:
-            sys_id = "c1"
-
-            @property
-            def user(self):
-                raise RuntimeError("bad")
-
-        perms = await servicenow_connector._extract_permissions_from_user_criteria_details(
-            BadCriteria(), PermissionType.READ
-        )
-        assert perms == []
+    async def test_no_field_is_everyone(self, servicenow_connector):
+        perms = await self._grants(servicenow_connector, {})
+        assert [p.entity_type for p in perms] == [EntityType.ORG]
 
 
 # ===========================================================================
@@ -2069,7 +1918,7 @@ class TestFetchAttachmentsForArticles:
 
 
 # ===========================================================================
-# _convert_permissions_to_objects and criteria helpers
+# criteria helpers
 # ===========================================================================
 
 
@@ -2098,7 +1947,6 @@ class TestCriteriaDenyAndMatchAll:
         ds = AsyncMock()
         ds.get_now_table_tableName = AsyncMock(side_effect=table)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._convert_permissions_to_objects = AsyncMock(side_effect=lambda perms: perms)
         connector._kb_privileged_users = AsyncMock(return_value=set())  # admins/owner/managers: tested separately
         everyone = {u for us in members.values() for u in us}
         for row in criteria.values():
@@ -2157,7 +2005,7 @@ class TestCriteriaDenyAndMatchAll:
             {},
         )
         perms = await servicenow_connector._process_criteria_permissions(["c"], PermissionType.READ)
-        assert {(p.entity_type, p.source_sys_id) for p in perms} == {("GROUP", "g1"), ("GROUP", "d1")}
+        assert {(p.entity_type, p.external_id) for p in perms} == {(EntityType.GROUP, "g1"), (EntityType.GROUP, "d1")}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("unevaluable", [{"script": "answer = true;"}, {"advanced": "false", "script": "answer = gs.getUser().isMemberOf('x');"}])
@@ -2174,7 +2022,7 @@ class TestCriteriaDenyAndMatchAll:
     async def test_match_any_with_an_unevaluable_condition_grants_through_the_rest(self, servicenow_connector, unevaluable) -> None:
         self._wire(servicenow_connector, {"c": {"sys_id": "c", "match_all": "false", "group": "g1", **unevaluable}}, {})
         perms = await servicenow_connector._process_criteria_permissions(["c"], PermissionType.READ)
-        assert {(p.entity_type, p.source_sys_id) for p in perms} == {("GROUP", "g1")}
+        assert {(p.entity_type, p.external_id) for p in perms} == {(EntityType.GROUP, "g1")}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("unevaluable", [{"script": "answer = true;"}, {"advanced": "false", "script": "answer = gs.getUser().isMemberOf('x');"}])
@@ -2448,16 +2296,16 @@ class TestFlattenAndRoles:
     async def test_fetch_all_role_assignments_pagination(self, servicenow_connector):
         page1 = [
             {"sys_id": f"ra{i}", "user": f"u{i}", "role": "r1", "sys_updated_on": "2024-01-01"}
-            for i in range(100)
+            for i in range(1000)
         ]
-        page2 = [{"sys_id": "ra100", "user": "u100", "role": "r1", "sys_updated_on": "2024-01-02"}]
+        page2 = [{"sys_id": "ra1000", "user": "u1000", "role": "r1", "sys_updated_on": "2024-01-02"}]
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, page2))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await servicenow_connector._fetch_all_role_assignments()
-        assert len(result) == 101
+        assert len(result) == 1001
 
     @pytest.mark.asyncio
     async def test_fetch_all_role_assignments_api_error_propagates(self, servicenow_connector):
@@ -2584,18 +2432,11 @@ class TestProcessCriteriaPermissions:
             {"sys_id": "crit1", "active": "true", "match_all": "false", "advanced": "false", "script": "", "user": "u1", "group": "", "role": "", "department": "", "location": "", "company": ""},
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        servicenow_connector._email_by_source_id = {"u1": "u@test.com"}
 
-        with patch.object(servicenow_connector, "_extract_permissions_from_user_criteria_details",
-                          new_callable=AsyncMock, return_value=[
-                              RawPermission(entity_type="USER", source_sys_id="u1", role="READER"),
-                          ]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
-                          new_callable=AsyncMock, return_value=[
-                              Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER),
-                          ]):
-            result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
+        result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
 
-        assert len(result) == 1
+        assert [(p.email, p.type, p.entity_type) for p in result] == [("u@test.com", PermissionType.READ, EntityType.USER)]
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_api_error(self, servicenow_connector):
@@ -2605,15 +2446,13 @@ class TestProcessCriteriaPermissions:
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        with patch.object(servicenow_connector, "_convert_permissions_to_objects",
-                          new_callable=AsyncMock, return_value=[]), pytest.raises(_CriteriaUnreadable):
+        with pytest.raises(_CriteriaUnreadable):
             await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_extract_and_convert(self, servicenow_connector):
-        mock_user = MagicMock(spec=AppUser)
-        mock_user.email = "extracted@test.com"
-        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            MagicMock(source_user_id="u1", email="extracted@test.com")])
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
@@ -2631,75 +2470,6 @@ class TestProcessCriteriaPermissions:
 
         with pytest.raises(_CriteriaUnreadable):
             await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
-
-
-class TestProcessRecordUpdatesBatch:
-    @pytest.mark.asyncio
-    async def test_process_record_updates_batch_empty_list(self, servicenow_connector, mock_data_entities_processor):
-        await servicenow_connector._process_record_updates_batch([])
-        mock_data_entities_processor.on_new_records.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_record_updates_batch_success(self, servicenow_connector, mock_data_entities_processor):
-        record = MagicMock(spec=WebpageRecord)
-        perm = Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        update = _record_update(
-            record=record,
-            new_permissions=[perm],
-            external_record_id="art1",
-        )
-        await servicenow_connector._process_record_updates_batch([update])
-        mock_data_entities_processor.on_new_records.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_process_record_updates_batch_skips_missing_permissions(self, servicenow_connector, mock_data_entities_processor):
-        record = MagicMock(spec=WebpageRecord, rewrite_permissions=False, inherit_permissions=False)
-        update = _record_update(
-            record=record,
-            permissions_changed=False,
-            new_permissions=[],
-            external_record_id="art1",
-        )
-        await servicenow_connector._process_record_updates_batch([update])
-        mock_data_entities_processor.on_new_records.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_record_updates_batch_reports_dropped_records(self, servicenow_connector, mock_data_entities_processor):
-        """A dropped record is never written, so the caller must be able to count it."""
-        granted = _record_update(
-            record=MagicMock(spec=WebpageRecord),
-            new_permissions=[Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)],
-            external_record_id="art1",
-        )
-        dropped = _record_update(
-            record=MagicMock(spec=WebpageRecord, rewrite_permissions=False, inherit_permissions=False),
-            new_permissions=[],
-            external_record_id="art2",
-        )
-        servicenow_connector.logger = MagicMock()
-
-        dropped_count = await servicenow_connector._process_record_updates_batch([granted, dropped])
-
-        assert dropped_count == 1
-        written = mock_data_entities_processor.on_new_records.call_args.args[0]
-        assert len(written) == 1
-        assert servicenow_connector.logger.warning.call_args.args[2] == ["art2"]
-
-
-# ===========================================================================
-# create_connector and cleanup
-# ===========================================================================
-
-    @pytest.mark.asyncio
-    async def test_process_record_updates_batch_exception(self, servicenow_connector):
-        record = MagicMock(spec=WebpageRecord)
-        perm = Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        update = _record_update(record=record, new_permissions=[perm], external_record_id="art1")
-        servicenow_connector.data_entities_processor.on_new_records = AsyncMock(
-            side_effect=RuntimeError("batch fail")
-        )
-        with pytest.raises(RuntimeError, match="batch fail"):
-            await servicenow_connector._process_record_updates_batch([update])
 
 
 class TestProcessSingleArticle:
@@ -2723,14 +2493,10 @@ class TestProcessSingleArticle:
         )
 
         with patch.object(servicenow_connector, "_process_criteria_permissions",
-                          new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
                           new_callable=AsyncMock, return_value=[]):
             updates = await servicenow_connector._process_single_article(article, [att])
 
-        assert len(updates) == 2
-        assert updates[0].record.record_type == RecordType.WEBPAGE
-        assert updates[1].record.record_type == RecordType.FILE
+        assert [(r.record_type, p) for r, p in updates] == [(RecordType.WEBPAGE, []), (RecordType.FILE, [])]
 
     @pytest.mark.asyncio
     async def test_process_single_article_with_permissions(self, servicenow_connector):
@@ -2749,8 +2515,8 @@ class TestProcessSingleArticle:
             updates = await servicenow_connector._process_single_article(article, [])
 
         assert len(updates) == 1
-        assert mock_perm in updates[0].new_permissions
-        assert updates[0].record.access_rule == AccessRule.RESTRICTED
+        assert mock_perm in updates[0][1]
+        assert updates[0][0].access_rule == AccessRule.RESTRICTED
 
     @pytest.mark.asyncio
     async def test_process_single_article_author_gets_no_grant(self, servicenow_connector):
@@ -2761,16 +2527,13 @@ class TestProcessSingleArticle:
             kb_category="cat1",
             author="author-sys-id",
         )
-        owner_perm = Permission(email="author@test.com", type=PermissionType.OWNER, entity_type=EntityType.USER)
+        servicenow_connector._email_by_source_id = {"author-sys-id": "author@test.com"}
 
         with patch.object(servicenow_connector, "_process_criteria_permissions",
-                          new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
-                          new_callable=AsyncMock, return_value=[owner_perm]):
+                          new_callable=AsyncMock, return_value=[]):
             updates = await servicenow_connector._process_single_article(article, [])
 
-        assert owner_perm not in updates[0].new_permissions
-        assert updates[0].new_permissions == []
+        assert updates[0][1] == []
 
     @pytest.mark.asyncio
     async def test_process_single_article_without_author(self, servicenow_connector):
@@ -2782,12 +2545,9 @@ class TestProcessSingleArticle:
         )
 
         with patch.object(servicenow_connector, "_process_criteria_permissions",
-                          new_callable=AsyncMock, return_value=[]), \
-             patch.object(servicenow_connector, "_convert_permissions_to_objects",
-                          new_callable=AsyncMock) as mock_convert:
+                          new_callable=AsyncMock, return_value=[]):
             updates = await servicenow_connector._process_single_article(article, [])
 
-        mock_convert.assert_not_called()
         assert len(updates) == 1
 
     @pytest.mark.asyncio
@@ -2875,13 +2635,15 @@ class TestSyncArticles:
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock,
-                          return_value=[_record_update(record=MagicMock(record_type=RecordType.WEBPAGE))]), \
+                          return_value=[(MagicMock(record_type=RecordType.WEBPAGE), [])]), \
              patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}), \
              patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}):
             await servicenow_connector._sync_articles()
 
         assert mock_ds.get_now_table_tableName.call_count == 2  # X-Total-Count ends it, no empty page
-        assert servicenow_connector.article_sync_point.data["articles"] == {"last_sync_time": "2024-01-02 00:00:00"}
+        # A finished full read clears where it would have resumed.
+        assert servicenow_connector.article_sync_point.data["articles"] == {
+            "last_sync_time": "2024-01-02 00:00:00", "full_resume_after": []}
 
     @pytest.mark.asyncio
     async def test_sync_articles_delta_sync_with_last_sync_time(self, servicenow_connector):
@@ -2953,22 +2715,17 @@ class TestSyncArticles:
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        article_update = _record_update(record=MagicMock(record_type=RecordType.WEBPAGE))
-        file_update = _record_update(record=MagicMock(record_type=RecordType.FILE))
+        article = (MagicMock(record_type=RecordType.WEBPAGE), [])
+        file = (MagicMock(record_type=RecordType.FILE), [])
 
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock,
-                          return_value=[article_update, file_update]) as mock_process_single, \
+                          return_value=[article, file]) as mock_process_single, \
              patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}), \
-             patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}), \
-             patch.object(servicenow_connector, "_process_record_updates_batch", new_callable=AsyncMock) as mock_batch:
+             patch.object(servicenow_connector, "_feedback", new_callable=AsyncMock, return_value={}):
             await servicenow_connector._sync_articles()
-            
-            mock_process_single.assert_called_once()
-            mock_batch.assert_called_once()
-            batch_call_args = mock_batch.call_args[0][0]
-            assert len(batch_call_args) == 2
-            assert batch_call_args[0].record.record_type == RecordType.WEBPAGE
-            assert batch_call_args[1].record.record_type == RecordType.FILE
+
+        mock_process_single.assert_called_once()
+        servicenow_connector.data_entities_processor.on_new_records.assert_awaited_once_with([article, file])
 
     @pytest.mark.asyncio
     async def test_sync_articles_exception_propagates(self, servicenow_connector):

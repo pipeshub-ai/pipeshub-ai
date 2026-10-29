@@ -1328,6 +1328,7 @@ async def test_hidden_group_that_is_kept_makes_the_full_sync_incomplete(servicen
     assert sc.full_sync_coverage().complete is True
 
     inst.hidden.add("g-other")  # an ACL hides it now; it is still there
+    sc.data_entities_processor.full_sync_running = MagicMock(return_value=True)  # the run that unlinks
     await _sync(sc, inst)
 
     assert "g-other" in graph.group_nodes

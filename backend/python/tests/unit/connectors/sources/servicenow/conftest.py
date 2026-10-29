@@ -5,13 +5,15 @@ Shared rows, fakes and wiring helpers are in ``servicenow_fakes.py``.
 
 import logging
 from collections.abc import Iterator
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from servicenow_fakes import MemorySyncPoint, make_data_store_provider
+from servicenow_fakes import FROZEN_NOW, MemorySyncPoint, make_data_store_provider
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.servicenow.servicenow import connector as connector_module
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 
 
@@ -94,3 +96,18 @@ def servicenow_connector(mock_logger, mock_data_entities_processor,
     # The knowledge base and category steps keep their last listed scope here.
     connector.category_sync_point = MemorySyncPoint()
     return connector
+
+
+@pytest.fixture()
+def frozen_now(monkeypatch) -> datetime:
+    """Freezes the connector's clock (its module's datetime and _utc_now) at FROZEN_NOW, for tests that
+    build dates from today."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return FROZEN_NOW.astimezone(tz) if tz else FROZEN_NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(connector_module, "datetime", _Frozen)
+    monkeypatch.setattr(ServiceNowConnector, "_utc_now", staticmethod(lambda: FROZEN_NOW.strftime("%Y-%m-%d %H:%M:%S")))
+    return FROZEN_NOW

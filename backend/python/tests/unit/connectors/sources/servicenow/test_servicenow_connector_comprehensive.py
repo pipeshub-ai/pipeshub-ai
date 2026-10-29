@@ -644,11 +644,11 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
         mock_ds = AsyncMock()
-        page1 = [{"sys_id": f"g{i:03d}", "name": "G"} for i in range(100)]
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, [{"sys_id": "g100", "name": "G"}]))
+        page1 = [{"sys_id": f"g{i:03d}", "name": "G"} for i in range(1000)]
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, [{"sys_id": "g9999", "name": "G"}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
-        assert len(groups) == 101
+        assert len(groups) == 1001
 
     @pytest.mark.asyncio
     async def test_empty_result(self, connector):
@@ -753,7 +753,7 @@ class TestRunSyncComprehensive:
     @pytest.mark.asyncio
     async def test_run_sync_with_no_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
-        connector._read_access_state = AsyncMock(return_value=(None, False))
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
         connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
@@ -763,7 +763,7 @@ class TestRunSyncComprehensive:
         await connector.run_sync()
 
         connector._sync_users_and_groups.assert_awaited_once()
-        connector._sync_knowledge_bases.assert_awaited_once_with(set())
+        connector._sync_knowledge_bases.assert_awaited_once_with(set(), grants=True)
         connector._sync_categories.assert_awaited_once()
         connector._sync_articles.assert_awaited_once()
 
@@ -825,12 +825,16 @@ class TestStreamRecord:
         record.mime_type = "application/pdf"
         record.id = "rec-1"
 
-        connector._open_attachment = AsyncMock(return_value=iter([b"file bytes"]))
+        chunks = iter([b"file bytes"])
+        connector._open_attachment = AsyncMock(return_value=chunks)
         connector._current_attachment = AsyncMock(return_value="att-1")
         with patch("app.connectors.sources.servicenow.servicenow.connector.create_stream_record_response") as mock_stream:
             mock_stream.return_value = MagicMock()
             response = await connector.stream_record(record)
-            assert response is not None
+
+        assert response is mock_stream.return_value
+        mock_stream.assert_called_once_with(chunks, filename="test.pdf", mime_type="application/pdf",
+                                            fallback_filename="record_rec-1")
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, connector):

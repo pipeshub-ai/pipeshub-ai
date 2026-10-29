@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import pytest
-from servicenow_fakes import migrated_sync_point
+from servicenow_fakes import FakeServiceNow, article_row, migrated_sync_point, wire_listing
 from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
 from app.config.constants.arangodb import AccessRule
@@ -90,23 +90,19 @@ async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_
         sys_id="att1", file_name="f.pdf", content_type="application/pdf", size_bytes="1", table_sys_id="a1",
         table_name="kb_knowledge", sys_created_on="2024-01-01 00:00:00", sys_updated_on="2024-01-01 00:00:00")])
 
-    assert [u.record.rewrite_permissions for u in updates] == [True, True]
+    assert [r.rewrite_permissions for r, _ in updates] == [True, True]
 
 
 @pytest.mark.asyncio
 async def test_a_rewrite_with_no_grants_is_still_written_so_stored_grants_go(servicenow_connector) -> None:
-    from types import SimpleNamespace
-
     sc = servicenow_connector
-    sc.data_entities_processor.on_new_records = AsyncMock()
-    rewrite = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=True, inherit_permissions=False),
-                              new_permissions=[], external_record_id="a1")
-    plain = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=False, inherit_permissions=False),
-                            new_permissions=[], external_record_id="a2")
+    wire_listing(sc, FakeServiceNow({"kb_knowledge": [article_row(1)]}))
+    sc._article_access = AsyncMock(return_value=(False, AccessRule.OPEN, []))
 
-    assert await sc._process_record_updates_batch([rewrite, plain]) == 1
+    await sc._sync_articles()
 
-    sc.data_entities_processor.on_new_records.assert_awaited_once_with([(rewrite.record, [])])
+    ((record, grants),) = sc.data_entities_processor.on_new_records.await_args.args[0]
+    assert record.rewrite_permissions is True and grants == []
 
 
 @pytest.mark.asyncio
@@ -132,7 +128,7 @@ async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_c
 
     await sc._sync_articles()
 
-    assert len(queries) == 3  # the delta (empty), the re-read pass (one row), its attachments
+    assert len(queries) == 2  # the delta (empty), the re-read pass (one row): its body names no image
     # both passes split at DELTA_OVERLAP_SECONDS before the checkpoint
     assert "sys_updated_on>2024-05-31 23:58:00" in queries[0]
     assert "sys_updated_on<=2024-05-31 23:58:00" in queries[1]

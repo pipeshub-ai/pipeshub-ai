@@ -173,8 +173,9 @@ async def test_kb_whose_criteria_fail_is_named_in_the_summary(servicenow_connect
     sc = servicenow_connector
     _connector(sc, inst)
     sent = _notices(sc)
-    inst.fake.fail = lambda table, q: status_error(500) if table == "sys_user_grmember" and "g-eng" in (q or "") \
-        and "IN" in (q or "") else None
+    # The knowledge bases' Cannot Read rows cannot be listed at once, nor kb-bad's on their own.
+    inst.fake.fail = lambda table, q: status_error(500) if table == "kb_uc_cannot_read_mtom" and (
+        q.startswith("ORDERBYsys") or "kb-bad" in q) else None
 
     await _sync(sc, inst)
 
@@ -485,6 +486,39 @@ async def test_webhook_is_a_no_op_that_logs_nothing(servicenow_connector, caplog
     assert "SECRET-BODY" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_a_failed_group_page_logs_one_traceback(servicenow_connector, caplog) -> None:
+    sc = servicenow_connector
+    inst = Instance()
+    _people(inst)
+    _connector(sc, inst)
+    # Not the 1-row access check (newest first): the group listing itself
+    inst.fake.fail = lambda table, q: status_error(503) if table == "sys_user_group" and not (
+        q or "").startswith("ORDERBYDESC") else None
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(ServiceNowAPIError):
+        await _sync(sc, inst)
+
+    assert len([r for r in caplog.records if r.exc_info]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_stop_logs_no_traceback(servicenow_connector, caplog) -> None:
+    sc = servicenow_connector
+    inst = Instance()
+    _people(inst)
+    _connector(sc, inst)
+    inst.fake.fail = lambda table, q: ServiceNowRateLimited(time.time() + 600) if table == "sys_user_group" else None
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(ServiceNowRateLimited):
+        await _sync(sc, inst)
+
+    assert not [r for r in caplog.records if r.exc_info]
+    assert any("Sync stopped" in r.getMessage() for r in caplog.records)
+
+
 def test_transform_failure_does_not_log_body(servicenow_connector, caplog) -> None:
     sc = servicenow_connector
     caplog.set_level(logging.DEBUG)
@@ -532,20 +566,101 @@ def _reread(fake: FakeServiceNow) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_no_change_no_reread_and_kb_criteria_read_once(servicenow_connector) -> None:
+async def test_the_reread_pass_lists_no_attachments_and_keeps_files_and_revisions(servicenow_connector) -> None:
     sc = servicenow_connector
-    inst, _ = _criteria_model(sc)
+    inst, graph = _criteria_model(sc)
+    image = "e" * 32
+    inst.articles["KB0b"]["text"] = f'<p><img src="/sys_attachment.do?sys_id={image}"></p>'
+    for sys_id, table, article in ((image, "ZZ_YYkb_knowledge", "s-KB0b"), ("f" * 32, "kb_knowledge", "s-KB1b")):
+        inst.attachments.append({"sys_id": sys_id, "file_name": f"{table}.png", "content_type": "image/png",
+                                 "size_bytes": "5", "hash": f"h-{sys_id[0]}", "table_name": table,
+                                 "table_sys_id": article, "sys_created_on": T0, "sys_updated_on": T0})
+    await _sync(sc, inst)
+    files = graph.store.keys("FILE")
+    revisions = {k: r.external_revision_id for k, r in graph.store.records.items()}
+    _later(sc)
+    sc.article_sync_point.data["access_fingerprint"]["last_sync_time"] = "2000-01-01 00:00:00"  # the daily pass
+    inst.fake.calls.clear()
+    sc.data_entities_processor.on_new_records.reset_mock()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake)
+    by_article = [q for q in inst.fake.calls_to("sys_attachment") if "table_sys_idIN" in q]
+    assert by_article == [f"table_nameINkb_knowledge,ZZ_YYkb_knowledge^table_sys_idIN{inst.articles['KB0b']['sys_id']}"
+                          "^ORDERBYsys_updated_on^ORDERBYsys_id"]  # only the body that names an image
+    written = [r.record_type for c in sc.data_entities_processor.on_new_records.await_args_list for r, _ in c.args[0]]
+    assert written and set(written) == {"WEBPAGE"}
+    assert graph.store.keys("FILE") == files == ["KB1b/kb_knowledge.png/h-f"]
+    assert {k: r.external_revision_id for k, r in graph.store.records.items()} == revisions
+
+
+def _listings(fake: FakeServiceNow, table: str) -> list[str]:
+    """The calls to ``table`` other than the 1-row access check (newest first)."""
+    return [q for q in fake.calls_to(table) if not q.startswith("ORDERBYDESC")]
+
+
+@pytest.mark.asyncio
+async def test_no_change_reads_and_writes_no_access(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst, graph = _criteria_model(sc)
     await _sync(sc, inst)  # full: stores what the access tables look like
+    readers = {k: graph.readers(k) for k in graph.store.records}
     _later(sc)
     inst.fake.calls.clear()
+    p = sc.data_entities_processor
+    p.on_new_user_groups.reset_mock()
+    p.on_new_record_groups.reset_mock()
 
     await _sync(sc, inst)
 
     assert _reread(inst.fake) == []
+    for table in ("sys_user_grmember", "sys_user_has_role", "sys_user_role", "user_criteria",
+                  "kb_uc_can_read_mtom", "kb_uc_cannot_read_mtom", "kb_uc_can_contribute_mtom",
+                  "kb_uc_cannot_contribute_mtom"):
+        assert _listings(inst.fake, table) == [], table
+    p.on_new_user_groups.assert_not_awaited()
+    assert not [kb for c in p.on_new_record_groups.await_args_list for kb, _ in c.args[0] if kb.external_group_id in inst.kbs]
+    assert {k: graph.readers(k) for k in graph.store.records} == readers
+
+
+@pytest.mark.asyncio
+async def test_an_access_change_reads_the_kb_criteria_once(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst, _ = _criteria_model(sc)
+    await _sync(sc, inst)
+    _later(sc)
+    inst.members.append(("plain", "g-hr"))
+    inst.fake.calls.clear()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake)
     for table in ("kb_uc_can_read_mtom", "kb_uc_cannot_read_mtom", "kb_uc_can_contribute_mtom",
                   "kb_uc_cannot_contribute_mtom"):
-        assert len(inst.fake.calls_to(table)) == 2  # one listing for every KB, one 1-row access check
-    assert len([q for q in inst.fake.calls_to("user_criteria") if not q.startswith("ORDERBYDESC")]) == 1
+        assert len(_listings(inst.fake, table)) == 1  # one listing for every KB
+    # the KBs' criteria in one read (the other is the re-read page's own criteria)
+    assert len([q for q in _listings(inst.fake, "user_criteria") if "c-hr0" in q]) == 1
+    assert len(_listings(inst.fake, "sys_user_grmember")) == 1  # criteria use the run's membership listing
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_run_reads_the_ownership_group_of_a_changed_article(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst, graph = _criteria_model(sc)
+    inst.article("KB-og", "kb0", can_read_user_criteria="c-hr0", ownership_group="g-eng")
+    await _sync(sc, inst)
+    assert "eng" in graph.readers("KB-og")  # through the child group g-eng-platform
+    _later(sc)
+    inst.articles["KB-og"].update(short_description="renamed", sys_updated_on="2024-06-03 00:00:00")
+    inst.fake.calls.clear()
+
+    await _sync(sc, inst)
+
+    assert _reread(inst.fake) == []  # quiet: access did not change
+    assert _listings(inst.fake, "sys_user_grmember")  # read for this article only
+    assert graph.store.records["KB-og"].record_name == "renamed"
+    assert {"eng", "eng2", "hr"} <= graph.readers("KB-og")
 
 
 @pytest.mark.asyncio
@@ -763,6 +878,19 @@ async def test_has_role_plugin_unreadable_grants_nobody(servicenow_connector) ->
         {"sys_id": "p", "id": "com.glide.explicit_roles", "active": "active", "sys_updated_on": T0, "_acl_hidden": True}])
     await _sync(servicenow_connector, inst)
     assert "knowledge" not in graph.readers("KB1") and "plain" not in graph.readers("KB1")
+
+
+@pytest.mark.asyncio
+async def test_has_role_counts_roles_in_any_state_from_the_runs_role_listing(servicenow_connector) -> None:
+    sc = servicenow_connector
+    inst, graph = _has_role_model(sc)
+    inst.role("itil")
+    inst.has_role.append({"user": "hr", "role": "r-itil", "inherited": "false", "state": "requested"})
+    await _sync(sc, inst)
+    assert "hr" in graph.readers("KB1")  # the script counts the requested role
+    assert "hr@x.com" not in graph.group_members["r-itil"]  # the role itself is not held yet
+    listings = [q for q in inst.fake.calls_to("sys_user_has_role") if not q.startswith("ORDERBYDESC")]
+    assert len(listings) == 2  # the admins and the role listing: "Has a role" reads none of its own
 
 
 @pytest.mark.asyncio

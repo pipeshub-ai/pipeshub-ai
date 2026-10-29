@@ -5,7 +5,7 @@ bases and categories; and the one-time move of records stored under a version's 
 The Table API is ``FakeServiceNow``; the stored records are ``FakeRecordStore``.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
     EARLIER,
+    FROZEN_NOW,
     INSTANCE,
     KB1,
     LATER,
@@ -23,9 +24,9 @@ from servicenow_fakes import (
     MemorySyncPoint,
     article_row,
     attachment_row,
-    file_key,
     block_groups,
     category_row,
+    file_key,
     groups_written,
     kb_row,
     migrated_sync_point,
@@ -34,8 +35,7 @@ from servicenow_fakes import (
     wire_store,
 )
 
-from app.config.constants.arangodb import Connectors
-from app.models.entities import AppUser, RecordGroupType
+from app.models.entities import RecordGroupType
 from app.sources.client.servicenow.servicenow import ServiceNowRateLimited
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
@@ -45,13 +45,22 @@ from app.sources.external.servicenow.models import (
 
 
 def _today(days: int = 0) -> str:
-    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+    """A date relative to the frozen clock: tests that use it take the frozen_now fixture."""
+    return (FROZEN_NOW + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+class _EveryUser(dict):
+    """Every source id is a synced app user, with the email <id>@x.com."""
+
+    def __contains__(self, key: object) -> bool:
+        return True
+
+    def __missing__(self, key: str) -> str:
+        return f"{key}@x.com"
 
 
 def _users_by_source_id(sc) -> None:
-    sc.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lambda source_id, connector_id: AppUser(
-        app_name=Connectors.SERVICENOW, connector_id=connector_id, source_user_id=source_id,
-        email=f"{source_id}@x.com", full_name=source_id))
+    sc._email_by_source_id = _EveryUser()
 
 
 def _row(n: int = 1, **fields: str) -> TableAPIRecord:
@@ -64,7 +73,7 @@ def _row(n: int = 1, **fields: str) -> TableAPIRecord:
 
 
 @pytest.mark.asyncio
-async def test_only_rows_search_shows_are_indexed(servicenow_connector) -> None:
+async def test_only_rows_search_shows_are_indexed(servicenow_connector, frozen_now) -> None:
     fake = FakeServiceNow({"kb_knowledge": [
         article_row(1),
         article_row(2, valid_to=_today()),  # expires at the end of today
@@ -278,7 +287,7 @@ async def test_expired_article_deleted(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
-async def test_article_expiring_without_update_deleted_next_day(servicenow_connector) -> None:
+async def test_article_expiring_without_update_deleted_next_day(servicenow_connector, frozen_now) -> None:
     fake = FakeServiceNow({"kb_knowledge": [
         article_row(1, EARLIER, valid_to=_today(-1)),  # passed since the last check, its row unchanged
         article_row(2, EARLIER, valid_to=_today()),

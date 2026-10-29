@@ -7,6 +7,7 @@ The Table API is ``FakeServiceNow``; the stored records are ``FakeRecordStore``.
 
 import base64
 import time
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,8 +27,10 @@ from servicenow_fakes import (
     article_row,
     attachment_row,
     block_groups,
+    category_row,
     file_key,
     file_response,
+    kb_row,
     migrated_sync_point,
     status_error,
     stored_record,
@@ -663,3 +666,63 @@ async def test_upgrade_moves_attachments_to_their_key_once(servicenow_connector)
     await sc._sync_articles()
 
     assert "sys_updated_on>" in fake.calls_to("kb_knowledge")[0]  # once
+
+
+# --- names in any script, and files too large to hold ---------------------------------------------
+
+UNICODE = "Ünïcødé — 漢字 🚀"
+
+
+@pytest.mark.asyncio
+async def test_unicode_names_survive_the_transforms_and_the_streams(servicenow_connector) -> None:
+    sc = servicenow_connector
+    store = wire_store(sc, FakeServiceNow({
+        "kb_knowledge": [article_row(1, short_description=UNICODE, text=f"<p>{UNICODE}</p>")],
+        "sys_attachment": [{**attachment_row(1, "a0001"), "file_name": f"{UNICODE}.pdf"}],
+    }))
+    kb = sc._transform_to_kb_record_group(TableAPIRecord(**kb_row("kb1", title=UNICODE)))
+    category = sc._transform_to_category_record_group(TableAPIRecord(**category_row(
+        "cat1", "kb1", label=UNICODE, value="u", parent_table="kb_knowledge_base", active="true", sys_created_on=T0)))
+
+    await sc._sync_articles()
+
+    assert (kb.name, category.name, store.records[KB1].record_name) == (UNICODE, UNICODE, UNICODE)
+    key = f"{KB1}/{UNICODE}.pdf/10"
+    assert store.records[key].record_name == f"{UNICODE}.pdf"
+    article = await sc.stream_record(store.records[KB1])
+    assert block_groups(b"".join([c async for c in article.body_iterator]))[0]["data"] == \
+        f"# {UNICODE}\n\n{KB1}\n\n{UNICODE}"
+    sc._current_attachment = AsyncMock(return_value="f0001")
+    sc._get_fresh_datasource = AsyncMock(return_value=_datasource(
+        lambda _: httpx.Response(200, content=b"%PDF", headers={"content-type": "application/pdf"})))
+    file = await sc.stream_record(store.records[key])
+    assert b"".join([c async for c in file.body_iterator]) == b"%PDF"
+    assert file.headers["content-disposition"].startswith("attachment;")
+
+
+@pytest.mark.asyncio
+async def test_a_200_mb_attachment_streams_without_being_held_in_memory(servicenow_connector) -> None:
+    chunk, count = b"\0" * 64 * 1024, 3200  # 200 MiB
+    produced: list[int] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        for _ in range(count):
+            produced.append(1)
+            yield chunk
+
+    servicenow_connector._current_attachment = AsyncMock(return_value="att1")
+    servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
+        lambda _: httpx.Response(200, content=body(), headers={"content-type": "application/octet-stream"})))
+    record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="application/octet-stream",
+                       record_name="big.bin", is_placeholder=False)
+
+    response = await servicenow_connector.stream_record(record)
+    stream = response.body_iterator
+    first = await anext(stream)
+
+    assert len(produced) <= 2  # only what was sent so far was read from ServiceNow
+    total = len(first)
+    async for part in stream:
+        total += len(part)
+        assert len(part) <= 64 * 1024
+    assert total == count * len(chunk) and len(produced) == count

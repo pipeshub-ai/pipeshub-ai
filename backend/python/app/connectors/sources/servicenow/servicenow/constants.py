@@ -87,7 +87,6 @@ class ServiceNowFields:
     PARENT_COMMENT = "parent_comment"
     ROOT_FEEDBACK = "root_feedback"
     NUMBER = "number"
-    AUTHOR = "author"
     CAN_READ_USER_CRITERIA = "can_read_user_criteria"
     CANNOT_READ_USER_CRITERIA = "cannot_read_user_criteria"
     MATCH_ALL = "match_all"
@@ -110,7 +109,6 @@ class ServiceNowFields:
     HASH = "hash"
     TABLE_NAME = "table_name"
     TABLE_SYS_ID = "table_sys_id"
-    RESULT = "result"
     CONTAINS = "contains"
     PARENT_TABLE = "parent_table"
     URL_SUFFIX = "url_suffix"
@@ -118,17 +116,6 @@ class ServiceNowFields:
     VALID_TO = "valid_to"
     TABLENAME = "tablename"
     DISPLAY_VALUE = "display_value"
-
-
-class ServiceNowQueryParams:
-    """ServiceNow API query parameter names"""
-    SYSPARM_QUERY = "sysparm_query"
-    SYSPARM_FIELDS = "sysparm_fields"
-    SYSPARM_LIMIT = "sysparm_limit"
-    SYSPARM_OFFSET = "sysparm_offset"
-    SYSPARM_DISPLAY_VALUE = "sysparm_display_value"
-    SYSPARM_NO_COUNT = "sysparm_no_count"
-    SYSPARM_EXCLUDE_REFERENCE_LINK = "sysparm_exclude_reference_link"
 
 
 class ServiceNowQueryValues:
@@ -234,6 +221,9 @@ class ServiceNowSyncPointKeys:
     USERS = "users"
     CATEGORIES = "categories"
     ARTICLES = "articles"
+    # In the articles sync point while a full read is unfinished: the (sys_updated_on, sys_id) of the
+    # last row it wrote, where the next run continues (see ServiceNowConnector._sync_articles)
+    FULL_RESUME_AFTER = "full_resume_after"
     LAST_SYNC_TIME = "last_sync_time"
     # Set once articles are stored under their number (they were under a version's sys_id)
     ARTICLE_KEY_V2 = "article_key/v2"
@@ -260,22 +250,16 @@ class ServiceNowSyncPointKeys:
 
 class ServiceNowDictKeys:
     """Keys used in internal dict structures"""
-    ENTITY_TYPE = "entity_type"
-    SOURCE_SYS_ID = "source_sys_id"
-    ROLE = "role"
     READ = "read"
     CANNOT_READ = "cannot_read"
     WRITE = "write"
     CANNOT_WRITE = "cannot_write"
-    USER_SYS_ID = "user_sys_id"
-    ORG_SYS_ID = "org_sys_id"
-    ORG_TYPE = "org_type"
-    PARENT = "parent"
     IDS = "ids"
     DONE = "done"
     KEPT = "kept"
     FINGERPRINT = "fingerprint"
     COUNT = "count"
+    GRANTED = "granted"
 
 
 class OrganizationalEntityConfig(TypedDict):
