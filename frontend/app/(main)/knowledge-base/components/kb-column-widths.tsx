@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { Box } from '@radix-ui/themes';
 
 /** The fixed-width columns of the records table; File name takes the rest. */
@@ -26,6 +26,9 @@ const STORAGE_KEY = 'pipeshub.kb.columnWidths';
 
 /** Width of a column as a CSS value; falls back to the default outside a provider. */
 export const kbCol = (column: KbColumn) => `var(--kb-col-${column}, ${DEFAULT_WIDTHS[column]}px)`;
+
+/** Narrowest a column may shrink to when the table is narrower than the saved widths. */
+export const kbColMin = (column: KbColumn) => `${MIN_WIDTHS[column]}px`;
 
 const clamp = (column: KbColumn, n: number) =>
   Math.min(MAX_WIDTH, Math.max(MIN_WIDTHS[column], Math.round(n)));
@@ -55,8 +58,8 @@ export function useKbColumnWidths() {
   const widthsRef = useRef(widths);
   widthsRef.current = widths;
 
-  // Read after mount so server and client render the same first frame
-  useEffect(() => setWidths(readStored()), []);
+  // Read before paint (no jump from the defaults) but after hydration, so server and client agree
+  useLayoutEffect(() => setWidths(readStored()), []);
 
   const save = (next: Record<KbColumn, number>) => {
     try {
@@ -99,6 +102,7 @@ export function useKbColumnWidths() {
       const onUp = () => {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
         document.body.style.removeProperty('cursor');
         document.body.style.removeProperty('user-select');
         if (latest !== start) save(latest);
@@ -107,6 +111,8 @@ export function useKbColumnWidths() {
       document.body.style.userSelect = 'none';
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
+      // A cancelled pointer (touch / pen gesture, OS interrupt) ends the drag too
+      window.addEventListener('pointercancel', onUp);
     },
     []
   );

@@ -21,7 +21,7 @@ import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
 import { TableHeaderCell } from './kb-list-view';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
-import { kbCol, useKbColumnWidths } from './kb-column-widths';
+import { kbCol, kbColMin, useKbColumnWidths } from './kb-column-widths';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -526,11 +526,11 @@ function RecordsLoadingTable({
       >
         <Box style={{ width: 36, flexShrink: 0 }} />
         <TableHeaderCell label="File Name" flex={1} />
-        <TableHeaderCell label="Status" width={kbCol('status')} align="center" />
-        {showSourceColumn && <TableHeaderCell label="Source" width={kbCol('source')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Size" width={kbCol('size')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Created" width={kbCol('created')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Updated" width={kbCol('updated')} align="center" />}
+        <TableHeaderCell label="Status" width={kbCol('status')} minWidth={kbColMin('status')} align="center" />
+        {showSourceColumn && <TableHeaderCell label="Source" width={kbCol('source')} minWidth={kbColMin('source')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Size" width={kbCol('size')} minWidth={kbColMin('size')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Created" width={kbCol('created')} minWidth={kbColMin('created')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Updated" width={kbCol('updated')} minWidth={kbColMin('updated')} align="center" />}
         <Box style={{ width: 104, flexShrink: 0 }} />
       </Flex>
       <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>

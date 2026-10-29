@@ -54,6 +54,11 @@ export function SegmentedTabs<V extends string>({
   const rootRef = useRef<HTMLDivElement>(null);
   const [pill, setPill] = useState<{ left: number; width: number; animate: boolean } | null>(null);
   const selectedIndex = items.findIndex((i) => i.value === value);
+  // One tab stop: the selected segment, or the first enabled one when nothing selectable is selected
+  const tabStop =
+    selectedIndex >= 0 && !items[selectedIndex]!.disabled
+      ? selectedIndex
+      : items.findIndex((i) => !i.disabled);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -144,7 +149,7 @@ export function SegmentedTabs<V extends string>({
           }}
         />
       )}
-      {items.map((item) => {
+      {items.map((item, index) => {
         const selected = item.value === value;
         // Once the sliding indicator is placed, it paints the selected pill instead of the segment
         const paintsOwnPill = selected && !pill;
@@ -158,7 +163,7 @@ export function SegmentedTabs<V extends string>({
             aria-disabled={item.disabled}
             disabled={item.disabled}
             // Roving focus: only the selected segment is a tab stop; arrows move between them
-            tabIndex={selected ? 0 : -1}
+            tabIndex={index === tabStop ? 0 : -1}
             onClick={() => {
               if (!item.disabled) onValueChange(item.value);
             }}

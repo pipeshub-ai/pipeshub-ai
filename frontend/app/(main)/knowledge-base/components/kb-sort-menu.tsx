@@ -83,8 +83,9 @@ export function KbSortMenu({
         <DropdownMenu.Separator />
         <DropdownMenu.RadioGroup
           value={value.order}
+          // Keep the active field even when it is one the menu does not list (e.g. Collections' type sort)
           onValueChange={(order) =>
-            onChange({ field: current?.value ?? 'updatedAt', order: order as 'asc' | 'desc' })
+            onChange({ field: value.field as KbSortMenuField, order: order as 'asc' | 'desc' })
           }
         >
           <DropdownMenu.RadioItem value="asc" style={itemStyle}>
