@@ -65,9 +65,9 @@ export function SettingsSection({
           />
         }
         label={
-          <Flex align="center" gap="1">
+          <Flex align="center" gap="2">
             {t('workspaceMenu.appearance')}
-            <Text style={{ color: 'var(--slate-6)' }}>•</Text>
+            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
             <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{appearanceLabel}</Text>
           </Flex>
         }
@@ -91,9 +91,9 @@ export function SettingsSection({
           />
         }
         label={
-          <Flex align="center" gap="1">
+          <Flex align="center" gap="2">
             {t('workspaceMenu.language')}
-            <Text style={{ color: 'var(--slate-6)' }}>•</Text>
+            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
             <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{languageLabel}</Text>
           </Flex>
         }

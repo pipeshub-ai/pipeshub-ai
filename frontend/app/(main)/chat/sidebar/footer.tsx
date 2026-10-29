@@ -55,8 +55,8 @@ export function ChatSidebarFooter() {
         onClick={() => setIsMenuOpen((prev) => !prev)}
         style={{
           width: '100%',
-          height: 40,
-          padding: 'var(--space-2)',
+          // Avatar gets the same inset on every side; the chevron keeps the wider right edge
+          padding: 'var(--space-1) var(--space-2) var(--space-1) var(--space-1)',
           background: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',

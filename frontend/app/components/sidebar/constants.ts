@@ -29,7 +29,7 @@ export const SIDEBAR_MAX_WIDTH = 450;
 export const HEADER_HEIGHT = 56;
 
 /** Height of the optional sidebar footer area (e.g., org selector in Chat) */
-export const FOOTER_HEIGHT = 60;
+export const FOOTER_HEIGHT = 58; // 8px inset + 42px org button + 8px inset
 
 /** Height of a single sidebar element/item row (nav items, time-group labels) */
 export const ELEMENT_HEIGHT = 32;
