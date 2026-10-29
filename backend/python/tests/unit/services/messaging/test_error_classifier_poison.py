@@ -64,7 +64,7 @@ class TestUndecodableBytes:
         worker.join(timeout=5)
 
         assert not worker.is_alive(), "classify_by_exception did not return for a looping cause chain"
-        assert len(results) == 2
+        assert results == [MessageErrorType.TRANSIENT, MessageErrorType.TRANSIENT]
 
     def test_malformed_json_stays_terminal(self) -> None:
         try:
