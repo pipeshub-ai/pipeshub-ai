@@ -86,6 +86,9 @@ class MentionCandidates:
     candidates: list[Candidate] = field(default_factory=list)
     ambiguous: bool = False
     """More readable prefix matches than can be told apart; ask for the full name."""
+    more_related: bool = False
+    """Longer names under a related kind were cut by the candidate cap, so the
+    check never saw them; asking for that kind reaches them."""
 
 
 @dataclass
@@ -191,6 +194,10 @@ class CandidateFinder:
             exact = [c for c in ordered if c.source is CandidateSource.EXACT]
             others = [c for c in ordered if c.source is not CandidateSource.EXACT]
             entry.candidates = [*exact, *others[:MAX_CANDIDATES]]
+            entry.more_related = any(
+                c.source is CandidateSource.PREFIX and not entry.mention.settles(c.kind)
+                for c in others[MAX_CANDIDATES:]
+            )
         return CandidateSet(per_mention=per_mention, timed_out=timed_out)
 
     async def _dense_for(self, mention: Mention) -> tuple[list[EntityHit], bool]:

@@ -235,6 +235,19 @@ async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: di
     assert "Many more readable names start with it" in text
 
 
+
+@pytest.mark.asyncio
+async def test_related_names_cut_by_the_cap_say_which_kind_to_ask_for(wired: dict[str, Any]) -> None:
+    (mention,) = parse_mentions([{"name": "Halcyon", "kind": "product"}]).mentions
+    wired["linking"] = _linking(LinkResult(mention, LinkStatus.NOT_FOUND, more_related_names=True))
+    wired["scope"] = RecordScope(per_name=[NameRecords("Halcyon", [], True)], record_ids=[], virtual_record_ids=[])
+    _, text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Halcyon", "kind": "product"}])
+    assert (
+        '"Halcyon" (product): no readable entity by this name. More readable names filed as organization '
+        "start with it and were not checked; call again with that kind or the full name to include them."
+    ) in text
+
+
 @pytest.mark.asyncio
 async def test_a_query_is_passed_as_given(wired: dict[str, Any]) -> None:
     wired["linking"] = _linking(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]))

@@ -35,6 +35,7 @@ from app.agents.agent_loop.protocol.run_usage import (
     llm_usage_reporter,
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.kinds import kind_family
 from app.modules.named_entities.linking.candidates import (
     MAX_CANDIDATES,
     CandidateFinder,
@@ -278,6 +279,7 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
             )
         if result.more_longer_names:
             line += " Many more readable names start with it; call again with the full name to include one."
+        line += _more_related(result)
         # The passages below are a ranked sample; the listing names every readable record.
         return line + " Every record: " + "; ".join(
             f'knowledgegraph__find_records_by_entity(entity_id="{c.entity_id}", entity_type="named_entity")'
@@ -300,11 +302,23 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
         )
         if result.namesakes:
             line += f" Several readable people also have this first name: {_counted(result.namesakes, names)}."
-        return line
+        return line + _more_related(result)
     line = f"- {asked}: no readable entity by this name."
     if result.rejected:
         line += f" Not the same: {_entities(result.rejected, names)}."
-    return line
+    return line + _more_related(result)
+
+
+def _more_related(result: LinkResult) -> str:
+    """Names under a related kind the candidate cap kept from the check."""
+    hint = result.mention.kind_hint
+    if not result.more_related_names or hint is None:
+        return ""
+    kinds = " or ".join(k.value for k in kind_family(hint) if not result.mention.settles(k))
+    return (
+        f" More readable names filed as {kinds} start with it and were not checked; "
+        f"call again with that kind or the full name to include them."
+    )
 
 
 def _entity(candidate: Candidate, names: dict[str, str]) -> str:

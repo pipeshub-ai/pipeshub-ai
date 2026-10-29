@@ -287,6 +287,18 @@ async def test_related_kind_prefixes_fill_the_cap_but_never_make_a_name_ambiguou
     assert not entry.ambiguous
     names = [c.name for c in entry.candidates]
     assert names[:3] == ["Halcyon books", "Halcyon ledger", "Halcyon pay"] and len(names) == MAX_CANDIDATES
+    assert entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_that_fit_the_cap_report_nothing_cut() -> None:
+    nodes = [
+        _node("product", "name:product:halcyon ledger", "Halcyon ledger"),
+        _node("organization", "name:organization:halcyon foods", "Halcyon foods"),
+    ]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert len(entry.candidates) == 2 and not entry.more_related
 
 
 @pytest.mark.asyncio
