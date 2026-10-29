@@ -748,7 +748,7 @@ class DropboxConnector(BaseConnector):
         for entry in entries:
             try:
                 if outside_namespace(entry, namespace_id, shared_folder_ids):
-                    await self._drop_mount_record(entry)
+                    await self._drop_mount_record(entry, record_group_id)
                     continue
                 record_update = await self._process_dropbox_entry(
                     entry, user_id, user_email, record_group_id, is_person_folder,
@@ -1383,14 +1383,26 @@ class DropboxConnector(BaseConnector):
             return
         await self._sync_shared_folder_groups(plan_shared_folders({member_id: [response.data]}))
 
-    async def _drop_mount_record(self, entry: object) -> None:
-        """Remove a record an earlier sync wrote for a shared folder's mount point; the folder is a record group now."""
+    async def _drop_mount_record(self, entry: object, record_group_id: str) -> None:
+        """Remove a record an earlier sync wrote for a shared folder's mount point; the folder is a record group now.
+
+        A folder that becomes a shared folder (shared, or its inherited access removed) is listed in its parent
+        under a new id at the same path, while its old id becomes the shared folder's own and still resolves
+        (dbx-audit/live, 2026-10-29). So the folder record stored at that path in this listing's group goes too:
+        left behind, it stays in the parent, open to the parent's members.
+        """
         info = getattr(entry, "sharing_info", None)
         if not isinstance(entry, FolderMetadata) or not getattr(info, "shared_folder_id", None):
             return
+        stale = {}
         stored = await self.data_entities_processor.get_record_by_external_id(self.connector_id, entry.id)
         if stored is not None:
-            await self.data_entities_processor.on_record_deleted(record_id=stored.id)
+            stale[stored.id] = stored
+        for record in await self.data_entities_processor.get_records_by_file_path(self.connector_id, entry.path_lower):
+            if record.external_record_group_id == record_group_id:
+                stale[record.id] = record
+        for record_id in stale:
+            await self.data_entities_processor.on_record_deleted(record_id=record_id)
 
     async def _run_sync_with_yield(
         self, user_id: str, user_email: str,

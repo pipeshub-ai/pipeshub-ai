@@ -329,6 +329,29 @@ class TestTeamMemberRootLayout:
         connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-mount")
 
     @pytest.mark.asyncio
+    async def test_a_folder_that_became_shared_leaves_its_old_record_though_its_mount_has_a_new_id(
+        self, connector,
+    ) -> None:
+        """Live, 2026-10-29: inherited access removed from a folder in the team folder; its parent then lists the
+        mount point under a new id at the same path, and the old folder record stayed, open to the team folder."""
+        mount = FolderMetadata(name="Test Folder 3", id="id:new", path_lower="/test folder 3",
+                               sharing_info=FolderSharingInfo(read_only=False, shared_folder_id="sf-3",
+                                                              parent_shared_folder_id="tf"))
+        old = MagicMock(id="rec-old", external_record_id="id:old", external_record_group_id="tf")
+        elsewhere = MagicMock(id="rec-other", external_record_id="id:x", external_record_group_id="dbmid:a")
+        connector._process_dropbox_entry = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_records_by_file_path = AsyncMock(return_value=[old, elsewhere])
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+
+        async for _ in connector._process_dropbox_items_generator(
+            [mount], "dbmid:a", "a@x.com", "tf", False, shared_folder_ids=frozenset({"tf", "sf-3"}),
+        ):
+            pass
+
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-old")
+
+    @pytest.mark.asyncio
     async def test_a_new_nested_folder_lists_its_parent_from_the_start_once(self, connector) -> None:
         plan = {"tf": _folder("tf", team=True), "it": _folder("it", parent="tf")}
         sync_point = connector.dropbox_cursor_sync_point = MagicMock()
