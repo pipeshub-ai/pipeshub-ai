@@ -9,13 +9,14 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeRetrieval:
-    def __init__(self, results: list[dict]) -> None:
+    def __init__(self, results: list[dict], status: str = "success") -> None:
         self.results = results
+        self.status = status
         self.calls: list[dict] = []
 
     async def search_with_filters(self, **kwargs) -> dict:
         self.calls.append(kwargs)
-        return {"searchResults": self.results}
+        return {"searchResults": self.results, "status": self.status, "message": "why"}
 
 
 def _hit(record_id: str, index: int, score: float, **extra) -> dict:
@@ -66,3 +67,33 @@ async def test_limit_and_guards() -> None:
     assert "not available" in (await _search(_graph(), None, query="x"))["error"]
     empty = await _search(_graph(), FakeRetrieval([]), query="x")
     assert empty["matches"] == [] and empty["hint"]
+
+
+async def test_a_repo_is_scoped_in_the_search_itself() -> None:
+    retrieval = FakeRetrieval([_hit("rec-b", 2, 0.9)])
+    out = await _search(_graph(), retrieval, query="x", repo="acme/shop")
+    assert retrieval.calls[0]["filter_groups"] == {"apps": [CONN], "recordGroups": ["repo-1"]}
+    assert [m["qualified_name"] for m in out["matches"]] == ["method:run"]
+    assert "error" in await _search(_graph(), retrieval, query="x", repo="other/repo")
+
+
+async def test_a_failed_search_is_an_error_not_no_matches() -> None:
+    out = await _search(_graph(), FakeRetrieval([], status="search_index_unavailable"), query="x")
+    assert out == {"error": "why"}
+    out = await _search(_graph(), FakeRetrieval([], status="empty_response"), query="x")
+    assert out["matches"] == []
+
+
+async def test_a_repo_falls_back_to_the_connector_when_groups_are_not_ready() -> None:
+    class NotReady(FakeRetrieval):
+        async def search_with_filters(self, **kwargs) -> dict:
+            if "recordGroups" in kwargs["filter_groups"]:
+                self.calls.append(kwargs)
+                return {"searchResults": [], "status": "selection_not_ready", "message": "no"}
+            return await super().search_with_filters(**kwargs)
+
+    retrieval = NotReady([_hit("rec-b", 2, 0.9)])
+    out = await _search(_graph(), retrieval, query="x", repo="acme/shop")
+    assert [c["filter_groups"] for c in retrieval.calls] == [
+        {"apps": [CONN], "recordGroups": ["repo-1"]}, {"apps": [CONN]}]
+    assert [m["qualified_name"] for m in out["matches"]] == ["method:run"]

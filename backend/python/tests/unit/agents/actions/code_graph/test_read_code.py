@@ -94,5 +94,12 @@ class TestCheckoutPaths:
             out = await _read(FakeGraphProvider(), file_path=path, qualified_name="function:target")
             assert out.get("code") == TARGET_SRC, path
 
+    async def test_a_suffix_only_another_connector_holds_is_skipped(self) -> None:
+        graph = FakeGraphProvider()
+        graph.code_files["rec-x"] = "repo/src/b.py"
+        graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2"}
+        out = await _read(graph, file_path="repo/src/b.py", qualified_name="function:target")
+        assert out.get("code") == TARGET_SRC
+
     async def test_a_bare_file_name_is_not_guessed(self) -> None:
         assert "error" in await _read(FakeGraphProvider(), file_path="b.py", qualified_name="function:target")

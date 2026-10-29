@@ -80,8 +80,7 @@ function mcpConnectedProps(
   req: AuthenticatedUserRequest,
 ): Record<string, unknown> | undefined {
   const body = req.body as
-    | { method?: unknown; params?: Record<string, unknown> }
-    | undefined;
+    { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'initialize') return undefined;
   const clientInfo = (body.params?.clientInfo ?? {}) as Record<string, unknown>;
   return {
@@ -100,8 +99,7 @@ function mcpToolCallProps(
   req: AuthenticatedUserRequest,
 ): Record<string, unknown> | undefined {
   const body = req.body as
-    | { method?: unknown; params?: Record<string, unknown> }
-    | undefined;
+    { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'tools/call') return undefined;
   return {
     ...mcpEventBase(req),
@@ -115,8 +113,7 @@ function mcpToolCallProps(
 function reachesCodeTools(body: unknown): boolean {
   if (Array.isArray(body)) return body.some(reachesCodeTools);
   const message = body as
-    | { method?: unknown; params?: { name?: unknown } }
-    | undefined;
+    { method?: unknown; params?: { name?: unknown } } | undefined;
   if (message?.method === 'tools/list' || message?.method === 'initialize') {
     return true;
   }
@@ -218,21 +215,25 @@ export const handleMCPRequest =
       ) {
         // A client asking for code only (`/mcp?tools=code`) is not sent the
         // document tools or their instructions, which it would re-read every turn.
-        const codeOnly = req.query?.tools === 'code';
+        const codeOnly = req.query.tools === 'code';
         if (codeOnly) {
           const tools = (
             mcpServer as unknown as {
               _registeredTools?: Record<string, { remove(): void }>;
             }
           )._registeredTools;
-          Object.values(tools ?? {}).forEach((tool) => tool.remove());
+          Object.values(tools ?? {}).forEach((tool) => {
+            tool.remove();
+          });
         }
         // The package's McpServer is typed against its own zod 4; comparing that
         // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
         registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
         // shortcut: the SDK has no setter for instructions and @pipeshub-ai/mcp
         // builds them; move this there once it takes extra sections.
-        const server = mcpServer.server as unknown as { _instructions?: string };
+        const server = mcpServer.server as unknown as {
+          _instructions?: string;
+        };
         server._instructions = codeOnly
           ? CODE_GRAPH_INSTRUCTIONS.trimStart()
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;

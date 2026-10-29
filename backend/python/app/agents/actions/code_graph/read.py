@@ -158,9 +158,12 @@ async def _load_blob(
     """
     miss = miss or {"error": f"No indexed code at {file_path!r}"}
     if record_id is None:
-        record_ids = await _choose_records(
-            graph_provider, org_id, await _records_for_path(graph_provider, org_id, file_path),
-            connector_id, file_path=file_path, repo=repo, access=access,
+        record_ids = await _records_for_path(
+            graph_provider, org_id, file_path,
+            choose=lambda ids: _choose_records(
+                graph_provider, org_id, ids, connector_id,
+                file_path=file_path, repo=repo, access=access,
+            ),
         )
         record_id = record_ids[0] if record_ids else None
         if record_id is None:

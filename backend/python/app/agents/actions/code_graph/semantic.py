@@ -13,13 +13,16 @@ from typing import TYPE_CHECKING, Any
 
 from .ops import (
     _BLOCKS,
+    _RECORD_GROUPS,
     TEST_ROLE,
     SymbolRef,
     _repo_matches,
+    _unwrap,
     attach_file_paths,
     get_record_roles,
     repo_names,
 )
+from .repos import repo_not_found_message
 
 if TYPE_CHECKING:
     from app.modules.retrieval.retrieval_service import RetrievalService
@@ -37,6 +40,9 @@ _MAX_QUERY = 500
 _OVERFETCH = 3
 # Blocks one code file can hold; a generated file past this is read partially.
 _BLOCKS_PER_FILE = 2000
+# Retrieval statuses that mean the search ran; any other says why it did not.
+# A missing status is a plain result.
+_NO_HITS_STATUSES = {None, "success", "empty_response", "accessible_records_not_found"}
 
 
 async def search_semantic_impl(
@@ -60,14 +66,32 @@ async def search_semantic_impl(
         return {"error": "Semantic search is not available here; use search_code."}
     limit = max(1, min(int(limit or DEFAULT_SEMANTIC_LIMIT), MAX_SEMANTIC_LIMIT))
 
-    # The search checks the caller's access to every record it returns.
-    response = await retrieval_service.search_with_filters(
-        queries=[query], user_id=user_id, org_id=org_id,
-        filter_groups={"apps": [connector_id]}, limit=limit * _OVERFETCH,
-    )
+    filter_groups: dict[str, list[str]] = {"apps": [connector_id]}
+    if repo:
+        # Scoped in the search itself, so other repos' hits cannot use up the limit.
+        groups = await _repo_groups(graph_provider, org_id, connector_id, repo)
+        if not groups:
+            return {"error": repo_not_found_message(repo)}
+        filter_groups["recordGroups"] = groups
+    async def search(groups: dict[str, list[str]]) -> dict[str, Any]:
+        # The search checks the caller's access to every record it returns.
+        response = await retrieval_service.search_with_filters(
+            queries=[query], user_id=user_id, org_id=org_id,
+            filter_groups=groups, limit=limit * _OVERFETCH,
+        )
+        return response if isinstance(response, dict) else {}
+
+    response = await search(filter_groups)
+    if repo and response.get("status") == "selection_not_ready":
+        # shortcut: a connector whose vectors lack group membership cannot be scoped
+        # by repo yet; the repo filter below still applies, so hits can come up short.
+        response = await search({"apps": [connector_id]})
     hits = _code_hits(response)
     if not hits:
-        message = response.get("message") if isinstance(response, dict) else None
+        message = response.get("message")
+        # A search that did not run is not "nothing matched".
+        if response.get("status") not in _NO_HITS_STATUSES:
+            return {"error": message or "The search failed; try again or use search_code."}
         return {"connector_id": connector_id, "matches": [], "total": 0,
                 "hint": message or "Nothing matched; try other words, or search_code for a name."}
 
@@ -104,6 +128,19 @@ async def search_semantic_impl(
     return out
 
 
+async def _repo_groups(
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str, repo: str,
+) -> list[str]:
+    """The connector's record groups that ``repo`` names."""
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=_RECORD_GROUPS, field_name="connectorId", field_values=[connector_id],
+        return_fields=["_key"], raise_on_error=True,
+    )
+    ids = [key for row in map(_unwrap, rows or []) if (key := row.get("_key") or row.get("id"))]
+    names = await repo_names(graph_provider, org_id, ids)
+    return sorted(g for g in ids if _repo_matches(repo, g, names))
+
+
 def _code_hits(response: object) -> list[tuple[str, int, float]]:
     """(recordId, blockIndex, score) of each code passage, best first, once each."""
     if not isinstance(response, dict):
@@ -135,7 +172,7 @@ async def _blocks_for(
             sort_field="_key", raise_on_error=True,
         )
         for row in rows or []:
-            if row.get("orgId") == org_id and not row.get("isBlockGroup") \
-                    and isinstance(row.get("index"), int) and row.get("qualifiedName"):
+            # The query is already scoped to the org.
+            if not row.get("isBlockGroup") and isinstance(row.get("index"), int) and row.get("qualifiedName"):
                 out[(record_id, row["index"])] = row
     return out

@@ -20,7 +20,7 @@ from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -194,12 +194,13 @@ async def resolve_symbol(
     A storage failure raises: returning None would tell the caller the symbol
     does not exist.
     """
-    record_ids = await _records_for_path(graph_provider, org_id, file_path)
-    if access is not None:
-        record_ids = await _choose_records(
-            graph_provider, org_id, record_ids, connector_id,
+    record_ids = await _records_for_path(
+        graph_provider, org_id, file_path,
+        choose=None if access is None else lambda ids: _choose_records(
+            graph_provider, org_id, ids, connector_id,
             file_path=file_path, repo=repo, access=access, ambiguous_ok=True,
-        )
+        ),
+    )
     if not record_ids:
         return None
     found: list[dict[str, Any]] = []
@@ -229,7 +230,8 @@ async def resolve_symbol(
 
 
 async def _records_for_path(
-    graph_provider: IGraphDBProvider, org_id: str, file_path: str
+    graph_provider: IGraphDBProvider, org_id: str, file_path: str,
+    choose: "Callable[[list[str]], Awaitable[list[str]]] | None" = None,
 ) -> list[str]:
     """Record ids for a repo-relative path.
 
@@ -241,6 +243,8 @@ async def _records_for_path(
     A path copied from the caller's checkout can carry a prefix the index does
     not -- an absolute path, or a repo indexed from a subdirectory -- so on a
     miss the longest indexed suffix of at least two parts answers instead.
+    ``choose`` narrows each candidate's records (to the caller's connector, repo
+    and access), so a suffix only another connector holds does not stop the search.
     """
     parts = [p for p in file_path.split("/") if p and p != "."]
     candidates = [file_path] + ["/".join(parts[i:]) for i in range(len(parts) - 1)]
@@ -252,6 +256,8 @@ async def _records_for_path(
             raise_on_error=True,
         )
         keys = [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
+        if keys and choose is not None:
+            keys = await choose(keys)
         if keys:
             return keys
     return []

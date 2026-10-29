@@ -154,25 +154,10 @@ async def _by_text(
     if blob_store is None:
         return {"error": "Blob storage is not available."}
     asked = path
-    paths, scan_capped = await files_by_pattern(graph_provider, org_id, path)
-    if not paths:
-        path, paths, scan_capped = await _path_suffix(graph_provider, org_id, path)
-    readable = await access.readable(paths)
-    if not readable:
-        return {"error": await _missing_path_message(graph_provider, org_id, path, access)}
-    rows = await graph_provider.get_nodes_by_field_in(
-        collection=_RECORDS, field_name="_key", field_values=sorted(readable),
-        return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId"],
-        raise_on_error=True,
-    ) if readable else []
-    records = {
-        (r.get("_key") or r.get("id")): r for r in map(_unwrap, rows or [])
-        if r.get("orgId") == org_id and r.get("connectorId") == connector_id
-    }
-    if repo:
-        names = await repo_names(graph_provider, org_id, (r.get("recordGroupId") for r in records.values()))
-        records = {k: r for k, r in records.items()
-                   if _repo_matches(repo, r.get("recordGroupId"), names)}
+    path, paths, records, scan_capped = await _scoped_files(
+        graph_provider, org_id, connector_id, path, repo, access)
+    if not records:
+        return {"error": await _missing_path_message(graph_provider, org_id, asked, access)}
     hidden = 0
     if not include_tests and records:
         roles = await get_record_roles(graph_provider, org_id, set(records))
@@ -224,23 +209,44 @@ async def _by_text(
     return out
 
 
-async def _path_suffix(
-    graph_provider: IGraphDBProvider, org_id: str, path: str,
-) -> tuple[str, dict[str, str], bool]:
-    """The longest suffix of ``path`` that selects files, for a prefix the index lacks.
+async def _scoped_files(
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str, path: str,
+    repo: str | None, access: RecordAccess,
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], bool]:
+    """``(path searched, record id -> path, record id -> record, scan_capped)``.
 
-    A path written for the caller's checkout (``src/vs/base``, ``src/**``) can
-    carry a leading directory the repo was indexed without.
+    The records are the readable ones in this connector (and ``repo``). A path
+    written for the caller's checkout (``src/vs/base``, ``repo/src/**``) can
+    carry a leading directory the repo was indexed without, so on a miss the
+    longest suffix that selects such records answers instead. Only a prefix may
+    go: a suffix never starts with a wildcard, so ``src/**`` or ``src/x/**`` is
+    never widened to the whole repo.
     """
     parts = [p for p in path.split("/") if p and p != "."]
+    candidates = [path]
     for i in range(1, len(parts)):
-        if i > 1 and "*" in parts[i]:
-            break  # only a prefix may go; never widen `src/x/**` to the whole repo
-        suffix = "/".join(parts[i:])
-        found, capped = await files_by_pattern(graph_provider, org_id, suffix)
-        if found:
-            return suffix, found, capped
-    return path, {}, False
+        if "*" in parts[i]:
+            break
+        candidates.append("/".join(parts[i:]))
+    for candidate in candidates:
+        paths, capped = await files_by_pattern(graph_provider, org_id, candidate)
+        readable = await access.readable(paths)
+        rows = await graph_provider.get_nodes_by_field_in(
+            collection=_RECORDS, field_name="_key", field_values=sorted(readable),
+            return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId"],
+            raise_on_error=True,
+        ) if readable else []
+        records = {
+            (r.get("_key") or r.get("id")): r for r in map(_unwrap, rows or [])
+            if r.get("orgId") == org_id and r.get("connectorId") == connector_id
+        }
+        if repo:
+            names = await repo_names(graph_provider, org_id, (r.get("recordGroupId") for r in records.values()))
+            records = {k: r for k, r in records.items()
+                       if _repo_matches(repo, r.get("recordGroupId"), names)}
+        if records:
+            return candidate, paths, records, capped
+    return path, {}, {}, False
 
 
 async def _missing_path_message(

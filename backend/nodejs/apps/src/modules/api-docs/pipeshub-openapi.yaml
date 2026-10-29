@@ -70360,9 +70360,11 @@ paths:
           in: query
           required: false
           description: |
-            `code` serves only the code-graph tools and their instructions, for an agent working
-            in a code checkout. It is ignored when the caller cannot use the code-graph tools
-            (see above): every other tool the caller may use is served, as without it.
+            `code` lists only the code-graph tools and sends only their instructions, for an agent
+            working in a code checkout. It narrows what is listed, not what may be called: a
+            `tools/call` for any other tool the caller may use still runs. It is ignored when the
+            caller cannot use the code-graph tools (see above): every other tool the caller may
+            use is served, as without it.
           schema:
             type: string
             enum: ["code"]
