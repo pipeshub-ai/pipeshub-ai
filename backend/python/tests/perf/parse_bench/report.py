@@ -7,6 +7,8 @@ parsers installed.
 from __future__ import annotations
 
 import math
+import os
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -59,6 +61,25 @@ def lag_summary(lags_seconds: Sequence[float]) -> dict[str, float]:
         "p99_ms": round(percentile(lags_seconds, 99) * 1000, 1),
         "max_ms": round(max(lags_seconds, default=0.0) * 1000, 1),
     }
+
+
+_FRAME = re.compile(r'File "(?P<file>[^"]+)", line (?P<line>\d+), in (?P<fn>\S+)')
+
+
+def stall_frames(stack_text: str, depth: int = 2) -> str:
+    """The innermost *depth* frames of a formatted stack, as ``file:line fn <- file:line fn``."""
+    frames = [f"{os.path.basename(m["file"])}:{m['line']} {m['fn']}" for m in _FRAME.finditer(stack_text)]
+    return " <- ".join(reversed(frames[-depth:])) if frames else "<no frames>"
+
+
+def top_stalls(stacks: Sequence[str], n: int = 3) -> list[dict[str, Any]]:
+    """The *n* most frequent places the loop was found blocked, most frequent first."""
+    counts: dict[str, int] = {}
+    for stack in stacks:
+        key = stall_frames(stack)
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"count": c, "where": where} for where, c in ranked[:n]]
 
 
 # -- cgroup -------------------------------------------------------------------

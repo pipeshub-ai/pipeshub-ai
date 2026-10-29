@@ -162,3 +162,30 @@ class TestReport:
         assert "T-small: 73 % (ok)" in text
         assert "T-laptop: 88 % (OVER 85 %)" in text
         assert "T-small: n/a (no cgroup)" in text
+
+
+class TestStalls:
+    STACK = (
+        '  File "/app/a.py", line 10, in outer\n    inner()\n'
+        '  File "/app/markdown_it_parser.py", line 99, in parse\n    heavy()\n'
+        '  File "/app/regex_tools.py", line 7, in scan\n    re.sub()'
+    )
+
+    def test_frames_are_innermost_first(self) -> None:
+        assert report.stall_frames(self.STACK) == "regex_tools.py:7 scan <- markdown_it_parser.py:99 parse"
+
+    def test_no_frames(self) -> None:
+        assert report.stall_frames("nothing here") == "<no frames>"
+
+    def test_top_stalls_counts_and_orders(self) -> None:
+        other = '  File "/app/json_parser.py", line 3, in load\n    json.loads()'
+        top = report.top_stalls([self.STACK, other, self.STACK, self.STACK, other], n=2)
+        assert [t["count"] for t in top] == [3, 2]
+        assert top[1]["where"] == "json_parser.py:3 load"
+
+    def test_top_stalls_limits_to_n(self) -> None:
+        stacks = [f'  File "/a/f{i}.py", line {i}, in fn' for i in range(5)]
+        assert len(report.top_stalls(stacks, n=3)) == 3
+
+    def test_no_stalls(self) -> None:
+        assert report.top_stalls([]) == []

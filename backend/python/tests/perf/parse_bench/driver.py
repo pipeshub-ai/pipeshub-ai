@@ -56,6 +56,7 @@ MIXES: dict[str, dict[str, int]] = {
 HOST_LIMIT_PCT = 85.0
 SAMPLE_SECONDS = 0.5
 LAG_INTERVAL_SECONDS = 0.1
+STALL_STACK_SECONDS = 0.25
 RETRY_SECONDS = 1.0
 
 log = logging.getLogger("parse_bench")
@@ -96,12 +97,14 @@ class TreeSampler(threading.Thread):
         self.peak_threads = 0
         self.peak_parse_workers = 0
         self.cpu_sampled = 0.0
-        self.idle_rss: int | None = None
         self.procs: dict[int, dict[str, Any]] = {}
         self._tick = 0
 
     def stop(self) -> None:
         self._stop.set()
+
+    def parent_rss_now(self) -> int:
+        return self._me.memory_info().rss
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -179,6 +182,21 @@ class TreeSampler(threading.Thread):
             {"pid": pid, **{k: v for k, v in rec.items() if k in ("role", "first_rss", "peak_rss", "peak_threads")}}
             for pid, rec in sorted(self.procs.items()) if rec["role"] != "parent"
         ]
+
+
+class StackCollector(logging.Handler):
+    """Keeps the stacks the loop-lag watchdog logs when the loop stops turning."""
+
+    marker = "it is executing:\n"
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.stacks: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        text = record.getMessage()
+        if self.marker in text:
+            self.stacks.append(text.split(self.marker, 1)[1])
 
 
 # -- the stubs: only the model call -------------------------------------------
@@ -266,12 +284,20 @@ class TierProbe:
 # -- the run ------------------------------------------------------------------
 
 
-def canonical_payload(result: Any) -> tuple[Any, int, int]:  # noqa: ANN401
+def serialize(result: Any) -> Any:  # noqa: ANN401
+    """What the route does with a result on the loop: dump a container to JSON. A Docling
+    document stays the string the service would send."""
     if result.block_container is not None:
-        dumped = json.loads(result.block_container.model_dump_json())
-        return dumped, len(dumped.get("blocks") or []), len(dumped.get("block_groups") or [])
-    doc = json.loads(result.raw_document or "{}")
-    return doc, len(doc.get("texts") or []), len(doc.get("tables") or [])
+        return json.loads(result.block_container.model_dump_json())
+    return result.raw_document or "{}"
+
+
+def summarize_payload(payload: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Golden entry for a serialized result. Run after the timed window, off the loop."""
+    if isinstance(payload, str):
+        doc = json.loads(payload)
+        return golden.summarize(doc, len(doc.get("texts") or []), len(doc.get("tables") or []))
+    return golden.summarize(payload, len(payload.get("blocks") or []), len(payload.get("block_groups") or []))
 
 
 async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sampler: TreeSampler) -> dict[str, Any]:
@@ -313,14 +339,23 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     loop = asyncio.get_running_loop()
     loop.set_default_executor(executor)
 
-    monitor = RecordingMonitor(log, "bench", interval=LAG_INTERVAL_SECONDS, warn_after=1e9, stack_after=None)
+    # stack_after: the production watchdog logs what the loop thread is executing once the loop
+    # has been silent that long. The handler keeps those stacks; they say which code held the loop.
+    stacks = StackCollector()
+    log.addHandler(stacks)
+    log.setLevel(logging.WARNING)
+    log.propagate = False
+    monitor = RecordingMonitor(log, "bench", interval=LAG_INTERVAL_SECONDS, warn_after=1e9, stack_after=STALL_STACK_SECONDS)
     monitor.lags = []
     monitor.start()
     governor_task = asyncio.create_task(governor.run())
+    # Services, models' libraries and the governor are up, nothing parsed yet: the idle footprint.
+    idle_rss = sampler.parent_rss_now()
     concurrency = args.concurrency or max(2, 2 * (ceilings.heavy + ceilings.light))
     sem = asyncio.Semaphore(concurrency)
     outcomes: list[dict[str, Any]] = []
-    golden_by_name: dict[str, dict[str, Any]] = {}
+    payloads: dict[str, Any] = {}
+    errors: dict[str, str | None] = {}
     stats = Counter()
 
     async def one(entry: Entry) -> None:
@@ -342,20 +377,20 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
             try:
                 parser = registry.resolve(entry.mime, entry.ext, ParserProvider.DEFAULT)
                 result = await parser.parse(data, entry.path, {"extension": entry.ext, "skip_table_enrichment": True})
-                payload, blocks, groups = canonical_payload(result)
-                summary = golden.summarize(payload, blocks, groups)
+                payload = serialize(result)
             except ParseError as exc:
                 error = exc.code.value
-                summary = {"error": error}
+                payload = {"error": error}
             except Exception as exc:  # recorded, not fatal to the run
                 error = type(exc).__name__
-                summary = {"error": error}
+                payload = {"error": error}
             finally:
                 gate.release(cost)
             done = time.monotonic()
         outcomes.append({"path": entry.path, "kind": entry.kind, "bytes": len(data), "error": error,
                          "latency_s": done - started, "gate_wait_s": admitted - started})
-        golden_by_name.setdefault(entry.path, summary)
+        payloads.setdefault(entry.path, payload if error is None else None)
+        errors.setdefault(entry.path, error)
 
     cg_path = Path(args.cgroup) if args.cgroup else None
     cg_before = report.read_cgroup(cg_path) if cg_path else None
@@ -393,6 +428,11 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     cpu_seconds = (ru1.ru_utime + ru1.ru_stime - ru0.ru_utime - ru0.ru_stime
                    + rc1.ru_utime + rc1.ru_stime - rc0.ru_utime - rc0.ru_stime)
 
+    # Hashing is the harness's own cost, so it happens here, outside the measured window.
+    golden_by_name = {
+        path: ({"error": errors[path]} if payload is None else summarize_payload(payload))
+        for path, payload in payloads.items()
+    }
     ok = [o for o in outcomes if o["error"] is None]
     failed = [o for o in outcomes if o["error"] is not None and o["kind"] != "damaged"]
     return {
@@ -403,6 +443,8 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         "failed_paths": sorted({o["path"] for o in failed}),
         "stats": dict(stats),
         "lags": monitor.lags,
+        "idle_rss": idle_rss,
+        "stall_stacks": stacks.stacks,
         "cpu_seconds": cpu_seconds,
         "ceilings": gov_stats.get("ceilings"),
         "limits": gov_stats.get("limits"),
@@ -452,11 +494,14 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
             "wall_s": round(raw["wall_s"], 2),
             "files_per_s": round(raw["ok"] / raw["wall_s"], 4) if raw["wall_s"] else 0.0,
             "loop_lag": report.lag_summary(raw["lags"]),
+            "top_stalls": report.top_stalls(raw["stall_stacks"]),
+            "stall_count": len(raw["stall_stacks"]),
             "latency_s": report.latency_by_type((o["kind"], o["latency_s"]) for o in raw["outcomes"]),
             "gate_wait_mean_s": round(sum(o["gate_wait_s"] for o in raw["outcomes"]) / max(1, len(raw["outcomes"])), 3),
             "cpu_seconds": round(raw["cpu_seconds"], 1),
             "cpu_seconds_sampled_max": round(sampler.cpu_sampled, 1),
             "memory": {
+                "parent_idle_rss_mib": round(raw["idle_rss"] / report.MIB, 1),
                 "peak_parent_rss_mib": round(sampler.peak_parent_rss / report.MIB, 1),
                 "peak_tree_rss_mib": round(sampler.peak_tree_rss / report.MIB, 1),
                 "peak_tree_pss_mib": round(sampler.peak_tree_pss / report.MIB, 1),

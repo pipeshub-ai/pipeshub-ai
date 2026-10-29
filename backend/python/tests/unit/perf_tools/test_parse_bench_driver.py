@@ -135,13 +135,43 @@ class TestMain:
             driver.main(["--corpus", str(tmp_path), "--mix", "nope"])
 
 
-def test_canonical_payload_of_blocks_and_of_a_docling_document() -> None:
+def test_serialize_dumps_a_container_and_keeps_a_docling_document_as_text() -> None:
     class Container:
         def model_dump_json(self) -> str:
             return '{"blocks": [1, 2], "block_groups": [3]}'
 
-    blocks = driver.canonical_payload(SimpleNamespace(block_container=Container(), raw_document=None))
-    assert blocks[1:] == (2, 1)
-    docling = driver.canonical_payload(
-        SimpleNamespace(block_container=None, raw_document='{"texts": [1, 2, 3], "tables": [4]}'))
-    assert docling[1:] == (3, 1)
+    dumped = driver.serialize(SimpleNamespace(block_container=Container(), raw_document=None))
+    assert dumped == {"blocks": [1, 2], "block_groups": [3]}
+    text = '{"texts": [1, 2, 3], "tables": [4]}'
+    assert driver.serialize(SimpleNamespace(block_container=None, raw_document=text)) == text
+
+
+def test_summaries_count_blocks_and_groups_for_both_shapes() -> None:
+    blocks = driver.summarize_payload({"blocks": [1, 2], "block_groups": [3]})
+    assert (blocks["blocks"], blocks["groups"]) == (2, 1)
+    docling = driver.summarize_payload('{"texts": [1, 2, 3], "tables": [4]}')
+    assert (docling["blocks"], docling["groups"]) == (3, 1)
+
+
+def test_hashing_does_not_run_inside_the_timed_window() -> None:
+    """The loop-lag figures must not contain the harness's own hashing (found in a first run:
+    uuid renaming held the loop for 100s of ms and was blamed on the parsers)."""
+    import inspect
+
+    source = inspect.getsource(driver.run)
+    window = source.split("t0 = time.monotonic()")[1].split("wall = time.monotonic() - t0")[0]
+    assert "summarize" not in window
+    assert "golden." not in window
+
+
+def test_stack_collector_keeps_only_the_watchdog_stacks() -> None:
+    import logging
+
+    handler = driver.StackCollector()
+    logger = logging.getLogger("collector-test")
+    logger.addHandler(handler)
+    logger.propagate = False
+    logger.warning("unrelated warning")
+    logger.warning("Event loop bench has not run for 1.0s; it is executing:\n  File \"/a/b.py\", line 1, in f")
+    assert len(handler.stacks) == 1
+    assert "b.py" in handler.stacks[0]
