@@ -374,7 +374,12 @@ export function WorkspaceRightPanel({
               disabled={primaryLoading}
               style={{ cursor: primaryLoading ? 'not-allowed' : 'pointer' }}
             >
-              {secondaryIcon && <MaterialIcon name={secondaryIcon} size={16} />}
+              {/* Decorative: MaterialIcon renders its name as text, which a screen reader would read out */}
+              {secondaryIcon && (
+                <span aria-hidden style={{ display: 'inline-flex' }}>
+                  <MaterialIcon name={secondaryIcon} size={16} />
+                </span>
+              )}
               {secondaryLabel}
             </Button>
             {showPrimaryButtonTooltip && primaryButtonTooltipText ? (

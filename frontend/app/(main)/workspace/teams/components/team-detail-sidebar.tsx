@@ -547,7 +547,7 @@ export function TeamDetailSidebar({
             readOnly={!isEditMode}
             style={{
               width: '100%',
-              height: 'var(--space-7)',
+              height: 44, // the touch-target minimum; also ~12px around the 20px line
               padding: '0 12px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',

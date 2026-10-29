@@ -1042,10 +1042,10 @@ export function KbListView({
             actionsWidth={parseInt(actionsWidth(isMobile, !!onGoToParent), 10)}
             columns={[
               { barWidth: 0.62 },
-              ...(!isMobile ? [{ width: kbCol('status'), barWidth: 0.45 }] : []),
-              ...(showSourceColumn && !isMobile ? [{ width: kbCol('source'), barWidth: 0.45 }] : []),
-              ...(!belowDesktop ? [{ width: kbCol('size'), barWidth: 0.55 }, { width: kbCol('created'), barWidth: 0.7 }] : []),
-              ...(!isMobile ? [{ width: kbCol('updated'), barWidth: 0.7 }] : []),
+              ...(!isMobile ? [{ width: kbCol('status'), minWidth: kbColMin('status'), barWidth: 0.45 }] : []),
+              ...(showSourceColumn && !isMobile ? [{ width: kbCol('source'), minWidth: kbColMin('source'), barWidth: 0.45 }] : []),
+              ...(!belowDesktop ? [{ width: kbCol('size'), minWidth: kbColMin('size'), barWidth: 0.55 }, { width: kbCol('created'), minWidth: kbColMin('created'), barWidth: 0.7 }] : []),
+              ...(!isMobile ? [{ width: kbCol('updated'), minWidth: kbColMin('updated'), barWidth: 0.7 }] : []),
             ]}
           />
         </Box>

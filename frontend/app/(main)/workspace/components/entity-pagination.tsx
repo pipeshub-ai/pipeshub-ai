@@ -85,7 +85,7 @@ export function EntityPagination({
       {/* Right: pagination controls */}
       <Flex gap="2" align="center">
         {/* Previous */}
-        <Button variant="ghost" size="2" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)} style={PAGER_BUTTON}>
+        <Button className="touch-hit" variant="ghost" size="2" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)} style={PAGER_BUTTON}>
           <MaterialIcon name="chevron_left" size={16} />
           {t('workspace.pagination.previous')}
         </Button>
@@ -98,7 +98,7 @@ export function EntityPagination({
         </Flex>
 
         {/* Next */}
-        <Button variant="ghost" size="2" color="gray" disabled={!hasNext} onClick={() => onPageChange(page + 1)} style={PAGER_BUTTON}>
+        <Button className="touch-hit" variant="ghost" size="2" color="gray" disabled={!hasNext} onClick={() => onPageChange(page + 1)} style={PAGER_BUTTON}>
           {t('workspace.pagination.next')}
           <MaterialIcon name="chevron_right" size={16} />
         </Button>
@@ -114,7 +114,7 @@ export function EntityPagination({
                 data-testid="page-size-trigger"
                 align="center"
                 gap="1"
-                className="entity-pager-select"
+                className="entity-pager-select touch-hit"
                 style={{ ...PAGER_PILL, cursor: 'pointer', gap: 'var(--space-1)' }}
               >
                 <Text size="1" weight="medium" style={{ color: 'var(--olive-12)' }}>

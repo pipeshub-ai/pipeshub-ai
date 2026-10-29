@@ -540,13 +540,13 @@ function RecordsLoadingTable({
           actionsWidth={104}
           columns={[
             { barWidth: 0.62 },
-            { width: kbCol('status'), barWidth: 0.45 },
-            ...(showSourceColumn ? [{ width: kbCol('source'), barWidth: 0.45 }] : []),
+            { width: kbCol('status'), minWidth: kbColMin('status'), barWidth: 0.45 },
+            ...(showSourceColumn ? [{ width: kbCol('source'), minWidth: kbColMin('source'), barWidth: 0.45 }] : []),
             ...(!isMobile
               ? [
-                  { width: kbCol('size'), barWidth: 0.55 },
-                  { width: kbCol('created'), barWidth: 0.7 },
-                  { width: kbCol('updated'), barWidth: 0.7 },
+                  { width: kbCol('size'), minWidth: kbColMin('size'), barWidth: 0.55 },
+                  { width: kbCol('created'), minWidth: kbColMin('created'), barWidth: 0.7 },
+                  { width: kbCol('updated'), minWidth: kbColMin('updated'), barWidth: 0.7 },
                 ]
               : []),
           ]}
