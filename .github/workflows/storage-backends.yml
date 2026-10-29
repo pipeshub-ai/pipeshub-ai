@@ -179,4 +179,4 @@ jobs:
         if: ${{ always() }}
         working-directory: .
         # the leak test must have run (3 cases per topology); the whole contract is not counted here, a skip or failure fails the step
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/mongo-junit.xml" --expect-suite "MongoDocumentRepository against a real MongoDB document store contract (state hidden)=3"
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/mongo-junit.xml" --expect-suite "MongoDocumentRepository against a real MongoDB document store contract (state hidden)=3" --expect-suite "MongoDocumentRepository against a real MongoDB document store contract (fingerprint)=15"

@@ -96,3 +96,25 @@ export function runModel(s: Pick<Schedule, 'writers' | 'hb' | 'order'>, em: 'str
   }
   return { reads, compliant };
 }
+
+/**
+ * The stack's begin is one atomic operation (it prunes expired tokens and adds its own in one statement), so a replay cannot stop
+ * between the model's `B1` (prune) and `B2` (begin). The model's schedule is therefore replayed as the one in which each writer's `B1`
+ * runs immediately before its own `B2`: a schedule of the same model, so everything the model proves about it holds.
+ */
+export function pruneAdjacent(
+  writers: Record<string, string[]>,
+  order: [string, number][],
+): [string, number][] {
+  const isStep = (a: string, i: number, name: string): boolean => (writers[a] ?? [])[i] === name;
+  const out: [string, number][] = [];
+  for (const [a, i] of order) {
+    if (a in writers && isStep(a, i, 'B1')) continue;
+    if (a in writers && isStep(a, i, 'B2')) {
+      const b1 = (writers[a] as string[]).indexOf('B1');
+      if (b1 >= 0) out.push([a, b1]);
+    }
+    out.push([a, i]);
+  }
+  return out;
+}

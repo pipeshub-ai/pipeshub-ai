@@ -10,6 +10,10 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/src/modules/storage/**'
+      - 'backend/nodejs/apps/tests/support/**'
+      - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
       - 'backend/nodejs/apps/src/libs/services/ttl-sweeper.service.ts'
       - 'backend/nodejs/apps/tests/stores/**'
       - 'backend/nodejs/apps/tests/libs/repositories/**'
@@ -90,3 +94,5 @@ jobs:
         run: >-
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pg-stores-junit.xml"
           --expect-suite "PostgreSQL content stores (/usr/lib/postgresql/${{ matrix.pg }}/bin) behind PgBouncer DocumentRepository contract document store contract (state hidden)=3"
+          --expect-suite "PostgreSQL content stores (/usr/lib/postgresql/${{ matrix.pg }}/bin) behind PgBouncer DocumentRepository contract document store contract (fingerprint)=15"
+          --expect-suite "document fingerprint=@N@"

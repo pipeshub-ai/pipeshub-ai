@@ -100,6 +100,8 @@ export interface Faults {
   /** Methods of the adapter that throw (the write did not happen) or throw AFTER the real call (the write landed). */
   failAdapterBefore: Map<string, Error>;
   failAdapterAfter: Map<string, Error>;
+  /** Fails the `n`th call (1-based) of an adapter method, before it reaches the store. */
+  failAdapterNth: Map<string, { n: number; error: Error }>;
   adapterCalls: Record<string, number>;
 }
 
@@ -111,6 +113,7 @@ export const newFaults = (): Faults => ({
   failRepo: new Map(),
   failAdapterBefore: new Map(),
   failAdapterAfter: new Map(),
+  failAdapterNth: new Map(),
   adapterCalls: {},
 });
 
@@ -159,6 +162,8 @@ export function faultAdapter(real: StorageServiceAdapter, f: Faults): StorageSer
         f.adapterCalls[prop] = (f.adapterCalls[prop] ?? 0) + 1;
         const before = f.failAdapterBefore.get(prop);
         if (before) throw before;
+        const nth = f.failAdapterNth.get(prop);
+        if (nth && f.adapterCalls[prop] === nth.n) throw nth.error;
         const out = await fn(...args);
         const after = f.failAdapterAfter.get(prop);
         if (after) throw after;
