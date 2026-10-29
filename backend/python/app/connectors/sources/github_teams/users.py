@@ -125,6 +125,9 @@ class UsersSync:
         c = self.c
         if not c.data_source:
             raise Exception("GitHub data source not initialized")
+        # Here rather than at the profile lookups, which a sync that resolves
+        # every member earlier never reaches.
+        _forget_expired_profiles()
 
         orgs, orgs_ok = await self._resolve_target_orgs()
         if not orgs_ok:
@@ -500,7 +503,6 @@ class UsersSync:
         """
         c = self.c
         org_id = c.data_entities_processor.org_id
-        _forget_expired_profiles()
         sem = asyncio.Semaphore(_GITHUB_USER_ENRICHMENT_CONCURRENCY)
         reused = fetched = 0
 

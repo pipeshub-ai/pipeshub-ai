@@ -749,6 +749,18 @@ class TestProfileReuse:
         assert self._profile_fetches(c) == 2
         assert list(users_mod._recent_profiles) == [("org-1", 6)]
 
+    async def test_expired_profiles_are_dropped_even_when_no_profile_is_looked_up(self) -> None:
+        c = make_mock_connector()
+        users_mod._recent_profiles[("org-1", 6)] = (-users_mod._GITHUB_PROFILE_REUSE_SECONDS, object())
+        users_mod._profile_fetch_locks[("org-1", 6)] = asyncio.Lock()
+        members = [make_named_user(user_id=2, login="bob", email="bob@example.com")]
+
+        await self._sync(c, members, {}).sync_users()
+
+        assert self._profile_fetches(c) == 0
+        assert users_mod._recent_profiles == {}
+        assert users_mod._profile_fetch_locks == {}
+
 
 class TestResolveCollaboratorPrincipals:
     """Identity source for individual-owned repos: their collaborators exist in
