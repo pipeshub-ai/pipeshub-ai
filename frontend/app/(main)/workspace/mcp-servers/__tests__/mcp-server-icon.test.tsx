@@ -28,6 +28,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Notion" />)).toBe('notion icon');
   });
 
+  it("shows Context7's logo", () => {
+    expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
+  });
+
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {
     const { container } = render(<McpServerIcon name="Acme internal" />);
 

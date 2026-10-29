@@ -88,6 +88,7 @@ export type ConnectorType =
   | 'lumos'
   // MCP / AI tools
   | 'exa'
+  | 'context7'
   | 'atlassian'
   | 'discord'
   | 'posthog'
@@ -184,6 +185,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
   // MCP / AI tools
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
+  'context7': { svg: svg('context7'), fallback: 'menu_book' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },
