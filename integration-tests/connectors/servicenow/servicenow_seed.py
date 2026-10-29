@@ -367,6 +367,13 @@ class ServiceNowSeed:
                                json={"user_password": password})
         if resp.status_code != 200:
             raise self.rest._error(resp)
+        # A new password can be refused for a few seconds; wait until the user can sign in.
+        as_user = self.rest.as_user(user_name, password)
+        deadline = time.monotonic() + 30
+        while as_user._call("GET", "/api/now/table/sys_user", params={"sysparm_limit": "1"}).status_code == 401:
+            if time.monotonic() > deadline:
+                raise ServiceNowError(401, f"{user_name} cannot sign in 30 s after its password was set")
+            time.sleep(2)
         self.users[key] = SeedUser(key, row["sys_id"], user_name, email, password)
         return self.users[key]
 
