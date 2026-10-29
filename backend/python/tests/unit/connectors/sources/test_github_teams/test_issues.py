@@ -344,6 +344,93 @@ class TestFetchIssuesBatched:
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
 
+_RESUME = {
+    "listing_resume_page": 2,
+    "listing_resume_cursor": "cursor-2",
+    "listing_resume_since": None,
+    "listing_resume_watermark": 1_800_000_000_000,
+    "listing_resume_created": 100,
+}
+
+
+class TestResumeInterruptedListing:
+    """A listing longer than one hour's rate limit used to start again from the
+    first page every sync, and so never finished: Apache Arrow's reached page
+    454 of about 490 and began again. It now reads on from where it stopped."""
+
+    @staticmethod
+    def _sync(c: object, checkpoint: dict) -> IssuesSync:
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value=dict(checkpoint))
+        sync._write_checkpoint = AsyncMock()
+        sync._reconcile_removed_issues = AsyncMock(return_value=(True, 5))
+        return sync
+
+    async def test_a_failure_past_the_first_page_saves_where_it_stopped(self) -> None:
+        c = make_mock_connector()
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", {
+            "listing_resume_page": 2,
+            "listing_resume_cursor": "cursor-2",
+            "listing_resume_since": None,
+            "listing_resume_watermark": epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc)),
+            "listing_resume_created": 100,
+        })
+
+    async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        # Issues created on the pages read before count towards the total check.
+        assert sync._reconcile_removed_issues.await_args.args[3] == 101
+        (group, written), _ = sync._write_checkpoint.await_args
+        # The watermark is the newest issue of the whole listing, read before the stop.
+        assert written["last_sync_time"] == _RESUME["listing_resume_watermark"]
+        assert all(written[k] is None for k in _RESUME)
+
+    async def test_a_saved_place_from_another_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_600_000_000_000})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
+
+    async def test_a_saved_place_github_refuses_is_forgotten(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("bad cursor", status_code=422))
+        sync = self._sync(c, _RESUME)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_once_with("1-work-items", dict.fromkeys(_RESUME))
+
+    async def test_a_rate_limit_at_the_saved_place_keeps_it(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c, _RESUME)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == _RESUME
+
+
 class TestProcessIssueToTicket:
     async def test_maps_fields_and_marks_new(self) -> None:
         c = make_mock_connector()

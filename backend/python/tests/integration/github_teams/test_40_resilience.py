@@ -8,7 +8,7 @@ GitHub in ``sim/``; see README.md.
 
 import pytest
 
-from tests.integration.github_teams.helpers import fail, issues_listing, on
+from tests.integration.github_teams.helpers import fail, issues_listing, nth, on
 from tests.integration.github_teams.sim.model import Fault
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -58,6 +58,53 @@ async def test_exhausted_hourly_limit_fails_the_sync_and_loses_nothing(world, or
     gh.faults.clear()
     await world.sync()
     assert await world.names("TICKET") == ["Before", "During"]
+
+
+async def test_an_issues_listing_cut_short_by_the_hourly_limit_reads_on_where_it_stopped(world, org) -> None:
+    """A listing longer than one hour's allowance used to start again from the first page
+    every sync, so it never finished. The next sync reads on from the page it stopped at,
+    and once it completes, the sync after starts from the watermark as before."""
+    gh, repo = world.gh, org["repo"]
+    for n in range(250):
+        gh.add_issue(repo, f"Issue {n:03}")
+    path = f"api.github.com/repos/{repo.full_name}/issues"
+    gh.faults.append(Fault(nth(path, 2), kind="primary", seconds=1800, times=1))
+    await world.sync(expect_error=True)
+
+    start = len(gh.calls)
+    await world.sync()
+    listing = [c for c in world.api_calls(since=start) if f"{c.host}{c.path}" == path]
+    assert "after" in listing[0].query, listing[0].query
+    assert await world.names("TICKET") == [f"Issue {n:03}" for n in range(250)]
+
+    gh.add_issue(repo, "Later")
+    start = len(gh.calls)
+    await world.sync()
+    listing = [c for c in world.api_calls(since=start) if f"{c.host}{c.path}" == path]
+    assert "after" not in listing[0].query and "since" in listing[0].query, listing[0].query
+    assert "Later" in await world.names("TICKET")
+
+
+async def test_a_pull_request_listing_cut_short_by_the_hourly_limit_reads_on_where_it_stopped(
+    world, org,
+) -> None:
+    gh, repo = world.gh, org["repo"]
+    for n in range(150):
+        gh.add_pull(repo, f"PR {n:03}")
+    path = f"api.github.com/repos/{repo.full_name}/pulls"
+    gh.faults.append(Fault(nth(path, 2), kind="primary", seconds=1800, times=1))
+    await world.sync(expect_error=True)
+
+    start = len(gh.calls)
+    await world.sync()
+    listing = [c for c in world.api_calls(since=start) if f"{c.host}{c.path}" == path]
+    assert listing[0].query.get("page") == "2", listing[0].query
+    assert await world.names("PULL_REQUEST") == [f"PR {n:03}" for n in range(150)]
+
+    start = len(gh.calls)
+    await world.sync()
+    listing = [c for c in world.api_calls(since=start) if f"{c.host}{c.path}" == path]
+    assert listing[0].query.get("page", "1") == "1", listing[0].query
 
 
 async def test_revoked_token_fails_the_sync(world, org) -> None:

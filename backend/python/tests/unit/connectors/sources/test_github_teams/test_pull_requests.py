@@ -98,8 +98,43 @@ class TestFetchPrsBatched:
         c.issues.process_new_records = AsyncMock(return_value=True)
         c.issues._get_sync_checkpoint = AsyncMock(return_value=None)
         c.issues._update_sync_checkpoint = AsyncMock()
+        c.issues._read_checkpoint = AsyncMock(return_value={})
+        c.issues._write_checkpoint = AsyncMock()
         c.comments.clean_github_content = AsyncMock(return_value=("", []))
         return sync
+
+    async def test_a_failure_past_the_first_page_saves_where_it_stopped(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            ok_response([_pr(number=n) for n in range(100)]),
+            failed_response("rate limited", status_code=429),
+        ])
+        sync = self._sync(c)
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is False
+
+        c.issues._write_checkpoint.assert_awaited_once()
+        group, written = c.issues._write_checkpoint.await_args.args
+        assert group == "10-pull-requests"
+        assert written["listing_resume_page"] == 2
+        assert written["listing_resume_watermark"] > 0
+        c.issues._update_sync_checkpoint.assert_not_awaited()
+
+    async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_pr(number=7)]))
+        sync = self._sync(c)
+        saved = {"listing_resume_page": 3, "listing_resume_since": None,
+                 "listing_resume_watermark": 9_999_999_999_999}
+        c.issues._read_checkpoint = AsyncMock(return_value=saved)
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is True
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 3
+        # The newest PR was on the pages read before the stop.
+        c.issues._update_sync_checkpoint.assert_awaited_once_with("10-pull-requests", 9_999_999_999_999)
+        _, cleared = c.issues._write_checkpoint.await_args.args
+        assert set(cleared) >= set(saved) and all(v is None for v in cleared.values())
 
     async def test_pages_until_short_page_and_never_fetches_a_single_pr(self) -> None:
         c = make_mock_connector()
