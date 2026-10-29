@@ -12,7 +12,9 @@ from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.snowflake.snowflake import SnowflakeClient, SnowflakeResponse
+from app.sources.external.snowflake.identifiers import quote_literal, stage_reference
 
 logger = logging.getLogger(__name__)
 
@@ -3846,7 +3848,10 @@ class SnowflakeDataSource:
         role: Optional[str] = None,
         timeout: Optional[int] = None,
         async_exec: Optional[bool] = None,
-        parameters: Optional[Dict[str, str]] = None
+        parameters: dict[str, str] | None = None,
+        *,
+        request_id: str | None = None,
+        retry: bool = False,
     ) -> SnowflakeResponse:
         """Execute a SQL statement via the Snowflake SQL API
 
@@ -3864,7 +3869,11 @@ class SnowflakeDataSource:
             role: Role to use for execution
             timeout: Query timeout in seconds
             async_exec: If True, execute asynchronously and return statement handle
-            parameters: Bind parameters for the statement
+            parameters: Session parameters for the statement, such as
+                ``QUERY_TAG`` (the SQL API binds values with ``bindings``)
+            request_id: UUID for this request; sending it again with ``retry``
+                resubmits the same statement instead of running a second copy
+            retry: Whether this is a resubmission of ``request_id``
 
         Returns:
             SnowflakeResponse with query results or statement handle
@@ -3872,6 +3881,10 @@ class SnowflakeDataSource:
         query_params = []
         if async_exec is not None:
             query_params.append(('async', 'true' if async_exec else 'false'))
+        if request_id is not None:
+            query_params.append(('requestId', request_id))
+            if retry:
+                query_params.append(('retry', 'true'))
 
         url = self.base_url + "/statements"
         if query_params:
@@ -3906,19 +3919,9 @@ class SnowflakeDataSource:
 
         try:
             response = await self.http.execute(request)
-            response_data = response.json() if response.text() else None
-            succeeded = response.status < ERROR_STATUS_CODE
-            failure = {} if succeeded or not isinstance(response_data, dict) else response_data
-            return SnowflakeResponse(
-                success=succeeded,
-                data=response_data,
-                status_code=response.status,
-                sql_state=failure.get("sqlState"),
-                error=failure.get("message"),
-                message="Successfully executed SQL statement" if succeeded else f"Failed with status {response.status}"
-            )
         except Exception as e:
-            return SnowflakeResponse(success=False, error=str(e), message="Failed to execute SQL statement")
+            return _no_answer(e, "Failed to execute SQL statement")
+        return _sql_api_response(response, "Successfully executed SQL statement")
 
     async def get_statement_status(
         self,
@@ -3955,14 +3958,9 @@ class SnowflakeDataSource:
 
         try:
             response = await self.http.execute(request)
-            response_data = response.json() if response.text() else None
-            return SnowflakeResponse(
-                success=response.status < ERROR_STATUS_CODE,
-                data=response_data,
-                message="Successfully retrieved statement status" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
-            )
         except Exception as e:
-            return SnowflakeResponse(success=False, error=str(e), message="Failed to get statement status")
+            return _no_answer(e, "Failed to get statement status")
+        return _sql_api_response(response, "Successfully retrieved statement status")
 
     async def cancel_statement(
         self,
@@ -4361,9 +4359,10 @@ class SnowflakeDataSource:
         Returns:
             SnowflakeResponse with presigned_url in data field
         """
-        # Escape single quotes in file path
-        safe_file_path = file_path.replace("'", "''")
-        statement = f"SELECT GET_PRESIGNED_URL(@{database}.{schema}.{stage}, '{safe_file_path}', {expiration_seconds}) AS presigned_url"
+        statement = (
+            f"SELECT GET_PRESIGNED_URL({stage_reference(database, schema, stage)}, "
+            f"{quote_literal(file_path)}, {int(expiration_seconds)}) AS presigned_url"
+        )
         return await self.execute_sql(statement=statement, database=database, schema=schema, warehouse=warehouse)
 
     async def list_stage_files(
@@ -4395,10 +4394,9 @@ class SnowflakeDataSource:
             - FILE_URL: Permanent file URL
             - SCOPED_FILE_URL: Temporary scoped URL for download
         """
-        statement = f"SELECT * FROM DIRECTORY(@{database}.{schema}.{stage})"
+        statement = f"SELECT * FROM DIRECTORY({stage_reference(database, schema, stage)})"
         if pattern:
-            safe_pattern = pattern.replace("'", "''")
-            statement += f" WHERE RELATIVE_PATH LIKE '{safe_pattern}'"
+            statement += f" WHERE RELATIVE_PATH LIKE {quote_literal(pattern)}"
 
         return await self.execute_sql(statement=statement, database=database, schema=schema, warehouse=warehouse)
 
@@ -4495,4 +4493,41 @@ class SnowflakeDataSource:
         except Exception as e:
             return SnowflakeResponse(success=False, error=str(e), message="Failed to get dynamic table")
 
+
+def _sql_api_response(response: HTTPResponse, ok_message: str) -> SnowflakeResponse:
+    """An SQL API answer, its HTTP status always kept.
+
+    An unknown account answers 404 with an HTML page, and a proxy may answer
+    with anything: a body that is not JSON is no data, not a failed call.
+    """
+    unreadable = False
+    try:
+        response_data = response.json() if response.text() else None
+    except ValueError:
+        response_data, unreadable = None, True
+    # A success page that is not JSON (a proxy, a captive portal) holds no result:
+    # a failure, or rows would silently be missing.
+    succeeded = response.status < ERROR_STATUS_CODE and not unreadable
+    failure = {} if succeeded or not isinstance(response_data, dict) else response_data
+    code = failure.get("code")
+    return SnowflakeResponse(
+        success=succeeded,
+        data=response_data,
+        status_code=response.status,
+        sql_state=failure.get("sqlState"),
+        code=str(code) if code is not None else None,
+        error=failure.get("message") or ("The response was not JSON" if unreadable else None),
+        message=ok_message if succeeded else (
+            f"Status {response.status} with a body that is not JSON" if unreadable
+            else f"Failed with status {response.status}"
+        ),
+    )
+
+
+def _no_answer(error: Exception, message: str) -> SnowflakeResponse:
+    """A call that got no HTTP answer: the exception's class tells a timeout from a refused connection."""
+    return SnowflakeResponse(
+        success=False, error=str(error) or type(error).__name__, message=message,
+        exception_type=type(error).__name__,
+    )
 

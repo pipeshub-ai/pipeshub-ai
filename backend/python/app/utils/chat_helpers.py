@@ -96,6 +96,7 @@ from app.utils.record_block_selection import (  # noqa: E402
 )
 from app.utils.render_budget import RenderBudget  # noqa: E402
 from app.utils.slack_replies import corrected_has_replies, replies_note  # noqa: E402
+from app.utils.text_fragments.cache import TtlCache  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
 # rendering is bounded only by `max_blocks` exactly as it was before budgets
@@ -910,6 +911,7 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "recordType": "record_type",
     "connectorName": "connector_name",
     "connectorId": "connector_id",
+    "connectorInstanceName": "connector_instance_name",
     "mimeType": "mime_type",
     "externalRecordId": "external_record_id",
     "webUrl": "weburl",
@@ -2654,6 +2656,84 @@ async def keep_graph_docs_inside_connection(
                 doc[key] = None
 
 
+# Connector names only label citations; a slow graph must not hold up the turn.
+CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
+
+# Connector instance display names for citations. Each search looked up the App
+# of every connector in its results, one query each; a rename shows within a minute.
+_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
+# A missing app or a failed lookup, so a stalled graph costs one timeout per
+# connector, not one per record a thread or FK read names.
+_connector_name_misses = TtlCache(maxsize=10_000, ttl_seconds=30.0)
+
+
+async def attach_connector_instance_names(
+    graph_provider: IGraphDBProvider | None,
+    records: Iterable[dict[str, Any] | None],
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """Set ``connectorInstanceName`` on graph record documents: the name the
+    admin gave the record's connector.
+
+    ``connectorName`` is only the type code (WEB), shared by every instance
+    of that type. A missing or unreadable instance leaves the field unset,
+    and the UI falls back to the type. Under a connected app's limit
+    (``connection_sources``) the app's own name is its source's or
+    collection's name: set only when the limit covers that app whole, as the
+    Location trail and record details show it; any other record loses it.
+    """
+    records = [r for r in records if isinstance(r, dict)]
+    if connection_sources is not None:
+        whole_apps = set(connection_sources.get("apps") or ())
+        for r in records:
+            if r.get("connectorId") not in whole_apps:
+                r.pop("connectorInstanceName", None)
+        records = [r for r in records if r.get("connectorId") in whole_apps]
+    if graph_provider is None:
+        return
+    connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
+    if not connector_ids:
+        return
+    names: dict[str, str | None] = {}
+    for cid in connector_ids:
+        hit, name = _connector_name_cache.get(cid)
+        if not hit:
+            hit, name = _connector_name_misses.get(cid)
+        if hit:
+            names[cid] = name
+    # shortcut: concurrent first lookups of one connector each query the graph; coalesce if that shows up in load.
+    to_fetch = [cid for cid in connector_ids if cid not in names]
+    if to_fetch:
+        try:
+            # Each lookup has its own timeout: one slow app must not cost the others their names.
+            apps = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        graph_provider.get_document(cid, CollectionNames.APPS.value),
+                        timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                    )
+                    for cid in to_fetch
+                ),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            # Labels only: results stay correct, the UI shows the type code.
+            logger.warning("Could not resolve connector names for citations: %s", e)
+            apps = []
+        found = dict(zip(to_fetch, apps))
+        for cid in to_fetch:
+            app = found.get(cid)
+            if isinstance(app, dict):
+                names[cid] = app.get("name")
+                _connector_name_cache.set(cid, app.get("name"))
+            else:
+                _connector_name_misses.set(cid, None)
+    for r in records:
+        name = names.get(r.get("connectorId"))
+        if name:
+            r["connectorInstanceName"] = name
+
+
 async def keep_context_blocks_inside_connection(
     holders: Iterable[tuple[str | None, Any]],
     graph_provider: IGraphDBProvider | None,
@@ -2840,6 +2920,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["origin"] = graph_rec.get("origin")
                         rec["connector_name"] = graph_rec.get("connectorName")
                         rec["connector_id"] = graph_rec.get("connectorId")
+                        await attach_connector_instance_names(graph_provider, [graph_rec], connection_sources)
+                        rec["connector_instance_name"] = graph_rec.get("connectorInstanceName")
                         rec["preview_renderable"] = graph_rec.get("previewRenderable", True)
                         rec["mime_type"] = graph_rec.get("mimeType")
                         rec["weburl"] = graph_rec.get("webUrl")

@@ -16,6 +16,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 
@@ -186,7 +187,10 @@ class SelectolaxHtmlParser:
                         src = first_part[0].strip()
             if not src:
                 continue
-            if src.startswith("data:"):
+            # A raster data: image already is the image; the converter stores it
+            # as it is. Anything else, an SVG or another data: URI, is reported
+            # for the caller to rasterise or refuse.
+            if is_inline_raster_image(src):
                 continue
 
             original_alt = img_tag.get("alt", "").strip()

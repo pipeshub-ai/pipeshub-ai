@@ -761,10 +761,13 @@ class ModelManager:
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
 
             def _encode() -> list[list[float]]:
+                # Left unset, sentence-transformers draws a progress bar on stderr
+                # for every call while its logger is at INFO.
                 embeddings = model.encode(
                     texts,
                     normalize_embeddings=self._normalize,
                     convert_to_numpy=True,
+                    show_progress_bar=False,
                 )
                 return embeddings.tolist()
 

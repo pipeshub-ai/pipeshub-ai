@@ -146,15 +146,6 @@ async def test_upload_succeeds_once_storage_is_writable_again(storage_outage: St
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "A failed upload leaves its storage document behind in MongoDB: the storage service saves "
-        "the document before writing the file and, when the write fails, only releases its upload "
-        "lease (storage.upload.service.ts handleDocumentUpload), so a file-less document remains."
-    ),
-)
 async def test_failed_upload_leaves_no_storage_document(storage_outage: StorageOutage) -> None:
     assert storage_outage.leftover_storage_documents == 0, (
         f"a failed upload left {storage_outage.leftover_storage_documents} storage document(s) behind in MongoDB"

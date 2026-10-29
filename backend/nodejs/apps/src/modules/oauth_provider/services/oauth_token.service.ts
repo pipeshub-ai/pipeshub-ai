@@ -5,7 +5,10 @@ import { Logger } from '../../../libs/services/logger.service';
 import { forOrg } from '../../../libs/context/orgContext';
 import {
   getOAuthTokenRepository,
+  REFRESH_ROTATED,
+  REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
+  type RefreshTokenDto,
 } from '../../../libs/repositories/oauth-token';
 import {
   getOAuthAppRepository,
@@ -376,9 +379,10 @@ export class OAuthTokenService {
   }
 
   /**
-   * Verify refresh token
+   * Signature, type and expiry only. Refresh reuse must still see a rotated
+   * row: identity lookup skips revoked tokens.
    */
-  async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
+  private readRefreshPayload(token: string): OAuthTokenPayload {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
@@ -386,13 +390,6 @@ export class OAuthTokenService {
 
       if (!payload.isRefreshToken) {
         throw new InvalidTokenError('Invalid token type');
-      }
-
-      const tokenHash = this.hashToken(token);
-      const storedToken = await getIdentityLookup().resolveRefresh(tokenHash);
-
-      if (!storedToken) {
-        throw new InvalidTokenError('Refresh token has been revoked');
       }
 
       return payload;
@@ -408,6 +405,22 @@ export class OAuthTokenService {
   }
 
   /**
+   * Verify refresh token
+   */
+  async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
+    const payload = this.readRefreshPayload(token);
+    const storedToken = await getIdentityLookup().resolveRefresh(
+      this.hashToken(token),
+    );
+
+    if (!storedToken) {
+      throw new InvalidTokenError('Refresh token has been revoked');
+    }
+
+    return payload;
+  }
+
+  /**
    * Refresh tokens - rotates refresh token for security
    */
   async refreshTokens(
@@ -415,14 +428,14 @@ export class OAuthTokenService {
     refreshToken: string,
     requestedScopes?: string[],
   ): Promise<GeneratedTokens> {
-    const payload = await this.verifyRefreshToken(refreshToken);
+    const payload = this.readRefreshPayload(refreshToken);
 
     // Ends refresh tokens that an app got for another workspace before the check existed.
     if (!isAppUsableInOrg(app, payload.orgId)) {
       throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
     }
 
-    // Get stored refresh token
+    // Includes revoked rows: a token already rotated must still family-revoke.
     const tokenHash = this.hashToken(refreshToken);
     const storedToken =
       await getOAuthTokenRepository().findRefreshByHash(tokenHash);
@@ -440,6 +453,18 @@ export class OAuthTokenService {
       throw new InvalidGrantError(
         'Refresh token was not issued to this client',
       );
+    }
+
+    if (this.isRotatedRefreshReplay(storedToken)) {
+      await this.rejectRefreshReplay(
+        storedToken.clientId,
+        storedToken.userId,
+        storedToken._id,
+      );
+    }
+
+    if (storedToken.isRevoked) {
+      throw new InvalidTokenError('Refresh token has been revoked');
     }
 
     // Determine scopes - can only be reduced, not expanded
@@ -461,8 +486,13 @@ export class OAuthTokenService {
     // Revoke old refresh token (rotation), atomically: of two refreshes
     // presenting the same token only one rotates it; the other has lost the
     // token and must not be issued a second pair.
-    if (!(await getOAuthTokenRepository().rotateRefresh(storedToken._id))) {
-      throw new InvalidGrantError('Refresh token has already been used');
+    const repo = getOAuthTokenRepository();
+    if (!(await repo.rotateRefresh(storedToken._id))) {
+      await this.rejectRefreshReplay(
+        storedToken.clientId,
+        storedToken.userId,
+        storedToken._id,
+      );
     }
 
     // Generate new tokens
@@ -484,6 +514,24 @@ export class OAuthTokenService {
       },
     );
 
+    // A replay that ran while this pair was being minted left a flag; take
+    // the new tokens back so the thief does not keep the winner's grant.
+    const afterMint = await repo.findRefreshByHash(tokenHash);
+    if (afterMint?.revokedReason === REFRESH_REUSE_DETECTED) {
+      await repo.revokeIssued(
+        this.hashToken(newTokens.accessToken),
+        newTokens.refreshToken
+          ? this.hashToken(newTokens.refreshToken)
+          : undefined,
+      );
+      await repo.revokeAllForClientUserBecause(
+        app.clientId,
+        storedToken.userId,
+        REFRESH_REUSE_DETECTED,
+      );
+      throw new InvalidGrantError('Refresh token has already been used');
+    }
+
     this.logger.info('Tokens refreshed', {
       clientId: app.clientId,
       userId: payload.userId,
@@ -491,6 +539,39 @@ export class OAuthTokenService {
     });
 
     return newTokens;
+  }
+
+  /** Rotation (or a reuse flag) — not a user revoke, which must not kill a later grant. */
+  private isRotatedRefreshReplay(token: RefreshTokenDto): boolean {
+    return (
+      token.isRevoked &&
+      (token.revokedReason === REFRESH_ROTATED ||
+        token.revokedReason === REFRESH_REUSE_DETECTED)
+    );
+  }
+
+  /**
+   * A used refresh token presented again: revoke the grant (RFC 6819) and
+   * refuse. Flag first so a winner still minting sees the replay after it
+   * inserts its pair.
+   */
+  private async rejectRefreshReplay(
+    clientId: string,
+    userId: string,
+    refreshId: string,
+  ): Promise<never> {
+    this.logger.warn(
+      'Refresh token reuse detected. Revoking all tokens for this client and user',
+      { clientId, userId },
+    );
+    const repo = getOAuthTokenRepository();
+    await repo.flagRefreshReplayed(refreshId);
+    await repo.revokeAllForClientUserBecause(
+      clientId,
+      userId,
+      REFRESH_REUSE_DETECTED,
+    );
+    throw new InvalidGrantError('Refresh token has already been used');
   }
 
   /**

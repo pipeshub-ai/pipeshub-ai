@@ -15,6 +15,13 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -406,7 +413,9 @@ async def _execute_postgres_query(
             )
         await client.connect()
         try:
-            columns, rows = await client.execute_query_raw(query_to_execute)
+            columns, rows = await client.execute_query_raw(
+                query_to_execute, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
         finally:
             await client.close()
 
@@ -433,7 +442,7 @@ async def _execute_postgres_query(
         logger.error(f"PostgreSQL query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"PostgreSQL query failed: {str(e)}"
+            "error": f"PostgreSQL query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -442,85 +451,39 @@ async def _execute_snowflake_query(
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute a query against Snowflake.
-    
-    Args:
-        query: SQL query to execute
-        config_service: Configuration service for retrieving connection details
-        connector_instance_id: Optional connector instance ID
-        
+    """Execute a query against Snowflake through the SQL API.
+
+    Snowflake has no read-only transaction: what keeps this read-only is the
+    query check, the API's one-statement-per-request default and the
+    connector's role.
+
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
     """
     try:
-        from app.sources.client.snowflake.snowflake import (
-            SnowflakeSDKClient,
-            SnowflakeClient,
-            SnowflakeConnectorConfig,
-        )
-        
-        # Get connection config
-        config_dict = await SnowflakeClient._get_connector_config(
+        from app.sources.external.snowflake.warehouse import connector_runner
+
+        async with connector_runner(
             logger=logger,
             config_service=config_service,
-            connector_instance_id=connector_instance_id,
-        )
-        
-        config = SnowflakeConnectorConfig.model_validate(config_dict)
-        account_identifier = config.accountIdentifier
-        warehouse = config.warehouse
-        
-        # Build SDK client based on auth type
-        auth_config = config.auth
-        auth_type = auth_config.authType.value if hasattr(auth_config.authType, 'value') else str(auth_config.authType)
-        
-        if auth_type == "PAT":
-            # PAT auth - use SDK client with token
-            pat_token = auth_config.patToken
-            if not pat_token:
-                return {
-                    "ok": False,
-                    "error": "PAT token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=pat_token,  # PAT tokens work with oauth authenticator
+            connector_id=connector_instance_id,
+            query_tag="pipeshub:agent",
+        ) as runner:
+            result = await runner.run(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
             )
-        elif auth_type == "OAUTH":
-            # OAuth auth
-            credentials = config.credentials
-            if not credentials or not credentials.access_token:
-                return {
-                    "ok": False,
-                    "error": "OAuth access token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=credentials.access_token,
-            )
-        else:
-            return {
-                "ok": False,
-                "error": f"Unsupported Snowflake auth type: {auth_type}"
-            }
-        
-        with sdk_client:
-            columns, rows = sdk_client.execute_query_raw(query)
-            return {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
-            
+
+        return {
+            "ok": True,
+            "columns": result.column_names,
+            "rows": result.rows,
+        }
+
     except Exception as e:
         logger.error(f"Snowflake query execution failed: {e}")
         return {
             "ok": False,
-            "error": f"Snowflake query failed: {str(e)}"
+            "error": f"Snowflake query failed: {friendly_sql_error(str(e))}"
         }
 
 
@@ -567,7 +530,9 @@ async def _execute_mariadb_query(
         logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
         async with client:
-            columns, rows = await client.execute_query_raw(query)
+            columns, rows = await client.execute_query_raw(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
 
         logger.info(
             f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
@@ -582,7 +547,7 @@ async def _execute_mariadb_query(
         logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
         return {
             "ok": False,
-            "error": f"MariaDB query failed: {str(e)}"
+            "error": f"MariaDB query failed: {friendly_sql_error(str(e))}"
         }
 
 async def _execute_query_impl(
@@ -658,7 +623,7 @@ async def _execute_query_impl(
     # Convert results to markdown
     if result.get("ok"):
         columns = result.get("columns", [])
-        rows = result.get("rows", [])
+        rows, rows_cut = cap_rows(result.get("rows", []))
         
         logger.info(f"🔍 [_execute_query_impl] Converting to markdown: {len(columns)} cols, {len(rows)} rows")
         logger.debug(f"🔍 [_execute_query_impl] Columns: {columns}")
@@ -677,6 +642,9 @@ async def _execute_query_impl(
             "raw_columns": columns,
             "raw_rows": rows,
         }
+        if rows_cut:
+            final_result["rows_cut_at"] = SQL_MAX_ROWS
+            final_result["markdown_result"] += f"\n\n_{truncation_note()}_"
         logger.info(f"🔍 [_execute_query_impl] Final result: ok=True, row_count={len(rows)}, column_count={len(columns)}")
         return final_result
     else:
@@ -856,7 +824,7 @@ def create_execute_query_tool(
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{'_first_%d_rows' % SQL_MAX_ROWS if result.get('rows_cut_at') else ''}.csv",
                     source_tool="sql.execute_sql_query",
                 ))
                 register_task(conversation_id, task)

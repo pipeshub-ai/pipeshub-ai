@@ -25,6 +25,7 @@ from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
     VECTOR_KINDS,
     EntityKind,
+    kind_family,
 )
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
@@ -147,7 +148,7 @@ async def execute_search_entities(
             context,
             query,
             entity_types=valid_types or None,
-            kinds=kinds or None,
+            kinds=_with_related_kinds(kinds) or None,
             top_k=bounded_top_k,
             include_named=enabled,
         )
@@ -243,6 +244,19 @@ async def _search_many(
     if len(queries) > MAX_QUERIES:
         result["note"] = f"Only the first {MAX_QUERIES} queries were searched."
     return True, json.dumps(result)
+
+
+def _with_related_kinds(kinds: list[str]) -> list[str]:
+    """``kinds`` and the kinds the extractor files the same names under, so a
+    product filed as its company is still found."""
+    widened: list[str] = []
+    for value in kinds:
+        try:
+            family = kind_family(EntityKind(value))
+        except ValueError:
+            family = ()
+        widened.extend([value, *(kind.value for kind in family if kind in VECTOR_KINDS)])
+    return list(dict.fromkeys(widened))
 
 
 def _searchable_kinds(requested: list[str]) -> tuple[list[str], list[str]]:

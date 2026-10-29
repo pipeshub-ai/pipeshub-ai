@@ -24,13 +24,16 @@ def _c(entity_id: str, name: str, kind: str, source: CandidateSource, record: st
 
 
 class _Finder:
-    def __init__(self, per_mention: list[tuple[list[Candidate], bool]], *, timed_out: bool = False) -> None:
-        self.per_mention, self.timed_out = per_mention, timed_out
+    def __init__(
+        self, per_mention: list[tuple[list[Candidate], bool]], *, timed_out: bool = False, more_related: frozenset[int] = frozenset(),
+    ) -> None:
+        self.per_mention, self.timed_out, self.more_related = per_mention, timed_out, more_related
 
     async def find(self, mentions: list[Mention]) -> CandidateSet:
         return CandidateSet(
             per_mention=[
-                MentionCandidates(mention=m, candidates=c, ambiguous=a) for m, (c, a) in zip(mentions, self.per_mention)
+                MentionCandidates(mention=m, candidates=c, ambiguous=a, more_related=i in self.more_related)
+                for i, (m, (c, a)) in enumerate(zip(mentions, self.per_mention))
             ],
             timed_out=self.timed_out,
         )
@@ -161,11 +164,11 @@ async def test_an_exact_match_beside_too_many_longer_names_says_so() -> None:
 @pytest.mark.asyncio
 async def test_an_exact_match_of_another_kind_goes_to_the_check() -> None:
     verifier = _Verifier({0: []})
-    product = _c("e1", "Atlas", "product", CandidateSource.EXACT)
+    place = _c("e1", "Atlas", "location", CandidateSource.EXACT)
     mentions = _mentions({"name": "Atlas", "kind": "organization"})
-    linking = await _link([([product], False)], verifier, mentions=mentions)
+    linking = await _link([([place], False)], verifier, mentions=mentions)
     assert linking.results[0].status is LinkStatus.NOT_FOUND
-    assert linking.results[0].rejected == [product]
+    assert linking.results[0].rejected == [place]
     assert len(verifier.calls) == 1
 
 
@@ -271,3 +274,42 @@ async def test_an_equally_frequent_spelling_goes_to_the_fuller_name() -> None:
     graph = _Graph({("e1", "r1"): ["Miguel Gallagher", "Miguel"]})
     names = await readable_names(graph, "org", [_c("e1", "Miguel", "person", CandidateSource.PREFIX)])
     assert names == {"e1": "Miguel Gallagher"}
+
+
+async def test_an_exact_node_of_a_related_kind_is_taken_without_a_check() -> None:
+    company = _c("e1", "Halcyon Ledger", "organization", CandidateSource.EXACT)
+    verifier = _Verifier({0: []})
+    linking = await _link([([company], False)], verifier, mentions=_mentions({"name": "Halcyon Ledger", "kind": "product"}))
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [company]
+    assert verifier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_same_name_as_a_product_and_as_an_organization_is_one_answer() -> None:
+    product = _c("e1", "Mosaic", "product", CandidateSource.EXACT)
+    company = _c("e2", "Mosaic", "organization", CandidateSource.EXACT)
+    verifier = _Verifier({0: []})
+    linking = await _link([([product, company], False)], verifier, mentions=_mentions({"name": "Mosaic", "kind": "product"}))
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [product, company]
+    assert verifier.calls == []
+
+
+
+@pytest.mark.asyncio
+async def test_an_organization_hint_takes_an_exact_product_of_the_same_name() -> None:
+    product = _c("e1", "Figma", "product", CandidateSource.EXACT)
+    linking = await _link([([product], False)], _Verifier({}), mentions=_mentions({"name": "Figma", "kind": "organization"}))
+    assert linking.results[0].accepted == [product]
+
+
+@pytest.mark.asyncio
+async def test_related_names_cut_by_the_cap_are_reported_even_when_nothing_is_found() -> None:
+    mentions = _mentions({"name": "Halcyon", "kind": "product"}, {"name": "Globex", "kind": "product"})
+    labs = _c("e1", "Halcyon Labs", "organization", CandidateSource.PREFIX)
+    finder = _Finder([([labs], False), ([], False)], more_related=frozenset({0}))
+    linking = await EntityLinker(finder, _Verifier({0: []}), _Graph(), "org").link(mentions, "the question")
+    assert [(r.status, r.more_related_names) for r in linking.results] == [
+        (LinkStatus.NOT_FOUND, True), (LinkStatus.NOT_FOUND, False),
+    ]

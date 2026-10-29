@@ -203,6 +203,7 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       const again = await tokens.findRefreshByHash(h);
       expect(again?.isRevoked).to.equal(true);
       expect(again?.revokedAt).to.be.instanceOf(Date);
+      expect(again?.revokedReason).to.equal('rotated');
       expect(await tokens.findRefreshByHash(sha('nope'))).to.equal(null);
     });
   });
@@ -225,6 +226,14 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       const rt = await tokens.issueRefresh({ tokenHash: h, clientId: 'c', userId: fx.newId(), orgId: ORG, scopes: ['a'], expiresAt: future() });
       await tokens.revokeRefreshByHash(h, 'c');
       expect(await tokens.rotateRefresh(rt._id)).to.equal(false);
+    });
+
+    it('flagRefreshReplayed stamps refresh_reuse_detected on that row', async () => {
+      const h = sha(uniq('rt'));
+      const rt = await tokens.issueRefresh({ tokenHash: h, clientId: 'c', userId: fx.newId(), orgId: ORG, scopes: ['a'], expiresAt: future() });
+      await tokens.rotateRefresh(rt._id);
+      await tokens.flagRefreshReplayed(rt._id);
+      expect((await tokens.findRefreshByHash(h))?.revokedReason).to.equal('refresh_reuse_detected');
     });
 
     it(`consumeCode: exactly one of ${CONTENDERS} concurrent redemptions wins, ${ROUNDS} rounds`, async () => {

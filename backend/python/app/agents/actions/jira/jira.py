@@ -415,6 +415,20 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
 # Backstops against a server that keeps pointing to more pages.
 _MAX_SEARCH_PAGES = 50
 _MAX_CREATE_FIELD_PAGES = 100
+# Options listed per field in get_create_issue_fields; the rest are counted, not shown.
+_MAX_LISTED_ALLOWED_VALUES = 20
+
+
+def _unlisted_option_hint(field: dict[str, Any], pass_via: str) -> str:
+    """How to pass an option get_create_issue_fields left out, in the shape the field takes."""
+    if pass_via == "named_parameter":
+        return "To use one, pass its name to the named parameter as Jira shows it."
+    is_list = field.get("schema_type") == "array"
+    kind = field.get("schema_items") if is_list else field.get("schema_type")
+    # Cloud user entries carry no name, so they are never listed or counted here.
+    key = "name" if kind in ("version", "priority", "component", "group") else "value"
+    shape = "{'" + key + "': '<label>'}"
+    return f"To use one, pass its label in custom_fields as {f'[{shape}]' if is_list else shape}."
 
 
 def _next_page_token(page: dict) -> str | None:
@@ -945,7 +959,7 @@ class Jira:
     def _parse_allowed_values(self, raw: list[Any]) -> list[dict[str, Any]]:
         """Normalise the allowedValues list from a createmeta field response."""
         result: list[dict[str, Any]] = []
-        for av in raw[:20]:
+        for av in raw:
             if not isinstance(av, dict):
                 continue
             entry: dict[str, Any] = {}
@@ -1083,12 +1097,15 @@ class Jira:
                 if not field_id:
                     continue
                 meta_schema = f.get("schema") or {}
+                values = self._parse_allowed_values(f.get("allowedValues") or [])
                 fields_by_id[field_id] = {
                     "field_id": field_id,
                     "name": f.get("name", field_id),
                     "required": bool(f.get("required", False)),
                     "schema_type": meta_schema.get("type", "string"),
-                    "allowed_values": self._parse_allowed_values(f.get("allowedValues") or []),
+                    "schema_items": meta_schema.get("items"),
+                    "allowed_values": values[:_MAX_LISTED_ALLOWED_VALUES],
+                    "allowed_values_omitted": max(0, len(values) - _MAX_LISTED_ALLOWED_VALUES),
                     "has_default_value": bool(f.get("hasDefaultValue", False)),
                     "operations": f.get("operations") or [],
                 }
@@ -1736,6 +1753,11 @@ class Jira:
                 avs = f.get("allowed_values") or []
                 if avs:
                     out["allowed_values"] = avs
+                omitted = f.get("allowed_values_omitted")
+                if omitted:
+                    out["more_values"] = (
+                        f"{omitted} more options are not listed. {_unlisted_option_hint(f, out['pass_via'])}"
+                    )
                 if f.get("has_default_value"):
                     out["has_default_value"] = True
                     out["note"] = "Jira will auto-fill this field if not provided"

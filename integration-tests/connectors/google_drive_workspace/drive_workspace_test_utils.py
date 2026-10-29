@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import pytest
 from google.auth.transport import requests as google_auth_requests  # type: ignore[import-not-found]
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
@@ -114,6 +115,30 @@ def require_drive_workspace_env() -> tuple[str, str, str]:
             "Drive Workspace credentials not set: " + ", ".join(missing)
         )
     return sa_json, admin_email, test_user
+
+
+# Which ordered TestDrive*FolderFilter case stores each key the later cases read.
+_FOLDER_FILTER_STATE_SET_BY = {
+    "new_file_id": "TC-FF-002",
+    "leave_file_id": "TC-FF-004",
+    "leave_file_name": "TC-FF-004",
+    "movable_folder_id": "TC-FF-006",
+    "movable_inside_file_id": "TC-FF-006",
+}
+
+
+def folder_filter_state(ctx: dict[str, Any], key: str) -> Any:
+    """Read a value an earlier folder-filter case stored on the class fixture.
+
+    Fails with the case that should have stored it, rather than a bare KeyError.
+    """
+    if key not in ctx:
+        pytest.fail(
+            f"{key} is not set: {_FOLDER_FILTER_STATE_SET_BY[key]} stores it and must "
+            "pass earlier in this class on the same pytest worker. Look for its "
+            "failure or skip above, or for the class being split across xdist workers."
+        )
+    return ctx[key]
 
 
 def load_service_account_info(sa_json: str, admin_email: str) -> dict[str, Any]:

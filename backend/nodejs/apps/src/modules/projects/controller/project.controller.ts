@@ -4,7 +4,10 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ForbiddenError,
+} from '../../../libs/errors/http.errors';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
@@ -118,6 +121,36 @@ export const updateProject =
       const { projectId } = req.params as { projectId: string };
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       const patch = req.body as UpdateProjectInput;
+      const headers = req.headers as Record<string, string>;
+      // Narrower visibility is committed only after the org grant is gone.
+      // Revoke first: a failed KB call must leave the project still org-wide.
+      // Owner check here so a non-owner cannot drop the grant and then bounce
+      // off update's own owner gate.
+      if (patch.visibility === 'private') {
+        const { role: currentRole, project: current } =
+          await ProjectService.assertAccess(
+            orgId,
+            userId,
+            projectId,
+            'editor',
+            callerTeamIds,
+          );
+        if (currentRole !== 'owner') {
+          throw new ForbiddenError(
+            'Only the project owner can change sharing settings',
+          );
+        }
+        // update() refuses archived projects. Check first so a failed save
+        // cannot leave the org grant already gone.
+        ProjectService.assertNotArchived(current);
+        if (current.linkedKnowledgeBaseId && current.visibility === 'org') {
+          await ProjectKnowledgeBaseService.revokeOrgVisibility(
+            appConfig,
+            headers,
+            current,
+          );
+        }
+      }
       const project = await ProjectService.update(
         orgId,
         userId,
@@ -131,25 +164,14 @@ export const updateProject =
         orgId,
         callerTeamIds,
       );
-      // Idempotent either way, so a plain resync (rather than diffing
-      // against the pre-update value) is enough: grant is a no-op if the
-      // `all_{orgId}` team already has the edge, revoke is a no-op
-      // (upstream 404) if it never did.
-      if (patch.visibility !== undefined && project.linkedKnowledgeBaseId) {
-        const headers = req.headers as Record<string, string>;
-        if (project.visibility === 'org') {
-          await ProjectKnowledgeBaseService.syncMemberPermissions(
-            appConfig,
-            headers,
-            project,
-          );
-        } else {
-          await ProjectKnowledgeBaseService.revokeOrgVisibility(
-            appConfig,
-            headers,
-            project,
-          );
-        }
+      // Widening is fail-closed the other way: the label may say org before
+      // the grant lands. Grant is a no-op if the edge already exists.
+      if (patch.visibility === 'org' && project.linkedKnowledgeBaseId) {
+        await ProjectKnowledgeBaseService.syncMemberPermissions(
+          appConfig,
+          headers,
+          project,
+        );
       }
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {

@@ -51797,6 +51797,14 @@ paths:
                     database: analytics
                     username: reader
                     password: your-password
+                authType:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: |
+                    The auth type the form was filled for, when the connector offers several
+                    (for example `KEY_PAIR` for Snowflake); `auth` then holds only that type's fields.
+                    When editing an instance, its saved auth type is kept.
                 connectorId:
                   type: string
                   pattern: '^[A-Za-z0-9_-]{1,64}$'

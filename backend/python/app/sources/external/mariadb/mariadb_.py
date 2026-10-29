@@ -736,7 +736,13 @@ class MariaDBDataSource:
             )
 
     async def execute_query(
-        self, query: str, params: tuple | None = None, *, read_only: bool = False
+        self,
+        query: str,
+        params: tuple | None = None,
+        *,
+        read_only: bool = False,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> MariaDBResponse:
         """Execute a custom SQL query.
 
@@ -750,7 +756,9 @@ class MariaDBDataSource:
         logger.debug("🔧 [MariaDBDataSource] execute_query called")
 
         try:
-            results = await self._client.execute_query(query, params, read_only=read_only)
+            results = await self._client.execute_query(
+                query, params, read_only=read_only, timeout_s=timeout_s, max_rows=max_rows
+            )
             logger.debug(f"🔧 [MariaDBDataSource] Query returned {len(results)} rows")
 
             return MariaDBResponse(

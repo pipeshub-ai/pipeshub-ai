@@ -21,7 +21,8 @@ suite whose credentials are missing skips itself, and a skipped suite still
 counts as covered here. On the nightly a missing credential fails instead of
 skipping (PIPESHUB_REQUIRE_CONNECTOR_SECRETS, see
 integration-tests/helper/source_credentials.py), and the run summary names any
-suite that covered nothing.
+suite that covered nothing. A suite no CI job runs (shard_balance.py's
+HELD_OUT_CONNECTORS) is not counted: it is there to run by hand.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from shard_balance import HELD_OUT_CONNECTORS
 
 REPO = Path(__file__).resolve().parent.parent
 FACTORY = REPO / "backend/python/app/connectors/core/factory/connector_factory.py"
@@ -124,7 +127,8 @@ def tested_connectors() -> set[str]:
         for d in INTEGRATION.iterdir()
         # `any(a or b)` would silently ignore b: glob returns a generator, which
         # is truthy even when it matches nothing.
-        if d.is_dir() and (any(d.glob("*_test.py")) or any(d.glob("test_*.py")))
+        if d.is_dir() and d.name not in HELD_OUT_CONNECTORS
+        and (any(d.glob("*_test.py")) or any(d.glob("test_*.py")))
     }
 
 

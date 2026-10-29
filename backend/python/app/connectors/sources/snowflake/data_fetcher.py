@@ -1,91 +1,123 @@
-"""
-Snowflake Data Fetcher
+"""Read a Snowflake account's catalog into plain dataclasses.
 
-A simple service to fetch metadata from Snowflake and cache it locally.
-This is used for testing and exploring Snowflake data before building the full connector.
+Every read is one SQL statement through ``SnowflakeStatementRunner``, which
+polls slow statements and reads every result partition. Names taken from the
+catalog are sent quoted (they are stored case-exact) and schema names are
+compared as literals.
 
-Usage:
-    from app.connectors.sources.snowflake.data_fetcher import SnowflakeDataFetcher
-    
-    fetcher = SnowflakeDataFetcher(data_source, warehouse="MY_WH")
-    hierarchy = await fetcher.fetch_all()
-    fetcher.save_to_file("snowflake_data.json")
+Reads raise ``SnowflakeFetchError`` when Snowflake refuses them: an empty list
+on failure would read as an empty schema, and a sync that removes what a
+listing no longer shows would then remove a schema's tables.
 """
 
 import json
 import logging
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
-from app.sources.client.snowflake.snowflake import SnowflakeResponse
-from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
+from pydantic import BaseModel
+
+from app.connectors.core.sql.key_flags import (
+    KeyDefinition,
+    key_flags,
+    primary_key_columns,
+)
+from app.connectors.core.sql.qualified_names import join_qualified_name
+from app.sources.external.snowflake.identifiers import (
+    qualified_identifier,
+    quote_identifier,
+    quote_literal,
+    stage_reference,
+)
+from app.sources.external.snowflake.profiling import top_value_pairs
+from app.sources.external.snowflake.statements import (
+    SnowflakeFetchError,
+    SnowflakeStatementRunner,
+)
 
 logger = logging.getLogger(__name__)
 
-# In SnowflakeHierarchy.unreadable: the database listing itself failed.
-UNREADABLE_ALL = "*"
+__all__ = [
+    "ForeignKey",
+    "SnowflakeDataFetcher",
+    "SnowflakeDatabase",
+    "SnowflakeFetchError",
+    "SnowflakeFile",
+    "SnowflakeHierarchy",
+    "SnowflakeSchema",
+    "SnowflakeStage",
+    "SnowflakeTable",
+    "SnowflakeView",
+]
 
-
-def unreadable_key(kind: str, scope: str) -> str:
-    """An entry in SnowflakeHierarchy.unreadable: ``kind`` could not be read under ``scope``.
-
-    ``kind`` is "tables", "views" or "files" for a failed listing, or "columns"
-    or "last_altered" for a failed read that leaves the tables listed but that
-    detail of them empty. A "last_altered" scope is a schema, or a single table
-    that SHOW TABLES lists but INFORMATION_SCHEMA.TABLES leaves out.
-    """
-    return f"{kind}:{scope}"
-
-
-class SnowflakeFetchError(Exception):
-    """A metadata query Snowflake refused, carrying what it refused with.
-
-    Every fetch below returns an empty result on failure so that a sync keeps
-    going past one bad schema. The streaming path cannot do that — an empty
-    result there is a successful download of a hollow table — so it passes
-    ``strict=True`` and gets this instead.
-
-    ``status_code`` and ``sqlstate`` are the attribute names ``to_stream_error``
-    and ``to_sql_stream_error`` read, and only one of them is ever set: the SQL
-    API answers *every* statement-level failure with HTTP 422, so where a
-    SQLSTATE exists the status is noise and must not reach ``map_source_status``.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        status_code: Optional[int] = None,
-        sqlstate: Optional[str] = None,
-    ) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.sqlstate = sqlstate
-
-    @classmethod
-    def from_response(cls, response: SnowflakeResponse, context: str) -> "SnowflakeFetchError":
-        """Build from a failed ``execute_sql`` envelope, preferring its SQLSTATE."""
-        if response.sql_state:
-            return cls(response.error or context, sqlstate=response.sql_state)
-        return cls(context, status_code=response.status_code)
+# Snowflake's own shared database (ACCOUNT_USAGE and friends), databases owned
+# by native apps, and each user's private worksheet database hold nothing a
+# user asks business questions about.
+_SKIPPED_DATABASES = frozenset({"SNOWFLAKE"})
+_SKIPPED_DATABASE_KINDS = frozenset({"APPLICATION", "APPLICATION PACKAGE", "PERSONAL DATABASE"})
+# Column added to a row sample to order it by, and removed again.
+_ROW_HASH = "_pipeshub_row_hash"
+_VALUE_COUNTS_TIMEOUT_S = 60
+# Snowflake's error code for DIRECTORY() on a stage created without a directory table.
+_DIRECTORY_NOT_ENABLED = "393901"
+# Tables with rows and columns to read. Views come from INFORMATION_SCHEMA.VIEWS;
+# temporary tables die with their session; event tables hold telemetry.
+_TABLE_TYPES = "('BASE TABLE', 'EXTERNAL TABLE')"
 
 
 @dataclass
 class SnowflakeDatabase:
     name: str
-    owner: Optional[str] = None
-    comment: Optional[str] = None
-    created_at: Optional[str] = None
+    owner: str | None = None
+    comment: str | None = None
+    created_at: str | None = None
 
 
 @dataclass
 class SnowflakeSchema:
     name: str
     database_name: str
-    owner: Optional[str] = None
-    comment: Optional[str] = None
-    created_at: Optional[str] = None
+    owner: str | None = None
+    comment: str | None = None
+    created_at: str | None = None
+
+
+@dataclass
+class ForeignKey:
+    constraint_name: str
+    source_database: str
+    source_schema: str
+    source_table: str
+    source_column: str
+    target_database: str
+    target_schema: str
+    target_table: str
+    target_column: str
+
+    @property
+    def target_fqn(self) -> str:
+        return join_qualified_name((self.target_database, self.target_schema, self.target_table))
+
+
+class SnowflakeColumnInfo(BaseModel):
+    """A column as INFORMATION_SCHEMA describes it, with its key flags.
+
+    ``ordinal_position`` is the catalog's, counted from 1.
+    """
+    name: str
+    ordinal_position: int | None = None
+    data_type: str | None = None
+    character_maximum_length: int | None = None
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
+    nullable: bool = True
+    default: str | None = None
+    comment: str | None = None
+    is_primary_key: bool = False
+    is_unique: bool = False
+    is_part_of_composite_primary_key: bool = False
+    is_part_of_composite_unique: bool = False
 
 
 @dataclass
@@ -93,32 +125,31 @@ class SnowflakeTable:
     name: str
     database_name: str
     schema_name: str
-    row_count: Optional[int] = None
-    bytes: Optional[int] = None
-    owner: Optional[str] = None
-    comment: Optional[str] = None
-    table_type: Optional[str] = None
-    created_at: Optional[str] = None
-    last_altered: Optional[str] = None  # For incremental sync change detection
-    columns: List[Dict[str, Any]] = field(default_factory=list)
-    foreign_keys: List[Dict[str, Any]] = field(default_factory=list)
-    primary_keys: List[str] = field(default_factory=list)
-    
+    row_count: int | None = None
+    bytes: int | None = None
+    owner: str | None = None
+    comment: str | None = None
+    table_type: str | None = None
+    created_at: str | None = None
+    last_altered: str | None = None
+    last_ddl: str | None = None
+    columns: list[SnowflakeColumnInfo] = field(default_factory=list)
+    foreign_keys: list[ForeignKey] = field(default_factory=list)
+    primary_keys: list[str] = field(default_factory=list)
+    # Whether the columns and the keys were read. A table missing either keeps
+    # its stored column records untouched.
+    columns_read: bool = False
+    keys_read: bool = False
+    foreign_keys_read: bool = False
+
+    @property
+    def fully_read(self) -> bool:
+        """Columns, keys and foreign keys were all read: the table can be written and diffed."""
+        return self.columns_read and self.keys_read and self.foreign_keys_read
+
     @property
     def fqn(self) -> str:
-        return f"{self.database_name}.{self.schema_name}.{self.name}"
-    
-    @property
-    def column_signature(self) -> str:
-        """Hash of column names and types for schema change detection."""
-        import hashlib
-        if not self.columns:
-            return ""
-        sig = "|".join(
-            f"{c.get('name', '')}:{c.get('data_type', '')}" 
-            for c in sorted(self.columns, key=lambda x: x.get('name', ''))
-        )
-        return hashlib.md5(sig.encode()).hexdigest()
+        return join_qualified_name((self.database_name, self.schema_name, self.name))
 
 
 @dataclass
@@ -126,16 +157,17 @@ class SnowflakeView:
     name: str
     database_name: str
     schema_name: str
-    owner: Optional[str] = None
-    comment: Optional[str] = None
+    owner: str | None = None
+    comment: str | None = None
     is_secure: bool = False
-    created_at: Optional[str] = None
-    definition: Optional[str] = None
-    source_tables: List[str] = field(default_factory=list)
-    
+    created_at: str | None = None
+    last_altered: str | None = None
+    definition: str | None = None
+    source_tables: list[str] = field(default_factory=list)
+
     @property
     def fqn(self) -> str:
-        return f"{self.database_name}.{self.schema_name}.{self.name}"
+        return join_qualified_name((self.database_name, self.schema_name, self.name))
 
 
 @dataclass
@@ -144,14 +176,14 @@ class SnowflakeStage:
     database_name: str
     schema_name: str
     stage_type: str = "INTERNAL"
-    url: Optional[str] = None
-    owner: Optional[str] = None
-    comment: Optional[str] = None
-    created_at: Optional[str] = None
-    
+    url: str | None = None
+    owner: str | None = None
+    comment: str | None = None
+    created_at: str | None = None
+
     @property
     def fqn(self) -> str:
-        return f"{self.database_name}.{self.schema_name}.{self.name}"
+        return join_qualified_name((self.database_name, self.schema_name, self.name))
 
 
 @dataclass
@@ -161,79 +193,39 @@ class SnowflakeFile:
     database_name: str
     schema_name: str
     size: int = 0
-    last_modified: Optional[str] = None
-    md5: Optional[str] = None
-    file_url: Optional[str] = None
-    
+    last_modified: str | None = None
+    md5: str | None = None
+    file_url: str | None = None
+
     @property
     def is_folder(self) -> bool:
         return self.relative_path.endswith('/')
-    
+
     @property
     def file_name(self) -> str:
-        path = self.relative_path.rstrip('/')
-        return path.split('/')[-1] if '/' in path else path
-    
-    @property
-    def parent_folder(self) -> Optional[str]:
-        path = self.relative_path.rstrip('/')
-        if '/' not in path:
-            return None
-        return '/'.join(path.split('/')[:-1])
-
-
-@dataclass
-class SnowflakeFolder:
-    path: str
-    stage_name: str
-    database_name: str
-    schema_name: str
-    parent_path: Optional[str] = None
-    
-    @property
-    def name(self) -> str:
-        return self.path.split('/')[-1]
-
-
-@dataclass
-class ForeignKey:
-    constraint_name: str
-    database_name: str
-    source_schema: str
-    source_table: str
-    source_column: str
-    target_schema: str
-    target_table: str
-    target_column: str
-    
-    @property
-    def source_fqn(self) -> str:
-        """Fully qualified name of source table: database.schema.table"""
-        return f"{self.database_name}.{self.source_schema}.{self.source_table}"
-    
-    @property
-    def target_fqn(self) -> str:
-        """Fully qualified name of target table: database.schema.table"""
-        return f"{self.database_name}.{self.target_schema}.{self.target_table}"
+        return self.relative_path.rstrip('/').split('/')[-1]
 
 
 @dataclass
 class SnowflakeHierarchy:
-    fetched_at: str = ""
-    databases: List[SnowflakeDatabase] = field(default_factory=list)
-    schemas: Dict[str, List[SnowflakeSchema]] = field(default_factory=dict)
-    tables: Dict[str, List[SnowflakeTable]] = field(default_factory=dict)
-    views: Dict[str, List[SnowflakeView]] = field(default_factory=dict)
-    stages: Dict[str, List[SnowflakeStage]] = field(default_factory=dict)
-    files: Dict[str, List[SnowflakeFile]] = field(default_factory=dict)
-    folders: Dict[str, List[SnowflakeFolder]] = field(default_factory=dict)
-    foreign_keys: List[ForeignKey] = field(default_factory=list)
-    # unreadable_key() entries, or UNREADABLE_ALL. The fetches return empty
-    # lists on failure so a sync can go on, which must not be read as "these
-    # objects are gone".
-    unreadable: Set[str] = field(default_factory=set)
-    
-    def summary(self) -> Dict[str, int]:
+    databases: list[SnowflakeDatabase] = field(default_factory=list)
+    # Keyed by database name.
+    schemas: dict[str, list[SnowflakeSchema]] = field(default_factory=dict)
+    # Keyed by schema FQN (database.schema).
+    tables: dict[str, list[SnowflakeTable]] = field(default_factory=dict)
+    views: dict[str, list[SnowflakeView]] = field(default_factory=dict)
+    stages: dict[str, list[SnowflakeStage]] = field(default_factory=dict)
+    # Keyed by stage FQN (database.schema.stage).
+    files: dict[str, list[SnowflakeFile]] = field(default_factory=dict)
+    # Reads that failed; what was read is kept.
+    errors: int = 0
+    # What could not be listed: nothing under these may be taken for gone.
+    unreadable_databases: set[str] = field(default_factory=set)
+    # By schema key (database.schema) and stage FQN.
+    unreadable_schemas: set[str] = field(default_factory=set)
+    unreadable_stages: set[str] = field(default_factory=set)
+
+    def summary(self) -> dict[str, int]:
         return {
             "databases": len(self.databases),
             "schemas": sum(len(s) for s in self.schemas.values()),
@@ -241,610 +233,509 @@ class SnowflakeHierarchy:
             "views": sum(len(v) for v in self.views.values()),
             "stages": sum(len(s) for s in self.stages.values()),
             "files": sum(len(f) for f in self.files.values()),
-            "folders": sum(len(f) for f in self.folders.values()),
-            "foreign_keys": len(self.foreign_keys),
+            "errors": self.errors,
         }
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "fetched_at": self.fetched_at,
-            "summary": self.summary(),
-            "databases": [asdict(d) for d in self.databases],
-            "schemas": {k: [asdict(s) for s in v] for k, v in self.schemas.items()},
-            "tables": {k: [asdict(t) for t in v] for k, v in self.tables.items()},
-            "views": {k: [asdict(v_) for v_ in v] for k, v in self.views.items()},
-            "stages": {k: [asdict(s) for s in v] for k, v in self.stages.items()},
-            "files": {k: [asdict(f) for f in v] for k, v in self.files.items()},
-            "folders": {k: [asdict(f) for f in v] for k, v in self.folders.items()},
-            "foreign_keys": [asdict(fk) for fk in self.foreign_keys],
-        }
+
+
+def _full_type(row: dict[str, Any]) -> str:
+    """``NUMBER(38,0)`` rather than ``NUMBER``: precision and scale tell an integer
+    key from a measure."""
+    data_type = row.get("DATA_TYPE") or ""
+    precision, scale = _int_or_none(row.get("NUMERIC_PRECISION")), _int_or_none(row.get("NUMERIC_SCALE"))
+    if data_type.upper() in ("NUMBER", "DECIMAL", "NUMERIC") and precision is not None:
+        return f"{data_type}({precision},{scale or 0})"
+    return data_type
+
+
+def apply_keys(table: SnowflakeTable, keys: list[KeyDefinition]) -> None:
+    """Set the table's column key flags and ordered primary key from its key definitions."""
+    flags = key_flags((c.name for c in table.columns), keys)
+    for column in table.columns:
+        column_flags = flags.get(column.name)
+        if column_flags is not None:
+            column.is_primary_key = column_flags.is_primary_key
+            column.is_unique = column_flags.is_unique
+            column.is_part_of_composite_primary_key = column_flags.is_part_of_composite_primary_key
+            column.is_part_of_composite_unique = column_flags.is_part_of_composite_unique
+    table.primary_keys = primary_key_columns(keys)
+    table.keys_read = True
+
+
+def schema_key(database: str, schema: str) -> str:
+    return join_qualified_name((database, schema))
+
+
+def _yes(value: object) -> bool:
+    return value is True or (isinstance(value, str) and value.upper() in ("YES", "TRUE", "Y"))
+
+
+def _int_or_none(value: Any) -> int | None:  # noqa: ANN401 - a catalog value of any type
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class SnowflakeDataFetcher:
-    
-    def __init__(
-        self,
-        data_source: SnowflakeDataSource,
-        warehouse: Optional[str] = None,
-    ) -> None:
-        self.data_source = data_source
-        self.warehouse = warehouse
-        self.hierarchy = SnowflakeHierarchy()
-        self._schema_cache: Dict[str, List[SnowflakeSchema]] = {}
-        self._columns_cache: Dict[str, List[Dict[str, Any]]] = {}
-    
-    def _clear_cache(self) -> None:
-        self._schema_cache.clear()
-        self._columns_cache.clear()
-    
+    def __init__(self, runner: SnowflakeStatementRunner) -> None:
+        self.runner = runner
+
     async def fetch_all(
         self,
-        database_filter: Optional[List[str]] = None,
-        schema_filter: Optional[List[str]] = None,
+        include_database: Callable[[str], bool] | None = None,
+        include_schema: Callable[[str], bool] | None = None,
+        *,
         include_files: bool = True,
         include_relationships: bool = True,
+        include_objects: bool = True,
     ) -> SnowflakeHierarchy:
-        self._clear_cache()
-        self.hierarchy = SnowflakeHierarchy()
-        self.hierarchy.fetched_at = datetime.now().isoformat()
-        
-        logger.info("Fetching databases")
-        databases = await self._fetch_databases()
-        
-        if database_filter:
-            databases = [d for d in databases if d.name in database_filter]
-        
-        self.hierarchy.databases = databases
-        logger.info("Found %d databases", len(databases))
-        
-        for db in databases:
-            logger.info("Fetching schemas in %s", db.name)
-            schemas = await self._fetch_schemas(db.name)
-            
-            if schema_filter:
-                schemas = [s for s in schemas if f"{db.name}.{s.name}" in schema_filter]
-            
-            self.hierarchy.schemas[db.name] = schemas
-            
-            for schema in schemas:
-                schema_key = f"{db.name}.{schema.name}"
-                logger.info("Fetching objects in %s", schema_key)
-                
-                tables = await self._fetch_tables(db.name, schema.name)
-                self.hierarchy.tables[schema_key] = tables
-                
-                views = await self._fetch_views(db.name, schema.name)
-                self.hierarchy.views[schema_key] = views
-                
-                stages = await self._fetch_stages(db.name, schema.name)
-                self.hierarchy.stages[schema_key] = stages
-                
-                if include_files:
-                    for stage in stages:
-                        stage_key = f"{db.name}.{schema.name}.{stage.name}"
-                        files = await self._fetch_stage_files(db.name, schema.name, stage.name)
-                        self.hierarchy.files[stage_key] = files
-                        folders = self._deduce_folders(files, db.name, schema.name, stage.name)
-                        self.hierarchy.folders[stage_key] = folders
-                
-                if include_relationships and tables:
-                    try:
-                        all_columns = await self._fetch_all_columns_in_schema(
-                            db.name, schema.name, strict=True
-                        )
-                    except SnowflakeFetchError:
-                        self.hierarchy.unreadable.add(unreadable_key("columns", schema_key))
-                        all_columns = {}
-                    try:
-                        last_altered = await self._fetch_last_altered_in_schema(db.name, schema.name)
-                    except SnowflakeFetchError:
-                        self.hierarchy.unreadable.add(unreadable_key("last_altered", schema_key))
-                        last_altered = {}
-                    else:
-                        # Snowflake documents that INFORMATION_SCHEMA can omit tables SHOW TABLES
-                        # lists, e.g. for a role with MANAGE GRANTS: their time is unknown, not None.
-                        if self.warehouse:
-                            self.hierarchy.unreadable.update(
-                                unreadable_key("last_altered", table.fqn)
-                                for table in tables
-                                if table.name not in last_altered
-                            )
-                    for table in tables:
-                        table.columns = all_columns.get(table.name, [])
-                        table.last_altered = last_altered.get(table.name)
+        """Read the catalog: databases, schemas, and (``include_objects``) their tables,
+        views and stages.
 
-                    fks = await self._fetch_foreign_keys_in_schema(db.name, schema.name)
-                    self.hierarchy.foreign_keys.extend(fks)
-                    
-                    fk_by_table: Dict[str, List[Dict[str, Any]]] = {}
-                    for fk in fks:
-                        table_name = fk.source_table
-                        if table_name not in fk_by_table:
-                            fk_by_table[table_name] = []
-                        fk_by_table[table_name].append({
-                            "constraint_name": fk.constraint_name,
-                            "column": fk.source_column,
-                            "references_schema": fk.target_schema,
-                            "references_table": fk.target_table,
-                            "references_column": fk.target_column,
-                        })
-                    
-                    for table in tables:
-                        table.foreign_keys = fk_by_table.get(table.name, [])
+        ``include_database`` is asked about each database name and
+        ``include_schema`` about each schema's ``database.schema`` key.
 
-                    pks = await self._fetch_primary_keys_in_schema(db.name, schema.name)
-                    pk_by_table: Dict[str, List[str]] = {}
-                    for pk in pks:
-                        if pk["table"] not in pk_by_table:
-                            pk_by_table[pk["table"]] = []
-                        pk_by_table[pk["table"]].append(pk["column"])
-                    
-                    for table in tables:
-                        table.primary_keys = pk_by_table.get(table.name, [])
-        
-        logger.info("Fetch complete: %s", self.hierarchy.summary())
-        return self.hierarchy
-    
-    async def _fetch_databases(self) -> List[SnowflakeDatabase]:
-        response = await self.data_source.list_databases()
-        if not response.success:
-            logger.error("Failed to fetch databases: %s", response.error)
-            self.hierarchy.unreadable.add(UNREADABLE_ALL)
-            return []
-        
-        databases = []
-        for item in self._extract_items(response.data):
-            databases.append(SnowflakeDatabase(
-                name=item.get("name", ""),
-                owner=item.get("owner"),
-                comment=item.get("comment"),
-                created_at=item.get("created_on"),
-            ))
-        return databases
-    
-    async def _fetch_schemas(self, database: str) -> List[SnowflakeSchema]:
-        if database in self._schema_cache:
-            return self._schema_cache[database]
-        
-        response = await self.data_source.list_schemas(database=database)
-        if not response.success:
-            logger.error("Failed to fetch schemas: %s", response.error)
-            self.hierarchy.unreadable.update(
-                unreadable_key(kind, database) for kind in ("tables", "views", "files")
-            )
-            return []
-        
-        schemas = []
-        for item in self._extract_items(response.data):
-            schemas.append(SnowflakeSchema(
-                name=item.get("name", ""),
-                database_name=database,
-                owner=item.get("owner"),
-                comment=item.get("comment"),
-                created_at=item.get("created_on"),
-            ))
-        
-        self._schema_cache[database] = schemas
-        return schemas
-    
-    async def _fetch_tables(self, database: str, schema: str) -> List[SnowflakeTable]:
-        response = await self.data_source.list_tables(database=database, schema=schema)
-        if not response.success:
-            logger.error("Failed to fetch tables: %s", response.error)
-            self.hierarchy.unreadable.add(unreadable_key("tables", f"{database}.{schema}"))
-            return []
-        
-        tables = []
-        for item in self._extract_items(response.data):
-            tables.append(SnowflakeTable(
-                name=item.get("name", ""),
-                database_name=database,
-                schema_name=schema,
-                row_count=item.get("rows"),
-                bytes=item.get("bytes"),
-                owner=item.get("owner"),
-                comment=item.get("comment"),
-                table_type=item.get("kind") or item.get("table_type"),
-                created_at=item.get("created_on"),
-            ))
-        return tables
-    
-    async def _fetch_views(self, database: str, schema: str) -> List[SnowflakeView]:
-        response = await self.data_source.list_views(database=database, schema=schema)
-        if not response.success:
-            logger.error("Failed to fetch views: %s", response.error)
-            self.hierarchy.unreadable.add(unreadable_key("views", f"{database}.{schema}"))
-            return []
-        
-        views = []
-        for item in self._extract_items(response.data):
-            views.append(SnowflakeView(
-                name=item.get("name", ""),
-                database_name=database,
-                schema_name=schema,
-                owner=item.get("owner"),
-                comment=item.get("comment"),
-                is_secure=item.get("is_secure", False),
-                created_at=item.get("created_on"),
-                definition=item.get("text"), # Start with text if available
-            ))
-        
-        # Optionally fetch full definitions if not present or incomplete
-        # Note: listing views usually provides 'text' which is the DDL
-        # If deeper definition is needed, one could use GET_DDL
-        
-        return views
-    
-    async def _fetch_stages(self, database: str, schema: str) -> List[SnowflakeStage]:
-        response = await self.data_source.list_stages(database=database, schema=schema)
-        if not response.success:
-            logger.error("Failed to fetch stages: %s", response.error)
-            # Without the stages, none of their files can be listed.
-            self.hierarchy.unreadable.add(unreadable_key("files", f"{database}.{schema}"))
-            return []
-        
-        stages = []
-        for item in self._extract_items(response.data):
-            stage_type = "EXTERNAL" if "EXTERNAL" in item.get("type", "").upper() else "INTERNAL"
-            stages.append(SnowflakeStage(
-                name=item.get("name", ""),
-                database_name=database,
-                schema_name=schema,
-                stage_type=stage_type,
-                url=item.get("url"),
-                owner=item.get("owner"),
-                comment=item.get("comment"),
-                created_at=item.get("created_on"),
-            ))
-        return stages
-    
-    async def _fetch_stage_files(
-        self, database: str, schema: str, stage: str
-    ) -> List[SnowflakeFile]:
-        stage_fqn = f"{database}.{schema}.{stage}"
-        if not self.warehouse:
-            logger.warning("Warehouse not set, skipping stage files for %s", stage_fqn)
-            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
-            return []
-        
-        logger.debug("Fetching files for stage: %s (warehouse: %s)", stage_fqn, self.warehouse)
-        response = await self.data_source.list_stage_files(
-            database=database,
-            schema=schema,
-            stage=stage,
-            warehouse=self.warehouse,
-        )
-        if not response.success:
-            logger.error("Failed to fetch stage files for %s: %s", stage_fqn, response.error)
-            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
-            return []
-        
-        data = await self._read_all_partitions(response.data)
-        if data is None:
-            logger.error("Could not read every result partition of stage files for %s", stage_fqn)
-            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
-            return []
-
-        files = []
-        logger.debug("Stage %s: received %d file entries from Snowflake", stage_fqn, len(data))
-        for item in data:
-            if isinstance(item, list) and len(item) >= 1:
-                files.append(SnowflakeFile(
-                    relative_path=item[0],
-                    stage_name=stage,
-                    database_name=database,
-                    schema_name=schema,
-                    size=int(item[1]) if len(item) > 1 and item[1] else 0,
-                    last_modified=item[2] if len(item) > 2 else None,
-                    md5=item[3] if len(item) > 3 else None,
-                    file_url=item[5] if len(item) > 5 else None,
-                ))
-        return files
-    
-    async def _read_all_partitions(self, data: object) -> Optional[List[Any]]:
-        """Every row of a SQL API result, or None if any part of it could not be read.
-
-        The SQL API returns only partition 0 inline and lists the rest in
-        resultSetMetaData.partitionInfo; a statement still running (HTTP 202)
-        returns no rows at all. Either would pass for a complete, shorter list.
-        A later partition is the bare row array, with no metadata around it.
+        A schema, stage or relationship read that fails is logged, counted in
+        ``errors`` and skipped; the database listing failing raises.
         """
-        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
-            return None
-        rows = list(data["data"])
-        partitions = (data.get("resultSetMetaData") or {}).get("partitionInfo") or []
-        if len(partitions) <= 1:
-            return rows
-        handle = data.get("statementHandle")
-        if not handle:
-            return None
-        for partition in range(1, len(partitions)):
-            response = await self.data_source.get_statement_status(
-                statement_handle=handle, partition=partition
-            )
-            body = response.data
-            if isinstance(body, dict):
-                body = body.get("data")
-            if not response.success or not isinstance(body, list):
-                return None
-            rows.extend(body)
-        return rows
+        hierarchy = SnowflakeHierarchy()
+        databases = await self.list_databases()
+        if include_database:
+            databases = [d for d in databases if include_database(d.name)]
+        hierarchy.databases = databases
 
-    def _deduce_folders(
+        for db in databases:
+            try:
+                schemas = await self.list_schemas(db.name)
+            except SnowflakeFetchError as e:
+                hierarchy.errors += 1
+                hierarchy.unreadable_databases.add(db.name)
+                logger.error("Could not list the schemas of %s: %s", db.name, e)
+                continue
+            if include_schema:
+                schemas = [s for s in schemas if include_schema(schema_key(db.name, s.name))]
+            hierarchy.schemas[db.name] = schemas
+            if not include_objects:
+                continue
+            for schema in schemas:
+                await self._fetch_schema_objects(
+                    hierarchy, db.name, schema.name,
+                    include_files=include_files, include_relationships=include_relationships,
+                )
+
+        logger.info("Fetch complete: %s", hierarchy.summary())
+        return hierarchy
+
+    async def _fetch_schema_objects(
         self,
-        files: List[SnowflakeFile],
+        hierarchy: SnowflakeHierarchy,
         database: str,
         schema: str,
-        stage: str,
-    ) -> List[SnowflakeFolder]:
-        folder_paths: Set[str] = set()
-        
-        for file in files:
-            path = file.relative_path.rstrip('/')
-            parts = path.split('/')[:-1]
-            for i in range(len(parts)):
-                folder_paths.add('/'.join(parts[:i+1]))
-        
-        folders = []
-        for path in sorted(folder_paths):
-            parent = None
-            if '/' in path:
-                parent = '/'.join(path.split('/')[:-1])
-            folders.append(SnowflakeFolder(
-                path=path,
+        *,
+        include_files: bool,
+        include_relationships: bool,
+    ) -> None:
+        key = schema_key(database, schema)
+        try:
+            tables = await self.list_tables(database, schema)
+            views = await self.list_views(database, schema)
+            stages = await self.list_stages(database, schema)
+        except SnowflakeFetchError as e:
+            hierarchy.errors += 1
+            hierarchy.unreadable_schemas.add(key)
+            logger.error("Could not read the objects of %s: %s", key, e)
+            return
+        hierarchy.tables[key] = tables
+        hierarchy.views[key] = views
+        hierarchy.stages[key] = stages
+
+        if include_files:
+            for stage in stages:
+                try:
+                    hierarchy.files[stage.fqn] = await self.list_stage_files(database, schema, stage.name)
+                except SnowflakeFetchError as e:
+                    if e.code == _DIRECTORY_NOT_ENABLED:
+                        # Its files are listed nowhere: none to sync, and none skipped.
+                        hierarchy.files[stage.fqn] = []
+                        logger.info("Stage %s has no directory table; its files are not synced", stage.fqn)
+                        continue
+                    # The schema's tables and views are still worth syncing.
+                    hierarchy.errors += 1
+                    hierarchy.unreadable_stages.add(stage.fqn)
+                    logger.warning("Could not list the files of stage %s: %s", stage.fqn, e)
+
+        if include_relationships and tables:
+            hierarchy.errors += await self.attach_relationships(database, schema, tables)
+
+    async def attach_relationships(self, database: str, schema: str, tables: list[SnowflakeTable]) -> int:
+        """Fill in each table's columns, keys and foreign keys; returns the reads that failed.
+
+        The three are read separately, so one refused read leaves the others:
+        a table whose columns or keys could not be read says so in
+        ``columns_read`` / ``keys_read``.
+        """
+        failures = 0
+        key = schema_key(database, schema)
+        try:
+            columns = await self.columns_by_table(database, schema)
+            for table in tables:
+                if table.name in columns:
+                    table.columns = columns[table.name]
+                    table.columns_read = True
+        except SnowflakeFetchError as e:
+            failures += 1
+            logger.error("Could not read the columns of %s: %s", key, e)
+        try:
+            keys = await self.key_definitions(database, schema)
+            for table in tables:
+                apply_keys(table, keys.get(table.name, []))
+        except SnowflakeFetchError as e:
+            failures += 1
+            logger.error("Could not read the keys of %s: %s", key, e)
+        try:
+            foreign_keys = await self.foreign_keys(database, schema)
+            for table in tables:
+                table.foreign_keys = [fk for fk in foreign_keys if fk.source_table == table.name]
+                table.foreign_keys_read = True
+        except SnowflakeFetchError as e:
+            failures += 1
+            logger.error("Could not read the foreign keys of %s: %s", key, e)
+        return failures
+
+    async def list_databases(self) -> list[SnowflakeDatabase]:
+        result = await self.runner.run("SHOW DATABASES")
+        databases = []
+        for row in result.as_dicts():
+            name = row.get("name") or ""
+            if not name or name in _SKIPPED_DATABASES:
+                continue
+            if (row.get("kind") or "").upper() in _SKIPPED_DATABASE_KINDS:
+                continue
+            databases.append(SnowflakeDatabase(
+                name=name,
+                owner=row.get("owner"),
+                comment=row.get("comment") or None,
+                created_at=row.get("created_on"),
+            ))
+        return databases
+
+    async def list_schemas(self, database: str) -> list[SnowflakeSchema]:
+        result = await self.runner.run(
+            "SELECT SCHEMA_NAME, SCHEMA_OWNER, CREATED, COMMENT "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.SCHEMATA "
+            "WHERE SCHEMA_NAME <> 'INFORMATION_SCHEMA' ORDER BY SCHEMA_NAME",
+            database=database,
+        )
+        return [
+            SnowflakeSchema(
+                name=row["SCHEMA_NAME"],
+                database_name=database,
+                owner=row.get("SCHEMA_OWNER"),
+                comment=row.get("COMMENT"),
+                created_at=row.get("CREATED"),
+            )
+            for row in result.as_dicts()
+        ]
+
+    async def list_tables(self, database: str, schema: str) -> list[SnowflakeTable]:
+        result = await self.runner.run(
+            "SELECT TABLE_NAME, TABLE_TYPE, ROW_COUNT, BYTES, TABLE_OWNER, COMMENT, "
+            "CREATED, LAST_ALTERED, LAST_DDL "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.TABLES "
+            f"WHERE TABLE_SCHEMA = {quote_literal(schema)} AND TABLE_TYPE IN {_TABLE_TYPES} "
+            "ORDER BY TABLE_NAME",
+            database=database,
+        )
+        return [
+            SnowflakeTable(
+                name=row["TABLE_NAME"],
+                database_name=database,
+                schema_name=schema,
+                row_count=_int_or_none(row.get("ROW_COUNT")),
+                bytes=_int_or_none(row.get("BYTES")),
+                owner=row.get("TABLE_OWNER"),
+                comment=row.get("COMMENT"),
+                table_type=row.get("TABLE_TYPE"),
+                created_at=row.get("CREATED"),
+                last_altered=row.get("LAST_ALTERED"),
+                last_ddl=row.get("LAST_DDL"),
+            )
+            for row in result.as_dicts()
+        ]
+
+    async def list_views(self, database: str, schema: str, name: str | None = None) -> list[SnowflakeView]:
+        only_view = f" AND TABLE_NAME = {quote_literal(name)}" if name is not None else ""
+        result = await self.runner.run(
+            "SELECT TABLE_NAME, VIEW_DEFINITION, IS_SECURE, TABLE_OWNER, COMMENT, CREATED, LAST_ALTERED "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.VIEWS "
+            f"WHERE TABLE_SCHEMA = {quote_literal(schema)}{only_view} ORDER BY TABLE_NAME",
+            database=database,
+        )
+        return [
+            SnowflakeView(
+                name=row["TABLE_NAME"],
+                database_name=database,
+                schema_name=schema,
+                owner=row.get("TABLE_OWNER"),
+                comment=row.get("COMMENT"),
+                is_secure=_yes(row.get("IS_SECURE")),
+                created_at=row.get("CREATED"),
+                last_altered=row.get("LAST_ALTERED"),
+                # Null for a secure view the role does not own.
+                definition=row.get("VIEW_DEFINITION") or None,
+            )
+            for row in result.as_dicts()
+        ]
+
+    async def list_stages(self, database: str, schema: str) -> list[SnowflakeStage]:
+        result = await self.runner.run(
+            "SELECT STAGE_NAME, STAGE_TYPE, STAGE_URL, STAGE_OWNER, COMMENT, CREATED "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.STAGES "
+            f"WHERE STAGE_SCHEMA = {quote_literal(schema)} ORDER BY STAGE_NAME",
+            database=database,
+        )
+        return [
+            SnowflakeStage(
+                name=row["STAGE_NAME"],
+                database_name=database,
+                schema_name=schema,
+                stage_type="EXTERNAL" if "EXTERNAL" in (row.get("STAGE_TYPE") or "").upper() else "INTERNAL",
+                url=row.get("STAGE_URL") or None,
+                owner=row.get("STAGE_OWNER"),
+                comment=row.get("COMMENT"),
+                created_at=row.get("CREATED"),
+            )
+            for row in result.as_dicts()
+        ]
+
+    async def list_stage_files(self, database: str, schema: str, stage: str) -> list[SnowflakeFile]:
+        result = await self.runner.run(
+            "SELECT RELATIVE_PATH, SIZE, LAST_MODIFIED, MD5, FILE_URL "
+            f"FROM DIRECTORY({stage_reference(database, schema, stage)})",
+            database=database,
+        )
+        return [
+            SnowflakeFile(
+                relative_path=row["RELATIVE_PATH"],
                 stage_name=stage,
                 database_name=database,
                 schema_name=schema,
-                parent_path=parent,
-            ))
-        return folders
-    
-    async def _fetch_all_columns_in_schema(
-        self, database: str, schema: str, strict: bool = False
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        cache_key = f"{database}.{schema}"
-        if cache_key in self._columns_cache:
-            return self._columns_cache[cache_key]
-        
-        if not self.warehouse:
-            return {}
-        
-        sql = f"""
-        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE, COLUMN_DEFAULT, COMMENT
-        FROM {database}.INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{schema}'
-        ORDER BY TABLE_NAME, ORDINAL_POSITION
-        """
-        
-        response = await self.data_source.execute_sql(
-            statement=sql,
-            database=database,
-            warehouse=self.warehouse,
-        )
-        
-        if not response.success:
-            logger.warning("Failed to fetch columns: %s", response.error)
-            if strict:
-                raise SnowflakeFetchError.from_response(
-                    response, f"Failed to fetch columns for {database}.{schema}"
-                )
-            return {}
-        
-        # Every partition: a column only in a later one must still move the table's signature.
-        all_rows = await self._read_all_partitions(response.data)
-        if all_rows is None:
-            context = f"Failed to fetch columns for {database}.{schema}: could not read every result partition"
-            logger.warning(context)
-            if strict:
-                raise SnowflakeFetchError(context)
-            return {}
-        columns_by_table: Dict[str, List[Dict[str, Any]]] = {}
-        for row in self._parse_sql_result({**response.data, "data": all_rows}):
-            table_name = row.get("TABLE_NAME", "")
-            if table_name not in columns_by_table:
-                columns_by_table[table_name] = []
-            columns_by_table[table_name].append({
-                "name": row.get("COLUMN_NAME", ""),
-                "data_type": row.get("DATA_TYPE", ""),
-                "character_maximum_length": row.get("CHARACTER_MAXIMUM_LENGTH"),
-                "numeric_precision": row.get("NUMERIC_PRECISION"),
-                "numeric_scale": row.get("NUMERIC_SCALE"),
-                "nullable": row.get("IS_NULLABLE", "YES") == "YES",
-                "default": row.get("COLUMN_DEFAULT"),
-                "comment": row.get("COMMENT"),
-            })
-        
-        self._columns_cache[cache_key] = columns_by_table
-        return columns_by_table
-    
-    async def _fetch_last_altered_in_schema(self, database: str, schema: str) -> dict[str, str]:
-        """LAST_ALTERED of each table in the schema, by table name.
-
-        SHOW TABLES has no last-altered column, and an UPDATE that keeps the row
-        count and byte estimate moves only this. Raises SnowflakeFetchError when
-        any part of the result can't be read.
-        """
-        if not self.warehouse:
-            return {}
-
-        escaped_schema = schema.replace("'", "''")
-        sql = f"""
-        SELECT TABLE_NAME, LAST_ALTERED
-        FROM {database}.INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = '{escaped_schema}'
-        """
-        response = await self.data_source.execute_sql(
-            statement=sql,
-            database=database,
-            warehouse=self.warehouse,
-        )
-        context = f"Failed to fetch last-altered times for {database}.{schema}"
-        if not response.success:
-            logger.warning("%s: %s", context, response.error)
-            raise SnowflakeFetchError.from_response(response, context)
-
-        rows = await self._read_all_partitions(response.data)
-        if rows is None:
-            logger.warning("%s: could not read every result partition", context)
-            raise SnowflakeFetchError(context)
-        return {
-            row[0]: row[1]
-            for row in rows
-            if isinstance(row, list) and len(row) >= 2 and row[0] and row[1]
-        }
-
-    async def get_table_ddl(
-        self, database: str, schema: str, table: str, strict: bool = False
-    ) -> Optional[str]:
-        """Fetch the DDL for a specific table using GET_DDL function."""
-        if not self.warehouse:
-            return None
-            
-        sql = f"SELECT GET_DDL('TABLE', '{database}.{schema}.{table}') as DDL"
-        
-        response = await self.data_source.execute_sql(
-            statement=sql,
-            database=database,
-            warehouse=self.warehouse,
-        )
-        
-        if response.success and response.data:
-            rows = self._parse_sql_result(response.data)
-            if rows:
-                return rows[0].get("DDL")
-        
-        logger.warning(f"Failed to fetch DDL for {database}.{schema}.{table}: {response.error}")
-        if strict and not response.success:
-            raise SnowflakeFetchError.from_response(
-                response, f"Failed to fetch DDL for {database}.{schema}.{table}"
+                size=_int_or_none(row.get("SIZE")) or 0,
+                last_modified=row.get("LAST_MODIFIED"),
+                md5=row.get("MD5"),
+                file_url=row.get("FILE_URL"),
             )
-        return None
-    
-    async def _fetch_foreign_keys_in_schema(
-        self, database: str, schema: str, strict: bool = False
-    ) -> List[ForeignKey]:
-        if not self.warehouse:
-            logger.warning("Warehouse not set, skipping foreign keys")
-            return []
-        
-        sql = f"SHOW IMPORTED KEYS IN SCHEMA {database}.{schema}"
-        
-        response = await self.data_source.execute_sql(
-            statement=sql,
-            database=database,
-            warehouse=self.warehouse,
-        )
-        
-        if not response.success:
-            logger.warning("Failed to fetch foreign keys: %s", response.error)
-            if strict:
-                raise SnowflakeFetchError.from_response(
-                    response, f"Failed to fetch foreign keys for {database}.{schema}"
-                )
-            return []
-        
-        foreign_keys = []
-        rows = self._parse_sql_result(response.data)
-        
-        for row in rows:
-            fk_schema = row.get("fk_schema_name") or row.get("FK_SCHEMA_NAME") or schema
-            fk_table = row.get("fk_table_name") or row.get("FK_TABLE_NAME") or ""
-            fk_column = row.get("fk_column_name") or row.get("FK_COLUMN_NAME") or ""
-            pk_schema = row.get("pk_schema_name") or row.get("PK_SCHEMA_NAME") or schema
-            pk_table = row.get("pk_table_name") or row.get("PK_TABLE_NAME") or ""
-            pk_column = row.get("pk_column_name") or row.get("PK_COLUMN_NAME") or ""
-            constraint = row.get("fk_name") or row.get("FK_NAME") or ""
-            
-            if fk_table and pk_table:
-                foreign_keys.append(ForeignKey(
-                    constraint_name=constraint,
-                    database_name=database,
-                    source_schema=fk_schema,
-                    source_table=fk_table,
-                    source_column=fk_column,
-                    target_schema=pk_schema,
-                    target_table=pk_table,
-                    target_column=pk_column,
-                ))
-        
-        return foreign_keys
-    
-    async def _fetch_primary_keys_in_schema(
-        self, database: str, schema: str, strict: bool = False
-    ) -> List[Dict[str, str]]:
-        if not self.warehouse:
-            return []
-        
-        sql = f"SHOW PRIMARY KEYS IN SCHEMA {database}.{schema}"
+            for row in result.as_dicts()
+            if row.get("RELATIVE_PATH")
+        ]
 
-        # SHOW PRIMARY KEYS might return columns: 
-        # database_name, schema_name, table_name, column_name, key_sequence, constraint_name
-        
-        response = await self.data_source.execute_sql(
-            statement=sql,
+    async def object_names(self, database: str, kind: str) -> list[str]:
+        """FQNs of every table, view or stage in a database, in one query.
+
+        For filter dropdowns, which would otherwise read each schema in turn.
+        """
+        sources = {
+            "tables": ("TABLE_SCHEMA", "TABLE_NAME", "TABLES", f" AND TABLE_TYPE IN {_TABLE_TYPES}"),
+            "views": ("TABLE_SCHEMA", "TABLE_NAME", "VIEWS", ""),
+            "stages": ("STAGE_SCHEMA", "STAGE_NAME", "STAGES", ""),
+        }
+        schema_column, name_column, view, condition = sources[kind]
+        result = await self.runner.run(
+            f"SELECT {schema_column}, {name_column} "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.{view} "
+            f"WHERE {schema_column} <> 'INFORMATION_SCHEMA'{condition} "
+            f"ORDER BY {schema_column}, {name_column}",
             database=database,
-            warehouse=self.warehouse,
         )
-        
-        if not response.success:
-            logger.warning("Failed to fetch primary keys: %s", response.error)
-            if strict:
-                raise SnowflakeFetchError.from_response(
-                    response, f"Failed to fetch primary keys for {database}.{schema}"
+        return [
+            join_qualified_name((database, row[schema_column], row[name_column]))
+            for row in result.as_dicts()
+        ]
+
+    async def columns_by_table(
+        self, database: str, schema: str, table: str | None = None,
+    ) -> dict[str, list[SnowflakeColumnInfo]]:
+        """Column definitions of every table and view in a schema (or of one), in ordinal order."""
+        only_table = f" AND TABLE_NAME = {quote_literal(table)}" if table is not None else ""
+        result = await self.runner.run(
+            "SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, "
+            "NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE, COLUMN_DEFAULT, COMMENT "
+            f"FROM {quote_identifier(database)}.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE TABLE_SCHEMA = {quote_literal(schema)}{only_table} ORDER BY TABLE_NAME, ORDINAL_POSITION",
+            database=database,
+        )
+        columns: dict[str, list[SnowflakeColumnInfo]] = {}
+        for row in result.as_dicts():
+            columns.setdefault(row["TABLE_NAME"], []).append(SnowflakeColumnInfo(
+                name=row.get("COLUMN_NAME") or "",
+                ordinal_position=_int_or_none(row.get("ORDINAL_POSITION")),
+                data_type=_full_type(row),
+                character_maximum_length=_int_or_none(row.get("CHARACTER_MAXIMUM_LENGTH")),
+                numeric_precision=_int_or_none(row.get("NUMERIC_PRECISION")),
+                numeric_scale=_int_or_none(row.get("NUMERIC_SCALE")),
+                nullable=_yes(row.get("IS_NULLABLE", "YES")),
+                default=row.get("COLUMN_DEFAULT"),
+                comment=row.get("COMMENT"),
+            ))
+        return columns
+
+    async def key_definitions(
+        self, database: str, schema: str, table: str | None = None,
+    ) -> dict[str, list[KeyDefinition]]:
+        """Primary and unique keys per table of a schema (or of one table), columns in key order.
+
+        Snowflake records but does not enforce these constraints. Each SHOW
+        lists one row per key column; rows are grouped by constraint.
+        """
+        keys: dict[str, list[KeyDefinition]] = {}
+        for kind, command in (("primary", "SHOW PRIMARY KEYS"), ("unique", "SHOW UNIQUE KEYS")):
+            result = await self.runner.run(
+                f"{command} IN {self._show_scope(database, schema, table)}", database=database,
+            )
+            grouped: dict[tuple[str, str], list[tuple[int, str]]] = {}
+            for row in result.as_dicts():
+                table_name, column = row.get("table_name"), row.get("column_name")
+                sequence = _int_or_none(row.get("key_sequence"))
+                if not table_name or not column:
+                    continue
+                if sequence is None:
+                    raise SnowflakeFetchError(f"{command} gave a key column without its position")
+                grouped.setdefault((table_name, row.get("constraint_name") or ""), []).append((sequence, column))
+            for (table_name, _), members in sorted(grouped.items()):
+                keys.setdefault(table_name, []).append(
+                    KeyDefinition(kind=kind, columns=tuple(column for _, column in sorted(members)))
                 )
-            return []
-        
-        pks = []
-        rows = self._parse_sql_result(response.data)
-        
+        return keys
+
+    async def foreign_keys(
+        self, database: str, schema: str, table: str | None = None,
+    ) -> list[ForeignKey]:
+        """Foreign keys declared on a schema's tables, or one table's (informational in Snowflake)."""
+        result = await self.runner.run(
+            f"SHOW IMPORTED KEYS IN {self._show_scope(database, schema, table)}",
+            database=database,
+        )
+        keys = []
+        for row in result.as_dicts():
+            fk_table, pk_table = row.get("fk_table_name"), row.get("pk_table_name")
+            if not fk_table or not pk_table:
+                continue
+            keys.append(ForeignKey(
+                constraint_name=row.get("fk_name") or "",
+                source_database=row.get("fk_database_name") or database,
+                source_schema=row.get("fk_schema_name") or schema,
+                source_table=fk_table,
+                source_column=row.get("fk_column_name") or "",
+                target_database=row.get("pk_database_name") or database,
+                target_schema=row.get("pk_schema_name") or schema,
+                target_table=pk_table,
+                target_column=row.get("pk_column_name") or "",
+            ))
+        return keys
+
+    @staticmethod
+    def _show_scope(database: str, schema: str, table: str | None) -> str:
+        if table is None:
+            return f"SCHEMA {qualified_identifier(database, schema)}"
+        return f"TABLE {qualified_identifier(database, schema, table)}"
+
+    async def get_view(self, database: str, schema: str, name: str) -> SnowflakeView | None:
+        views = await self.list_views(database, schema, name=name)
+        return views[0] if views else None
+
+    async def presigned_url(
+        self, database: str, schema: str, stage: str, relative_path: str, expiration_s: int = 3600,
+    ) -> str | None:
+        result = await self.runner.run(
+            f"SELECT GET_PRESIGNED_URL({stage_reference(database, schema, stage)}, "
+            f"{quote_literal(relative_path)}, {int(expiration_s)}) AS URL",
+            database=database,
+        )
+        rows = result.as_dicts()
+        url = rows[0].get("URL") if rows else None
+        return url if isinstance(url, str) and url else None
+
+    async def column_value_counts(
+        self, database: str, schema: str, table: str, column: str, *, limit: int, approximate: bool,
+    ) -> list[dict[str, Any]]:
+        """A column's ``limit`` most common values as ``{"value", "count"}``.
+
+        Exact counts group the whole column, NULL included, values decoded by
+        type and as text; ``approximate`` uses APPROX_TOP_K, for tables too
+        large to group.
+        """
+        reference = qualified_identifier(database, schema, table)
+        name = quote_identifier(column)
+        if approximate:
+            result = await self.runner.run(
+                f'SELECT APPROX_TOP_K({name}, {int(limit)}, {int(limit) * 10}) AS "top" FROM {reference}',
+                database=database, timeout_s=_VALUE_COUNTS_TIMEOUT_S,
+            )
+            rows = result.as_dicts()
+            # NULL, if APPROX_TOP_K counts it at all, is left out (the exact
+            # path keeps it); values come as JSON, not decoded by column type.
+            raw = rows[0].get("top") if rows else None
+            return [{"value": value, "count": count} for value, count in top_value_pairs(raw)]
+        result = await self.runner.run(
+            f'SELECT {name} AS "value", COUNT(*) AS "count" FROM {reference} '
+            f"GROUP BY 1 ORDER BY 2 DESC, 1 NULLS LAST LIMIT {int(limit)}",
+            database=database, timeout_s=_VALUE_COUNTS_TIMEOUT_S,
+        )
+        return [
+            {"value": None if row["value"] is None else str(row["value"]), "count": row["count"]}
+            for row in result.as_dicts()
+        ]
+
+    async def sample_rows(
+        self,
+        database: str,
+        schema: str,
+        table: str,
+        *,
+        limit: int,
+        order_by: list[str] | None,
+        max_bytes: int,
+    ) -> tuple[list[str], list[list[Any]]]:
+        """Up to ``limit`` rows and their column names, at most ``max_bytes`` of them as JSON.
+
+        ``order_by`` columns, or ``[]`` to order by a hash of each row, make the
+        sample the same on every read of unchanged data; ``None`` reads rows in
+        whatever order Snowflake returns them, which needs no sort.
+        """
+        reference = qualified_identifier(database, schema, table)
+        if order_by is None:
+            statement = f"SELECT * FROM {reference} LIMIT {int(limit)}"
+        elif order_by:
+            ordering = ", ".join(quote_identifier(c) for c in order_by)
+            statement = f"SELECT * FROM {reference} ORDER BY {ordering} LIMIT {int(limit)}"
+        else:
+            statement = (
+                f'SELECT *, HASH(*) AS "{_ROW_HASH}" FROM {reference} '
+                f'ORDER BY "{_ROW_HASH}" LIMIT {int(limit)}'
+            )
+        result = await self.runner.run(statement, database=database, max_rows=limit, max_bytes=max_bytes)
+        names = result.column_names
+        rows = result.rows
+        if order_by == []:
+            names, rows = names[:-1], [row[:-1] for row in rows]
+        kept: list[list[Any]] = []
+        size = 0
         for row in rows:
-            table = row.get("table_name") or row.get("TABLE_NAME")
-            column = row.get("column_name") or row.get("COLUMN_NAME")
-            if table and column:
-                pks.append({"table": table, "column": column})
-        
-        return pks
-    
-    def _extract_items(self, data: Any) -> List[Dict[str, Any]]:
-        if not data:
-            return []
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ["data", "rowset", "items"]:
-                if key in data and isinstance(data[key], list):
-                    return data[key]
-        return []
-    
-    def _parse_sql_result(self, data: Any) -> List[Dict[str, Any]]:
-        if not data or not isinstance(data, dict):
-            return []
-        
-        meta = data.get("resultSetMetaData", {})
-        row_type = meta.get("rowType", [])
-        columns = [col.get("name", f"col_{i}") for i, col in enumerate(row_type)]
-        
-        rows = []
-        for row in data.get("data", []):
-            if isinstance(row, list):
-                rows.append(dict(zip(columns, row)))
-            elif isinstance(row, dict):
-                rows.append(row)
-        return rows
-    
-    def save_to_file(self, filepath: str) -> None:
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.hierarchy.to_dict(), f, indent=2, default=str)
-        
-        logger.info("Saved to %s", path)
-    
-    def print_summary(self) -> None:
-        print("\n" + "=" * 50)
-        print("Snowflake Data Summary")
-        print("=" * 50)
-        for key, value in self.hierarchy.summary().items():
-            print(f"  {key}: {value}")
-        print("=" * 50)
+            size += len(json.dumps(row, default=str))
+            if size > max_bytes:
+                break
+            kept.append(row)
+        return names, kept
+
+    async def get_ddl(self, kind: str, database: str, schema: str, name: str) -> str | None:
+        """``GET_DDL`` for a table or view; None when Snowflake returns no text."""
+        object_name = quote_literal(qualified_identifier(database, schema, name))
+        result = await self.runner.run(
+            f"SELECT GET_DDL({quote_literal(kind)}, {object_name}) AS DDL",
+            database=database,
+        )
+        rows = result.as_dicts()
+        return (rows[0].get("DDL") or None) if rows else None
+
+    async def get_table_ddl(self, database: str, schema: str, table: str) -> str | None:
+        return await self.get_ddl("TABLE", database, schema, table)

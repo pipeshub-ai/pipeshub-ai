@@ -459,6 +459,8 @@ const testConnectorConnectionSchema = z.object({
   }),
   body: z.object({
     auth: z.record(z.string(), z.unknown()),
+    // The chosen form when a connector offers several: `auth` holds only its fields.
+    authType: z.string().min(1).max(64).optional(),
     connectorId: z
       .string()
       .regex(

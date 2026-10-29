@@ -7,7 +7,11 @@ dependencies = [
   # The backend code these suites import. Every package it needs, at the versions it
   # pins, comes from backend/python/pyproject.toml; do not pin them again here.
   "ai-service",
-  "pytest>=7.0",
+  # pytest 9.2 keeps node ids in Node._id, so pytest-xdist 3.8 can no longer append
+  # the "@group" suffix and --dist loadgroup ignores every xdist_group mark: the
+  # connector classes then split across workers and lose their ordered state.
+  # unit/test_xdist_loadgroup.py fails if a release breaks this again.
+  "pytest>=7.0,<9.2",
   "pytest-asyncio>=0.21.0",
   "pytest-order>=1.1.0",
   "pytest-timeout>=2.2.0",

@@ -15,6 +15,9 @@ import logging
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
+from app.agents.actions.knowledge_graph.views import CITE_NOTE
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -33,7 +36,7 @@ from app.modules.demo_data.chat import excluded_app_ids
 from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from app.modules.agents.qna.chat_state import ChatState
     from app.utils.chat_helpers import RecordIdShortener
@@ -55,6 +58,9 @@ _NO_NAMED_SOURCE_NOTE = (
 _NAME_A_SOURCE_NOTE = (
     "To list records or folders, name one source: call again with "
     "source_ids=[<node_id of a source below>]."
+)
+_ONE_SELECTED_SOURCE_MESSAGE = (
+    "This conversation is limited to specific items: name one of their ids per call in source_ids."
 )
 _TOO_LARGE_MESSAGE = (
     "This listing is too large to read at once. Name one source with source_ids, "
@@ -99,6 +105,7 @@ def _render_flat_text(
     response: KnowledgeHubNodesResponse,
     query: str | None,
     shortener: "RecordIdShortener | None" = None,
+    cite_refs: "Mapping[str, str] | None" = None,
     *,
     page: int = 1,
 ) -> str:
@@ -106,8 +113,10 @@ def _render_flat_text(
 
     `shortener` is the TEMPORARY token-savings `RecordIdShortener` (see
     `app.utils.chat_helpers`) — when supplied, every printed id becomes a
-    short `R<n>` label instead of the full record id.
+    short `R<n>` label instead of the full record id. `cite_refs` (Record ID ->
+    Citation ID) marks the records an answer may cite for their names.
     """
+    cite_refs = cite_refs or {}
     if not response.success:
         if getattr(response, "errorCode", None) == HTTPStatus.UNPROCESSABLE_ENTITY:
             return f"Error: {_TOO_LARGE_MESSAGE}"
@@ -125,6 +134,9 @@ def _render_flat_text(
     if query:
         header_parts.append(f'matching "{query}"')
     lines.append(" ".join(header_parts) + ".")
+    cited = [cite_refs[item.id] for item in items if item.id in cite_refs]
+    if cited:
+        lines.append(CITE_NOTE.format(ref=cited[0]))
     lines.append("")
 
     for item in items:
@@ -136,6 +148,8 @@ def _render_flat_text(
         id_label = "record_id" if node_type in _FETCHABLE_NODE_TYPES else "node_id"
         item_id = shortener.get_or_create_short_id(item.id) if shortener is not None else item.id
         line = f"  [{type_str}] {item.name}  | {id_label}={item_id}"
+        if item.id in cite_refs:
+            line += f"  | cite={cite_refs[item.id]}"
         if hasattr(item, "webUrl") and item.webUrl:
             line += f"  | url={item.webUrl}"
         lines.append(line)
@@ -180,6 +194,7 @@ async def _page_inside_bounds(
     *,
     page: int,
     limit: int,
+    in_selection: bool = False,
 ) -> tuple[KnowledgeHubNodesResponse, str | None]:
     """Page ``page`` of the rows ``inside`` admits, read from the source's pages
     until it is full or they run out, and a line saying whether more follow.
@@ -191,9 +206,10 @@ async def _page_inside_bounds(
     if len(read.kept) > page * limit:
         hint = _next_page_hint(page)
     elif read.stop is not None:
+        narrow = "Narrow the query or name one selected id in source_ids" if in_selection else "Narrow the query"
         hint = (
             f"(Stopped after checking {BOUNDED_BATCH * BOUNDED_MAX_BATCHES} items; more may match. "
-            "Narrow the query to find them.)"
+            f"{narrow} to find them.)"
         )
     else:
         hint = None
@@ -257,27 +273,19 @@ async def execute_list_files(
             return False, "Graph provider not available."
 
         from app.agents.actions.knowledge_graph.ops.scope import (
+            SELECTION_OUTSIDE_MESSAGE,
             browsable_app_ids,
             ids_within_scope,
             list_selected_nodes,
             resolve_scope,
+            selected_node_ids,
+            selection_browse_refusal,
             turn_picked_sources,
         )
-        from app.modules.retrieval.selection_scope import resolve_request_scopes
-
-        selected = await list_selected_nodes(
-            state, graph_provider, user_id, org_id, cursor=cursor,
+        from app.modules.retrieval.selection_scope import (
+            has_selection,
+            resolve_request_scopes,
         )
-        if selected is not None:
-            return True, selected
-
-        scope = await resolve_scope(state)
-        agent_source_ids = browsable_app_ids(state, scope)
-        if not agent_source_ids:
-            if turn_picked_sources(state):
-                return True, "This conversation has no sources to list; only attached files."
-            if not state.get("has_knowledge"):
-                return False, "No knowledge sources configured for this agent."
 
         # Input normalization
         query = query.strip() if query else None
@@ -289,6 +297,27 @@ async def execute_list_files(
         source_ids_norm = _normalize_list(source_ids)
         node_types = _normalize_list(node_types)
         record_types = _normalize_list(record_types)
+
+        filters = state.get("filters") or {}
+        # Under a selection a search runs inside it; a cursor pages the
+        # selection itself, whatever the query says.
+        selection_search = has_selection(filters) and not cursor and bool(
+            query or record_types or node_types or source_ids_norm
+        )
+        if not selection_search:
+            selected = await list_selected_nodes(
+                state, graph_provider, user_id, org_id, cursor=cursor,
+            )
+            if selected is not None:
+                return True, selected
+
+        scope = await resolve_scope(state)
+        agent_source_ids = browsable_app_ids(state, scope)
+        if not agent_source_ids:
+            if turn_picked_sources(state):
+                return True, "This conversation has no sources to list; only attached files."
+            if not state.get("has_knowledge"):
+                return False, "No knowledge sources configured for this agent."
 
         if node_types:
             node_types = [nt for nt in node_types if nt in _VALID_NODE_TYPES] or None
@@ -306,7 +335,7 @@ async def execute_list_files(
         allowed = set(agent_source_ids)
         matched = [sid for sid in source_ids_norm or [] if not allowed or sid in allowed]
         note: str | None = None
-        if source_ids_norm and not matched:
+        if source_ids_norm and not matched and not selection_search:
             # Listing the rest under a source the call named would pass it off
             # as that source's contents.
             query = None
@@ -316,14 +345,50 @@ async def execute_list_files(
         # The agent's sources can be everything the user reads, while a bound
         # (a connected app's limit, a saved agent's or a project's sources) is
         # narrower, and the listing service knows nothing of it.
-        filters = state.get("filters") or {}
         bound_user_key: str | None = None
         partial_ids: set[str] = set()
-        if any(key in filters for key in ALLOWED_FILTER_KEYS):
+        parent_id: str | None = None
+        parent_type: str | None = None
+        if selection_search or any(key in filters for key in ALLOWED_FILTER_KEYS):
             user = await graph_provider.get_user_by_user_id(user_id=user_id)
             bound_user_key = (user.get("_key") or user.get("id")) if user else None
             if not bound_user_key:
                 return False, "User not found."
+        if selection_search:
+            # Every row is checked against the selection and the bounds below;
+            # a source the call names only narrows where the search starts.
+            if len(source_ids_norm or []) > 1:
+                return False, _ONE_SELECTED_SOURCE_MESSAGE
+            start: str | None = None
+            if not source_ids_norm:
+                # A scan of the touched apps stops after a few hundred rows, before
+                # the selection is applied: start from the one selected node instead.
+                named = selected_node_ids(state)
+                if len(named) > 1 and not query:
+                    return False, _ONE_SELECTED_SOURCE_MESSAGE
+                if (
+                    len(named) == 1 and named[0] not in (filters.get("recordsExact") or ())
+                    and not await selection_browse_refusal(state, graph_provider, bound_user_key, org_id, named[0])
+                ):
+                    start = named[0]
+            elif source_ids_norm[0] not in agent_source_ids:
+                refusal = await selection_browse_refusal(
+                    state, graph_provider, bound_user_key, org_id, source_ids_norm[0],
+                )
+                if refusal:
+                    return False, refusal
+                start = source_ids_norm[0]
+            if start:
+                # The start node bounds the search; its app may not be a touched one.
+                use_connector_ids = []
+                info = await graph_provider.get_knowledge_hub_node_access(
+                    node_id=start, user_key=bound_user_key, org_id=org_id,
+                    folder_mime_types=FOLDER_MIME_TYPES,
+                )
+                if info is None:
+                    return False, SELECTION_OUTSIDE_MESSAGE
+                parent_id, parent_type = start, info["nodeType"]
+        elif bound_user_key:
             _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
             if not use_connector_ids and bounds:
                 use_connector_ids = sorted(bounds[0].connector_ids)
@@ -344,7 +409,7 @@ async def execute_list_files(
                     return True, listing
         wants_contents = _asks_for_contents(node_types, record_types)
         single_source = len(use_connector_ids) == 1 and note is None
-        flattened = _wants_flat_listing(
+        flattened = True if selection_search else _wants_flat_listing(
             query, matched, wants_contents=wants_contents, single_source=single_source,
         )
         if flattened is False and wants_contents:
@@ -362,8 +427,8 @@ async def execute_list_files(
             return await service.get_nodes(
                 user_id=user_id,
                 org_id=org_id,
-                parent_id=None,
-                parent_type=None,
+                parent_id=parent_id,
+                parent_type=parent_type,
                 only_containers=False,
                 page=service_page,
                 limit=service_limit,
@@ -377,27 +442,30 @@ async def execute_list_files(
             )
 
         hint: str | None = None
-        if bound_user_key and partial_ids:
+        if bound_user_key and (partial_ids or selection_search):
             # This service hands out no cursors, so a batch is read by page number.
             response, hint = await _page_inside_bounds(
                 lambda position, **_: fetch(position.page, BOUNDED_BATCH),
                 lambda ids: ids_within_scope(state, graph_provider, bound_user_key, org_id, ids),
-                page=page, limit=limit,
+                page=page, limit=limit, in_selection=selection_search and parent_id is None,
             )
         else:
             response = await fetch(page, limit)
 
         from app.modules.agents.qna.chat_state import remember_record_ids
+        fetchable = _record_ids_in_items(response.items)
         remember_record_ids(
             state,
-            _record_ids_in_items(response.items),
+            fetchable,
             names={item.id: item.name for item in response.items or []},
         )
+        # The listing states only names, so that is all a citation to one quotes.
+        cite_refs = await cite_listed_records(state, graph_provider, org_id, dict.fromkeys(fetchable, ""))
 
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = _render_flat_text(response, query, record_id_shortener, page=page)
+        text = _render_flat_text(response, query, record_id_shortener, cite_refs, page=page)
         return True, "\n".join(part for part in (note, text, hint) if part)
 
     except Exception as exc:

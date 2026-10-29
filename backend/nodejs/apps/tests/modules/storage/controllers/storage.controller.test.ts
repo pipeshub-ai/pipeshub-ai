@@ -11,7 +11,8 @@ import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
 import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimetypes'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
-import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { NotFoundError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
+import { StorageConfigurationError } from '../../../../src/libs/errors/storage.errors'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -759,6 +760,27 @@ describe('StorageController', () => {
 
       await controller.uploadDocument(req, res, next)
       expect(next.calledOnce).to.be.true
+    })
+
+    it('reports storage that cannot be opened as a file that was not saved', async () => {
+      initAdapterStub.rejects(new StorageConfigurationError('Failed to initialize mount point', { mountPath: '/root/.local/PipesHub' }))
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ServiceUnavailableError)
+      expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+    })
+
+    it('passes on a failure that is not about storage unchanged', async () => {
+      const failure = new NotFoundError('Storage configuration not found')
+      initAdapterStub.rejects(failure)
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.equal(failure)
     })
   })
 

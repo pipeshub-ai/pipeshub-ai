@@ -27,6 +27,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
+    _ParentLevel,
 )
 from app.models.entities import AppUser, TicketRecord
 from app.models.permission import EntityType
@@ -699,6 +700,14 @@ class TestSubtasksFollowTheirParent:
         return [_issue(None, key="PROJ-1", issue_id="1001"), sub]
 
     @pytest.mark.asyncio
+    async def test_a_story_filed_under_its_epic_names_its_children_too(self) -> None:
+        """Its level reaches its sub-tasks whether or not it hangs under an epic."""
+        story, sub = self._parent_and_subtask()
+        story["fields"]["parent"] = {"id": "2001", "key": "PROJ-9"}
+        _, calls, _ = await self._run(stored={}, batch_issues=[_epic(), story, sub])
+        assert calls[1:] == [{"stored_only": True, "parent_ids": ["2001", "1001"]}]
+
+    @pytest.mark.asyncio
     async def test_the_subtasks_of_issues_read_again_are_read_again(self) -> None:
         _, calls, point = await self._run(stored={}, batch_issues=self._parent_and_subtask())
         # Only the issue that is not itself a sub-task names its children.
@@ -726,10 +735,19 @@ class TestSubtasksFollowTheirParent:
 
 
 class TestIssuePlacementPass:
-    """A project synced while stories hung off their epics has every stored issue read
-    once, so they move to the project; the marker then stops the pass."""
+    """A project synced under another placement rule has every stored issue read once, so
+    each story moves to where the current rule files it; the marker then stops the pass."""
 
     _sync = TestMemberChangeRereadsOnlyTheAffectedLevels._sync
+
+    @pytest.mark.asyncio
+    async def test_a_project_filed_under_the_previous_rule_rereads_every_stored_issue_once(self) -> None:
+        """Every story was filed under its project; those under a readable epic now move under it."""
+        c, _, calls, _ = await self._sync(
+            stored_levels=_present().level_fingerprints(), placement="subtasks-under-parent")
+        assert calls[1:] == [
+            {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": False, "stored_only": True}]
+        assert c.issues_sync_point.update_sync_point.await_args.args[1]["issue_placement"] == ISSUE_PLACEMENT
 
     @pytest.mark.asyncio
     async def test_a_project_without_the_marker_rereads_every_stored_issue_once(self) -> None:
@@ -974,3 +992,269 @@ class TestStoredOnlyPass:
 
         records, _ = await c._build_issue_records(issues, PROJECT_ID, _users(), is_new_project=True)
         assert len(records) == 3  # the normal pass is unchanged
+
+
+LEVEL = {"id": "10102", "name": "Leadership"}
+# Holders that name the same people on every issue, so two issues in the level read alike.
+SAME_ON_EVERY_ISSUE = {"10102": [
+    {"type": "group", "value": "group-1"},
+    {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9"}},
+    {"type": "projectRole", "parameter": "10003", "projectRole": {"id": "10003", "name": "Developers"}},
+]}
+
+
+def _epic(security: dict | None = None, *, issue_id: str = "2001", key: str = "PROJ-9",
+          project: dict | None = None) -> dict:
+    epic = _issue(security, key=key, issue_id=issue_id)
+    epic["fields"]["issuetype"] = {"name": "Epic", "hierarchyLevel": 1}
+    if project is not None:
+        epic["fields"]["project"] = project
+    return epic
+
+
+def _story(security: dict | None = None, *, parent_id: str = "2001", parent_key: str = "PROJ-9") -> dict:
+    story = _issue(security, key="PROJ-3", issue_id="3001")
+    story["fields"]["issuetype"] = {"name": "Story", "hierarchyLevel": 0}
+    story["fields"]["parent"] = {"id": parent_id, "key": parent_key}
+    return story
+
+
+def _bulk_fetch(*answers: MagicMock) -> MagicMock:
+    ds = MagicMock()
+    ds.bulk_fetch_issues = AsyncMock(side_effect=list(answers))
+    return ds
+
+
+async def _story_record(
+    c: JiraConnector, issues: list[dict], context: IssueSecurityContext | None = None,
+    existing: MagicMock | None = None,
+) -> TicketRecord:
+    c._issue_security[PROJECT_ID] = context or _present()
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(
+        side_effect=lambda **kw: existing if kw.get("external_record_id") == "3001" else None)
+    records, _ = await c._build_issue_records(issues, PROJECT_ID, _users())
+    return next(r for r, _, _ in records if r.external_record_id == "3001")
+
+
+class TestStoriesUnderTheirEpic:
+    """A story inherits the record it is filed under, so it goes under its epic only when
+    everyone who reads the story reads the epic; Jira does not copy an epic's level onto it."""
+
+    @pytest.mark.asyncio
+    async def test_a_story_goes_under_an_epic_with_no_level_in_its_project(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock()
+        story = await _story_record(c, [_epic(), _story()])
+        assert story.parent_external_record_id == "2001"
+        c._get_fresh_datasource.assert_not_awaited()  # the epic was read in the same page
+
+    @pytest.mark.asyncio
+    async def test_a_leveled_story_goes_under_an_epic_with_no_level(self) -> None:
+        """The story's own grant still applies on top of the epic's readers."""
+        story = await _story_record(_connector(), [_epic(), _story(LEVEL)])
+        assert story.parent_external_record_id == "2001"
+        assert story.access_rule == AccessRule.RESTRICTED
+
+    @pytest.mark.asyncio
+    async def test_a_story_without_the_epics_level_hangs_off_its_project(self) -> None:
+        story = await _story_record(_connector(), [_epic(LEVEL), _story()])
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_story_with_another_level_hangs_off_its_project(self) -> None:
+        other = {"id": "10103", "name": "Board"}
+        context = _present({**SAME_ON_EVERY_ISSUE, "10103": SAME_ON_EVERY_ISSUE["10102"]})
+        story = await _story_record(_connector(), [_epic(LEVEL), _story(other)], context)
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_story_with_the_epics_level_goes_under_it_when_the_level_names_no_one_per_issue(self) -> None:
+        story = await _story_record(_connector(), [_epic(LEVEL), _story(LEVEL)], _present(SAME_ON_EVERY_ISSUE))
+        assert story.parent_external_record_id == "2001"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("holder", [
+        {"type": "reporter"}, {"type": "assignee"},
+        {"type": "userCustomField", "parameter": "customfield_10050"},
+        {"type": "groupCustomField", "parameter": "customfield_10051"},
+    ])
+    async def test_a_level_that_names_people_per_issue_keeps_the_story_off_its_epic(self, holder: dict) -> None:
+        """The epic's reporter is not the story's: the story's reporter could not read the epic."""
+        context = _present({"10102": [*SAME_ON_EVERY_ISSUE["10102"], holder]})
+        story = await _story_record(_connector(), [_epic(LEVEL), _story(LEVEL)], context)
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_level_whose_members_are_unread_keeps_the_story_off_its_epic(self) -> None:
+        context = _present(SAME_ON_EVERY_ISSUE)
+        context.members_readable = False
+        story = await _story_record(_connector(), [_epic(LEVEL), _story(LEVEL)], context)
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_an_epic_in_another_project_is_not_asked_for(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock()
+        story = await _story_record(c, [_story(parent_id="2001", parent_key="OTHER-9")])
+        assert story.parent_external_record_id is None
+        c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_epic_jira_places_in_another_project_keeps_the_story_off_it(self) -> None:
+        moved = _epic(project={"id": "p-2", "key": "PROJ"})
+        story = await _story_record(_connector(), [moved, _story()])
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_an_epic_not_read_this_sync_is_read_in_bulk_once(self) -> None:
+        c = _connector()
+        ds = _bulk_fetch(_resp(200, {"issues": [_epic()]}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        first = await _story_record(c, [_story()])
+        again = await _story_record(c, [_story()])
+        assert first.parent_external_record_id == again.parent_external_record_id == "2001"
+        ds.bulk_fetch_issues.assert_awaited_once()
+        kwargs = ds.bulk_fetch_issues.await_args.kwargs
+        assert kwargs["issueIdsOrKeys"] == ["2001"]
+        assert {"security", "project", "issuetype"} <= set(kwargs["fields"])
+
+    @pytest.mark.asyncio
+    async def test_an_epic_jira_does_not_return_keeps_the_story_off_it_without_retrying(self) -> None:
+        """Deleted, or hidden from the connector's account: asking again would not help."""
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(200, {"issues": []})))
+        story = await _story_record(c, [_story()])
+        assert story.parent_external_record_id is None
+        assert c._parents_to_retry == set()
+
+    @pytest.mark.asyncio
+    async def test_an_epic_without_its_security_field_is_unknown(self) -> None:
+        """A missing field is not "no level"; the story must not inherit an epic it may not read."""
+        epic = _epic()
+        del epic["fields"]["security"]
+        story = await _story_record(_connector(), [epic, _story()])
+        assert story.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_epic_read_keeps_a_story_under_the_epic_it_was_filed_under(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
+        stored = MagicMock(id="rid", version=1, source_updated_at=0, is_placeholder=False,
+                           parent_external_record_id="2001")
+        story = await _story_record(c, [_story()], existing=stored)
+        assert story.parent_external_record_id == "2001"
+        assert c._parents_to_retry == {"2001"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_epic_read_leaves_a_story_filed_elsewhere_on_its_project(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
+        stored = MagicMock(id="rid", version=1, source_updated_at=0, is_placeholder=False,
+                           parent_external_record_id=None)
+        story = await _story_record(c, [_story()], existing=stored)
+        assert story.parent_external_record_id is None
+        assert c._parents_to_retry == {"2001"}
+
+    @pytest.mark.asyncio
+    async def test_an_epic_read_later_in_the_sync_replaces_a_failed_read(self) -> None:
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock(return_value=_bulk_fetch(_resp(500)))
+        await _story_record(c, [_story()])
+        story = await _story_record(c, [_epic(), _story()])
+        assert story.parent_external_record_id == "2001"
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_still_goes_under_its_parent(self) -> None:
+        sub = _story()
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        c = _connector()
+        c._get_fresh_datasource = AsyncMock()
+        assert (await _story_record(c, [sub])).parent_external_record_id == "2001"
+        c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_issue_in_the_page_does_not_stop_the_others(self) -> None:
+        broken = {"id": "4001", "key": "PROJ-4", "fields": {"issuetype": "Story", "parent": "PROJ-9", "project": "PROJ"}}
+        story = await _story_record(_connector(), [broken, _epic(), _story()])
+        assert story.parent_external_record_id == "2001"
+
+
+class TestEpicsReadAgainNextSync:
+    _sync = TestMemberChangeRereadsOnlyTheAffectedLevels._sync
+
+    @pytest.mark.asyncio
+    async def test_epics_that_could_not_be_read_wait_in_the_checkpoint(self) -> None:
+        """The stories under them are placed again first thing next sync."""
+        async def unread_epic(c: JiraConnector, calls: list) -> None:
+            c._parents_to_retry.add("2001")
+
+        c, _, _, _ = await self._sync(stored_levels=_present().level_fingerprints(), fetch_fn=unread_epic)
+        saved = [json.loads(call.args[1]["subtask_parents"])
+                 for call in c.issues_sync_point.update_sync_point.await_args_list if "subtask_parents" in call.args[1]]
+        assert saved[-1] == ["2001"]
+
+    @pytest.mark.asyncio
+    async def test_epics_wait_in_the_checkpoint_before_the_cursor_passes_their_stories(self) -> None:
+        """A later page that fails must not lose them: the cursor has already passed the stories."""
+        c = _connector()
+        record, _, _ = await _build(c, _issue(None), _present())
+        point = {"issue_placement": ISSUE_PLACEMENT, "security_levels": json.dumps(_present().level_fingerprints()),
+                 "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
+        c._load_issue_security = AsyncMock(return_value=_present())
+        c._process_new_records = AsyncMock()
+
+        async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
+                        leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
+            if parent_ids:
+                return
+            c._parents_to_retry.add("2001")
+            yield [(record, [], True)], True, 1_700_000_100_000
+            raise JiraReadError(503, "unavailable")
+
+        c._fetch_issues_batched = fetch
+        with pytest.raises(JiraReadError):
+            await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert point["last_issue_updated"] == 1_700_000_100_000
+        assert json.loads(point["subtask_parents"]) == ["2001"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_saved_when_every_epic_was_read(self) -> None:
+        c, _, _, _ = await self._sync(stored_levels=_present().level_fingerprints())
+        assert not any("subtask_parents" in call.args[1]
+                       for call in c.issues_sync_point.update_sync_point.await_args_list)
+
+
+class TestReindexPlacesTheStoryAgain:
+    """A reindex runs between syncs, so it reads the epic's level afresh."""
+
+    @staticmethod
+    def _connector(epic_answer: MagicMock, **known: object) -> JiraConnector:
+        c = _connector()
+        c.indexing_filters = MagicMock()  # already loaded
+        story = _story()
+        story["fields"]["updated"] = "2025-01-01T00:00:00.000+0000"
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(return_value=_resp(200, story))
+        ds.bulk_fetch_issues = AsyncMock(return_value=epic_answer)
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._parent_levels.update(known)
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_level_the_epic_gained_since_the_sync_moves_the_story_off_it(self) -> None:
+        c = self._connector(_resp(200, {"issues": [_epic(LEVEL)]}), **{"2001": _ParentLevel(PROJECT_ID, None)})
+        record, _ = await c._check_and_fetch_updated_issue(
+            _stored_ticket(external_record_id="3001", parent_external_record_id="2001"), {},
+            {"PROJ": _present()})
+        assert record.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_epic_read_keeps_the_story_where_the_sync_filed_it(self) -> None:
+        c = self._connector(_resp(500), **{"2001": _ParentLevel(PROJECT_ID, LEVEL["id"])})
+        record, _ = await c._check_and_fetch_updated_issue(
+            _stored_ticket(external_record_id="3001", parent_external_record_id="2001"), {},
+            {"PROJ": _present()})
+        assert record.parent_external_record_id == "2001"

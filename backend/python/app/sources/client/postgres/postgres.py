@@ -92,6 +92,15 @@ async def connect_to_checked_address(
     return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
 
 
+
+def _client_timeout(timeout_s: int | None) -> float | None:
+    """asyncpg's own timeout, set past the server's so the server's clearer error wins.
+
+    Without it the connection's ``command_timeout`` (30 s by default) cancels first.
+    """
+    return timeout_s + 10.0 if timeout_s else None
+
+
 class PostgreSQLClient:
     """PostgreSQL client for asyncpg pool management."""
 
@@ -271,11 +280,16 @@ class PostgreSQLClient:
         params: Sequence[Any] | None = None,
         *,
         read_only: bool = True,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """
         Execute a SQL query and return raw columns/rows, read-only unless
         ``read_only=False`` (see ``execute_query``).
         conn.execute doesn't support multi-statement queries.
+
+        ``timeout_s`` sets the server's statement_timeout for this transaction and
+        ``max_rows`` reads at most that many rows through a server-side cursor.
         """
         if not self.is_connected():
             await self.connect()
@@ -288,13 +302,16 @@ class PostgreSQLClient:
                 prepared_params = self._normalize_params(params)
                 # See execute_query: one transaction keeps the pooler on one server.
                 async with conn.transaction(readonly=read_only):
-                    statement = await conn.prepare(query)
+                    if timeout_s:
+                        await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
+                    client_timeout = _client_timeout(timeout_s)
+                    statement = await conn.prepare(query, timeout=client_timeout)
                     attributes = statement.get_attributes()
                     if not attributes:
                         await conn.execute(query, *prepared_params)
                         return ([], [])
 
-                    rows = await statement.fetch(*prepared_params)
+                    rows = await self._fetch(statement, prepared_params, max_rows, client_timeout)
                     columns = [attr.name for attr in attributes]
                     raw_rows = [tuple(row) for row in rows]
                     return (columns, raw_rows)
@@ -306,6 +323,7 @@ class PostgreSQLClient:
         self,
         query: str,
         timeout_s: int,
+        max_rows: int | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Run one row-returning statement in a read-only transaction.
 
@@ -322,12 +340,26 @@ class PostgreSQLClient:
         async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
             async with conn.transaction(readonly=True):
                 await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s) * 1000}")
-                statement = await conn.prepare(query)
+                client_timeout = _client_timeout(timeout_s)
+                statement = await conn.prepare(query, timeout=client_timeout)
                 attributes = statement.get_attributes()
                 if not attributes:
                     raise ValueError("Only statements that return rows can be run here.")
-                rows = await statement.fetch()
+                rows = await self._fetch(statement, (), max_rows, client_timeout)
                 return [attr.name for attr in attributes], [tuple(row) for row in rows]
+
+    @staticmethod
+    async def _fetch(
+        statement: asyncpg.prepared_stmt.PreparedStatement,
+        params: Sequence[Any],
+        max_rows: int | None,
+        timeout: float | None = None,
+    ) -> list[Any]:
+        """All rows, or at most ``max_rows`` read from a server-side cursor (needs a transaction)."""
+        if max_rows is None:
+            return await statement.fetch(*params, timeout=timeout)
+        cursor = await statement.cursor(*params, timeout=timeout)
+        return await cursor.fetch(max_rows, timeout=timeout)
 
     @staticmethod
     def _normalize_params(

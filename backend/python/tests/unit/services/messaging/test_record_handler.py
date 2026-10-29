@@ -765,12 +765,14 @@ class TestRequestCodeEdges:
         handler.producer.send_event.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_deleting_a_code_file_asks_for_a_full_build(self) -> None:
+    async def test_deleting_a_code_file_whose_names_were_not_kept_asks_for_a_full_build(self) -> None:
         """An incremental build starts from records updated since the last one,
-        and a deleted record is not among them (R-3)."""
+        and a deleted record is not among them (R-3); without the names the
+        file defined it cannot find the files that called into it."""
         handler = _make_handler()
         graph_provider = handler.event_processor.graph_provider
         graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         graph_provider.upsert_sync_point = AsyncMock()
         await handler._request_code_edge_build_for_deleted({
             "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
@@ -781,6 +783,37 @@ class TestRequestCodeEdges:
         mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
         assert mark["edgeBuildFullRequestId"]
         handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_code_file_whose_names_were_kept_asks_for_an_incremental_build(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"syncPointKey": "k"}])
+        graph_provider.upsert_sync_point = AsyncMock()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+            "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+        })
+        assert graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {
+            "orgId": "org-1", "recordId": "record-1", "syncDataPointType": "codeEdgeDeletedFile",
+        }
+        for call in graph_provider.upsert_sync_point.await_args_list:
+            assert "edgeBuildFullRequestId" not in call.kwargs["sync_point_data"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_deleted_file_record_asks_for_a_full_build(self) -> None:
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("graph down"))
+        graph_provider.upsert_sync_point = AsyncMock()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+            "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+        })
+        mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
+        assert mark["edgeBuildFullRequestId"]
 
     @pytest.mark.asyncio
     async def test_an_edited_file_does_not_ask_for_a_full_build(self) -> None:
@@ -2121,7 +2154,7 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "fork-2": self._code("fork-2", "repo-b"),
             "doc": {"_key": "doc", "connectorName": "Drive", "indexingStatus": "COMPLETED"},
         })
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_awaited_once_with("org-1", "conn-1", "repo-b")
 
     @pytest.mark.asyncio
@@ -2132,17 +2165,29 @@ class TestPromotedCodeCopiesAskForTheirRepoBuild:
             "_key": "twin", "indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": "vr1"})
         gp.update_queued_duplicates_status = AsyncMock(return_value=1)
         handler._reconcile_pending_duplicates = AsyncMock()
-        handler._request_code_edge_builds_for_copies = AsyncMock()
+        handler.request_code_edge_builds_for_copies = AsyncMock()
         await handler._release_queued_copies("twin")
-        handler._request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
+        handler.request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_does_not_raise(self) -> None:
         handler = self._handler({})
         handler.event_processor.graph_provider.get_records_by_virtual_record_id = AsyncMock(
             side_effect=ConnectionError("graph down"))
-        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
         handler._ask_for_code_edge_build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_failed_request_does_not_skip_the_other_repos(self) -> None:
+        handler = self._handler({
+            "twin": self._code("twin", "repo-a"),
+            "fork-1": self._code("fork-1", "repo-b"),
+            "fork-2": self._code("fork-2", "repo-c"),
+        })
+        handler._ask_for_code_edge_build = AsyncMock(side_effect=[ConnectionError("broker down"), None])
+        await handler.request_code_edge_builds_for_copies("twin", "vr1")
+        asked = {c.args[2] for c in handler._ask_for_code_edge_build.await_args_list}
+        assert asked == {"repo-b", "repo-c"}
 
 
 class TestReleasingQueuedCopies:

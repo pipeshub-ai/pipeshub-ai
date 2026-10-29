@@ -298,8 +298,6 @@ async def authMiddleware(request: Request) -> Request:
         # Attach the authenticated user information to the request state
         request.state.user = payload
         _bind_org_context(request, payload)
-        # Context middleware runs before auth, so this is the first point the org is known.
-        set_context_org(payload.get("orgId") or payload.get("org_id"))
 
         logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 
@@ -334,6 +332,8 @@ def _bind_org_context(request: Request, payload: dict[str, Any]) -> None:
         source="scoped_jwt" if scoped else "jwt",
         request_id=rc.root_id if rc else "-",
     ))
+    # Context middleware runs before auth, so this is the first point the org is known.
+    set_context_org(org_id)
 
 
 def is_request_admin(request: Request) -> bool:

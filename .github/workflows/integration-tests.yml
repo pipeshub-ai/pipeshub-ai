@@ -41,6 +41,7 @@ on:
             - web
             - rss
             - local_fs
+            - local_fs_sim
             - google_drive_workspace
             - google_drive_individual
             - gmail_workspace
@@ -381,6 +382,12 @@ jobs:
       CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
       SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
       NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
+      # The local_fs_sim suite runs the desktop app's real Local FS code headless, on shard 1 next to local_fs:
+      # connectors-simulator's desktop_agent.ts loads this checkout's frontend/electron/local-sync under Node,
+      # so it needs no image or dataset, only this checkout's Node dependencies. CONNSIM_LOCALFS_REF is
+      # connectors-simulator's main with the Local FS harness (#9).
+      CONNSIM_LOCALFS_REF: c36cf2a33d1f0db73211ab529781ad03a42bbfa6
+      NEEDS_LOCAL_FS_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'local_fs_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -461,7 +468,7 @@ jobs:
       # Gmail suites are on shard 2 too: they need the simulator image Jira's
       # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
+      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
@@ -607,6 +614,34 @@ jobs:
           echo "SHAREPOINT_SIM_TLS_DIR=$RUNNER_TEMP/sharepoint-sim-tls" >> "$GITHUB_ENV"
           echo "SHAREPOINT_SIM_COMPOSE=-f docker-compose.integration.sharepoint-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/sharepoint_sim.env >> "$GITHUB_ENV"
+
+      - name: Check out the Local FS desktop agent
+        if: env.NEEDS_LOCAL_FS_SIM == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_LOCALFS_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-localfs
+          persist-credentials: false
+
+      # Node 22 replaces the Playwright step's Node 20 for the rest of a dispatch job; the browser tests run on it.
+      - name: Set up Node.js for the Local FS desktop agent
+        if: env.NEEDS_LOCAL_FS_SIM == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      # The agent takes ts-node from the Node backend and chokidar and socket.io-client from the frontend.
+      # A dispatch job has the frontend's already, from the Playwright step. It never starts Electron.
+      - name: Use the Local FS desktop agent
+        if: env.NEEDS_LOCAL_FS_SIM == 'true'
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          (cd backend/nodejs/apps && npm ci --no-audit --no-fund)
+          [ -d frontend/node_modules ] || (cd frontend && npm ci --no-audit --no-fund)
+          echo "LOCAL_FS_DESKTOP_AGENT=$GITHUB_WORKSPACE/connectors-simulator-localfs/harness/local_fs/node/desktop_agent.ts" >> "$GITHUB_ENV"
 
       - name: Pull pre-built base images
         run: |
@@ -785,7 +820,7 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -990,7 +1025,7 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;

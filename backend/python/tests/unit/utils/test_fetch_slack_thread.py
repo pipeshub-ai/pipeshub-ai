@@ -155,9 +155,9 @@ class TestModelToDict:
 class TestFetchRecordById:
     async def test_missing_dependencies_returns_none(self):
         vmap: dict = {}
-        assert await fst._fetch_record_by_id("rid", None, MagicMock(), "org", vmap) is None
-        assert await fst._fetch_record_by_id("rid", AsyncMock(), None, "org", vmap) is None
-        assert await fst._fetch_record_by_id("rid", AsyncMock(), MagicMock(), None, vmap) is None
+        assert await fst._fetch_record_by_id("rid", None, MagicMock(), "org", vmap, None) is None
+        assert await fst._fetch_record_by_id("rid", AsyncMock(), None, "org", vmap, None) is None
+        assert await fst._fetch_record_by_id("rid", AsyncMock(), MagicMock(), None, vmap, None) is None
 
     async def test_graph_record_not_found(self):
         graph = AsyncMock()
@@ -168,6 +168,7 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             {},
+            None,
         )
         assert out is None
 
@@ -180,6 +181,7 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             {},
+            None,
         )
         assert out is None
 
@@ -197,6 +199,7 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             vmap,
+            None,
         )
         assert out is cached
         mock_get_record.assert_not_awaited()
@@ -226,6 +229,7 @@ class TestFetchRecordById:
             blob,
             "org-1",
             vmap,
+            None,
         )
         assert out is not None
         assert out["id"] == "graph-id"
@@ -254,6 +258,7 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             vmap,
+            None,
         )
         assert out["id"] == "requested-id"
 
@@ -270,8 +275,47 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             {},
+            None,
         )
         assert out is None
+
+    @pytest.mark.parametrize(("limit", "named"), [
+        (None, "Eng Slack"),
+        ({"apps": ["c-slack"], "recordGroups": [], "records": []}, "Eng Slack"),
+        ({"apps": [], "recordGroups": ["channel"], "records": []}, None),
+    ])
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_names_the_connector_inside_the_limit(self, mock_get_record, limit, named):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={"virtual_record_id": "vr1", "id": "r1", "connector_id": "c-slack"}
+        )
+        graph.get_document = AsyncMock(return_value={"_key": "c-slack", "name": "Eng Slack"})
+
+        async def populate_map(vrid, result_map, *args, **kwargs):
+            result_map[vrid] = {"id": "r1"}
+
+        mock_get_record.side_effect = populate_map
+        await fst._fetch_record_by_id("r1", graph, MagicMock(), "org", {}, limit)
+
+        graph_map = mock_get_record.await_args.kwargs["virtual_to_record_map"]
+        assert graph_map["vr1"].get("connectorInstanceName") == named
+
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_a_provider_without_async_lookups_leaves_the_record_unnamed(self, mock_get_record):
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={"virtual_record_id": "vr1", "id": "r1", "connector_id": "c-sync"}
+        )
+
+        async def populate_map(vrid, result_map, *args, **kwargs):
+            result_map[vrid] = {"id": "r1"}
+
+        mock_get_record.side_effect = populate_map
+        out = await fst._fetch_record_by_id("r1", graph, MagicMock(), "org", {}, None)
+
+        assert out == {"id": "r1", "virtual_record_id": "vr1"}
+        assert "connectorInstanceName" not in mock_get_record.await_args.kwargs["virtual_to_record_map"]["vr1"]
 
     async def test_exception_returns_none(self):
         graph = AsyncMock()
@@ -282,6 +326,7 @@ class TestFetchRecordById:
             MagicMock(),
             "org",
             {},
+            None,
         )
         assert out is None
 
@@ -1470,8 +1515,20 @@ class TestAConnectedAppsLimit:
                   AsyncMock(side_effect=lambda _s, _g, _k, _o, ids: set(ids))),
         )
 
-    @pytest.mark.parametrize(("scope_state", "limit"), [(None, None), (_LIMITED_TURN, _THREAD_LIMIT)])
-    async def test_a_thread_read_passes_the_limit_on(self, scope_state, limit):
+    @staticmethod
+    def _blob_read(hydrated: dict[str, dict]) -> AsyncMock:
+        """``get_record`` as it fills the map: the blob, named as the graph record is."""
+        async def read(vrid, result_map, *_a, virtual_to_record_map, **_kw) -> None:
+            graph_record = virtual_to_record_map[vrid]
+            result_map[vrid] = {
+                **hydrated[graph_record["id"]], "connector_instance_name": graph_record.get("connectorInstanceName"),
+            }
+        return AsyncMock(side_effect=read)
+
+    @pytest.mark.parametrize(("scope_state", "limit", "named"), [
+        (None, None, "Eng Slack"), (_LIMITED_TURN, _THREAD_LIMIT, None),
+    ])
+    async def test_a_thread_read_passes_the_limit_on(self, scope_state, limit, named):
         links, text, scoped = self._patched()
         with links as mock_links, text as mock_text, scoped, \
                 patch.object(fst, "_resolve_thread_record_group", AsyncMock(return_value={
@@ -1479,26 +1536,49 @@ class TestAConnectedAppsLimit:
                 })), \
                 patch.object(fst, "resolve_user_key", AsyncMock(return_value="ukey")), \
                 patch.object(fst, "user_can_access_node", AsyncMock(return_value=True)), \
-                patch.object(fst, "_fetch_record_by_id", AsyncMock(return_value={"id": "reply", "source_created_at": 1})):
+                patch("app.utils.chat_helpers.get_record",
+                      self._blob_read({"reply": {"id": "reply", "source_created_at": 1}})):
             graph = _allowing(AsyncMock())
             graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "reply"}])
+            graph.get_record_by_id = AsyncMock(
+                return_value={"id": "reply", "virtual_record_id": "vr-reply", "connector_id": "c"},
+            )
+            graph.get_document = AsyncMock(return_value={"_key": "c", "name": "Eng Slack"})
             out = await fst._fetch_thread_records_impl(
                 "rid", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org-1",
                 user_id="u1", scope_state=scope_state,
             )
 
         assert out["ok"] is True
+        assert [r.get("connector_instance_name") for r in out["records"]] == [named]
         assert mock_links.await_args.kwargs["connection_sources"] == limit
         assert mock_text.await_args.args[4] == limit
 
-    @pytest.mark.parametrize(("scope_state", "limit"), [(None, None), (_LIMITED_TURN, _THREAD_LIMIT)])
-    async def test_a_channel_record_read_passes_the_limit_on(self, scope_state, limit):
-        records = {"burst": _slack_meta(external_record_id="burst_C1_cd34")}
-        hydrated = {"burst": _hydrated("burst", ("1700000000.000100", False))}
+    @pytest.mark.parametrize(("scope_state", "limit", "named"), [
+        (None, None, "Eng Slack"), (_LIMITED_TURN, _THREAD_LIMIT, None),
+    ])
+    async def test_a_channel_record_read_passes_the_limit_on(self, scope_state, limit, named):
+        records = {
+            "burst": _slack_meta(external_record_id="burst_C1_cd34", id="burst", virtual_record_id="vr-burst"),
+            "r-1": _slack_meta(id="r-1", virtual_record_id="vr-r-1"),
+        }
+        hydrated = {
+            "burst": _hydrated("burst", ("1700000000.000100", True)),
+            "r-1": {"id": "r-1", "source_created_at": 5},
+        }
+        graph = _slack_graph(records, groups={"thread_C1_1700000000.000100": "rg"}, listings={"rg": ["r-1"]})
+        graph.get_document = AsyncMock(return_value={"_key": _CONNECTOR, "name": "Eng Slack"})
         links, text, scoped = self._patched()
-        with links as mock_links, text as mock_text, scoped:
-            out = await _read_thread(_slack_graph(records), "burst", hydrated, scope_state=scope_state)
+        with links as mock_links, text as mock_text, scoped, \
+                patch.object(fst, "resolve_user_key", AsyncMock(return_value="ukey")), \
+                patch.object(fst, "user_can_access_node", AsyncMock(return_value=True)), \
+                patch("app.utils.chat_helpers.get_record", self._blob_read(hydrated)):
+            out = await fst._fetch_thread_records_impl(
+                "burst", {}, graph_provider=graph, blob_store=MagicMock(), org_id=_ORG,
+                user_id="u1", scope_state=scope_state,
+            )
 
-        assert out["ok"] is True and [r["id"] for r in out["records"]] == ["burst"]
+        assert out["ok"] is True and [r["id"] for r in out["records"]] == ["burst", "r-1"]
+        assert [r.get("connector_instance_name") for r in out["records"]] == [named, named]
         assert mock_links.await_args.kwargs["connection_sources"] == limit
         assert mock_text.await_args.args[4] == limit

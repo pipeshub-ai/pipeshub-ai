@@ -182,6 +182,29 @@ def spec_for(kind: EntityKind | str) -> EntityTypeSpec | None:
     return ENTITY_TYPE_REGISTRY.get(parsed)
 
 
+# The extractor files one place under any of these, so a hint of one means all.
+INTERCHANGEABLE_KINDS: tuple[EntityKind, ...] = (
+    EntityKind.LOCATION, EntityKind.CITY, EntityKind.STATE, EntityKind.COUNTRY_REGION,
+)
+# One name is often both a company and its product, and the extractor files it
+# under either; a lookup by one kind must also reach the other.
+RELATED_KINDS: tuple[EntityKind, ...] = (EntityKind.PRODUCT, EntityKind.ORGANIZATION)
+
+
+def kind_family(kind: EntityKind) -> tuple[EntityKind, ...]:
+    """The kinds a lookup of ``kind`` reaches: itself and the kinds the
+    extractor files the same thing under."""
+    for family in (INTERCHANGEABLE_KINDS, RELATED_KINDS):
+        if kind in family:
+            return family
+    return (kind,)
+
+
+def interchangeable_kinds(kind: EntityKind) -> tuple[EntityKind, ...]:
+    """The kinds an exact name match under ``kind`` may be taken from without a check."""
+    return INTERCHANGEABLE_KINDS if kind in INTERCHANGEABLE_KINDS else (kind,)
+
+
 def default_enabled_kinds() -> frozenset[EntityKind]:
     return frozenset(kind for kind, spec in ENTITY_TYPE_REGISTRY.items() if spec.default_enabled)
 

@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
@@ -247,11 +248,15 @@ class MariaDBClient:
         params: dict[str, Any] | list[Any] | tuple | None = None,
         *,
         read_only: bool = False,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
 
         ``read_only`` runs it in a READ ONLY transaction with a statement timeout, so even a
-        stored function it calls cannot write or hold the server."""
+        stored function it calls cannot write or hold the server. ``timeout_s`` puts the
+        same server-side limit on any statement (``read_only`` implies READ_ONLY_TIMEOUT_S);
+        ``max_rows`` reads at most that many rows of the result."""
         if not self.is_connected():
             await self.connect()
         if self._pool is None:
@@ -261,17 +266,23 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor(dictionary=True)
+                    # The driver buffers the whole result by default, so a capped read must stream.
+                    cursor = conn.cursor(dictionary=True, buffered=not max_rows)
                     if read_only:
                         await cursor.execute("START TRANSACTION READ ONLY")
+                    timeout_s = timeout_s or (READ_ONLY_TIMEOUT_S if read_only else None)
+                    if timeout_s:
                         # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
                         # error propagates and the query is not retried without the guard.
-                        query = f"SET STATEMENT max_statement_time={READ_ONLY_TIMEOUT_S} FOR {query}"
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        results = await cursor.fetchall()
-                    else:
-                        results = [{"affected_rows": cursor.rowcount}]
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            results = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            # Unread rows of an unbuffered result would block the commit.
+                            await cursor.close()
+                        else:
+                            results = [{"affected_rows": cursor.rowcount}]
                     await conn.commit()
                     return results
                 except Exception:
@@ -296,8 +307,13 @@ class MariaDBClient:
         self,
         query: str,
         params: dict[str, Any] | list[Any] | tuple | None = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple:
-        """Execute a SQL query and return raw columns and rows."""
+        """Execute a SQL query and return raw columns and rows.
+
+        ``timeout_s`` and ``max_rows`` bound the statement's time and the rows read (see ``execute_query``)."""
         logger.debug(
             f"🔧 [MariaDBClient.execute_query_raw] Executing query: {query[:200]}..."
         )
@@ -311,22 +327,26 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor()
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        columns = [desc[0] for desc in cursor.description]
-                        rows = await cursor.fetchall()
-                        logger.debug(
-                            f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
-                            f"with columns {columns}"
-                        )
-                    else:
-                        columns = []
-                        rows = []
-                        logger.warning(
-                            "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
-                            "- no result set"
-                        )
+                    cursor = conn.cursor(buffered=not max_rows)
+                    if timeout_s:
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            columns = [desc[0] for desc in cursor.description]
+                            rows = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            await cursor.close()
+                            logger.debug(
+                                f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
+                                f"with columns {columns}"
+                            )
+                        else:
+                            columns = []
+                            rows = []
+                            logger.warning(
+                                "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
+                                "- no result set"
+                            )
 
                     await conn.commit()
                     return (columns, rows)
@@ -345,6 +365,37 @@ class MariaDBClient:
         except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise
+
+    @contextlib.asynccontextmanager
+    async def _deadline(self, thread_id: int, timeout_s: float | None) -> AsyncIterator[None]:
+        """Stop the statement running on connection ``thread_id`` with KILL QUERY if it outlives ``timeout_s``.
+
+        max_statement_time does not stop stored procedures (an approved CALL) and is only
+        checked at certain points. The running await is left alone, since a pooled connection
+        abandoned mid-answer hangs; the kill makes it fail with the server's error instead."""
+        if not timeout_s:
+            yield
+            return
+        killing = asyncio.Event()
+
+        async def kill_when_late() -> None:
+            await asyncio.sleep(timeout_s + READ_TIMEOUT_MARGIN_S)
+            killing.set()
+            logger.warning(f"🔧 [MariaDBClient] Statement on connection {thread_id} outlived {timeout_s:g}s; killing it")
+            try:
+                await asyncio.to_thread(_kill_query, await self._connect_kwargs(), thread_id)
+            except Exception as e:
+                logger.error(f"🔧 [MariaDBClient] KILL QUERY {thread_id} failed: {e}")
+
+        killer = spawn_in_request(kill_when_late())
+        try:
+            yield
+        finally:
+            if killing.is_set():
+                # Let the kill land before the connection runs anything else, or it could stop that.
+                await killer
+            else:
+                killer.cancel()
 
     async def execute_read_only_query(
         self,
@@ -512,6 +563,15 @@ class MariaDBClient:
 
 def _open_and_close(kwargs: dict[str, Any]) -> None:
     mariadb.connect(**kwargs).close()
+
+
+def _kill_query(kwargs: dict[str, Any], thread_id: int) -> None:
+    """KILL QUERY from a connection of its own: the pool may have none free."""
+    conn = mariadb.connect(**kwargs)
+    try:
+        conn.cursor().execute(f"KILL QUERY {int(thread_id)}")
+    finally:
+        conn.close()
 
 
 def _read_only(

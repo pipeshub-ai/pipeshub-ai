@@ -7,6 +7,8 @@ chosen branch (``World.code_tree``), so ``diff()`` holds the index to that branc
 
 import pytest
 
+from app.connectors.sources.gitlab.repos import ReposSync
+
 BRANCH = "feature/login"
 DEFAULT_APP = b"print('hi')\n"
 BRANCH_APP = b"print('login')\n"
@@ -66,6 +68,32 @@ async def test_a_chosen_branch_indexes_that_branch_and_streams_its_content(world
 @pytest.mark.personal
 async def test_personal_connector_indexes_the_chosen_branch(world, org) -> None:
     await _chosen_branch_is_what_gets_indexed(world, org)
+
+
+async def test_switching_branch_syncs_only_what_differs(world, org, monkeypatch) -> None:
+    """A switch, either way, is the straight compare between the two heads: no walk, and
+    a file the same on both branches is not written again."""
+    gl, p = world.gl, org["project"]
+    fork(gl, p)
+    await world.sync()
+    readme = await world.typed(blob(p, "README.md"))
+    walks: list[str] = []
+    walk = ReposSync._sync_repo_full
+
+    async def counted(self: ReposSync, *args: object) -> bool:
+        walks.append(str(args[-1]))
+        return await walk(self, *args)
+
+    monkeypatch.setattr(ReposSync, "_sync_repo_full", counted)
+    for branch, app in ((BRANCH, BRANCH_APP), (None, DEFAULT_APP)):
+        world.set_branch(branch)
+        await world.sync()
+        diff = await world.diff()
+        assert diff.clean(), diff
+        assert await world.stream(blob(p, "src/app.py")) == app
+    assert walks == []
+    after = await world.typed(blob(p, "README.md"))
+    assert (after.updated_at, after.version) == (readme.updated_at, readme.version)
 
 
 async def test_switching_to_a_branch_and_back_updates_records_in_place(world, org) -> None:

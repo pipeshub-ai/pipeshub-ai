@@ -87,4 +87,6 @@ jobs:
 
       - name: No unexpected skips
         if: ${{ always() }}
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pg-stores-junit.xml"
+        run: >-
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pg-stores-junit.xml"
+          --expect-suite "PostgreSQL content stores (/usr/lib/postgresql/${{ matrix.pg }}/bin) behind PgBouncer DocumentRepository contract document store contract (state hidden)=3"

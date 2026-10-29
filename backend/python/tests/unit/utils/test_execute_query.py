@@ -17,6 +17,8 @@ from app.utils.execute_query import (
     sql_connector_instance_ids,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.utils import execute_query as eq
+from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
 
 # ===========================================================================
@@ -372,7 +374,7 @@ class TestExecutePostgresQuery:
         assert result["rows"] == [(1, "Alice")]
         mock_client.resize_pool.assert_called_once_with(min_pool_size=1, max_pool_size=1)
         mock_client.connect.assert_awaited_once()
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1", timeout_s=120, max_rows=1001)
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -403,7 +405,7 @@ class TestExecutePostgresQuery:
         assert result["ok"] is True
         assert result["columns"] == ["id"]
         assert result["rows"] == [(2,)]
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 2 AS id")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 2 AS id", timeout_s=120, max_rows=1001)
 
     @pytest.mark.asyncio
     async def test_empty_rows(self):
@@ -432,7 +434,7 @@ class TestExecutePostgresQuery:
         assert result["rows"] == []
         mock_client.resize_pool.assert_called_once_with(min_pool_size=1, max_pool_size=1)
         mock_client.connect.assert_awaited_once()
-        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1 WHERE FALSE")
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 1 WHERE FALSE", timeout_s=120, max_rows=1001)
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -456,173 +458,99 @@ class TestExecutePostgresQuery:
 
 
 class TestExecuteSnowflakeQuery:
+    CONFIG = {"auth": {"accountIdentifier": "acc-1", "warehouse": "WH_1", "patToken": "pat-123"}}
+
+    @staticmethod
+    def _patches(config, run=None) -> tuple:
+        from app.sources.external.snowflake.statements import (
+            SnowflakeColumn,
+            SnowflakeResult,
+        )
+
+        runner = MagicMock()
+        runner.run = run or AsyncMock(return_value=SnowflakeResult(
+            columns=[SnowflakeColumn("N", "fixed", 0)], rows=[[42]],
+        ))
+        data_source = MagicMock()
+        data_source.http.close = AsyncMock()
+        return runner, data_source, (
+            patch(
+                "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
+                new_callable=AsyncMock, return_value=config,
+            ),
+            patch("app.sources.external.snowflake.warehouse.SnowflakeDataSource", return_value=data_source),
+            patch("app.sources.external.snowflake.warehouse.SnowflakeStatementRunner", return_value=runner),
+        )
+
     @pytest.mark.asyncio
-    async def test_pat_auth_success(self):
+    async def test_runs_through_the_sql_api_with_a_timeout_and_closes_the_client(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_sdk_client = MagicMock()
-        mock_sdk_client.execute_query_raw.return_value = (["col1"], [(42,)])
-        mock_sdk_client.__enter__ = MagicMock(return_value=mock_sdk_client)
-        mock_sdk_client.__exit__ = MagicMock(return_value=False)
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "PAT"
-        mock_auth.patToken = "token-123"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeSDKClient",
-            return_value=mock_sdk_client,
-        ):
+        runner, data_source, patches = self._patches(self.CONFIG)
+        with patches[0], patches[1], patches[2] as runner_cls:
             result = await _execute_snowflake_query("SELECT 1", MagicMock(), "conn-sf")
 
-        assert result["ok"] is True
-        assert result["rows"] == [(42,)]
+        assert result == {"ok": True, "columns": ["N"], "rows": [[42]]}
+        runner.run.assert_awaited_once_with("SELECT 1", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
+        kwargs = runner_cls.call_args.kwargs
+        assert kwargs["warehouse"] == "WH_1"
+        assert kwargs["session_parameters"] == {"QUERY_TAG": "pipeshub:agent"}
+        assert kwargs["slots"] is not None
+        data_source.http.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_oauth_auth_success(self):
+    async def test_missing_warehouse_fails_before_any_call(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_sdk_client = MagicMock()
-        mock_sdk_client.execute_query_raw.return_value = (["x"], [(1,)])
-        mock_sdk_client.__enter__ = MagicMock(return_value=mock_sdk_client)
-        mock_sdk_client.__exit__ = MagicMock(return_value=False)
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "OAUTH"
-
-        mock_credentials = MagicMock()
-        mock_credentials.access_token = "oauth-token"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-        mock_config.credentials = mock_credentials
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeSDKClient",
-            return_value=mock_sdk_client,
-        ):
+        config = {"auth": {"accountIdentifier": "acc-1", "patToken": "pat-123"}}
+        runner, _, patches = self._patches(config)
+        with patches[0], patches[1], patches[2]:
             result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
-        assert result["ok"] is True
+        assert result["ok"] is False
+        assert "warehouse" in result["error"]
+        runner.run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_pat_missing_token(self):
+    async def test_missing_token_is_reported(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "PAT"
-        mock_auth.patToken = None
+        config = {"auth": {"accountIdentifier": "acc-1", "warehouse": "WH"}}
+        _, _, patches = self._patches(config)
+        with patches[0], patches[1], patches[2]:
+            result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
+        assert result["ok"] is False
+        assert "personal access token" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_statement_is_reported_and_the_client_closed(self) -> None:
+        from app.sources.external.snowflake.statements import SnowflakeFetchError
+        from app.utils.execute_query import _execute_snowflake_query
+
+        run = AsyncMock(side_effect=SnowflakeFetchError("Object 'X' does not exist", sqlstate="42S02"))
+        _, data_source, patches = self._patches(self.CONFIG, run=run)
+        with patches[0], patches[1], patches[2]:
+            result = await _execute_snowflake_query("SELECT * FROM X", MagicMock())
+
+        assert result["ok"] is False
+        assert "does not exist" in result["error"]
+        data_source.http.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_config_is_reported(self) -> None:
+        from app.utils.execute_query import _execute_snowflake_query
 
         with patch(
             "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
+            new_callable=AsyncMock, side_effect=ValueError("Failed to get Snowflake connector configuration"),
         ):
             result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
         assert result["ok"] is False
-        assert "PAT token" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_oauth_missing_access_token(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "OAUTH"
-
-        mock_credentials = MagicMock()
-        mock_credentials.access_token = None
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-        mock_config.credentials = mock_credentials
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "OAuth access token" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_unsupported_auth_type(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "BASIC"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "Unsupported" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("boom"),
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "boom" in result["error"]
+        assert "configuration" in result["error"]
 
 
-# ===========================================================================
-# _execute_mariadb_query
 # ===========================================================================
 
 
@@ -1452,3 +1380,84 @@ def test_functions_that_do_more_than_read_are_blocked(sql: str) -> None:
 @pytest.mark.parametrize("sql", ["SET @x = 1", "USE other_db", "DECLARE x INT"])
 def test_session_statements_are_not_reads(sql: str) -> None:
     assert _is_query_safe(sql)[0] is False
+
+
+
+# ---- bounds: execute_sql_query: what the executors ask for, and what the model is told ----
+
+
+def _patched_client(raw: AsyncMock) -> MagicMock:
+    client = MagicMock()
+    client.resize_pool = MagicMock()
+    client.connect = AsyncMock()
+    client.close = AsyncMock()
+    client.execute_query_raw = raw
+    client.get_connection_info.return_value = {"host": "h", "port": 1, "database": "d", "user": "u"}
+    builder = MagicMock()
+    builder.get_client.return_value = client
+    return builder
+
+
+@pytest.mark.asyncio
+async def test_postgres_executor_asks_for_the_bounds() -> None:
+    raw = AsyncMock(return_value=(["id"], [(1,)]))
+    with patch(
+        "app.sources.client.postgres.postgres.PostgreSQLClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=_patched_client(raw),
+    ):
+        await eq._execute_postgres_query("SELECT 1", MagicMock(), "c")
+    assert raw.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_mariadb_executor_asks_for_the_bounds() -> None:
+    raw = AsyncMock(return_value=(["id"], [(1,)]))
+    builder = _patched_client(raw)
+    builder.get_client.return_value.__aenter__ = AsyncMock(return_value=None)
+    builder.get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    with patch(
+        "app.sources.client.mariadb.mariadb.MariaDBClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=builder,
+    ):
+        await eq._execute_mariadb_query("SELECT 1", MagicMock(), "c")
+    assert raw.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_snowflake_executor_asks_for_the_bounds() -> None:
+    runner, _, patches = TestExecuteSnowflakeQuery._patches(TestExecuteSnowflakeQuery.CONFIG)
+    with patches[0], patches[1], patches[2]:
+        await eq._execute_snowflake_query("SELECT 1", MagicMock(), "c")
+    assert runner.run.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+
+
+@pytest.mark.asyncio
+async def test_a_cut_result_is_reported_to_the_model() -> None:
+    rows = [(i,) for i in range(SQL_MAX_ROWS + 1)]  # what a bounded fetch hands back
+    with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["id"], "rows": rows})):
+        out = await eq._execute_query_impl("SELECT id FROM t", "PostgreSQL", MagicMock(), "c")
+    assert out["row_count"] == SQL_MAX_ROWS == len(out["raw_rows"])
+    assert out["rows_cut_at"] == SQL_MAX_ROWS
+    assert f"cut at {SQL_MAX_ROWS} rows" in out["markdown_result"]
+
+
+@pytest.mark.asyncio
+async def test_a_complete_result_is_not_marked_cut() -> None:
+    rows = [(i,) for i in range(SQL_MAX_ROWS)]
+    with patch.object(eq, "_execute_postgres_query", AsyncMock(return_value={"ok": True, "columns": ["id"], "rows": rows})):
+        out = await eq._execute_query_impl("SELECT id FROM t", "PostgreSQL", MagicMock(), "c")
+    assert "rows_cut_at" not in out and "cut at" not in out["markdown_result"]
+
+
+@pytest.mark.asyncio
+async def test_a_database_timeout_is_a_tool_error() -> None:
+    raw = AsyncMock(side_effect=Exception("canceling statement due to statement timeout"))
+    with patch(
+        "app.sources.client.postgres.postgres.PostgreSQLClientBuilder.build_from_services",
+        new_callable=AsyncMock,
+        return_value=_patched_client(raw),
+    ):
+        out = await eq._execute_postgres_query("SELECT pg_sleep(999)", MagicMock(), "c")
+    assert out["ok"] is False and f"up to {SQL_QUERY_TIMEOUT_S}s" in out["error"]

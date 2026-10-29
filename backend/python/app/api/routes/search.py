@@ -641,6 +641,10 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
         # naming bucket and key; search links to the record page instead.
         hidden = bool(md.get("hideWeburl") or doc.get("hideWeburl"))
         record_page = f"/record/{record_id}"
+        # Records without pages are indexed with pageNum [None]; older indexes stored
+        # a bare page number. The contract is a list of integers, or null.
+        pages = md.get("pageNum")
+        pages = [p for p in (pages if isinstance(pages, list) else [pages]) if p is not None] or None
         chunks.append({
             # Stable across calls for the same indexed block, so callers can dedupe and cache.
             "id": f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{hit.get('block_index')}",
@@ -657,7 +661,7 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
                 # Built by app/utils/text_fragments; never rebuilt here.
                 "url": record_page if hidden else md.get("webUrl"),
                 "recordUrl": record_page if hidden else (doc.get("webUrl") or md.get("webUrl")),
-                "pageNum": md.get("pageNum"),
+                "pageNum": pages,
                 "blockIndex": hit.get("block_index"),
             },
         })

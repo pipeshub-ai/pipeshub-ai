@@ -1773,6 +1773,44 @@ class TestUpdateFiltersSyncConfigGaps:
         assert updates[ConnectorStateKeys.PENDING_FULL_SYNC] is True
 
     @pytest.mark.asyncio
+    async def test_a_branch_change_alone_does_not_set_pending_full_sync(self) -> None:
+        """The full resync deleted the code checkpoint and the code graph's build
+        state: the whole repo was walked again and every edge rebuilt."""
+        registry = AsyncMock()
+        instance = {
+            "type": "GITHUB", "scope": "team", "createdBy": "user-1",
+            "isActive": False, "name": "Code",
+        }
+        registry.update_connector_instance = AsyncMock(return_value={"_key": "c1"})
+        repos = {"repo_ids": {"operator": "in", "value": ["acme/widgets"]}}
+        old_config = {"filters": {"sync": {"values": {
+            **repos, "branch": {"operator": "in", "type": "select", "value": ["main"]}}}}}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=old_config)
+        config_service.set_config = AsyncMock()
+        container = MagicMock()
+        container.logger = MagicMock(return_value=logging.getLogger("test"))
+        container.config_service = MagicMock(return_value=config_service)
+        req = _mock_request(
+            connector_registry=registry,
+            container=container,
+            body={"filters": {"sync": {"values": {
+                **repos, "branch": {"operator": "in", "type": "select", "value": ["release"]}}}}},
+        )
+
+        with patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=instance):
+            with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+                with patch(f"{_ROUTER}._validate_sync_filter_selections", new_callable=AsyncMock):
+                    with patch(f"{_ROUTER}._trim_connector_config", side_effect=lambda x: x):
+                        result = await update_connector_instance_filters_sync_config("c1", req)
+
+        assert result["syncFiltersChanged"] is False
+        updates = registry.update_connector_instance.call_args[1]["updates"]
+        assert ConnectorStateKeys.PENDING_FULL_SYNC not in updates
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["filters"]["sync"]["values"]["branch"]["value"] == ["release"]
+
+    @pytest.mark.asyncio
     async def test_does_not_set_pending_full_sync_when_filters_unchanged(self):
         """Verify that pendingFullSync is not set when sync filters don't change."""
 

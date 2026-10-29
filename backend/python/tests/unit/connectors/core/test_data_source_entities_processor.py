@@ -7857,6 +7857,46 @@ class TestOnRecordsMovedDuplicateGuard:
         # The duplicate must still be retired, same as before.
         tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
 
+    async def test_records_inheriting_from_the_duplicate_inherit_from_the_survivor(self) -> None:
+        """Search reaches a record by walking INHERIT_PERMISSIONS up to its group.
+        Children that inherited from the retired duplicate (a placeholder folder
+        minted before the real folder's move landed) must inherit from the
+        surviving vertex, or nobody can find them any more."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        async def edges_to(node_id, collection, **_kwargs) -> list[dict[str, str]]:
+            if collection == CollectionNames.INHERIT_PERMISSIONS.value and node_id.endswith("/rec-duplicate"):
+                return [
+                    # ArangoDB's shape: its own edge documents.
+                    {"_from": f"{CollectionNames.RECORDS.value}/child-1",
+                     "_to": f"{CollectionNames.RECORDS.value}/rec-duplicate"},
+                    {"_from": f"{CollectionNames.RECORD_GROUPS.value}/not-a-record",
+                     "_to": f"{CollectionNames.RECORDS.value}/rec-duplicate"},
+                    # Neo4j's shape: the generic from_id / from_collection.
+                    {"from_id": "child-2", "from_collection": CollectionNames.RECORDS.value,
+                     "to_id": "rec-duplicate", "to_collection": CollectionNames.RECORDS.value},
+                    {"from_id": "group-x", "from_collection": CollectionNames.RECORD_GROUPS.value,
+                     "to_id": "rec-duplicate", "to_collection": CollectionNames.RECORDS.value},
+                ]
+            return []
+
+        tx_store.get_edges_to_node = AsyncMock(side_effect=edges_to)
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.create_inherit_permissions_relation_record.assert_any_await("child-1", "rec-original")
+        tx_store.create_inherit_permissions_relation_record.assert_any_await("child-2", "rec-original")
+        assert all(
+            call.args[0] not in ("not-a-record", "group-x")
+            for call in tx_store.create_inherit_permissions_relation_record.await_args_list
+        )
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+
     async def test_duplicate_non_parent_child_edges_are_not_reparented(self) -> None:
         """Only PARENT_CHILD edges are migrated off a retired duplicate — an
         ATTACHMENT edge (e.g. an email attachment) must not be copied onto the

@@ -538,6 +538,7 @@ export function ConnectorPanel() {
       try {
         const result = await ConnectorsApi.testConnection(connectorType, {
           auth,
+          ...(selectedAuthType ? { authType: selectedAuthType } : {}),
           ...(panelConnectorId ? { connectorId: panelConnectorId } : {}),
         });
         if (isStale()) return false;
@@ -561,7 +562,7 @@ export function ConnectorPanel() {
       });
       return false;
     },
-    [connectorType, panelConnectorId, setConnectionCheck, t]
+    [connectorType, panelConnectorId, selectedAuthType, setConnectionCheck, t]
   );
 
   /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */

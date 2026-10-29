@@ -463,7 +463,7 @@ class TestLookupRecord:
         scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
         mock_resolve_scope.return_value = scope
 
-        match = SimpleNamespace(id="rec-1", name="Login bug")
+        match = SimpleNamespace(id="rec-1", name="Login bug", context_block=None)
         result_obj = SimpleNamespace(matches=[match])
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = result_obj
@@ -495,8 +495,8 @@ class TestLookupRecord:
 
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = SimpleNamespace(matches=[
-            SimpleNamespace(id="rec-1", name="Login bug"),
-            SimpleNamespace(id="rec-2", name="Cut by the cap"),
+            SimpleNamespace(id="rec-1", name="Login bug", context_block=None),
+            SimpleNamespace(id="rec-2", name="Cut by the cap", context_block=None),
         ])
         mock_resolver_cls.return_value = resolver_instance
 

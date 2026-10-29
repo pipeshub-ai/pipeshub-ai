@@ -155,12 +155,14 @@ class ReposSync:
         last_sha, last_path, last_branch = await self._get_code_repo_checkpoint(project_id)
         # A checkpoint from before branch selection was taken on the default branch.
         last_branch = last_branch or default_branch
-        if last_sha is not None and last_branch != branch:
+        branch_changed = last_sha is not None and last_branch != branch
+        if branch_changed:
+            # The compare is straight (from one head to the other, not from their
+            # merge base), so it is the exact delta between the two branches.
             self.logger.info(
-                "Project %s synced branch changed (%s -> %s); walking the whole tree",
+                "Project %s synced branch changed (%s -> %s); syncing the difference",
                 project_id, last_branch, branch,
             )
-            last_sha = None
         if last_sha is not None and last_path != project_path:
             # Code records are keyed by the project's path. After a rename or a transfer
             # (or a checkpoint written before the path was kept) only a walk re-keys them.
@@ -184,6 +186,8 @@ class ReposSync:
             return
 
         if last_sha == current_sha:
+            if branch_changed:
+                await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
             self.logger.info(
                 "Code repo unchanged for project %s (HEAD %s); skipping",
                 project_id, current_sha[:8],

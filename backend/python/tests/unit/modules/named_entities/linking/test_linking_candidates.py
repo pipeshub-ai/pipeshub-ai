@@ -136,7 +136,7 @@ async def test_dense_runs_only_for_embedded_kinds_and_never_repeats_an_exact_can
         return [_hit(acme["id"], "Acme"), _hit("other", "Acme Labs")]
 
     _, found = await _find([acme], {acme["id"]}, [{"name": "Acme", "kind": "organization"}, {"name": "Sam Lee", "kind": "person"}], dense=dense)
-    assert calls == [("Acme", ["organization"])]
+    assert calls == [("Acme", ["product", "organization"])]
     assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [
         ("Acme", CandidateSource.EXACT), ("Acme Labs", CandidateSource.DENSE),
     ]
@@ -274,3 +274,35 @@ async def test_a_correct_full_name_is_exact_and_organizations_get_no_fuzzy_looku
     ])
     assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [("Maya Castellanos", CandidateSource.EXACT)]
     assert ("organization", "name:organization:acme") not in graph.prefix_calls[0]
+
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_fill_the_cap_but_never_make_a_name_ambiguous() -> None:
+    products = [_node("product", f"name:product:halcyon {w}", f"Halcyon {w}") for w in ("ledger", "pay", "books")]
+    companies = [_node("organization", f"name:organization:halcyon {w}", f"Halcyon {w}") for w in ("foods", "labs", "group", "capital")]
+    nodes = [*products, *companies]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert not entry.ambiguous
+    names = [c.name for c in entry.candidates]
+    assert names[:3] == ["Halcyon books", "Halcyon ledger", "Halcyon pay"] and len(names) == MAX_CANDIDATES
+    assert entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_that_fit_the_cap_report_nothing_cut() -> None:
+    nodes = [
+        _node("product", "name:product:halcyon ledger", "Halcyon ledger"),
+        _node("organization", "name:organization:halcyon foods", "Halcyon foods"),
+    ]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert len(entry.candidates) == 2 and not entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_a_product_hint_reaches_a_name_filed_as_an_organization() -> None:
+    company = _node("organization", "name:organization:halcyon ledger", "Halcyon Ledger")
+    _, found = await _find([company], {company["id"]}, [{"name": "Halcyon Ledger", "kind": "product"}])
+    assert [(c.name, c.kind) for c in found.per_mention[0].candidates] == [("Halcyon Ledger", "organization")]
