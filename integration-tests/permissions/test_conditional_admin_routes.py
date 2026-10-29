@@ -68,7 +68,11 @@ def world(
     pipeshub_client: PipeshubClient,
     user_session_client: SessionClient,
     people: tuple[SecondUser, SecondUser],
+    ai_models_configured: object,
 ) -> Iterator[World]:
+    # The world uploads notes, and the first upload fixes the org's embedding
+    # model: without this the built-in one takes it and the suite's cannot.
+    del ai_models_configured
     creator, member = people
     made = World(
         gateway_url=user_session_client.base_url,
