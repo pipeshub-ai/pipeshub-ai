@@ -34,6 +34,13 @@ class ServiceNowAPIError(Exception):
         super().__init__(f"ServiceNow API Error {status_code}: {message}")
 
 
+class ServiceNowAuthError(ServiceNowAPIError):
+    """A 401 that a token refresh did not cure: the sync stops instead of failing item by item."""
+
+    def __init__(self, message: str, details: str | None = None) -> None:
+        super().__init__(status_code=401, message=message, details=details)
+
+
 class TableAPIRecord(BaseModel):
     """Generic record from ServiceNow Table API.
 
@@ -101,6 +108,8 @@ class TableAPIResponse(BaseModel):
         default_factory=list,
         description="Array of table records returned by the query"
     )
+    # X-Total-Count: rows the query matches before ACLs drop any (None when not sent).
+    total_count: int | None = None
 
     model_config = ConfigDict(extra="allow")
 

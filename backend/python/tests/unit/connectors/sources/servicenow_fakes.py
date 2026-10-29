@@ -4,9 +4,10 @@
 the encoded query language the connector sends (``=``, ``!=``, ``>``, ``<``, ``>=``, ``<=``, ``IN``,
 ``ISEMPTY``, ``ISNOTEMPTY``, ``^OR``, ``^NQ``, ``ORDERBY``), cuts the page at ``sysparm_limit`` and only
 then drops the rows an ACL hides (``_acl_hidden``), as ServiceNow does, so a page can come back short
-while more rows follow. With ``shuffle_ties`` rows that the ORDERBY does not tell apart come back in a
+while more rows follow. ``total_count`` (X-Total-Count) counts the matching rows before the ACL, as
+ServiceNow does. With ``shuffle_ties`` rows that the ORDERBY does not tell apart come back in a
 different order on every call, as a database without a total order returns them. Every call is logged
-in ``calls``; ``after_call`` runs after each one (to change rows mid-walk); ``fail`` may return an
+in ``calls`` (and its parameters in ``params``); ``after_call`` runs after each one (to change rows mid-walk); ``fail`` may return an
 error to raise for a (table, query).
 """
 
@@ -78,6 +79,7 @@ class FakeServiceNow:
     after_call: Callable[[FakeServiceNow], None] | None = None
     fail: Callable[[str, str | None], Exception | None] | None = None
     calls: list[tuple[str, str | None, int]] = field(default_factory=list)
+    params: list[dict[str, str | None]] = field(default_factory=list)
     _rng: random.Random = field(default_factory=lambda: random.Random(7))
 
     def calls_to(self, table: str) -> list[str | None]:
@@ -85,10 +87,11 @@ class FakeServiceNow:
 
     async def get_now_table_tableName(
         self, tableName: str, sysparm_query: str | None = None, sysparm_fields: str | None = None,
-        sysparm_limit: str | None = None, sysparm_offset: str | None = None, **_: str | None,
+        sysparm_limit: str | None = None, sysparm_offset: str | None = None, **rest: str | None,
     ) -> TableAPIResponse:
         limit = int(sysparm_limit or 10000)
         self.calls.append((tableName, sysparm_query, limit))
+        self.params.append({"sysparm_offset": sysparm_offset, **rest})
         error = self.fail(tableName, sysparm_query) if self.fail else None
         if error:
             raise error
@@ -96,14 +99,14 @@ class FakeServiceNow:
         if self.shuffle_ties:
             self._rng.shuffle(rows)
         offset = int(sysparm_offset or 0)
-        page = matching(rows, sysparm_query)[offset:offset + limit]
-        visible = [r for r in page if not r.get("_acl_hidden")]
+        matched = matching(rows, sysparm_query)
+        visible = [r for r in matched[offset:offset + limit] if not r.get("_acl_hidden")]
         names = sysparm_fields.split(",") if sysparm_fields else None
         response = TableAPIResponse(result=[
             TableAPIRecord(**({n: r.get(n, "") for n in names} if names else
                               {k: v for k, v in r.items() if not k.startswith("_")}))
             for r in visible
-        ])
+        ], total_count=len(matched))
         if self.after_call:
             self.after_call(self)
         return response

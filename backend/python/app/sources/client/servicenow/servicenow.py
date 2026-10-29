@@ -1,5 +1,8 @@
 import base64
+import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
@@ -11,6 +14,58 @@ from app.sources.client.http.exception.exception import BadRequestError
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
+
+
+class ServiceNowRateLimited(Exception):
+    """ServiceNow asked for a longer wait than a sync should hold: a rate limit rule is spent until ``reset_at``."""
+
+    def __init__(self, reset_at: float, rule: str | None = None) -> None:
+        self.reset_at = reset_at
+        self.rule = rule
+        until = datetime.fromtimestamp(reset_at, tz=timezone.utc).strftime("%H:%M UTC")
+        super().__init__(f"ServiceNow rate limit reached until {until}" + (f" (rule {rule})" if rule else ""))
+
+
+class ServiceNowRateLimitPolicy(ResiliencePolicy):
+    """Retries short waits, and stops once a 429 asks for more than ``max_delay``.
+
+    ServiceNow rate limit rules count per hour: a 429 carries Retry-After (seconds to the next
+    full hour), X-RateLimit-Reset (epoch seconds) and X-RateLimit-Rule, and no Remaining header,
+    so there is nothing to throttle on ahead of it. Waiting out the hour would hold a sync, so
+    every request after it raises ``ServiceNowRateLimited`` unsent until the reset.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.reset_at: float | None = None
+        self.rule: str | None = None
+        self._last_status: int | None = None
+        self._last_headers: Mapping[str, str] = {}
+
+    def note_response_status(self, status: int, headers: Mapping[str, str] | None = None) -> None:
+        """The response the next ``note_retry`` is about (set by the transport)."""
+        self._last_status, self._last_headers = status, headers or {}
+
+    def note_retry(self, attempt: int, retry_after: float | None = None) -> float:
+        # Cleared on read: a network error that follows a 429 is not another 429.
+        status, self._last_status = self._last_status, None
+        if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            if retry_after is None:
+                try:
+                    retry_after = float(self._last_headers.get("X-RateLimit-Reset") or "") - time.time()
+                except ValueError:
+                    retry_after = None
+            if retry_after is not None and retry_after > self.max_delay:
+                self.reset_at = time.time() + retry_after
+                self.rule = self._last_headers.get("X-RateLimit-Rule")
+                raise ServiceNowRateLimited(self.reset_at, self.rule)
+        return super().note_retry(attempt, retry_after)
+
+    async def acquire(self) -> None:
+        if self.reset_at is not None and time.time() < self.reset_at:
+            raise ServiceNowRateLimited(self.reset_at, self.rule)
+        await super().acquire()
 
 
 class ServiceNowResponse(BaseModel):
@@ -202,6 +257,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         client_secret: The OAuth client secret
         redirect_uri: The redirect URI for OAuth flow
         access_token: Optional existing access token
+        resilience: Rate limit and retry policy applied below every request
     """
     def __init__(
         self,
@@ -209,9 +265,10 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         client_id: str,
         client_secret: str,
         redirect_uri: str,
-        access_token: Optional[str] = None
+        access_token: Optional[str] = None,
+        resilience: ResiliencePolicy | None = None,
     ) -> None:
-        super().__init__(access_token or "", "Bearer")
+        super().__init__(access_token or "", "Bearer", resilience=resilience)
 
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"

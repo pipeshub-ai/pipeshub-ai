@@ -12,6 +12,18 @@ from app.sources.external.servicenow.models import (
     ServiceNowAPIError,
     TableAPIResponse,
 )
+from app.utils.url_redaction import redact_urls_in_text
+
+
+def _vendor_reason(body: str) -> str | None:
+    """``error.message`` and ``error.detail`` of a ServiceNow error body, or None if it has neither."""
+    try:
+        error = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(error, dict):
+        return None
+    return ": ".join(str(error[k]) for k in ("message", "detail") if error.get(k)) or None
 
 
 class ServiceNowDataSource:
@@ -92,19 +104,25 @@ class ServiceNowDataSource:
         """
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             error_body = response.text()
-            self.logger.error(f"ServiceNow Table API error: HTTP {response.status} - {error_body[:500]}")
+            self.logger.error(
+                f"ServiceNow Table API error: HTTP {response.status} - {redact_urls_in_text(error_body[:300])}"
+            )
             raise ServiceNowAPIError(
                 status_code=response.status,
-                message=f"HTTP {response.status}",
+                message=redact_urls_in_text(_vendor_reason(error_body) or "") or f"HTTP {response.status}",
                 details=error_body
             )
 
+        # Rows the query matches before ACLs hide any; a listing needs it to know where it ends.
+        count = (response.headers or {}).get("x-total-count")
+        total_count = int(count) if isinstance(count, str) and count.isdigit() else None
+
         if response.status == HttpStatusCode.NO_CONTENT or not response.text():
-            return TableAPIResponse(result=[])
+            return TableAPIResponse(result=[], total_count=total_count)
 
         try:
             data = response.json()
-            return TableAPIResponse(**data)
+            return TableAPIResponse(**{**data, "total_count": total_count})
         except Exception as e:
             self.logger.error(f"Failed to parse ServiceNow Table API response: {e}")
             raise ServiceNowAPIError(

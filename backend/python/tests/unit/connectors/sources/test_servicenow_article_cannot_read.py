@@ -84,11 +84,10 @@ async def test_an_article_with_cannot_read_replaces_its_grants_and_its_attachmen
     attachment = SimpleNamespace(rewrite_permissions=False)
     sc._transform_to_article_webpage_record = lambda _: article
     sc._transform_to_attachment_file_record = lambda *_a, **_k: attachment
-    sc._fetch_attachments_for_article = AsyncMock(return_value=[SimpleNamespace(sys_id="att1")])
     sc._article_deny_permissions = AsyncMock(return_value=[])
     sc._process_criteria_permissions = AsyncMock(return_value=[])
 
-    updates = await sc._process_single_article(_art(cannot_read_user_criteria=deny))
+    updates = await sc._process_single_article(_art(cannot_read_user_criteria=deny), [SimpleNamespace(sys_id="att1")])
 
     assert [u.record.rewrite_permissions for u in updates] == [rewrite, rewrite]
 
@@ -152,10 +151,9 @@ async def test_a_failed_admin_read_skips_the_article_so_its_stored_admin_grants_
     sc._get_admin_users = AsyncMock(side_effect=ServiceNowAPIError(500, "fail", None))
     sc._transform_to_article_webpage_record = lambda _: SimpleNamespace(
         rewrite_permissions=False, inherit_permissions=False, record_group_type=None, external_record_group_id="kb1")
-    sc._fetch_attachments_for_article = AsyncMock(return_value=[])
 
     # It raises, so _sync_articles skips the article (stored grants stay) and retries it next run.
     with pytest.raises(ServiceNowAPIError):
-        await sc._process_single_article(_art(cannot_read_user_criteria="deny1"))
+        await sc._process_single_article(_art(cannot_read_user_criteria="deny1"), [])
 
     assert sc._admin_source_ids is None, "an unread admin list must not be cached"

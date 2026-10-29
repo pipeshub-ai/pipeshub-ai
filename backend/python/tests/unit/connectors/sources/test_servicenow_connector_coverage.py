@@ -46,8 +46,10 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _table_api_response(records: list) -> TableAPIResponse:
-    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
+def _table_api_response(records: list, total: int | None = None) -> TableAPIResponse:
+    # total: X-Total-Count, the rows the query matches from here on (default: these rows)
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records],
+                            total_count=len(records) if total is None else total)
 
 
 @pytest.fixture()
@@ -423,9 +425,10 @@ class TestServiceNowMisc:
 
     @pytest.mark.asyncio
     async def test_cleanup(self, connector):
-        connector.servicenow_client = MagicMock()
+        client = connector.servicenow_client = MagicMock(close=AsyncMock())
         connector.servicenow_datasource = MagicMock()
         await connector.cleanup()
+        client.close.assert_awaited_once()  # the connection pool is closed, not just dropped
         assert connector.servicenow_client is None
         assert connector.servicenow_datasource is None
 

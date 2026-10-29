@@ -4,7 +4,6 @@ The connector's listings run against ``FakeServiceNow``, which answers encoded q
 Table API does, including pages that come back short because an ACL hid rows after the page was cut.
 """
 
-import math
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
@@ -60,7 +59,7 @@ def _written(sc) -> list[str]:
     return [r.external_record_id for c in sc.data_entities_processor.on_new_records.await_args_list for r, _ in c.args[0]]
 
 
-# --- SN-01: only an empty page ends a listing -------------------------------------------------
+# --- SN-01: a short page does not end a listing (X-Total-Count does: test_servicenow_batch_f) ---
 
 
 @pytest.mark.asyncio
@@ -78,22 +77,9 @@ async def test_acl_short_page_does_not_end_listing(servicenow_connector) -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count", [0, 1, 100, 150])
-async def test_empty_page_ends_listing(servicenow_connector, count) -> None:  # noqa: F811
-    fake = FakeServiceNow({"kb_knowledge": [_article(i) for i in range(count)]})
-    _wire(servicenow_connector, fake)
-
-    await servicenow_connector._sync_articles()
-
-    # each listing makes exactly one extra call, the empty page that ends it
-    assert len(fake.calls_to("kb_knowledge")) == math.ceil(count / 100) + 1
-    assert len(set(_written(servicenow_connector))) == count
-
-
-@pytest.mark.asyncio
 async def test_listing_that_does_not_advance_raises(servicenow_connector) -> None:  # noqa: F811
     # An instance that ignores the keyset condition answers every page with the first one.
-    same = TableAPIResponse(result=[{"sys_id": "g1", "sys_updated_on": T0}])
+    same = TableAPIResponse(result=[{"sys_id": "g1", "sys_updated_on": T0}], total_count=1000)
     servicenow_connector._get_fresh_datasource = AsyncMock(
         return_value=MagicMock(get_now_table_tableName=AsyncMock(return_value=same)))
 
@@ -166,8 +152,8 @@ async def test_in_list_is_chunked_under_max_url_length(servicenow_connector) -> 
     fields = "sys_id,active,match_all,advanced,user,group,role,department,location,company,cost_center,sys_updated_on"
     for _, query, limit in fake.calls:
         url = (f"{INSTANCE}/api/now/table/user_criteria?sysparm_query={quote(query, safe='')}"
-               f"&sysparm_fields={quote(fields, safe='')}&sysparm_limit={limit}&sysparm_display_value=false"
-               "&sysparm_no_count=true&sysparm_exclude_reference_link=true")
+               f"&sysparm_fields={quote(fields, safe='')}&sysparm_limit={limit}&sysparm_offset=0"
+               "&sysparm_display_value=false&sysparm_exclude_reference_link=true")
         assert len(url) < ServiceNowDefaults.MAX_URL_LENGTH
 
 
@@ -186,7 +172,7 @@ async def test_admin_read_is_paged(servicenow_connector) -> None:  # noqa: F811
     admins = await servicenow_connector._get_admin_users()
 
     assert len(admins) == 150
-    assert [limit for _, _, limit in fake.calls] == [100, 100, 100]
+    assert [limit for _, _, limit in fake.calls] == [100, 100]
 
 
 # --- SN-04 / SN-05 / SN-06: failures hold the checkpoint and the coverage -------------------
@@ -237,11 +223,17 @@ async def test_clean_run_reports_complete(servicenow_connector) -> None:  # noqa
 
 
 def _three_articles_second_fails(fail: bool) -> FakeServiceNow:
+    # Attachments are listed per page, so the second article fails on its own Can Read criteria.
     return FakeServiceNow(
-        {"kb_knowledge": [
-            _article(1, "2024-06-01 01:00:00"), _article(2, "2024-06-01 02:00:00"), _article(3, "2024-06-01 03:00:00"),
-        ]},
-        fail=lambda table, query: status_error(503) if fail and table == "sys_attachment" and "a0002" in query else None,
+        {
+            "kb_knowledge": [
+                _article(1, "2024-06-01 01:00:00"),
+                _article(2, "2024-06-01 02:00:00", can_read_user_criteria="uc2"),
+                _article(3, "2024-06-01 03:00:00"),
+            ],
+            "user_criteria": [{"sys_id": "uc2", "user": "u1", "sys_updated_on": T0}],
+        },
+        fail=lambda table, query: status_error(503) if fail and table == "user_criteria" else None,
     )
 
 
@@ -273,10 +265,11 @@ async def test_failed_article_retried_next_run(servicenow_connector) -> None:  #
 
 @pytest.mark.asyncio
 async def test_attachment_listing_503_fails_the_article_not_the_attachments(servicenow_connector) -> None:  # noqa: F811
+    # Attachments are listed per page of articles, so a failed listing fails that page.
     fake = FakeServiceNow(
         {
-            "kb_knowledge": [_article(1), _article(2)],
-            "sys_attachment": [_attachment(1, "a0001"), _attachment(2, "a0002")],
+            "kb_knowledge": [_article(i, f"2024-06-01 00:{i // 100:02d}:00") for i in range(101)],
+            "sys_attachment": [_attachment(1, "a0001"), _attachment(100, "a0100")],
         },
         fail=lambda table, query: status_error(503) if table == "sys_attachment" and "a0001" in query else None,
     )
@@ -284,8 +277,8 @@ async def test_attachment_listing_503_fails_the_article_not_the_attachments(serv
 
     await servicenow_connector._sync_articles()
 
-    # a0001 and its stored attachment are left as they are, not rewritten with "no attachments"
-    assert sorted(_written(servicenow_connector)) == ["a0002", "f0002"]
+    # page 1 and a0001's stored attachment are left as they are, not rewritten with "no attachments"
+    assert sorted(_written(servicenow_connector)) == ["a0100", "f0100"]
     assert servicenow_connector.full_sync_coverage().complete is False
 
 
