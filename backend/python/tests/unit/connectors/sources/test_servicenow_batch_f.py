@@ -462,7 +462,7 @@ async def test_admins_read_once_per_run(servicenow_connector) -> None:  # noqa: 
          patch.object(sc, "_sync_categories", new_callable=AsyncMock):
         await sc.run_sync()
 
-    assert len(fake.calls_to("sys_user_has_role")) == 1
+    assert len([q for q in fake.calls_to("sys_user_has_role") if not q.startswith("ORDERBYDESC")]) == 1
     assert _written(sc) == ["KB0000001"]
 
 

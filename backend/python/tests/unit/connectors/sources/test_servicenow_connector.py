@@ -169,6 +169,7 @@ def mock_data_entities_processor():
     proc.delete_record_by_external_id = AsyncMock()
     proc.get_records_by_parent = AsyncMock(return_value=[])
     proc.get_records_by_record_type = AsyncMock(return_value=[])
+    proc.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())  # stored
     return proc
 
 
@@ -292,7 +293,8 @@ class TestServiceNowConnectorInit:
 
     async def test_init_fails_no_config(self, servicenow_connector):
         servicenow_connector.config_service.get_config = AsyncMock(return_value=None)
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match="no saved settings"):
+            await servicenow_connector.init()
 
     async def test_init_fails_no_oauth_config_id(self, servicenow_connector):
         servicenow_connector.config_service.get_config = AsyncMock(return_value={
@@ -305,12 +307,14 @@ class TestServiceNowConnectorInit:
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_oauth_not_found(self, mock_fetch_oauth, servicenow_connector):
         mock_fetch_oauth.return_value = None
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match="OAuth app this connector is linked to was not found"):
+            await servicenow_connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_incomplete_config(self, mock_fetch_oauth, servicenow_connector):
         mock_fetch_oauth.return_value = {"config": {"clientId": "id"}}
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match="missing the instance URL"):
+            await servicenow_connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_no_access_token(self, mock_fetch_oauth, servicenow_connector):
@@ -318,14 +322,15 @@ class TestServiceNowConnectorInit:
             "config": {
                 "clientId": "id", "clientSecret": "secret",
                 "instanceUrl": "https://sn.example.com",
-                "redirectUri": "http://localhost/callback",
-            }
+            },
+            "redirectUri": "http://localhost/callback",
         }
         servicenow_connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"oauthConfigId": "oauth-sn-1"},
             "credentials": {},
         })
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match="not authorized yet"):
+            await servicenow_connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowRESTClientViaOAuthAuthorizationCode")
@@ -336,8 +341,8 @@ class TestServiceNowConnectorInit:
             "config": {
                 "clientId": "id", "clientSecret": "secret",
                 "instanceUrl": "https://sn.example.com",
-                "redirectUri": "http://localhost/callback",
-            }
+            },
+            "redirectUri": "http://localhost/callback",
         }
         mock_client_cls.return_value = MagicMock()
         mock_ds_instance = MagicMock()
@@ -345,7 +350,8 @@ class TestServiceNowConnectorInit:
             side_effect=ServiceNowAPIError(401, "Unauthorized", None)
         )
         mock_ds_cls.return_value = mock_ds_instance
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match=r"refused the connector's sign-in \(HTTP 401: Unauthorized\)"):
+            await servicenow_connector.init()
 
 
 # ===========================================================================
@@ -424,15 +430,18 @@ class TestConnectionAndAccess:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                side_effect=ServiceNowAPIError(401, "Unauthorized", None)
+                side_effect=ServiceNowAPIError(503, "Unavailable", None)
             )
             mock_ds.return_value = mock_datasource
-            assert await servicenow_connector.test_connection_and_access() is False
+            with pytest.raises(ConnectorInitError, match="answered HTTP 503: Unavailable"):
+                await servicenow_connector.test_connection_and_access()
 
     async def test_exception(self, servicenow_connector):
+        # Not a ServiceNow or network error: the caller reports it as a failure of its own.
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock,
-                          side_effect=Exception("Connection refused")):
-            assert await servicenow_connector.test_connection_and_access() is False
+                          side_effect=Exception("Connection refused")), \
+                pytest.raises(Exception, match="Connection refused"):
+            await servicenow_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -615,10 +624,6 @@ class TestFetchAttachmentContent:
 class TestMiscMethods:
     def test_get_signed_url_returns_none(self, servicenow_connector):
         assert servicenow_connector.get_signed_url(MagicMock()) is None
-
-    async def test_handle_webhook_returns_true(self, servicenow_connector):
-        result = await servicenow_connector.handle_webhook_notification("org-1", {"event": "test"})
-        assert result is True
 
     async def test_cleanup(self, servicenow_connector):
         client = servicenow_connector.servicenow_client = MagicMock(close=AsyncMock())
@@ -1290,6 +1295,11 @@ class TestSyncSingleOrganizationalEntity:
 # ===========================================================================
 
 class TestSyncKnowledgeBases:
+    @pytest.fixture(autouse=True)
+    def _criteria_read_per_kb(self, servicenow_connector) -> None:
+        # These tests script the datasource call by call: each KB reads its own criteria.
+        servicenow_connector._load_kb_criteria = AsyncMock()
+
     @pytest.mark.asyncio
     async def test_knowledge_base_query_carries_no_delta_even_with_a_sync_point(self, servicenow_connector):
         """Read grants live in kb_uc_can_read_mtom, which never bumps the base row."""
@@ -1802,6 +1812,11 @@ class TestSyncUsersErrors:
 # ===========================================================================
 
 class TestSyncKnowledgeBasesDeep:
+    @pytest.fixture(autouse=True)
+    def _criteria_read_per_kb(self, servicenow_connector) -> None:
+        # These tests script the datasource call by call: each KB reads its own criteria.
+        servicenow_connector._load_kb_criteria = AsyncMock()
+
     async def test_reads_every_knowledge_base(self, servicenow_connector):
         """A criterion change does not touch the base row, so a delta would miss it."""
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
@@ -2652,11 +2667,6 @@ class TestInitRefreshToken:
         assert await servicenow_connector.init() is True
         assert mock_client.refresh_token is None
 
-    @pytest.mark.asyncio
-    async def test_handle_webhook_exception_returns_false(self, servicenow_connector):
-        with patch.object(servicenow_connector.logger, "info", side_effect=RuntimeError("log fail")):
-            result = await servicenow_connector.handle_webhook_notification("org-1", {"event": "test"})
-        assert result is False
 
 
 # ===========================================================================
@@ -2942,6 +2952,11 @@ class TestStreamRecordGenerators:
 
 
 class TestSyncArticles:
+    @pytest.fixture(autouse=True)
+    def _reread_due(self, servicenow_connector) -> None:
+        # These tests script the datasource call by call: the access check is not one of the calls.
+        servicenow_connector._access_reread_due = AsyncMock(return_value=(None, True))
+
     @pytest.mark.asyncio
     async def test_sync_articles_full_sync_with_pagination(self, servicenow_connector, mock_data_entities_processor):
         servicenow_connector.article_sync_point = migrated_sync_point()

@@ -1,10 +1,11 @@
 import base64
+import os
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from pydantic import BaseModel  # type: ignore
 
@@ -15,6 +16,64 @@ from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
+from app.utils.url_fetcher import (
+    PRIVATE_ADDRESS_SWITCH_ENV,
+    FetchError,
+    check_http_url_without_resolving,
+    private_addresses_blocked,
+)
+
+# Server-wide opt-in for an instance reached over plain http (a local test server).
+ALLOW_INSECURE_HTTP_ENV = "SERVICENOW_ALLOW_INSECURE_HTTP"
+
+
+def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | None] | None = None) -> str:
+    """The instance URL without a trailing slash; raises ValueError, with a message for the user,
+    when it may not be used.
+
+    The access token goes in a header on every request, so the URL must be https and name the
+    instance only: paths are appended to it as text. Custom domains are fine. ``same_host`` maps
+    a label to another URL (the OAuth token and authorize URLs) that must be on the same scheme,
+    host and port, so a token is never minted on, or sent to, another host.
+    """
+    url = (url or "").strip().rstrip("/")
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as e:
+        raise ValueError(f"The ServiceNow instance URL {url!r} is not a valid URL") from e
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("The ServiceNow instance URL must start with https:// and name a host")
+    if parts.username or parts.password:
+        raise ValueError("The ServiceNow instance URL must not contain a user name or password")
+    if parts.path or "?" in url or "#" in url:
+        raise ValueError(
+            "The ServiceNow instance URL must be the instance address only, such as "
+            "https://acme.service-now.com, with no path, query or fragment"
+        )
+    if parts.scheme == "http" and os.getenv(ALLOW_INSECURE_HTTP_ENV, "").strip().lower() not in {"1", "true", "yes"}:
+        raise ValueError(
+            "The ServiceNow instance URL must use https: the access token is sent with every request"
+        )
+    allow_private = not private_addresses_blocked()
+    try:
+        check_http_url_without_resolving(url, block_non_global=not allow_private, allow_private=allow_private)
+    except FetchError as e:
+        rule = "it must not point to this server (loopback), a link-local or a cloud metadata address"
+        if not allow_private:
+            rule += f", or a private network address ({PRIVATE_ADDRESS_SWITCH_ENV} is on)"
+        raise ValueError(f"The ServiceNow instance URL is not allowed: {rule}") from e
+    for label, other in (same_host or {}).items():
+        if not other:
+            continue
+        try:
+            theirs = urlsplit(other.strip())
+            same = (theirs.scheme, theirs.hostname, theirs.port) == (parts.scheme, parts.hostname, port)
+        except ValueError:
+            same = False
+        if not same:
+            raise ValueError(f"The ServiceNow {label} must be on the instance's address, {parts.scheme}://{parts.netloc}")
+    return url
 
 
 class ServiceNowRateLimited(Exception):

@@ -965,9 +965,11 @@ async def test_inactive_group_grants_nothing_and_reactivated_group_regains_membe
     _people(inst)
     inst.kb("kb", can=(inst.crit("c-hr", group="g-hr"),))
     graph = _connector(servicenow_connector, inst)
+    await _sync(servicenow_connector, inst)
+    assert "hr" in graph.kb_readers("kb")
     inst.groups["g-hr"]["active"] = "false"
     await _sync(servicenow_connector, inst)
-    assert graph.group_members["g-hr"] == set()
+    assert "g-hr" not in graph.group_members  # not written, and the stored one removed
     assert "hr" not in graph.kb_readers("kb")
 
     inst.groups["g-hr"]["active"] = "true"

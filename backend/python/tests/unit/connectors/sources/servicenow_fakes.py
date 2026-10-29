@@ -2,7 +2,7 @@
 
 ``FakeServiceNow`` holds rows per table and serves ``get_now_table_tableName``. It evaluates the parts of
 the encoded query language the connector sends (``=``, ``!=``, ``>``, ``<``, ``>=``, ``<=``, ``IN``,
-``NOT IN``, ``ISEMPTY``, ``ISNOTEMPTY``, ``^OR``, ``^NQ``, ``ORDERBY``), cuts the page at ``sysparm_limit`` and only
+``NOT IN``, ``ISEMPTY``, ``ISNOTEMPTY``, ``^OR``, ``^NQ``, ``ORDERBY``, ``ORDERBYDESC``), cuts the page at ``sysparm_limit`` and only
 then drops the rows an ACL hides (``_acl_hidden``), as ServiceNow does, so a page can come back short
 while more rows follow. ``total_count`` (X-Total-Count) counts the matching rows before the ACL, as
 ServiceNow does. With ``shuffle_ties`` rows that the ORDERBY does not tell apart come back in a
@@ -81,7 +81,10 @@ def matching(rows: list[dict[str, Any]], query: str | None) -> list[dict[str, An
     where = "^".join(t for t in tokens if not t.startswith("ORDERBY"))
     blocks = where.split("^NQ") if where else [""]
     found = [r for r in rows if any(_block_holds(r, b) for b in blocks)]
-    return sorted(found, key=lambda r: tuple(str(r.get(f) or "") for f in order)) if order else found
+    for f in reversed(order):  # stable sorts, last key first
+        desc = f.startswith("DESC")
+        found = sorted(found, key=lambda r, f=f.removeprefix("DESC"): str(r.get(f) or ""), reverse=desc)
+    return found
 
 
 @dataclass

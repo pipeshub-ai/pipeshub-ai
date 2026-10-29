@@ -106,7 +106,12 @@ class ServiceNowDataSource:
         """
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             error_body = response.text()
-            self.logger.error(
+            # A 401 is refreshed and retried, and some 403s are expected (a table the account may
+            # not read): the connector logs what it does about them.
+            log = self.logger.debug if response.status in (
+                HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
+            ) else self.logger.error
+            log(
                 f"ServiceNow Table API error: HTTP {response.status} - {redact_urls_in_text(error_body[:300])}"
             )
             raise ServiceNowAPIError(

@@ -125,6 +125,8 @@ async def test_articles_with_criteria_are_re_read_every_run_without_moving_the_c
     queries: list[str] = []
 
     async def table(tableName, sysparm_query, **_) -> TableAPIResponse:
+        if sysparm_query.startswith("ORDERBYDESC"):  # the access check (no stored state: the pass runs)
+            return _table_api_response([])
         queries.append(sysparm_query)
         # the re-read pass: an old article with Cannot Read, on its first page only
         if "ISNOTEMPTY" in sysparm_query and "^NQ" not in sysparm_query:

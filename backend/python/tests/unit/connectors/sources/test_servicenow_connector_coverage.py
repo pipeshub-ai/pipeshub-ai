@@ -134,7 +134,8 @@ class TestServiceNowInit:
     @pytest.mark.asyncio
     async def test_init_no_config(self, connector):
         connector.config_service.get_config = AsyncMock(return_value=None)
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="no saved settings"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_no_oauth_config_id(self, connector):
@@ -148,7 +149,8 @@ class TestServiceNowInit:
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="was not found"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -159,7 +161,8 @@ class TestServiceNowInit:
                 # Missing clientSecret, instanceUrl, redirectUri
             }
         }
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="missing the instance URL"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -176,7 +179,8 @@ class TestServiceNowInit:
             "auth": {"oauthConfigId": "oauth-1"},
             "credentials": {},
         })
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="not authorized yet"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -189,8 +193,9 @@ class TestServiceNowInit:
             },
             "redirectUri": "http://localhost/callback",
         }
-        connector.test_connection_and_access = AsyncMock(return_value=False)
-        assert await connector.init() is False
+        connector.test_connection_and_access = AsyncMock(side_effect=ConnectorInitError("cannot read user_criteria"))
+        with pytest.raises(ConnectorInitError, match="cannot read user_criteria"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -263,16 +268,18 @@ class TestServiceNowTestConnection:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            side_effect=ServiceNowAPIError(401, "Unauthorized", None)
+            side_effect=ServiceNowAPIError(403, "User Not Authorized", None)
         )
         connector._get_fresh_datasource.return_value = mock_ds
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="answered HTTP 403"):
+            await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
         connector.servicenow_client = MagicMock()
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("boom"))
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(Exception, match="boom"):
+            await connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -421,11 +428,6 @@ class TestServiceNowMisc:
     def test_get_signed_url_returns_none(self, connector):
         record = MagicMock()
         assert connector.get_signed_url(record) is None
-
-    @pytest.mark.asyncio
-    async def test_handle_webhook_returns_true(self, connector):
-        result = await connector.handle_webhook_notification("org-1", {"type": "test"})
-        assert result is True
 
     @pytest.mark.asyncio
     async def test_cleanup(self, connector):

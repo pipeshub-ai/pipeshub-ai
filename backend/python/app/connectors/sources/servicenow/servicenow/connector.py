@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple, TypeVar
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -45,6 +47,7 @@ from app.connectors.core.constants import (
     OAuthRedirectPaths,
 )
 from app.connectors.core.base.connector.connector_service import (
+    ActionItem,
     BaseConnector,
     ConnectorInitError,
     oauth_app_not_linked_error,
@@ -111,10 +114,18 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationOutcome,
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
+from app.sources.client.http.address_guard import AddressNotAllowedError
 from app.sources.client.servicenow.servicenow import (
     ServiceNowRateLimited,
     ServiceNowRateLimitPolicy,
     ServiceNowRESTClientViaOAuthAuthorizationCode,
+    check_servicenow_instance_url,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 from app.sources.external.servicenow.models import (
@@ -134,6 +145,7 @@ from app.sources.external.servicenow.models import (
 from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
+from app.utils.url_redaction import redact_urls_in_text
 from app.connectors.sources.servicenow.servicenow.constants import (
     ORGANIZATIONAL_ENTITIES,
     OrganizationalEntityConfig,
@@ -191,8 +203,63 @@ _ACCESS_TABLES = frozenset({
     ServiceNowTables.SYS_USER_GRMEMBER,
     ServiceNowTables.SYS_USER_ROLE,
     ServiceNowTables.SYS_USER_HAS_ROLE,
-    ServiceNowTables.SYS_USER_ROLE_CONTAINS,
 })
+
+# The tables a sync reads: the connection test fails, naming them, when the account may not read
+# one. sys_user_role_contains is optional (sys_user_has_role already holds the inherited roles),
+# and sys_properties and sp_portal fall back to the settings that grant less (see init).
+_REQUIRED_TABLES = (
+    (ServiceNowTables.SYS_USER, None),
+    (ServiceNowTables.SYS_USER_GROUP, None),
+    (ServiceNowTables.SYS_USER_GRMEMBER, None),
+    (ServiceNowTables.SYS_USER_ROLE, None),
+    (ServiceNowTables.SYS_USER_HAS_ROLE, None),
+    (ServiceNowTables.CORE_COMPANY, None),
+    (ServiceNowTables.CMN_DEPARTMENT, None),
+    (ServiceNowTables.CMN_LOCATION, None),
+    (ServiceNowTables.KB_KNOWLEDGE_BASE, None),
+    (ServiceNowTables.KB_CATEGORY, None),
+    (ServiceNowTables.KB_KNOWLEDGE, None),
+    (ServiceNowTables.SYS_ATTACHMENT, f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.KB_KNOWLEDGE}"),
+    (ServiceNowTables.KB_FEEDBACK, None),
+    (ServiceNowTables.USER_CRITERIA, None),
+    (ServiceNowTables.KB_UC_CAN_READ_MTOM, None),
+    (ServiceNowTables.KB_UC_CANNOT_READ_MTOM, None),
+    (ServiceNowTables.KB_UC_CAN_CONTRIBUTE_MTOM, None),
+    (ServiceNowTables.KB_UC_CANNOT_CONTRIBUTE_MTOM, None),
+)
+
+# A knowledge base's criteria ids by kind, from these tables (see _kb_criteria)
+_KB_MTOM = (
+    (ServiceNowDictKeys.READ, ServiceNowTables.KB_UC_CAN_READ_MTOM),
+    (ServiceNowDictKeys.CANNOT_READ, ServiceNowTables.KB_UC_CANNOT_READ_MTOM),
+    (ServiceNowDictKeys.WRITE, ServiceNowTables.KB_UC_CAN_CONTRIBUTE_MTOM),
+    (ServiceNowDictKeys.CANNOT_WRITE, ServiceNowTables.KB_UC_CANNOT_CONTRIBUTE_MTOM),
+)
+
+# The tables whose rows decide who reads an article with criteria or an ownership group, without
+# the article changing (see _access_reread_due)
+_ACCESS_DEPENDENCIES = (
+    ServiceNowTables.USER_CRITERIA,
+    *(table for _, table in _KB_MTOM),
+    ServiceNowTables.SYS_USER_GRMEMBER,
+    ServiceNowTables.SYS_USER_HAS_ROLE,
+    ServiceNowTables.SYS_USER,
+    ServiceNowTables.SYS_USER_GROUP,
+    ServiceNowTables.KB_KNOWLEDGE_BASE,
+)
+
+# Shown when the account cannot read the instance settings the connector reads at start (see init)
+_PROPERTIES_HIDDEN = (
+    "The integration user cannot read the glide.knowman properties, so PipesHub uses the settings that "
+    "grant less: knowledge bases with no user criteria stay closed, and contributors are held to each "
+    "article's own criteria."
+)
+_PORTAL_HIDDEN = "The integration user cannot read the Service Portal settings, so article links open the /kb portal."
+_NOT_ADMIN = (
+    "The integration user is not a ServiceNow admin, so PipesHub syncs only the articles, users and "
+    "groups it can read."
+)
 
 # The name prefixes of the user groups that stand for a company, department or location
 _ORG_GROUP_PREFIXES = {
@@ -237,6 +304,10 @@ class _Listing:
 class _CriteriaUnreadable(Exception):
     """A user criteria (Can Read or Cannot Read) could not be read or resolved to users;
     the grants it governs are left as stored."""
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
 
 
 def _raise_if_run_stop(error: BaseException | None) -> None:
@@ -442,6 +513,10 @@ class ServiceNowConnector(BaseConnector):
         self._criteria_rows: dict[str, TableAPIRecord | None] = {_EVERYONE: TableAPIRecord(sys_id=_EVERYONE, active="true")}
         # KB sys_id -> its criteria ids by kind (see _kb_criteria), read once per run
         self._kb_criteria_cache: dict[str, dict[str, list[str]]] = {}
+        # Every KB's criteria ids by kind, from one listing of each mtom table per run (see _load_kb_criteria)
+        self._kb_mtom: dict[str, dict[str, list[str]]] | None = None
+        # source user ids the out-of-box "Has a role" criterion matches, per run (see _has_role_users)
+        self._has_role_users_cache: set[str] | None = None
         # KB sys_id -> the READ grants that stand for its contributors (see _kb_contributor_grants)
         self._kb_contributor_cache: dict[str, list[Permission]] = {}
         # (criteria sys_id, deny) -> the source user ids it matches, per run (see _users_matching_criteria)
@@ -454,6 +529,17 @@ class ServiceNowConnector(BaseConnector):
         # Set when this run skipped something after an error it did not raise, so a full
         # sync's cleanup unlinks nothing (see full_sync_coverage).
         self._sync_read_incomplete = False
+        # What this run could not do, reported once when it ends (see _report_sync_problems):
+        # lines as they are shown, and counts of skipped things by the line that names them.
+        self._problems: list[str] = []
+        self._skipped: dict[str, int] = defaultdict(int)
+        # Conditions of the instance's set-up rather than of this run, shown when they first appear
+        self._persistent: set[str] = set()
+        self._kbs_unread: list[str] = []
+        self._criteria_noted: dict[str, set[str]] = defaultdict(set)
+        self._no_reader = 0
+        # What init found the integration user cannot read (see _notify_setup_warnings)
+        self._setup_warnings: list[str] = []
         # Set by the knowledge base and category steps of a run (see _sync_knowledge_bases, _sync_categories)
         self._live_kb_ids: set[str] | None = None
         self._kbs_back_in_scope: set[str] = set()
@@ -504,10 +590,15 @@ class ServiceNowConnector(BaseConnector):
         Initialize the connector with OAuth credentials and API client.
 
         Returns:
-            bool: True if initialization successful, False otherwise
+            bool: True if initialization successful, False on an unexpected error
+
+        Raises:
+            ConnectorInitError: with the reason, for the user, when the settings, the sign-in or
+                the integration user's access do not allow a sync
         """
         try:
             self.logger.info("🔧 Initializing ServiceNow KB Connector (OAuth)...")
+            self._setup_warnings = []
             connector_id = self.connector_id
             # Load configuration
             config = await self.config_service.get_config(
@@ -515,8 +606,9 @@ class ServiceNowConnector(BaseConnector):
             )
 
             if not config:
-                self.logger.error("❌ ServiceNow configuration not found")
-                return False
+                raise ConnectorInitError(
+                    "The ServiceNow connector has no saved settings. Configure it on its Authenticate Instance tab."
+                )
 
             # Extract OAuth configuration
             auth_config = config.get(OAuthConfigKeys.AUTH, {})
@@ -536,8 +628,10 @@ class ServiceNowConnector(BaseConnector):
             )
 
             if not oauth_config:
-                self.logger.error("OAuth config not found for ServiceNow connector.")
-                return False
+                raise ConnectorInitError(
+                    "The OAuth app this connector is linked to was not found. Choose or create an OAuth app "
+                    "on the connector's Authenticate Instance tab, then sign in again on the Authorize tab."
+                )
 
             oauth_config_data = oauth_config.get(OAuthConfigKeys.CONFIG, {})
 
@@ -561,16 +655,23 @@ class ServiceNowConnector(BaseConnector):
                     self.redirect_uri,
                 ]
             ):
-                self.logger.error(
-                    "❌ Incomplete ServiceNow OAuth configuration. "
-                    "Ensure instanceUrl, clientId, clientSecret, and redirectUri are configured."
+                raise ConnectorInitError(
+                    "The linked OAuth app is missing the instance URL, client ID, client secret or redirect URI. "
+                    "Complete it on the connector's Authenticate Instance tab."
                 )
-                return False
+            try:
+                self.instance_url = check_servicenow_instance_url(self.instance_url, same_host={
+                    "token URL": oauth_config_data.get(AuthFieldKeys.TOKEN_URL),
+                    "authorize URL": oauth_config_data.get(AuthFieldKeys.AUTHORIZE_URL),
+                })
+            except ValueError as e:
+                raise ConnectorInitError(str(e)) from e
 
             # Check if OAuth flow is complete
             if not self.access_token:
-                self.logger.warning("⚠️ OAuth authorization not complete. User needs to authorize.")
-                return False
+                raise ConnectorInitError(
+                    "The connector is not authorized yet. Sign in to ServiceNow on the connector's Authorize tab."
+                )
 
             # Initialize ServiceNow OAuth client
             self.logger.info(
@@ -593,15 +694,14 @@ class ServiceNowConnector(BaseConnector):
             # Initialize data source wrapper
             self.servicenow_datasource = ServiceNowDataSource(self.servicenow_client)
 
-            # Test connection
-            if not await self.test_connection_and_access():
-                self.logger.error("❌ Connection test failed")
-                return False
+            # Raises ConnectorInitError with the reason
+            await self.test_connection_and_access()
 
             self.kb_portal_suffix = await self._resolve_kb_portal_suffix()
 
             self.apply_article_read_criteria = await self._resolve_article_read_criteria()
             self.block_kb_without_criteria = await self._resolve_block_no_criteria()
+            await self._notify_setup_warnings()
 
             self.logger.info("✅ ServiceNow KB Connector initialized successfully")
             return True
@@ -895,38 +995,119 @@ class ServiceNowConnector(BaseConnector):
         return FullSyncCoverage(complete=not self._sync_read_incomplete)
 
     async def test_connection_and_access(self) -> bool:
-        """
-        Test OAuth connection and access to ServiceNow API.
+        """Check that the integration user can sign in and read every table a sync reads.
 
-        Returns:
-            bool: True if connection successful, False otherwise
+        One row of each table in _REQUIRED_TABLES: a table it may not read fails the test, naming
+        it, because a sync would stop there. A user that is not an admin passes with a warning (it
+        syncs what its ACLs let it read; see _notify_setup_warnings).
+
+        Raises:
+            ConnectorInitError: why the test failed, for the user
         """
+        host = urlsplit(self.instance_url or "").hostname or "the instance"
+        self.logger.info("🔍 Testing the ServiceNow connection and the integration user's access...")
         try:
-            self.logger.info("🔍 Testing ServiceNow OAuth connection...")
-
-            # Make a simple API call to verify OAuth token works
-            try:
-                await self._table_get(
-                    ServiceNowTables.KB_KNOWLEDGE_BASE,
-                    sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
-                    sysparm_fields=CommonStrings.COMMA.join(
-                        [
-                            ServiceNowFields.SYS_ID,
-                            ServiceNowFields.TITLE,
-                        ]
+            me = await self._table_get(
+                ServiceNowTables.SYS_USER, sysparm_query=ServiceNowQueryValues.CURRENT_USER,
+                sysparm_fields=ServiceNowFields.SYS_ID, sysparm_limit="2",
+            )
+            missing = []
+            for table, query in _REQUIRED_TABLES:
+                try:
+                    await self._table_get(
+                        table, sysparm_query=query, sysparm_fields=ServiceNowFields.SYS_ID,
+                        sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
                     )
+                except ServiceNowAPIError as e:
+                    if e.status_code != HttpStatusCode.FORBIDDEN.value:
+                        raise
+                    missing.append(table)
+            if missing:
+                raise ConnectorInitError(
+                    f"The ServiceNow integration user cannot read these tables: {', '.join(missing)}. Give it "
+                    "the admin role, or at least the knowledge_admin and user_admin roles, then try again."
                 )
-                
-                self.logger.info("✅ OAuth connection test successful")
-                return True
-                
-            except ServiceNowAPIError as e:
-                self.logger.error(f"❌ Connection test failed: {e.message} (status: {e.status_code})")
-                return False
+            rows = me.result or []
+            if len(rows) == 1 and rows[0].sys_id:
+                admin = await self._table_get(
+                    ServiceNowTables.SYS_USER_HAS_ROLE,
+                    sysparm_query=f"{ServiceNowFields.USER}={rows[0].sys_id}^{ServiceNowFields.ROLE_NAME}="
+                                  f"{ServiceNowRoles.ADMIN}^{ServiceNowFields.STATE}={ServiceNowFields.ACTIVE}",
+                    sysparm_fields=ServiceNowFields.SYS_ID, sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                    sysparm_no_count=None,
+                )
+                if not (admin.result or admin.total_count):
+                    self.logger.warning(_NOT_ADMIN)
+                    self._add_setup_warning(_NOT_ADMIN)
+        except ConnectorInitError:
+            raise
+        except ServiceNowAuthError as e:
+            raise ConnectorInitError(
+                f"ServiceNow at {host} refused the connector's sign-in (HTTP 401: {e.message[:200]}). "
+                "Re-authorize the connector on its Authorize tab."
+            ) from e
+        except ServiceNowAPIError as e:
+            if e.message == "Failed to parse API response":
+                raise ConnectorInitError(
+                    f"ServiceNow at {host} did not answer with its REST API; the instance may be hibernating. "
+                    "Wake it up, then try again."
+                ) from e
+            raise ConnectorInitError(
+                f"ServiceNow at {host} answered HTTP {e.status_code}: {e.message[:200]}. Try again later."
+            ) from e
+        except (ServiceNowRateLimited, AddressNotAllowedError) as e:
+            raise ConnectorInitError(str(e)) from e
+        except httpx.HTTPError as e:
+            raise ConnectorInitError(f"Could not reach ServiceNow at {host}. Check the instance URL.") from e
+        self.logger.info("✅ ServiceNow connection test passed")
+        return True
 
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict) -> list[str]:
+        """An instance URL in the settings about to be saved must pass check_servicenow_instance_url.
+        The token and authorize URLs are checked against it in init: a save may still carry the
+        registry's placeholder URLs, which the save drops."""
+        url = (auth_config or {}).get(AuthFieldKeys.INSTANCE_URL)
+        if not url:
+            return []
+        try:
+            check_servicenow_instance_url(url)
+        except ValueError as e:
+            return [str(e)]
+        return []
+
+    def _add_setup_warning(self, warning: str) -> None:
+        if warning not in self._setup_warnings:
+            self._setup_warnings.append(warning)
+
+    async def _notify_setup_warnings(self) -> None:
+        """One warning naming what init found the integration user cannot read; repeats back off."""
+        if not self._setup_warnings:
+            return
+        await self._notify(
+            NotificationType.CONNECTOR_WARNING, NotificationSeverity.WARNING,
+            "the integration user can read less than an admin",
+            "\n".join(f"- {w}" for w in self._setup_warnings)
+            + "\nFor a complete sync, give the integration user the admin role.",
+        )
+
+    async def _notify(
+        self, type: NotificationType, severity: NotificationSeverity, event: str, message: str,  # noqa: A002
+        *, suppress_repeats: bool = True,
+    ) -> None:
+        """A notice about this connector instance, to its creator and the org admins. The platform
+        backs off repeats of the same notice. Never raises: it reports a failure, it must not hide one."""
+        try:
+            outcome = await self.notify_and_wait(
+                type=type, severity=severity, title=self._notification_title(event), message=message,
+                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+                suppress_repeats=suppress_repeats,
+            )
+            if outcome == NotificationOutcome.FAILED:
+                self.logger.warning(f"The notification \"{event}\" was not sent")
         except Exception as e:
-            self.logger.error(f"❌ Connection test failed: {e}", exc_info=True)
-            return False
+            self.logger.error(f"Could not send the notification \"{event}\": {e}")
 
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
@@ -953,6 +1134,134 @@ class ServiceNowConnector(BaseConnector):
         )
 
     async def run_sync(self) -> None:
+        """One sync (see _run_sync). A stop is reported to the connector's creator and the org
+        admins, then raised; a run that finished with problems sends one summary of them."""
+        self._problems, self._skipped, self._persistent = [], defaultdict(int), set()
+        self._kbs_unread, self._criteria_noted, self._no_reader = [], defaultdict(set), 0
+        try:
+            await self._run_sync()
+        except ServiceNowAuthError as e:
+            self.last_action_items = [ActionItem(
+                code="servicenow_reauthorize", severity="error", title="Re-authorize ServiceNow",
+                message="ServiceNow refused the connector's sign-in. Sign in again on the Authorize tab.",
+                action="authenticate",
+            )]
+            await self._notify(
+                NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR, "needs to be re-authorized",
+                f"ServiceNow refused the connector's sign-in (HTTP 401: {e.message[:200]}), also after a token "
+                "refresh. The sync stopped; what it did not read stays as it was. Re-authorize the connector on "
+                "its Authorize tab.",
+            )
+            raise
+        except ServiceNowAccessError as e:
+            await self._notify(
+                NotificationType.CONNECTOR_NOT_ACCESSIBLE, NotificationSeverity.ERROR, f"cannot read {e.table}",
+                f"The ServiceNow integration user cannot read the table {e.table} ({e.message[:200]}), which "
+                "decides who may read knowledge articles. The sync stopped; what it did not read stays as it "
+                "was. Give the user a role that reads it (admin, or knowledge_admin and user_admin), then sync again.",
+            )
+            raise
+        except ServiceNowRateLimited as e:
+            until = datetime.fromtimestamp(e.reset_at, tz=timezone.utc).strftime("%H:%M")
+            rule = f" ({e.rule})" if e.rule else ""
+            # The reset time is in the text, so the platform's back-off sends this once per reset.
+            await self._notify(
+                NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR,
+                "sync paused, ServiceNow rate limit reached",
+                f"A ServiceNow rate limit rule{rule} is used up until {until} UTC, so the sync stopped. Nothing "
+                "it did not read was removed; the next sync after that time continues where this one stopped.",
+            )
+            raise
+        except Exception as e:
+            await self._notify(
+                NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR, "sync failed",
+                f"The sync stopped: {redact_urls_in_text(str(e))[:200]}. Recent ServiceNow changes may not be in "
+                "search yet; the sync is retried on its next run.",
+            )
+            raise
+        self.last_action_items = []
+        await self._report_sync_problems()
+
+    # Per connector, across instances: the persistent conditions last reported.
+    _persistent_noticed: dict[str, set[str]] = {}
+
+    # Most lines one notice lists; the rest are counted.
+    _MAX_PROBLEMS_SHOWN = 10
+
+    def _note_problem(self, problem: str, *, persistent: bool = False) -> None:
+        """Note something this run could not do; all of it is reported once when the run ends.
+        ``persistent``: a condition of the instance's set-up (users with no email, articles nobody
+        can read), shown when it first appears and again only once it changed or came back."""
+        if problem not in self._problems:
+            self._problems.append(problem)
+        if persistent:
+            self._persistent.add(problem)
+
+    def _note_skipped(self, what: str) -> None:
+        """Count one item this run skipped, under the line that reports it ("{n} could not ...")."""
+        self._skipped[what] += 1
+
+    def _note_criteria(self, kind: str, sys_id: str) -> None:
+        """A user criterion this run could not evaluate in full, by why (see _report_sync_problems)."""
+        self._criteria_noted[kind].add(sys_id)
+
+    async def _report_sync_problems(self) -> None:
+        """One warning listing what a finished run could not do; nothing for a clean run. Never
+        names an article, a user or a secret: counts, knowledge base titles and table names."""
+        problems = list(self._problems)
+        if self._kbs_unread:
+            titles = sorted(set(self._kbs_unread))
+            more = len(titles) - self._MAX_PROBLEMS_SHOWN
+            problems.append(
+                f"{_plural(len(titles), 'knowledge base', 'knowledge bases')} kept their stored access because "
+                f"their user criteria could not be read: {', '.join(titles[:self._MAX_PROBLEMS_SHOWN])}"
+                + (f" and {more} more" if more > 0 else "")
+            )
+        problems += [line.format(n=count) for line, count in self._skipped.items()]
+        if self._no_reader:
+            problem = (f"{_plural(self._no_reader, 'article has', 'articles have')} no reader in PipesHub: their "
+                       "user criteria match nobody PipesHub can evaluate (for example, a scripted criterion)")
+            problems.append(problem)
+            self._persistent.add(problem)
+        for kind, line in (
+            ("scripted", "{n} use a script, which PipesHub does not run: they grant nobody here, and as Cannot Read "
+                         "or Cannot Contribute they deny everyone they may cover"),
+            ("hidden", "{n} are hidden from the integration user: they grant nobody here, and as Cannot Read or "
+                       "Cannot Contribute they deny everyone"),
+            ("partial", "{n} name groups or users partly hidden from the integration user: as Cannot Read or "
+                        "Cannot Contribute they deny everyone they may cover"),
+        ):
+            if self._criteria_noted.get(kind):
+                problem = line.format(n=_plural(len(self._criteria_noted[kind]), "user criterion", "user criteria"))
+                problems.append(problem)
+                self._persistent.add(problem)
+        # Shown when it first appears, and again once it has changed, or gone and come back.
+        noticed = ServiceNowConnector._persistent_noticed.get(self.connector_id, set())
+        ServiceNowConnector._persistent_noticed[self.connector_id] = set(self._persistent)
+        problems = [p for p in problems if p not in self._persistent or p not in noticed]
+        if not problems:
+            return
+        shown = problems[: self._MAX_PROBLEMS_SHOWN]
+        lines = "\n".join(f"- {p}" for p in shown)
+        if len(problems) > len(shown):
+            lines += f"\n- and {len(problems) - len(shown)} more (see the connector logs)"
+        self.logger.warning(f"ServiceNow sync finished with problems:\n{lines}")
+        await self._notify(
+            NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.WARNING, "sync finished with problems",
+            f"The sync finished, but:\n{lines}",
+        )
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """A sync could not start: tell the creator and the org admins why (repeats back off)."""
+        reason = str(error)[:300] if isinstance(error, ConnectorInitError) else (
+            "the connector could not be set up; the connector's log has the details."
+        )
+        await self._notify(
+            NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR, "could not start",
+            f"PipesHub could not start the ServiceNow connector. {reason} Syncs fail until this is fixed.",
+        )
+
+    async def _run_sync(self) -> None:
         """
         Sync ServiceNow knowledge data. Full and incremental runs both come here: users,
         organizational entities, categories and articles read from their checkpoints (none
@@ -971,6 +1280,7 @@ class ServiceNowConnector(BaseConnector):
             # A knowledge base with no user criteria may be open to every user (see _kb_criteria).
             self._criteria_rows = {_EVERYONE: TableAPIRecord(sys_id=_EVERYONE, active="true")}
             self._kb_criteria_cache, self._kb_contributor_cache, self._criteria_users = {}, {}, {}
+            self._kb_mtom, self._has_role_users_cache = None, None
             self._groups, self._group_members = {}, {}
             self._admin_source_ids = None
             self._kb_owner_cache = {}
@@ -1093,9 +1403,13 @@ class ServiceNowConnector(BaseConnector):
             sysparm_query=f"{ServiceNowFields.NAME}={name}",
             sysparm_fields=ServiceNowFields.VALUE,
             sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+            sysparm_no_count=None,
         )
         if response.result:
             return (response.result[0].get(ServiceNowFields.VALUE) or "").strip()
+        if response.total_count:
+            # Counted before ACLs: the property is set, and hidden from this account.
+            raise ServiceNowAPIError(status_code=HttpStatusCode.FORBIDDEN.value, message=f"{name} is hidden from this account")
         return None
 
     async def _resolve_article_read_criteria(self) -> bool:
@@ -1118,6 +1432,8 @@ class ServiceNowConnector(BaseConnector):
                 f"{ServiceNowDefaults.ARTICLE_READ_CRITERIA_PROPERTY} ({e}); "
                 "applying article read criteria as an override until it can be read"
             )
+            if not isinstance(e, (ServiceNowRateLimited, ServiceNowAuthError)):  # not the account's access
+                self._add_setup_warning(_PROPERTIES_HIDDEN)
             return True
 
         applies = (value or "").strip().lower() == "true"
@@ -1136,6 +1452,8 @@ class ServiceNowConnector(BaseConnector):
                 f"Could not read {ServiceNowDefaults.BLOCK_NO_CRITERIA_PROPERTY} ({e}); "
                 "knowledge bases with no user criteria stay closed"
             )
+            if not isinstance(e, (ServiceNowRateLimited, ServiceNowAuthError)):  # not the account's access
+                self._add_setup_warning(_PROPERTIES_HIDDEN)
             return True
         return (value or "").strip().lower() != "false"
 
@@ -1167,13 +1485,18 @@ class ServiceNowConnector(BaseConnector):
                 sysparm_query=f"{ServiceNowFields.DEFAULT}=true",
                 sysparm_fields=ServiceNowFields.URL_SUFFIX,
                 sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                sysparm_no_count=None,
             )
             suffix = (response.result[0].get(ServiceNowFields.URL_SUFFIX) or "").strip() if response.result else ""
             if suffix:
                 self.logger.info(f"Knowledge portal from the default portal: /{suffix}")
                 return suffix
+            if not response.result and response.total_count:
+                self._add_setup_warning(_PORTAL_HIDDEN)
         except Exception as e:
+            _raise_if_run_stop(e)
             self.logger.warning(f"Could not read the default portal: {e}")
+            self._add_setup_warning(_PORTAL_HIDDEN)
 
         self.logger.info(
             f"Knowledge portal falls back to /{ServiceNowDefaults.KB_PORTAL_SUFFIX}"
@@ -1225,9 +1548,16 @@ class ServiceNowConnector(BaseConnector):
             title = article.get(ServiceNowFields.SHORT_DESCRIPTION) or number
 
             body = self._article_body(article)
-            if body and article.get(ServiceNowFields.ARTICLE_TYPE) != ServiceNowFields.WIKI:
+            if article.get(ServiceNowFields.ARTICLE_TYPE) == ServiceNowFields.WIKI and article.get(ServiceNowFields.WIKI):
+                # The wiki field's display value is the markup rendered as HTML.
+                rendered = await self._table_get(
+                    ServiceNowTables.KB_KNOWLEDGE, sysparm_query=f"{ServiceNowFields.SYS_ID}={article.sys_id}",
+                    sysparm_fields=ServiceNowFields.WIKI, sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                    sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_TRUE,
+                )
+                body = (rendered.result[0].get(ServiceNowFields.WIKI) if rendered.result else None) or body
+            if body:
                 body = await html_to_markdown_async(await self._inline_images_as_data_uris(body))
-            # A wiki body is the raw wiki markup (read with display values off), indexed as text.
             groups = [BlockGroup(
                 id=str(uuid.uuid4()), index=0, name=title,
                 type=GroupType.TEXT_SECTION, sub_type=GroupSubType.CONTENT, description="Article body",
@@ -1403,31 +1733,9 @@ class ServiceNowConnector(BaseConnector):
         """
         return None
 
-    async def handle_webhook_notification(
-        self, org_id: str, notification: Dict
-    ) -> bool:
-        """
-        Handle webhook notifications from ServiceNow.
-
-        This can be used for real-time sync when ServiceNow sends notifications
-        about changes to KB articles.
-
-        Args:
-            org_id: Organization ID
-            notification: Webhook notification payload
-
-        Returns:
-            bool: True if handled successfully
-        """
-        try:
-            # TODO: Implement webhook handling
-            # ServiceNow can send notifications via Business Rules or Flow Designer
-            self.logger.info(f"📬 Received webhook notification: {notification}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"❌ Error handling webhook: {e}", exc_info=True)
-            return False
+    async def handle_webhook_notification(self, notification: Dict) -> None:
+        """ServiceNow sends no webhooks to this connector; changes are read by the scheduled sync."""
+        return
 
     async def cleanup(self) -> None:
         """
@@ -1619,6 +1927,7 @@ class ServiceNowConnector(BaseConnector):
             total_synced = 0
             latest_update_time = None
             inactive: set[str] = set()
+            no_email = 0
 
             # A failed page raises: a short list is indistinguishable from a complete one to
             # everything downstream, so the sync would report success over what it missed.
@@ -1646,6 +1955,7 @@ class ServiceNowConnector(BaseConnector):
                         inactive.add(user_data.sys_id)
                         continue
                     if not (user_data.email or "").strip():
+                        no_email += 1
                         continue
                     app_user = await self._transform_to_app_user(user_data)
                     if app_user:
@@ -1668,7 +1978,14 @@ class ServiceNowConnector(BaseConnector):
             if not migrated:
                 await self.user_sync_point.update_sync_point(ServiceNowSyncPointKeys.USERS_V2, {ServiceNowDictKeys.DONE: True})
 
-            self.logger.info(f"User sync complete, Total synced: {total_synced}, inactive: {len(inactive)}")
+            if no_email:
+                self._note_problem(
+                    f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "
+                    "address and could not be synced, so they get no access in PipesHub", persistent=True,
+                )
+            self.logger.info(
+                f"User sync complete, Total synced: {total_synced}, inactive: {len(inactive)}, no email: {no_email}"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
@@ -1920,13 +2237,20 @@ class ServiceNowConnector(BaseConnector):
 
             all_hierarchy: List[SysUserRoleContains] = []
             # A failed page raises: a partial list makes the caller delete permission
-            # edges that it cannot rebuild.
-            async for rows in self._iter_table(
-                ServiceNowTables.SYS_USER_ROLE_CONTAINS,
-                None,
-                [ServiceNowFields.SYS_ID, ServiceNowFields.CONTAINS, ServiceNowFields.ROLE],
-            ):
-                all_hierarchy.extend(SysUserRoleContains(**record.model_dump()) for record in rows)
+            # edges that it cannot rebuild. A table closed to the account is read as empty:
+            # sys_user_has_role already has a row for every role a user gets from another.
+            try:
+                async for rows in self._iter_table(
+                    ServiceNowTables.SYS_USER_ROLE_CONTAINS,
+                    None,
+                    [ServiceNowFields.SYS_ID, ServiceNowFields.CONTAINS, ServiceNowFields.ROLE],
+                ):
+                    all_hierarchy.extend(SysUserRoleContains(**record.model_dump()) for record in rows)
+            except ServiceNowAPIError as e:
+                if e.status_code != HttpStatusCode.FORBIDDEN.value:
+                    raise
+                self.logger.info("This account cannot read sys_user_role_contains; roles come from sys_user_has_role")
+                return []
 
             self.logger.info(f"Fetched {len(all_hierarchy)} role hierarchy records")
             return all_hierarchy
@@ -1944,7 +2268,8 @@ class ServiceNowConnector(BaseConnector):
         at a time could only be added). A group or role missing from a listing that an ACL cut
         short is deleted only once ServiceNow counts no row for it.
         """
-        listed = set(self._groups) | role_ids
+        # An inactive group is listed, and not written (see _flatten_and_create_user_groups): a stored one goes.
+        listed = {g for g, row in self._groups.items() if self._is_active(row)} | role_ids
         stored = [g for g in await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
                   if g.source_user_group_id not in listed]
         org_prefixes = tuple(_ORG_GROUP_PREFIXES.values())
@@ -1957,11 +2282,11 @@ class ServiceNowConnector(BaseConnector):
             table, listing = (
                 (ServiceNowTables.SYS_USER_ROLE, role_listing) if is_role else (ServiceNowTables.SYS_USER_GROUP, group_listing)
             )
-            if listing.partial and not await self._gone_at_source(
+            if group.source_user_group_id not in self._groups and listing.partial and not await self._gone_at_source(
                 table, f"{ServiceNowFields.SYS_ID}={group.source_user_group_id}"
             ):
                 continue
-            self.logger.info(f"Removing {'role' if is_role else 'group'} {group.source_user_group_id}, deleted in ServiceNow")
+            self.logger.info(f"Removing {'role' if is_role else 'group'} {group.source_user_group_id}, deleted or inactive in ServiceNow")
             await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
 
     async def _sync_org_memberships(self, org_groups: list[AppUserGroup]) -> None:
@@ -1997,8 +2322,8 @@ class ServiceNowConnector(BaseConnector):
         """
         Flatten group hierarchy and create AppUserGroup objects: a group's members are its
         direct members plus those of its child groups (ServiceNow group criteria match child
-        group members too). An inactive group matches nobody: it gets no members and adds none
-        to its parent.
+        group members too). An inactive group matches nobody: it is not written and adds no
+        members to its parent (_reconcile_user_groups removes a stored one).
 
         Args:
             groups_data: List of SysUserGroup Pydantic models
@@ -2048,6 +2373,8 @@ class ServiceNowConnector(BaseConnector):
             user_lookup = {user.source_user_id: user for user in existing_app_users}
 
             for group_id, group_data in group_by_id.items():
+                if group_id in inactive:
+                    continue
                 # Create AppUserGroup
                 user_group = self._transform_to_user_group(group_data)
 
@@ -2191,6 +2518,7 @@ class ServiceNowConnector(BaseConnector):
             # kb_knowledge_base.sys_updated_on. A delta on the base row would
             # therefore never see a new or a removed grant.
             self.logger.info("Fetching all knowledge bases")
+            await self._load_kb_criteria()
             total_synced = 0
             listed: set[str] = set()
             live: set[str] = set()
@@ -2256,6 +2584,7 @@ class ServiceNowConnector(BaseConnector):
                             _raise_if_run_stop(e)
                             # Unknown is not empty: write no grants for this KB, keep what is stored.
                             self.logger.error(f"Skipping knowledge base {kb_sys_id}, its user criteria were not read in full: {e}")
+                            self._kbs_unread.append(str(kb_data.title or kb_sys_id))
                             await self.data_entities_processor.note_kept_record_group(self.connector_id, kb_sys_id)
                             self._sync_read_incomplete = True
                             continue
@@ -2463,6 +2792,11 @@ class ServiceNowConnector(BaseConnector):
         kept: set[str] = set()
         for group_id in sorted(previous - in_scope):
             try:
+                # Before there is a stored scope, a group out of scope may never have been written.
+                if not stored and not await self.data_entities_processor.get_record_group_by_external_id(
+                    self.connector_id, group_id
+                ):
+                    continue
                 if hidden_in and group_id not in listed and not await self._gone_at_source(
                     hidden_in[0], f"{ServiceNowFields.SYS_ID}={group_id}{hidden_in[1]}"
                 ):
@@ -2512,6 +2846,7 @@ class ServiceNowConnector(BaseConnector):
 
             # (query, whether its rows move the checkpoint, whether its rows are versions to resolve)
             queries = [(current, True, False)]
+            fingerprint, reread = await self._access_reread_due(full=not last_sync_time)
             if last_sync_time:
                 since = self._delta_since(last_sync_time)
                 self.logger.info(f"🔄 Delta sync: Fetching articles updated after {since}")
@@ -2522,14 +2857,15 @@ class ServiceNowConnector(BaseConnector):
                     # users (resolved criteria, the privileged readers, the contributors) or that
                     # follow its knowledge base's criteria, which change without the article
                     # changing: such articles are re-read and their grants replaced every run.
-                    (
+                    # Only when one of the tables they depend on changed, and once a day (_access_reread_due).
+                    *([(
                         f"{current}^{ServiceNowFields.CAN_READ_USER_CRITERIA}ISNOTEMPTY"
                         f"^OR{ServiceNowFields.CANNOT_READ_USER_CRITERIA}ISNOTEMPTY"
                         f"^OR{ServiceNowFields.OWNERSHIP_GROUP}ISNOTEMPTY"
                         f"^{ServiceNowFields.SYS_UPDATED_ON}<={since}",
                         False,
                         False,
-                    ),
+                    )] if reread else []),
                     # The rows whose inline images or feedback changed (feedback may be on an old version).
                     *[(f"{ServiceNowFields.SYS_ID}IN{CommonStrings.COMMA.join(c)}", False, True)
                       for c in self._chunk_ids(sorted({*inline_changed, *feedback_changed}))],
@@ -2548,7 +2884,7 @@ class ServiceNowConnector(BaseConnector):
             failed_ids: set[str] = set()  # kept by the reconcile (see _reconcile_articles)
             brought_by: dict[str, TableAPIRecord] = {}  # number -> the changed row that brought it, this page
 
-            def note_failed(article_data: TableAPIRecord, *, moves_checkpoint: bool) -> None:
+            def note_failed(article_data: TableAPIRecord, *, moves_checkpoint: bool, what: str) -> None:
                 # The checkpoint stays before the row that brought it, so the next run retries it.
                 # The re-read pass lists its articles every run, so its failures do not hold it.
                 row = brought_by.get(getattr(article_data, ServiceNowFields.NUMBER, None) or "", article_data)
@@ -2558,6 +2894,7 @@ class ServiceNowConnector(BaseConnector):
                 )
                 failed_ids.add(article_data.sys_id)
                 self._sync_read_incomplete = True
+                self._note_skipped(what)
 
             for query, moves_checkpoint, resolve in queries:
                 # A failed page raises: a short list is indistinguishable from a complete one to
@@ -2582,7 +2919,7 @@ class ServiceNowConnector(BaseConnector):
                             self.logger.error(f"❌ Failed to delete {len(gone)} articles with no current version: {e}")
                             for row in rows:
                                 if row.number in gone:
-                                    note_failed(row, moves_checkpoint=moves_checkpoint)
+                                    note_failed(row, moves_checkpoint=moves_checkpoint, what="Articles with no current version that could not be removed, retried on the next sync: {n}")
                     # A resolved row is in scope already (_current_versions); the others are checked here.
                     articles_data = [a for a in articles_data if self._article_in_scope(a)]
                     if not articles_data:
@@ -2600,8 +2937,17 @@ class ServiceNowConnector(BaseConnector):
                             f"❌ Failed to list the attachments or feedback of {len(articles_data)} articles: {e}"
                         )
                         for article_data in articles_data:
-                            note_failed(article_data, moves_checkpoint=moves_checkpoint)
+                            note_failed(article_data, moves_checkpoint=moves_checkpoint, what="Articles whose attachments or feedback could not be listed, retried on the next sync: {n}")
                         continue
+                    try:
+                        # The page's own criteria in one read, not one per article (cached for the run).
+                        await self._fetch_user_criteria(sorted({
+                            c for a in articles_data for f in (
+                                ServiceNowFields.CAN_READ_USER_CRITERIA, ServiceNowFields.CANNOT_READ_USER_CRITERIA
+                            ) for c in self._split_ids(a.get(f))
+                        }))
+                    except Exception as e:
+                        _raise_if_run_stop(e)  # each article reads its own again, and fails on its own
 
                     # Collect RecordUpdates for this batch
                     record_updates = []
@@ -2619,7 +2965,7 @@ class ServiceNowConnector(BaseConnector):
                                 f"❌ Failed to process article {getattr(article_data, 'sys_id', 'unknown')}: {e}",
                                 exc_info=True,
                             )
-                            note_failed(article_data, moves_checkpoint=moves_checkpoint)
+                            note_failed(article_data, moves_checkpoint=moves_checkpoint, what="Articles that could not be synced, retried on the next sync: {n}")
                             continue
                         if updates:
                             record_updates.extend(updates)
@@ -2641,7 +2987,7 @@ class ServiceNowConnector(BaseConnector):
                         except Exception as e:
                             _raise_if_run_stop(e)
                             self.logger.error(f"❌ Failed to remove the deleted attachments of {article_data.sys_id}: {e}")
-                            note_failed(article_data, moves_checkpoint=moves_checkpoint)
+                            note_failed(article_data, moves_checkpoint=moves_checkpoint, what="Articles whose deleted attachments could not be removed, retried on the next sync: {n}")
 
             # Update sync checkpoint
             if latest_update_time:
@@ -2658,6 +3004,8 @@ class ServiceNowConnector(BaseConnector):
 
             # Their articles are not held by the article checkpoint, so a failure reads them again.
             if not failed.count:
+                if fingerprint is not None:
+                    await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ACCESS_FINGERPRINT, fingerprint)
                 for key, stamp in ((ServiceNowSyncPointKeys.INLINE_IMAGES, inline_checkpoint),
                                    (ServiceNowSyncPointKeys.FEEDBACK, feedback_checkpoint)):
                     await self.article_sync_point.update_sync_point(key, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: stamp})
@@ -2683,6 +3031,46 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing articles: {e}", exc_info=True)
             raise
+
+    async def _access_reread_due(self, *, full: bool) -> tuple[dict | None, bool]:
+        """Whether an incremental run re-reads the articles with criteria or an ownership group,
+        and what to store once this run synced without failures.
+
+        Their grants follow rows that change without the article changing (criteria, the mtom
+        tables, memberships, roles, users, groups, knowledge base owners and managers, and the two
+        instance properties). Each table's row count and newest sys_updated_on (one 1-row read,
+        newest first) tell whether any row was added, changed or deleted since the last pass.
+        The pass runs when one differs, when there is no stored state, and at least once every
+        RECONCILE_INTERVAL_SECONDS. A full read covers those articles anyway and stores the state.
+        """
+        now = datetime.now(timezone.utc)
+        try:
+            tables: dict[str, list] = {}
+            for table in _ACCESS_DEPENDENCIES:
+                response = await self._table_get(
+                    table, sysparm_query=f"ORDERBYDESC{ServiceNowFields.SYS_UPDATED_ON}",
+                    sysparm_fields=ServiceNowFields.SYS_UPDATED_ON, sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                    sysparm_no_count=None,
+                )
+                tables[table] = [response.total_count,
+                                 str(response.result[0].get(ServiceNowFields.SYS_UPDATED_ON) or "") if response.result else ""]
+            tables["properties"] = [self.apply_article_read_criteria, self.block_kb_without_criteria]
+        except ServiceNowAPIError as e:
+            _raise_if_run_stop(e)
+            self.logger.warning(f"Could not tell whether article access changed; re-reading those articles: {e}")
+            return None, True
+        stored = await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ACCESS_FINGERPRINT) or {}
+        last = stored.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME)
+        due = full or not last or now - datetime.strptime(last, ServiceNowDefaults.DATETIME_FORMAT).replace(
+            tzinfo=timezone.utc) >= timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS)
+        reread = due or stored.get(ServiceNowDictKeys.FINGERPRINT) != tables
+        if not reread:
+            self.logger.info("No table behind article access changed; not re-reading the articles with criteria")
+            return None, False
+        return {
+            ServiceNowDictKeys.FINGERPRINT: tables,
+            ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT) if due else last,
+        }, True
 
     async def _current_versions(self, numbers: list[str], fields: list[str]) -> list[TableAPIRecord]:
         """The current row (see _current_article_query) of each of ``numbers`` that has one in scope."""
@@ -2877,6 +3265,8 @@ class ServiceNowConnector(BaseConnector):
             return []
 
         inherit, access_rule, all_permission_objects = await self._article_access(article_data)
+        if not all_permission_objects and (not inherit or access_rule == AccessRule.RESTRICTED):
+            self._no_reader += 1
         article_record.inherit_permissions = inherit
         article_record.access_rule = access_rule
         # Every write replaces the stored grants: who the criteria and groups name changes
@@ -3049,10 +3439,10 @@ class ServiceNowConnector(BaseConnector):
                         )
                     )
                 else:
-                    self.logger.warning(f"Unknown entity_type '{entity_type}' in permission: {perm}")
+                    self.logger.warning(f"Unknown entity_type '{entity_type}' in a permission of {perm.source_sys_id}")
 
             except Exception as e:
-                self.logger.error(f"Failed to convert permission {perm}: {str(e)}", exc_info=True)
+                self.logger.error(f"Failed to convert a permission of {perm.source_sys_id}: {e}", exc_info=True)
 
         return permission_objects
 
@@ -3070,21 +3460,13 @@ class ServiceNowConnector(BaseConnector):
             Dict with 'read', 'cannot_read', 'write' and 'cannot_write' lists of criteria sys_ids
         """
         try:
-            criteria_map: dict[str, list[str]] = {
-                ServiceNowDictKeys.READ: [],
-                ServiceNowDictKeys.CANNOT_READ: [],
-                ServiceNowDictKeys.WRITE: [],
-                ServiceNowDictKeys.CANNOT_WRITE: [],
-            }
+            criteria_map: dict[str, list[str]] = {key: [] for key, _ in _KB_MTOM}
+            if self._kb_mtom is not None:
+                return {key: list(ids) for key, ids in self._kb_mtom.get(kb_sys_id, criteria_map).items()}
 
             # A failed read raises: an empty Can Read list would remove every reader of the KB,
             # and an empty Cannot Read list would grant the KB to users it denies.
-            for key, table in (
-                (ServiceNowDictKeys.READ, ServiceNowTables.KB_UC_CAN_READ_MTOM),
-                (ServiceNowDictKeys.CANNOT_READ, ServiceNowTables.KB_UC_CANNOT_READ_MTOM),
-                (ServiceNowDictKeys.WRITE, ServiceNowTables.KB_UC_CAN_CONTRIBUTE_MTOM),
-                (ServiceNowDictKeys.CANNOT_WRITE, ServiceNowTables.KB_UC_CANNOT_CONTRIBUTE_MTOM),
-            ):
+            for key, table in _KB_MTOM:
                 try:
                     async for rows in self._iter_table(
                         table, f"{ServiceNowFields.KB_KNOWLEDGE_BASE}={kb_sys_id}", [ServiceNowFields.USER_CRITERIA]
@@ -3101,6 +3483,29 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to fetch KB permissions: {e}", exc_info=True)
             raise
+
+    async def _load_kb_criteria(self) -> None:
+        """Every knowledge base's criteria ids, one listing per mtom table, and their user_criteria
+        rows in one read, instead of five reads per knowledge base. A failed read leaves each
+        knowledge base to read its own (_fetch_kb_permissions_from_criteria); a run stop raises."""
+        try:
+            by_kb: dict[str, dict[str, list[str]]] = defaultdict(lambda: {key: [] for key, _ in _KB_MTOM})
+            for key, table in _KB_MTOM:
+                async for rows in self._iter_table(
+                    table, None, [ServiceNowFields.KB_KNOWLEDGE_BASE, ServiceNowFields.USER_CRITERIA],
+                    page=ServiceNowDefaults.ID_PAGE_SIZE,
+                ):
+                    for r in rows:
+                        if r.get(ServiceNowFields.KB_KNOWLEDGE_BASE) and r.get(ServiceNowFields.USER_CRITERIA):
+                            by_kb[str(r.get(ServiceNowFields.KB_KNOWLEDGE_BASE))][key].append(
+                                str(r.get(ServiceNowFields.USER_CRITERIA))
+                            )
+            self._kb_mtom = dict(by_kb)
+            await self._fetch_user_criteria(sorted({c for kinds in by_kb.values() for ids in kinds.values() for c in ids}))
+        except ServiceNowAPIError as e:
+            _raise_if_run_stop(e)
+            self.logger.warning(f"Could not read the knowledge bases' criteria at once; reading them one by one: {e}")
+            self._kb_mtom = None
 
     async def _kb_criteria(self, kb_sys_id: str) -> dict[str, list[str]]:
         """A knowledge base's criteria ids (_fetch_kb_permissions_from_criteria), read once per
@@ -3189,6 +3594,8 @@ class ServiceNowConnector(BaseConnector):
             except Exception as e:
                 raise _CriteriaUnreadable(str(e)) from e
             if users is None:
+                if not self._deny_reach_unknown(record):
+                    self._note_criteria("partial", record.sys_id)
                 # Whom a scripted, unreadable or partly hidden Cannot Read denies is unknown, so it may
                 # deny anyone: nobody is allowed through criteria (privileged readers are added by the callers).
                 self.logger.warning(f"Cannot Read / Cannot Contribute {record.sys_id} cannot be evaluated; denying everyone it may cover")
@@ -3354,6 +3761,19 @@ class ServiceNowConnector(BaseConnector):
         comments and whitespace is no script; anything else counts as one."""
         return bool(_SCRIPT_COMMENTS.sub("", str(getattr(record, ServiceNowFields.SCRIPT, None) or "")).strip())
 
+    @staticmethod
+    def _is_has_role(record: TableAPIRecord) -> bool:
+        """The out-of-box "Has atleast one role apart from snc_internal KB" criterion, unedited: its
+        script is evaluated here (see _has_role_users). Any other script is not."""
+        return (
+            record.sys_id == ServiceNowDefaults.HAS_ROLE_CRITERIA
+            and " ".join(str(getattr(record, ServiceNowFields.SCRIPT, None) or "").split())
+            == " ".join(ServiceNowDefaults.HAS_ROLE_CRITERIA_SCRIPT.split())
+        )
+
+    def _has_unevaluated_script(self, record: TableAPIRecord) -> bool:
+        return self._has_script(record) and not self._is_has_role(record)
+
     def _has_unevaluable_condition(self, record: TableAPIRecord) -> bool:
         """A script, or a row that could not be read: conditions not evaluated here."""
         return self._unreadable(record) or self._has_script(record)
@@ -3368,7 +3788,7 @@ class ServiceNowConnector(BaseConnector):
         a superset of the users it denies."""
         if self._unreadable(record):
             return True
-        return self._has_script(record) and not (self._match_all(record) and self._dims(record))
+        return self._has_unevaluated_script(record) and not (self._match_all(record) and self._dims(record))
 
     def _allow_rows(self, records: list[TableAPIRecord]) -> list[TableAPIRecord]:
         """The active Can Read / Can Contribute rows that may grant. A condition not evaluated here
@@ -3378,11 +3798,11 @@ class ServiceNowConnector(BaseConnector):
             r for r in records
             if self._criteria_is_active(r)
             and not self._unreadable(r)
-            and not (self._match_all(r) and self._has_script(r))
+            and not (self._match_all(r) and self._has_unevaluated_script(r))
         ]
 
     def _needs_user_resolution(self, record: TableAPIRecord) -> bool:
-        return self._match_all(record) and len(self._dims(record)) > 1
+        return (self._match_all(record) and len(self._dims(record)) > 1) or self._is_has_role(record)
 
     async def _fetch_user_criteria(self, criteria_ids: list[str]) -> list[TableAPIRecord]:
         """user_criteria rows by sys_id, each read once per sync run. Raises on an API error.
@@ -3403,12 +3823,16 @@ class ServiceNowConnector(BaseConnector):
             ):
                 self._criteria_rows.update((r.sys_id, r) for r in page)
         for c in missing:
+            row = self._criteria_rows.get(c)
+            if row is not None and self._has_script(row) and not self._is_has_role(row):
+                self._note_criteria("scripted", c)
             if c in self._criteria_rows:
                 continue
             if await self._gone_at_source(ServiceNowTables.USER_CRITERIA, f"{ServiceNowFields.SYS_ID}={c}"):
                 self._criteria_rows[c] = None  # deleted: not asked for again this run
             else:
                 self.logger.warning(f"User criteria {c} is hidden from this account; it grants nobody and denies everyone")
+                self._note_criteria("hidden", c)
                 self._criteria_rows[c] = TableAPIRecord(sys_id=c, active="true", unreadable="true")
                 self._sync_read_incomplete = True
         return [r for c in dict.fromkeys(criteria_ids) if (r := self._criteria_rows.get(c)) is not None]
@@ -3452,6 +3876,11 @@ class ServiceNowConnector(BaseConnector):
             return self._criteria_users[key]
         if self._is_everyone(record):
             return set(await self._emails_by_source_id())
+        if self._is_has_role(record):
+            users = await self._has_role_users()
+            # Unknown (the plugin state could not be read): nobody as an allow, everyone as a deny.
+            self._criteria_users[key] = None if users is None and deny else (users or set())
+            return self._criteria_users[key]
         active = f"{ServiceNowFields.USER}.{ServiceNowFields.ACTIVE}=true"
         sources = {
             ServiceNowFields.GROUP: (
@@ -3495,6 +3924,40 @@ class ServiceNowConnector(BaseConnector):
         result = None if deny and any(listing.partial for listing in listings) else matched
         self._criteria_users[key] = result
         return result
+
+    async def _has_role_users(self) -> set[str] | None:
+        """The active users the out-of-box "Has a role" criterion matches, per run. Its script: a
+        user with at least one sys_user_has_role row (inherited rows count, whatever their state),
+        or, while the plugin com.glide.explicit_roles is active, one with snc_internal and at least
+        two rows. None when the plugin's state could not be read."""
+        if self._has_role_users_cache is None:
+            try:
+                plugin = await self._table_get(
+                    ServiceNowTables.V_PLUGIN,
+                    sysparm_query=f"{ServiceNowFields.ID}={ServiceNowDefaults.EXPLICIT_ROLES_PLUGIN}",
+                    sysparm_fields=ServiceNowFields.ACTIVE, sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+                    sysparm_no_count=None,
+                )
+            except ServiceNowAPIError as e:
+                _raise_if_run_stop(e)
+                self.logger.warning(f"Could not read whether {ServiceNowDefaults.EXPLICIT_ROLES_PLUGIN} is active: {e}")
+                return None
+            if plugin.total_count is None or (plugin.total_count and not plugin.result):
+                return None  # hidden from this account
+            explicit = any(str(r.get(ServiceNowFields.ACTIVE)) == ServiceNowFields.ACTIVE for r in plugin.result)
+            roles: dict[str, list[str]] = defaultdict(list)
+            async for rows in self._iter_table(
+                ServiceNowTables.SYS_USER_HAS_ROLE, f"{ServiceNowFields.USER}.{ServiceNowFields.ACTIVE}=true",
+                [ServiceNowFields.USER, ServiceNowFields.ROLE_NAME], page=ServiceNowDefaults.ID_PAGE_SIZE,
+            ):
+                for r in rows:
+                    if r.get(ServiceNowFields.USER):
+                        roles[str(r.get(ServiceNowFields.USER))].append(str(r.get(ServiceNowFields.ROLE_NAME) or ""))
+            self._has_role_users_cache = {
+                user for user, names in roles.items()
+                if (ServiceNowRoles.SNC_INTERNAL in names and len(names) >= 2 if explicit else len(names) >= 1)
+            }
+        return self._has_role_users_cache
 
     async def _extract_permissions_from_user_criteria_details(
         self, criteria_details: TableAPIRecord, permission_type: PermissionType
@@ -3816,7 +4279,7 @@ class ServiceNowConnector(BaseConnector):
             parent_sys_id = category_data.parent_id
 
             if not sys_id or not label:
-                self.logger.warning(f"Category missing sys_id or label: {category_data}")
+                self.logger.warning(f"Category {getattr(category_data, 'sys_id', None)} has no sys_id or label")
                 return None
 
             # Parse timestamps
@@ -3991,7 +4454,7 @@ class ServiceNowConnector(BaseConnector):
             file_name = attachment_data.file_name
 
             if not sys_id or not file_name:
-                self.logger.warning(f"Attachment missing sys_id or file_name: {attachment_data}")
+                self.logger.warning(f"Attachment {getattr(attachment_data, 'sys_id', None)} has no sys_id or file name")
                 return None
 
             # Parse timestamps

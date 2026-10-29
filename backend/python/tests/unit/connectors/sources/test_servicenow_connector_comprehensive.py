@@ -774,18 +774,6 @@ class TestMiscComprehensive:
         assert connector.get_signed_url(MagicMock()) is None
 
     @pytest.mark.asyncio
-    async def test_handle_webhook_returns_true(self, connector):
-        result = await connector.handle_webhook_notification("org-1", {})
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_handle_webhook_exception(self, connector):
-        result = await connector.handle_webhook_notification("org-1", None)
-        # Should catch exception and return False
-        # Actually the method logs and returns True. Let's test normal case.
-        assert result is True
-
-    @pytest.mark.asyncio
     async def test_cleanup(self, connector):
         client = connector.servicenow_client = MagicMock(close=AsyncMock())
         connector.servicenow_datasource = MagicMock()

@@ -168,7 +168,7 @@ async def test_sn_the_kb_loop_passes_the_cannot_read_criteria_to_the_read_grants
          patch.object(sc, "_transform_to_kb_record_group", return_value=MagicMock(id="rg-1")), \
          patch.object(sc, "_fetch_kb_permissions_from_criteria", new_callable=AsyncMock,
                       return_value={"read": ["c"], "cannot_read": ["d"], "write": []}), \
-         patch.object(sc, "_process_criteria_permissions", side_effect=spy):
+         patch.object(sc, "_process_criteria_permissions", side_effect=spy),          patch.object(sc, "_load_kb_criteria", new_callable=AsyncMock):
         ds.return_value.get_now_table_tableName = AsyncMock(
             side_effect=[resp([{"sys_id": "kb1", "title": "KB 1", "owner": "o1"}]), resp([])])
         await sc._sync_knowledge_bases([])

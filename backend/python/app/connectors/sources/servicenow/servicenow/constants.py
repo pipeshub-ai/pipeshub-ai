@@ -41,6 +41,8 @@ class ServiceNowTables:
     CMN_LOCATION = "cmn_location"
     KB_UC_CANNOT_CONTRIBUTE_MTOM = "kb_uc_cannot_contribute_mtom"
     KB_FEEDBACK = "kb_feedback"
+    # Plugins and whether each is active (see ServiceNowConnector._explicit_roles_active)
+    V_PLUGIN = "v_plugin"
 
 
 class ServiceNowFields:
@@ -62,6 +64,9 @@ class ServiceNowFields:
     USER = "user"
     GROUP = "group"
     ROLE = "role"
+    ROLE_NAME = "role.name"
+    # v_plugin
+    ID = "id"
     OWNER = "owner"
     KB_MANAGERS = "kb_managers"
     KB_KNOWLEDGE_BASE = "kb_knowledge_base"
@@ -188,6 +193,20 @@ class ServiceNowDefaults:
     # The out-of-box "Guest User" criterion every new knowledge base gets as Cannot Read and
     # Cannot Contribute: it denies only the guest user, who has no PipesHub account.
     GUEST_USER_CRITERIA = "76f09af6cb1200108ad442fcf7076dbf"
+    # The out-of-box "Has atleast one role apart from snc_internal KB" criterion every new
+    # knowledge base gets as Can Contribute. Its script, evaluated only while it reads exactly so:
+    HAS_ROLE_CRITERIA = "f9397919f79d52507787d3e543bfd6cd"
+    HAS_ROLE_CRITERIA_SCRIPT = (
+        "var all_roles = [];\n"
+        "var userHasRoleGR = new GlideRecord('sys_user_has_role');\n"
+        "userHasRoleGR.addQuery('user',user_id);\n"
+        "userHasRoleGR.query();\n"
+        "while(userHasRoleGR.next())\n"
+        "all_roles.push(userHasRoleGR.getDisplayValue('role'));\n"
+        "answer = GlidePluginManager.isActive('com.glide.explicit_roles') ? "
+        "all_roles.includes ('snc_internal') && all_roles.length >=2:all_roles.length >=1;"
+    )
+    EXPLICIT_ROLES_PLUGIN = "com.glide.explicit_roles"
 
 
 class ServiceNowConfigPaths:
@@ -200,6 +219,7 @@ class ServiceNowRoles:
     ADMIN = "admin"
     # Reads every knowledge base and article without user criteria (the knowledge_manager role does not).
     KNOWLEDGE_ADMIN = "knowledge_admin"
+    SNC_INTERNAL = "snc_internal"
 
 
 class ServiceNowSyncPointKeys:
@@ -219,6 +239,9 @@ class ServiceNowSyncPointKeys:
     # Set once a run has read every user, so the users deactivated before it lose access too
     USERS_V2 = "users/v2"
     CATEGORY_SCOPE = "category_scope"
+    # What the tables behind article grants looked like when the re-read pass last ran (see
+    # ServiceNowConnector._access_reread_due)
+    ACCESS_FINGERPRINT = "access_fingerprint"
 
 
 class ServiceNowDictKeys:
@@ -237,6 +260,7 @@ class ServiceNowDictKeys:
     IDS = "ids"
     DONE = "done"
     KEPT = "kept"
+    FINGERPRINT = "fingerprint"
 
 
 class OrganizationalEntityConfig(TypedDict):
