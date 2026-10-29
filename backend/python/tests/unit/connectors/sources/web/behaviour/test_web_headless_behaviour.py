@@ -382,6 +382,7 @@ async def test_a_sync_starts_a_browser_context_of_its_own_that_later_pages_opene
     await connector.stream_record(_legacy_record("http://site.test/guide"))
 
     assert len(sync_keys) == 1
+    assert None not in sync_keys
     assert live_key is not None
     assert live_key not in sync_keys
     assert browser.browser_context_keys[-1] in sync_keys
