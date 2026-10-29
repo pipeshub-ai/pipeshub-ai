@@ -5078,6 +5078,7 @@ components:
           description: A direct upload was started and has not been recorded as finished (a verified read of the document records it).
         retiredAt:
           type: integer
+          format: int64
           nullable: true
           description: Server time (ms) the document was marked retired.
         alternateDocumentName:

@@ -20,7 +20,7 @@ from app.services.storage_documents import (
 DOC = {"_id": "d1", "isDeleted": False, "sizeInBytes": 10, "storageVendor": "s3"}
 
 
-def fingerprint(**over: Any) -> dict[str, Any]:
+def fingerprint(**over: object) -> dict[str, Any]:
     fp = {
         "version": 1,
         "value": "a" * 32,
@@ -116,7 +116,7 @@ def test_p11b_matches_download_compares_the_normalised_etag_and_never_a_weak_one
 class _Storage:
     """A real local HTTP server standing in for the storage service."""
 
-    def __init__(self, status: int = 200, payload: Any = None) -> None:
+    def __init__(self, status: int = 200, payload: object = None) -> None:
         self.status = status
         self.payload = payload
         self.queries: list[dict[str, str]] = []
