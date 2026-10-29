@@ -15,6 +15,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# The message of the error a Table API answer that is not JSON raises; the connector names it.
+PARSE_ERROR_MESSAGE = "Failed to parse API response"
+# A 3xx: the ServiceNow clients do not follow redirects, so credentials never leave the instance.
+REDIRECT_MESSAGE = "ServiceNow answered with a redirect to another address"
+
 
 class ServiceNowAPIError(Exception):
     """Raised when ServiceNow API returns an error.
@@ -139,6 +144,7 @@ class AttachmentMetadata(BaseModel):
     table_name: str | None = Field(default=None, description="Name of the parent table")
     sys_created_on: str = Field(description="Creation timestamp")
     sys_updated_on: str = Field(description="Last update timestamp")
+    hash: str | None = Field(default=None, description="SHA-256 of the file's bytes")
 
     model_config = ConfigDict(extra="allow")
 

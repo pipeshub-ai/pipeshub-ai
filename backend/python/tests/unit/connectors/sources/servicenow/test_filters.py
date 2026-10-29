@@ -15,6 +15,7 @@ from servicenow_fakes import (
     MemorySyncPoint,
     article_row,
     attachment_row,
+    file_key,
     category_row,
     groups_written,
     kb_row,
@@ -448,7 +449,7 @@ async def test_index_articles_off_still_syncs_with_grants(servicenow_connector) 
     await sc._sync_articles()
 
     assert store.records[_number(1)].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
-    assert store.records["f0001"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+    assert store.records[file_key(1)].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
 
 # --- filter options ----------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+# Generated from the ServiceNow OpenAPI specifications, with hand-maintained parts to keep when
+# regenerating: _vendor_reason, _handle_table_response and stream_attachment.
 import json
 import logging
 from typing import Any
@@ -11,10 +13,14 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowResponse,
 )
 from app.sources.external.servicenow.models import (
+    PARSE_ERROR_MESSAGE,
+    REDIRECT_MESSAGE,
     ServiceNowAPIError,
     TableAPIResponse,
 )
 from app.utils.url_redaction import redact_urls_in_text
+
+_FIRST_REDIRECT_STATUS = 300
 
 
 def _vendor_reason(body: str) -> str | None:
@@ -104,6 +110,8 @@ class ServiceNowDataSource:
         Raises:
             ServiceNowAPIError: If the API returns an error or response parsing fails
         """
+        if _FIRST_REDIRECT_STATUS <= response.status < HttpStatusCode.BAD_REQUEST.value:
+            raise ServiceNowAPIError(status_code=response.status, message=REDIRECT_MESSAGE)
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             error_body = response.text()
             # A 401 is refreshed and retried, and some 403s are expected (a table the account may
@@ -134,7 +142,7 @@ class ServiceNowDataSource:
             self.logger.error(f"Failed to parse ServiceNow Table API response: {e}")
             raise ServiceNowAPIError(
                 status_code=500,
-                message="Failed to parse API response",
+                message=PARSE_ERROR_MESSAGE,
                 details=str(e)
             )
 
@@ -11825,7 +11833,7 @@ class ServiceNowDataSource:
             timeout=httpx.Timeout(30.0, read=600.0),
         )
         response = await client.send(request, stream=True)
-        if response.status_code >= HttpStatusCode.BAD_REQUEST.value:
+        if response.status_code >= _FIRST_REDIRECT_STATUS:  # a redirect is not the file either
             body = (await response.aread()).decode("utf-8", "replace")
             await response.aclose()
             raise ServiceNowAPIError(

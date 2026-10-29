@@ -15,6 +15,7 @@ from servicenow_fakes import (
     MemorySyncPoint,
     article_row,
     attachment_row,
+    file_key,
     kb_row,
     status_error,
     stored_record,
@@ -195,7 +196,7 @@ async def test_clean_run_reports_complete(servicenow_connector) -> None:
          patch.object(sc, "_sync_categories", new_callable=AsyncMock):
         await sc.run_sync()
 
-    assert sorted(written_ids(sc)) == ["KB0000001", "f0001"]
+    assert sorted(written_ids(sc)) == ["KB0000001", file_key(1)]
     assert sc.full_sync_coverage().complete is True
 
 
@@ -255,7 +256,7 @@ async def test_attachment_listing_503_fails_the_article_not_the_attachments(serv
     await servicenow_connector._sync_articles()
 
     # page 1 and a0001's stored attachment are left as they are, not rewritten with "no attachments"
-    assert sorted(written_ids(servicenow_connector)) == ["KB0000100", "f0100"]
+    assert sorted(written_ids(servicenow_connector)) == ["KB0000100", file_key(100, "KB0000100")]
     assert servicenow_connector.full_sync_coverage().complete is False
 
 
@@ -379,7 +380,7 @@ async def test_attachment_an_acl_hides_is_not_pruned(servicenow_connector) -> No
 
     await servicenow_connector._sync_articles()
 
-    assert store.keys() == ["KB0000001", "f0001", "f0002"]
+    assert store.keys() == ["KB0000001", file_key(1), "f0002"]
     assert servicenow_connector.full_sync_coverage().complete is False
 
 

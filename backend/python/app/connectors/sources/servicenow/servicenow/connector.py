@@ -135,6 +135,8 @@ from app.sources.client.servicenow.servicenow import (
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 from app.sources.external.servicenow.models import (
+    PARSE_ERROR_MESSAGE,
+    REDIRECT_MESSAGE,
     AttachmentMetadata,
     RawPermission,
     ServiceNowAccessError,
@@ -331,9 +333,21 @@ def _raise_if_run_stop(error: BaseException | None) -> None:
     Every later call would fail the same way, so the run ends there (checkpoints unmoved, nothing
     unlinked) instead of failing item by item."""
     while error is not None:
-        if isinstance(error, (ServiceNowRateLimited, ServiceNowAuthError, ServiceNowAccessError)):
+        if isinstance(error, (ServiceNowRateLimited, ServiceNowAuthError, ServiceNowAccessError)) or (
+            isinstance(error, ServiceNowAPIError) and error.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+        ):
             raise error
         error = error.__cause__
+
+
+def _stream_error(error: Exception, connector: str) -> HTTPException:
+    """The answer to a failed stream: a spent rate limit is a 429 that says when to try again."""
+    if isinstance(error, ServiceNowRateLimited):
+        return map_source_status(
+            HttpStatusCode.TOO_MANY_REQUESTS.value, connector=connector,
+            retry_after=str(max(1, int(error.reset_at - time.time()))),
+        )
+    return to_stream_error(error, connector=connector)
 
 
 def _instance_url_field() -> AuthField:
@@ -572,6 +586,8 @@ class ServiceNowConnector(BaseConnector):
         # Set when this run skipped something after an error it did not raise, so a full
         # sync's cleanup unlinks nothing (see full_sync_coverage).
         self._sync_read_incomplete = False
+        # The run that moves attachments stored under their sys_id to their key (see _attachment_keys)
+        self._rekey_attachments = False
         # What this run could not do, reported once when it ends (see _report_sync_problems):
         # lines as they are shown, and counts of skipped things by the line that names them.
         self._problems: list[str] = []
@@ -1191,7 +1207,12 @@ class ServiceNowConnector(BaseConnector):
                 + self._sign_in_fix()
             ) from e
         except ServiceNowAPIError as e:
-            if e.message == "Failed to parse API response":
+            if e.message == REDIRECT_MESSAGE:
+                raise ConnectorInitError(
+                    f"ServiceNow at {host} redirected the request (HTTP {e.status_code}), so this URL is not the "
+                    "instance's REST API. Enter the instance's own address, such as https://<instance>.service-now.com."
+                ) from e
+            if e.message == PARSE_ERROR_MESSAGE:
                 raise ConnectorInitError(
                     f"ServiceNow at {host} did not answer with its REST API; the instance may be hibernating. "
                     "Wake it up, then try again."
@@ -1516,7 +1537,7 @@ class ServiceNowConnector(BaseConnector):
 
             elif record.record_type == RecordType.FILE:
                 chunks = await self._open_attachment(
-                    record.external_record_id, is_html=record.mime_type == MimeTypes.HTML.value
+                    await self._current_attachment(record), is_html=record.mime_type == MimeTypes.HTML.value
                 )
                 filename = record.record_name or f"{record.external_record_id}"
                 return create_stream_record_response(
@@ -1536,7 +1557,7 @@ class ServiceNowConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise to_stream_error(e, connector=self.display_name) from e
+            raise _stream_error(e, self.display_name) from e
 
     async def _read_instance_property(self, name: str) -> Optional[str]:
         """Read one sys_properties value. None means the property is not set.
@@ -1704,7 +1725,7 @@ class ServiceNowConnector(BaseConnector):
                 )
                 body = (rendered.result[0].get(ServiceNowFields.WIKI) if rendered.result else None) or body
             if body:
-                body = await html_to_markdown_async(await self._inline_images_as_data_uris(body))
+                body = await html_to_markdown_async(await self._inline_images_as_data_uris(body, article.sys_id))
             groups = [BlockGroup(
                 id=str(uuid.uuid4()), index=0, name=title,
                 type=GroupType.TEXT_SECTION, sub_type=GroupSubType.CONTENT, description="Article body",
@@ -1758,7 +1779,7 @@ class ServiceNowConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions
         except Exception as e:
             self.logger.error(f"Failed to fetch article content: {e}", exc_info=True)
-            raise to_stream_error(e, connector=self.display_name) from e
+            raise _stream_error(e, self.display_name) from e
 
     @staticmethod
     def _article_body(article: TableAPIRecord) -> str:
@@ -1790,43 +1811,103 @@ class ServiceNowConnector(BaseConnector):
                     rows[row.get(ServiceNowFields.ARTICLE_NUMBER)].append(row)
         return rows
 
-    async def _inline_images_as_data_uris(self, body: str) -> str:
-        """The article HTML with each image stored on this instance embedded as a data: URI, so
-        the indexer, which cannot sign in to ServiceNow, sees it. An image on another host, one
-        larger than MAX_INLINE_IMAGE_BYTES, or one that cannot be read stays a link."""
-        resolved: dict[str, str | None] = {}
-        for match in _IMG_SRC.finditer(body):
-            if match.group(2) not in resolved:
-                resolved[match.group(2)] = await self._image_data_uri(match.group(2))
-        return _IMG_SRC.sub(lambda m: f"{m.group(1)}{resolved.get(m.group(2)) or m.group(2)}{m.group(3)}", body)
-
-    async def _image_data_uri(self, src: str) -> str | None:
+    def _instance_image_id(self, src: str) -> str | None:
+        """The sys_attachment sys_id an <img> src names on this instance, or None."""
         url = html.unescape(src)
         if self.instance_url and url.startswith(self.instance_url):
             url = url[len(self.instance_url):]
         match = _INSTANCE_IMAGE.match(url)
-        if not match:
-            return None
+        return match.group(1) if match else None
+
+    async def _inline_images_as_data_uris(self, body: str, article_sys_id: str) -> str:
+        """The article HTML with each image stored on this instance embedded as a data: URI, so
+        the indexer, which cannot sign in to ServiceNow, sees it.
+
+        Only this article version's own images are embedded (its inline images and its
+        attachments): any other attachment on the instance stays a link, as its readers are not
+        the article's. So does an image on another host, one larger than MAX_INLINE_IMAGE_BYTES,
+        one that cannot be read, and every image past MAX_INLINE_IMAGES or
+        MAX_INLINE_IMAGES_TOTAL_BYTES for the article."""
+        ids = {src: image_id for m in _IMG_SRC.finditer(body) if (image_id := self._instance_image_id(src := m.group(2)))}
+        if not ids:
+            return body
+        own: dict[str, int] = {}  # sys_id -> size_bytes
+        async for rows in self._iter_table(
+            ServiceNowTables.SYS_ATTACHMENT,
+            f"{ServiceNowFields.TABLE_SYS_ID}={article_sys_id}^{ServiceNowFields.TABLE_NAME}IN"
+            f"{ServiceNowTables.INLINE_IMAGE},{ServiceNowTables.KB_KNOWLEDGE}",
+            [ServiceNowFields.SYS_ID, ServiceNowFields.SIZE_BYTES], page=ServiceNowDefaults.ID_PAGE_SIZE,
+        ):
+            for row in rows:
+                size = str(row.get(ServiceNowFields.SIZE_BYTES) or "")
+                own[row.sys_id] = int(size) if size.isdigit() else 0
+        by_id: dict[str, str] = {}  # sys_id -> data: URI, the embedded ones
+        budget = ServiceNowDefaults.MAX_INLINE_IMAGES_TOTAL_BYTES
+        for image_id in dict.fromkeys(ids.values()):
+            limit = min(budget, ServiceNowDefaults.MAX_INLINE_IMAGE_BYTES)
+            size = own.get(image_id)
+            if size is None or size > limit or len(by_id) >= ServiceNowDefaults.MAX_INLINE_IMAGES:
+                continue
+            embedded = await self._image_data_uri(image_id, limit)
+            if embedded:
+                by_id[image_id], read = embedded
+                budget -= read  # the bytes read, whatever size_bytes said
+        return _IMG_SRC.sub(
+            lambda m: f"{m.group(1)}{by_id.get(ids.get(m.group(2), '')) or m.group(2)}{m.group(3)}", body
+        )
+
+    async def _image_data_uri(self, image_id: str, max_bytes: int) -> tuple[str, int] | None:
+        """The image ``image_id`` as a data: URI and its size, or None when it is not an image,
+        cannot be read or is larger than ``max_bytes``."""
         try:
-            response = await self._with_token_retry(lambda datasource: datasource.stream_attachment(match.group(1)))
+            response = await self._with_token_retry(lambda datasource: datasource.stream_attachment(image_id))
             data = bytearray()
             try:
                 async for chunk in response.aiter_bytes():
                     data += chunk
-                    if len(data) > ServiceNowDefaults.MAX_INLINE_IMAGE_BYTES:
-                        self.logger.warning(f"Inline image {match.group(1)} is too large to embed; it stays a link")
+                    if len(data) > max_bytes:
+                        self.logger.warning(f"Inline image {image_id} is too large to embed; it stays a link")
                         return None
             finally:
                 await response.aclose()
         except Exception as e:
             # A rate limit or a lost sign-in fails the stream, so indexing tries again later.
             _raise_if_run_stop(e)
-            self.logger.warning(f"Could not read inline image {match.group(1)}; it stays a link: {e}")
+            self.logger.warning(f"Could not read inline image {image_id}; it stays a link: {e}")
             return None
         mime = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if not mime.startswith("image/"):
             return None
-        return f"data:{mime};base64,{base64.b64encode(bytes(data)).decode('ascii')}"
+        return f"data:{mime};base64,{base64.b64encode(bytes(data)).decode('ascii')}", len(data)
+
+    async def _current_attachment(self, record: Record) -> str:
+        """The sys_id of the file behind an attachment record on its article's current version
+        (see _current_article_query). The article must still be current, so a retired or expired
+        article's files are not served to its old readers until the next sync removes them.
+
+        Raises:
+            HTTPException: not found when the article has no current version or that version
+                no longer has the file
+        """
+        article_key = record.parent_external_record_id or ""
+        key_field = ServiceNowFields.SYS_ID if _LEGACY_ARTICLE_KEY.match(article_key) else ServiceNowFields.NUMBER
+        try:
+            response = await self._table_get(
+                ServiceNowTables.KB_KNOWLEDGE,
+                sysparm_query=f"{key_field}={article_key}^{self._current_article_query()}",
+                sysparm_fields=f"{ServiceNowFields.SYS_ID},{ServiceNowFields.NUMBER}",
+                sysparm_limit=ServiceNowDefaults.DEFAULT_LIMIT,
+            )
+            article = response.result[0] if article_key and response.result else None
+            rows = (await self._fetch_attachments_for_articles([article.sys_id])).get(article.sys_id, []) \
+                if article else []
+        except ServiceNowAPIError as e:
+            raise map_source_status(e.status_code, connector=self.display_name) from e
+        for key, row in self._attachment_keys(article.number if article else "", rows):
+            # A record stored before attachments had their key is under the file's sys_id.
+            if record.external_record_id in (key, row.sys_id):
+                return row.sys_id
+        raise not_found_at_source(self.display_name)
 
     async def _open_attachment(self, attachment_sys_id: str, *, is_html: bool = False) -> AsyncGenerator[bytes, None]:
         """
@@ -3003,9 +3084,10 @@ class ServiceNowConnector(BaseConnector):
         return in_scope - previous, kept, gone
 
     async def _article_checkpoint(self) -> tuple[bool, str | None]:
-        """(whether articles are stored under their number, the article checkpoint): no checkpoint
-        until they are, so every run reads every article."""
-        migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2))
+        """(whether articles are stored under their number and attachments under their key, the
+        article checkpoint): no checkpoint until they are, so every run reads every article."""
+        migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2)) \
+            and bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ATTACHMENT_KEY_V2))
         return migrated, (
             await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES) if migrated else None
         )
@@ -3041,6 +3123,7 @@ class ServiceNowConnector(BaseConnector):
         """
         try:
             migrated, last_sync_time = await self._article_checkpoint()
+            self._rekey_attachments = not migrated
             current = self._current_article_query()
             # Inline images and feedback change without their article row changing.
             inline_changed, inline_checkpoint = await self._changed_articles(
@@ -3212,12 +3295,12 @@ class ServiceNowConnector(BaseConnector):
                     if attachment_listing.partial:
                         # An ACL hid attachments: what the listing lacks may still be there.
                         self._sync_read_incomplete = True
-                        processed = []
                     # After the write, which moved the listed attachments under the article's number.
                     for article_data in processed:
                         try:
                             await self._remove_attachments_gone(
-                                article_data.number, {a.sys_id for a in attachments.get(article_data.sys_id, [])}
+                                article_data.number, attachments.get(article_data.sys_id, []),
+                                complete=not attachment_listing.partial,
                             )
                         except Exception as e:
                             _raise_if_run_stop(e)
@@ -3259,6 +3342,12 @@ class ServiceNowConnector(BaseConnector):
                     _raise_if_run_stop(e)
                     self.logger.error(f"❌ {removal.__name__} failed; it runs again next sync: {e}")
                     self._note_problem(_CLEANUP_FAILED)
+            if not migrated:
+                # This full read wrote every article's files under their key and removed the ones
+                # under a sys_id; an article it failed to write moves its files the next time it is.
+                await self.article_sync_point.update_sync_point(
+                    ServiceNowSyncPointKeys.ATTACHMENT_KEY_V2, {ServiceNowDictKeys.DONE: True}
+                )
             if await self._reconcile_articles(force=not migrated, keep=failed_ids) and not migrated:
                 await self.article_sync_point.update_sync_point(
                     ServiceNowSyncPointKeys.ARTICLE_KEY_V2, {ServiceNowDictKeys.DONE: True}
@@ -3350,14 +3439,42 @@ class ServiceNowConnector(BaseConnector):
             if await self.data_entities_processor.get_record_by_external_id(self.connector_id, number):
                 await self.data_entities_processor.delete_record_by_external_id(self.connector_id, number)
 
-    async def _remove_attachments_gone(self, number: str, listed: set[str]) -> None:
-        """Delete the stored attachments of article ``number`` that its complete attachment listing no longer has."""
+    async def _remove_attachments_gone(
+        self, number: str, listed: Sequence[AttachmentMetadata], *, complete: bool = True,
+    ) -> None:
+        """Delete the stored attachments of article ``number`` that its attachment listing
+        ``listed`` no longer has. When an ACL hid some (not ``complete``), only the ones stored
+        under the sys_id of a listed file go: that file is stored under its key now."""
+        keys = {key for key, _ in self._attachment_keys(number, listed)}
+        sys_ids = {a.sys_id for a in listed}
         children = await self.data_entities_processor.get_records_by_parent(
             self.connector_id, number, RecordType.FILE.value
         )
         for child in children:
-            if child.external_record_id not in listed:
+            if child.external_record_id not in keys and (complete or child.external_record_id in sys_ids):
                 await self.data_entities_processor.on_record_deleted(child.id)
+
+    @staticmethod
+    def _attachment_keys(
+        number: str, rows: Sequence[AttachmentMetadata],
+    ) -> list[tuple[str, AttachmentMetadata]]:
+        """Each file attachment of article ``number`` (not its inline images) with the key it is
+        stored under: ``<number>/<file name>/<hash>``, or the size where ServiceNow shows no hash.
+
+        A new version of an article copies its files with new sys_ids and the same bytes, so the
+        key, unlike the sys_id, stays. A second identical file on the article gets ``#2`` and so on;
+        which of the two is which does not matter, as their bytes are the same."""
+        keyed: list[tuple[str, AttachmentMetadata]] = []
+        seen: dict[str, int] = defaultdict(int)
+        files = sorted(
+            (a for a in rows if (a.table_name or ServiceNowTables.KB_KNOWLEDGE) == ServiceNowTables.KB_KNOWLEDGE),
+            key=lambda a: (a.sys_created_on or "", a.sys_id),
+        )
+        for row in files:
+            key = f"{number}/{row.file_name}/{row.hash or row.size_bytes}"
+            seen[key] += 1
+            keyed.append((key if seen[key] == 1 else f"{key}#{seen[key]}", row))
+        return keyed
 
     async def _changed_articles(self, table: str, article_field: str, key: str, scope: str = "") -> tuple[list[str], str]:
         """The sys_ids of the article rows that the rows of ``table`` (matching ``scope``) changed
@@ -3519,7 +3636,7 @@ class ServiceNowConnector(BaseConnector):
         record_updates = []
 
         # Transform article to WebpageRecord
-        article_record = self._transform_to_article_webpage_record(article_data, feedback)
+        article_record = self._transform_to_article_webpage_record(article_data, feedback, attachments_data)
         if not article_record:
             self.logger.warning(f"Failed to transform article {article_sys_id}")
             return []
@@ -3548,9 +3665,7 @@ class ServiceNowConnector(BaseConnector):
         record_updates.append(article_update)
 
         # Process attachments
-        for att_data in attachments_data:
-            att_sys_id = att_data.sys_id
-
+        for key, att_data in self._attachment_keys(article_record.external_record_id, attachments_data):
             # An attachment has exactly its article's readers: it inherits from the article
             # (OPEN, no grants of its own), whichever way the article's own access is written.
             att_record = self._transform_to_attachment_file_record(
@@ -3558,10 +3673,18 @@ class ServiceNowConnector(BaseConnector):
                 parent_record_group_type=article_record.record_group_type,
                 parent_external_record_group_id=article_record.external_record_group_id,
                 article=article_record,
+                key=key,
             )
 
             if att_record:
                 att_record.rewrite_permissions = True
+                if self._rekey_attachments:
+                    # The same record under its new key: its citations and links still open.
+                    stored = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, att_data.sys_id
+                    )
+                    if stored is not None:
+                        att_record.id = stored.id
                 attachment_update = RecordUpdate(
                     record=att_record,
                     is_new=True,
@@ -3571,7 +3694,7 @@ class ServiceNowConnector(BaseConnector):
                     content_changed=False,
                     permissions_changed=True,
                     new_permissions=[],
-                    external_record_id=att_sys_id,
+                    external_record_id=key,
                 )
                 record_updates.append(attachment_update)
 
@@ -3630,8 +3753,8 @@ class ServiceNowConnector(BaseConnector):
         self, article_sys_ids: list[str], listing: _Listing | None = None,
     ) -> dict[str, list[AttachmentMetadata]]:
         """
-        The attachments of a page of articles, by article sys_id: one listing per IN chunk, not
-        one per article. ``listing`` gets the counts of every chunk added up.
+        The attachments and inline images of a page of articles, by article sys_id: one listing
+        per IN chunk, not one per article. ``listing`` gets the counts of every chunk added up.
 
         Raises:
             ServiceNowAPIError: a failed listing is not "no attachments"; read that way, a full
@@ -3642,13 +3765,15 @@ class ServiceNowConnector(BaseConnector):
             chunk_listing = _Listing()
             async for rows in self._iter_table(
                 ServiceNowTables.SYS_ATTACHMENT,
-                f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.KB_KNOWLEDGE}"
+                f"{ServiceNowFields.TABLE_NAME}IN{ServiceNowTables.KB_KNOWLEDGE},{ServiceNowTables.INLINE_IMAGE}"
                 f"^{ServiceNowFields.TABLE_SYS_ID}IN{CommonStrings.COMMA.join(chunk)}",
                 [
                     ServiceNowFields.SYS_ID,
                     ServiceNowFields.FILE_NAME,
                     ServiceNowFields.CONTENT_TYPE,
                     ServiceNowFields.SIZE_BYTES,
+                    ServiceNowFields.HASH,
+                    ServiceNowFields.TABLE_NAME,
                     ServiceNowFields.TABLE_SYS_ID,
                     ServiceNowFields.SYS_CREATED_ON,
                     ServiceNowFields.SYS_UPDATED_ON,
@@ -4630,7 +4755,8 @@ class ServiceNowConnector(BaseConnector):
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
     def _transform_to_article_webpage_record(
-        self, article_data: TableAPIRecord, feedback: Sequence[TableAPIRecord] = ()
+        self, article_data: TableAPIRecord, feedback: Sequence[TableAPIRecord] = (),
+        attachments: Sequence[AttachmentMetadata] = (),
     ) -> Optional[WebpageRecord]:
         """
         Transform ServiceNow kb_knowledge article to WebpageRecord entity.
@@ -4638,11 +4764,13 @@ class ServiceNowConnector(BaseConnector):
         Args:
             article_data: ServiceNow kb_knowledge TableAPIRecord
             feedback: the article's kb_feedback rows (any fields), for the revision
+            attachments: this version's attachments and inline images, for the revision
 
         Returns:
             WebpageRecord: Transformed article or None if invalid
         """
         sys_id = article_data.sys_id
+        images = {a.sys_id: a.hash or a.size_bytes for a in attachments}
         # The record is the article, not this version of it (see _sync_articles)
         number = getattr(article_data, ServiceNowFields.NUMBER, None) or ""
         short_description = article_data.short_description or number
@@ -4699,9 +4827,10 @@ class ServiceNowConnector(BaseConnector):
             external_record_id=number,
             # The processor re-queues a stored record for indexing only when this differs
             # from what it holds: a hash of what the article streams (_fetch_article_content).
-            # Inline images are in the body by their sys_id; attachments are records of their own.
+            # The body names its images by sys_id, which a new version's copy changes, so the
+            # version's own images count by their bytes; attachments are records of their own.
             external_revision_id=self._content_revision(
-                self._article_body(article_data),
+                _SYS_ID.sub(lambda m: images.get(m.group(0), m.group(0)), self._article_body(article_data)),
                 sorted((row.sys_id, row.get(ServiceNowFields.SYS_UPDATED_ON)) for row in feedback),
             ),
             version=0,
@@ -4730,6 +4859,7 @@ class ServiceNowConnector(BaseConnector):
         *,
         inherit_permissions: bool = True,
         article: WebpageRecord | None = None,
+        key: str | None = None,
     ) -> Optional[FileRecord]:
         """
         Transform ServiceNow sys_attachment to FileRecord entity.
@@ -4741,6 +4871,7 @@ class ServiceNowConnector(BaseConnector):
             inherit_permissions: True: the attachment takes its article's readers
             article: The parent article's record: the attachment hangs under its number
                 and links to its page (a sys_attachment.do link downloads the file)
+            key: what the record is stored under (see _attachment_keys); the sys_id without one
 
         Returns:
             FileRecord: Transformed attachment or None if invalid
@@ -4780,12 +4911,14 @@ class ServiceNowConnector(BaseConnector):
         attachment_record = FileRecord(
             id=attachment_record_id,
             inherit_permissions=inherit_permissions,
-            # A file's sys_updated_on moves with no change to its bytes, which never change.
-            external_revision_id=f"{attachment_data.size_bytes}:{attachment_data.sys_created_on}",
+            # A file's bytes never change, and a new version's copy keeps them (and their hash);
+            # its sys_updated_on moves with no change. Without a hash, the copy is new.
+            external_revision_id=attachment_data.hash
+            or f"{attachment_data.size_bytes}:{attachment_data.sys_created_on}",
             org_id=self.data_entities_processor.org_id,
             record_name=file_name,
             record_type=RecordType.FILE,
-            external_record_id=sys_id,
+            external_record_id=key or sys_id,
             version=0,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.SERVICENOW,

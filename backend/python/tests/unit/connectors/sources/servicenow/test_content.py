@@ -6,6 +6,7 @@ The Table API is ``FakeServiceNow``; the stored records are ``FakeRecordStore``.
 """
 
 import base64
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,8 +22,11 @@ from servicenow_fakes import (
     V1,
     V2,
     FakeServiceNow,
+    MemorySyncPoint,
     article_row,
+    attachment_row,
     block_groups,
+    file_key,
     file_response,
     migrated_sync_point,
     status_error,
@@ -35,7 +39,7 @@ from app.connectors.sources.servicenow.servicenow.connector import _FEEDBACK_FIE
 from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
 from app.models.entities import FileRecord, RecordType
 from app.sources.client.servicenow.servicenow import ServiceNowRateLimited
-from app.sources.external.servicenow.models import TableAPIRecord
+from app.sources.external.servicenow.models import ServiceNowAPIError, TableAPIRecord
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 
 IMG = "c" * 32  # an inline image's sys_attachment sys_id
@@ -98,6 +102,20 @@ async def test_new_version_same_body_keeps_revision(servicenow_connector) -> Non
     assert before == after
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("copy_hash", "same"), [("h-img", True), ("h-other", False)])
+async def test_new_version_with_copied_images_keeps_revision(servicenow_connector, copy_hash, same) -> None:
+    # A checkout copies the inline images with new sys_ids and rewrites the body to them.
+    def version(sys_id: str, image: str, image_hash: str, updated: str) -> FakeServiceNow:
+        return FakeServiceNow({"kb_knowledge": [article_row(1, updated, sys_id=sys_id, text=f'<img src="/sys_attachment.do?sys_id&#61;{image}">')],
+                               "sys_attachment": [{**_image_row(image, sys_id), "hash": image_hash}]})
+
+    before = await _revision(servicenow_connector, version(V1, "1" * 32, "h-img", EARLIER))
+    after = await _revision(servicenow_connector, version(V2, "2" * 32, copy_hash, LATER))
+
+    assert (before == after) is same
+
+
 def test_attachment_revision_is_size_and_creation(servicenow_connector) -> None:
     from app.sources.external.servicenow.models import AttachmentMetadata
 
@@ -107,6 +125,18 @@ def test_attachment_revision_is_size_and_creation(servicenow_connector) -> None:
             table_sys_id="a0001", sys_created_on="2015-01-01 00:00:00", sys_updated_on=updated))
 
     assert build("2015-01-01 00:00:00").external_revision_id == build("2026-01-01 00:00:00").external_revision_id
+
+
+def test_attachment_revision_is_its_hash_which_a_copy_keeps(servicenow_connector) -> None:
+    from app.sources.external.servicenow.models import AttachmentMetadata
+
+    def build(sys_id: str, created: str) -> FileRecord | None:
+        return servicenow_connector._transform_to_attachment_file_record(AttachmentMetadata(
+            sys_id=sys_id, file_name="a.pdf", content_type="application/pdf", size_bytes="10", hash="h1",
+            table_sys_id="a0001", sys_created_on=created, sys_updated_on=created))
+
+    assert build("f1", "2015-01-01 00:00:00").external_revision_id == "h1"
+    assert build("f2", "2026-01-01 00:00:00").external_revision_id == "h1"
 
 
 # --- the article as blocks ---------------------------------------------------------------------
@@ -288,8 +318,15 @@ async def test_failed_feedback_listing_skips_the_page(servicenow_connector) -> N
 # --- inline images ----------------------------------------------------------------------------
 
 
-def _with_image(sc, src: str, response: httpx.Response | Exception | None = None) -> AsyncMock:
-    fake = FakeServiceNow({"kb_knowledge": [article_row(1, text=f'<p>See <img src="{src}" alt="x"></p>')]})
+def _image_row(sys_id: str, owner: str = "a0001", table: str = "ZZ_YYkb_knowledge", size: int = len(PNG)) -> dict:
+    return {"sys_id": sys_id, "file_name": "image.png", "content_type": "image/png", "size_bytes": str(size),
+            "table_name": table, "table_sys_id": owner, "sys_created_on": T0, "sys_updated_on": T0}
+
+
+def _with_image(sc, src: str, response: httpx.Response | Exception | None = None, **row: str) -> AsyncMock:
+    """Article a0001 shows ``src``; its attachment row is ``_image_row(IMG, **row)``."""
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, text=f'<p>See <img src="{src}" alt="x"></p>')],
+                           "sys_attachment": [_image_row(IMG, **row)]})
     fake.stream_attachment = AsyncMock(
         side_effect=response if isinstance(response, Exception) else None,
         return_value=response or file_response(PNG, "image/png"),
@@ -334,6 +371,64 @@ async def test_oversize_image_left_as_link(servicenow_connector, monkeypatch) ->
 
 
 @pytest.mark.asyncio
+async def test_image_listed_over_the_size_cap_is_not_downloaded(servicenow_connector) -> None:
+    fetch = _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}",
+                        size=ServiceNowDefaults.MAX_INLINE_IMAGE_BYTES + 1)
+
+    data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
+
+    assert "data:" not in data
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [
+    {"table": "incident", "owner": "inc0001"},  # an incident's screenshot
+    {"owner": "a0002"},  # another article's inline image
+    {"table": "kb_knowledge", "owner": "a0002"},  # another article's attachment
+])
+async def test_image_that_is_not_this_articles_stays_a_link(servicenow_connector, row) -> None:
+    # Its readers are not the article's: embedded, it would reach every reader of the article.
+    fetch = _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", **row)
+
+    data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
+
+    assert "data:" not in data and f"sys_attachment.do?sys_id={IMG}" in data
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_articles_own_attachment_shown_inline_is_embedded(servicenow_connector) -> None:
+    fetch = _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", table="kb_knowledge")
+
+    data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
+
+    assert "data:image/png;base64," in data
+    fetch.assert_awaited_once_with(IMG)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [
+    ("MAX_INLINE_IMAGES", 2),
+    ("MAX_INLINE_IMAGES_TOTAL_BYTES", 2 * len(PNG)),
+])
+async def test_images_past_the_articles_budget_stay_links(servicenow_connector, monkeypatch, budget) -> None:
+    monkeypatch.setattr(ServiceNowDefaults, *budget)
+    images = [f"{n}" * 32 for n in (1, 2, 3)]
+    fake = FakeServiceNow({
+        "kb_knowledge": [article_row(1, text="".join(f'<img src="/sys_attachment.do?sys_id={i}">' for i in images))],
+        "sys_attachment": [_image_row(i) for i in images],
+    })
+    fake.stream_attachment = AsyncMock(side_effect=lambda _: file_response(PNG, "image/png"))
+    wire_store(servicenow_connector, fake)
+
+    data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
+
+    assert data.count("data:image/png;base64,") == 2 and f"sys_id={images[2]}" in data
+    assert [c.args[0] for c in fake.stream_attachment.await_args_list] == images[:2]
+
+
+@pytest.mark.asyncio
 async def test_external_image_not_fetched(servicenow_connector) -> None:
     fetch = _with_image(servicenow_connector, "https://cdn.example.com/sys_attachment.do?sys_id=" + IMG)
 
@@ -355,10 +450,39 @@ async def test_unreadable_image_left_as_link(servicenow_connector) -> None:
 @pytest.mark.asyncio
 async def test_rate_limited_image_fails_the_stream(servicenow_connector) -> None:
     # Indexing tries the article again later rather than index it without the image.
-    _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", ServiceNowRateLimited(0.0))
+    _with_image(servicenow_connector, f"/sys_attachment.do?sys_id={IMG}", ServiceNowRateLimited(time.time() + 600))
 
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as raised:
         await servicenow_connector._fetch_article_content(KB1)
+
+    assert raised.value.status_code == 429
+    assert 590 <= int(raised.value.headers["Retry-After"]) <= 600
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_attachment_stream_is_429(servicenow_connector) -> None:
+    servicenow_connector._current_attachment = AsyncMock(side_effect=ServiceNowRateLimited(time.time() + 60))
+    record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="application/pdf",
+                       is_placeholder=False)
+
+    with pytest.raises(HTTPException) as raised:
+        await servicenow_connector.stream_record(record)
+
+    assert raised.value.status_code == 429 and raised.value.headers["Retry-After"].isdigit()
+
+
+@pytest.mark.asyncio
+async def test_429_the_retries_did_not_get_past_stops_the_run(servicenow_connector) -> None:
+    # Not one failed article after another: every later call would get the same answer.
+    fake = FakeServiceNow({"kb_knowledge": [article_row(i) for i in (1, 2, 3, 4)]},
+                          fail=lambda table, q: status_error(429) if table == "sys_attachment" else None)
+    wire_store(servicenow_connector, fake)
+
+    with pytest.raises(ServiceNowAPIError) as raised:
+        await servicenow_connector._sync_articles()
+
+    assert raised.value.status_code == 429
+    assert len(fake.calls_to("sys_attachment")) == 1
 
 
 @pytest.mark.asyncio
@@ -402,6 +526,7 @@ async def test_attachment_streams_in_chunks(servicenow_connector) -> None:
 
 @pytest.mark.asyncio
 async def test_404_raised_before_response(servicenow_connector) -> None:
+    servicenow_connector._current_attachment = AsyncMock(return_value="att1")
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(404, json={"error": {"message": "No Record found"}})))
     record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="application/pdf",
@@ -415,6 +540,7 @@ async def test_404_raised_before_response(servicenow_connector) -> None:
 
 @pytest.mark.asyncio
 async def test_zero_byte_attachment_streams_200(servicenow_connector) -> None:
+    servicenow_connector._current_attachment = AsyncMock(return_value="att1")
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(200, content=b"", headers={"content-type": "text/plain"})))
     record = MagicMock(record_type=RecordType.FILE, external_record_id="att1", mime_type="text/plain",
@@ -429,6 +555,7 @@ async def test_zero_byte_attachment_streams_200(servicenow_connector) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("mime", "rejected"), [("application/pdf", True), (MimeTypes.HTML.value, False)])
 async def test_html_body_for_pdf_rejected(servicenow_connector, mime, rejected) -> None:
+    servicenow_connector._current_attachment = AsyncMock(return_value="att1")
     # A hibernating instance answers every URL with its own HTML page.
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=_datasource(
         lambda _: httpx.Response(200, content=b"<html>Your instance is hibernating</html>",
@@ -443,3 +570,96 @@ async def test_html_body_for_pdf_rejected(servicenow_connector, mime, rejected) 
     else:
         response = await servicenow_connector.stream_record(record)
         assert b"".join([c async for c in response.body_iterator]).startswith(b"<html>")
+
+
+# --- an attachment keeps its record across article versions, and streams its current copy --------
+
+
+def _versions(copy: dict | None = None, *, current: str = "published") -> FakeServiceNow:
+    """KB0000001: v1 (outdated) and v2, whose checkout copied v1's file with a new sys_id."""
+    original = {**attachment_row(1, V1), "hash": "h1"}
+    return FakeServiceNow({
+        "kb_knowledge": [article_row(1, EARLIER, sys_id=V1, workflow_state="outdated"),
+                         article_row(1, LATER, sys_id=V2, workflow_state=current)],
+        "sys_attachment": [original, copy if copy is not None else
+                           {**original, "sys_id": "f0002", "table_sys_id": V2, "sys_created_on": LATER}],
+    })
+
+
+@pytest.mark.asyncio
+async def test_new_version_keeps_the_attachment_record_and_revision(servicenow_connector) -> None:
+    sc = servicenow_connector
+    store = wire_store(sc, FakeServiceNow({"kb_knowledge": [article_row(1, EARLIER, sys_id=V1)],
+                                           "sys_attachment": [{**attachment_row(1, V1), "hash": "h1"}]}),
+                       sync_point=migrated_sync_point())
+    await sc._sync_articles()
+    key, before = f"{KB1}/file1.pdf/h1", store.records[f"{KB1}/file1.pdf/h1"]
+
+    sc._get_fresh_datasource = AsyncMock(return_value=_versions())
+    sc.article_sync_point = migrated_sync_point(EARLIER)
+    await sc._sync_articles()
+
+    assert store.keys("FILE") == [key] and store.deleted == []
+    assert store.records[key].id == before.id  # its citations still open
+    assert store.records[key].external_revision_id == before.external_revision_id == "h1"  # not indexed again
+
+
+@pytest.mark.asyncio
+async def test_two_identical_files_on_one_article_are_two_records(servicenow_connector) -> None:
+    rows = [{**attachment_row(1, "a0001"), "hash": "h1"}, {**attachment_row(1, "a0001"), "sys_id": "f0009", "hash": "h1"}]
+    store = wire_store(servicenow_connector, FakeServiceNow({"kb_knowledge": [article_row(1)], "sys_attachment": rows}))
+
+    await servicenow_connector._sync_articles()
+
+    assert store.keys("FILE") == [f"{KB1}/file1.pdf/h1", f"{KB1}/file1.pdf/h1#2"]
+
+
+def _file(external_id: str) -> SimpleNamespace:
+    return SimpleNamespace(**vars(stored_record(external_id, "FILE", parent=KB1)), record_name="file1.pdf",
+                           mime_type="application/pdf")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("external_id", [f"{KB1}/file1.pdf/h1", "f0002"])  # by key, and stored under its sys_id
+async def test_attachment_streams_the_current_versions_copy(servicenow_connector, external_id) -> None:
+    wire_store(servicenow_connector, _versions())
+
+    assert await servicenow_connector._current_attachment(_file(external_id)) == "f0002"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fake", [
+    _versions(current="retired"),  # the article is no longer current
+    _versions({**attachment_row(3, V2), "hash": "h3"}),  # the current version no longer has the file
+])
+async def test_attachment_not_on_a_current_version_is_404(servicenow_connector, fake) -> None:
+    fake.stream_attachment = AsyncMock()
+    wire_store(servicenow_connector, fake)
+
+    with pytest.raises(HTTPException) as raised:
+        await servicenow_connector.stream_record(_file(f"{KB1}/file1.pdf/h1"))
+
+    assert raised.value.status_code == 404
+    fake.stream_attachment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_moves_attachments_to_their_key_once(servicenow_connector) -> None:
+    # An install whose articles are keyed by number and whose files are under their sys_id.
+    sc = servicenow_connector
+    sync_point = MemorySyncPoint({**migrated_sync_point(T0).data})
+    del sync_point.data["attachment_key/v2"]
+    fake = FakeServiceNow({"kb_knowledge": [article_row(1, EARLIER)], "sys_attachment": [attachment_row(1, "a0001")]})
+    store = wire_store(sc, fake, stored_record(KB1), _file("f0001"), sync_point=sync_point)
+
+    await sc._sync_articles()
+
+    assert "sys_updated_on>" not in fake.calls_to("kb_knowledge")[0]  # read in full, checkpoint or not
+    assert store.keys("FILE") == [file_key(1)]
+    assert store.records[file_key(1)].id == "id-f0001"  # the same record, so its citations still open
+    assert sync_point.data["attachment_key/v2"] == {"done": True}
+
+    fake.calls.clear()
+    await sc._sync_articles()
+
+    assert "sys_updated_on>" in fake.calls_to("kb_knowledge")[0]  # once

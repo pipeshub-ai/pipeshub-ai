@@ -168,10 +168,12 @@ class MemorySyncPoint:
 
 
 def migrated_sync_point(checkpoint: str | None = None, **data: dict[str, Any]) -> MemorySyncPoint:
-    """The article sync point of an install whose articles are keyed by number, reconciled just now."""
+    """The article sync point of an install whose articles are keyed by number and attachments by
+    their key, reconciled just now."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     stored: dict[str, dict[str, Any]] = {
-        "article_key/v2": {"done": True}, "articles_reconcile/last": {"last_sync_time": now}, **data,
+        "article_key/v2": {"done": True}, "attachment_key/v2": {"done": True},
+        "articles_reconcile/last": {"last_sync_time": now}, **data,
     }
     if checkpoint:
         stored["articles"] = {"last_sync_time": checkpoint}
@@ -189,7 +191,8 @@ class FakeRecordStore:
     """The connector's stored records, by external id. ``attach`` points a mocked processor's record
     calls here. A record deleted by external id takes the attachments under it, as the processor's
     cascade does; ``on_record_deleted`` takes the record alone. Writing a record that exists keeps
-    its id and moves it under its new parent."""
+    its id and moves it under its new parent; writing one under the id of a stored record stores
+    that record under the new key."""
 
     def __init__(self, *records: SimpleNamespace) -> None:
         self.records: dict[str, Any] = {r.external_record_id: r for r in records}
@@ -215,6 +218,9 @@ class FakeRecordStore:
             existing = self.records.get(record.external_record_id)
             if existing is not None:
                 record.id = existing.id
+            for key, other in list(self.records.items()):  # a record id is one record: a new key renames it
+                if other.id == record.id and key != record.external_record_id:
+                    del self.records[key]
             self.records[record.external_record_id] = record
             self.permissions[record.external_record_id] = permissions
 
@@ -274,6 +280,11 @@ def attachment_row(n: int, article: str) -> dict:
         "table_name": "kb_knowledge", "table_sys_id": article,
         "sys_created_on": "2024-01-01 00:00:00", "sys_updated_on": "2024-01-01 00:00:00",
     }
+
+
+def file_key(n: int, number: str = "KB0000001") -> str:
+    """The key ``attachment_row(n, ...)`` is stored under on article ``number`` (it has no hash)."""
+    return f"{number}/file{n}.pdf/10"
 
 
 def wire_listing(sc, fake: FakeServiceNow, checkpoint: str | None = None) -> None:

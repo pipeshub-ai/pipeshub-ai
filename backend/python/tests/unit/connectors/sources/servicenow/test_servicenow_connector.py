@@ -371,10 +371,12 @@ class TestStreamRecord:
         async def chunks():
             yield b"PDF content"
 
+        servicenow_connector._current_attachment = AsyncMock(return_value="sys-att-1")
         with patch.object(servicenow_connector, "_open_attachment",
-                          new_callable=AsyncMock, return_value=chunks()):
+                          new_callable=AsyncMock, return_value=chunks()) as opened:
             response = await servicenow_connector.stream_record(record)
             assert response.media_type == "application/pdf"
+        assert opened.await_args.args == ("sys-att-1",)
 
     async def test_unsupported_type_raises(self, servicenow_connector):
         record = MagicMock()
@@ -2827,6 +2829,7 @@ class TestStreamRecordGenerators:
         datasource = AsyncMock()
         datasource.stream_attachment = AsyncMock(return_value=file_response(b"file-bytes" * 10000))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=datasource)
+        servicenow_connector._current_attachment = AsyncMock(return_value="att-1")
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.record_name = "file.pdf"

@@ -325,7 +325,8 @@ async def test_article_criteria_truth_table(servicenow_connector, apply_article_
 
     for number, readers in TRUTH[apply_article_criteria].items():
         assert graph.readers(number) == readers | PRIV, number
-    assert graph.readers("att-1") == graph.readers("KB-read-eng")  # an attachment has its article's readers
+    # an attachment has its article's readers
+    assert graph.readers("KB-read-eng/f.pdf/1") == graph.readers("KB-read-eng")
 
 
 @pytest.mark.asyncio

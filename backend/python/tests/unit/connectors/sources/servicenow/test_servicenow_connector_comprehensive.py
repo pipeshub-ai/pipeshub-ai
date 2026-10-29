@@ -826,6 +826,7 @@ class TestStreamRecord:
         record.id = "rec-1"
 
         connector._open_attachment = AsyncMock(return_value=iter([b"file bytes"]))
+        connector._current_attachment = AsyncMock(return_value="att-1")
         with patch("app.connectors.sources.servicenow.servicenow.connector.create_stream_record_response") as mock_stream:
             mock_stream.return_value = MagicMock()
             response = await connector.stream_record(record)

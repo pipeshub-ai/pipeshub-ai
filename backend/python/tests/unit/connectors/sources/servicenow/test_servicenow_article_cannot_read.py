@@ -9,7 +9,7 @@ from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
 from app.config.constants.arangodb import AccessRule
 from app.models.permission import PermissionType
-from app.sources.external.servicenow.models import KBKnowledge, TableAPIResponse
+from app.sources.external.servicenow.models import AttachmentMetadata, KBKnowledge, TableAPIResponse
 
 
 def _art(**kw) -> KBKnowledge:
@@ -86,7 +86,9 @@ async def test_every_article_replaces_its_grants_and_its_attachments(servicenow_
     sc._transform_to_attachment_file_record = lambda *_a, **_k: attachment
     sc._article_access = AsyncMock(return_value=(True, AccessRule.OPEN, []))
 
-    updates = await sc._process_single_article(_art(cannot_read_user_criteria=deny), [SimpleNamespace(sys_id="att1")])
+    updates = await sc._process_single_article(_art(cannot_read_user_criteria=deny), [AttachmentMetadata(
+        sys_id="att1", file_name="f.pdf", content_type="application/pdf", size_bytes="1", table_sys_id="a1",
+        table_name="kb_knowledge", sys_created_on="2024-01-01 00:00:00", sys_updated_on="2024-01-01 00:00:00")])
 
     assert [u.record.rewrite_permissions for u in updates] == [True, True]
 

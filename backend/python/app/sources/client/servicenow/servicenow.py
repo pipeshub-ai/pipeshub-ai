@@ -76,6 +76,11 @@ def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | Non
     return url
 
 
+# The clients send credentials (a password, an API key header, a client secret or refresh token in a
+# token POST) that must never reach another host, so none of them follows a redirect.
+_FIRST_REDIRECT_STATUS = 300
+
+
 class ServiceNowRateLimited(Exception):
     """ServiceNow asked for a longer wait than a sync should hold: a rate limit rule is spent until ``reset_at``."""
 
@@ -159,7 +164,7 @@ class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
         # Initialize with empty token and override headers
-        super().__init__("", "", resilience=resilience)
+        super().__init__("", "", follow_redirects=False, resilience=resilience)
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
         self.username = username
@@ -186,7 +191,7 @@ class ServiceNowRESTClientViaToken(HTTPClient):
         token: The bearer token to use for authentication
     """
     def __init__(self, instance_url: str, token: str) -> None:
-        super().__init__(token, "Bearer")
+        super().__init__(token, "Bearer", follow_redirects=False)
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
 
@@ -216,7 +221,7 @@ class ServiceNowRESTClientViaAPIKey(HTTPClient):
         self, instance_url: str, api_key: str, header_name: str = "x-sn-apikey",
         resilience: ResiliencePolicy | None = None,
     ) -> None:
-        super().__init__("", "", resilience=resilience)
+        super().__init__("", "", follow_redirects=False, resilience=resilience)
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
         self.api_key = api_key
@@ -254,7 +259,7 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
         access_token: Optional[str] = None,
         resilience: ResiliencePolicy | None = None,
     ) -> None:
-        super().__init__(access_token or "", "Bearer", resilience=resilience)
+        super().__init__(access_token or "", "Bearer", follow_redirects=False, resilience=resilience)
 
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
@@ -308,7 +313,7 @@ class ServiceNowRESTClientViaOAuthClientCredentials(HTTPClient):
 
         response = await self.execute(request)
 
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        if response.status >= _FIRST_REDIRECT_STATUS:  # a redirect is not followed: the secrets stay here
             raise BadRequestError(f"Token request failed with status {response.status}: {response.text()[:300]}")
 
         token_data = response.json()
@@ -345,7 +350,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
         access_token: Optional[str] = None,
         resilience: ResiliencePolicy | None = None,
     ) -> None:
-        super().__init__(access_token or "", "Bearer", resilience=resilience)
+        super().__init__(access_token or "", "Bearer", follow_redirects=False, resilience=resilience)
 
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
@@ -442,7 +447,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
 
         response = await self.execute(request)
 
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        if response.status >= _FIRST_REDIRECT_STATUS:  # a redirect is not followed: the secrets stay here
             raise BadRequestError(f"Token refresh failed with status {response.status}: {response.text()}")
 
         token_data = response.json()
@@ -479,7 +484,7 @@ class ServiceNowRESTClientViaOAuthAuthorizationCode(HTTPClient):
 
         response = await self.execute(request)
 
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        if response.status >= _FIRST_REDIRECT_STATUS:  # a redirect is not followed: the secrets stay here
             raise BadRequestError(f"Token exchange failed with status {response.status}: {response.text()}")
 
         token_data = response.json()
@@ -514,7 +519,7 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
         password: str,
         access_token: Optional[str] = None
     ) -> None:
-        super().__init__(access_token or "", "Bearer")
+        super().__init__(access_token or "", "Bearer", follow_redirects=False)
 
         self.instance_url = instance_url.rstrip('/')
         self.base_url = f"{self.instance_url}/api/now"
@@ -566,7 +571,7 @@ class ServiceNowRESTClientViaOAuthROPC(HTTPClient):
 
         response = await self.execute(request)
 
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        if response.status >= _FIRST_REDIRECT_STATUS:  # a redirect is not followed: the secrets stay here
             raise BadRequestError(f"Token request failed with status {response.status}: {response.text()}")
 
         token_data = response.json()

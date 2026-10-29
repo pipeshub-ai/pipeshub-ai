@@ -301,6 +301,7 @@ class TestServiceNowStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
         connector._open_attachment = AsyncMock(return_value=iter([b"file-bytes"]))
+        connector._current_attachment = AsyncMock(return_value="att-123")
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.record_name = "attachment.pdf"

@@ -510,3 +510,75 @@ async def test_client_credentials_refusal_carries_the_vendor_text() -> None:
 def test_clients_take_the_connector_resilience(make) -> None:
     policy = ResiliencePolicy()
     assert make(policy).resilience is policy
+
+
+# ---------------------------------------------------------------------------
+# Redirects: credentials never leave the instance
+# ---------------------------------------------------------------------------
+
+_OTHER_HOST = "elsewhere.example.com"
+
+
+def _transport_to(monkeypatch, status: int, seen: list[httpx.Request]) -> None:
+    """Every client gets a transport where the instance answers ``status`` pointing at another host."""
+    import app.sources.client.http.address_guard as guard
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == _OTHER_HOST:
+            return httpx.Response(200, json={"result": [], "access_token": "t"})
+        return httpx.Response(status, headers={"location": f"http://{_OTHER_HOST}{request.url.path}"})
+
+    monkeypatch.setattr(guard, "guarded_async_client", lambda **kw: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=kw["follow_redirects"], headers=kw["headers"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+async def test_api_key_is_not_sent_to_a_redirect_target(monkeypatch, status) -> None:
+    from app.sources.external.servicenow.models import (
+        REDIRECT_MESSAGE,
+        ServiceNowAPIError,
+    )
+
+    seen: list[httpx.Request] = []
+    _transport_to(monkeypatch, status, seen)
+    datasource = ServiceNowDataSource(ServiceNowClient(ServiceNowRESTClientViaAPIKey(INSTANCE_URL, "the-key")))
+
+    with pytest.raises(ServiceNowAPIError) as raised:
+        await datasource.get_now_table_tableName(tableName="kb_knowledge")
+
+    assert raised.value.message == REDIRECT_MESSAGE and raised.value.status_code == status
+    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send", [
+    lambda: ServiceNowRESTClientViaOAuthClientCredentials(INSTANCE_URL, "cid", "the-secret").fetch_token(),
+    lambda: ServiceNowRESTClientViaOAuthAuthorizationCode(
+        INSTANCE_URL, "cid", "the-secret", "https://app/cb").refresh_access_token("the-refresh-token"),
+])
+async def test_token_post_is_not_resent_to_a_redirect_target(monkeypatch, send) -> None:
+    from app.sources.client.http.exception.exception import BadRequestError
+
+    seen: list[httpx.Request] = []
+    _transport_to(monkeypatch, 307, seen)
+
+    with pytest.raises(BadRequestError):
+        await send()
+
+    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_does_not_follow_a_redirect(monkeypatch) -> None:
+    from app.sources.external.servicenow.models import ServiceNowAPIError
+
+    seen: list[httpx.Request] = []
+    _transport_to(monkeypatch, 302, seen)
+    datasource = ServiceNowDataSource(ServiceNowClient(ServiceNowRESTClientViaAPIKey(INSTANCE_URL, "the-key")))
+
+    with pytest.raises(ServiceNowAPIError):
+        await datasource.stream_attachment("f" * 32)
+
+    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]

@@ -23,6 +23,7 @@ from servicenow_fakes import (
     MemorySyncPoint,
     article_row,
     attachment_row,
+    file_key,
     block_groups,
     category_row,
     groups_written,
@@ -324,7 +325,7 @@ async def test_removed_attachment_deleted(servicenow_connector) -> None:
 
     await servicenow_connector._sync_articles()
 
-    assert store.keys() == [KB1, "f0002"]
+    assert store.keys() == [KB1, file_key(2)]
 
 
 @pytest.mark.asyncio
@@ -683,9 +684,10 @@ async def test_migration_keeps_current_version_attachments(servicenow_connector)
 
     await sc._sync_articles()
 
-    assert store.keys("FILE") == ["f0002"]  # moved under the number; v1's own file went with v1
-    assert store.records["f0002"].parent_external_record_id == KB1
-    assert store.records["f0002"].id == "id-f0002"  # the same record, so no re-index of the file
+    # moved under the number and its key; v1's own file went with v1
+    assert store.keys("FILE") == [file_key(2)]
+    assert store.records[file_key(2)].parent_external_record_id == KB1
+    assert store.records[file_key(2)].id == "id-f0002"  # the same record, so its citations still open
 
 
 @pytest.mark.asyncio
@@ -707,8 +709,8 @@ async def test_migration_keeps_the_record_of_an_article_that_failed(servicenow_c
     await sc._sync_articles()
 
     assert "sys_updated_on>" in fixed.calls_to("kb_knowledge")[0]  # the checkpoint held before v2
-    assert store.keys() == [KB1, "f0002"]  # reconciled again at once, not a day later
-    assert store.records["f0002"].parent_external_record_id == KB1
+    assert store.keys() == [KB1, file_key(2)]  # reconciled again at once, not a day later
+    assert store.records[file_key(2)].parent_external_record_id == KB1
     assert sc.article_sync_point.data["articles_reconcile/last"]["kept"] == []
 
 
@@ -731,7 +733,7 @@ async def test_migration_repeats_after_a_failed_listing(servicenow_connector) ->
     await sc._sync_articles()
 
     assert "sys_updated_on>" not in fake.calls_to("kb_knowledge")[0]  # read in full again
-    assert store.keys() == [KB1, "f0002"]
+    assert store.keys() == [KB1, file_key(2)]
     assert sc.article_sync_point.data["article_key/v2"] == {"done": True}
 
 

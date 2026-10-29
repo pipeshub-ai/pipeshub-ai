@@ -106,6 +106,8 @@ class ServiceNowFields:
     FILE_NAME = "file_name"
     CONTENT_TYPE = "content_type"
     SIZE_BYTES = "size_bytes"
+    # sys_attachment: a SHA-256 of the file's bytes, kept when a new article version copies the file
+    HASH = "hash"
     TABLE_NAME = "table_name"
     TABLE_SYS_ID = "table_sys_id"
     RESULT = "result"
@@ -179,6 +181,9 @@ class ServiceNowDefaults:
     CONNECTOR_TYPE = "SERVICENOW"
     # An inline image is embedded as a data: URI (a third larger) in the streamed article.
     MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+    # Past either budget an article's further inline images stay links.
+    MAX_INLINE_IMAGES = 20
+    MAX_INLINE_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024
     # Content types that say nothing about the file, so its name decides.
     UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
     # The out-of-box Knowledge Portal. Used only when the instance tells us nothing.
@@ -232,6 +237,9 @@ class ServiceNowSyncPointKeys:
     LAST_SYNC_TIME = "last_sync_time"
     # Set once articles are stored under their number (they were under a version's sys_id)
     ARTICLE_KEY_V2 = "article_key/v2"
+    # Set once attachments are stored under a key that survives a new article version (they
+    # were under their own sys_id, which each version's copy changes)
+    ATTACHMENT_KEY_V2 = "attachment_key/v2"
     ARTICLES_RECONCILE = "articles_reconcile/last"
     ARTICLES_EXPIRY = "articles_expiry"
     INLINE_IMAGES = "attachments"

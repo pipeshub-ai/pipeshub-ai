@@ -344,6 +344,9 @@ async def test_401_message_has_vendor_text(servicenow_connector) -> None:
      "ServiceNow at acme.service-now.com did not answer with its REST API; the instance may be hibernating. "
      "Wake it up, then try again."),
     (httpx.ConnectError("refused"), "Could not reach ServiceNow at acme.service-now.com. Check the instance URL."),
+    (ServiceNowAPIError(302, "ServiceNow answered with a redirect to another address"),
+     "ServiceNow at acme.service-now.com redirected the request (HTTP 302), so this URL is not the instance's "
+     "REST API. Enter the instance's own address, such as https://<instance>.service-now.com."),
     (ServiceNowAPIError(503, "Service Unavailable"),
      "ServiceNow at acme.service-now.com answered HTTP 503: Service Unavailable. Try again later."),
 ])
