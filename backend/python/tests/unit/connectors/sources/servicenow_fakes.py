@@ -2,7 +2,7 @@
 
 ``FakeServiceNow`` holds rows per table and serves ``get_now_table_tableName``. It evaluates the parts of
 the encoded query language the connector sends (``=``, ``!=``, ``>``, ``<``, ``>=``, ``<=``, ``IN``,
-``ISEMPTY``, ``ISNOTEMPTY``, ``^OR``, ``^NQ``, ``ORDERBY``), cuts the page at ``sysparm_limit`` and only
+``NOT IN``, ``ISEMPTY``, ``ISNOTEMPTY``, ``^OR``, ``^NQ``, ``ORDERBY``), cuts the page at ``sysparm_limit`` and only
 then drops the rows an ACL hides (``_acl_hidden``), as ServiceNow does, so a page can come back short
 while more rows follow. ``total_count`` (X-Total-Count) counts the matching rows before the ACL, as
 ServiceNow does. With ``shuffle_ties`` rows that the ORDERBY does not tell apart come back in a
@@ -37,7 +37,7 @@ from app.sources.external.servicenow.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_CONDITION = re.compile(r"^([a-z_][\w.]*?)(ISNOTEMPTY|ISEMPTY|IN|<=|>=|!=|=|>|<)(.*)$")
+_CONDITION = re.compile(r"^([a-z_][\w.]*?)(ISNOTEMPTY|ISEMPTY|NOT IN|IN|<=|>=|!=|=|>|<)(.*)$")
 
 
 def _holds(row: dict[str, Any], condition: str) -> bool:
@@ -52,6 +52,8 @@ def _holds(row: dict[str, Any], condition: str) -> bool:
         return have == ""
     if op == "IN":
         return have in value.split(",")
+    if op == "NOT IN":
+        return have not in value.split(",")
     return {
         "=": have.lower() == value.lower(),  # ServiceNow compares = case-insensitively
         "!=": have.lower() != value.lower(),

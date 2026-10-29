@@ -799,8 +799,8 @@ class TestMiscComprehensive:
         await connector.reindex_records([])  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_get_filter_options_raises(self, connector):
-        with pytest.raises(NotImplementedError):
+    async def test_get_filter_options_unknown_key_raises(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("any_key")
 
     @pytest.mark.asyncio

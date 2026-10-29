@@ -633,8 +633,8 @@ class TestMiscMethods:
         await servicenow_connector.reindex_records([record])
         servicenow_connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])
 
-    async def test_get_filter_options_raises(self, servicenow_connector):
-        with pytest.raises(NotImplementedError):
+    async def test_get_filter_options_unknown_key_raises(self, servicenow_connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await servicenow_connector.get_filter_options("key")
 
     async def test_run_incremental_sync_delegates(self, servicenow_connector):

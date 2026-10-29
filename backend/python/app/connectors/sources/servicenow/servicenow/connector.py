@@ -26,13 +26,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, TypeVar
+from typing import AsyncGenerator, Dict, List, Optional, Tuple, TypeVar
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AccessRule, Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import AccessRule, Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import (
     AuthFieldKeys,
@@ -73,6 +73,20 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    MultiselectOperator,
+    OptionSourceType,
+    SyncFilterKey,
+    name_passes_filter,
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
@@ -313,6 +327,47 @@ def _raise_if_run_stop(error: BaseException | None) -> None:
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.KNOWLEDGE_BASES.value,
+            display_name="Knowledge bases",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Sync only these knowledge bases (In) or all but these (Not in). Leave empty to sync "
+                        "every knowledge base the account can read.",
+            default_operator=MultiselectOperator.IN.value,
+            option_source_type=OptionSourceType.DYNAMIC,
+        ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.FOLDER_IDS.value,
+            display_name="Categories",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Sync only articles in these categories and their sub-categories (In), or skip them "
+                        "(Not in). Articles with no category are kept by Not in and dropped by In.",
+            default_operator=MultiselectOperator.IN.value,
+            option_source_type=OptionSourceType.DYNAMIC,
+        ))
+        .add_filter_field(CommonFields.modified_date_filter("Sync only articles last updated in this range (UTC)."))
+        .add_filter_field(CommonFields.created_date_filter(
+            "Sync only articles whose current version was created in this range (UTC)."
+        ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.KNOWLEDGE_BASE.value,
+            display_name="Index articles",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Index knowledge articles. Applies to new and changed articles.",
+            default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ATTACHMENTS.value,
+            display_name="Index attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Index article attachments. Applies to new and changed attachments.",
+            default_value=True,
+        ))
     )\
     .build_decorator()
 
@@ -403,6 +458,11 @@ class ServiceNowConnector(BaseConnector):
         self._live_kb_ids: set[str] | None = None
         self._kbs_back_in_scope: set[str] = set()
         self._category_ids: set[str] | None = None
+        # The admin's filters, read at the start of every run (see _load_filters)
+        self.sync_filters = FilterCollection()
+        self.indexing_filters = FilterCollection()
+        # (In, the chosen categories with their sub-categories) when the categories filter is set
+        self._category_filter: tuple[bool, set[str]] | None = None
         self.client_id: str | None = None
         self.client_secret: str | None = None
         self.redirect_uri: str | None = None
@@ -762,19 +822,67 @@ class ServiceNowConnector(BaseConnector):
         start = stored - timedelta(seconds=ServiceNowDefaults.DELTA_OVERLAP_SECONDS)
         return start.strftime(ServiceNowDefaults.DATETIME_FORMAT)
 
-    @staticmethod
-    def _current_article_query() -> str:
+    def _current_article_query(self) -> str:
         """The article rows PipesHub indexes: the ones ServiceNow search shows (its knowledge
-        search sources use this filter). Every other row is not indexed, and a stored article
-        whose number has no such row is deleted: retired, outdated, draft or review rows,
-        ``active=false``, ``valid_to`` before today (UTC; empty never expires) and articles in
-        an inactive knowledge base. Each number has at most one such row. Change the rule here
-        only: the full read, the version resolution, the reconcile and streaming all use it."""
+        search sources use this filter), within the sync filters. Every other row is not indexed,
+        and a stored article whose number has no such row is deleted: retired, outdated, draft or
+        review rows, ``active=false``, ``valid_to`` before today (UTC; empty never expires),
+        articles in an inactive knowledge base, and articles the filters leave out. Each number
+        has at most one such row. Change the rule here only: the full read, the version
+        resolution, the reconcile and streaming all use it. The categories filter, and a
+        knowledge base list too long for a URL, are checked per row instead (_article_in_scope)."""
         today = datetime.now(timezone.utc).strftime(ServiceNowDefaults.DATE_FORMAT)
-        return (
+        query = (
             f"{ServiceNowFields.WORKFLOW_STATE}={ServiceNowFields.PUBLISHED}^{ServiceNowFields.ACTIVE}=true"
             f"^{ServiceNowFields.KB_KNOWLEDGE_BASE}.{ServiceNowFields.ACTIVE}=true"
             f"^{ServiceNowFields.VALID_TO}ISEMPTY^OR{ServiceNowFields.VALID_TO}>={today}"
+        )
+        query += self._kb_filter_clause(ServiceNowFields.KB_KNOWLEDGE_BASE)
+        for key, field in ((SyncFilterKey.MODIFIED, ServiceNowFields.SYS_UPDATED_ON),
+                           (SyncFilterKey.CREATED, ServiceNowFields.SYS_CREATED_ON)):
+            window = self.sync_filters.get(key)
+            if window is None:
+                continue
+            for bound, operator in ((window.get_datetime_start(), ">="), (window.get_datetime_end(), "<=")):
+                if bound is not None:
+                    # Query literals are UTC
+                    utc = datetime.fromtimestamp(bound / 1000, tz=timezone.utc)
+                    query += f"^{field}{operator}{utc.strftime(ServiceNowDefaults.DATETIME_FORMAT)}"
+        return query
+
+    def _kb_filter_clause(self, field: str) -> str:
+        """``^<field>IN<ids>`` (or ``NOT IN``) for the knowledge bases filter. Empty when the filter
+        is unset, or when the list is too long for a URL: the keyset repeats the query, and
+        _chunk_ids keeps a quarter of the URL for an IN list. _article_in_scope checks it anyway."""
+        kbs = self.sync_filters.get(SyncFilterKey.KNOWLEDGE_BASES)
+        if kbs is None or kbs.is_empty():
+            return ""
+        operator = "NOT IN" if kbs.operator_value == FilterOperator.NOT_IN else "IN"
+        clause = f"^{field}{operator}{CommonStrings.COMMA.join(kbs.as_list())}"
+        return clause if len(clause) <= ServiceNowDefaults.MAX_URL_LENGTH // 4 else ""
+
+    def _article_in_scope(self, row: TableAPIRecord) -> bool:
+        """Whether an article row passes the knowledge bases and categories filters. Categories are
+        checked here, not in the query: a category with its sub-categories can be a list too long
+        for a URL. Not in keeps an article with no category, In drops it."""
+        kb = row.get(ServiceNowFields.KB_KNOWLEDGE_BASE) or None
+        if not name_passes_filter(self.sync_filters, SyncFilterKey.KNOWLEDGE_BASES.value, kb):
+            return False
+        if self._category_filter is None:
+            return True
+        keep_in, chosen = self._category_filter
+        return ((row.get(ServiceNowFields.KB_CATEGORY) or None) in chosen) == keep_in
+
+    async def _load_filters(self) -> None:
+        """The admin's sync and indexing filters. load_connector_filters answers a failed config
+        read with no filters, which would sync every knowledge base: this raises instead."""
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config", raise_on_error=True
+        )
+        filters = (config.get("filters") if isinstance(config, dict) else None) or {}
+        self.sync_filters = FilterCollection.from_dict((filters.get("sync") or {}).get("values") or {}, self.logger)
+        self.indexing_filters = FilterCollection.from_dict(
+            (filters.get("indexing") or {}).get("values") or {}, self.logger
         )
 
     @staticmethod
@@ -868,6 +976,7 @@ class ServiceNowConnector(BaseConnector):
             self._kb_owner_cache = {}
             self._sync_read_incomplete = False
             self._live_kb_ids, self._kbs_back_in_scope, self._category_ids = None, set(), None
+            self._category_filter = None
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting ServiceNow KB sync for org: {org_id}")
 
@@ -875,6 +984,8 @@ class ServiceNowConnector(BaseConnector):
             if not self.servicenow_client:
                 raise Exception("ServiceNow client not initialized. Call init() first.")
 
+            # Before anything is written: a run with the wrong scope would write, then remove, the wrong things.
+            await self._load_filters()
             await self._register_authenticated_identity()
 
             # Step 1: Sync users and groups globally
@@ -1352,9 +1463,56 @@ class ServiceNowConnector(BaseConnector):
         limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
-    ) -> NoReturn:
-        """ServiceNow connector does not support dynamic filter options."""
-        raise NotImplementedError("ServiceNow connector does not support dynamic filter options")
+    ) -> FilterOptionsResponse:
+        """The active knowledge bases, or the categories under them labelled with their knowledge
+        base and parents ("IT › Network › VPN"), that this account can read, by label. ``search``
+        matches any part of the label. A failed read gives success=False with the reason.
+
+        shortcut: every page lists every knowledge base (and category) and pages in memory, as
+        Zendesk does; fine at thousands of categories, page in ServiceNow if lists get much bigger.
+        """
+        if filter_key not in (SyncFilterKey.KNOWLEDGE_BASES.value, SyncFilterKey.FOLDER_IDS.value):
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+        what = "knowledge bases" if filter_key == SyncFilterKey.KNOWLEDGE_BASES.value else "categories"
+        try:
+            labels: dict[str, str] = {}
+            async for rows in self._iter_table(
+                ServiceNowTables.KB_KNOWLEDGE_BASE, f"{ServiceNowFields.ACTIVE}=true", [ServiceNowFields.TITLE]
+            ):
+                labels.update({r.sys_id: str(r.get(ServiceNowFields.TITLE) or r.sys_id) for r in rows})
+            if filter_key == SyncFilterKey.FOLDER_IDS.value:
+                categories: dict[str, tuple[str, str]] = {}
+                async for rows in self._iter_table(
+                    ServiceNowTables.KB_CATEGORY, None, [ServiceNowFields.LABEL, ServiceNowFields.PARENT_ID],
+                    page=ServiceNowDefaults.ID_PAGE_SIZE,
+                ):
+                    categories.update({r.sys_id: (str(r.get(ServiceNowFields.LABEL) or r.sys_id),
+                                                  str(r.get(ServiceNowFields.PARENT_ID) or "")) for r in rows})
+                parents = {c: parent for c, (_, parent) in categories.items()}
+                kb_labels, labels = labels, {}
+                for category, (label, _) in categories.items():
+                    root = self._category_root(category, parents)
+                    if root in kb_labels:  # a category under an inactive knowledge base is never synced
+                        path = [categories[c][0] for c in self._parent_categories(category, parents)]
+                        labels[category] = " › ".join([kb_labels[root], *path[::-1], label])
+        except (ServiceNowAPIError, ServiceNowRateLimited) as e:
+            reason = f"HTTP {e.status_code}: {e.message}" if isinstance(e, ServiceNowAPIError) else str(e)
+            self.logger.error(f"Could not load the ServiceNow {what} for the filter: {reason}")
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=limit, has_more=False,
+                message=f"Could not load ServiceNow {what} ({reason}).",
+            )
+        needle = (search or "").strip().casefold()
+        found = sorted((label.casefold(), label, sys_id) for sys_id, label in labels.items()
+                       if needle in label.casefold())
+        start = (max(page, 1) - 1) * limit
+        return FilterOptionsResponse(
+            success=True,
+            options=[FilterOption(id=sys_id, label=label) for _, label, sys_id in found[start:start + limit]],
+            page=page,
+            limit=limit,
+            has_more=len(found) > start + limit,
+        )
 
     async def _sync_users_and_groups(self) -> None:
         """
@@ -2060,7 +2218,11 @@ class ServiceNowConnector(BaseConnector):
                 for kb_data in kbs_data:
                     listed.add(kb_data.sys_id)
                     # ServiceNow search leaves an inactive knowledge base out, and its readers lose it.
-                    if str(getattr(kb_data, ServiceNowFields.ACTIVE, "") or "").lower() == "false":
+                    # One the filter leaves out goes the same way (see _remove_groups_out_of_scope).
+                    inactive = str(getattr(kb_data, ServiceNowFields.ACTIVE, "") or "").lower() == "false"
+                    if inactive or not name_passes_filter(
+                        self.sync_filters, SyncFilterKey.KNOWLEDGE_BASES.value, kb_data.sys_id
+                    ):
                         continue
                     live.add(kb_data.sys_id)
                     kb_record_group = self._transform_to_kb_record_group(kb_data)
@@ -2132,7 +2294,10 @@ class ServiceNowConnector(BaseConnector):
             # category leaves scope. A hidden one that is still there keeps its categories.
             self._kbs_back_in_scope, kept = await self._remove_groups_out_of_scope(
                 ServiceNowSyncPointKeys.KB_SCOPE, listed, live,
-                hidden_in=(ServiceNowTables.KB_KNOWLEDGE_BASE, f"^{ServiceNowFields.ACTIVE}=true") if listing.partial else None,
+                hidden_in=(
+                    ServiceNowTables.KB_KNOWLEDGE_BASE,
+                    f"^{ServiceNowFields.ACTIVE}=true{self._kb_filter_clause(ServiceNowFields.SYS_ID)}",
+                ) if listing.partial else None,
             )
             self._live_kb_ids = (live | kept) if listed else None
             self.logger.info(f"✅ Knowledge base sync complete, Total synced: {total_synced}")
@@ -2165,6 +2330,14 @@ class ServiceNowConnector(BaseConnector):
             in_scope = set(parents)
             if self._live_kb_ids is not None:
                 in_scope = {c for c in parents if self._category_root(c, parents) in self._live_kb_ids}
+            chosen_filter = self.sync_filters.get(SyncFilterKey.FOLDER_IDS)
+            if chosen_filter is not None and not chosen_filter.is_empty():
+                chosen = self._with_sub_categories(set(chosen_filter.as_list()), parents)
+                keep_in = chosen_filter.operator_value != FilterOperator.NOT_IN
+                self._category_filter = (keep_in, chosen)
+                # In also writes the parents of what it picks, so the tree under the knowledge base is whole.
+                wanted = chosen | {a for c in chosen for a in self._parent_categories(c, parents)}
+                in_scope &= wanted if keep_in else set(parents) - chosen
             self._category_ids = in_scope
 
             # A knowledge base back in scope lost its categories when it left, and they did not change since.
@@ -2233,6 +2406,30 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing categories: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _with_sub_categories(chosen: set[str], parents: dict[str, str]) -> set[str]:
+        """``chosen`` and every category below one of them."""
+        children: dict[str, list[str]] = defaultdict(list)
+        for child, parent in parents.items():
+            children[parent].append(child)
+        found, frontier = set(chosen), list(chosen)
+        while frontier:
+            for child in children[frontier.pop()]:
+                if child not in found:
+                    found.add(child)
+                    frontier.append(child)
+        return found
+
+    @staticmethod
+    def _parent_categories(category_id: str, parents: dict[str, str]) -> list[str]:
+        """The categories above ``category_id``, nearest first, up to its knowledge base."""
+        found: list[str] = []
+        parent = parents.get(category_id)
+        while parent in parents and parent not in found and parent != category_id:
+            found.append(parent)
+            parent = parents[parent]
+        return found
 
     @staticmethod
     def _category_root(category_id: str, parents: dict[str, str]) -> str:
@@ -2386,6 +2583,8 @@ class ServiceNowConnector(BaseConnector):
                             for row in rows:
                                 if row.number in gone:
                                     note_failed(row, moves_checkpoint=moves_checkpoint)
+                    # A resolved row is in scope already (_current_versions); the others are checked here.
+                    articles_data = [a for a in articles_data if self._article_in_scope(a)]
                     if not articles_data:
                         continue
 
@@ -2486,15 +2685,15 @@ class ServiceNowConnector(BaseConnector):
             raise
 
     async def _current_versions(self, numbers: list[str], fields: list[str]) -> list[TableAPIRecord]:
-        """The current row (see _current_article_query) of each of ``numbers`` that has one."""
+        """The current row (see _current_article_query) of each of ``numbers`` that has one in scope."""
         rows: list[TableAPIRecord] = []
         for chunk in self._chunk_ids(numbers):
             async for page in self._iter_table(
                 ServiceNowTables.KB_KNOWLEDGE,
                 f"{ServiceNowFields.NUMBER}IN{CommonStrings.COMMA.join(chunk)}^{self._current_article_query()}",
-                fields,
+                [*fields, ServiceNowFields.KB_KNOWLEDGE_BASE, ServiceNowFields.KB_CATEGORY],
             ):
-                rows.extend(page)
+                rows.extend(r for r in page if self._article_in_scope(r))
         return rows
 
     async def _delete_articles(self, numbers: set[str]) -> None:
@@ -2550,13 +2749,23 @@ class ServiceNowConnector(BaseConnector):
             return False
         try:
             current: set[str] = set()
+            out_of_scope: set[str] = set()  # listed, so known to be there, but left out by a filter
             listing = _Listing()
             async for rows in self._iter_table(
-                ServiceNowTables.KB_KNOWLEDGE, self._current_article_query(), [ServiceNowFields.NUMBER],
+                ServiceNowTables.KB_KNOWLEDGE, self._current_article_query(),
+                [ServiceNowFields.NUMBER, ServiceNowFields.KB_KNOWLEDGE_BASE, ServiceNowFields.KB_CATEGORY],
                 page=ServiceNowDefaults.ID_PAGE_SIZE, listing=listing,
             ):
-                current.update(r.number for r in rows if r.number)
-            if not current:
+                for r in rows:
+                    if r.number:
+                        (current if self._article_in_scope(r) else out_of_scope).add(r.number)
+            # Empty is the account failing, unless a filter left everything out: rows it listed, or
+            # a filtered query ServiceNow counts no row for (a count is taken before ACLs).
+            filtered = self._category_filter is not None or any(
+                f is not None and not f.is_empty() for f in map(self.sync_filters.get, (
+                    SyncFilterKey.KNOWLEDGE_BASES, SyncFilterKey.MODIFIED, SyncFilterKey.CREATED))
+            )
+            if not current and not out_of_scope and not (filtered and listing.total == 0):
                 self.logger.warning("The article listing came back empty; no stored article is removed")
                 return False
             stored = {r.external_record_id for r in
@@ -2566,7 +2775,7 @@ class ServiceNowConnector(BaseConnector):
             if listing.partial:
                 # An ACL hid some current rows from this account: a key the listing lacks is
                 # gone only once ServiceNow counts no current row for it.
-                gone = [key for key in gone if await self._gone_at_source(
+                gone = [key for key in gone if key in out_of_scope or await self._gone_at_source(
                     ServiceNowTables.KB_KNOWLEDGE, f"{ServiceNowFields.NUMBER}={key}^{self._current_article_query()}"
                 )]
             if gone:
@@ -3649,6 +3858,13 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"Error transforming category {getattr(category_data, 'sys_id', 'unknown')}: {e}", exc_info=True)
             return None
 
+    def _apply_indexing_filter(self, record: Record, key: IndexingFilterKey) -> None:
+        """Keep a record out of indexing when its indexing filter is off, or manual indexing is on.
+        It is still synced, with its grants. A record indexed already stays indexed (the processor
+        keeps COMPLETED), so the toggle applies to new and changed records."""
+        if not self.indexing_filters.is_enabled(key):
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
     def _transform_to_article_webpage_record(
         self, article_data: TableAPIRecord, feedback: Sequence[TableAPIRecord] = ()
     ) -> Optional[WebpageRecord]:
@@ -3740,6 +3956,7 @@ class ServiceNowConnector(BaseConnector):
                 source_updated_at=source_updated_at,
                 preview_renderable=False,
             )
+            self._apply_indexing_filter(article_record, IndexingFilterKey.KNOWLEDGE_BASE)
             return article_record
 
         except Exception as e:
@@ -3827,7 +4044,7 @@ class ServiceNowConnector(BaseConnector):
                 source_updated_at=source_updated_at,
                 extension=file_name.rsplit(".", 1)[-1].lower() if "." in file_name else None,
             )
-
+            self._apply_indexing_filter(attachment_record, IndexingFilterKey.ATTACHMENTS)
             return attachment_record
 
         except Exception as e:
