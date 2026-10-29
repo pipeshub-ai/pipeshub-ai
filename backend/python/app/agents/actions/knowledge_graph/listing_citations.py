@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    attach_connector_instance_names,
     build_record_page_web_url,
     resolve_frontend_url,
 )
@@ -87,6 +89,7 @@ async def cite_listed_records(
     listed = {rid: doc for rid, doc in listed.items() if urls[rid]}
     if not listed:
         return {}
+    await attach_connector_instance_names(graph_provider, listed.values(), connection_sources_of(state.get("filters")))
 
     ref_mapper = state.get("citation_ref_mapper")
     if not isinstance(ref_mapper, CitationRefMapper):

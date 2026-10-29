@@ -77,6 +77,7 @@ from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTE
 from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
+    attach_connector_instance_names,
     get_record_id_shortener_if_enabled,
     is_base64_image,
     keep_graph_docs_inside_connection,
@@ -1078,10 +1079,9 @@ async def _execute_search(
                         [r for r in grep_records if isinstance(r, dict) and "block_containers" in r],
                         graph_provider, user_id, org_id, limit_sources,
                     )
-                    await keep_graph_docs_inside_connection(
-                        [r for r in grep_records if isinstance(r, dict) and "block_containers" not in r],
-                        graph_provider, user_id, org_id, limit_sources,
-                    )
+                    graph_docs = [r for r in grep_records if isinstance(r, dict) and "block_containers" not in r]
+                    await keep_graph_docs_inside_connection(graph_docs, graph_provider, user_id, org_id, limit_sources)
+                    await attach_connector_instance_names(graph_provider, graph_docs, limit_sources)
             except Exception as exc:
                 logger_instance.warning(
                     "Pattern match merge failed, continuing with semantic results only: %s", exc,

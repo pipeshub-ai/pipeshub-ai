@@ -111,6 +111,7 @@ from app.utils.aimodels import (
 )
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
+    attach_connector_instance_names,
     describe_search_records,
     get_flattened_results,
     get_record,
@@ -122,7 +123,6 @@ from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
-from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -448,14 +448,6 @@ def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[s
 _SELECTION_REQUEST_KEYS = frozenset(
     (*SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_KEY)
 )
-
-# Connector names only label citations; a slow graph must not hold up the search.
-CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
-
-# Connector instance display names for citations. Each search looked up the App
-# of every connector in its results, one query each; a rename shows within a minute.
-_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
-
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -1095,16 +1087,10 @@ class RetrievalService:
                         r["webUrl"], user_email, r.get("connectorName")
                     )
 
-            await self._attach_connector_instance_names(fetched_records)
-            limit_sources = connection_sources_of(filter_groups)
-            if limit_sources is not None:
-                # The app's own name is its source's or collection's name: shown
-                # only when the limit covers that app whole, as the Location
-                # trail and record details show it.
-                whole_apps = set(limit_sources.get("apps") or ())
-                for r in fetched_records:
-                    if r and r.get("connectorId") not in whole_apps:
-                        r.pop("connectorInstanceName", None)
+            with span("records"):
+                await attach_connector_instance_names(
+                    self.graph_provider, fetched_records, connection_sources_of(filter_groups)
+                )
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -2847,46 +2833,6 @@ class RetrievalService:
             "status_code": status_code,
             "message": message,
         }
-
-    @spanned("records")
-    async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
-        """Set ``connectorInstanceName``: the name the admin gave the record's connector.
-
-        ``connectorName`` is only the type code (WEB), shared by every instance
-        of that type. A missing or unreadable instance leaves the field unset,
-        and the UI falls back to the type.
-        """
-        records = [r for r in records if isinstance(r, dict)]
-        connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
-        if not connector_ids:
-            return
-        names: dict[str, str | None] = {}
-        for cid in connector_ids:
-            hit, name = _connector_name_cache.get(cid)
-            if hit:
-                names[cid] = name
-        to_fetch = [cid for cid in connector_ids if cid not in names]
-        if to_fetch:
-            try:
-                apps = await asyncio.wait_for(
-                    asyncio.gather(
-                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
-                        return_exceptions=True,
-                    ),
-                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-                )
-            except Exception as e:
-                # Labels only: search results stay correct, the UI shows the type code.
-                self.logger.warning("Could not resolve connector names for citations: %s", e)
-                apps = []
-            for cid, app in zip(to_fetch, apps):
-                if isinstance(app, dict):
-                    names[cid] = app.get("name")
-                    _connector_name_cache.set(cid, app.get("name"))
-        for r in records:
-            name = names.get(r.get("connectorId"))
-            if name:
-                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,
