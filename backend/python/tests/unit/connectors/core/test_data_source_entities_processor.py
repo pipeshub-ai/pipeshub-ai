@@ -7720,39 +7720,20 @@ class TestPlaceholderFlag:
         assert len(messages) == 1
 
     @pytest.mark.asyncio
-    async def test_stub_over_a_completed_real_record_leaves_it_indexed(self) -> None:
-        existing = _make_record(external_revision_id="v1", version=3, md5_hash="md5-1")
+    async def test_a_real_record_resent_as_a_stub_is_demoted_and_not_published(self) -> None:
+        """A narrowed date filter turns an issue it now leaves out back into a stub."""
+        existing = _make_record(external_revision_id="v1", version=3)
         existing.id = "rec-1"
         existing.indexing_status = ProgressStatus.COMPLETED.value
-        existing.access_rule = AccessRule.OPEN
         proc, _ = self._sync_with(existing)
         incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
 
         await proc.on_new_records([(incoming, [])])
 
-        assert incoming.is_placeholder is False
-        assert incoming.indexing_status == ProgressStatus.COMPLETED.value
-        assert incoming.external_revision_id == "v1"
-        assert incoming.version == 3
-        assert incoming.md5_hash == "md5-1"
-        assert incoming.access_rule == AccessRule.OPEN
+        assert incoming.is_placeholder is True
+        assert incoming.indexing_status != ProgressStatus.QUEUED.value
+        assert incoming.queued_at is None
         proc.messaging_producer.send_messages.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_stub_over_a_queued_real_record_keeps_it_queued_and_published(self) -> None:
-        existing = _make_record(external_revision_id="v1", version=1)
-        existing.id = "rec-1"
-        existing.indexing_status = ProgressStatus.QUEUED.value
-        proc, _ = self._sync_with(existing)
-        incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
-
-        await proc.on_new_records([(incoming, [])])
-
-        assert incoming.is_placeholder is False
-        assert incoming.indexing_status == ProgressStatus.QUEUED.value
-        assert incoming.external_revision_id == "v1"
-        ((_, messages), _) = proc.messaging_producer.send_messages.await_args
-        assert len(messages) == 1
 
     @pytest.mark.asyncio
     async def test_real_record_keeps_the_connectors_auto_index_off(self) -> None:

@@ -2588,12 +2588,7 @@ class DataSourceEntitiesProcessor:
                 record.record_name, existing_record.id,
             )
             return None, []
-        if record.is_placeholder and existing_record is not None and not existing_record.is_placeholder:
-            # A stub for a record already synced must not demote it (see below) or
-            # change its indexing: it keeps the stored revision and status.
-            record.external_revision_id = existing_record.external_revision_id
-            self._preserve_indexing_state(record, existing_record)
-        elif record.is_placeholder:
+        if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
             # Set before the trash restore, which decides from this status.
@@ -2768,7 +2763,9 @@ class DataSourceEntitiesProcessor:
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                # A stub (also a real record a narrowed filter turns back into one) is
+                # never indexed: it keeps the AUTO_INDEX_OFF set above, not re-queued.
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and not record.is_placeholder:
                     if record.external_revision_id != existing_record.external_revision_id:
                         # Real content change on an already-indexed record: re-queue it,
                         # even when the connector stamped AUTO_INDEX_OFF for a manual-only
@@ -2844,10 +2841,6 @@ class DataSourceEntitiesProcessor:
                 # A stub carries no ACL and must not reset a real record's rule, unless it
                 # knows its source restriction (a rewrite, or RESTRICTED) and so corrects it.
                 record.access_rule = existing_record.access_rule
-            if record.is_placeholder and not existing_record.is_placeholder:
-                # After the version and access rule above, which keep a stub's
-                # stored values: a stub never demotes the record it names.
-                record.is_placeholder = False
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
                 self._stamp_queued_at(record)
