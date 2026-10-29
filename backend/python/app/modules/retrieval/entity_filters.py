@@ -9,14 +9,18 @@ silently drop records the filter named.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.modules.named_entities.domain.kinds import EntityKind, kind_family
-from app.modules.named_entities.graph_ops import NamedEntityQuery
+from app.modules.named_entities.graph_ops import NamedEntityQuery, filter_constraints
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _LOW = -1e308
 _HIGH = 1e308
@@ -184,3 +188,85 @@ def entity_query_from(raw: dict[str, Any]) -> NamedEntityQuery | None:
         percent_max=percent_max,
         limit=5000,
     )
+
+
+_FREE_TEXT_MAX = 80
+
+
+def describe_entity_filter(raw: object) -> str | None:
+    """What a request's ``entityFilters`` limits records to, in words, or None
+    when it is invalid or names no constraint. Built from the graph's own
+    constraints (``filter_constraints``), so the words combine its parts the way
+    the match does. Free text (a name, a quantity's dimension) is set by the
+    client, so it is quoted, kept to one line and capped."""
+    if not isinstance(raw, dict):
+        return None
+    ids = raw.get("entityIds")
+    entity_ids = [str(item) for item in ids if item] if isinstance(ids, list) else []
+    try:
+        query = entity_query_from(raw)
+    except ValueError:
+        return None
+    if not entity_ids and query is None:
+        return None
+    constraints = filter_constraints(entity_ids, query)
+    name = query.name_prefix if query is not None else ""
+    described = [" or ".join(filter(None, (_part(part, name) for part in parts))) for parts in constraints]
+    return " and ".join(filter(None, described)) or None
+
+
+def _part(part: Any, name: str) -> str:  # noqa: ANN401
+    """``name`` is the filter's own spelling; the graph matches it lowercased."""
+    binds = part.binds
+    kinds = " or ".join(binds.get("kinds") or ())
+    if part.source == "node":
+        ids, prefix = binds.get("ids") or [], binds.get("prefix") or ""
+        subject = (
+            "the entity picked for this conversation" if len(ids) == 1
+            else f"one of {len(ids)} entities picked for this conversation" if ids
+            else "an entity"
+        )
+        if not (ids or prefix):
+            return f"any entity of kind {kinds}"
+        named = f" whose name starts with {_quoted(name or prefix)}" if prefix else ""
+        return f"{subject}{f' ({kinds})' if kinds else ''}{named}"
+    if binds.get("dateStart") is not None:
+        return f"a date {_span(binds['dateStart'], binds['dateEnd'], _iso_date, 'on or after', 'on or before')}"
+    if binds.get("amountMin") is not None:
+        cur = f" {binds['currency']}" if binds.get("currency") else ""
+        span = _span(binds["amountMin"], binds["amountMax"], lambda v: f"{v:,g}{cur}")
+        return f"an amount {span}" if span else f"an amount in{cur}" if cur else "any amount"
+    if binds.get("quantityMin") is not None:
+        unit = f" {_quoted(binds['dimension'])}" if binds.get("dimension") else ""
+        span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{v:,g}{unit}")
+        return f"a quantity {span}" if span else f"a quantity in{unit}" if unit else "any quantity"
+    if binds.get("percentMin") is not None:
+        # The API takes percentages as fractions: 0.125 is 12.5%.
+        span = _span(binds["percentMin"], binds["percentMax"], lambda v: f"{v * 100:g}%")
+        return f"a percentage {span}" if span else "any percentage"
+    return f"any {kinds} value" if kinds else ""
+
+
+def _span(
+    low: float, high: float | None, show: Callable[[float], str],
+    at_least: str = "of at least", at_most: str = "of at most",
+) -> str:
+    has_low, has_high = low > _LOW, high is not None and high < _HIGH
+    if has_low and has_high:
+        return f"from {show(low)} to {show(high)}"
+    if has_low:
+        return f"{at_least} {show(low)}"
+    return f"{at_most} {show(high)}" if has_high else ""
+
+
+def _iso_date(ms: float) -> str:
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=UTC).date().isoformat()
+    except (ValueError, OverflowError, OSError):
+        return f"{ms:.0f} ms since 1970"
+
+
+def _quoted(text: str) -> str:
+    one_line = " ".join(str(text).split())
+    capped = one_line if len(one_line) <= _FREE_TEXT_MAX else one_line[:_FREE_TEXT_MAX] + "…"
+    return json.dumps(capped, ensure_ascii=False)
