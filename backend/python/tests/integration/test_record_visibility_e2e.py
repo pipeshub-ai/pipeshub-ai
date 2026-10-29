@@ -496,6 +496,7 @@ EXERCISED_HERE: dict[str, str] = {
     "find_next_queued_duplicate": "test_next_queued_duplicate",
     "update_queued_duplicates_status": "test_queued_duplicate_status_is_not_copied_onto_the_trash",
     "get_failed_records_by_org": "test_failed_records",
+    "count_connector_records_by_status": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_records_by_weburls": "test_weburl_lookup",
     "get_records_linking_to_weburls": "test_records_linking_to_an_address",
@@ -692,6 +693,9 @@ async def test_record_content_revisions(world: _World) -> None:
 async def test_failed_records(world: _World) -> None:
     g = world.graph
     assert _ids(await g.get_failed_records_by_org(world.org_id, world.connector_id)) == {world.ids["live_failed"]}
+    # The progress count leaves the trashed failure out, as the listing does.
+    counts = await g.count_connector_records_by_status(world.connector_id, [ProgressStatus.FAILED.value])
+    assert counts == {ProgressStatus.FAILED.value: 1}
 
 
 async def test_weburl_lookup(world: _World) -> None:

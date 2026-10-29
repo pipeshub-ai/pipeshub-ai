@@ -5686,6 +5686,10 @@ components:
           format: int64
           nullable: true
           description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
+        autoRetryCount:
+          type: integer
+          nullable: true
+          description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
         parsingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED]
@@ -6046,6 +6050,10 @@ components:
               type: integer
               format: int64
               nullable: true
+            autoRetryCount:
+              type: integer
+              nullable: true
+              description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
             retryNotBefore:
               type: integer
               format: int64
@@ -7608,6 +7616,108 @@ components:
           type: boolean
           description: When true, triggers a full sync instead of incremental.
           default: false
+    ConnectorSyncRun:
+      type: object
+      description: One sync run, live or finished. Counts are records written, each counted once per run.
+      properties:
+        runId: { type: string }
+        trigger:
+          type: string
+          enum: [manual, schedule, enable, startup, resume, follow_up, unknown]
+        full: { type: boolean }
+        startedAt: { type: integer, description: Epoch ms }
+        finishedAt: { type: integer, description: Epoch ms; finished runs only }
+        phase:
+          type: string
+          enum: [starting, people, containers, content, finishing]
+          description: Live runs only
+        lastActivityAt: { type: integer, description: Epoch ms; live runs only }
+        stalled: { type: boolean, description: No headway for 20 minutes and not rate-limited; live runs only }
+        throttledUntil:
+          type: integer
+          nullable: true
+          description: Epoch ms the source asked the sync to wait until; live runs only
+        outcome:
+          type: string
+          enum: [succeeded, failed, stopped, skipped]
+          description: Finished runs only
+        counts:
+          type: object
+          properties:
+            found: { type: integer }
+            new: { type: integer }
+            changed: { type: integer }
+            unchanged: { type: integer }
+            removed: { type: integer }
+            filtered: { type: integer }
+            containers: { type: integer }
+        filteredByReason:
+          type: object
+          additionalProperties: { type: integer }
+        unit:
+          type: object
+          nullable: true
+          properties:
+            kind: { type: string, description: "user, mailbox, drive, site, bucket, share, channel, space, project, repository, table, feed, page" }
+            done: { type: integer }
+            total: { type: integer, nullable: true }
+        expectedTotal: { type: integer, nullable: true }
+        approximate: { type: boolean, description: Counts may include repeats (very large runs) }
+        error: { $ref: '#/components/schemas/ConnectorSyncError' }
+        skipCode: { type: string }
+        startedBy: { type: string, description: User id, manual runs only }
+    ConnectorSyncError:
+      type: object
+      properties:
+        code:
+          type: string
+          enum: [auth, permission, rate_limit, network, source_unavailable, not_found, config, incomplete, interrupted, unknown]
+        detail: { type: string, nullable: true, description: Scrubbed technical detail for admins }
+        runId: { type: string }
+        at: { type: integer, description: Epoch ms }
+    ConnectorProgressResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            connectorId: { type: string }
+            status: { type: string, enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING] }
+            isActive: { type: boolean }
+            run:
+              allOf: [{ $ref: '#/components/schemas/ConnectorSyncRun' }]
+              nullable: true
+            lastRun:
+              allOf: [{ $ref: '#/components/schemas/ConnectorSyncRun' }]
+              nullable: true
+            recentRuns:
+              type: array
+              description: Newest first, at most ten
+              items: { $ref: '#/components/schemas/ConnectorSyncRun' }
+            lastError:
+              allOf: [{ $ref: '#/components/schemas/ConnectorSyncError' }]
+              nullable: true
+            awaitingFirstSync: { type: boolean }
+            readyAt: { type: integer, nullable: true }
+            hasSearchableContent:
+              type: boolean
+              description: Some of its records are searchable; true whenever there is a run history
+            indexing:
+              type: object
+              properties:
+                waiting: { type: integer }
+                inProgress: { type: integer }
+                failed: { type: integer }
+                indexedRecently: { type: integer, description: Records indexed in the last 10 minutes }
+                perMinute: { type: number }
+                etaSeconds: { type: integer, nullable: true }
+                waitingInLine: { type: boolean, description: Work is queued but none of it is moving yet }
+            stats:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: detail=full only; the `data` of GET /connectors/{connectorId}/stats
     ConnectorStats:
       type: object
       description: Statistics for a connector's records
@@ -7686,6 +7796,23 @@ components:
                     description: Record counts by named-entity extraction (`entities` stage) status.
                     additionalProperties:
                       type: integer
+            byReason:
+              type: array
+              description: |
+                Why records are not searchable: counts per indexing status and the
+                stored plain-language reason, largest first, at most twenty groups.
+                Covers FAILED, AUTO_INDEX_OFF, FILE_TYPE_NOT_SUPPORTED, EMPTY,
+                ENABLE_MULTIMODAL_MODELS, SKIPPED, PAUSED and PASSWORD_PROTECTED.
+              items:
+                type: object
+                properties:
+                  indexingStatus:
+                    type: string
+                  reason:
+                    type: string
+                    nullable: true
+                  count:
+                    type: integer
     ConnectorIndexingStatusCounts:
       type: object
       description: Number of records in each indexing status.
@@ -11966,6 +12093,10 @@ components:
         queuedAtTimestamp:
           type: number
           nullable: true
+        autoRetryCount:
+          type: integer
+          nullable: true
+          description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
         retryNotBefore:
           type: number
           nullable: true
@@ -52884,6 +53015,69 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/progress:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get what a connector is doing now
+      description: |
+        The running sync (phase, what it has found so far, units done, whether
+        it is waiting on the source's rate limit or making no progress), the
+        last run and the last failure, and how much of the connector's content
+        is still being made searchable, with an estimate once the speed is
+        steady. Works for collections too, which have no sync runs.
+
+        `detail=summary` (the default) is cheap enough to poll. `detail=full`
+        adds the connector's statistics, including why records are not
+        searchable, grouped by reason.
+      operationId: getConnectorProgress
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID, or a collection ID
+          schema:
+            type: string
+        - name: detail
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [summary, full]
+            default: summary
+      responses:
+        '200':
+          description: Connector progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorProgressResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Insufficient OAuth scope, or a collection the caller has a role on
+            other than OWNER, WRITER or READER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Connector not found, or one the caller cannot open (another user's
+            personal connector, admins included)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /connectors/record/{recordId}/content:
     get:
       tags:

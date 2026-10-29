@@ -151,6 +151,7 @@ from app.services.graph_db.common.utils import (
     ENTITY_CANDIDATE_SCAN_CAP,
     PATH_MAX_CANDIDATES,
     PERSON_ENTITY_TYPE,
+    STATS_REASONED_STATUSES,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
@@ -4789,6 +4790,58 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return {row["vrid"] for row in results or [] if row.get("vrid")}
+
+    async def count_connector_records_by_status(
+        self,
+        connector_id: str,
+        statuses: list[str],
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, int]:
+        """See :meth:`IGraphDBProvider.count_connector_records_by_status`."""
+        query = """
+        MATCH (r:Record {connectorId: $connector_id})
+        WHERE r.indexingStatus IN $statuses
+          AND coalesce(r.isInternal, false) = false
+          AND coalesce(r.isPlaceholder, false) = false
+          AND coalesce(r.isDeleted, false) = false
+          AND NOT coalesce(r.mimeType, '') IN $folder_mime_types
+        RETURN r.indexingStatus AS status, count(r) AS cnt
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "connector_id": connector_id,
+                "statuses": statuses,
+                "folder_mime_types": FOLDER_MIME_TYPES,
+            },
+            txn_id=transaction,
+        )
+        return {row["status"]: int(row["cnt"]) for row in rows or [] if row.get("status")}
+
+    async def count_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.count_records_indexed_since`."""
+        query = """
+        MATCH (r:Record {connectorId: $connector_id, indexingStatus: $completed})
+        WHERE r.lastIndexTimestamp > $since_ms
+        RETURN count(r) AS cnt
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            txn_id=transaction,
+        )
+        return int((results or [{}])[0].get("cnt") or 0)
 
     async def has_records_indexed_since(
         self,
@@ -12881,7 +12934,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (s:{collection_to_label(CollectionNames.STAGE_STATES.value)}
                 {{id: r.virtualRecordId + ':' + r.contentRev + ':entities'}})
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus,
-                   r.extractionStatus AS extractionStatus, s.status AS entitiesStatus, count(r) AS cnt
+                   r.extractionStatus AS extractionStatus, s.status AS entitiesStatus,
+                   CASE WHEN r.indexingStatus IN $reasoned_statuses THEN r.reason ELSE null END AS reason,
+                   count(r) AS cnt
             """
 
             results = await self.client.execute_query(
@@ -12889,6 +12944,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parameters={
                     "connector_id": connector_id,
                     "folder_mime_types": FOLDER_MIME_TYPES,
+                    "reasoned_statuses": list(STATS_REASONED_STATUSES),
                 },
                 txn_id=transaction
             )

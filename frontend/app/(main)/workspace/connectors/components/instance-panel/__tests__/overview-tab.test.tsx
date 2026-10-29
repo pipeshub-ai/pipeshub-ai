@@ -4,8 +4,12 @@ import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const reindexConnector = vi.fn();
+const getConnectorProgress = vi.fn();
 vi.mock('../../../api', () => ({
-  ConnectorsApi: { reindexConnector: (...args: unknown[]) => reindexConnector(...args) },
+  ConnectorsApi: {
+    reindexConnector: (...args: unknown[]) => reindexConnector(...args),
+    getConnectorProgress: (...args: unknown[]) => getConnectorProgress(...args),
+  },
 }));
 const fetchInstanceStats = vi.fn();
 vi.mock('../../../utils/fetch-instance-stats', () => ({
@@ -53,6 +57,7 @@ beforeEach(() => {
   useConnectorsStore.getState().reset();
   clearToasts();
   reindexConnector.mockReset().mockResolvedValue({});
+  getConnectorProgress.mockReset().mockRejectedValue(new Error('not in this test'));
   fetchInstanceStats.mockReset().mockResolvedValue(undefined);
   runConnectorResync.mockReset().mockResolvedValue({ kind: 'backend' });
   routerPush.mockReset();
@@ -85,14 +90,24 @@ describe('OverviewTab: record status', () => {
     expect(screen.queryByText('Indexed and searchable')).toBeNull();
   });
 
-  it('shows sync progress while a sync runs', () => {
+  it('shows what a running sync has found so far', async () => {
+    const counts = { found: 40, new: 3, changed: 2, unchanged: 35, removed: 0, filtered: 0, containers: 0 };
+    getConnectorProgress.mockResolvedValue({
+      connectorId: 'conn-1',
+      status: 'SYNCING',
+      isActive: true,
+      run: { runId: 'r1', trigger: 'manual', full: false, startedAt: Date.now(), phase: 'content', counts },
+      lastRun: null,
+      recentRuns: [],
+      lastError: null,
+      awaitingFirstSync: false,
+      indexing: { waiting: 0, inProgress: 0, failed: 0, indexedRecently: 0, perMinute: 0, etaSeconds: null, waitingInLine: false },
+    });
     renderInTheme(
-      <OverviewTab
-        instance={makeInstance({ isActive: true, status: 'SYNCING', syncProgress: { percentage: 35 } })}
-        stats={null}
-      />
+      <OverviewTab instance={makeInstance({ isActive: true, status: 'SYNCING', name: 'Drive' })} stats={null} />
     );
-    expect(screen.getByText('35% complete')).toBeTruthy();
+    expect(await screen.findByText('Reading from Drive · 40 found · 5 new or changed')).toBeTruthy();
+    expect(screen.getByText('New or changed')).toBeTruthy();
   });
 
   it('opens the failed records in the knowledge base', () => {
@@ -179,7 +194,8 @@ describe('OverviewTab: actions', () => {
 
   it('hides the entity extraction retry when no record failed it', () => {
     const noFailedEntities = stats({ COMPLETED: 5 });
-    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     noFailedEntities.stats.entitiesStatus = { COMPLETED: 5, FAILED: 0 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={noFailedEntities} />);
@@ -196,7 +212,8 @@ describe('OverviewTab: actions', () => {
 
   it('retries failed entity extraction and refreshes the numbers', async () => {
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { COMPLETED: 1, FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
@@ -212,7 +229,8 @@ describe('OverviewTab: actions', () => {
   it('does not call a queued entity extraction retry failed when only the stats refresh fails', async () => {
     fetchInstanceStats.mockRejectedValue(new Error('stats down'));
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
@@ -248,7 +266,8 @@ describe('OverviewTab: actions', () => {
   it('reports a failed entity extraction retry', async () => {
     reindexConnector.mockRejectedValue(new Error('nope'));
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);

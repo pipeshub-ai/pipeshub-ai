@@ -1626,6 +1626,7 @@
       "downloading": "Stahování artefaktu"
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
+    "sourcesSettingUp": "Ještě se nastavuje: {{sources}}. Odpovědi zatím nemusí zahrnovat vše z těchto zdrojů.",
     "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
     "removeSelectedSource": "Odebrat {{name}}",
     "diagramSourceCopied": "Zdroj diagramu zkopírován",
@@ -3500,6 +3501,160 @@
         "title": "Vyžaduje akci",
         "openAuthentication": "Aktualizovat ověření",
         "viewSteps": "Zobrazit postup nastavení"
+      },
+      "progress": {
+        "label": "Stav",
+        "removing": "Odebírání tohoto konektoru…",
+        "off": "Vypnuto. Nic se nesynchronizuje.",
+        "queued": "Čeká na volné místo pro synchronizaci",
+        "notSyncedYet": "Zatím nesynchronizováno",
+        "noSyncRecorded": "Obsah je prohledávatelný · zatím nezaznamenána žádná synchronizace",
+        "upToDate": "Aktuální",
+        "upToDateAgo": "Aktuální · synchronizováno {{time}}",
+        "withFailures": "{{base}} · nelze indexovat: {{n, number}}",
+        "lastFailed": "Poslední synchronizace selhala: {{reason}}",
+        "skipped": "Poslední synchronizace byla přeskočena: desktopová aplikace nebyla připojena",
+        "stopped": "Poslední synchronizace byla zastavena před dokončením",
+        "stoppedAfterFailure": "Poslední synchronizace byla zastavena. Ta předchozí selhala: {{reason}}",
+        "approximate": "Tato synchronizace je velmi rozsáhlá, takže některé položky mohou být započítány víc než jednou.",
+        "viewRecords": "Zobrazit záznamy",
+        "run": {
+          "starting": "Zahajuje se čtení ze zdroje {{source}}",
+          "people": "Načítají se lidé a skupiny ze zdroje {{source}}",
+          "containers": "Zjišťuje se, co číst ve zdroji {{source}} · nalezeno: {{containers, number}}",
+          "content": "Čtení ze zdroje {{source}} · nalezeno: {{found, number}} · nové nebo změněné: {{changed, number}}",
+          "finishing": "Dokončování: odebírá se to, co už zdroj {{source}} neobsahuje",
+          "units": "Čtení ze zdroje {{source}} · {{unit}}: {{done, number}} z {{total, number}} · nalezeno: {{found, number}}",
+          "ofTotal": "Čtení ze zdroje {{source}} · {{found, number}} z {{total, number}}",
+          "throttled": "Pozastaveno: zdroj {{source}} požádal o zpomalení · pokračování přibližně {{time}}",
+          "stalled": "Žádný postup za {{n, number}} min. Zdroj může být pomalý nebo nedostupný."
+        },
+        "indexing": {
+          "left": "Zpřístupňování pro vyhledávání · zbývá: {{n, number}}",
+          "leftWithEta": "Zpřístupňování pro vyhledávání · zbývá: {{n, number}} · {{eta}}",
+          "inLine": "Čeká na zpřístupnění pro vyhledávání: {{n, number}}. Ve frontě je napřed jiná práce na indexování.",
+          "inLineHelp": "Indexování sdílí více konektorů, takže položky tohoto konektoru se začnou zpracovávat, jakmile skončí práce před nimi."
+        },
+        "eta": {
+          "underMinute": "méně než minuta",
+          "minutes": "asi {{n, number}} min",
+          "hours": "asi {{n, number}} h",
+          "longer": "několik hodin",
+          "unknown": "Zjišťuje se"
+        },
+        "duration": {
+          "underMinute": "méně než minuta",
+          "minutes": "{{n, number}} min"
+        },
+        "stage": {
+          "reading": "Čtení ze zdroje {{source}}",
+          "searchable": "Zpřístupňování pro vyhledávání"
+        },
+        "count": {
+          "found": "Nalezeno",
+          "changed": "Nové nebo změněné",
+          "unchanged": "Beze změny",
+          "removed": "Odebráno",
+          "filtered": "Vyřazeno filtry",
+          "containers": "Složky, disky a prostory",
+          "waiting": "Čeká",
+          "inProgress": "Probíhá",
+          "failed": "Nelze indexovat",
+          "eta": "Zbývající čas"
+        },
+        "units": {
+          "user": "Lidé",
+          "mailbox": "Poštovní schránky",
+          "drive": "Disky",
+          "site": "Weby",
+          "bucket": "Buckety",
+          "share": "Sdílené složky",
+          "channel": "Kanály",
+          "space": "Prostory",
+          "project": "Projekty",
+          "repository": "Repozitáře",
+          "table": "Tabulky",
+          "feed": "Feedy",
+          "page": "Stránky",
+          "container": "Kontejnery",
+          "folder": "Složky",
+          "item": "Položky"
+        },
+        "attention": {
+          "title": "Vyžaduje pozornost"
+        },
+        "notIndexed": {
+          "title": "Neindexováno – kvůli nastavení nebo povaze obsahu"
+        },
+        "status": {
+          "FAILED": "Nelze indexovat",
+          "ENABLE_MULTIMODAL_MODELS": "Vyžaduje model AI, který umí číst obrázky",
+          "AUTO_INDEX_OFF": "Pouze ruční indexování",
+          "FILE_TYPE_NOT_SUPPORTED": "Nepodporovaný typ souboru",
+          "EMPTY": "Prázdné",
+          "SKIPPED": "Přeskočeno",
+          "PAUSED": "Pozastaveno",
+          "PASSWORD_PROTECTED": "Chráněno heslem"
+        },
+        "history": {
+          "title": "Nedávné synchronizace",
+          "full": "Úplná synchronizace",
+          "quick": "Synchronizace",
+          "line": "{{kind}} · {{trigger}} · {{time}}",
+          "counts": "nalezeno: {{found, number}} · nové nebo změněné: {{changed, number}} · odebráno: {{removed, number}}"
+        },
+        "trigger": {
+          "manual": "spuštěno ručně",
+          "schedule": "podle plánu",
+          "enable": "konektor zapnut",
+          "startup": "po restartu",
+          "resume": "obnoveno po restartu",
+          "follow_up": "vyžádáno během jiné synchronizace",
+          "unknown": "spuštěno"
+        },
+        "error": {
+          "detail": "Podrobnosti: {{detail}}",
+          "auth": {
+            "title": "Zdroj {{source}} odmítl přihlášení",
+            "action": "Znovu připojte účet v nastavení tohoto konektoru. Pokud to stále selhává, možná musí aplikaci nebo její oprávnění schválit správce."
+          },
+          "permission": {
+            "title": "PipesHub nemá přístup k části zdroje {{source}}",
+            "action": "Udělte připojenému účtu přístup k tomu, co má tento konektor číst, a pak synchronizujte znovu."
+          },
+          "rate_limit": {
+            "title": "Zdroj {{source}} omezil rychlost čtení",
+            "action": "Teď není potřeba nic dělat: další synchronizace bude pokračovat. Pokud se to opakuje, synchronizujte méně často."
+          },
+          "network": {
+            "title": "Nepodařilo se spojit se zdrojem {{source}}",
+            "action": "Zkontrolujte, že je zdroj {{source}} dostupný z místa, kde běží PipesHub, a pak synchronizujte znovu."
+          },
+          "source_unavailable": {
+            "title": "Zdroj {{source}} měl potíže na své straně",
+            "action": "Obvykle jde o dočasný problém. Synchronizujte znovu za pár minut."
+          },
+          "not_found": {
+            "title": "Něco, co tento konektor čte, už ve zdroji {{source}} neexistuje",
+            "action": "Zkontrolujte nastavení konektoru: vybraná složka, web nebo projekt mohly být odebrány nebo přejmenovány."
+          },
+          "config": {
+            "title": "Nastavení konektoru vyžaduje pozornost",
+            "action": "Otevřete nastavení konektoru, zkontrolujte adresu a možnosti a pak synchronizujte znovu."
+          },
+          "incomplete": {
+            "title": "Část zdroje {{source}} se nepodařilo načíst",
+            "action": "Vše ostatní bylo synchronizováno. Další synchronizace zkusí chybějící část znovu."
+          },
+          "interrupted": {
+            "title": "PipesHub se během synchronizace restartoval",
+            "action": "Synchronizace se spustí znovu sama: podle dalšího plánu, nebo hned, pokud šlo o úplnou synchronizaci."
+          },
+          "unknown": {
+            "title": "Něco se pokazilo",
+            "action": "Synchronizujte znovu. Pokud to stále selhává, zkontrolujte nastavení konektoru nebo se obraťte na správce."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Tato data uvidí všichni ve vaší organizaci",

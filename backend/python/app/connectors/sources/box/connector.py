@@ -1221,6 +1221,7 @@ class BoxConnector(BaseConnector):
             self.logger.info(f"Processing {len(users_to_sync)} active users SEQUENTIALLY")
 
             # Loop directly, awaiting each user fully before starting the next
+            self.progress.set_units("user", 0, len(users_to_sync))
             for i, user in enumerate(users_to_sync):
                 self.logger.info(f"[{i+1}/{len(users_to_sync)}] Syncing user: {user.email}")
                 try:
@@ -1230,6 +1231,8 @@ class BoxConnector(BaseConnector):
                     self._mark_read_incomplete(e)
                     # Continue to next user even if one fails
                     continue
+                finally:
+                    self.progress.advance_units("user")
 
             self.logger.info("Completed processing all user batches")
 

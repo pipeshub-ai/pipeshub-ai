@@ -856,7 +856,9 @@ class SlackConnector(BaseConnector):
                             f"{rg.external_group_id}: {exc}",
                             exc_info=True,
                         )
+                    self.progress.advance_units("channel")
 
+            self.progress.set_units("channel", 0, sum(1 for rg in channels if rg.external_group_id))
             # Channels already reading finish before a refused token is raised, so
             # none is left running after the sync has failed.
             results = await asyncio.gather(

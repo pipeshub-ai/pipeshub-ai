@@ -1674,6 +1674,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                 )
                 skipped += 1
+                self.progress.note_filtered("extension")
                 continue
             if not self._pass_date_filters(event, sync_filters):
                 self.logger.debug(
@@ -1681,6 +1682,7 @@ class LocalFsConnector(BaseConnector):
                     rel_path,
                 )
                 skipped += 1
+                self.progress.note_filtered("date")
                 continue
 
             new_ext_id = self._external_record_id_for_rel_path(rel_path)

@@ -436,10 +436,12 @@ class DropboxConnector(BaseConnector):
 
             # 0. Apply date filters if provided
             if not self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before):
+                self.progress.note_filtered("date")
                 return None
 
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
+                self.progress.note_filtered("extension")
                 return
 
             # 2. Get existing record from the database
@@ -1227,6 +1229,7 @@ class DropboxConnector(BaseConnector):
             known_shared_folders = frozenset(plan)
 
             # Process users in concurrent batches
+            self.progress.set_units("user", 0, len(users_to_sync))
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
 
@@ -1240,6 +1243,7 @@ class DropboxConnector(BaseConnector):
                 ]
 
                 await asyncio.gather(*sync_tasks, return_exceptions=True)
+                self.progress.advance_units("user", len(batch))
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)

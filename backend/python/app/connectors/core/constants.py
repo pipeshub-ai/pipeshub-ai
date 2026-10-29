@@ -134,6 +134,15 @@ class ConnectorStateKeys:
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
     ACTION_ITEMS = "actionItems"
+    # app.connectors.core.sync.sync_progress: the running sync's live view, the
+    # last runs, and why the last one failed. JSON text, so every graph store holds them.
+    SYNC_PROGRESS = "syncProgress"
+    SYNC_RUNS = "syncRuns"
+    LAST_SYNC_ERROR = "lastSyncError"
+    # Set when a connector's first sync starts and cleared once that content is
+    # searchable (app.connectors.core.sync.first_sync_watch).
+    AWAITING_FIRST_SYNC = "awaitingFirstSync"
+    READY_AT = "readyAtTimestamp"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"

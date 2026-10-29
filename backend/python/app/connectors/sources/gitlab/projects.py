@@ -88,6 +88,7 @@ class ProjectsSync:
         if not projects:
             self.logger.warning("No projects to sync after applying filters")
             return
+        self.c.progress.set_units("project", 0, len(projects))
         for project in projects:
             project_id: int = project.id
             project_path: str = project.path_with_namespace
@@ -112,6 +113,7 @@ class ProjectsSync:
                         step_name, project_id, project_path, e, exc_info=True,
                     )
                     self.c.note_sync_problem(f"{step_name} of project {project_path}: {e}")
+            self.c.progress.advance_units("project")
 
     # ------------------------------------------------------------------
     # Project resolution

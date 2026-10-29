@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { formatRelativeTime } from '@/lib/utils/formatters';
@@ -21,6 +21,8 @@ import {
   InstanceSyncOperationIndicator,
   InstanceSetupStatusRow,
 } from './instance-status-badges';
+import { ConnectorProgressLine } from '../connector-progress-line';
+import { useConnectorProgress } from '../../utils/use-connector-progress';
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
@@ -76,6 +78,12 @@ export function InstanceCard({
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
 
   usePollInstanceWhileSyncing(instance._key, instance.status);
+  // Restarted when the status flips (a Sync click, a run ending), so the line never lags the buttons.
+  const progress = useConnectorProgress(
+    instance.supportsSync ? instance._key : undefined,
+    'summary',
+    instance.status,
+  );
 
   useEffect(() => {
     setIdentityIconError(false);
@@ -323,7 +331,22 @@ export function InstanceCard({
           <InfoRow label={t('workspace.connectors.settingsTab.enabledBy')} value="-" />
         )}
 
-        <InfoRow label={t('workspace.connectors.instanceCard.lastSynced')} value={lastSynced} />
+        {progress ? (
+          <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
+            <Text
+              size="1"
+              weight="medium"
+              style={{ color: 'var(--gray-10)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+            >
+              {t('workspace.connectors.progress.label')}
+            </Text>
+            <Box style={{ flex: 1, minWidth: 0, width: isMobile ? '100%' : undefined }}>
+              <ConnectorProgressLine view={progress} source={instance.name?.trim() || instance.type} />
+            </Box>
+          </Flex>
+        ) : (
+          <InfoRow label={t('workspace.connectors.instanceCard.lastSynced')} value={lastSynced} />
+        )}
 
         {instance._key && instance.supportsSync && (
           <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'} style={{ marginTop: 2 }}>
@@ -397,7 +420,8 @@ export function InstanceCard({
               connectorType={instance.type}
               status={instance.status}
             />
-            <InstanceSyncOperationIndicator instance={instance} />
+            {/* Until the first progress answer arrives (or if it cannot), the stored status still says a sync runs. */}
+            {!progress && <InstanceSyncOperationIndicator instance={instance} />}
           </Flex>
         )}
       </Flex>

@@ -25,6 +25,7 @@ import {
 } from './components';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
+import { ConnectorSyncStatus } from './components/connector-sync-status';
 import type { UploadFileItem } from './components';
 import { SelectionActionBar } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
@@ -3071,6 +3072,13 @@ function KnowledgeBasePageContent() {
     return [rootCrumb, ...apiBreadcrumbs];
   }, [allRecordsTableData?.breadcrumbs, t]);
 
+  // The connector being browsed in All Records, at any depth; collections have no sync to show.
+  const browsedConnector = useMemo(() => {
+    if (!isAllRecordsMode) return null;
+    const crumb = allRecordsTableData?.breadcrumbs?.find((b) => b.nodeType === 'app');
+    return crumb && !isKbCollectionsHubApp(crumb) ? crumb : null;
+  }, [isAllRecordsMode, allRecordsTableData?.breadcrumbs]);
+
   return (
     <Flex style={{ height: '100%', width: '100%' }}>
       {/* Main Content */}
@@ -3131,6 +3139,10 @@ function KnowledgeBasePageContent() {
                 onClose={handleSearchClose}
                 placeholder="eg: Sales Docs"
               />
+            )}
+
+            {browsedConnector && (
+              <ConnectorSyncStatus connectorId={browsedConnector.id} source={browsedConnector.name} />
             )}
 
             {/* KB Filter Bar - mode-aware */}

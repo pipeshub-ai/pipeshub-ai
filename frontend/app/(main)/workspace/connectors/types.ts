@@ -1,3 +1,5 @@
+import type { ReasonGroup } from './utils/connector-progress';
+
 // ========================================
 // Connector page types
 // ========================================
@@ -46,6 +48,8 @@ export interface Connector {
   lastSyncStartedAtTimestamp?: number | null;
   lastSyncFinishedAtTimestamp?: number | null;
   lastSyncOutcome?: 'succeeded' | 'failed' | 'stopped' | 'skipped' | null;
+  /** Its first sync has not finished making its content searchable; search and chat say so. */
+  awaitingFirstSync?: boolean;
   /** What the last run did, in the connector's own terms (see LastSyncSummary for the web connector's). */
   lastSyncSummary?: LastSyncSummary | null;
   /** What the connector's admin has to do; shown as an action-needed badge until it is done. */
@@ -519,13 +523,6 @@ export interface ConnectorInstance extends Connector {
   enabledBy?: { name: string; avatar?: string };
   /** Last synced timestamp */
   lastSynced?: string | null;
-  /** Sync progress info */
-  syncProgress?: {
-    total?: number;
-    synced?: number;
-    percentage?: number;
-    label?: string;
-  };
 }
 
 /** Electron local-folder watcher state per connector instance */
@@ -619,6 +616,8 @@ export interface ConnectorStatsResponse {
       entitiesStatus?: ExtractionStatusCounts;
     };
     byRecordType: RecordTypeStats[];
+    /** Why records are not searchable, by status and stored reason (largest first). */
+    byReason?: ReasonGroup[];
   };
 }
 

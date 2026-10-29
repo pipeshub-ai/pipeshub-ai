@@ -1758,6 +1758,53 @@ export const getConnectorStats =
     }
   };
 
+export const getConnectorProgress =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      const queryParams = new URLSearchParams();
+      queryParams.append('connector_id', req.params.connectorId);
+      queryParams.append(
+        'detail',
+        req.query.detail === 'full' ? 'full' : 'summary',
+      );
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/progress?${queryParams.toString()}`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting connector progress',
+        'Connector not found',
+      );
+    } catch (error: unknown) {
+      logger.error('Error getting connector progress', {
+        connectorId: req.params.connectorId,
+        error,
+      });
+      next(handleBackendError(error, 'get connector progress'));
+      return;
+    }
+  };
+
 /**
  * The query service parameters for a budgeted read, or null when the caller
  * asked for none and gets the whole record from the connector service.

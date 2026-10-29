@@ -436,10 +436,12 @@ class DropboxIndividualConnector(BaseConnector):
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
             ):
+                self.progress.note_filtered("date")
                 return None
 
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
+                self.progress.note_filtered("extension")
                 return None
 
             # 2. Get existing record from the database

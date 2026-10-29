@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import json
 import logging
 import os
 import traceback
@@ -171,6 +172,32 @@ async def initialize_sync_coordinator(
     )
 
 
+def interrupted_run_record(doc: dict, now: int) -> dict:
+    """The history fields for a run this process died during: its live snapshot becomes a failed run."""
+    # Imported here: every top-level import in this module counts against its E402 baseline.
+    from app.connectors.core.sync.sync_errors import SyncErrorCode
+    from app.connectors.core.sync.sync_progress import (
+        merged_run_history,
+        parse_json_field,
+    )
+
+    snapshot = parse_json_field(doc.get(ConnectorStateKeys.SYNC_PROGRESS))
+    if not snapshot or not snapshot.get("runId"):
+        return {ConnectorStateKeys.SYNC_PROGRESS: None}
+    error = {"code": SyncErrorCode.INTERRUPTED.value, "detail": None}
+    entry = {
+        **{k: snapshot.get(k) for k in ("runId", "trigger", "full", "startedAt", "counts", "approximate", "unit")},
+        "finishedAt": now,
+        "outcome": SyncRunOutcome.FAILED.value,
+        "error": error,
+    }
+    return {
+        ConnectorStateKeys.SYNC_PROGRESS: None,
+        ConnectorStateKeys.SYNC_RUNS: merged_run_history(doc.get(ConnectorStateKeys.SYNC_RUNS), entry),
+        ConnectorStateKeys.LAST_SYNC_ERROR: json.dumps({**error, "runId": entry["runId"], "at": now}),
+    }
+
+
 async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None:
     """Reset sync state left behind by a crash.
 
@@ -206,7 +233,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
             CollectionNames.APPS.value,
             "status",
             [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
-            ["id", "status"],
+            ["id", "status", ConnectorStateKeys.SYNC_PROGRESS, ConnectorStateKeys.SYNC_RUNS],
         )
         locked = await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
@@ -265,8 +292,10 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 return
 
         now = get_epoch_timestamp_in_ms()
+        docs_by_key = {doc["id"]: doc for doc in (stuck or []) if doc.get("id")}
         payloads = [
             {
+                **interrupted_run_record(docs_by_key.get(key) or {}, now),
                 "id": key,
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
@@ -522,6 +551,7 @@ async def _publish_startup_resync(
                 connector_name=connector_name,
                 org_id=org_id,
                 boot_resume=manual,
+                trigger="resume",
             )
         )
         logger.info(f"Startup resync for {connector_id}: {result.value}")
@@ -1134,6 +1164,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Code edge build reconciler started")
 
         try:
+            from app.connectors.core.sync.first_sync_watch import (
+                watch_first_syncs_forever,
+            )
+
+            app.state.first_sync_watch_task = spawn_detached(
+                watch_first_syncs_forever(graph_provider, app_container.connector_notification_service(), logger),
+                name="first_sync_watch",
+            )
+        except Exception as e:
+            # Only the "is ready" notice depends on it; the steps below must still run.
+            logger.error(f"❌ Failed to start the first-sync watch: {e}", exc_info=True)
+
+        try:
             await start_reconciler()
         except Exception as e:
             logger.error(f"❌ Failed to start code edge build reconciler: {str(e)}", exc_info=True)
@@ -1214,7 +1257,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
         "stored_content_heal_task", "code_edge_build_reconcile_task",
-        "flat_storage_migration_task",
+        "flat_storage_migration_task", "first_sync_watch_task",
     ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():

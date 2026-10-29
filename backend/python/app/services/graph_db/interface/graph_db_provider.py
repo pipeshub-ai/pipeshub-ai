@@ -4537,6 +4537,39 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def count_connector_records_by_status(
+        self,
+        connector_id: str,
+        statuses: list[str],
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, int]:
+        """Live records of this connector per indexing status, for ``statuses`` only.
+
+        The cheap counterpart of :meth:`get_connector_stats`, polled by
+        connector cards: a seek on the (connectorId, indexingStatus) index
+        prefix, no walk from the App. Placeholders, internal records and
+        folders are left out as the stats leave them out. Raises on failure.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> int:
+        """How many of this connector's records finished indexing after ``since_ms``.
+
+        The indexing speed behind the progress estimate. Counts COMPLETED
+        records by ``lastIndexTimestamp`` on the same index as
+        :meth:`has_records_indexed_since`. Raises on failure.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def has_records_indexed_since(
         self,
         connector_id: str,

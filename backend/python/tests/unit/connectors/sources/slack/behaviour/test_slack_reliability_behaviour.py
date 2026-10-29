@@ -6,7 +6,7 @@ check how long the connector would have paused without actually pausing.
 
 import inspect
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import slack_sdk
@@ -159,11 +159,14 @@ class TestRateLimits:
         workspace.fail("conversations.history", RateLimited(30), when=lambda p: p.get("channel") == GENERAL)
         connector, _ = await workspace_connector(store, checkpoints)
 
-        await connector.run_sync()
+        with patch("app.connectors.core.sync.sync_progress.report_throttled") as reported:
+            await connector.run_sync()
 
         assert ts in store.records
         # Retry-After, plus at most a quarter second of jitter.
         assert any(30 <= w <= 30.25 for w in waits)
+        # Slack asked for the wait, so the sync's status line may say so.
+        assert any(30 <= c.args[0] <= 30.25 for c in reported.call_args_list)
 
     async def test_tier_two_methods_pause_once_the_per_minute_budget_is_spent(self, workspace, store, checkpoints, waits) -> None:
         for n in range(15):
@@ -171,10 +174,13 @@ class TestRateLimits:
         workspace.page_size["users.list"] = 1
         connector, _ = await workspace_connector(store, checkpoints)
 
-        await connector.run_sync()
+        with patch("app.connectors.core.sync.sync_progress.report_throttled") as reported:
+            await connector.run_sync()
 
         assert len(workspace.calls_to("users.list")) == 20
         assert waits, "20 users.list pages exceed Slack's tier-2 budget and must pause"
+        # This pause is our own pacing, not Slack asking us to slow down.
+        reported.assert_not_called()
         assert 50 < waits[0] <= 60
         assert len(store.roles["workspace_member"][1]) == 17
 
