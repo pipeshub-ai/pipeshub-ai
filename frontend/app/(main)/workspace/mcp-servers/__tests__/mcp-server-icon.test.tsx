@@ -20,6 +20,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
   });
 
+  it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
+    expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
+  });
+
   it('goes by the catalog type when the server was renamed', () => {
     expect(logo(<McpServerIcon typeId="linear" name="Team tracker" />)).toBe('linear icon');
   });

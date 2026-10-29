@@ -58,6 +58,7 @@ export type ConnectorType =
   | 'google-slides'
   | 'google-forms'
   | 'ms-onenote'
+  | 'microsoft-learn'
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
@@ -152,6 +153,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides': { svg: svg('slides'), fallback: 'slideshow' },
   'google-forms': { svg: svg('forms'), fallback: 'quiz' },
   'ms-onenote': { svg: svg('ms-onenote'), fallback: 'note' },
+  'microsoft-learn': { svg: svg('microsoft-learn'), fallback: 'menu_book' },
   'kb': { svg: svg('kb'), fallback: 'folder' },
   'knowledge-base': { svg: svg('kb'), fallback: 'folder' },
   // Project & Issue Tracking (keys sorted A–Z)
