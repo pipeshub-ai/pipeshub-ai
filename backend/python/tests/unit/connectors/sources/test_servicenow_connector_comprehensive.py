@@ -67,6 +67,11 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
 def _table_api_response(records: list) -> TableAPIResponse:
     return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
 
+def _listing(*pages: list) -> list[TableAPIResponse]:
+    """Responses of one Table API listing: these pages, then the empty page that ends it."""
+    return [_table_api_response(p) for p in pages] + [_table_api_response([])]
+
+
 
 def _sys_user_row(**fields: object) -> dict:
     base = {
@@ -101,6 +106,8 @@ def mock_data_entities_processor():
     proc.create_user_group_membership = AsyncMock()
     proc.get_user_by_source_id = AsyncMock(return_value=None)
     proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.full_sync_running = MagicMock(return_value=False)
+    proc.reindex_existing_records = AsyncMock()
     return proc
 
 
@@ -502,7 +509,7 @@ class TestTransformToAttachmentFileRecord:
         result = connector._transform_to_attachment_file_record(data)
         assert result.mime_type == MimeTypes.PDF.value
 
-    def test_unknown_mime_type_returns_none(self, connector):
+    def test_unknown_mime_type_keeps_the_attachment(self, connector):
         data = AttachmentMetadata(
             sys_id="att2",
             file_name="data.xyz",
@@ -513,7 +520,10 @@ class TestTransformToAttachmentFileRecord:
             sys_updated_on="2023-06-01 00:00:00",
         )
         result = connector._transform_to_attachment_file_record(data)
-        assert result is None
+        # A type outside MimeTypes used to drop the file; it is kept with the type it has.
+        assert result is not None
+        assert result.mime_type == "application/x-unknown"
+        assert result.extension == "xyz"
 
     def test_no_web_url_when_instance_url_none(self, connector):
         connector.instance_url = None
@@ -586,7 +596,7 @@ class TestSyncUsers:
         connector.user_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             _sys_user_row(
                 sys_id="u1",
                 email="u1@test.com",
@@ -622,11 +632,8 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
         mock_ds = AsyncMock()
-        page1 = [{"sys_id": f"g{i}", "name": "G"} for i in range(100)]
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=[
-            _table_api_response(page1),
-            _table_api_response([{"sys_id": "g100", "name": "G"}]),
-        ])
+        page1 = [{"sys_id": f"g{i:03d}", "name": "G"} for i in range(100)]
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, [{"sys_id": "g100", "name": "G"}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
         assert len(groups) == 101
@@ -662,7 +669,7 @@ class TestFetchAllMemberships:
         connector.group_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2023-07-01"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -677,7 +684,7 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_dict_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"user": "u1"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -692,7 +699,7 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_string_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"user": "u1-str"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)

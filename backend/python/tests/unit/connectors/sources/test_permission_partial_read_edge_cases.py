@@ -85,6 +85,7 @@ async def test_sn_an_article_cannot_read_denies_users_the_knowledge_base_grants(
 async def test_sn_an_article_cannot_read_that_cannot_be_read_skips_the_article(servicenow_connector) -> None:  # noqa: F811
     from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
+    from app.connectors.sources.servicenow.servicenow.connector import _CriteriaUnreadable
     from app.sources.external.servicenow.models import ServiceNowAPIError
 
     art = KBKnowledge(sys_id="a1", short_description="t", kb_category="cat1", kb_knowledge_base="kb1",
@@ -95,7 +96,9 @@ async def test_sn_an_article_cannot_read_that_cannot_be_read_skips_the_article(s
         side_effect=ServiceNowAPIError(500, "boom", None))
     sc._fetch_attachments_for_article = AsyncMock(return_value=[])
     sc._fetch_kb_permissions_from_criteria = AsyncMock(return_value={"read": ["kbcan"], "cannot_read": [], "write": []})
-    assert await sc._process_single_article(art) == []
+    # It raises, so _sync_articles skips the article (stored grants stay) and retries it next run.
+    with pytest.raises(_CriteriaUnreadable):
+        await sc._process_single_article(art)
 
 
 @pytest.mark.asyncio
@@ -169,7 +172,7 @@ async def test_sn_the_kb_loop_passes_the_cannot_read_criteria_to_the_read_grants
                       return_value={"read": ["c"], "cannot_read": ["d"], "write": []}), \
          patch.object(sc, "_process_criteria_permissions", side_effect=spy):
         ds.return_value.get_now_table_tableName = AsyncMock(
-            return_value=resp([{"sys_id": "kb1", "title": "KB 1", "owner": "o1"}]))
+            side_effect=[resp([{"sys_id": "kb1", "title": "KB 1", "owner": "o1"}]), resp([])])
         await sc._sync_knowledge_bases([])
     assert (["c"], PermissionType.READ, ["d"]) in calls
 

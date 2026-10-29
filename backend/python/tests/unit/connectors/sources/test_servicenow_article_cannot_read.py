@@ -65,8 +65,9 @@ def _kb_row_then(real) -> Callable[..., Awaitable[TableAPIResponse]]:
     from test_servicenow_connector import _table_api_response
 
     async def table(tableName, **kw) -> TableAPIResponse:
-        if tableName == "kb_knowledge_base":
-            return _table_api_response([{"owner": "own", "kb_managers": "mgr,u9"}])
+        if tableName == "kb_knowledge_base":  # one row, then the empty page that ends the listing
+            first = "^NQ" not in kw["sysparm_query"]
+            return _table_api_response([{"owner": "own", "kb_managers": "mgr,u9"}] if first else [])
         return await real(tableName=tableName, **kw)
 
     return table
@@ -98,8 +99,10 @@ async def test_a_rewrite_with_no_grants_is_still_written_so_stored_grants_go(ser
 
     sc = servicenow_connector
     sc.data_entities_processor.on_new_records = AsyncMock()
-    rewrite = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=True), new_permissions=[], external_record_id="a1")
-    plain = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=False), new_permissions=[], external_record_id="a2")
+    rewrite = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=True, inherit_permissions=False),
+                              new_permissions=[], external_record_id="a1")
+    plain = SimpleNamespace(record=SimpleNamespace(rewrite_permissions=False, inherit_permissions=False),
+                            new_permissions=[], external_record_id="a2")
 
     assert await sc._process_record_updates_batch([rewrite, plain]) == 1
 
@@ -118,7 +121,8 @@ async def test_articles_with_cannot_read_are_re_read_every_run_without_moving_th
 
     async def table(tableName, sysparm_query, **_) -> TableAPIResponse:
         queries.append(sysparm_query)
-        if "ISNOTEMPTY" in sysparm_query:  # the re-read pass: an old article with Cannot Read
+        # the re-read pass: an old article with Cannot Read, on its first page only
+        if "ISNOTEMPTY" in sysparm_query and "^NQ" not in sysparm_query:
             return _table_api_response([{"sys_id": "old", "sys_updated_on": "2024-01-01 00:00:00"}])
         return _table_api_response([])
 
@@ -127,9 +131,10 @@ async def test_articles_with_cannot_read_are_re_read_every_run_without_moving_th
 
     await sc._sync_articles()
 
-    assert len(queries) == 2
-    assert "sys_updated_on>2024-06-01 00:00:00" in queries[0]
-    assert "cannot_read_user_criteriaISNOTEMPTY" in queries[1] and "sys_updated_on<=2024-06-01 00:00:00" in queries[1]
+    assert len(queries) == 3  # the delta (empty), then the re-read pass (one row, then the empty page)
+    # both passes split at DELTA_OVERLAP_SECONDS before the checkpoint
+    assert "sys_updated_on>2024-05-31 23:58:00" in queries[0]
+    assert "cannot_read_user_criteriaISNOTEMPTY" in queries[1] and "sys_updated_on<=2024-05-31 23:58:00" in queries[1]
     assert [c.args[0].sys_id for c in sc._process_single_article.await_args_list] == ["old"]
     sc.article_sync_point.update_sync_point.assert_not_awaited()
 
@@ -148,11 +153,9 @@ async def test_a_failed_admin_read_skips_the_article_so_its_stored_admin_grants_
     sc._transform_to_article_webpage_record = lambda _: SimpleNamespace(
         rewrite_permissions=False, inherit_permissions=False, record_group_type=None, external_record_group_id="kb1")
     sc._fetch_attachments_for_article = AsyncMock(return_value=[])
-    sc.data_entities_processor.on_new_records = AsyncMock()
 
-    updates = await sc._process_single_article(_art(cannot_read_user_criteria="deny1"))
-    await sc._process_record_updates_batch(updates)
+    # It raises, so _sync_articles skips the article (stored grants stay) and retries it next run.
+    with pytest.raises(ServiceNowAPIError):
+        await sc._process_single_article(_art(cannot_read_user_criteria="deny1"))
 
-    assert updates == [], f"article written after a failed admin read: {updates}"
     assert sc._admin_source_ids is None, "an unread admin list must not be cached"
-    sc.data_entities_processor.on_new_records.assert_not_awaited()

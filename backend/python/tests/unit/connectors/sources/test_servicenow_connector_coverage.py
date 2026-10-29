@@ -66,6 +66,8 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
+    proc.full_sync_running = MagicMock(return_value=False)
+    proc.reindex_existing_records = AsyncMock()
     return proc
 
 

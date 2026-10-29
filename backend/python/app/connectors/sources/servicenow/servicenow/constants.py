@@ -108,7 +108,8 @@ class ServiceNowQueryValues:
     DISPLAY_VALUE_TRUE = "true"
     NO_COUNT_TRUE = "true"
     EXCLUDE_REFERENCE_LINK_TRUE = "true"
-    ORDER_BY_UPDATED = "ORDERBYsys_updated_on"
+    # Keyset order of every listing (see ServiceNowConnector._iter_table).
+    ORDER_BY_KEYSET = "ORDERBYsys_updated_on^ORDERBYsys_id"
     CURRENT_USER = "sys_id=javascript:gs.getUserID()"
 
 
@@ -136,14 +137,17 @@ class ServiceNowPrefixes:
 class ServiceNowDefaults:
     """Default values for ServiceNow API operations"""
     BATCH_SIZE = 100
-    PAGINATION_OFFSET = 0
     DEFAULT_LIMIT = "1"
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
     MAX_URL_LENGTH = 2000
+    # An incremental read starts this far before its checkpoint. Rows written in
+    # the same second as the checkpoint, or committed late, would otherwise be
+    # skipped for good; reading them again is an idempotent upsert.
+    DELTA_OVERLAP_SECONDS = 120
     CONNECTOR_TYPE = "SERVICENOW"
     ADMIN_ROLE_NAME = "admin"
-    DEFAULT_MIME_TYPE = "application/octet-stream"
-    UNKNOWN_VALUE = "Unknown"
+    # Content types that say nothing about the file, so its name decides.
+    UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
     # The out-of-box Knowledge Portal. Used only when the instance tells us nothing.
     KB_PORTAL_SUFFIX = "kb"
     KB_PORTAL_PROPERTY = "sn_km_portal.glide.knowman.serviceportal.portal_url"
