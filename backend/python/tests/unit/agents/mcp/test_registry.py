@@ -102,11 +102,11 @@ class TestMCPRegistry:
 
             if template.transport == MCPTransport.STDIO:
                 assert template.command, f"{template.type_id}: STDIO template missing command"
+                if template.default_auth_mode == MCPAuthMode.API_TOKEN:
+                    assert template.required_env, f"{template.type_id}: API_TOKEN template missing required_env"
             else:
                 assert template.default_url, f"{template.type_id}: HTTP/SSE template missing default_url"
 
-            if template.default_auth_mode == MCPAuthMode.API_TOKEN:
-                assert template.required_env, f"{template.type_id}: API_TOKEN template missing required_env"
             if template.default_auth_mode == MCPAuthMode.OAUTH:
                 assert template.authorization_url, f"{template.type_id}: OAuth template missing authorization_url"
                 assert template.token_url, f"{template.type_id}: OAuth template missing token_url"

@@ -12,7 +12,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         description="Customers, payments, subscriptions, refunds, invoices, and balance data in Stripe.",
         icon="/icons/connectors/stripe.svg",
         transport=MCPTransport.STREAMABLE_HTTP,
-        default_auth_mode=MCPAuthMode.OAUTH,
+        default_auth_mode=MCPAuthMode.API_TOKEN,
         supported_auth_modes=[MCPAuthMode.API_TOKEN, MCPAuthMode.OAUTH],
         default_url="https://mcp.stripe.com",
         # Confirmed live via https://mcp.stripe.com/.well-known/oauth-protected-resource -> AS
@@ -27,7 +27,11 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         auth_hint=AuthHint(
             label="Restricted API key",
             placeholder="rk_live_...",
-            help_text="Create a restricted key with least-privilege access at https://dashboard.stripe.com/apikeys, or sign in with OAuth.",
+            help_text=(
+                "Create a restricted key with least-privilege access at "
+                "https://dashboard.stripe.com/apikeys and select 'Authorizing agent access "
+                "to your account', or sign in with OAuth."
+            ),
         ),
         tags=["payments", "billing", "finance"],
     )
