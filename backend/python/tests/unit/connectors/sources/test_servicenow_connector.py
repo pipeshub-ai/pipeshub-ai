@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from servicenow_fakes import keyset_page
+from servicenow_fakes import MemorySyncPoint, keyset_page, migrated_sync_point
 
 from app.config.constants.arangodb import Connectors, MimeTypes
 from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
@@ -50,6 +50,11 @@ def _listing(*pages: list) -> list[TableAPIResponse]:
     return [_table_api_response(p, sum(map(len, pages[i:]))) for i, p in enumerate(pages)] or [_table_api_response([])]
 
 
+
+
+def _category_listing(*pages: list) -> list[TableAPIResponse]:
+    """The responses of _sync_categories: its listing of every category id (one page), then ``pages``."""
+    return [_table_api_response([r for p in pages for r in p]), *_listing(*pages)]
 
 
 def _kb_api_row(**fields: object) -> dict:
@@ -154,6 +159,10 @@ def mock_data_entities_processor():
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.full_sync_running = MagicMock(return_value=False)
     proc.reindex_existing_records = AsyncMock()
+    proc.on_record_group_deleted = AsyncMock(return_value=True)
+    proc.delete_record_by_external_id = AsyncMock()
+    proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.get_records_by_record_type = AsyncMock(return_value=[])
     return proc
 
 
@@ -191,6 +200,8 @@ def servicenow_connector(mock_logger, mock_data_entities_processor,
             created_by="test-user-id",
         )
     connector.connector_name = Connectors.SERVICENOW
+    # The knowledge base and category steps keep their last listed scope here.
+    connector.category_sync_point = MemorySyncPoint()
     return connector
 
 
@@ -1485,7 +1496,7 @@ class TestSyncCategories:
              patch.object(servicenow_connector, "_transform_to_category_record_group", return_value=MagicMock()):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                side_effect=_listing([
+                side_effect=_category_listing([
                     {
                         "sys_id": "cat1",
                         "label": "Category 1",
@@ -1524,7 +1535,7 @@ class TestSyncCategories:
              patch.object(servicenow_connector, "_transform_to_category_record_group", return_value=mock_rg):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                side_effect=_listing([
+                side_effect=_category_listing([
                     {
                         "sys_id": "cat2",
                         "label": "Subcategory",
@@ -1556,11 +1567,12 @@ class TestSyncCategories:
         page2 = [_category_api_row(sys_id="cat100", label="Cat 100", value="cat-100", sys_updated_on="2024-01-02")]
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, page2))
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_category_listing(page1, page2))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await servicenow_connector._sync_categories()
-        assert mock_ds.get_now_table_tableName.call_count == 2  # X-Total-Count ends it, no empty page
+        # the id listing, then two pages: X-Total-Count ends it, no empty page
+        assert mock_ds.get_now_table_tableName.call_count == 3
         assert mock_data_entities_processor.on_new_record_groups.call_count == 2
 
     @pytest.mark.asyncio
@@ -1586,7 +1598,7 @@ class TestSyncCategories:
         servicenow_connector.category_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_category_listing([
             _category_api_row(sys_id="cat1", label="", sys_updated_on="2024-01-01"),
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -1618,6 +1630,8 @@ class TestSyncCategories:
 
     @pytest.mark.asyncio
     async def test_sync_categories_exception_propagates(self, servicenow_connector):
+        servicenow_connector._get_fresh_datasource = AsyncMock(return_value=AsyncMock(
+            get_now_table_tableName=AsyncMock(return_value=_table_api_response([]))))
         servicenow_connector.category_sync_point = AsyncMock()
         servicenow_connector.category_sync_point.read_sync_point = AsyncMock(
             side_effect=RuntimeError("category sync fail")
@@ -2799,7 +2813,7 @@ class TestProcessSingleArticle:
     @pytest.mark.asyncio
     async def test_process_single_article_with_attachments(self, servicenow_connector):
         article = KBKnowledge(
-            sys_id="art1",
+            sys_id="art1", number="KB-art1",
             short_description="Article with attachment",
             kb_category="cat1",
             author="author1",
@@ -2828,7 +2842,7 @@ class TestProcessSingleArticle:
     @pytest.mark.asyncio
     async def test_process_single_article_with_permissions(self, servicenow_connector):
         article = KBKnowledge(
-            sys_id="art2",
+            sys_id="art2", number="KB-art2",
             short_description="Article with criteria",
             kb_category="cat1",
             can_read_user_criteria="crit1,crit2",
@@ -2845,7 +2859,7 @@ class TestProcessSingleArticle:
     @pytest.mark.asyncio
     async def test_process_single_article_with_author_owner(self, servicenow_connector):
         article = KBKnowledge(
-            sys_id="art3",
+            sys_id="art3", number="KB-art3",
             short_description="Article with author",
             kb_category="cat1",
             author="author-sys-id",
@@ -2863,7 +2877,7 @@ class TestProcessSingleArticle:
     @pytest.mark.asyncio
     async def test_process_single_article_without_author(self, servicenow_connector):
         article = KBKnowledge(
-            sys_id="art4",
+            sys_id="art4", number="KB-art4",
             short_description="No author",
             kb_category="cat1",
             author=None,
@@ -2882,9 +2896,9 @@ class TestProcessSingleArticle:
     async def test_process_single_article_transform_fails(self, servicenow_connector):
         article = KBKnowledge(
             sys_id="art5",
-            short_description="",
+            short_description="Title",
             kb_category="cat1",
-        )
+        )  # no number, so no record key
         updates = await servicenow_connector._process_single_article(article, [])
         assert updates == []
 
@@ -2934,17 +2948,15 @@ class TestStreamRecordGenerators:
 class TestSyncArticles:
     @pytest.mark.asyncio
     async def test_sync_articles_full_sync_with_pagination(self, servicenow_connector, mock_data_entities_processor):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(return_value=None)
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point()
 
         page1 = [
-            {"sys_id": f"art{i}", "short_description": f"Article {i}",
+            {"sys_id": f"art{i}", "number": f"KB{i}", "short_description": f"Article {i}",
              "kb_category": "cat1", "sys_updated_on": "2024-01-01"}
             for i in range(100)
         ]
         page2 = [
-            {"sys_id": "art100", "short_description": "Article 100",
+            {"sys_id": "art100", "number": "KB100", "short_description": "Article 100",
              "kb_category": "cat1", "sys_updated_on": "2024-01-02"},
         ]
 
@@ -2958,15 +2970,11 @@ class TestSyncArticles:
             await servicenow_connector._sync_articles()
 
         assert mock_ds.get_now_table_tableName.call_count == 2  # X-Total-Count ends it, no empty page
-        servicenow_connector.article_sync_point.update_sync_point.assert_called_once()
+        assert servicenow_connector.article_sync_point.data["articles"] == {"last_sync_time": "2024-01-02 00:00:00"}
 
     @pytest.mark.asyncio
     async def test_sync_articles_delta_sync_with_last_sync_time(self, servicenow_connector):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": "2024-01-01 00:00:00"}
-        )
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point("2024-01-01 00:00:00")
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([]))
@@ -2979,9 +2987,7 @@ class TestSyncArticles:
 
     @pytest.mark.asyncio
     async def test_sync_articles_api_error_breaks_loop(self, servicenow_connector):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(return_value=None)
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point()
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
@@ -2993,17 +2999,15 @@ class TestSyncArticles:
             await servicenow_connector._sync_articles()
         mock_data_entities_processor = servicenow_connector.data_entities_processor
         mock_data_entities_processor.on_new_records.assert_not_called()
-        servicenow_connector.article_sync_point.update_sync_point.assert_not_awaited()
+        assert "articles" not in servicenow_connector.article_sync_point.data
 
     @pytest.mark.asyncio
     async def test_sync_articles_updates_sync_checkpoint(self, servicenow_connector):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(return_value=None)
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point()
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
-            {"sys_id": "art1", "short_description": "A1", "kb_category": "c1",
+            {"sys_id": "art1", "number": "KB1", "short_description": "A1", "kb_category": "c1",
              "sys_updated_on": "2024-06-15 12:00:00"},
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -3012,32 +3016,27 @@ class TestSyncArticles:
              patch.object(servicenow_connector, "_fetch_attachments_for_articles", new_callable=AsyncMock, return_value={}):
             await servicenow_connector._sync_articles()
 
-        servicenow_connector.article_sync_point.update_sync_point.assert_called_once()
-        checkpoint = servicenow_connector.article_sync_point.update_sync_point.call_args[0][1]
+        checkpoint = servicenow_connector.article_sync_point.data["articles"]
         assert checkpoint["last_sync_time"] == "2024-06-15 12:00:00"
 
     @pytest.mark.asyncio
     async def test_sync_articles_empty_result(self, servicenow_connector):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(return_value=None)
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point()
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await servicenow_connector._sync_articles()
-        servicenow_connector.article_sync_point.update_sync_point.assert_not_called()
+        assert "articles" not in servicenow_connector.article_sync_point.data
 
     @pytest.mark.asyncio
     async def test_sync_articles_counts_attachments_correctly(self, servicenow_connector):
-        servicenow_connector.article_sync_point = AsyncMock()
-        servicenow_connector.article_sync_point.read_sync_point = AsyncMock(return_value=None)
-        servicenow_connector.article_sync_point.update_sync_point = AsyncMock()
+        servicenow_connector.article_sync_point = migrated_sync_point()
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
-            {"sys_id": "art1", "short_description": "A1", "kb_category": "c1",
+            {"sys_id": "art1", "number": "KB1", "short_description": "A1", "kb_category": "c1",
              "sys_updated_on": "2024-01-01"},
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -3110,11 +3109,11 @@ class TestArticleWebUrl:
         servicenow_connector.kb_portal_suffix = "esc"
 
         record = servicenow_connector._transform_to_article_webpage_record(
-            KBKnowledge(sys_id="art1", short_description="Title", kb_category="cat1")
+            KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title", kb_category="cat1")
         )
 
         assert record.weburl == (
-            "https://dev194883.service-now.com/esc?id=kb_article_view&sys_kb_id=art1"
+            "https://dev194883.service-now.com/esc?id=kb_article_view&sysparm_article=KB-art1"
         )
 
 
@@ -3130,7 +3129,7 @@ class TestRecordRevision:
     def test_article_carries_a_revision_id(self, servicenow_connector):
         record = servicenow_connector._transform_to_article_webpage_record(
             KBKnowledge(
-                sys_id="art1",
+                sys_id="art1", number="KB-art1",
                 short_description="Title",
                 kb_category="cat1",
                 sys_updated_on="2026-08-26 09:15:00",
@@ -3142,7 +3141,7 @@ class TestRecordRevision:
         def build(updated_on):
             return servicenow_connector._transform_to_article_webpage_record(
                 KBKnowledge(
-                    sys_id="art1",
+                    sys_id="art1", number="KB-art1",
                     short_description="Title",
                     kb_category="cat1",
                     sys_updated_on=updated_on,
@@ -3227,7 +3226,7 @@ class TestArticleReadCriteriaResolution:
 
         record = servicenow_connector._transform_to_article_webpage_record(
             KBKnowledge(
-                sys_id="art1",
+                sys_id="art1", number="KB-art1",
                 short_description="Restricted",
                 kb_category="cat1",
                 can_read_user_criteria="crit1",
@@ -3257,7 +3256,7 @@ class TestArticleReadCriteriaOverride:
 
     def _article(self):
         return KBKnowledge(
-            sys_id="art1",
+            sys_id="art1", number="KB-art1",
             short_description="Restricted",
             kb_category="cat1",
             can_read_user_criteria="crit1",

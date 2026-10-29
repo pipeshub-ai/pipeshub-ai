@@ -66,7 +66,7 @@ async def test_sn_an_article_cannot_read_denies_users_the_knowledge_base_grants(
     inheriting and gets the explicit effective set: KB allowed minus article denied."""
     from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
-    art = KBKnowledge(sys_id="a1", short_description="t", kb_category="cat1", kb_knowledge_base="kb1",
+    art = KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="cat1", kb_knowledge_base="kb1",
                       cannot_read_user_criteria="deny1")
     sc = servicenow_connector
     T._wire(
@@ -87,7 +87,7 @@ async def test_sn_an_article_cannot_read_that_cannot_be_read_skips_the_article(s
     from app.connectors.sources.servicenow.servicenow.connector import _CriteriaUnreadable
     from app.sources.external.servicenow.models import ServiceNowAPIError
 
-    art = KBKnowledge(sys_id="a1", short_description="t", kb_category="cat1", kb_knowledge_base="kb1",
+    art = KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="cat1", kb_knowledge_base="kb1",
                       cannot_read_user_criteria="deny1")
     sc = servicenow_connector
     T._wire(sc, {}, {})
@@ -177,7 +177,7 @@ async def test_sn_the_kb_loop_passes_the_cannot_read_criteria_to_the_read_grants
 
 @pytest.mark.asyncio
 async def test_sn_an_article_with_cannot_read_takes_the_explicit_grant_path(servicenow_connector) -> None:  # noqa: F811
-    art = KBKnowledge(sys_id="a1", short_description="t", kb_category="c1", can_read_user_criteria="c",
+    art = KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="c1", can_read_user_criteria="c",
                       cannot_read_user_criteria="d1, d2")
     sc = servicenow_connector
     sc._article_deny_permissions = AsyncMock(return_value=[])
@@ -218,7 +218,7 @@ async def test_sn_run_sync_resets_the_user_listing_cache(servicenow_connector) -
 async def test_sn_an_article_with_own_allow_and_a_deny_narrows_the_knowledge_base_set(servicenow_connector) -> None:  # noqa: F811
     from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
-    art = KBKnowledge(sys_id="a1", short_description="t", kb_category="c1", kb_knowledge_base="kb1",
+    art = KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="c1", kb_knowledge_base="kb1",
                       can_read_user_criteria="own", cannot_read_user_criteria="deny1")
     sc = servicenow_connector
     T._wire(

@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import pytest
+from servicenow_fakes import migrated_sync_point
 from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 from test_servicenow_connector import (  # noqa: F401
     mock_config_service,
@@ -20,7 +21,7 @@ from app.sources.external.servicenow.models import KBKnowledge, TableAPIResponse
 
 
 def _art(**kw) -> KBKnowledge:
-    return KBKnowledge(sys_id="a1", short_description="t", kb_category="c1", kb_knowledge_base="kb1", **kw)
+    return KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="c1", kb_knowledge_base="kb1", **kw)
 
 
 @pytest.mark.asyncio
@@ -80,7 +81,7 @@ async def test_an_article_with_cannot_read_replaces_its_grants_and_its_attachmen
 
     sc = servicenow_connector
     article = SimpleNamespace(rewrite_permissions=False, inherit_permissions=not deny,
-                              record_group_type=None, external_record_group_id="kb1")
+                              record_group_type=None, external_record_group_id="kb1", external_record_id="KB-a1")
     attachment = SimpleNamespace(rewrite_permissions=False)
     sc._transform_to_article_webpage_record = lambda _: article
     sc._transform_to_attachment_file_record = lambda *_a, **_k: attachment
@@ -113,9 +114,7 @@ async def test_articles_with_cannot_read_are_re_read_every_run_without_moving_th
     from test_servicenow_connector import _table_api_response
 
     sc = servicenow_connector
-    sc.article_sync_point = AsyncMock()
-    sc.article_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": "2024-06-01 00:00:00"})
-    sc.article_sync_point.update_sync_point = AsyncMock()
+    sc.article_sync_point = migrated_sync_point("2024-06-01 00:00:00")
     queries: list[str] = []
 
     async def table(tableName, sysparm_query, **_) -> TableAPIResponse:
@@ -130,12 +129,12 @@ async def test_articles_with_cannot_read_are_re_read_every_run_without_moving_th
 
     await sc._sync_articles()
 
-    assert len(queries) == 3  # the delta (empty), then the re-read pass (one row, then the empty page)
+    assert len(queries) == 3  # the delta (empty), the re-read pass (one row), its attachments
     # both passes split at DELTA_OVERLAP_SECONDS before the checkpoint
     assert "sys_updated_on>2024-05-31 23:58:00" in queries[0]
     assert "cannot_read_user_criteriaISNOTEMPTY" in queries[1] and "sys_updated_on<=2024-05-31 23:58:00" in queries[1]
     assert [c.args[0].sys_id for c in sc._process_single_article.await_args_list] == ["old"]
-    sc.article_sync_point.update_sync_point.assert_not_awaited()
+    assert sc.article_sync_point.data["articles"] == {"last_sync_time": "2024-06-01 00:00:00"}  # not moved
 
 
 @pytest.mark.asyncio

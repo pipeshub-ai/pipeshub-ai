@@ -15,6 +15,7 @@ Synced Entities:
 """
 
 import mimetypes
+import re
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -124,6 +125,27 @@ from app.connectors.sources.servicenow.servicenow.constants import (
 
 
 T = TypeVar("T")
+
+# Articles stored before they were keyed by number carry a version's sys_id (32 hex) instead.
+_LEGACY_ARTICLE_KEY = re.compile(r"^[0-9a-f]{32}$")
+
+# The kb_knowledge fields an article is written from
+_ARTICLE_FIELDS = [
+    ServiceNowFields.SYS_ID,
+    ServiceNowFields.NUMBER,
+    ServiceNowFields.SHORT_DESCRIPTION,
+    ServiceNowFields.TEXT,
+    ServiceNowFields.AUTHOR,
+    ServiceNowFields.KB_KNOWLEDGE_BASE,
+    ServiceNowFields.KB_CATEGORY,
+    ServiceNowFields.WORKFLOW_STATE,
+    ServiceNowFields.ACTIVE,
+    ServiceNowFields.PUBLISHED,
+    ServiceNowFields.CAN_READ_USER_CRITERIA,
+    ServiceNowFields.CANNOT_READ_USER_CRITERIA,
+    ServiceNowFields.SYS_CREATED_ON,
+    ServiceNowFields.SYS_UPDATED_ON,
+]
 
 
 class _CriteriaUnreadable(Exception):
@@ -295,6 +317,10 @@ class ServiceNowConnector(BaseConnector):
         # Set when this run skipped something after an error it did not raise, so a full
         # sync's cleanup unlinks nothing (see full_sync_coverage).
         self._sync_read_incomplete = False
+        # Set by the knowledge base and category steps of a run (see _sync_knowledge_bases, _sync_categories)
+        self._live_kb_ids: set[str] | None = None
+        self._kbs_back_in_scope: set[str] = set()
+        self._category_ids: set[str] | None = None
         self.client_id: str | None = None
         self.client_secret: str | None = None
         self.redirect_uri: str | None = None
@@ -620,6 +646,25 @@ class ServiceNowConnector(BaseConnector):
         start = stored - timedelta(seconds=ServiceNowDefaults.DELTA_OVERLAP_SECONDS)
         return start.strftime(ServiceNowDefaults.DATETIME_FORMAT)
 
+    @staticmethod
+    def _current_article_query() -> str:
+        """The article rows PipesHub indexes: the ones ServiceNow search shows (its knowledge
+        search sources use this filter). Every other row is not indexed, and a stored article
+        whose number has no such row is deleted: retired, outdated, draft or review rows,
+        ``active=false``, ``valid_to`` before today (UTC; empty never expires) and articles in
+        an inactive knowledge base. Each number has at most one such row. Change the rule here
+        only: the full read, the version resolution, the reconcile and streaming all use it."""
+        today = datetime.now(timezone.utc).strftime(ServiceNowDefaults.DATE_FORMAT)
+        return (
+            f"{ServiceNowFields.WORKFLOW_STATE}={ServiceNowFields.PUBLISHED}^{ServiceNowFields.ACTIVE}=true"
+            f"^{ServiceNowFields.KB_KNOWLEDGE_BASE}.{ServiceNowFields.ACTIVE}=true"
+            f"^{ServiceNowFields.VALID_TO}ISEMPTY^OR{ServiceNowFields.VALID_TO}>={today}"
+        )
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).strftime(ServiceNowDefaults.DATETIME_FORMAT)
+
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A full sync that skipped an article or a knowledge base after an error did not see
         it, so it unlinks nothing."""
@@ -704,6 +749,7 @@ class ServiceNowConnector(BaseConnector):
             self._admin_source_ids = None
             self._kb_owner_cache = {}
             self._sync_read_incomplete = False
+            self._live_kb_ids, self._kbs_back_in_scope, self._category_ids = None, set(), None
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting ServiceNow KB sync for org: {org_id}")
 
@@ -770,6 +816,9 @@ class ServiceNowConnector(BaseConnector):
         Returns:
             StreamingResponse: Streaming response with article HTML or file content
         """
+        # A stub for a parent that never synced: there is nothing behind it to serve.
+        if getattr(record, "is_placeholder", False) is True:
+            raise not_found_at_source(self.display_name)
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
@@ -902,23 +951,25 @@ class ServiceNowConnector(BaseConnector):
 
     async def _fetch_article_content(self, article_sys_id: str) -> str:
         """
-        Fetch article HTML content from ServiceNow kb_knowledge table.
+        Fetch the HTML of an article's current version (see _current_article_query).
 
         Args:
-            article_sys_id: The sys_id of the article
+            article_sys_id: The record's key: the article number, or a version's sys_id for a
+                record stored before articles were keyed by number
 
         Returns:
             str: HTML content of the article
 
         Raises:
-            HTTPException: If article not found or fetch fails
+            HTTPException: not found when the article has no current version (retired, expired, ...)
         """
+        key_field = ServiceNowFields.SYS_ID if _LEGACY_ARTICLE_KEY.match(article_sys_id) else ServiceNowFields.NUMBER
         try:
             # Fetch article using ServiceNow Table API
             try:
                 response = await self._table_get(
                     ServiceNowTables.KB_KNOWLEDGE,
-                    sysparm_query=f"{ServiceNowFields.SYS_ID}={article_sys_id}",
+                    sysparm_query=f"{key_field}={article_sys_id}^{self._current_article_query()}",
                     sysparm_fields=CommonStrings.COMMA.join(
                         [
                             ServiceNowFields.SYS_ID,
@@ -1773,6 +1824,8 @@ class ServiceNowConnector(BaseConnector):
             # therefore never see a new or a removed grant.
             self.logger.info("Fetching all knowledge bases")
             total_synced = 0
+            listed: set[str] = set()
+            live: set[str] = set()
 
             # A failed page raises: a short list is indistinguishable from a complete one to
             # everything downstream, so the sync would report success over what it missed.
@@ -1793,6 +1846,11 @@ class ServiceNowConnector(BaseConnector):
                 # Transform to RecordGroup entities
                 kb_record_groups = []
                 for kb_data in kbs_data:
+                    listed.add(kb_data.sys_id)
+                    # ServiceNow search leaves an inactive knowledge base out, and its readers lose it.
+                    if str(getattr(kb_data, ServiceNowFields.ACTIVE, "") or "").lower() == "false":
+                        continue
+                    live.add(kb_data.sys_id)
                     kb_record_group = self._transform_to_kb_record_group(kb_data)
                     if kb_record_group:
                         kb_record_groups.append((kb_record_group, kb_data))
@@ -1859,6 +1917,12 @@ class ServiceNowConnector(BaseConnector):
                     await self.data_entities_processor.on_new_record_groups(kb_list_with_permissions)
                     total_synced += len(kb_list_with_permissions)
 
+            # The listing read to the end (a failed page raises), so what it left out is gone. An
+            # empty one says nothing (see _remove_groups_out_of_scope), so no category leaves scope.
+            self._live_kb_ids = live if listed else None
+            self._kbs_back_in_scope = await self._remove_groups_out_of_scope(
+                ServiceNowSyncPointKeys.KB_SCOPE, listed, live
+            )
             self.logger.info(f"✅ Knowledge base sync complete, Total synced: {total_synced}")
 
         except Exception as e:
@@ -1874,10 +1938,25 @@ class ServiceNowConnector(BaseConnector):
         - PARENT_CHILD edges in nodeRelations collection
 
         First sync: Fetches all categories
-        Subsequent syncs: Only fetches categories modified since last sync
+        Subsequent syncs: Only fetches categories modified since last sync. Every run also lists
+        every category id, which tells the categories that are gone, and the ones out of scope:
+        a category is synced only when its parent chain ends at a knowledge base this run wrote.
         """
         try:
-            last_sync_time = await self._read_checkpoint(self.category_sync_point, ServiceNowSyncPointKeys.CATEGORIES)
+            parents: dict[str, str] = {}
+            async for rows in self._iter_table(
+                ServiceNowTables.KB_CATEGORY, None, [ServiceNowFields.PARENT_ID], page=ServiceNowDefaults.ID_PAGE_SIZE
+            ):
+                parents.update({r.sys_id: r.parent_id or "" for r in rows})
+            in_scope = set(parents)
+            if self._live_kb_ids is not None:
+                in_scope = {c for c in parents if self._category_root(c, parents) in self._live_kb_ids}
+            self._category_ids = in_scope
+
+            # A knowledge base back in scope lost its categories when it left, and they did not change since.
+            last_sync_time = None if self._kbs_back_in_scope else await self._read_checkpoint(
+                self.category_sync_point, ServiceNowSyncPointKeys.CATEGORIES
+            )
 
             query = None
             if last_sync_time:
@@ -1912,6 +1991,8 @@ class ServiceNowConnector(BaseConnector):
                 # Transform categories to RecordGroups with hierarchy information
                 categories_with_permissions = []
                 for cat_data in categories_data:
+                    if cat_data.sys_id not in in_scope:
+                        continue
                     category_rg = self._transform_to_category_record_group(cat_data)
                     if not category_rg:
                         continue
@@ -1928,46 +2009,97 @@ class ServiceNowConnector(BaseConnector):
             if latest_update_time:
                 await self.category_sync_point.update_sync_point(ServiceNowSyncPointKeys.CATEGORIES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: latest_update_time})
 
+            # An inactive category changes nothing in ServiceNow (its articles stay searchable), so it stays.
+            await self._remove_groups_out_of_scope(ServiceNowSyncPointKeys.CATEGORY_SCOPE, set(parents), in_scope)
             self.logger.info(f"✅ Categories synced: {total_synced} total")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing categories: {e}", exc_info=True)
             raise
 
+    @staticmethod
+    def _category_root(category_id: str, parents: dict[str, str]) -> str:
+        """The id a category's parent chain ends at: its knowledge base, or a parent the listing lacks."""
+        seen: set[str] = set()
+        while category_id in parents and category_id not in seen:
+            seen.add(category_id)
+            category_id = parents[category_id]
+        return category_id
+
+    async def _remove_groups_out_of_scope(self, key: str, listed: set[str], in_scope: set[str]) -> set[str]:
+        """Delete the stored knowledge bases or categories that a complete listing no longer has
+        in scope, with everything below them, and return the ones in scope now that were not
+        in the last listing.
+
+        What is stored is the last listing's scope, kept under ``key``; before there is one, only
+        the listed groups out of scope can be stored ones. A listing with nothing in it removes
+        nothing: that is the account failing, not every group leaving. A failed removal keeps the
+        last scope, so the next run tries again.
+        """
+        if not listed:
+            self.logger.warning(f"The {key} listing came back empty; nothing is removed")
+            return set()
+        stored = await self.category_sync_point.read_sync_point(key)
+        previous = set(stored.get(ServiceNowDictKeys.IDS) or []) if stored else listed
+        removed_all = True
+        for group_id in sorted(previous - in_scope):
+            try:
+                await self.data_entities_processor.on_record_group_deleted(group_id, self.connector_id)
+            except Exception as e:
+                _raise_if_run_stop(e)
+                self.logger.error(f"Could not remove {group_id}, which is out of scope now; retrying next sync: {e}")
+                removed_all = False
+        if removed_all:
+            await self.category_sync_point.update_sync_point(key, {ServiceNowDictKeys.IDS: sorted(in_scope)})
+        return in_scope - previous
+
     async def _sync_articles(self) -> None:
         """
         Sync KB articles and attachments from ServiceNow using batch processing.
 
-        Flow:
-        1. Fetch 100 articles in a batch
-        2. Batch fetch user_criteria for all articles (efficiency)
-        3. For each article:
-           - Create WebpageRecord + fetch attachments + create all edges + permissions
-        4. Update checkpoint after batch
+        An article is stored under its number: each version of it is a row with its own sys_id,
+        and the record follows the current row (see _current_article_query). A full read lists the
+        current rows. A delta lists every row changed since the checkpoint, in any state, and
+        resolves each changed number to its current row, which is written; a stored number with
+        none is deleted. Then stored articles with no current row are deleted (_reconcile_articles).
+        That also removes the records stored under a version's sys_id before articles were keyed by
+        number: until it has run to the end once, every run reads every article.
 
         API Endpoints:
         - /api/now/table/kb_knowledge - Articles
         - /api/now/table/user_criteria - Permissions
-        - /api/now/attachment - Attachments
+        - /api/now/table/sys_attachment - Attachments
         """
         try:
-            last_sync_time = await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES)
-            published = f"{ServiceNowFields.ACTIVE}=true^{ServiceNowFields.WORKFLOW_STATE}={ServiceNowFields.PUBLISHED}"
+            migrated = bool(await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLE_KEY_V2))
+            last_sync_time = (
+                await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES) if migrated else None
+            )
+            current = self._current_article_query()
+            inline_changed, inline_checkpoint = await self._inline_image_changes()
 
-            # (query, whether its rows move the checkpoint)
-            queries = [(published, True)]
+            # (query, whether its rows move the checkpoint, whether its rows are versions to resolve)
+            queries = [(current, True, False)]
             if last_sync_time:
                 since = self._delta_since(last_sync_time)
                 self.logger.info(f"🔄 Delta sync: Fetching articles updated after {since}")
                 queries = [
-                    (f"{published}^{ServiceNowFields.SYS_UPDATED_ON}>{since}", True),
+                    # Every state: a new version, a retire or an unpublish changes some row of the article.
+                    (f"{ServiceNowFields.SYS_UPDATED_ON}>{since}", True, True),
                     # Cannot Read is resolved to users here, so whom it denies changes without the
                     # article changing: articles that have it are re-read every run, not only when updated.
                     (
-                        f"{published}^{ServiceNowFields.CANNOT_READ_USER_CRITERIA}ISNOTEMPTY"
+                        f"{current}^{ServiceNowFields.CANNOT_READ_USER_CRITERIA}ISNOTEMPTY"
                         f"^{ServiceNowFields.SYS_UPDATED_ON}<={since}",
                         False,
+                        False,
                     ),
+                    # An inline image changes without its article row changing.
+                    *[(f"{ServiceNowFields.SYS_ID}IN{CommonStrings.COMMA.join(c)}", False, True)
+                      for c in self._chunk_ids(inline_changed)],
+                    # A knowledge base back in scope: its articles left with it and did not change since.
+                    *[(f"{current}^{ServiceNowFields.KB_KNOWLEDGE_BASE}IN{CommonStrings.COMMA.join(c)}", False, False)
+                      for c in self._chunk_ids(sorted(self._kbs_back_in_scope))],
                 ]
             else:
                 self.logger.info("🆕 Full sync: Fetching all articles")
@@ -1977,42 +2109,46 @@ class ServiceNowConnector(BaseConnector):
             total_records_dropped = 0
             latest_update_time = None
             failed = FailedItems()
+            failed_ids: set[str] = set()  # kept by the reconcile (see _reconcile_articles)
+            brought_by: dict[str, TableAPIRecord] = {}  # number -> the changed row that brought it, this page
 
             def note_failed(article_data: TableAPIRecord, *, moves_checkpoint: bool) -> None:
-                # The checkpoint stays before it, so the next run retries it. The re-read
-                # pass lists its articles every run, so its failures do not hold it.
+                # The checkpoint stays before the row that brought it, so the next run retries it.
+                # The re-read pass lists its articles every run, so its failures do not hold it.
+                row = brought_by.get(getattr(article_data, ServiceNowFields.NUMBER, None) or "", article_data)
                 failed.add(
-                    datetime_to_epoch_ms(article_data.sys_updated_on, ServiceNowDefaults.DATETIME_FORMAT)
+                    datetime_to_epoch_ms(row.sys_updated_on, ServiceNowDefaults.DATETIME_FORMAT)
                     if moves_checkpoint else None
                 )
+                failed_ids.add(article_data.sys_id)
                 self._sync_read_incomplete = True
 
-            for query, moves_checkpoint in queries:
+            for query, moves_checkpoint, resolve in queries:
                 # A failed page raises: a short list is indistinguishable from a complete one to
                 # everything downstream, so the sync would report success over what it missed.
-                async for articles_data in self._iter_table(
-                    ServiceNowTables.KB_KNOWLEDGE,
-                    query,
-                    [
-                        ServiceNowFields.SYS_ID,
-                        ServiceNowFields.NUMBER,
-                        ServiceNowFields.SHORT_DESCRIPTION,
-                        ServiceNowFields.TEXT,
-                        ServiceNowFields.AUTHOR,
-                        ServiceNowFields.KB_KNOWLEDGE_BASE,
-                        ServiceNowFields.KB_CATEGORY,
-                        ServiceNowFields.WORKFLOW_STATE,
-                        ServiceNowFields.ACTIVE,
-                        ServiceNowFields.PUBLISHED,
-                        ServiceNowFields.CAN_READ_USER_CRITERIA,
-                        ServiceNowFields.CANNOT_READ_USER_CRITERIA,
-                        ServiceNowFields.SYS_CREATED_ON,
-                        ServiceNowFields.SYS_UPDATED_ON,
-                    ],
+                async for rows in self._iter_table(
+                    ServiceNowTables.KB_KNOWLEDGE, query, [ServiceNowFields.NUMBER] if resolve else _ARTICLE_FIELDS
                 ):
                     if moves_checkpoint:
                         # Pages come oldest first, so the last row is the newest seen
-                        latest_update_time = articles_data[-1].sys_updated_on
+                        latest_update_time = rows[-1].sys_updated_on
+
+                    articles_data = rows
+                    brought_by = {r.number: r for r in rows if r.number} if resolve else {}
+                    if resolve:
+                        numbers = set(brought_by)
+                        articles_data = await self._current_versions(sorted(numbers), _ARTICLE_FIELDS)
+                        gone = numbers - {a.number for a in articles_data}
+                        try:
+                            await self._delete_articles(gone)
+                        except Exception as e:
+                            _raise_if_run_stop(e)
+                            self.logger.error(f"❌ Failed to delete {len(gone)} articles with no current version: {e}")
+                            for row in rows:
+                                if row.number in gone:
+                                    note_failed(row, moves_checkpoint=moves_checkpoint)
+                    if not articles_data:
+                        continue
 
                     try:
                         attachments = await self._fetch_attachments_for_articles([a.sys_id for a in articles_data])
@@ -2025,6 +2161,7 @@ class ServiceNowConnector(BaseConnector):
 
                     # Collect RecordUpdates for this batch
                     record_updates = []
+                    processed = []
 
                     for article_data in articles_data:
                         try:
@@ -2041,6 +2178,7 @@ class ServiceNowConnector(BaseConnector):
                             continue
                         if updates:
                             record_updates.extend(updates)
+                            processed.append(article_data)
                             total_articles_synced += 1
                             # Count attachments
                             total_attachments_synced += len([u for u in updates if u.record.record_type == RecordType.FILE])
@@ -2048,6 +2186,17 @@ class ServiceNowConnector(BaseConnector):
                     # Process batch of RecordUpdates
                     if record_updates:
                         total_records_dropped += await self._process_record_updates_batch(record_updates)
+
+                    # After the write, which moved the listed attachments under the article's number.
+                    for article_data in processed:
+                        try:
+                            await self._remove_attachments_gone(
+                                article_data.number, {a.sys_id for a in attachments.get(article_data.sys_id, [])}
+                            )
+                        except Exception as e:
+                            _raise_if_run_stop(e)
+                            self.logger.error(f"❌ Failed to remove the deleted attachments of {article_data.sys_id}: {e}")
+                            note_failed(article_data, moves_checkpoint=moves_checkpoint)
 
             # Update sync checkpoint
             if latest_update_time:
@@ -2062,6 +2211,23 @@ class ServiceNowConnector(BaseConnector):
                         ServiceNowSyncPointKeys.ARTICLES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint}
                     )
 
+            # Its articles are not held by the article checkpoint, so a failure reads them again.
+            if not failed.count:
+                await self.article_sync_point.update_sync_point(
+                    ServiceNowSyncPointKeys.INLINE_IMAGES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: inline_checkpoint}
+                )
+            for removal in (self._remove_expired_articles, self._apply_audited_deletes):
+                try:
+                    await removal()
+                except Exception as e:
+                    _raise_if_run_stop(e)
+                    self.logger.error(f"❌ {removal.__name__} failed; it runs again next sync: {e}")
+            if await self._reconcile_articles(force=not migrated, keep=failed_ids) and not migrated:
+                await self.article_sync_point.update_sync_point(
+                    ServiceNowSyncPointKeys.ARTICLE_KEY_V2, {ServiceNowDictKeys.DONE: True}
+                )
+                self.logger.info("Articles are now stored under their number")
+
             self.logger.info(
                 f"✅ Articles synced: {total_articles_synced} articles, "
                 f"{total_attachments_synced} attachments, "
@@ -2072,6 +2238,154 @@ class ServiceNowConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing articles: {e}", exc_info=True)
             raise
+
+    async def _current_versions(self, numbers: list[str], fields: list[str]) -> list[TableAPIRecord]:
+        """The current row (see _current_article_query) of each of ``numbers`` that has one."""
+        rows: list[TableAPIRecord] = []
+        for chunk in self._chunk_ids(numbers):
+            async for page in self._iter_table(
+                ServiceNowTables.KB_KNOWLEDGE,
+                f"{ServiceNowFields.NUMBER}IN{CommonStrings.COMMA.join(chunk)}^{self._current_article_query()}",
+                fields,
+            ):
+                rows.extend(page)
+        return rows
+
+    async def _delete_articles(self, numbers: set[str]) -> None:
+        """Delete the stored articles among ``numbers``, with their attachments."""
+        for number in sorted(numbers):
+            # Most numbers without a current version were never stored (drafts of new articles).
+            if await self.data_entities_processor.get_record_by_external_id(self.connector_id, number):
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, number)
+
+    async def _remove_attachments_gone(self, number: str, listed: set[str]) -> None:
+        """Delete the stored attachments of article ``number`` that its complete attachment listing no longer has."""
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, number, RecordType.FILE.value
+        )
+        for child in children:
+            if child.external_record_id not in listed:
+                await self.data_entities_processor.on_record_deleted(child.id)
+
+    async def _inline_image_changes(self) -> tuple[list[str], str]:
+        """The sys_ids of the article rows whose inline images changed since the last run, and the
+        checkpoint to store once those are synced. Before there is a checkpoint nothing is read:
+        that run reads every article."""
+        checkpoint = await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.INLINE_IMAGES)
+        if not checkpoint:
+            return [], self._utc_now()
+        changed: set[str] = set()
+        async for rows in self._iter_table(
+            ServiceNowTables.SYS_ATTACHMENT,
+            f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.INLINE_IMAGE}"
+            f"^{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}",
+            [ServiceNowFields.TABLE_SYS_ID],
+        ):
+            changed.update(r.table_sys_id for r in rows if r.table_sys_id)
+            checkpoint = rows[-1].sys_updated_on
+        return sorted(changed), checkpoint
+
+    async def _reconcile_articles(self, *, force: bool, keep: set[str]) -> bool:
+        """Delete the stored articles whose key is no current article's number: deleted at the
+        source, which leaves no row a delta could see, or stored under a version's sys_id.
+        Runs when forced, on a full sync, and otherwise at most once per
+        RECONCILE_INTERVAL_SECONDS. True when it ran to the end; a listing that failed or came
+        back empty deletes nothing.
+
+        ``keep``: the sys_ids of the rows this run failed to write. Such an article is not under
+        its number yet, so a record under its sys_id still holds its attachments; the run that
+        writes it moves them. While such records are kept, every run reconciles.
+        """
+        kept_before = ((await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLES_RECONCILE))
+                       or {}).get(ServiceNowDictKeys.KEPT)
+        last = await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES_RECONCILE)
+        now = datetime.now(timezone.utc)
+        if not force and not kept_before and last and now - datetime.strptime(
+            last, ServiceNowDefaults.DATETIME_FORMAT
+        ).replace(tzinfo=timezone.utc) < timedelta(seconds=ServiceNowDefaults.RECONCILE_INTERVAL_SECONDS):
+            return False
+        try:
+            current: set[str] = set()
+            async for rows in self._iter_table(
+                ServiceNowTables.KB_KNOWLEDGE, self._current_article_query(), [ServiceNowFields.NUMBER],
+                page=ServiceNowDefaults.ID_PAGE_SIZE,
+            ):
+                current.update(r.number for r in rows if r.number)
+            if not current:
+                self.logger.warning("The article listing came back empty; no stored article is removed")
+                return False
+            stored = {r.external_record_id for r in
+                      await self.data_entities_processor.get_records_by_record_type(self.connector_id, RecordType.WEBPAGE)}
+            kept = sorted((stored - current) & keep)
+            gone = sorted(stored - current - keep)
+            if gone:
+                self.logger.info(f"Removing {len(gone)} stored articles with no current version in ServiceNow")
+            for key in gone:
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, key)
+        except Exception as e:
+            _raise_if_run_stop(e)
+            self.logger.error(f"❌ Could not reconcile the stored articles; trying again next sync: {e}")
+            return False
+        await self.article_sync_point.update_sync_point(
+            ServiceNowSyncPointKeys.ARTICLES_RECONCILE,
+            {ServiceNowSyncPointKeys.LAST_SYNC_TIME: now.strftime(ServiceNowDefaults.DATETIME_FORMAT),
+             ServiceNowDictKeys.KEPT: kept},
+        )
+        return True
+
+    async def _remove_expired_articles(self) -> None:
+        """Delete the articles whose ``valid_to`` passed since the last check: expiry changes no
+        row, so no delta sees it. The first check only records the date; the run that makes it
+        reads every article."""
+        today = datetime.now(timezone.utc).strftime(ServiceNowDefaults.DATE_FORMAT)
+        last = ((await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLES_EXPIRY)) or {}).get(
+            ServiceNowSyncPointKeys.LAST_SYNC_TIME
+        )
+        if last == today:
+            return
+        if last:
+            expired: set[str] = set()
+            async for rows in self._iter_table(
+                ServiceNowTables.KB_KNOWLEDGE,
+                f"{ServiceNowFields.WORKFLOW_STATE}={ServiceNowFields.PUBLISHED}"
+                f"^{ServiceNowFields.VALID_TO}>={last}^{ServiceNowFields.VALID_TO}<{today}",
+                [ServiceNowFields.NUMBER],
+            ):
+                expired.update(r.number for r in rows if r.number)
+            await self._delete_articles(expired)
+        await self.article_sync_point.update_sync_point(
+            ServiceNowSyncPointKeys.ARTICLES_EXPIRY, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: today}
+        )
+
+    async def _apply_audited_deletes(self) -> None:
+        """Delete the articles whose deletion sys_audit_delete recorded since the last run, without
+        waiting for the reconcile. Only an admin can read that table: on a 403 this pass does
+        nothing and the reconcile stays the only way. Deleted categories need no pass: every run
+        lists every category id (see _sync_categories)."""
+        checkpoint = await self._read_checkpoint(self.article_sync_point, ServiceNowSyncPointKeys.AUDIT_DELETE)
+        if checkpoint:
+            numbers: set[str] = set()
+            try:
+                async for rows in self._iter_table(
+                    ServiceNowTables.SYS_AUDIT_DELETE,
+                    f"{ServiceNowFields.TABLENAME}={ServiceNowTables.KB_KNOWLEDGE}"
+                    f"^{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}",
+                    [ServiceNowFields.DISPLAY_VALUE],
+                ):
+                    # display_value is "<number> v<version>"
+                    numbers.update(str(r.display_value).rsplit(" v", 1)[0] for r in rows if r.display_value)
+                    checkpoint = rows[-1].sys_updated_on
+            except ServiceNowAPIError as e:
+                if e.status_code == HttpStatusCode.FORBIDDEN.value:
+                    self.logger.debug("This account cannot read sys_audit_delete; the reconcile removes deleted articles")
+                    return
+                raise
+            # A deleted old version of an article that still has a current one deletes nothing.
+            live = {r.number for r in await self._current_versions(sorted(numbers), [ServiceNowFields.NUMBER])}
+            await self._delete_articles(numbers - live)
+        await self.article_sync_point.update_sync_point(
+            ServiceNowSyncPointKeys.AUDIT_DELETE, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint or self._utc_now()}
+        )
 
     async def _process_single_article(
         self, article_data: TableAPIRecord, attachments_data: list[AttachmentMetadata]
@@ -2139,7 +2453,7 @@ class ServiceNowConnector(BaseConnector):
             content_changed=False,
             permissions_changed=True,
             new_permissions=all_permission_objects,
-            external_record_id=article_sys_id,
+            external_record_id=article_record.external_record_id,
         )
         record_updates.append(article_update)
 
@@ -2153,6 +2467,7 @@ class ServiceNowConnector(BaseConnector):
                 parent_record_group_type=article_record.record_group_type,
                 parent_external_record_group_id=article_record.external_record_group_id,
                 inherit_permissions=article_record.inherit_permissions,
+                article=article_record,
             )
 
             if att_record:
@@ -2881,10 +3196,11 @@ class ServiceNowConnector(BaseConnector):
         """
         try:
             sys_id = kb_data.sys_id
-            title = kb_data.title or ""
+            # An untitled KB is still written: its categories and articles hang under it.
+            title = kb_data.title or sys_id
 
-            if not sys_id or not title:
-                self.logger.warning(f"KB missing sys_id or title: {kb_data}")
+            if not sys_id:
+                self.logger.warning("KB missing sys_id")
                 return None
 
             # Parse timestamps
@@ -2998,10 +3314,12 @@ class ServiceNowConnector(BaseConnector):
         """
         try:
             sys_id = article_data.sys_id
-            short_description = article_data.short_description or ""
+            # The record is the article, not this version of it (see _sync_articles)
+            number = getattr(article_data, ServiceNowFields.NUMBER, None) or ""
+            short_description = article_data.short_description or number
 
-            if not sys_id or not short_description:
-                self.logger.warning(f"Article missing sys_id or short_description: {article_data}")
+            if not sys_id or not number:
+                self.logger.warning(f"Article {sys_id} has no sys_id or number")
                 return None
 
             # Parse timestamps
@@ -3018,12 +3336,15 @@ class ServiceNowConnector(BaseConnector):
                 web_url = ServiceNowURLPatterns.KB_ARTICLE.format(
                     instance_url=self.instance_url,
                     portal=self.kb_portal_suffix,
-                    sys_id=sys_id,
+                    number=number,
                 )
 
-            # Extract category sys_id for external_record_group_id
-            # Fallback to KB if category is empty/missing
+            # Extract category sys_id for external_record_group_id. Fall back to the KB when
+            # the category is empty or this run did not sync it (see _sync_categories): an
+            # article under a stub group named by its sys_id would reach nobody.
             kb_category_sys_id = article_data.kb_category
+            if self._category_ids is not None and kb_category_sys_id not in self._category_ids:
+                kb_category_sys_id = None
             external_record_group_id = None
             record_group_type = None
 
@@ -3055,7 +3376,7 @@ class ServiceNowConnector(BaseConnector):
             article_record = WebpageRecord(
                 id=record_id,
                 inherit_permissions=inherit_permissions,
-                external_record_id=sys_id,
+                external_record_id=number,
                 # The processor rewrites a stored record, and re-queues it for
                 # indexing, only when this differs from what it holds. Leaving it
                 # unset froze every record at its first index.
@@ -3087,6 +3408,7 @@ class ServiceNowConnector(BaseConnector):
         parent_external_record_group_id: Optional[str] = None,
         *,
         inherit_permissions: bool = True,
+        article: WebpageRecord | None = None,
     ) -> Optional[FileRecord]:
         """
         Transform ServiceNow sys_attachment to FileRecord entity.
@@ -3097,6 +3419,8 @@ class ServiceNowConnector(BaseConnector):
             parent_external_record_group_id: The external record group ID from parent article
             inherit_permissions: Follows the parent article, so an attachment never
                 reaches a reader that the article itself keeps out
+            article: The parent article's record: the attachment hangs under its number
+                and links to its page (a sys_attachment.do link downloads the file)
 
         Returns:
             FileRecord: Transformed attachment or None if invalid
@@ -3116,11 +3440,6 @@ class ServiceNowConnector(BaseConnector):
                 source_created_at = datetime_to_epoch_ms(attachment_data.sys_created_on, ServiceNowDefaults.DATETIME_FORMAT)
             if attachment_data.sys_updated_on:
                 source_updated_at = datetime_to_epoch_ms(attachment_data.sys_updated_on, ServiceNowDefaults.DATETIME_FORMAT)
-
-            # Construct web URL
-            web_url = None
-            if self.instance_url:
-                web_url = ServiceNowURLPatterns.ATTACHMENT.format(instance_url=self.instance_url, sys_id=sys_id)
 
             # ServiceNow sends "type;charset=..." and generic types for uploads it could not
             # type; the file name decides those. An unknown type still keeps the file.
@@ -3152,11 +3471,11 @@ class ServiceNowConnector(BaseConnector):
                 connector_name=Connectors.SERVICENOW,
                 connector_id=self.connector_id,
                 mime_type=mime_type,
-                parent_external_record_id=attachment_data.table_sys_id,
+                parent_external_record_id=article.external_record_id if article else None,
                 parent_record_type=RecordType.WEBPAGE,
                 record_group_type=parent_record_group_type,
                 external_record_group_id=parent_external_record_group_id,
-                weburl=web_url,
+                weburl=article.weburl if article else None,
                 is_file=True,
                 size_in_bytes=file_size,
                 source_created_at=source_created_at,

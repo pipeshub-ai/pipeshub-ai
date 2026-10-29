@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
 import pytest
-from servicenow_fakes import FakeServiceNow, MemorySyncPoint, status_error
+from servicenow_fakes import (
+    FakeServiceNow,
+    MemorySyncPoint,
+    migrated_sync_point,
+    status_error,
+)
 from test_servicenow_connector import (  # noqa: F401
     mock_config_service,
     mock_data_entities_processor,
@@ -36,7 +41,8 @@ INSTANCE = "https://dev00000.service-now.com"
 def _article(n: int, updated: str = T0, **fields: str) -> dict:
     return {
         "sys_id": f"a{n:04d}", "number": f"KB{n:07d}", "short_description": f"Article {n}", "text": "<p>body</p>",
-        "kb_knowledge_base": "kb1", "kb_category": "cat1", "workflow_state": "published", "active": "true",
+        "kb_knowledge_base": "kb1", "kb_knowledge_base.active": "true", "kb_category": "cat1",
+        "workflow_state": "published", "active": "true",
         "sys_created_on": "2024-01-01 00:00:00", "sys_updated_on": updated, **fields,
     }
 
@@ -52,7 +58,7 @@ def _attachment(n: int, article: str) -> dict:
 def _wire(sc, fake: FakeServiceNow, checkpoint: str | None = None) -> None:
     sc._get_fresh_datasource = AsyncMock(return_value=fake)
     sc.instance_url = INSTANCE
-    sc.article_sync_point = MemorySyncPoint({"articles": {"last_sync_time": checkpoint}} if checkpoint else None)
+    sc.article_sync_point = migrated_sync_point(checkpoint)
 
 
 def _written(sc) -> list[str]:
@@ -131,7 +137,7 @@ async def test_delta_reads_with_overlap_window(servicenow_connector) -> None:  #
     await servicenow_connector._sync_articles()
 
     assert "sys_updated_on>2024-05-31 23:58:00" in fake.calls_to("kb_knowledge")[0]
-    assert sorted(_written(servicenow_connector)) == ["a0002", "a0003", "a0004"]
+    assert sorted(_written(servicenow_connector)) == ["KB0000002", "KB0000003", "KB0000004"]
     saved = servicenow_connector.article_sync_point.data["articles"]["last_sync_time"]
     assert saved == "2024-06-01 10:00:00"
 
@@ -218,7 +224,7 @@ async def test_clean_run_reports_complete(servicenow_connector) -> None:  # noqa
          patch.object(sc, "_sync_categories", new_callable=AsyncMock):
         await sc.run_sync()
 
-    assert sorted(_written(sc)) == ["a0001", "f0001"]
+    assert sorted(_written(sc)) == ["KB0000001", "f0001"]
     assert sc.full_sync_coverage().complete is True
 
 
@@ -243,7 +249,7 @@ async def test_checkpoint_held_before_oldest_failed_article(servicenow_connector
 
     await servicenow_connector._sync_articles()
 
-    assert sorted(_written(servicenow_connector)) == ["a0001", "a0003"]
+    assert sorted(_written(servicenow_connector)) == ["KB0000001", "KB0000003"]
     assert servicenow_connector.article_sync_point.data["articles"]["last_sync_time"] == "2024-06-01 01:59:59"
 
 
@@ -259,7 +265,7 @@ async def test_failed_article_retried_next_run(servicenow_connector) -> None:  #
     sc.article_sync_point = sync_point
     await sc._sync_articles()
 
-    assert "a0002" in _written(sc)
+    assert "KB0000002" in _written(sc)
     assert sync_point.data["articles"]["last_sync_time"] == "2024-06-01 03:00:00"
 
 
@@ -278,7 +284,7 @@ async def test_attachment_listing_503_fails_the_article_not_the_attachments(serv
     await servicenow_connector._sync_articles()
 
     # page 1 and a0001's stored attachment are left as they are, not rewritten with "no attachments"
-    assert sorted(_written(servicenow_connector)) == ["a0100", "f0100"]
+    assert sorted(_written(servicenow_connector)) == ["KB0000100", "f0100"]
     assert servicenow_connector.full_sync_coverage().complete is False
 
 
@@ -334,8 +340,9 @@ async def test_full_sync_ignores_stored_checkpoints(servicenow_connector) -> Non
     await sc._sync_articles()
 
     for table in ("sys_user", "kb_category", "core_company", "kb_knowledge"):
-        assert "sys_updated_on>" not in fake.calls_to(table)[0]
-    assert len(fake.calls_to("kb_knowledge")) == 1  # no Cannot Read re-read pass either
+        assert all("sys_updated_on>" not in q for q in fake.calls_to(table))
+    # no Cannot Read re-read pass either; the other listing is the full sync's reconcile (ids only)
+    assert [limit for t, _, limit in fake.calls if t == "kb_knowledge"] == [100, 1000]
     sc.data_entities_processor.full_sync_running.assert_called_with(sc.connector_id)
 
 
@@ -362,4 +369,4 @@ async def test_inherit_only_article_without_author_is_written(servicenow_connect
     await servicenow_connector._sync_articles()
 
     [(record, permissions)] = servicenow_connector.data_entities_processor.on_new_records.await_args.args[0]
-    assert (record.external_record_id, record.inherit_permissions, permissions) == ("a0001", True, [])
+    assert (record.external_record_id, record.inherit_permissions, permissions) == ("KB0000001", True, [])

@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from servicenow_fakes import FakeServiceNow, MemorySyncPoint, status_error
+from servicenow_fakes import (
+    FakeServiceNow,
+    migrated_sync_point,
+    status_error,
+)
 from test_servicenow_batch_a import INSTANCE, T0, _article, _attachment, _wire, _written
 from test_servicenow_connector import (  # noqa: F401
     mock_config_service,
@@ -250,7 +254,7 @@ def _token_wiring(sc, monkeypatch, *, always_401: bool = False) -> tuple[FakeSer
     )
     monkeypatch.setattr(connector_module, "ServiceNowDataSource", lambda _client: fake)
     sc.instance_url = INSTANCE
-    sc.article_sync_point = MemorySyncPoint()
+    sc.article_sync_point = migrated_sync_point()
     return fake, refresh_now, creds
 
 
@@ -264,7 +268,7 @@ async def test_401_refreshes_once_and_continues(servicenow_connector, monkeypatc
     refresh_now.assert_awaited_once_with("sn-conn-1", "SERVICENOW", "rt-old")  # the refresh token held before the call
     assert sc.servicenow_client.access_token == "new"
     assert sc.servicenow_client.headers["Authorization"] == "Bearer new"
-    assert _written(sc) == ["a0001"]
+    assert _written(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio
@@ -285,7 +289,7 @@ async def test_401_adopts_a_token_stored_meanwhile(servicenow_connector, monkeyp
 
     refresh_now.assert_not_awaited()
     assert sc.servicenow_client.access_token == "rotated"
-    assert _written(sc) == ["a0001"]
+    assert _written(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio
@@ -298,7 +302,7 @@ async def test_second_401_raises_auth_error_and_unlinks_nothing(servicenow_conne
 
     refresh_now.assert_awaited_once()
     sc.data_entities_processor.on_new_records.assert_not_awaited()
-    assert sc.article_sync_point.data == {}
+    assert "articles" not in sc.article_sync_point.data
 
 
 @pytest.mark.asyncio
@@ -458,7 +462,7 @@ async def test_admins_read_once_per_run(servicenow_connector) -> None:  # noqa: 
         await sc.run_sync()
 
     assert len(fake.calls_to("sys_user_has_role")) == 1
-    assert _written(sc) == ["a0001"]
+    assert _written(sc) == ["KB0000001"]
 
 
 @pytest.mark.asyncio

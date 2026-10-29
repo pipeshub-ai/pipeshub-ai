@@ -9,6 +9,10 @@ ServiceNow does. With ``shuffle_ties`` rows that the ORDERBY does not tell apart
 different order on every call, as a database without a total order returns them. Every call is logged
 in ``calls`` (and its parameters in ``params``); ``after_call`` runs after each one (to change rows mid-walk); ``fail`` may return an
 error to raise for a (table, query).
+
+``FakeRecordStore`` keeps the records a sync writes, by external id, and answers the processor calls the
+connector makes to read and delete them. ``migrated_sync_point`` is the article sync point of an install
+whose articles are already keyed by number and were reconciled just now.
 """
 
 from __future__ import annotations
@@ -16,7 +20,10 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 from app.sources.external.servicenow.models import (
     ServiceNowAPIError,
@@ -135,3 +142,89 @@ class MemorySyncPoint:
 
     async def update_sync_point(self, key: str, value: dict[str, Any]) -> None:
         self.data[key] = value
+
+
+def migrated_sync_point(checkpoint: str | None = None, **data: dict[str, Any]) -> MemorySyncPoint:
+    """The article sync point of an install whose articles are keyed by number, reconciled just now."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    stored: dict[str, dict[str, Any]] = {
+        "article_key/v2": {"done": True}, "articles_reconcile/last": {"last_sync_time": now}, **data,
+    }
+    if checkpoint:
+        stored["articles"] = {"last_sync_time": checkpoint}
+    return MemorySyncPoint(stored)
+
+
+def stored_record(external_id: str, record_type: str = "WEBPAGE", parent: str | None = None,
+                  group: str | None = None) -> SimpleNamespace:
+    """A record as the store returns it."""
+    return SimpleNamespace(id=f"id-{external_id}", external_record_id=external_id, record_type=record_type,
+                           parent_external_record_id=parent, external_record_group_id=group, is_placeholder=False)
+
+
+class FakeRecordStore:
+    """The connector's stored records, by external id. ``attach`` points a mocked processor's record
+    calls here. A record deleted by external id takes the attachments under it, as the processor's
+    cascade does; ``on_record_deleted`` takes the record alone. Writing a record that exists keeps
+    its id and moves it under its new parent."""
+
+    def __init__(self, *records: SimpleNamespace) -> None:
+        self.records: dict[str, Any] = {r.external_record_id: r for r in records}
+        self.permissions: dict[str, list] = {}
+        self.deleted: list[str] = []
+        self.deleted_groups: list[str] = []
+
+    def attach(self, processor: object) -> FakeRecordStore:
+        processor.on_new_records = AsyncMock(side_effect=self.on_new_records)
+        processor.get_record_by_external_id = AsyncMock(side_effect=self.get_record_by_external_id)
+        processor.delete_record_by_external_id = AsyncMock(side_effect=self.delete_record_by_external_id)
+        processor.on_record_deleted = AsyncMock(side_effect=self.on_record_deleted)
+        processor.get_records_by_parent = AsyncMock(side_effect=self.get_records_by_parent)
+        processor.get_records_by_record_type = AsyncMock(side_effect=self.get_records_by_record_type)
+        processor.on_record_group_deleted = AsyncMock(side_effect=self.on_record_group_deleted)
+        return self
+
+    def keys(self, record_type: str | None = None) -> list[str]:
+        return sorted(k for k, r in self.records.items() if record_type is None or r.record_type == record_type)
+
+    async def on_new_records(self, pairs: list[tuple[Any, list]]) -> None:
+        for record, permissions in pairs:
+            existing = self.records.get(record.external_record_id)
+            if existing is not None:
+                record.id = existing.id
+            self.records[record.external_record_id] = record
+            self.permissions[record.external_record_id] = permissions
+
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str, **_: object) -> object:
+        return self.records.get(external_record_id)
+
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+        if self.records.pop(external_id, None) is not None:
+            self.deleted.append(external_id)
+        for key, child in list(self.records.items()):
+            if child.parent_external_record_id == external_id and child.record_type == "FILE":
+                del self.records[key]
+                self.deleted.append(key)
+
+    async def on_record_deleted(self, record_id: str) -> bool:
+        for key, record in list(self.records.items()):
+            if record.id == record_id:
+                del self.records[key]
+                self.deleted.append(key)
+        return False
+
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
+                                    record_type: str | None = None, **_: object) -> list[Any]:
+        return [r for r in self.records.values() if r.parent_external_record_id == parent_external_record_id
+                and (record_type is None or r.record_type == record_type)]
+
+    async def get_records_by_record_type(self, connector_id: str, record_type: str) -> list[Any]:
+        return [r for r in self.records.values() if r.record_type == record_type]
+
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str, **_: object) -> bool:
+        self.deleted_groups.append(external_group_id)
+        for key, record in list(self.records.items()):
+            if record.external_record_group_id == external_group_id:
+                del self.records[key]
+                self.deleted.append(key)
+        return True

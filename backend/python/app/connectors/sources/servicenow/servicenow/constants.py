@@ -27,6 +27,9 @@ class ServiceNowTables:
     SYS_USER_HAS_ROLE = "sys_user_has_role"
     SYS_USER_ROLE_CONTAINS = "sys_user_role_contains"
     SYS_ATTACHMENT = "sys_attachment"
+    # Inline images: sys_attachment rows hidden from the article's attachment list
+    INLINE_IMAGE = "ZZ_YYkb_knowledge"
+    SYS_AUDIT_DELETE = "sys_audit_delete"
     USER_CRITERIA = "user_criteria"
     SYS_PROPERTIES = "sys_properties"
     SP_PORTAL = "sp_portal"
@@ -89,6 +92,9 @@ class ServiceNowFields:
     PARENT_TABLE = "parent_table"
     URL_SUFFIX = "url_suffix"
     DEFAULT = "default"
+    VALID_TO = "valid_to"
+    TABLENAME = "tablename"
+    DISPLAY_VALUE = "display_value"
 
 
 class ServiceNowQueryParams:
@@ -120,9 +126,9 @@ class ServiceNowURLPatterns:
     which portal that is. See ServiceNowConnector._resolve_kb_portal_suffix.
     """
     KB_BASE = "{instance_url}/{portal}?id=kb_home&kb={sys_id}"
-    KB_ARTICLE = "{instance_url}/{portal}?id=kb_article_view&sys_kb_id={sys_id}"
+    # By number: opens the article's current version, whichever row that is.
+    KB_ARTICLE = "{instance_url}/{portal}?id=kb_article_view&sysparm_article={number}"
     KB_CATEGORY = "{instance_url}/{portal}?id=kb_category&kb_category={sys_id}"
-    ATTACHMENT = "{instance_url}/sys_attachment.do?sys_id={sys_id}"
 
 
 class ServiceNowPrefixes:
@@ -137,8 +143,14 @@ class ServiceNowPrefixes:
 class ServiceNowDefaults:
     """Default values for ServiceNow API operations"""
     BATCH_SIZE = 100
+    # Page size of the listings that read ids only
+    ID_PAGE_SIZE = 1000
     DEFAULT_LIMIT = "1"
     DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+    DATE_FORMAT = "%Y-%m-%d"
+    # Stored articles are checked against the full list of current ones at least this often
+    # (and on every full sync): a deleted article leaves no row a delta could see.
+    RECONCILE_INTERVAL_SECONDS = 24 * 3600
     MAX_URL_LENGTH = 2000
     # An incremental read starts this far before its checkpoint. Rows written in
     # the same second as the checkpoint, or committed late, would otherwise be
@@ -172,6 +184,14 @@ class ServiceNowSyncPointKeys:
     CATEGORIES = "categories"
     ARTICLES = "articles"
     LAST_SYNC_TIME = "last_sync_time"
+    # Set once articles are stored under their number (they were under a version's sys_id)
+    ARTICLE_KEY_V2 = "article_key/v2"
+    ARTICLES_RECONCILE = "articles_reconcile/last"
+    ARTICLES_EXPIRY = "articles_expiry"
+    INLINE_IMAGES = "attachments"
+    AUDIT_DELETE = "audit_delete"
+    KB_SCOPE = "kb_scope"
+    CATEGORY_SCOPE = "category_scope"
 
 
 class ServiceNowDictKeys:
@@ -186,6 +206,9 @@ class ServiceNowDictKeys:
     ORG_SYS_ID = "org_sys_id"
     ORG_TYPE = "org_type"
     PARENT = "parent"
+    IDS = "ids"
+    DONE = "done"
+    KEPT = "kept"
 
 
 class OrganizationalEntityConfig(TypedDict):

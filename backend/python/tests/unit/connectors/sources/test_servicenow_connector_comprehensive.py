@@ -328,7 +328,7 @@ class TestTransformToArticleWebpageRecord:
     def test_valid_article_with_category(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-1",
+            sys_id="art-1", number="KB-art-1",
             short_description="KB Article Title",
             kb_category="cat-1",
             kb_knowledge_base="kb-1",
@@ -344,7 +344,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_without_category_falls_back_to_kb(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-2",
+            sys_id="art-2", number="KB-art-2",
             short_description="No Category Article",
             kb_category="",
             kb_knowledge_base="kb-1",
@@ -357,7 +357,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_without_category_or_kb_returns_none(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-3",
+            sys_id="art-3", number="KB-art-3",
             short_description="Orphan Article",
             kb_category="",
             kb_knowledge_base="",
@@ -370,15 +370,19 @@ class TestTransformToArticleWebpageRecord:
         result = connector._transform_to_article_webpage_record(data)
         assert result is None
 
-    def test_article_missing_description(self, connector):
-        data = KBKnowledge(sys_id="art-4", short_description="")
+    def test_article_missing_description_is_named_by_number(self, connector) -> None:
+        data = KBKnowledge(sys_id="art-4", number="KB-art-4", short_description="", kb_knowledge_base="kb-1")
         result = connector._transform_to_article_webpage_record(data)
-        assert result is None
+        assert result.record_name == "KB-art-4"
+
+    def test_article_missing_number(self, connector) -> None:
+        data = KBKnowledge(sys_id="art-4", short_description="Title", kb_knowledge_base="kb-1")
+        assert connector._transform_to_article_webpage_record(data) is None
 
     def test_article_with_string_category_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-5",
+            sys_id="art-5", number="KB-art-5",
             short_description="String Category",
             kb_category="cat-str",
         )
@@ -389,7 +393,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_with_string_kb_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-6",
+            sys_id="art-6", number="KB-art-6",
             short_description="String KB",
             kb_category="",
             kb_knowledge_base="kb-str",
@@ -401,17 +405,17 @@ class TestTransformToArticleWebpageRecord:
     def test_web_url_generated(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-7",
+            sys_id="art-7", number="KB-art-7",
             short_description="URL Test",
             kb_category="cat-1",
         )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
-        assert "art-7" in result.weburl
+        assert result.weburl.endswith("?id=kb_article_view&sysparm_article=KB-art-7")
 
     def test_no_web_url_when_instance_url_none(self, connector):
         connector.instance_url = None
-        data = KBKnowledge(sys_id="art1", short_description="Title", kb_category="cat1")
+        data = KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title", kb_category="cat1")
         result = connector._transform_to_article_webpage_record(data)
         assert result.weburl is None
 
@@ -432,16 +436,19 @@ class TestTransformToAttachmentFileRecord:
             sys_created_on="2023-01-01 00:00:00",
             sys_updated_on="2023-06-01 00:00:00",
         )
+        article = connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art-1", number="KB-art-1", short_description="A", kb_category="cat-1"))
         result = connector._transform_to_attachment_file_record(
             data,
             parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
-            parent_external_record_group_id="cat-1"
+            parent_external_record_group_id="cat-1",
+            article=article,
         )
         assert result is not None
         assert result.record_name == "document.pdf"
         assert result.extension == "pdf"
         assert result.size_in_bytes == 1024
-        assert result.parent_external_record_id == "art-1"
+        assert result.parent_external_record_id == "KB-art-1"  # the article, not this version of it
 
     def test_attachment_missing_sys_id(self, connector):
         data = AttachmentMetadata(
