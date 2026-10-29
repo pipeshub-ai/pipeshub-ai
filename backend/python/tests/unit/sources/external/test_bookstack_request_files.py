@@ -47,3 +47,28 @@ async def test_a_file_becomes_a_multipart_part() -> None:
     request = http.execute.await_args.args[0]
     assert request.files == [("file", ("file", b"PDF", "application/octet-stream"))]
     assert request.body["name"] == "Spec"
+
+
+@pytest.mark.asyncio
+async def test_an_update_with_a_file_is_a_post_with_method_put() -> None:
+    """PHP parses a multipart body only on POST; BookStack reads _method as the real verb."""
+    ds, http = _datasource()
+    result = await ds.update_attachment(attachment_id=3, name="Spec v2", file=b"PDF")
+
+    assert result.success
+    request = http.execute.await_args.args[0]
+    assert request.method == "POST"
+    assert request.body == {"name": "Spec v2", "_method": "PUT"}
+    assert request.files == [("file", ("file", b"PDF", "application/octet-stream"))]
+
+
+@pytest.mark.asyncio
+async def test_an_update_without_a_file_stays_a_put() -> None:
+    ds, http = _datasource()
+    result = await ds.update_attachment(attachment_id=3, name="Spec v2")
+
+    assert result.success
+    request = http.execute.await_args.args[0]
+    assert request.method == "PUT"
+    assert request.body == {"name": "Spec v2"}
+    assert request.files is None
