@@ -159,9 +159,9 @@ def test_hashing_does_not_run_inside_the_timed_window() -> None:
     import inspect
 
     source = inspect.getsource(driver.run)
-    window = source.split("t0 = time.monotonic()")[1].split("wall = time.monotonic() - t0")[0]
-    assert "summarize" not in window
-    assert "golden." not in window
+    end_of_window = source.index("wall = time.monotonic() - t0")
+    for marker in ("summarize", "golden.", "canonicalize", "digest("):
+        assert marker not in source[:end_of_window], f"{marker} runs before the timed window ends"
 
 
 def test_stack_collector_keeps_only_the_watchdog_stacks() -> None:
