@@ -217,6 +217,16 @@ class TestRepathAndReconcile:
         assert processor.batch_update_nodes.await_args.args[0] == [{"id": "r-child", "path": "/documents/b.md"}]
 
     @pytest.mark.asyncio
+    async def test_a_failed_path_write_is_incomplete(self) -> None:
+        processor = MagicMock()
+        child = MagicMock(id="r-child", external_record_id="id:child")
+        processor.get_records_by_parent = AsyncMock(side_effect=lambda c, parent: [child] if parent == "id:dir" else [])
+        processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/docs/b.md"))
+        processor.batch_update_nodes = AsyncMock(return_value=False)
+
+        assert await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER) == (0, False)
+
+    @pytest.mark.asyncio
     async def test_a_walk_stopped_at_its_cap_says_so(self) -> None:
         processor = MagicMock()
         children = iter(range(10))

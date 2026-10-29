@@ -33,7 +33,8 @@ async def repath_descendants(
 ) -> tuple[int, bool]:
     """Rewrite ``old_prefix/...`` to ``new_prefix/...`` on every stored descendant of a folder.
 
-    Returns how many were moved, and False when the walk stopped at its cap with folders left unvisited.
+    Returns how many were moved, and False when the walk stopped at its cap with folders left unvisited, or the
+    paths could not be written.
     """
     old_prefix, new_prefix = old_prefix.rstrip("/"), new_prefix.rstrip("/")
     if old_prefix == new_prefix:
@@ -55,6 +56,9 @@ async def repath_descendants(
         logger.warning(f"Stopped moving stored paths under {folder_external_id} at {_MAX_NODES} items; "
                        f"{len(todo)} folder(s) below are rewritten by listing the folder again from the start")
     if updates:
-        await processor.batch_update_nodes(updates, CollectionNames.FILES.value)
+        if await processor.batch_update_nodes(updates, CollectionNames.FILES.value) is False:
+            logger.warning(f"Could not write the moved paths below {folder_external_id}; "
+                           "the folder is listed again from the start")
+            return 0, False
         logger.info(f"Moved the stored paths of {len(updates)} item(s) from {old_prefix} to {new_prefix}")
     return len(updates), not todo
