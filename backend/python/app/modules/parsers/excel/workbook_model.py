@@ -26,18 +26,20 @@ import contextlib
 import gc
 import io
 import pickle
+import signal
 import threading
 import zipfile
 import zlib
 from array import array
 from bisect import bisect_left
 from typing import TYPE_CHECKING, Any
-from xml.etree import ElementTree
+from xml.parsers import expat
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
-from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import coordinate_from_string
+from openpyxl.worksheet.cell_range import CellRange
 
 from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
 
@@ -66,8 +68,6 @@ _CHUNK_BYTES = 1024 * 1024
 _COLUMN_BITS = 20  # a position is (row << 20) | column; columns stop at 18278
 _COLUMN_MASK = (1 << _COLUMN_BITS) - 1
 _TALL_MERGE_ROWS = 32  # taller merged ranges are searched, shorter ones are indexed by row
-_MAX_ROW = 1048576
-_MAX_COLUMN = 16384
 _MAX_NUMBER_FORMAT_CHARS = 255  # Excel's own limit; openpyxl does not enforce it
 _NEAR_LIMIT = 0.8  # an error with the worker this close to its cap is the cap
 
@@ -507,76 +507,146 @@ class _GrowthWatcher:
 
 
 def max_merged_positions(max_text_bytes: int) -> int:
-    """Positions the declared merged ranges may add up to: as many cells as the output budget
-    could hold (openpyxl builds one ``MergedCell`` for every position of every range, overlaps
-    included, which costs time proportional to the sum of the areas)."""
+    """Positions the declared merged ranges and hyperlink ranges may add up to: as many cells as
+    the output budget could hold. openpyxl builds one ``MergedCell`` for every position of every
+    merged range and visits (and copies a hyperlink onto) every cell of every hyperlink range,
+    overlaps included, so the time grows with the sum of the areas while memory stays flat."""
     return OUTPUT_BUDGET_FACTOR * max_text_bytes // CELL_DICT_BYTES
 
 
-def _merge_area(ref: str) -> int:
-    """Positions in one ``mergeCell`` ref (``A1:B2``, ``$a$1:$B$2``, ``C3``, `` A1 : B2 ``, ``A:B``)."""
-    cleaned = "".join(ref.split()).replace("$", "").upper()
-    if not cleaned:
-        return 0
+# openpyxl resolves a hyperlink on a merged cell by scanning every merged range of the sheet:
+# hyperlinks x merges. Allowed up to this many times the position cap (about 5 M scans, tens of
+# seconds); realistic sheets have a few thousand of each.
+_LINK_MERGE_SCAN_FACTOR = 4
+
+
+def _range_area(ref: str) -> int:
+    """Positions openpyxl expands for one ``ref``: it reads it with ``CellRange`` (``Sheet!``
+    prefixes, quotes, ``$`` and case included). A ref it rejects raises there and expands nothing."""
     try:
-        min_col, min_row, max_col, max_row = range_boundaries(cleaned)
+        size = CellRange(ref).size
     except (ValueError, TypeError):
-        return 0  # openpyxl reports a ref it cannot read
-    rows = abs((max_row or _MAX_ROW) - (min_row or 1)) + 1
-    columns = abs((max_col or _MAX_COLUMN) - (min_col or 1)) + 1
-    return rows * columns
+        return 0
+    return size["rows"] * size["columns"]
 
 
-def _declared_merged_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> int:
-    """Sum the areas of the ``mergeCell`` elements of one sheet part, stopping once past *budget*."""
-    total = 0
+# Every encoding a worksheet part may use that the XML parser reads, as the byte patterns of the
+# tokens the scan looks for.
+_ENCODINGS = ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+
+
+def _patterns(*tokens: str) -> tuple[bytes, ...]:
+    return tuple(token.encode(encoding) for token in tokens for encoding in _ENCODINGS)
+
+
+_DOCTYPE_PATTERNS = _patterns("<!DOCTYPE", "<!ENTITY")
+_RANGE_PATTERNS = _patterns("<mergeCell", "<hyperlink")
+_TAIL = max(len(p) for p in (*_DOCTYPE_PATTERNS, *_RANGE_PATTERNS))
+# A part that starts with none of these (an ASCII '<', a UTF-8 or UTF-16/32 byte-order mark, a
+# BOM-less UTF-16/32 '<') is in some other encoding the parser may still accept (EBCDIC): scan it.
+_KNOWN_STARTS = frozenset(b"<\xef\xff\xfe\x00")
+
+
+class _DeclaredRanges:
+    """What one sheet part declares: merged ranges and hyperlinks, as openpyxl will read them."""
+
+    def __init__(self) -> None:
+        self.positions = 0
+        self.merges = 0
+        self.links = 0
+
+
+def _declared_ranges(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> _DeclaredRanges:
+    """Stream one sheet part through expat (which decodes whatever encoding it declares), adding up
+    the areas of the ``mergeCell`` elements under ``mergeCells`` and the ``hyperlink`` elements under
+    ``hyperlinks`` (the only places openpyxl reads), and stopping once the positions pass *budget*."""
+    found = _DeclaredRanges()
+    state = {"merges": False, "links": False}
+
+    def start(name: str, attrs: dict[str, str]) -> None:
+        local = name.rpartition("}")[2]
+        if local == "mergeCells":
+            state["merges"] = True
+        elif local == "hyperlinks":
+            state["links"] = True
+        elif local == "mergeCell" and state["merges"]:
+            found.merges += 1
+            found.positions += _range_area(attrs.get("ref", ""))
+        elif local == "hyperlink" and state["links"]:
+            found.links += 1
+            ref = attrs.get("ref", "")
+            if ":" in ref:
+                found.positions += _range_area(ref)
+        if found.positions > budget:
+            raise _StopScan
+
+    def end(name: str) -> None:
+        local = name.rpartition("}")[2]
+        if local == "mergeCells":
+            state["merges"] = False
+        elif local == "hyperlinks":
+            state["links"] = False
+
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
     try:
         with archive.open(info) as stream:
-            for _event, element in ElementTree.iterparse(stream, events=("end",)):
-                if element.tag.rpartition("}")[2] == "mergeCell":
-                    total += _merge_area(element.get("ref") or "")
-                    if total > budget:
-                        break
-                element.clear()
-    except (ElementTree.ParseError, zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
+            while chunk := stream.read(_CHUNK_BYTES):
+                parser.Parse(chunk, False)
+            parser.Parse(b"", True)
+    except _StopScan:
+        pass
+    except (expat.ExpatError, zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
         pass  # the loader reports a part it cannot read
-    return total
+    return found
+
+
+class _StopScan(Exception):
+    pass
 
 
 def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = None) -> None:
-    """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere, a total of
-    decompressed bytes over the cap, and declared merged ranges whose areas add up to more than
-    *max_merged* positions. Streams every entry in 1 MB chunks (constant memory),
-    skips an entry it cannot read (the loader reads only what it needs), and never trusts the
-    sizes the zip declares."""
+    """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere (in any encoding), a
+    total of decompressed bytes over the cap, and declared merged and hyperlink ranges that add up
+    to more than *max_merged* positions (or hyperlinks x merges past ``_LINK_MERGE_SCAN_FACTOR``
+    times it). Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
+    (the loader reads only what it needs), and never trusts the sizes the zip declares."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
         entries = [info for info in archive.infolist() if not info.is_dir()]
     except (zipfile.BadZipFile, OSError, ValueError):
         return  # not a zip: the loader reports it
     total = 0
-    merged = 0
+    positions = 0
     with archive:
         for info in entries:
             tail = b""
-            has_merges = False
+            has_ranges = False
+            first = True
             try:
                 with archive.open(info) as stream:
                     while chunk := stream.read(_CHUNK_BYTES):
                         total += len(chunk)
                         if total > max_xml_bytes:
                             raise WorkbookRefused("too_large", f"{total} decompressed bytes")
+                        if first:
+                            first = False
+                            has_ranges = chunk[0] not in _KNOWN_STARTS and info.filename.endswith(".xml")
                         window = tail + chunk
-                        if b"<!DOCTYPE" in window or b"<!ENTITY" in window:
+                        if any(p in window for p in _DOCTYPE_PATTERNS):
                             raise WorkbookRefused("unreadable", "DOCTYPE or entity declaration")
-                        has_merges = has_merges or b"mergeCell" in window
-                        tail = window[-16:]
+                        has_ranges = has_ranges or any(p in window for p in _RANGE_PATTERNS)
+                        tail = window[-_TAIL:]
             except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
                 continue
-            if has_merges and max_merged is not None:
-                merged += _declared_merged_positions(archive, info, max_merged - merged)
-                if merged > max_merged:
-                    raise WorkbookRefused("too_large", f"{merged} positions in merged ranges")
+            if has_ranges and max_merged is not None:
+                found = _declared_ranges(archive, info, max_merged - positions)
+                positions += found.positions
+                if positions > max_merged:
+                    raise WorkbookRefused("too_large", f"{positions} positions in merged and hyperlink ranges")
+                if found.links * found.merges > _LINK_MERGE_SCAN_FACTOR * max_merged:
+                    raise WorkbookRefused("too_large", f"{found.links} hyperlinks over {found.merges} merged ranges")
 
 
 def _intern(table: list[tuple], index: dict[tuple, int], style: tuple) -> int:
@@ -685,16 +755,68 @@ def _portable_failure(exc: Exception) -> Exception:
     return exc
 
 
+class _CpuLimit(BaseException):
+    """Raised by the SIGXCPU handler; a BaseException so no ``except Exception`` in openpyxl or
+    lxml callers swallows it."""
+
+
+# The in-worker CPU limit sits this many seconds above the parent's wall-clock limit, so the
+# parent's timeout is the normal stop and RLIMIT_CPU the backstop inside the worker.
+_CPU_SLACK_SECONDS = 2
+
+
+@contextlib.contextmanager
+def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
+    """Refuse the load as too large once the worker has used *max_seconds* of CPU, however little
+    memory it holds: SIGXCPU from ``RLIMIT_CPU`` (counted from this process's CPU time now, since a
+    pool worker lives across jobs) raises ``_CpuLimit`` in the main thread. The soft limit is put
+    back afterwards; the hard limit is never touched. Where it cannot be set, only the parent's
+    timeout bounds the load."""
+    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU"):
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+    used = resource.getrusage(resource.RUSAGE_SELF)
+    target = int(used.ru_utime + used.ru_stime) + int(max_seconds) + _CPU_SLACK_SECONDS
+    if hard != resource.RLIM_INFINITY:
+        target = min(target, hard)
+
+    def on_cpu_limit(_signum: int, _frame: object) -> None:
+        raise _CpuLimit
+
+    try:
+        previous = signal.signal(signal.SIGXCPU, on_cpu_limit)
+        resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
+    except (ValueError, OSError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
+        signal.signal(signal.SIGXCPU, previous)
+
+
 def load_workbook_model(
-    file_binary: bytes, limit_bytes: int, max_xml_bytes: int, max_text_bytes: int | None = None
+    file_binary: bytes,
+    limit_bytes: int,
+    max_xml_bytes: int,
+    max_text_bytes: int | None = None,
+    max_seconds: float | None = None,
 ) -> WorkbookModel:
     """Load a workbook and return its compact model, growing by at most *limit_bytes*.
 
     Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
-    shared string counted, in UTF-8 bytes) passed *max_text_bytes*, or the merged ranges
-    declare more positions than ``max_merged_positions(max_text_bytes)``; ``unreadable`` for a DOCTYPE or
+    shared string counted, in UTF-8 bytes) passed *max_text_bytes*, the merged and hyperlink ranges
+    declare more positions than ``max_merged_positions(max_text_bytes)``, or the load used more than
+    *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that overlap,
+    hyperlinks on merged cells, anything not yet known); ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
     cannot read, as the caller would have seen it before.
     """
@@ -702,15 +824,18 @@ def load_workbook_model(
     over = False
     with _GrowthWatcher() as growth:
         try:
-            _precheck(
-                file_binary,
-                max_xml_bytes,
-                None if max_text_bytes is None else max_merged_positions(max_text_bytes),
-            )
-            model = _extract(file_binary)
+            with _cpu_limited(max_seconds):
+                _precheck(
+                    file_binary,
+                    max_xml_bytes,
+                    None if max_text_bytes is None else max_merged_positions(max_text_bytes),
+                )
+                model = _extract(file_binary)
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
+        except _CpuLimit:
+            raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
         except MemoryError:
             over = True
         except WorkbookRefused:

@@ -30,6 +30,7 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.excel.limits import (
     CELL_DICT_BYTES,
     OUTPUT_BUDGET_FACTOR,
+    excel_load_max_seconds,
     excel_max_text_bytes,
 )
 from app.modules.parsers.excel.prompt_template import (
@@ -86,6 +87,9 @@ EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX"
 # and the parent only receives the compact model.
 EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
 EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
+# Seconds the load may run (see limits.DEFAULT_LOAD_MAX_SECONDS): the pool's job timeout, and the
+# worker's own CPU limit just above it. Past it the workbook is refused as too large.
+EXCEL_LOAD_MAX_SECONDS = excel_load_max_seconds()
 # Backstop on the XML decompressed, all parts together (checked in the worker).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
 # What the parent builds from the model is bounded twice, from one number (the name says characters
@@ -561,11 +565,18 @@ class ExcelParser:
                 EXCEL_LOAD_MAX_BYTES,
                 EXCEL_MAX_SHEET_XML_BYTES,
                 EXCEL_MAX_TEXT_CHARS,
+                EXCEL_LOAD_MAX_SECONDS,
                 label="xlsx workbook",
                 size=len(file_binary),
+                timeout=EXCEL_LOAD_MAX_SECONDS,
             )
         except WorkbookRefused as refused:
             raise _refusal(refused) from None
+        except parse_pool.ParseWorkerError as error:
+            if error.cause == "timed_out":
+                # the pool stopped the worker: a workbook that takes this long is refused, not retried
+                raise _too_large(f"the load ran past {EXCEL_LOAD_MAX_SECONDS} s") from None
+            raise
         except LoaderFailure as failure:
             raise _loader_error(failure) from None
         self.workbook = model

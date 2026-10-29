@@ -12,7 +12,7 @@ from app.modules.parsers.excel.workbook_model import (
     OUTPUT_BUDGET_FACTOR,
     WorkbookModel,
     WorkbookRefused,
-    _merge_area,
+    _range_area,
     load_workbook_model,
     max_merged_positions,
 )
@@ -43,10 +43,14 @@ def test_the_cap_is_derived_from_the_cell_charge_and_the_output_budget() -> None
 
 @pytest.mark.parametrize(
     ("ref", "area"),
-    [("A1:B2", 4), ("C3", 1), ("$A$1:$B$2", 4), ("a1:b2", 4), (" A1 : B2 ", 4), ("B2:A1", 4), ("A:B", 2 * 1048576), ("1:2", 2 * 16384), ("junk", 0), ("", 0)],
+    [
+        ("A1:B2", 4), ("C3", 1), ("$A$1:$B$2", 4), ("a1:b2", 4), ("S!A1:B2", 4), ("'S'!A1:Z9", 26 * 9),
+        # refs openpyxl's CellRange rejects raise there and expand nothing
+        ("A1 : B2", 0), ("B2:A1", 0), ("A:B", 0), ("1:2", 0), ("S!A:B", 0), ("junk", 0), ("", 0),
+    ],
 )
-def test_merge_ref_spellings(ref: str, area: int) -> None:
-    assert _merge_area(ref) == area
+def test_range_area_counts_what_openpyxl_expands(ref: str, area: int) -> None:
+    assert _range_area(ref) == area
 
 
 def test_many_small_merges_just_under_the_cap_load() -> None:
@@ -63,7 +67,7 @@ def test_many_small_merges_just_over_the_cap_are_refused_fast() -> None:
     assert time.monotonic() - started < 5
 
 
-@pytest.mark.parametrize("spelling", ["$A$1:$Z$1000", "a1:z1000", "A1:Z1000", "A1 : Z1000"])
+@pytest.mark.parametrize("spelling", ["$A$1:$Z$1000", "a1:z1000", "A1:Z1000", "S!A1:Z1000", "'S'!$A$1:$Z$1000"])
 def test_one_huge_merge_is_refused_in_every_spelling(spelling: str) -> None:
     with pytest.raises(WorkbookRefused) as raised:
         _load([spelling])

@@ -35,3 +35,17 @@ def excel_document_memory_bytes() -> int:
     the larger of the two, not their sum. The governor sizes its heavy-parse gate from this.
     """
     return max(excel_load_max_bytes(), OUTPUT_BUDGET_FACTOR * excel_max_text_bytes())
+
+
+# Seconds a workbook may spend loading (CPU in the worker, wall clock in the pool). Memory does not
+# bound everything openpyxl does: ranges that overlap, hyperlinks on merged cells and the like spend
+# unbounded time on a flat amount of memory. Measured loads of the heaviest workbooks the memory
+# limit admits (2.9 M numeric cells, 1.3 GB of worker): 72 s on a host with a load average of 5; a
+# merged-range sheet exactly at the position cap: 36 s. The default is more than three times the
+# slowest, and an explicit EXCEL_LOAD_MAX_SECONDS wins.
+DEFAULT_LOAD_MAX_SECONDS = 240
+
+
+def excel_load_max_seconds() -> int:
+    """``EXCEL_LOAD_MAX_SECONDS`` (default 240); read each call."""
+    return env_positive_int("EXCEL_LOAD_MAX_SECONDS", DEFAULT_LOAD_MAX_SECONDS)

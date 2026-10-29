@@ -10,7 +10,9 @@ growth ramps slowly (plan section 4).
 """
 from __future__ import annotations
 
+import logging
 import math
+import os
 import statistics
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -26,6 +28,8 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.utils.env_config import env_float as _env_float
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -49,11 +53,34 @@ HEAVY_PARSE_WORKING_SET_GB = _env_float(
 )
 
 
+_HEAVY_PARSE_WORKING_SET_DEFAULT_GB = 1.5
+_warned_below_excel = False
+
+
+def _heavy_parse_working_set_is_explicit() -> bool:
+    raw = os.environ.get("GOVERNOR_HEAVY_PARSE_WORKING_SET_GB")
+    return bool(raw and raw.strip()) or HEAVY_PARSE_WORKING_SET_GB != _HEAVY_PARSE_WORKING_SET_DEFAULT_GB
+
+
 def heavy_parse_working_set_gb() -> float:
-    """Resident GiB one heavy parse is assumed to hold: ``HEAVY_PARSE_WORKING_SET_GB``, or what one
-    Excel document may hold (``excel_document_memory_bytes``) when that is more, so raising the
-    Excel limits lowers the number of heavy parses the memory gate admits."""
-    return max(HEAVY_PARSE_WORKING_SET_GB, excel_document_memory_bytes() / 1024 ** 3)
+    """Resident GiB one heavy parse is assumed to hold.
+
+    A ``GOVERNOR_HEAVY_PARSE_WORKING_SET_GB`` set by the operator is used exactly, even below what
+    one Excel document may hold (``excel_document_memory_bytes``); that is logged once. Unset, it
+    is the larger of the default and the Excel figure, so raising the Excel limits lowers the
+    number of heavy parses the memory gate admits."""
+    global _warned_below_excel
+    excel_gb = excel_document_memory_bytes() / 1024 ** 3
+    if _heavy_parse_working_set_is_explicit():
+        if HEAVY_PARSE_WORKING_SET_GB < excel_gb and not _warned_below_excel:
+            _warned_below_excel = True
+            _logger.warning(
+                "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=%.2f is below what one Excel document may hold "
+                "(%.2f GiB, from EXCEL_LOAD_MAX_MB and EXCEL_MAX_TEXT_MB); the setting is used as given",
+                HEAVY_PARSE_WORKING_SET_GB, excel_gb,
+            )
+        return HEAVY_PARSE_WORKING_SET_GB
+    return max(HEAVY_PARSE_WORKING_SET_GB, excel_gb)
 
 
 # Slots per CPU per tier. A heavy parse is CPU-bound end to end (Docling

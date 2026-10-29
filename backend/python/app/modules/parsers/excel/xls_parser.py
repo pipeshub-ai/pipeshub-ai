@@ -2,7 +2,6 @@ from typing import Any
 
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.services.parsing.interface import ParseResult
-
 from app.utils.libreoffice_convert import (
     convert_with_libreoffice,
     unreadable_file_as_parse_error,
