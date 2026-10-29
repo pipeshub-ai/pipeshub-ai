@@ -14,6 +14,7 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _time_range_error_message,
 )
+from app.agents.actions.knowledge_graph.ops.scope import SELECTION_BROWSE_HINT
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
@@ -318,6 +319,23 @@ class TestNavigateIssueKeyUnderASelection:
         assert success
         assert get_nodes.await_args.kwargs["connector_ids"] in (None, [])
         assert "alpha-north-revenue" in text
+
+    @pytest.mark.asyncio
+    async def test_without_a_node_a_selection_points_at_its_listing_and_a_search_in_it(self) -> None:
+        state = _make_state(
+            has_knowledge=True,
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "selectionApps": ["conn-jira"]},
+        )
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert not success and text == SELECTION_BROWSE_HINT
+        assert "source_ids=[<id>]" in text
+        get_nodes.assert_not_called()
 
 
 class TestNavigateStaysInsideTheLimit:

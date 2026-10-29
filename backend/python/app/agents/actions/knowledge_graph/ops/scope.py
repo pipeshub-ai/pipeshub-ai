@@ -138,6 +138,17 @@ def browsable_app_ids(state: "ChatState", scope: KnowledgeScope) -> list[str]:
     return [i for i in dict.fromkeys([*scope.app_ids, *scope.kb_ids]) if i not in attached]
 
 
+def selected_node_ids(state: "ChatState") -> list[str]:
+    """Every node the turn's selection below app level names, whole apps and
+    collections included, without the attachments chat mode adds to ``kb``."""
+    filters = state.get("filters") or {}
+    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
+    return list(dict.fromkeys(
+        i for key in ("apps", "kb", *SELECTION_FILTER_KEYS) for i in filters.get(key) or ()
+        if isinstance(i, str) and i and i != _NO_KB_SENTINEL and i not in attached
+    ))
+
+
 def turn_picked_sources(state: "ChatState") -> bool:
     """Whether the turn is limited to sources the user picked (or a project's,
     under ``strictScope``), not counting the attachments chat mode adds."""
@@ -436,8 +447,9 @@ async def _catalog_fallback(state: "ChatState") -> KnowledgeScope | None:
 # A conversation is limited by what the user selected or by what a saved agent
 # or a project may search; the wording fits both.
 SELECTION_BROWSE_HINT = (
-    "This conversation is limited to specific folders or items. Call "
-    "knowledgegraph__list_files to see them, then pass one of their ids as node_id."
+    "This conversation is limited to specific folders or items, listed in the prompt. "
+    "Pass one of their ids as node_id, or call knowledgegraph__list_files(query=..., "
+    "source_ids=[<id>]) to find something inside one by name."
 )
 SELECTION_OUTSIDE_MESSAGE = (
     "That item is outside what this conversation is limited to."
@@ -541,8 +553,8 @@ async def list_selected_nodes(
         start = _selection_offset(cursor) if cursor else 0
     except ValueError:
         return (
-            "That cursor is not a page of this selection. "
-            "Call knowledgegraph__list_files without a cursor to start again."
+            "That cursor is not a page of this selection. The selection is listed in the "
+            "prompt; to list it again, call knowledgegraph__list_files with no cursor and an empty query."
         )
     page = lines[start:start + page_size]
     if cursor and not page:
@@ -551,6 +563,7 @@ async def list_selected_nodes(
     more = _selection_cursor(nxt) if nxt < len(lines) else None
     hint = (
         "Pass one of these ids to knowledgegraph__navigate to see what is inside it, "
+        "to knowledgegraph__list_files(query=..., source_ids=[<id>]) to find something in it by name, "
         "or use knowledgegraph__search to search inside all of them."
     )
     if more or cursor:
