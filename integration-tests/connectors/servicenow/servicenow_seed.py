@@ -55,6 +55,7 @@ _MTOM = {
     "read": "kb_uc_can_read_mtom",
     "cannot": "kb_uc_cannot_read_mtom",
     "contribute": "kb_uc_can_contribute_mtom",
+    "cannot_contribute": "kb_uc_cannot_contribute_mtom",  # the platform puts Guest User here too
 }
 PUBLISH_TIMEOUT = 120
 
@@ -379,7 +380,7 @@ class ServiceNowSeed:
     def kb(self, key: str, *, read: Iterable[str] = (), cannot: Iterable[str] = (), contribute: Iterable[str] = (),
            keep_defaults: bool = False, owner: str | None = None, managers: Iterable[str] = ()) -> str:
         """A knowledge base. Inserting one adds the platform's default criteria ("Any User" can read,
-        "Has atleast one role" can contribute, "Guest User" cannot read); they are removed unless asked."""
+        "Has atleast one role" can contribute, "Guest User" cannot read or contribute); they are removed unless asked."""
         body: dict[str, Any] = {"title": self.name(key), "description": "PipesHub integration test", "active": "true"}
         if owner:
             body["owner"] = owner
@@ -567,7 +568,7 @@ for(var i=0;i<arts.length;i+=100){var c=arts.slice(i,i+100).join(',');
  drop('kb_feedback',function(g){g.addQuery('article','IN',c);});
  drop('sys_attachment',function(g){g.addQuery('table_sys_id','IN',c);});}
 drop('kb_knowledge',inKb);
-['kb_uc_can_read_mtom','kb_uc_cannot_read_mtom','kb_uc_can_contribute_mtom'].forEach(function(t){
+['kb_uc_can_read_mtom','kb_uc_cannot_read_mtom','kb_uc_can_contribute_mtom','kb_uc_cannot_contribute_mtom'].forEach(function(t){
  drop(t,inKb);drop(t,function(g){g.addQuery('user_criteria.name','STARTSWITH',P.up);old(g,'user_criteria.sys_created_on');});});
 drop('kb_category',function(g){g.addQuery('label','STARTSWITH',P.up);old(g,'sys_created_on');});
 drop('user_criteria',function(g){g.addQuery('name','STARTSWITH',P.up);old(g,'sys_created_on');});
@@ -634,7 +635,8 @@ def _smoke(rest: ServiceNowRest) -> None:
         crit = seed.criterion("uc-readers", group=group)
         kb = seed.kb("kb", read=[crit])
         defaults = {t: rest.count(t, f"kb_knowledge_base={kb}") for t in _MTOM.values()}
-        assert defaults == {"kb_uc_can_read_mtom": 1, "kb_uc_cannot_read_mtom": 0, "kb_uc_can_contribute_mtom": 0}, defaults
+        assert defaults == {"kb_uc_can_read_mtom": 1, "kb_uc_cannot_read_mtom": 0, "kb_uc_can_contribute_mtom": 0,
+                            "kb_uc_cannot_contribute_mtom": 0}, defaults
         cat = seed.category("cat", kb)
         art = seed.article("art", kb, category=cat)
         seed.attach(art, "note.txt", b"phit smoke attachment", "text/plain")

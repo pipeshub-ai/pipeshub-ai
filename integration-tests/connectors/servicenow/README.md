@@ -20,7 +20,7 @@ roles `phit_<run>_…`. Nothing else on the instance is changed. The fixture use
 read, and added to (and removed from) the run's own groups.
 
 - A new KB gets the platform's default criteria ("Any User" can read, "Has atleast one role" can
-  contribute, "Guest User" cannot read). The seeder removes them, except on the one KB that tests
+  contribute, "Guest User" cannot read and cannot contribute). The seeder removes them, except on the one KB that tests
   them.
 - Publishing, checkout of a new version, revert and retire go through a background script in an
   admin UI session (`/sys.scripts.do`): writing `workflow_state` directly is reverted to draft, and
