@@ -530,6 +530,10 @@ export function McpInstanceConfigPanel({
     if (!liveInstance) return 'ready';
     const base = mcpConnectionState(liveInstance, { isAdmin: !isPersonal });
     if (base !== 'ready' || toolsLoad.status !== 'error') return base;
+    if (toolsLoad.code === 'reauth' && liveInstance.authMode === 'none') {
+      // The 409 says the server asks for a sign-in, which only its auth mode can give it.
+      return mcpConnectionState({ ...liveInstance, toolsErrorCode: 'unauthorized' }, { isAdmin: !isPersonal });
+    }
     if (toolsLoad.code === 'reauth') return usesSharedCredential(liveInstance) ? 'shared_credential_missing' : 'needs_reconnect';
     return toolsLoad.code === 'unreachable' ? 'unreachable' : base;
   }, [liveInstance, isPersonal, toolsLoad]);
@@ -1035,6 +1039,7 @@ export function McpInstanceConfigPanel({
                   onRefresh={() => void loadTools(false)}
                   onAuthenticate={() => onAuthenticate(liveInstance)}
                   onReauthenticate={() => onReauthenticate(liveInstance)}
+                  onEditServer={isReadOnly ? undefined : () => setActiveTab('configuration')}
                 />
               ) : (
                 <Text size="2" style={{ color: 'var(--gray-10)' }}>

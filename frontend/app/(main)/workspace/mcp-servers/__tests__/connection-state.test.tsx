@@ -89,6 +89,17 @@ describe('mcpConnectionState', () => {
     expect(mcpConnectionState(rejected, { isAdmin: true })).toBe('shared_credential_missing');
   });
 
+  // Reported: a member clicking Reconnect on such a server was asked for an API token it can't take.
+  it.each(['auth_expired', 'unauthorized', 'needs_permission'] as const)(
+    'a server set to No authentication that is %s waits for whoever can change its auth mode',
+    (code) => {
+      const asksForSignIn = entry({ authMode: 'none', toolsError: 'x', toolsErrorCode: code });
+      expect(mcpConnectionState(asksForSignIn)).toBe('waiting_for_admin');
+      expect(mcpConnectionState(asksForSignIn, { isAdmin: true })).toBe('needs_auth_mode');
+      expect(mcpConnectionState({ ...asksForSignIn, scope: 'personal' })).toBe('needs_auth_mode');
+    },
+  );
+
   it('a server that missed the time budget is slow, not broken', () => {
     expect(mcpConnectionState(entry({ toolsError: 'x', toolsErrorCode: 'timeout', toolsTimedOut: true }))).toBe('slow');
   });
@@ -135,6 +146,21 @@ describe('McpPersonalServerCard status', () => {
     renderPersonalCard(entry({ ...sharedToken, isAuthenticated: false }));
 
     expect(screen.getByText('Waiting for admin')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+  });
+
+  it('a member is not offered a sign-in for a server set to No authentication', () => {
+    renderPersonalCard(
+      entry({
+        authMode: 'none',
+        toolsError: "This server asks for a sign-in, but it's set to No authentication.",
+        toolsErrorCode: 'unauthorized',
+      }),
+    );
+
+    expect(screen.getByText('Waiting for admin')).toBeTruthy();
+    expect(screen.getByText("This server asks for a sign-in, but it's set to No authentication.")).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
   });
