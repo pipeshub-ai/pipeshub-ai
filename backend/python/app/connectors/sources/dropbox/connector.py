@@ -1464,7 +1464,7 @@ class DropboxConnector(BaseConnector):
         # since the last cursor, which Dropbox reports only once: what it does not show is checked once it ends.
         relisting = older or cursor is None
         listed: set[str] = set()
-        held = False
+        held = restart = False
         self.logger.info(f"Starting sync loop for: {sync_log_name} (cursor: {bool(cursor)})")
         while True:
             try:
@@ -1508,16 +1508,20 @@ class DropboxConnector(BaseConnector):
             if relisting:
                 listed.update(getattr(e, "id", None) for e in entries if not isinstance(e, DeletedMetadata))
             await self._write_updates(updates, sync_log_name)
-            await self._repath_moved_folders()
+            # A moved folder too big to walk: listed again from the start, which rewrites every path below it.
+            restart = not await self._repath_moved_folders() or restart
 
             cursor = result.data.cursor
             # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
             # the next run reads it again (its writes are idempotent). The pages after it are still written.
             held = held or len(self._health.problems) > page_problems
-            if not held:
+            if not (held or restart):
                 await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": cursor})
             if result.data.has_more is not True:
                 break
+
+        if restart:
+            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": None})
 
         if relisting and len(self._health.problems) == problems_before:
             outcome = await remove_unlisted(
@@ -1561,11 +1565,15 @@ class DropboxConnector(BaseConnector):
         await self._write_updates([record_update], "re-read")
         await self._repath_moved_folders()
 
-    async def _repath_moved_folders(self) -> None:
+    async def _repath_moved_folders(self) -> bool:
+        """Rewrite the stored paths below each folder that moved; False when a walk stopped at its cap."""
+        complete = True
         moved, self._moved_folders = self._moved_folders, []
         for external_id, old_path, new_path in moved:
-            await repath_descendants(self.data_entities_processor, self.connector_id, external_id, old_path,
-                                     new_path, self.logger)
+            _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
+                                               old_path, new_path, self.logger)
+            complete = complete and done
+        return complete
 
     def get_app_users(self, users: DropboxResponse | List) -> List[AppUser]:
         members = users if isinstance(users, list) else users.data.members

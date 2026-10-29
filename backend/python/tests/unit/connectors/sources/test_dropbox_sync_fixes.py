@@ -213,8 +213,22 @@ class TestRepathAndReconcile:
         processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/docs/b.md"))
         processor.batch_update_nodes = AsyncMock()
 
-        assert await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER) == 1
+        assert await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER) == (1, True)
         assert processor.batch_update_nodes.await_args.args[0] == [{"id": "r-child", "path": "/documents/b.md"}]
+
+    @pytest.mark.asyncio
+    async def test_a_walk_stopped_at_its_cap_says_so(self) -> None:
+        processor = MagicMock()
+        children = iter(range(10))
+        processor.get_records_by_parent = AsyncMock(side_effect=lambda c, parent: [
+            MagicMock(id=f"r{n}", external_record_id=f"id:{n}") for n in [next(children)]])
+        processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/docs/x"))
+        processor.batch_update_nodes = AsyncMock()
+
+        with patch("app.connectors.sources.dropbox.paths._MAX_NODES", 3):
+            moved, complete = await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER)
+
+        assert (moved, complete) == (2, False)
 
     @pytest.mark.asyncio
     async def test_an_unlisted_record_goes_only_once_dropbox_says_it_is_gone(self) -> None:
@@ -289,6 +303,19 @@ class TestTeamListing:
         written = [r.external_record_id for call in team.data_entities_processor.on_new_records.await_args_list
                    for r, _ in call.args[0]]
         assert written == ["id:a", "id:c"]
+
+    @pytest.mark.asyncio
+    async def test_a_move_too_big_to_walk_lists_the_folder_again_from_the_start(self, team) -> None:
+        team.data_source.files_list_folder = AsyncMock(return_value=page([file_entry()], cursor="c1", has_more=True))
+        team.data_source.files_list_folder_continue = AsyncMock(return_value=page([file_entry("b.txt", "id:b", "/b.txt")],
+                                                                                    cursor="c2"))
+        team._repath_moved_folders = AsyncMock(side_effect=[False, True])
+
+        await team._sync_namespace("dbmid:a", "a@x.com", None, frozenset())
+
+        saved = [call.kwargs["sync_point_data"]["cursor"]
+                 for call in team.dropbox_cursor_sync_point.update_sync_point.await_args_list]
+        assert saved == [None]
 
     @pytest.mark.asyncio
     async def test_owed_deletes_are_saved_when_the_run_stops_part_way(self, team) -> None:

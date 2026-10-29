@@ -30,11 +30,14 @@ async def repath_descendants(
     old_prefix: str,
     new_prefix: str,
     logger: logging.Logger,
-) -> int:
-    """Rewrite ``old_prefix/...`` to ``new_prefix/...`` on every stored descendant of a folder. Returns how many."""
+) -> tuple[int, bool]:
+    """Rewrite ``old_prefix/...`` to ``new_prefix/...`` on every stored descendant of a folder.
+
+    Returns how many were moved, and False when the walk stopped at its cap with folders left unvisited.
+    """
     old_prefix, new_prefix = old_prefix.rstrip("/"), new_prefix.rstrip("/")
     if old_prefix == new_prefix:
-        return 0
+        return 0, True
     updates: list[dict] = []
     todo, seen = [folder_external_id], {folder_external_id}
     while todo and len(seen) < _MAX_NODES:
@@ -50,8 +53,8 @@ async def repath_descendants(
                 updates.append({"id": child.id, "path": new_prefix + path[len(old_prefix):]})
     if todo:
         logger.warning(f"Stopped moving stored paths under {folder_external_id} at {_MAX_NODES} items; "
-                       f"{len(todo)} folder(s) below keep their old paths until the next full sync")
+                       f"{len(todo)} folder(s) below are rewritten by listing the folder again from the start")
     if updates:
         await processor.batch_update_nodes(updates, CollectionNames.FILES.value)
         logger.info(f"Moved the stored paths of {len(updates)} item(s) from {old_prefix} to {new_prefix}")
-    return len(updates)
+    return len(updates), not todo

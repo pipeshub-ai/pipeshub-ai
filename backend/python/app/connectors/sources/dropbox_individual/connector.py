@@ -822,7 +822,7 @@ class DropboxIndividualConnector(BaseConnector):
         # which Dropbox reports only once: what it does not show is checked once it ends.
         relisting = older or cursor is None
         listed: set[str] = set()
-        held = False
+        held = restart = False
 
         while True:
             try:
@@ -870,18 +870,22 @@ class DropboxIndividualConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records([(u.record, []) for u in updates])
             moved, self._moved_folders = self._moved_folders, []
             for external_id, old_path, new_path in moved:
-                await repath_descendants(self.data_entities_processor, self.connector_id, external_id, old_path,
-                                         new_path, self.logger)
+                _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
+                                                   old_path, new_path, self.logger)
+                # A moved folder too big to walk: listed again from the start, which rewrites every path below it.
+                restart = restart or not done
 
             cursor = result.data.cursor
             # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
             # the next run reads it again (its writes are idempotent). The pages after it are still written.
             held = held or len(self._health.problems) > page_problems
-            if not held:
+            if not (held or restart):
                 await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': cursor})
             if result.data.has_more is not True:
                 break
 
+        if restart:
+            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': None})
         if relisting and len(self._health.problems) == problems_before:
             self._note_delete_outcome(await remove_unlisted(
                 self.data_entities_processor, self.connector_id, user_id, listed, self._item_still_exists,
