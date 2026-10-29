@@ -40,7 +40,7 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -1111,10 +1111,12 @@ class NotionConnector(BaseConnector):
             child.parent_record_type = None
             nodes.append(child.to_arango_base_record())
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Base node only — batch_upsert_records would also rewrite the type doc, and
-            # these come back as base Records whose type payload is the wrong shape.
-            updated = await tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+        # Base node only — batch_upsert_records would also rewrite the type doc, and
+        # these come back as base Records whose type payload is the wrong shape.
+        # execute_in_transaction runs it again on a write conflict.
+        updated = await self.data_store_provider.execute_in_transaction(
+            lambda tx_store: tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+        )
 
         # The providers report a partial write by returning False, not by raising. Deleting
         # the stub anyway would strand whichever children kept their now-dangling parent
@@ -1156,7 +1158,7 @@ class NotionConnector(BaseConnector):
             child.parent_record_type = new_parent_type
             nodes.append(child.to_arango_base_record())
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async def rehome(tx_store: TransactionStore) -> None:
             if nodes:
                 updated = await tx_store.batch_update_nodes(
                     nodes, CollectionNames.RECORDS.value
@@ -1174,6 +1176,9 @@ class NotionConnector(BaseConnector):
                         child.id,
                         RecordRelations.PARENT_CHILD.value,
                     )
+
+        # Run again on a write conflict: the children may be indexing.
+        await self.data_store_provider.execute_in_transaction(rehome)
 
     async def _retire_database_container_record(self, record: Record) -> None:
         """Re-home children of a leftover DATABASE container, then delete it.

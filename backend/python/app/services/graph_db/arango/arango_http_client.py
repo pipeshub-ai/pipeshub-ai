@@ -8,10 +8,15 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import functools
+import inspect
 import json
+import random
+import re
 import threading
+from collections.abc import Awaitable, Callable
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 
 import aiohttp
 
@@ -48,6 +53,48 @@ class ArangoQueryError(Exception):
             error_num = cast(dict[str, object], parsed).get("errorNum")
             if isinstance(error_num, int):
                 self.error_num = error_num
+
+
+# Every form a 1200 takes in this client's errors: the server's JSON body, and the
+# "[1200]" the per-document checks write.
+_CONFLICT_RE = re.compile(r'"errorNum"\s*:\s*1200\b|\[1200\]')
+_WRITE_CONFLICT_ATTEMPTS = 6
+
+_W = TypeVar("_W")
+
+
+def is_write_conflict(error: BaseException | str) -> bool:
+    """ArangoDB errorNum 1200: a write-write conflict, or a lock timeout on the key."""
+    if isinstance(error, ArangoQueryError) and error.error_num is not None:
+        return error.error_num == ARANGO_CONFLICT
+    return bool(_CONFLICT_RE.search(str(error)))
+
+
+def _retries_write_conflicts(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """Run a write outside a transaction again when it fails with errorNum 1200.
+
+    Another writer held the document or its lock, and the failed write did not land
+    (a batch's other documents did, and running them again rewrites the same
+    values). Inside a transaction the conflict aborted it, so the transaction's
+    owner reruns it and the error is raised at once.
+    """
+    signature = inspect.signature(write)
+
+    @functools.wraps(write)
+    async def run(*args: object, **kwargs: object) -> _W:
+        if signature.bind(*args, **kwargs).arguments.get("txn_id"):
+            return await write(*args, **kwargs)
+        attempt = 0
+        while True:
+            try:
+                return await write(*args, **kwargs)
+            except Exception as exc:
+                attempt += 1
+                if attempt >= _WRITE_CONFLICT_ATTEMPTS or not is_write_conflict(exc):
+                    raise
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+
+    return run
 
 
 class ArangoHTTPClient:
@@ -391,6 +438,7 @@ class ArangoHTTPClient:
                 raise
             return None
 
+    @_retries_write_conflicts
     async def create_document(
         self,
         collection: str,
@@ -423,6 +471,10 @@ class ArangoHTTPClient:
                     self._check_response_for_errors(result, "Create document")
                     return result
                 elif resp.status == HttpStatusCode.CONFLICT.value:
+                    error = await resp.text()
+                    # 409 is also a write conflict: the document was not written.
+                    if is_write_conflict(error):
+                        raise Exception(f"Failed to create document (status={resp.status}): {error}")
                     # Document already exists, treat as success
                     return {"_key": document.get("_key")}
                 else:
@@ -434,6 +486,7 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating document: {str(e)}")
             raise
 
+    @_retries_write_conflicts
     async def update_document(
         self,
         collection: str,
@@ -476,6 +529,7 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error updating document: {str(e)}")
             raise
 
+    @_retries_write_conflicts
     async def delete_document(
         self,
         collection: str,
@@ -523,6 +577,7 @@ class ArangoHTTPClient:
 
     # ==================== Query Operations ====================
 
+    @_retries_write_conflicts
     async def execute_aql(
         self,
         query: str,
@@ -601,6 +656,7 @@ class ArangoHTTPClient:
 
     # ==================== Batch Operations ====================
 
+    @_retries_write_conflicts
     async def batch_insert_documents(
     self,
     collection: str,
@@ -693,6 +749,7 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Batch insert error: {str(e)}")
             raise
 
+    @_retries_write_conflicts
     async def batch_delete_documents(
         self,
         collection: str,
@@ -748,7 +805,7 @@ class ArangoHTTPClient:
                                 self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
                             else:
                                 error_msg = result.get("errorMessage", "Unknown error")
-                                errors.append(f"Document {document_ids[idx]}: (errorNum={error_num}) {error_msg}")
+                                errors.append(f"Document {document_ids[idx]}: [{error_num}] {error_msg}")
                         else:
                             deleted_count += 1
 
@@ -771,6 +828,7 @@ class ArangoHTTPClient:
 
     # ==================== Edge Operations ====================
 
+    @_retries_write_conflicts
     async def create_edge(
         self,
         edge_collection: str,
@@ -811,6 +869,10 @@ class ArangoHTTPClient:
                     self._check_response_for_errors(result, "Create edge")
                     return result
                 elif resp.status == HttpStatusCode.CONFLICT.value:
+                    error = await resp.text()
+                    # 409 is also a write conflict: the edge was not written.
+                    if is_write_conflict(error):
+                        raise Exception(f"Failed to create edge (status={resp.status}): {error}")
                     # Edge already exists
                     return {"_key": edge_doc.get("_key")}
                 else:

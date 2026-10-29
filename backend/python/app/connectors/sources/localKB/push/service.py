@@ -452,8 +452,14 @@ class KbPushService:
 
         False when the stored revision is no longer the one read (nothing was changed)."""
         new_revision = C.revision_id(v.digest, v.content_rev)
-        async with (await self._processor(kb_id)).data_store_provider.transaction() as tx:
-            return await tx.retag_push_record(
-                key=existing.get("id") or existing.get("_key"), kb_id=kb_id, org_id=org_id,
-                expected_revision=existing["externalRevisionId"], new_revision=new_revision,
-            )
+        try:
+            async with (await self._processor(kb_id)).data_store_provider.transaction() as tx:
+                return await tx.retag_push_record(
+                    key=existing.get("id") or existing.get("_key"), kb_id=kb_id, org_id=org_id,
+                    expected_revision=existing["externalRevisionId"], new_revision=new_revision,
+                )
+        except Exception as e:
+            # A conflict or an aborted transaction changed nothing: the caller reads again.
+            if is_attempt_lost(e):
+                return False
+            raise

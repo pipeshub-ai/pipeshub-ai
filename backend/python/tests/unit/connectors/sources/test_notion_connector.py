@@ -44,6 +44,16 @@ from app.models.entities import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def _runs_in_its_transaction(provider: MagicMock) -> MagicMock:
+    """execute_in_transaction runs the block in the mock's own transaction()."""
+    async def execute_in_transaction(func, *args, **kwargs) -> object:
+        async with provider.transaction() as tx_store:
+            return await func(tx_store, *args, **kwargs)
+    provider.execute_in_transaction = execute_in_transaction
+    return provider
+
+
 def _make_connector():
     """Build a NotionConnector with all dependencies mocked."""
     logger = MagicMock()
@@ -57,7 +67,7 @@ def _make_connector():
     data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
     data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
-    data_store_provider = MagicMock()
+    data_store_provider = _runs_in_its_transaction(MagicMock())
     config_service = AsyncMock()
     connector_id = "notion-conn-1"
     connector = NotionConnector(
@@ -2428,7 +2438,7 @@ def _make_connector_fullcov():
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_by_record_type = AsyncMock(return_value=[])
-    dsp = MagicMock()
+    dsp = _runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_cm = AsyncMock()
