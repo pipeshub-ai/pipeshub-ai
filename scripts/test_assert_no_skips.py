@@ -29,7 +29,9 @@ class AssertNoSkips(unittest.TestCase):
         self.assertEqual(main([f, "--expect-suite", "s one=2"]), 0)
         self.assertEqual(main([f, "--expect-suite", "s one=3"]), 1)
         self.assertEqual(main([f, "--expect-suite", "missing=1"]), 1)
-        self.assertEqual(main([f, "--expect-suite", "missing=0"]), 0)
+        # A suite with no cases is never a pass, so a count of 0 is refused.
+        self.assertEqual(main([f, "--expect-suite", "missing=0"]), 1)
+        self.assertEqual(main([f, "--expect-suite", "s one=0"]), 1)
         self.assertEqual(main([f, "--expect-suite", "s one"]), 1)
         broken = self._report('<testsuites><testsuite><testcase classname="s" name="a"><failure/></testcase></testsuite></testsuites>')
         self.assertEqual(main([broken, "--expect-suite", "s=1"]), 1)

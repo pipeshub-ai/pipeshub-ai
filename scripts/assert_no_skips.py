@@ -47,7 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         title, _, want = spec.rpartition("=")
         n, bad = suite_counts(args.reports, title)
         print(f"suite '{title}': {n} cases (expected {want}), {bad} failed")
-        if not title or not want.isdigit() or n != int(want) or bad:
+        # A count of 0 would pass a suite that never ran; N must be at least 1.
+        if not title or not want.isdigit() or int(want) < 1 or n != int(want) or bad:
             suite_failed = True
     total, skips = skipped(args.reports)
     bad = [s for s in skips if not any(a in s for a in args.allow)]
