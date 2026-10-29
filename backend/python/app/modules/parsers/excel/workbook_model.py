@@ -35,8 +35,12 @@ from typing import TYPE_CHECKING, Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
-from openpyxl.utils import column_index_from_string, get_column_letter
+from xml.etree import ElementTree
+
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
+
+from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -56,12 +60,15 @@ __all__ = [
     "get_cell_background_color",
     "get_cell_font_color",
     "load_workbook_model",
+    "max_merged_positions",
 ]
 
 _CHUNK_BYTES = 1024 * 1024
 _COLUMN_BITS = 20  # a position is (row << 20) | column; columns stop at 18278
 _COLUMN_MASK = (1 << _COLUMN_BITS) - 1
 _TALL_MERGE_ROWS = 32  # taller merged ranges are searched, shorter ones are indexed by row
+_MAX_ROW = 1048576
+_MAX_COLUMN = 16384
 _MAX_NUMBER_FORMAT_CHARS = 255  # Excel's own limit; openpyxl does not enforce it
 _NEAR_LIMIT = 0.8  # an error with the worker this close to its cap is the cap
 
@@ -73,6 +80,10 @@ class WorkbookRefused(Exception):
         super().__init__(reason, detail)
         self.reason = reason
         self.detail = detail
+
+    @property
+    def too_large(self) -> bool:
+        return self.reason == "too_large"
 
 
 # ---------------------------------------------------------------------------
@@ -496,9 +507,47 @@ class _GrowthWatcher:
         return max(self.sample(), _status_kb("VmPeak") - self._start_vm_peak_kb)
 
 
-def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
-    """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere, and a total of
-    decompressed bytes over the cap. Streams every entry in 1 MB chunks (constant memory),
+def max_merged_positions(max_text_bytes: int) -> int:
+    """Positions the declared merged ranges may add up to: as many cells as the output budget
+    could hold (openpyxl builds one ``MergedCell`` for every position of every range, overlaps
+    included, which costs time proportional to the sum of the areas)."""
+    return OUTPUT_BUDGET_FACTOR * max_text_bytes // CELL_DICT_BYTES
+
+
+def _merge_area(ref: str) -> int:
+    """Positions in one ``mergeCell`` ref (``A1:B2``, ``$a$1:$B$2``, ``C3``, `` A1 : B2 ``, ``A:B``)."""
+    cleaned = "".join(ref.split()).replace("$", "").upper()
+    if not cleaned:
+        return 0
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(cleaned)
+    except (ValueError, TypeError):
+        return 0  # openpyxl reports a ref it cannot read
+    rows = abs((max_row or _MAX_ROW) - (min_row or 1)) + 1
+    columns = abs((max_col or _MAX_COLUMN) - (min_col or 1)) + 1
+    return rows * columns
+
+
+def _declared_merged_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> int:
+    """Sum the areas of the ``mergeCell`` elements of one sheet part, stopping once past *budget*."""
+    total = 0
+    try:
+        with archive.open(info) as stream:
+            for _event, element in ElementTree.iterparse(stream, events=("end",)):
+                if element.tag.rpartition("}")[2] == "mergeCell":
+                    total += _merge_area(element.get("ref") or "")
+                    if total > budget:
+                        break
+                element.clear()
+    except (ElementTree.ParseError, zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
+        pass  # the loader reports a part it cannot read
+    return total
+
+
+def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = None) -> None:
+    """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere, a total of
+    decompressed bytes over the cap, and declared merged ranges whose areas add up to more than
+    *max_merged* positions. Streams every entry in 1 MB chunks (constant memory),
     skips an entry it cannot read (the loader reads only what it needs), and never trusts the
     sizes the zip declares."""
     try:
@@ -507,9 +556,11 @@ def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
     except (zipfile.BadZipFile, OSError, ValueError):
         return  # not a zip: the loader reports it
     total = 0
+    merged = 0
     with archive:
         for info in entries:
             tail = b""
+            has_merges = False
             try:
                 with archive.open(info) as stream:
                     while chunk := stream.read(_CHUNK_BYTES):
@@ -519,9 +570,14 @@ def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
                         window = tail + chunk
                         if b"<!DOCTYPE" in window or b"<!ENTITY" in window:
                             raise WorkbookRefused("unreadable", "DOCTYPE or entity declaration")
+                        has_merges = has_merges or b"mergeCell" in window
                         tail = window[-16:]
             except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
                 continue
+            if has_merges and max_merged is not None:
+                merged += _declared_merged_positions(archive, info, max_merged - merged)
+                if merged > max_merged:
+                    raise WorkbookRefused("too_large", f"{merged} positions in merged ranges")
 
 
 def _intern(table: list[tuple], index: dict[tuple, int], style: tuple) -> int:
@@ -638,7 +694,8 @@ def load_workbook_model(
     Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
-    shared string counted, in UTF-8 bytes) passed *max_text_bytes*; ``unreadable`` for a DOCTYPE or
+    shared string counted, in UTF-8 bytes) passed *max_text_bytes*, or the merged ranges
+    declare more positions than ``max_merged_positions(max_text_bytes)``; ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
     cannot read, as the caller would have seen it before.
     """
@@ -646,7 +703,11 @@ def load_workbook_model(
     over = False
     with _GrowthWatcher() as growth:
         try:
-            _precheck(file_binary, max_xml_bytes)
+            _precheck(
+                file_binary,
+                max_xml_bytes,
+                None if max_text_bytes is None else max_merged_positions(max_text_bytes),
+            )
             model = _extract(file_binary)
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")

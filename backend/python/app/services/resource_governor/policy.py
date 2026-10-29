@@ -15,6 +15,7 @@ import statistics
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from app.modules.parsers.excel.limits import excel_document_memory_bytes
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
@@ -46,6 +47,14 @@ SAMPLE_JITTER_SECONDS = 1.0
 HEAVY_PARSE_WORKING_SET_GB = _env_float(
     "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB", 1.5, low=0.1, high=64.0
 )
+
+
+def heavy_parse_working_set_gb() -> float:
+    """Resident GiB one heavy parse is assumed to hold: ``HEAVY_PARSE_WORKING_SET_GB``, or what one
+    Excel document may hold (``excel_document_memory_bytes``) when that is more, so raising the
+    Excel limits lowers the number of heavy parses the memory gate admits."""
+    return max(HEAVY_PARSE_WORKING_SET_GB, excel_document_memory_bytes() / 1024 ** 3)
+
 
 # Slots per CPU per tier. A heavy parse is CPU-bound end to end (Docling
 # layout analysis, OCR, LibreOffice), so one per core is the most that adds
@@ -306,7 +315,7 @@ def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | Non
     free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
+    return _worker_share(max(1, int(free_gb / heavy_parse_working_set_gb())), worker_count)
 
 
 def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:

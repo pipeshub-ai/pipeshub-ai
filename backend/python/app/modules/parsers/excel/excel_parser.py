@@ -37,6 +37,7 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR, excel_max_text_bytes
 from app.modules.parsers.excel.workbook_model import (
     LoaderFailure,
     ModelMergedCell,
@@ -92,13 +93,13 @@ EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 10
 # every cell dict, row dict, block and group at its measured size, and released when a sheet's cell
 # dicts are freed. It raises EXCEL_TOO_LARGE as soon as it is spent. 1.4 GB plus the ~0.8 GB import
 # floor and the model keeps the parent near 2.3 GB.
-EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 480) * 1024 * 1024
+EXCEL_MAX_TEXT_CHARS = excel_max_text_bytes()
 
 
 # Parent memory per structure built, measured (tracemalloc and RSS deltas, openpyxl 3.1.5 values from
 # the compact model): one cell dict from `_process_cell` / `_process_sheet` with its style dicts,
 # one TABLE_ROW block with its data dict, a block group, and a `{header: value}` row dict.
-_CELL_DICT_BYTES = 1106
+_CELL_DICT_BYTES = CELL_DICT_BYTES  # defined with the merged-range cap that derives from it
 _BLOCK_BYTES = 2100
 _GROUP_BYTES = 4000
 # A row dict (64) plus the processed-row dict that holds it (3 keys, 184) and its slot in the rows list.
@@ -109,10 +110,10 @@ _ROW_DICT_CELL_BYTES = 48
 # list (56 B + 8 B a cell, rounded up by append), a processed table (dict of 4 keys, location dict,
 # rows list: about 550-780 B). Rounded up with margin. Without them a sheet of many small tables
 # held 1.12x (tracemalloc) to 1.31x (RSS) what it was charged.
-_TABLE_BYTES = 1024
-_TABLE_ROW_LIST_BYTES = 80
+_TABLE_BYTES = 2048
+_TABLE_ROW_LIST_BYTES = 96
 _TABLE_LIST_SLOT_BYTES = 8
-_PROCESSED_TABLE_BYTES = 1024
+_PROCESSED_TABLE_BYTES = 2048
 # Memory held per byte of text: the string, its copy in the block, and the serialised form.
 _TEXT_WEIGHT = 2
 # A cell value put into an LLM prompt is cut to this many characters. Prompt builders copy their
@@ -496,7 +497,7 @@ class ExcelParser:
         self.config_service = config_service
         self.workbook = None
         self.file_binary = None
-        self._output = _OutputBudget(3 * EXCEL_MAX_TEXT_CHARS)
+        self._output = _OutputBudget(OUTPUT_BUDGET_FACTOR * EXCEL_MAX_TEXT_CHARS)
 
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
@@ -546,7 +547,7 @@ class ExcelParser:
         """
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
-        self._output = _OutputBudget(3 * EXCEL_MAX_TEXT_CHARS)
+        self._output = _OutputBudget(OUTPUT_BUDGET_FACTOR * EXCEL_MAX_TEXT_CHARS)
         if not self.file_binary:
             return
         try:
