@@ -156,7 +156,7 @@ async def jira_connector(
         "blocks_issue_key": None,
         "link_source_issue_key": None,
         "epic_key": None, "epic_id": None,
-        "epic_child_key": None, "epic_child_id": None,
+        "epic_child_key": None, "epic_child_id": None, "epic_child_filed_under_epic": None,
         "subtask_parent_key": None, "subtask_parent_id": None,
         "subtask_key": None, "subtask_id": None,
         "attachment_issue_key": None, "attachment_issue_id": None,
@@ -246,7 +246,8 @@ async def jira_connector(
 
     epic = await discover_epic_and_child(jira_datasource, primary_key)
     if epic:
-        state["epic_key"], state["epic_id"], state["epic_child_key"], state["epic_child_id"] = epic
+        (state["epic_key"], state["epic_id"], state["epic_child_key"], state["epic_child_id"],
+         state["epic_child_filed_under_epic"]) = epic
     subtask = await discover_task_and_subtask(jira_datasource, primary_key)
     if subtask:
         (state["subtask_parent_key"], state["subtask_parent_id"],
@@ -320,6 +321,7 @@ async def jira_connector(
     state["expected_ticket_count"] = scope["ticket"]
     state["expected_file_count"] = scope["file"]
     state["expected_parent_child_edges"] = scope["parent_child"]
+    state["parent_child_edges_by_level"] = scope["parent_child_by_level"]
     state["expected_attachment_edges"] = scope["file"]  # one ATTACHMENT edge per attachment/FILE
     state["expected_record_groups"] = 1  # only the primary project is in scope
 

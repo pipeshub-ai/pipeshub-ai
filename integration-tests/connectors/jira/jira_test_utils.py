@@ -1007,28 +1007,36 @@ async def fetch_ancestor_chain(
 
 async def discover_epic_and_child(
     datasource: JiraDataSource, project_key: str
-) -> Optional[tuple[str, str, str, str]]:
+) -> Optional[tuple[str, str, str, str, bool]]:
     """Find an Epic (hierarchyLevel 1) with a level-0 child under it.
 
-    Returns ``(epic_key, epic_id, child_key, child_id)`` or None.
+    Returns ``(epic_key, epic_id, child_key, child_id, filed_under_epic)`` or None, where
+    ``filed_under_epic`` is where the connector files the child (see ``_story_filed_under``).
+    A pair whose placement depends on its level's members is passed over, and a pair whose
+    child is filed under the epic is preferred, so both outcomes are seen as the project allows.
     """
     issues = await search_issues_jql(
-        datasource, f'project = "{project_key}"', ["issuetype", "parent"],
+        datasource, f'project = "{project_key}"', ["issuetype", "parent", "security"],
     )
-    epic_id_to_key: dict[str, str] = {}
-    for it in issues:
-        f = it.get("fields") or {}
-        if (f.get("issuetype") or {}).get("hierarchyLevel") == 1:
-            epic_id_to_key[str(it.get("id"))] = it.get("key")
-    if not epic_id_to_key:
-        return None
+    by_id = {str(it.get("id")): it for it in issues}
+    fallback: Optional[tuple[str, str, str, str, bool]] = None
     for it in issues:
         f = it.get("fields") or {}
         parent = f.get("parent") or {}
-        pid = str(parent.get("id")) if parent.get("id") else None
-        if pid and pid in epic_id_to_key and (f.get("issuetype") or {}).get("hierarchyLevel") == 0:
-            return (epic_id_to_key[pid], pid, it.get("key"), str(it.get("id")))
-    return None
+        epic = by_id.get(str(parent.get("id") or ""))
+        if epic is None or (f.get("issuetype") or {}).get("hierarchyLevel") != 0:
+            continue
+        epic_fields = epic.get("fields") or {}
+        if (epic_fields.get("issuetype") or {}).get("hierarchyLevel") != 1:
+            continue
+        filed = _story_filed_under(f, epic_fields)
+        if filed is None:
+            continue
+        pair = (epic.get("key"), str(epic.get("id")), it.get("key"), str(it.get("id")), filed)
+        if filed:
+            return pair
+        fallback = fallback or pair
+    return fallback
 
 
 async def discover_task_and_subtask(
@@ -1230,10 +1238,12 @@ async def derive_jira_scope_counts(
       - ``file``: one FILE record per attachment that is *not* a new inline image
         (``_fetch_issue_attachments`` skips image attachments referenced in the description
         or an unrestricted comment; the sync's issue search requests ``comment`` too).
-      - ``parent_child``: one PARENT_CHILD edge per sub-task whose parent is in this project. The
-        connector files a story under its project, not its epic (Jira copies a parent's security
-        level onto its sub-tasks but not onto an epic's children), and an issue whose parent is in a
-        project that does not sync hangs off its project too. Attachments use ATTACHMENT.
+      - ``parent_child``: one PARENT_CHILD edge per sub-task whose parent is in this project, and
+        per story the connector files under its epic (``_story_filed_under``). An issue whose
+        parent is in a project that does not sync hangs off its project. Attachments use ATTACHMENT.
+      - ``parent_child_by_level``: stories that share their epic's level, filed under it only
+        when that level grants the same people on every issue. That depends on the level's
+        members, so these are counted apart and may or may not have an edge.
 
     IT artifacts are skipped: this project is shared with any concurrently running leg,
     whose in-flight tickets would otherwise land in the baseline.
@@ -1241,23 +1251,75 @@ async def derive_jira_scope_counts(
     issues = await search_issues_jql(
         datasource,
         f'project = "{project_key}"',
-        ["parent", "issuetype", "attachment", "description", "comment", "summary"],
+        ["parent", "issuetype", "attachment", "description", "comment", "summary", "security"],
     )
+    # Artifacts are left out of the counts, not out of the parents a story can be filed under.
+    fields_by_id = {str(it.get("id")): it.get("fields") or {} for it in issues}
     ticket = 0
     files = 0
     parent_child = 0
+    parent_child_by_level = 0
     for it in issues:
         if is_jira_it_artifact(it):
             continue
         ticket += 1
         f = it.get("fields") or {}
-        issue_type = f.get("issuetype") or {}
-        is_subtask = bool(issue_type.get("subtask")) or issue_type.get("hierarchyLevel") == -1
-        parent_key = str((f.get("parent") or {}).get("key") or "")
-        if is_subtask and parent_key.rsplit("-", 1)[0] == project_key:
-            parent_child += 1
         files += count_synced_file_attachments(f)
-    return {"ticket": ticket, "file": files, "parent_child": parent_child}
+        parent = f.get("parent") or {}
+        if str(parent.get("key") or "").rsplit("-", 1)[0] != project_key:
+            continue
+        if _is_subtask(f):
+            parent_child += 1
+            continue
+        filed = _story_filed_under(f, fields_by_id.get(str(parent.get("id") or "")))
+        if filed:
+            parent_child += 1
+        elif filed is None:
+            parent_child_by_level += 1
+    return {
+        "ticket": ticket,
+        "file": files,
+        "parent_child": parent_child,
+        "parent_child_by_level": parent_child_by_level,
+    }
+
+
+def _is_subtask(fields: dict[str, Any]) -> bool:
+    issue_type = fields.get("issuetype") or {}
+    return bool(issue_type.get("subtask")) or issue_type.get("hierarchyLevel") == -1
+
+
+def _level_of(fields: dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """``(usable, level_id)``: a missing field, or a level Jira sent without an id, is not "no level"."""
+    if "security" not in fields:
+        return False, None
+    security = fields["security"]
+    if security is None:
+        return True, None
+    level_id = security.get("id") if isinstance(security, dict) else None
+    return (True, str(level_id)) if level_id not in (None, "") else (False, None)
+
+
+def _story_filed_under(story: dict[str, Any], parent: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Whether the connector files a story (any issue but a sub-task) under its parent in the same project.
+
+    Jira does not copy an epic's level onto its stories, so the story is filed under the epic only
+    when everyone who reads the story reads the epic: the epic has no level, or both share a level
+    that grants the same people on every issue. None for that last case, which depends on the
+    level's members.
+    """
+    if parent is None or _is_subtask(parent):
+        return False
+    hierarchy_level = (parent.get("issuetype") or {}).get("hierarchyLevel")
+    if isinstance(hierarchy_level, int) and hierarchy_level <= 0:
+        return False
+    usable, parent_level = _level_of(parent)
+    if not usable:
+        return False
+    if parent_level is None:
+        return True
+    story_usable, story_level = _level_of(story)
+    return None if story_usable and story_level == parent_level else False
 
 
 # =============================================================================
