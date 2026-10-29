@@ -254,7 +254,12 @@ class SnowflakeStatementRunner:
     async def _read_result(
         self, body: dict[str, Any], handle: str | None, max_rows: int | None, max_bytes: int | None = None,
     ) -> SnowflakeResult:
-        meta = body.get("resultSetMetaData") or {}
+        meta = body.get("resultSetMetaData")
+        if not isinstance(meta, dict):
+            # Every finished statement has it, an empty result too. Without it the
+            # reply is not a result (an empty body from a proxy, say), and reading
+            # it as no rows would make a schema look empty.
+            raise SnowflakeFetchError("Snowflake sent a finished statement without its result metadata")
         columns = [
             SnowflakeColumn(
                 name=column.get("name", f"col_{i}"),

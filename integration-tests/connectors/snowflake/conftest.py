@@ -96,50 +96,58 @@ async def snowflake_connector(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    await snowflake_source.create_schema()
-    await snowflake_source.create_schema(HIDDEN_SCHEMA)
-    await snowflake_source.run(*_seed_statements(snowflake_source))
-    await snowflake_source.grant_reads()
-    await snowflake_source.grant_reads(HIDDEN_SCHEMA)
-    await snowflake_source.run(*(
-        f"GRANT READ ON STAGE {snowflake_source.qualified(stage)} TO ROLE {snowflake_source.reader_role}"
-        for stage in (STAGE, BARE_STAGE)
-    ))
-
     database = snowflake_source.database
     state: dict[str, Any] = {"resource_name": SCHEMA, "schema": SCHEMA, "hidden_schema": HIDDEN_SCHEMA}
-    instance = pipeshub_client.create_connector(
-        connector_type="Snowflake",
-        instance_name=f"snowflake-lifecycle-test-{uuid.uuid4().hex[:8]}",
-        scope="team",
-        config={"auth": key_pair_auth()},
-        auth_type="KEY_PAIR",
-    )
-    connector_id = instance.connector_id
-    state["connector_id"] = connector_id
+    # Cleanup runs even when setup fails: this account is real, and a failed run
+    # must not leave schemas, or a connector syncing them, behind.
+    try:
+        await snowflake_source.create_schema()
+        await snowflake_source.create_schema(HIDDEN_SCHEMA)
+        await snowflake_source.run(*_seed_statements(snowflake_source))
+        await snowflake_source.grant_reads()
+        await snowflake_source.grant_reads(HIDDEN_SCHEMA)
+        await snowflake_source.run(*(
+            f"GRANT READ ON STAGE {snowflake_source.qualified(stage)} TO ROLE {snowflake_source.reader_role}"
+            for stage in (STAGE, BARE_STAGE)
+        ))
 
-    # Only this run's schemas: a trial account shares large sample databases with every role.
-    pipeshub_client.update_connector_filters_sync_safe(
-        connector_id,
-        filters={"sync": {"values": {
-            "databases": {"operator": "in", "value": [database], "type": "multiselect"},
-            "schemas": {"operator": "in", "value": [f"{database}.{SCHEMA}", f"{database}.{HIDDEN_SCHEMA}"],
-                        "type": "multiselect"},
-        }}},
-    )
-    pipeshub_client.toggle_sync(connector_id, enable=True)
+        instance = pipeshub_client.create_connector(
+            connector_type="Snowflake",
+            instance_name=f"snowflake-lifecycle-test-{uuid.uuid4().hex[:8]}",
+            scope="team",
+            config={"auth": key_pair_auth()},
+            auth_type="KEY_PAIR",
+        )
+        connector_id = instance.connector_id
+        state["connector_id"] = connector_id
 
-    async def _synced() -> bool:
-        names = set(await graph_provider.fetch_record_names(connector_id))
-        return {*SEEDED_TABLES, HIDDEN_TABLE} <= names
+        # Only this run's schemas: a trial account shares large sample databases with every role.
+        pipeshub_client.update_connector_filters_sync_safe(
+            connector_id,
+            filters={"sync": {"values": {
+                "databases": {"operator": "in", "value": [database], "type": "multiselect"},
+                "schemas": {"operator": "in", "value": [f"{database}.{SCHEMA}", f"{database}.{HIDDEN_SCHEMA}"],
+                            "type": "multiselect"},
+            }}},
+        )
+        pipeshub_client.toggle_sync(connector_id, enable=True)
 
-    await wait_until_graph_condition(
-        connector_id, check=_synced, timeout=600, poll_interval=10, description="first Snowflake sync",
-    )
-    state["full_sync_count"] = await graph_provider.count_records(connector_id)
+        async def _synced() -> bool:
+            names = set(await graph_provider.fetch_record_names(connector_id))
+            return {*SEEDED_TABLES, HIDDEN_TABLE} <= names
 
-    yield state
+        await wait_until_graph_condition(
+            connector_id, check=_synced, timeout=600, poll_interval=10, description="first Snowflake sync",
+        )
+        state["full_sync_count"] = await graph_provider.count_records(connector_id)
 
-    await destructor(snowflake_source, pipeshub_client, graph_provider, state, connector_type="Snowflake")
-    await snowflake_source.drop_schema(HIDDEN_SCHEMA)
-    await snowflake_source.drop_schema()
+        yield state
+    finally:
+        try:
+            if state.get("connector_id"):
+                await destructor(
+                    snowflake_source, pipeshub_client, graph_provider, state, connector_type="Snowflake",
+                )
+        finally:
+            await snowflake_source.drop_schema(HIDDEN_SCHEMA)
+            await snowflake_source.drop_schema()

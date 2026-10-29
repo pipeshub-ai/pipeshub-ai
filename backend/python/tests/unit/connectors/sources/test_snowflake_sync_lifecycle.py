@@ -26,7 +26,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
     schema_key,
 )
 from app.connectors.sources.snowflake.sync_state import SnowflakeStateStore
-from app.models.entities import RecordGroupType, RecordType
+from app.models.entities import RecordType
 from app.sources.external.snowflake.profiling import TableProfile
 
 CONFIG = {"auth": {"accountIdentifier": "acct", "warehouse": "WH", "patToken": "pat"}}
@@ -630,7 +630,3 @@ class TestOtherObjects:
         assert world.ids(RecordType.SQL_TABLE) == {"DB.S.A"}
         assert "D2" not in world.graph.groups and world.sync_point.data["snowflake_state"]["databases"] == ["DB"]
         assert "snowflake_state:D2" not in world.sync_point.data
-
-
-def test_group_types_used_match_the_connector() -> None:
-    assert {RecordGroupType.STAGE.value, RecordGroupType.SQL_NAMESPACE.value, RecordGroupType.SQL_DATABASE.value}

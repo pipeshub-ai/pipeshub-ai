@@ -2,6 +2,8 @@ import json
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
 
 
@@ -95,11 +97,10 @@ async def test_an_html_404_is_not_retried() -> None:
     )
 
     http = HTMLHTTP()
-    runner = SnowflakeStatementRunner(data_source(http), warehouse="WH")
-    try:
+    runner = SnowflakeStatementRunner(data_source(http), warehouse="WH", sleep=AsyncMock())
+    with pytest.raises(SnowflakeFetchError) as error:
         await runner.run("SELECT 1")
-    except SnowflakeFetchError as error:
-        assert error.status_code == 404
+    assert error.value.status_code == 404
     assert len(http.requests) == 1
 
 
@@ -160,3 +161,17 @@ async def test_an_empty_success_body_is_still_a_success() -> None:
 
     response = await data_source(EmptyHTTP()).execute_sql("SELECT 1")
     assert response.success and response.data is None
+
+
+@pytest.mark.parametrize("body", [{}, {"data": []}], ids=["empty", "rows-without-metadata"])
+async def test_a_finished_reply_without_result_metadata_is_an_error_not_no_rows(body) -> None:
+    # Every finished statement carries resultSetMetaData, an empty result too:
+    # without it, an empty listing would make a schema look emptied.
+    from app.sources.external.snowflake.statements import (
+        SnowflakeFetchError,
+        SnowflakeStatementRunner,
+    )
+
+    runner = SnowflakeStatementRunner(data_source(FakeHTTP(200, body)), warehouse="WH", sleep=AsyncMock())
+    with pytest.raises(SnowflakeFetchError, match="without its result metadata"):
+        await runner.run("SELECT 1")

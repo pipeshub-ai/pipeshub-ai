@@ -51799,6 +51799,7 @@ paths:
                     password: your-password
                 authType:
                   type: string
+                  minLength: 1
                   maxLength: 64
                   description: |
                     The auth type the form was filled for, when the connector offers several
