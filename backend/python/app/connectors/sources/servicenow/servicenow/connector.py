@@ -372,7 +372,7 @@ _CLIENT_CREDENTIALS = "the ServiceNow OAuth application whose OAuth application 
 _API_KEY_FIELD = "apiKey"
 # A client-credentials token this close to expiry is replaced before the next request.
 _TOKEN_RENEW_MARGIN_S = 60
-_MISSING_CREDENTIALS = "The ServiceNow connector needs {what}. Enter them on the connector's Authenticate Instance tab."
+_MISSING_CREDENTIALS = "The ServiceNow connector needs {what}. Enter them on the connector's Authenticate tab."
 
 
 @ConnectorBuilder(ServiceNowConnectorMetadata.NAME)\
@@ -682,7 +682,7 @@ class ServiceNowConnector(BaseConnector):
 
             if not config:
                 raise ConnectorInitError(
-                    "The ServiceNow connector has no saved settings. Configure it on its Authenticate Instance tab."
+                    "The ServiceNow connector has no saved settings. Configure it on its Authenticate tab."
                 )
 
             # Extract OAuth configuration
@@ -710,7 +710,7 @@ class ServiceNowConnector(BaseConnector):
             if not oauth_config:
                 raise ConnectorInitError(
                     "The OAuth app this connector is linked to was not found. Choose or create an OAuth app "
-                    "on the connector's Authenticate Instance tab, then sign in again on the Authorize tab."
+                    "on the connector's Authenticate tab, then sign in again on the Authorize tab."
                 )
 
             oauth_config_data = oauth_config.get(OAuthConfigKeys.CONFIG, {})
@@ -737,7 +737,7 @@ class ServiceNowConnector(BaseConnector):
             ):
                 raise ConnectorInitError(
                     "The linked OAuth app is missing the instance URL, client ID, client secret or redirect URI. "
-                    "Complete it on the connector's Authenticate Instance tab."
+                    "Complete it on the connector's Authenticate tab."
                 )
             try:
                 self.instance_url = check_servicenow_instance_url(self.instance_url, same_host={
@@ -849,7 +849,7 @@ class ServiceNowConnector(BaseConnector):
         """What the user does when ServiceNow refuses the connector's sign-in."""
         if self.auth_type == AuthType.OAUTH:
             return "Re-authorize the connector on its Authorize tab."
-        return "Check the credentials on the connector's Authenticate Instance tab."
+        return "Check the credentials on the connector's Authenticate tab."
 
     async def _get_fresh_datasource(self) -> ServiceNowDataSource:
         """A datasource on a client with a current credential. OAuth: the access token stored in the
@@ -1342,7 +1342,7 @@ class ServiceNowConnector(BaseConnector):
                 code="servicenow_reauthorize", severity="error",
                 title="Re-authorize ServiceNow" if oauth else "Check the ServiceNow credentials",
                 message="ServiceNow refused the connector's sign-in. "
-                        + ("Sign in again on the Authorize tab." if oauth else "Update them on the Authenticate Instance tab."),
+                        + ("Sign in again on the Authorize tab." if oauth else "Update them on the Authenticate tab."),
                 action="authenticate",
             )]
             retried = ", also after a token refresh" if oauth else (

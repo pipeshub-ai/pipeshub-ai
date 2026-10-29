@@ -180,7 +180,7 @@ async def test_every_type_checks_the_instance_url(servicenow_connector, auth_typ
 async def test_a_missing_secret_is_named(servicenow_connector, auth_type, field) -> None:
     sc = servicenow_connector
     _saved(sc, auth_type, **{field: ""})
-    with pytest.raises(ConnectorInitError, match="Authenticate Instance tab"):
+    with pytest.raises(ConnectorInitError, match="Authenticate tab"):
         await sc.init()
 
 
@@ -269,7 +269,7 @@ async def test_401_stops_and_notifies_with_the_credentials_fix(servicenow_connec
     with pytest.raises(ServiceNowAuthError):
         await sc.run_sync()
     assert len(sent) == 1 and sent[0]["type"] == NotificationType.CONNECTOR_AUTH_ERROR
-    assert "Check the credentials on the connector's Authenticate Instance tab." in sent[0]["message"]
+    assert "Check the credentials on the connector's Authenticate tab." in sent[0]["message"]
     assert "Authorize tab" not in sent[0]["message"] and "token refresh" not in sent[0]["message"]
     assert sc.last_action_items[0].title == "Check the ServiceNow credentials"
 
@@ -283,7 +283,7 @@ async def test_connection_test_401_names_the_credentials_fix(servicenow_connecto
         await sc.test_connection_and_access()
     assert str(error.value) == (
         "ServiceNow at acme.service-now.com refused the connector's sign-in (HTTP 401: User is not authenticated). "
-        "Check the credentials on the connector's Authenticate Instance tab."
+        "Check the credentials on the connector's Authenticate tab."
     )
 
 
