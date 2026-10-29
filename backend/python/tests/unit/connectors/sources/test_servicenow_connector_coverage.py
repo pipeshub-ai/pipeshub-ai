@@ -115,7 +115,7 @@ class TestOrganizationalEntities:
         assert "company" in ORGANIZATIONAL_ENTITIES
         assert "department" in ORGANIZATIONAL_ENTITIES
         assert "location" in ORGANIZATIONAL_ENTITIES
-        assert "cost_center" in ORGANIZATIONAL_ENTITIES
+        assert "cost_center" not in ORGANIZATIONAL_ENTITIES  # no such user_criteria field
 
     def test_entity_has_required_fields(self):
         for entity_type, config in ORGANIZATIONAL_ENTITIES.items():

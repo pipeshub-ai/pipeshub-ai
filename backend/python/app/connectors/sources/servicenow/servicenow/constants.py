@@ -39,7 +39,7 @@ class ServiceNowTables:
     CORE_COMPANY = "core_company"
     CMN_DEPARTMENT = "cmn_department"
     CMN_LOCATION = "cmn_location"
-    CMN_COST_CENTER = "cmn_cost_center"
+    KB_UC_CANNOT_CONTRIBUTE_MTOM = "kb_uc_cannot_contribute_mtom"
 
 
 class ServiceNowFields:
@@ -80,7 +80,9 @@ class ServiceNowFields:
     DEPARTMENT = "department"
     COMPANY = "company"
     LOCATION = "location"
-    COST_CENTER = "cost_center"
+    SCRIPT = "script"
+    OWNERSHIP_GROUP = "ownership_group"
+    STATE = "state"
     MANAGER = "manager"
     FILE_NAME = "file_name"
     CONTENT_TYPE = "content_type"
@@ -136,7 +138,6 @@ class ServiceNowPrefixes:
     COMPANY = "COMPANY_"
     DEPARTMENT = "DEPARTMENT_"
     LOCATION = "LOCATION_"
-    COST_CENTER = "COSTCENTER_"
     ROLE = "ROLE_"
 
 
@@ -157,15 +158,20 @@ class ServiceNowDefaults:
     # skipped for good; reading them again is an idempotent upsert.
     DELTA_OVERLAP_SECONDS = 120
     CONNECTOR_TYPE = "SERVICENOW"
-    ADMIN_ROLE_NAME = "admin"
     # Content types that say nothing about the file, so its name decides.
     UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
     # The out-of-box Knowledge Portal. Used only when the instance tells us nothing.
     KB_PORTAL_SUFFIX = "kb"
     KB_PORTAL_PROPERTY = "sn_km_portal.glide.knowman.serviceportal.portal_url"
-    # When true, an article's own Can Read criteria decide, and the grants of
-    # the parent knowledge base no longer reach that article.
+    # When true, contributors are held to an article's own Can Read and Cannot Read too. Readers
+    # always are: an article's Can Read narrows its knowledge base, whatever this says.
     ARTICLE_READ_CRITERIA_PROPERTY = "glide.knowman.apply_article_read_criteria"
+    # When true (and when it cannot be read or is unset), a knowledge base with no user criteria
+    # is readable only by its owner, managers and knowledge admins.
+    BLOCK_NO_CRITERIA_PROPERTY = "glide.knowman.block_access_with_no_user_criteria"
+    # The out-of-box "Guest User" criterion every new knowledge base gets as Cannot Read and
+    # Cannot Contribute: it denies only the guest user, who has no PipesHub account.
+    GUEST_USER_CRITERIA = "76f09af6cb1200108ad442fcf7076dbf"
 
 
 class ServiceNowConfigPaths:
@@ -176,6 +182,8 @@ class ServiceNowConfigPaths:
 class ServiceNowRoles:
     """ServiceNow role names"""
     ADMIN = "admin"
+    # Reads every knowledge base and article without user criteria (the knowledge_manager role does not).
+    KNOWLEDGE_ADMIN = "knowledge_admin"
 
 
 class ServiceNowSyncPointKeys:
@@ -191,6 +199,8 @@ class ServiceNowSyncPointKeys:
     INLINE_IMAGES = "attachments"
     AUDIT_DELETE = "audit_delete"
     KB_SCOPE = "kb_scope"
+    # Set once a run has read every user, so the users deactivated before it lose access too
+    USERS_V2 = "users/v2"
     CATEGORY_SCOPE = "category_scope"
 
 
@@ -202,6 +212,7 @@ class ServiceNowDictKeys:
     READ = "read"
     CANNOT_READ = "cannot_read"
     WRITE = "write"
+    CANNOT_WRITE = "cannot_write"
     USER_SYS_ID = "user_sys_id"
     ORG_SYS_ID = "org_sys_id"
     ORG_TYPE = "org_type"
@@ -269,24 +280,5 @@ ORGANIZATIONAL_ENTITIES: dict[str, OrganizationalEntityConfig] = {
         "prefix": ServiceNowPrefixes.LOCATION,
         "sync_point_key": "locations",
     },
-    "cost_center": {
-        "table": ServiceNowTables.CMN_COST_CENTER,
-        "fields": CommonStrings.COMMA.join(
-            [
-                ServiceNowFields.SYS_ID,
-                ServiceNowFields.NAME,
-                ServiceNowFields.PARENT,
-                ServiceNowFields.SYS_CREATED_ON,
-                ServiceNowFields.SYS_UPDATED_ON,
-            ]
-        ),
-        "prefix": ServiceNowPrefixes.COST_CENTER,
-        "sync_point_key": "cost_centers",
-    },
 }
 
-
-#: Whether a Can Read group criteria also matches members of child groups. Unverified on a real
-#: instance (see ServiceNowConnector._users_matching_criteria), so off: an allow grants less.
-#: Cannot Read always expands child groups.
-CRITERIA_ALLOW_INCLUDES_CHILD_GROUPS = False

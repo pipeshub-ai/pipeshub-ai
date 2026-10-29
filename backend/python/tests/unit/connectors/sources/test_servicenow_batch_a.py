@@ -155,7 +155,7 @@ async def test_in_list_is_chunked_under_max_url_length(servicenow_connector) -> 
 
     assert sorted(r.sys_id for r in rows) == ids
     assert len(fake.calls) > 2
-    fields = "sys_id,active,match_all,advanced,user,group,role,department,location,company,cost_center,sys_updated_on"
+    fields = "sys_id,active,match_all,advanced,script,user,group,role,department,location,company,sys_updated_on"
     for _, query, limit in fake.calls:
         url = (f"{INSTANCE}/api/now/table/user_criteria?sysparm_query={quote(query, safe='')}"
                f"&sysparm_fields={quote(fields, safe='')}&sysparm_limit={limit}&sysparm_offset=0"
@@ -166,7 +166,7 @@ async def test_in_list_is_chunked_under_max_url_length(servicenow_connector) -> 
 @pytest.mark.asyncio
 async def test_admin_read_is_paged(servicenow_connector) -> None:  # noqa: F811
     fake = FakeServiceNow({"sys_user_has_role": [
-        {"sys_id": f"r{i:03d}", "user": f"u{i:03d}", "role.name": "admin", "user.active": "true", "sys_updated_on": T0}
+        {"sys_id": f"r{i:03d}", "user": f"u{i:03d}", "role.name": "admin", "state": "active", "user.active": "true", "sys_updated_on": T0}
         for i in range(150)
     ]})
     servicenow_connector._get_fresh_datasource = AsyncMock(return_value=fake)

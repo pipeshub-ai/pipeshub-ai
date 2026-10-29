@@ -180,9 +180,14 @@ async def test_sn_an_article_with_cannot_read_takes_the_explicit_grant_path(serv
     art = KBKnowledge(sys_id="a1", number="KB-a1", short_description="t", kb_category="c1", can_read_user_criteria="c",
                       cannot_read_user_criteria="d1, d2")
     sc = servicenow_connector
-    sc._article_deny_permissions = AsyncMock(return_value=[])
-    await sc._process_single_article(art, [])
-    sc._article_deny_permissions.assert_awaited_once_with(art, ["c"], ["d1", "d2"])
+    sc._kb_criteria = AsyncMock(return_value={"read": ["k"], "cannot_read": [], "write": [], "cannot_write": []})
+    sc._effective_users = AsyncMock(return_value=set())
+    sc._kb_privileged_users = AsyncMock(return_value=set())
+    updates = await sc._process_single_article(art, [])
+    assert updates[0].record.inherit_permissions is False
+    # KB readers minus both article denies, narrowed by the article's own Can Read
+    assert sc._effective_users.await_args_list[0].args == (["k"], ["d1", "d2"])
+    assert sc._effective_users.await_args_list[2].args == (["c"], [])
 
 
 @pytest.mark.asyncio
@@ -228,5 +233,5 @@ async def test_sn_an_article_with_own_allow_and_a_deny_narrows_the_knowledge_bas
         {},
     )
     sc._fetch_kb_permissions_from_criteria = AsyncMock(return_value={"read": ["kbcan"], "cannot_read": [], "write": []})
-    perms = await sc._article_deny_permissions(art, ["own"], ["deny1"])
+    _inherit, _rule, perms = await sc._article_access(art)
     assert T._users(perms) == ["u2"]  # (KB u1,u2,u3 - u3) and own u2,u3,u4

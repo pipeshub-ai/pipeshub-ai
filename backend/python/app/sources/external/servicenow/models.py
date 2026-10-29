@@ -41,6 +41,16 @@ class ServiceNowAuthError(ServiceNowAPIError):
         super().__init__(status_code=401, message=message, details=details)
 
 
+class ServiceNowAccessError(ServiceNowAPIError):
+    """A table that says who may read what is closed to this account: a 403, or a listing whose
+    rows are all hidden although ServiceNow counts them. Read as empty it would change access,
+    so the sync stops. ``table`` names it."""
+
+    def __init__(self, table: str, message: str, details: str | None = None) -> None:
+        self.table = table
+        super().__init__(status_code=403, message=f"{table}: {message}", details=details)
+
+
 class TableAPIRecord(BaseModel):
     """Generic record from ServiceNow Table API.
 
