@@ -178,6 +178,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             RedisConnectionConfig.from_redis_config(config)
         )
         self._planner = StreamReadPlanner(self._provider)
+        # Lanes this replica only judges (a lane subset): their group, once made.
+        self._judged_groups: set[str] = set()
         # PEL ownership is keyed by consumer name; sharing one across replicas
         # lets one process re-read another process's still-active messages.
         self.consumer_name = f"{tagged(config.client_id)}-{uuid.uuid4().hex}"
@@ -686,7 +688,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Reading a lane subset, this replica still judges every lane: the sweep
             # and lane upkeep take a lane missing from this reading as caught up.
             every_lane = RedisLaneRouter(messaging_env.fair_scheduling_lane_count).lane_topics(topic)
-            streams = [*streams, *(s for s in every_lane if s not in streams)]
+            judged = [s for s in every_lane if s not in streams]
+            await self.__ensure_groups(judged)
+            streams = [*streams, *judged]
         oldest, pending = await read_stream_backlog_detail(
             self.redis, self.config.group_id, streams
         )
@@ -710,6 +714,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
 
         return LaneBacklog(topic, oldest, lanes_for_event, pending)
+
+    async def __ensure_groups(self, streams: list[str]) -> None:
+        """Create the group, from the start, on lanes another pool consumes, so
+        their backlog can be read before that pool has started: a lane that
+        cannot be read fails the whole reading. The pool's replicas then join
+        this group, as they would one they made."""
+        for stream in streams:
+            if stream in self._judged_groups:
+                continue
+            try:
+                await self.redis.xgroup_create(  # type: ignore[union-attr]
+                    stream, self.config.group_id, id="0", mkstream=True
+                )
+            except Exception as e:
+                if _BUSYGROUP_ERROR not in str(e):
+                    raise
+            self._judged_groups.add(stream)
 
     async def __read_lane_map(self, topic: str) -> "Mapping[str, LaneEntry] | None":
         """The lane map, once per backlog read; None if it cannot be read,
