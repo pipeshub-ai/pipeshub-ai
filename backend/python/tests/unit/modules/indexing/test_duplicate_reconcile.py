@@ -40,6 +40,7 @@ class FakeGraph:
         self.pending_queries: list[tuple[int, int]] = []
         self.mention_copies: list[tuple[str, str]] = []
         self.mention_copy_error: Exception | None = None
+        self.read_errors: set[str] = set()
 
     async def copy_named_entity_mentions(self, source: str, target: str) -> int:
         if self.mention_copy_error is not None:
@@ -47,10 +48,12 @@ class FakeGraph:
         self.mention_copies.append((source, target))
         return 1
 
-    async def get_records_by_virtual_record_id(self, vrid: str) -> list[str]:
+    async def get_records_by_virtual_record_id(self, vrid: str, **_kw: object) -> list[str]:
         return list(self.siblings.get(vrid, []))
 
-    async def get_document(self, key: str, collection: str) -> dict | None:
+    async def get_document(self, key: str, collection: str, **_kw: object) -> dict | None:
+        if key in self.read_errors:
+            raise ConnectionError("graph unavailable")
         doc = self.docs.get(key)
         return dict(doc) if doc is not None else None
 
@@ -135,6 +138,30 @@ class TestReconciler:
         reconciler, _ = _reconciler(graph)
         assert await reconciler.reconcile("p1", "vr1") is False
         assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_copy_that_moved_to_a_new_revision_keeps_its_status(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED", contentRev="r1")
+        reconciler, _ = _reconciler(graph)
+        original_get = graph.get_document
+
+        async def moved_after_read(key: str, collection: str, **kw: object) -> dict | None:
+            doc = await original_get(key, collection, **kw)
+            if key == "s1":
+                graph.docs["s1"]["contentRev"] = "r2"
+            return doc
+
+        graph.get_document = moved_after_read  # type: ignore[method-assign]
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_failed_read_fails_the_reconcile(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.read_errors.add("s1")
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
 
     async def test_a_failed_primary_leaves_copies_for_its_next_try(self) -> None:
         graph = FakeGraph()

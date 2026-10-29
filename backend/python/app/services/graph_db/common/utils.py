@@ -437,6 +437,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "republishCount",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
+    "extractionDeferred",
     "duplicateReconcileDueAt",
 })
 
