@@ -30,7 +30,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text=(
                 "Create a restricted key with least-privilege access at "
                 "https://dashboard.stripe.com/apikeys and select 'Authorizing agent access "
-                "to your account', or sign in with OAuth."
+                "to your account'. To use OAuth, select OAuth as the authentication mode first."
             ),
         ),
         tags=["payments", "billing", "finance"],
