@@ -110,24 +110,29 @@ async def test_a_send_that_raises_leaves_the_rest_to_the_next_search(producer: A
     assert [c.args[1]["payload"]["recordId"] for c in producer.send_message.await_args_list] == ["a", "b", "b", "c"]
 
 
-async def test_two_searches_at_once_ask_once(producer: AsyncMock) -> None:
-    gate = asyncio.Event()
-
-    async def slow_send(*_args: object, **_kwargs: object) -> bool:
-        await gate.wait()
+async def test_two_searches_at_once_ask_once_per_record(producer: AsyncMock) -> None:
+    async def yielding_send(*_args: object, **_kwargs: object) -> bool:
+        await asyncio.sleep(0)
         return True
 
-    producer.send_message = AsyncMock(side_effect=slow_send)
-    results = {"records": [_doc("a")]}
+    producer.send_message = AsyncMock(side_effect=yielding_send)
+    results = {"records": [_doc("a"), _doc("b"), _doc("c")]}
     with _on(True):
-        both = asyncio.gather(
+        counts = await asyncio.gather(
             first_use.classify_on_first_use(results, "org-1", object(), _LOG),
             first_use.classify_on_first_use(results, "org-1", object(), _LOG),
         )
-        await asyncio.sleep(0)
-        gate.set()
-        assert sorted(await both) == [0, 1]
-    assert producer.send_message.await_count == 1
+    assert sorted(counts) == [0, 3]
+    asked = [c.args[1]["payload"]["recordId"] for c in producer.send_message.await_args_list]
+    assert sorted(asked) == ["a", "b", "c"]
+
+
+async def test_a_producer_that_cannot_start_releases_every_reservation(producer: AsyncMock) -> None:
+    results = {"records": [_doc("a"), _doc("b")]}
+    with _on(True):
+        with patch.object(first_use, "_get_producer", AsyncMock(side_effect=ConnectionError("down"))):
+            assert await first_use.classify_on_first_use(results, "org-1", object(), _LOG) == 0
+        assert await first_use.classify_on_first_use(results, "org-1", object(), _LOG) == 2
 
 
 async def test_the_cap_applies_after_records_already_asked_for(producer: AsyncMock) -> None:

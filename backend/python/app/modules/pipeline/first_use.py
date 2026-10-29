@@ -108,27 +108,31 @@ async def classify_on_first_use(
         if not org_id or not docs or not await is_classify_on_first_use_enabled(config_service):
             return 0
         # Capped after the repeat filter, so records past the first page are asked for too.
-        docs = _not_asked_recently(docs, time.monotonic())[:_MAX_PER_SEARCH]
+        now = time.monotonic()
+        docs = _not_asked_recently(docs, now)[:_MAX_PER_SEARCH]
         if not docs:
             return 0
-        producer = await _get_producer(config_service, logger)
+        # Reserved together, before the first await, so a search running alongside
+        # skips them; each is released if the broker refuses or never gets it.
+        pending = [(doc, _asked_key(doc)) for doc in docs]
+        for _doc, key in pending:
+            _asked[key] = now
         sent = 0
-        for doc in docs:
-            record_id, rev = _asked_key(doc)
-            # Reserved before the send, so a search running alongside does not ask
-            # too; released if the broker refuses, so the next search asks again.
-            _asked[(record_id, rev)] = time.monotonic()
-            try:
+        try:
+            producer = await _get_producer(config_service, logger)
+            while pending:
+                doc, key = pending[0]
                 accepted = await producer.send_message(
-                    RECORD_EVENTS_TOPIC, first_use_event(doc, org_id), key=record_id
+                    RECORD_EVENTS_TOPIC, first_use_event(doc, org_id), key=key[0]
                 ) is not False
-            except Exception:
-                _asked.pop((record_id, rev), None)
-                raise
-            if accepted:
-                sent += 1
-            else:
-                _asked.pop((record_id, rev), None)
+                pending.pop(0)
+                if accepted:
+                    sent += 1
+                else:
+                    _asked.pop(key, None)
+        finally:
+            for _doc, key in pending:
+                _asked.pop(key, None)
         return sent
     except Exception as e:
         logger.warning("Could not ask for classification of searched records: %s", e)
