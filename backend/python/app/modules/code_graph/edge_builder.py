@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
 from app.modules.code_graph.guards import (
+    is_test_path,
     lang_family,
     path_proximity_winner,
     prefer_non_test,
@@ -320,6 +321,7 @@ class _Builder:
         # (`from django.apps import apps`), whose type that file's assignment gives.
         self.value_imports: dict[str, dict[str, tuple[str, str]]] = {}
         self._py_classes: dict[str, list[str]] | None = None
+        self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
@@ -940,7 +942,8 @@ class _Builder:
                 return None, CONFIDENCE_INFERRED, _EXTERNAL
             last = (fact.get("qualifiedPrefix") or receiver or "").rsplit(".", 1)[-1]
             named = self._py_named_like(last, name) if _SEGMENT.fullmatch(last) and last not in ("self", "cls") else None
-            if named:
+            call_file = self.index.file_by_record.get(record_id) or ""
+            if named and self._py_reachable(call_file, named):
                 return self._resolve_self_method(named, name), CONFIDENCE_INFERRED, RESOLUTION_NAME
             return self._py_unique_method(name, fact, record_id)
 
@@ -1113,6 +1116,26 @@ class _Builder:
         self._expr_memo[memo_key] = found
         return found
 
+    def _py_reachable(self, call_file: str, target: str) -> bool:
+        """Whether a guessed *target* is code *call_file* can see: its own file, a file it
+        imports from, or a file under a package it imports (not the top-level package,
+        which would cover the whole repo). App code never reaches into test files."""
+        target_file = self.index.file_by_block.get(target) or ""
+        if target_file == call_file:
+            return True
+        if is_test_path(target_file) and not is_test_path(call_file):
+            return False
+        if call_file not in self._py_reach:
+            files = set(self.module_imports.get(call_file, ()))
+            files |= {self.index.file_by_block.get(b) or "" for b in self.symbol_bindings.get(call_file, {}).values()}
+            files |= {f for f, _ in self.value_imports.get(call_file, {}).values()}
+            files.discard("")
+            packages = {f.rsplit("/", 1)[0] + "/" for f in files
+                        if f.endswith("__init__.py") and f.count("/") >= 2}
+            self._py_reach[call_file] = (files, packages)
+        files, packages = self._py_reach[call_file]
+        return target_file in files or any(target_file.startswith(p) for p in packages)
+
     def _py_roots(self, classes: list[str]) -> list[str]:
         """*classes* without those that inherit from another of them."""
         wanted = set(classes)
@@ -1143,7 +1166,7 @@ class _Builder:
             return None, CONFIDENCE_INFERRED, _EXTERNAL
         owners = [cid for cid in self.index.candidates(name)
                   if self._family_of(cid) == "py" and self._parent_of(cid) in self.index.type_blocks]
-        if len(owners) != 1:
+        if len(owners) != 1 or not self._py_reachable(call_file, owners[0]):
             return None, CONFIDENCE_INFERRED, None
         return owners[0], CONFIDENCE_INFERRED, RESOLUTION_NAME
 

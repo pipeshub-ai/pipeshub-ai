@@ -179,3 +179,26 @@ class Leaf(Mid):
     await _build(graph)
     assert ("pkg/geo.py::method:Base.as_sql"
             in _targets(graph, CALLS, "pkg/geo.py"))
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_guess_needs_code_the_caller_can_see(graph, index_file) -> None:
+    """`client.patch()` in one integration is not the one `patch` another package
+    defines: a guess by name needs the target's module (or its package) imported,
+    and app code never lands in a test file."""
+    await _index(index_file, {
+        "pkg/skills/manager.py": b"class SkillManager:\n    def patch_skill(self):\n        pass\n",
+        "tests/test_fakes.py": b"class FakeLogger:\n    def warn_once(self):\n        pass\n",
+        "pkg/billing/__init__.py": b"",
+        "pkg/billing/ledger.py": b"class Ledger:\n    def post_entry(self):\n        pass\n",
+        "pkg/outlook.py": b'''
+from pkg.billing import ledger
+
+def sync(client, log, book):
+    client.patch_skill()
+    log.warn_once()
+    book.post_entry()
+''',
+    })
+    await _build(graph)
+    assert _targets(graph, CALLS, "pkg/outlook.py") == {"pkg/billing/ledger.py::method:Ledger.post_entry"}
