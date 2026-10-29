@@ -320,7 +320,8 @@ async def test_inline_image_added_without_article_edit_reprocesses_article(servi
     await servicenow_connector._sync_articles()
 
     assert store.keys() == [KB1]  # not KB0000002: nothing of it changed
-    assert sync_point.data["attachments"] == {"last_sync_time": LATER}
+    assert sync_point.data["attachments"] == {"last_sync_time": LATER,
+                                              "synced_in_overlap": [f"{LATER}|{_inline_image(9, 'a0001', LATER)['sys_id']}"]}
     # inline images are not file attachments of the article
     assert not any(r.record_type == "FILE" for r in store.records.values())
 

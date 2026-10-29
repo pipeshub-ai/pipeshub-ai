@@ -286,7 +286,8 @@ async def test_feedback_without_article_bump_reprocesses_article(servicenow_conn
 
     assert store.keys() == [KB1]
     assert store.records[KB1].external_revision_id == sc._content_revision("<p>body</p>", [["fb01", LATER]])
-    assert sc.article_sync_point.data["feedback"] == {"last_sync_time": LATER, "count": 1}
+    assert sc.article_sync_point.data["feedback"] == {"last_sync_time": LATER, "count": 1,
+                                                      "synced_in_overlap": [f"{LATER}|fb01"]}
     assert sc.article_sync_point.data["articles"]["last_sync_time"] == T0  # not moved by feedback
 
 

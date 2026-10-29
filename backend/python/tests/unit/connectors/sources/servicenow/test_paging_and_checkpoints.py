@@ -477,7 +477,10 @@ async def test_a_stopped_full_read_resumes_where_it_stopped_and_unlinks_only_aft
     # the platform unlinks nothing after a resumed run, which did not see the first part.
     assert store.deleted == ["KB9999999"]
     assert sc.full_sync_coverage().complete is False
-    assert point.data["articles"] == {"last_sync_time": rows[-1]["sys_updated_on"], "full_resume_after": []}
+    saved = point.data["articles"]
+    assert (saved["last_sync_time"], saved["full_resume_after"]) == (rows[-1]["sys_updated_on"], [])
+    # the rows the next delta's overlap reads again (the last 120 s), synced already
+    assert saved["synced_in_overlap"] == sorted(f"{r['sys_updated_on']}|{r['sys_id']}" for r in rows[130:])
 
 
 @pytest.mark.asyncio
@@ -503,19 +506,37 @@ async def test_a_resume_point_is_never_past_a_failed_article(servicenow_connecto
 
 
 @pytest.mark.asyncio
-async def test_a_platform_full_sync_reads_from_the_start_and_sees_everything(servicenow_connector) -> None:
+async def test_a_platform_full_sync_continues_a_stopped_one_and_unlinks_only_after_a_whole_pass(servicenow_connector) -> None:
     sc = servicenow_connector
-    rows = _timed_articles(150)
-    fake = FakeServiceNow({"kb_knowledge": rows})
-    point = migrated_sync_point(articles={"full_resume_after": [rows[99]["sys_updated_on"], rows[99]["sys_id"]]})
-    wire_store(sc, fake, sync_point=point)
-    sc.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+    rows = _timed_articles(250)
+    stop, fail = _stop_on_listing_call(2)
+    fake = FakeServiceNow({"kb_knowledge": rows}, fail=fail)
+    point = migrated_sync_point(**{"articles_reconcile/last": {"last_sync_time": "2000-01-01 00:00:00"}})
+    store = wire_store(sc, fake, sync_point=point)
+    sc.data_entities_processor.full_sync_running = MagicMock(return_value=True)  # every run here
 
-    await sc._sync_articles()
+    with pytest.raises(ServiceNowRateLimited):  # over the cap at the second page
+        await sc._sync_articles()
+    assert len(store.keys("WEBPAGE")) == 100
+    stop["on"] = False
+    fake.calls.clear()
+    sc._sync_read_incomplete = False
 
-    assert "^NQ" not in fake.calls_to("kb_knowledge")[0]
-    assert len(written_ids(sc)) == 150
-    assert sc.full_sync_coverage().complete is True
+    await sc._sync_articles()  # the rerun the platform owes, as a full sync
+
+    listed = [q for q in fake.calls_to("kb_knowledge") if q.startswith("workflow_state=published")]
+    assert f"sys_updated_on>{rows[99]['sys_updated_on']}^NQ" in listed[0]  # continues where it stopped
+    assert store.keys("WEBPAGE") == [f"KB{i:07d}" for i in range(1, 251)]
+    assert sc.full_sync_coverage().complete is False  # did not see the first part: unlinks nothing
+    assert point.data["articles"]["full_resume_after"] == []
+
+    fake.calls.clear()
+    sc._sync_read_incomplete = False
+
+    await sc._sync_articles()  # the full sync the platform owes after an incomplete one
+
+    assert "^NQ" not in fake.calls_to("kb_knowledge")[0]  # the incremental checkpoint is not used
+    assert sc.full_sync_coverage().complete is True  # a whole pass: now it unlinks
 
 
 @pytest.mark.asyncio

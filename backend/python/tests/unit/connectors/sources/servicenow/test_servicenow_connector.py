@@ -2643,7 +2643,8 @@ class TestSyncArticles:
         assert mock_ds.get_now_table_tableName.call_count == 2  # X-Total-Count ends it, no empty page
         # A finished full read clears where it would have resumed.
         assert servicenow_connector.article_sync_point.data["articles"] == {
-            "last_sync_time": "2024-01-02 00:00:00", "full_resume_after": []}
+            "last_sync_time": "2024-01-02 00:00:00", "full_resume_after": [],
+            "synced_in_overlap": ["2024-01-02|art100"]}
 
     @pytest.mark.asyncio
     async def test_sync_articles_delta_sync_with_last_sync_time(self, servicenow_connector):

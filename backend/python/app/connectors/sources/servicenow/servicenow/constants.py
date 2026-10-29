@@ -165,6 +165,8 @@ class ServiceNowDefaults:
     # the same second as the checkpoint, or committed late, would otherwise be
     # skipped for good; reading them again is an idempotent upsert.
     DELTA_OVERLAP_SECONDS = 120
+    # Most rows kept as synced in the overlap; past it the next delta syncs them again
+    OVERLAP_KEYS_MAX = 2000
     CONNECTOR_TYPE = "SERVICENOW"
     # An inline image is embedded as a data: URI (a third larger) in the streamed article.
     MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
@@ -225,6 +227,9 @@ class ServiceNowSyncPointKeys:
     # last row it wrote, where the next run continues (see ServiceNowConnector._sync_articles)
     FULL_RESUME_AFTER = "full_resume_after"
     LAST_SYNC_TIME = "last_sync_time"
+    # Beside a checkpoint: the "<sys_updated_on>|<sys_id>" of the rows already synced that the next
+    # delta's overlap reads again, so it skips them (see ServiceNowConnector._overlap_keys)
+    SYNCED_IN_OVERLAP = "synced_in_overlap"
     # Set once articles are stored under their number (they were under a version's sys_id)
     ARTICLE_KEY_V2 = "article_key/v2"
     # Set once attachments are stored under a key that survives a new article version (they

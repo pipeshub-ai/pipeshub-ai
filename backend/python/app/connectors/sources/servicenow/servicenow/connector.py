@@ -1061,10 +1061,16 @@ class ServiceNowConnector(BaseConnector):
         """The stored checkpoint, or None while a full sync runs. A full sync whose sync points
         could not be cleared would otherwise read only the delta, and its cleanup would then
         unlink everything that did not change."""
+        return (await self._read_delta_point(sync_point, key))[0]
+
+    async def _read_delta_point(self, sync_point: SyncPoint, key: str) -> tuple[str | None, set[str]]:
+        """The stored checkpoint and the rows its delta's overlap reads again that were synced
+        already (see _overlap_keys); (None, none) while a full sync runs (see _read_checkpoint)."""
         if self.data_entities_processor.full_sync_running(self.connector_id):
-            return None
-        data = await sync_point.read_sync_point(key)
-        return data.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME) if data else None
+            return None, set()
+        data = await sync_point.read_sync_point(key) or {}
+        return data.get(ServiceNowSyncPointKeys.LAST_SYNC_TIME), set(
+            data.get(ServiceNowSyncPointKeys.SYNCED_IN_OVERLAP) or ())
 
     @staticmethod
     def _delta_since(checkpoint: str) -> str:
@@ -1072,6 +1078,21 @@ class ServiceNowConnector(BaseConnector):
         stored = datetime.strptime(checkpoint, ServiceNowDefaults.DATETIME_FORMAT).replace(tzinfo=timezone.utc)
         start = stored - timedelta(seconds=ServiceNowDefaults.DELTA_OVERLAP_SECONDS)
         return start.strftime(ServiceNowDefaults.DATETIME_FORMAT)
+
+    @staticmethod
+    def _row_key(row: TableAPIRecord) -> str:
+        """A row as it was when read: a change gives it another sys_updated_on, so another key."""
+        return f"{row.sys_updated_on}|{row.sys_id}"
+
+    @classmethod
+    def _overlap_keys(cls, keys: Iterable[str], checkpoint: str) -> list[str]:
+        """Of the keys of the rows synced, the ones the next delta from ``checkpoint`` reads again,
+        to store beside it: that delta skips them, so a run with nothing new syncs nothing. The
+        overlap stays for rows committed late into it, whose keys are not among them."""
+        since = cls._delta_since(checkpoint)
+        kept = sorted(k for k in keys if k.split("|", 1)[0] > since)
+        # shortcut: past the cap a bulk change is synced again by the next run; raise it if that shows
+        return kept if len(kept) <= ServiceNowDefaults.OVERLAP_KEYS_MAX else []
 
     def _current_article_query(self) -> str:
         """The article rows PipesHub indexes: the ones ServiceNow search shows (its knowledge
@@ -1331,12 +1352,15 @@ class ServiceNowConnector(BaseConnector):
         except ServiceNowRateLimited as e:
             until = datetime.fromtimestamp(e.reset_at, tz=timezone.utc).strftime("%H:%M")
             rule = f" ({e.rule})" if e.rule else ""
+            # The platform clears every sync point before a full sync, the resume point too.
+            again = "runs the full sync again" if self.data_entities_processor.full_sync_running(
+                self.connector_id) else "continues where this one stopped"
             # The reset time is in the text, so the platform's back-off sends this once per reset.
             await self._notify(
                 NotificationType.CONNECTOR_SYNC_ERROR, NotificationSeverity.ERROR,
                 "sync paused, ServiceNow rate limit reached",
                 f"A ServiceNow rate limit rule{rule} is used up until {until} UTC, so the sync stopped. Nothing "
-                "it did not read was removed; the next sync after that time continues where this one stopped.",
+                f"it did not read was removed; the next sync after that time {again}.",
             )
             raise
         except Exception as e:
@@ -1381,26 +1405,37 @@ class ServiceNowConnector(BaseConnector):
             titles = sorted(set(self._kbs_unread))
             more = len(titles) - self._MAX_PROBLEMS_SHOWN
             problems.append(
-                f"{_plural(len(titles), 'knowledge base', 'knowledge bases')} kept their stored access because "
-                f"their user criteria could not be read: {', '.join(titles[:self._MAX_PROBLEMS_SHOWN])}"
+                f"{_plural(len(titles), 'knowledge base kept its', 'knowledge bases kept their')} stored access "
+                f"because {'its' if len(titles) == 1 else 'their'} user criteria could not be read: "
+                f"{', '.join(titles[:self._MAX_PROBLEMS_SHOWN])}"
                 + (f" and {more} more" if more > 0 else "")
             )
         problems += [line.format(n=count) for line, count in self._skipped.items()]
         if self._no_reader:
-            problem = (f"{_plural(self._no_reader, 'article has', 'articles have')} no reader in PipesHub: their "
-                       "user criteria match nobody PipesHub can evaluate (for example, a scripted criterion)")
+            problem = (f"{_plural(self._no_reader, 'article has', 'articles have')} no reader in PipesHub: "
+                       f"{'its' if self._no_reader == 1 else 'their'} user criteria match nobody PipesHub can "
+                       "evaluate (for example, a scripted criterion)")
             problems.append(problem)
             self._persistent.add(problem)
-        for kind, line in (
-            ("scripted", "{n} use a script, which PipesHub does not run: they grant nobody here, and as Cannot Read "
-                         "or Cannot Contribute they deny everyone they may cover"),
-            ("hidden", "{n} are hidden from the integration user: they grant nobody here, and as Cannot Read or "
-                       "Cannot Contribute they deny everyone"),
-            ("partial", "{n} name groups or users partly hidden from the integration user: as Cannot Read or "
-                        "Cannot Contribute they deny everyone they may cover"),
+        for kind, one, many in (
+            ("scripted",
+             "uses a script, which PipesHub does not run: it grants nobody here, and as Cannot Read or Cannot "
+             "Contribute it denies everyone it may cover",
+             "use a script, which PipesHub does not run: they grant nobody here, and as Cannot Read or Cannot "
+             "Contribute they deny everyone they may cover"),
+            ("hidden",
+             "is hidden from the integration user: it grants nobody here, and as Cannot Read or Cannot Contribute "
+             "it denies everyone",
+             "are hidden from the integration user: they grant nobody here, and as Cannot Read or Cannot "
+             "Contribute they deny everyone"),
+            ("partial",
+             "names groups or users partly hidden from the integration user: as Cannot Read or Cannot Contribute "
+             "it denies everyone it may cover",
+             "name groups or users partly hidden from the integration user: as Cannot Read or Cannot Contribute "
+             "they deny everyone they may cover"),
         ):
-            if self._criteria_noted.get(kind):
-                problem = line.format(n=_plural(len(self._criteria_noted[kind]), "user criterion", "user criteria"))
+            if count := len(self._criteria_noted.get(kind) or ()):
+                problem = f"{_plural(count, 'user criterion', 'user criteria')} {one if count == 1 else many}"
                 problems.append(problem)
                 self._persistent.add(problem)
         # Shown when it first appears, and again once it has changed, or gone and come back.
@@ -3083,11 +3118,11 @@ class ServiceNowConnector(BaseConnector):
         self._rekey_attachments = not migrated
         current = self._current_article_query()
         # Inline images and feedback change without their article row changing.
-        inline_changed, inline_checkpoint = await self._changed_articles(
+        inline_changed, inline_checkpoint, inline_keys = await self._changed_articles(
             ServiceNowTables.SYS_ATTACHMENT, ServiceNowFields.TABLE_SYS_ID, ServiceNowSyncPointKeys.INLINE_IMAGES,
             f"{ServiceNowFields.TABLE_NAME}={ServiceNowTables.INLINE_IMAGE}^",
         )
-        feedback_changed, feedback_checkpoint = await self._changed_articles(
+        feedback_changed, feedback_checkpoint, feedback_keys = await self._changed_articles(
             ServiceNowTables.KB_FEEDBACK, ServiceNowFields.ARTICLE, ServiceNowSyncPointKeys.FEEDBACK
         )
         # A deleted feedback row leaves no row a delta could see, only a lower count.
@@ -3105,7 +3140,9 @@ class ServiceNowConnector(BaseConnector):
         fingerprint, reread = access or await self._access_reread_due(full=not last_sync_time)
         # Where a full read that stopped got to: it continues from there instead of starting over
         # (its pages are a keyset on (sys_updated_on, sys_id), so a row changed since comes again).
-        resume = {} if last_sync_time or self.data_entities_processor.full_sync_running(self.connector_id) else (
+        # Only a full read writes it, so a full sync of the platform continues from it too: the
+        # run then unlinks nothing (below), and the platform runs one more full sync to the end.
+        resume = {} if last_sync_time else (
             await self.article_sync_point.read_sync_point(ServiceNowSyncPointKeys.ARTICLES) or {})
         resume_after = tuple(resume.get(ServiceNowSyncPointKeys.FULL_RESUME_AFTER) or ()) or None
         if resume_after:
@@ -3116,7 +3153,13 @@ class ServiceNowConnector(BaseConnector):
             fingerprint = None  # not stored: the next run re-reads the articles with criteria
             inline_checkpoint = resume.get(ServiceNowSyncPointKeys.INLINE_IMAGES) or inline_checkpoint
             feedback_checkpoint = resume.get(ServiceNowSyncPointKeys.FEEDBACK) or feedback_checkpoint
+            inline_keys, feedback_keys = [], []
             feedback_count = resume.get(ServiceNowDictKeys.COUNT, feedback_count)
+        # The rows the last run synced that this delta's overlap reads again: skipped (_overlap_keys).
+        # Not while the re-read pass runs: it lists only the rows before the overlap.
+        synced_before = (await self._read_delta_point(self.article_sync_point, ServiceNowSyncPointKeys.ARTICLES))[1] \
+            if last_sync_time and not reread else set()
+        synced: set[str] = set()  # the keys of the checkpoint rows this run synced
         if last_sync_time:
             since = self._delta_since(last_sync_time)
             self.logger.info(f"🔄 Delta sync: Fetching articles updated after {since}")
@@ -3164,6 +3207,7 @@ class ServiceNowConnector(BaseConnector):
             # The checkpoint stays before the row that brought it, so the next run retries it.
             # The re-read pass lists its articles every run, so its failures do not hold it.
             row = brought_by.get(getattr(article_data, ServiceNowFields.NUMBER, None) or "", article_data)
+            synced.discard(self._row_key(row))
             failed.add(
                 datetime_to_epoch_ms(row.sys_updated_on, ServiceNowDefaults.DATETIME_FORMAT)
                 if moves_checkpoint else None
@@ -3181,13 +3225,18 @@ class ServiceNowConnector(BaseConnector):
             # A failed page raises: a short list is indistinguishable from a complete one to
             # everything downstream, so the sync would report success over what it missed.
             full_read = not last_sync_time and moves_checkpoint
-            async for rows in self._iter_table(
+            async for page in self._iter_table(
                 ServiceNowTables.KB_KNOWLEDGE, query, [ServiceNowFields.NUMBER] if resolve else _ARTICLE_FIELDS,
                 listing=listing, after=resume_after if full_read else None,
             ):
+                rows = page
                 if moves_checkpoint:
                     # Pages come oldest first, so the last row is the newest seen
-                    latest_update_time = rows[-1].sys_updated_on
+                    latest_update_time = page[-1].sys_updated_on
+                    synced.update(map(self._row_key, page))
+                    rows = [r for r in page if self._row_key(r) not in synced_before]
+                    if not rows:
+                        continue
 
                 articles_data = rows
                 brought_by = {r.number: r for r in rows if r.number} if resolve else {}
@@ -3320,9 +3369,11 @@ class ServiceNowConnector(BaseConnector):
             checkpoint = datetime.fromtimestamp(checkpoint_ms / 1000, tz=timezone.utc).strftime(
                 ServiceNowDefaults.DATETIME_FORMAT
             )
-            if checkpoint != last_sync_time:
+            keys = self._overlap_keys(synced_before | synced, checkpoint)
+            if checkpoint != last_sync_time or keys != sorted(synced_before):
                 await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ARTICLES, {
                     ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint, ServiceNowSyncPointKeys.FULL_RESUME_AFTER: [],
+                    **({ServiceNowSyncPointKeys.SYNCED_IN_OVERLAP: keys} if keys else {}),
                 })
 
         # Their articles are not held by the article checkpoint, so a failure reads them again.
@@ -3331,11 +3382,13 @@ class ServiceNowConnector(BaseConnector):
                 await self.category_sync_point.update_sync_point(key, {ServiceNowDictKeys.IDS: ids})
             if fingerprint is not None:
                 await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.ACCESS_FINGERPRINT, fingerprint)
-            await self.article_sync_point.update_sync_point(
-                ServiceNowSyncPointKeys.INLINE_IMAGES, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: inline_checkpoint}
-            )
+            await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.INLINE_IMAGES, {
+                ServiceNowSyncPointKeys.LAST_SYNC_TIME: inline_checkpoint,
+                **({ServiceNowSyncPointKeys.SYNCED_IN_OVERLAP: inline_keys} if inline_keys else {}),
+            })
             await self.article_sync_point.update_sync_point(ServiceNowSyncPointKeys.FEEDBACK, {
                 ServiceNowSyncPointKeys.LAST_SYNC_TIME: feedback_checkpoint, ServiceNowDictKeys.COUNT: feedback_count,
+                **({ServiceNowSyncPointKeys.SYNCED_IN_OVERLAP: feedback_keys} if feedback_keys else {}),
             })
         for removal in (self._remove_expired_articles, self._apply_audited_deletes):
             try:
@@ -3473,21 +3526,27 @@ class ServiceNowConnector(BaseConnector):
             keyed.append((key if seen[key] == 1 else f"{key}#{seen[key]}", row))
         return keyed
 
-    async def _changed_articles(self, table: str, article_field: str, key: str, scope: str = "") -> tuple[list[str], str]:
+    async def _changed_articles(
+        self, table: str, article_field: str, key: str, scope: str = "",
+    ) -> tuple[list[str], str, list[str]]:
         """The sys_ids of the article rows that the rows of ``table`` (matching ``scope``) changed
         since the last run point at through ``article_field``, and the checkpoint ``key`` to store
-        once those are synced. Before there is a checkpoint nothing is read: that run reads every
-        article."""
-        checkpoint = await self._read_checkpoint(self.article_sync_point, key)
+        once those are synced, with its overlap keys (_overlap_keys). Before there is a checkpoint
+        nothing is read: that run reads every article."""
+        checkpoint, synced = await self._read_delta_point(self.article_sync_point, key)
         if not checkpoint:
-            return [], self._utc_now()
+            return [], self._utc_now(), []
+        seen = set(synced)
         changed: set[str] = set()
         async for rows in self._iter_table(
             table, f"{scope}{ServiceNowFields.SYS_UPDATED_ON}>{self._delta_since(checkpoint)}", [article_field],
         ):
-            changed.update(str(r.get(article_field)) for r in rows if r.get(article_field))
+            # A row the last run synced already is read again by the overlap only.
+            changed.update(str(r.get(article_field)) for r in rows
+                           if r.get(article_field) and self._row_key(r) not in seen)
+            synced.update(map(self._row_key, rows))
             checkpoint = rows[-1].sys_updated_on
-        return sorted(changed), checkpoint
+        return sorted(changed), checkpoint, self._overlap_keys(synced, checkpoint)
 
     async def _reconcile_articles(self, *, force: bool, keep: set[str]) -> bool:
         """Delete the stored articles whose key is no current article's number: deleted at the

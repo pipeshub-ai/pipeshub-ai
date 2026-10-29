@@ -123,6 +123,21 @@ async def test_rate_limit_notice_once_per_reset(servicenow_connector) -> None:
     assert len(sent) == 2
     assert sent[0]["title"] == f"{NAME}: sync paused, ServiceNow rate limit reached"
     assert sent[0]["message"].startswith("A ServiceNow rate limit rule (rule-1) is used up until ")
+    assert sent[0]["message"].endswith("the next sync after that time continues where this one stopped.")
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_notice_of_a_platform_full_sync_says_it_runs_again(servicenow_connector) -> None:
+    # The platform clears every sync point before a full sync, so the next one starts over.
+    sc = servicenow_connector
+    sent = _notices(sc)
+    sc.data_entities_processor.full_sync_running = MagicMock(return_value=True)
+    _failing_run(sc, ServiceNowRateLimited(int(time.time()) + 7200))
+    with pytest.raises(ServiceNowRateLimited):
+        await sc.run_sync()
+
+    assert sent[0]["message"].endswith("Nothing it did not read was removed; the next sync after that time "
+                                       "runs the full sync again.")
 
 
 @pytest.mark.asyncio
@@ -155,6 +170,28 @@ async def test_summary_lists_two_skipped_kbs_once(servicenow_connector) -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_count_line_agrees_with_its_count(servicenow_connector) -> None:
+    sc = servicenow_connector
+    sent = _notices(sc)
+
+    async def run() -> None:
+        sc._note_criteria("scripted", "c1")
+        sc._note_criteria("scripted", "c2")
+        for kind in ("hidden", "partial"):
+            sc._note_criteria(kind, "c3")
+        sc._no_reader = 2
+
+    sc._run_sync = run
+    await sc.run_sync()
+
+    message = sent[0]["message"]
+    assert "- 2 user criteria use a script, which PipesHub does not run: they grant nobody here, and as Cannot "         "Read or Cannot Contribute they deny everyone they may cover" in message
+    assert "- 1 user criterion is hidden from the integration user: it grants nobody here, and as Cannot Read "         "or Cannot Contribute it denies everyone" in message
+    assert "- 1 user criterion names groups or users partly hidden from the integration user: as Cannot Read "         "or Cannot Contribute it denies everyone it may cover" in message
+    assert "- 2 articles have no reader in PipesHub: their user criteria match nobody" in message
+
+
+@pytest.mark.asyncio
 async def test_clean_run_sends_nothing(servicenow_connector) -> None:
     sc = servicenow_connector
     sent = _notices(sc)
@@ -179,7 +216,7 @@ async def test_kb_whose_criteria_fail_is_named_in_the_summary(servicenow_connect
 
     await _sync(sc, inst)
 
-    assert "1 knowledge base kept their stored access because their user criteria could not be read: Engineering" \
+    assert "1 knowledge base kept its stored access because its user criteria could not be read: Engineering" \
         in sent[0]["message"]
 
 
@@ -197,7 +234,7 @@ async def test_scripted_criteria_counted_in_summary_once(servicenow_connector) -
     await _sync(sc, inst)  # a persistent condition is shown when it first appears
 
     assert len(sent) == 1
-    assert "1 user criterion use a script, which PipesHub does not run" in sent[0]["message"]
+    assert "1 user criterion uses a script, which PipesHub does not run: it grants nobody here" in sent[0]["message"]
 
 
 @pytest.mark.asyncio
@@ -217,7 +254,7 @@ async def test_hidden_criteria_and_users_without_email_reported(servicenow_conne
 
     message = sent[0]["message"]
     assert "1 active ServiceNow user has no email address and could not be synced" in message
-    assert "1 user criterion are hidden from the integration user" in message
+    assert "1 user criterion is hidden from the integration user: it grants nobody here" in message
     assert "noemail" not in message and "KB1" not in message  # no user or article named
 
 
@@ -235,7 +272,7 @@ async def test_article_nobody_can_read_reported(servicenow_connector) -> None:
     await _sync(sc, inst)
 
     assert graph.readers("KB1") == set()
-    assert "- 1 article has no reader in PipesHub: their user criteria match nobody PipesHub can evaluate" \
+    assert "- 1 article has no reader in PipesHub: its user criteria match nobody PipesHub can evaluate" \
         in sent[0]["message"]
 
 

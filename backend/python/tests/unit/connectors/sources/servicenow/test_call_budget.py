@@ -95,3 +95,36 @@ async def test_call_budget_full_quiet_and_after_a_membership_change(servicenow_c
     assert quiet["sys_user_grmember"] == quiet["sys_user_has_role"] == 1  # the 1-row access checks only
     assert sum(changed.values()) <= 50
     assert changed["sys_attachment"] <= 1  # the re-read pass lists no attachments here
+
+
+def _written(sc) -> list[str]:
+    written = [r.external_record_id for c in sc.data_entities_processor.on_new_records.await_args_list
+               for r, _ in c.args[0]]
+    sc.data_entities_processor.on_new_records.reset_mock()
+    return written
+
+
+@pytest.mark.asyncio
+async def test_quiet_runs_after_a_change_cost_what_a_quiet_run_costs(servicenow_connector) -> None:
+    # Each delta starts DELTA_OVERLAP_SECONDS before the checkpoint, so a run with nothing new reads
+    # the last change again: it must not sync it again.
+    sc = servicenow_connector
+    inst, graph, feedback = _model(sc, articles=60, kbs=3)
+    await _run(sc, inst, feedback)
+    _written(sc)
+    baseline = await _run(sc, inst, feedback)  # quiet, no change since the full read
+    assert _written(sc) == []
+
+    # KB0000001 has its own Can Read and an ownership group: syncing it re-reads its access.
+    inst.articles["KB0000001"].update(text="<p>edited</p>", sys_updated_on="2024-06-01 05:00:00")
+    changed = await _run(sc, inst, feedback)
+    assert _written(sc) == ["KB0000001"]
+    assert changed["user_criteria"] > baseline["user_criteria"]  # the access work the change triggers
+    quiet = [await _run(sc, inst, feedback), await _run(sc, inst, feedback)]
+
+    assert _written(sc) == []
+    assert quiet == [baseline, baseline]
+    # A row committed late into the overlap, before the checkpoint, is still synced.
+    inst.articles["KB0000002"]["sys_updated_on"] = "2024-06-01 04:59:30"
+    await _run(sc, inst, feedback)
+    assert _written(sc) == ["KB0000002"]
