@@ -508,6 +508,30 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       expect(handlers.onReauthenticate).toHaveBeenCalled();
     });
 
+    const asksForSignIn = () => apiError(409, "This server asks for a sign-in, but it's set to No authentication.");
+
+    it('a server set to No authentication that asks for a sign-in says so, and Edit server opens its settings', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      const handlers = renderEditing(entry({ createdBy: '', isAuthenticated: true }));
+      openTools();
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(screen.getByTestId('mcp-panel-status')).getByText('Sign-in needed')).toBeTruthy();
+      expect(screen.queryByText("Couldn't load the tool list")).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit server' }));
+      expect(screen.getByRole('tab', { name: /^Configuration/ }).getAttribute('aria-selected')).toBe('true');
+      expect(handlers.onReauthenticate).not.toHaveBeenCalled();
+    });
+
+    it('the sign-in answer wins over an older listing that only timed out', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      renderEditing(entry({ createdBy: '', isAuthenticated: true, toolsErrorCode: 'timeout', toolsTimedOut: true }));
+      openTools();
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(screen.getByTestId('mcp-panel-status')).getByText('Sign-in needed')).toBeTruthy();
+    });
+
     it('lists the tools again once someone signs in again', async () => {
       mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
       const editing = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });

@@ -104,7 +104,7 @@ export function McpToolsApprovalsTab({
             </Text>
           ) : listing ? (
             <FindingTools />
-          ) : load.status === 'error' && state !== 'needs_auth_mode' ? (
+          ) : load.status === 'error' && !(state === 'needs_auth_mode' && load.code === 'reauth') ? (
             <Flex
               direction="column"
               gap="2"

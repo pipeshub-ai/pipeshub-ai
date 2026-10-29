@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app.agents.mcp.errors import (
     MCPConnectionError,
+    MCPHttpStatusError,
     MCPInsufficientScopeError,
     MCPUrlBlockedError,
 )
@@ -114,7 +115,16 @@ def _token_store() -> FakeConfigService:
     })
 
 
-_ASKS_FOR_SIGN_IN = [_unauthorized(), MCPInsufficientScopeError("needs repo:read", scopes=["repo:read"])]
+def _raw_insufficient_scope() -> MCPHttpStatusError:
+    # Discovery only turns this into MCPInsufficientScopeError for an OAuth sign-in it can widen.
+    return MCPHttpStatusError(403, challenge={"error": "insufficient_scope", "scope": "repo:read"})
+
+
+_ASKS_FOR_SIGN_IN = [
+    _unauthorized(),
+    MCPInsufficientScopeError("needs repo:read", scopes=["repo:read"]),
+    _raw_insufficient_scope(),
+]
 
 
 @pytest.mark.parametrize("failure", _ASKS_FOR_SIGN_IN)
@@ -157,6 +167,15 @@ async def test_instance_tools_asks_for_a_reconnect_when_the_token_is_rejected() 
 
     assert exc.value.status_code == 409
     assert exc.value.detail == "Authentication with this MCP server has expired. Reconnect it to continue."
+
+
+async def test_a_token_server_refusing_a_scope_is_not_sent_to_sign_in_again() -> None:
+    # A new token sign-in can't widen what the token is allowed: that refusal stays a server error.
+    with patch("app.agents.mcp.discovery.discover_tool_listing", new=AsyncMock(side_effect=_raw_insufficient_scope())):
+        with pytest.raises(HTTPException) as exc:
+            await get_instance_tools(route_request(_token_store()), "inst-1")
+
+    assert exc.value.status_code == 502
 
 
 async def test_a_healthy_listing_has_no_code() -> None:

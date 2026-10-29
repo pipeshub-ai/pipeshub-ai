@@ -59277,8 +59277,9 @@ paths:
             The caller hasn't connected this server, or the server asks for a sign-in: its authorization
             expired, it answered `401`, or it wants more scopes ("Authentication with this MCP server has
             expired. Reconnect it to continue."). A server set to No authentication that asks for a sign-in
-            is answered "This server asks for a sign-in, but it's set to No authentication.": an
-            administrator has to choose the auth mode it needs.
+            is answered "This server asks for a sign-in, but it's set to No authentication.": whoever can
+            edit it has to choose the auth mode it needs, an administrator for an organization server and
+            the owner for a personal one.
           content:
             application/json:
               schema:
@@ -59290,8 +59291,6 @@ paths:
             service answers `502`, which the gateway reports as `500`).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or answered with an error: the connectors service answers `502`, which the gateway reports as `500`.
           content:
             application/json:
               schema:

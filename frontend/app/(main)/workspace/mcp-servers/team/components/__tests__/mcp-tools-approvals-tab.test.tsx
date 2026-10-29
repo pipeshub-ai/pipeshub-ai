@@ -77,4 +77,12 @@ describe('McpToolsApprovalsTab, a server set to No authentication that asks for 
     expect(screen.getByText(/No sign-in needed/)).toBeTruthy();
     expect(screen.queryByText('This server asks for a sign-in')).toBeNull();
   });
+
+  it('still shows a later failure that is not the sign-in request, with Try again', () => {
+    const handlers = renderTab({ load: { status: 'error', code: 'unreachable', message: "Couldn't load this MCP server's tools." } });
+
+    expect(screen.getByText("Couldn't load the tool list")).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Try again/ }));
+    expect(handlers.onRefresh).toHaveBeenCalledOnce();
+  });
 });
