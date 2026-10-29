@@ -51,6 +51,7 @@ from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import read_lane_map, write_lane_count
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
+from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
@@ -681,6 +682,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         ]
         if not streams:
             raise RuntimeError(f"This consumer does not read {topic}")
+        if messaging_env.indexing_consume_lanes is not None and topic == Topic.RECORD_EVENTS.value:
+            # Reading a lane subset, this replica still judges every lane: the sweep
+            # and lane upkeep take a lane missing from this reading as caught up.
+            every_lane = RedisLaneRouter(messaging_env.fair_scheduling_lane_count).lane_topics(topic)
+            streams = [*streams, *(s for s in every_lane if s not in streams)]
         oldest, pending = await read_stream_backlog_detail(
             self.redis, self.config.group_id, streams
         )

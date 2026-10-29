@@ -264,6 +264,20 @@ class TestIndexingConsumerLaneBacklog:
         assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
         assert backlog.oldest_waiting_for({"connectorId": IDLE}) is None
 
+    async def test_a_replica_reading_a_lane_subset_still_sees_every_lanes_backlog(
+        self, provider: FakeRedisConnectionProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        idle_lane = stable_lane(IDLE, LANES)
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", str(idle_lane))
+        for topic in RedisLaneRouter(LANES).lane_topics(TOPIC):
+            await provider.get_client().xgroup_create(topic, GROUP, id="0", mkstream=True)
+        subset = _consumer(provider, [TOPIC, f"{TOPIC}.{idle_lane}"])
+        await _publish(provider, BUSY, "rec-1")
+
+        backlog = await subset.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
+
     async def test_work_on_the_base_stream_is_waiting_for_every_connector(
         self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
     ) -> None:
