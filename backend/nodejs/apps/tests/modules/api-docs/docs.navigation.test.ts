@@ -8,9 +8,8 @@ import {
   ApiDocsService,
   UnifiedApiDocs,
 } from '../../../src/modules/api-docs/docs.service';
-import { API_DOCS_NAV } from '../../../src/modules/api-docs/docs.nav';
 
-describe('ApiDocsService navigation from API_DOCS_NAV', () => {
+describe('ApiDocsService navigation from x-pipeshub-nav', () => {
   const logger: any = {
     info: sinon.stub(),
     warn: sinon.stub(),
@@ -63,8 +62,13 @@ describe('ApiDocsService navigation from API_DOCS_NAV', () => {
 
     expect(enterpriseSearch.id).to.equal('enterprise-search');
     expect(enterpriseSearch.icon).to.equal('search');
-    const listed = API_DOCS_NAV.find((c) => c.name === 'Search & AI')!
-      .modules!.find((m) => m.name === 'Enterprise Search')!.tags!;
+    const listed: string[] = [
+      'Conversations',
+      'Projects',
+      'Code Graph',
+      'Semantic Search',
+      'Conversational Speech',
+    ];
     expect(enterpriseSearch.tags.length).to.be.greaterThan(1);
     expect(enterpriseSearch.tags).to.deep.equal(
       listed.filter((tag) => enterpriseSearch.tags.includes(tag)),

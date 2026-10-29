@@ -178,10 +178,17 @@ function getDocumentationHtml(): string {
     body.resizing { user-select: none; cursor: col-resize; }
     body.resizing * { cursor: col-resize !important; }
 
+    /* Same height as .content-header so the two bottom borders line up. */
     .sidebar-header {
-      padding: 16px;
+      display: flex;
+      align-items: center;
+      height: 56px;
+      padding: 0 16px;
       border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
+
+    .sidebar-header .logo { flex: 1; min-width: 0; }
 
     .logo {
       display: flex;
@@ -216,7 +223,7 @@ function getDocumentationHtml(): string {
       border-radius: 999px;
     }
 
-    .search-box { margin-top: 12px; position: relative; }
+    .search-box { padding: 12px 16px 4px; position: relative; flex-shrink: 0; }
 
     .search-input {
       width: 100%;
@@ -236,8 +243,8 @@ function getDocumentationHtml(): string {
 
     .search-icon {
       position: absolute;
-      left: 9px;
-      top: 50%;
+      left: 25px;
+      top: 28px;
       transform: translateY(-50%);
       color: var(--text-3);
       pointer-events: none;
@@ -1487,10 +1494,10 @@ function getDocumentationHtml(): string {
           <span>PipesHub API</span>
           <span class="logo-tag" id="apiVersion"></span>
         </a>
-        <div class="search-box">
-          <span class="material-icons-outlined search-icon" aria-hidden="true">search</span>
-          <input type="search" class="search-input" placeholder="Search endpoints, paths, tags" id="searchInput" aria-label="Search endpoints">
-        </div>
+      </div>
+      <div class="search-box">
+        <span class="material-icons-outlined search-icon" aria-hidden="true">search</span>
+        <input type="search" class="search-input" placeholder="Search endpoints, paths, tags" id="searchInput" aria-label="Search endpoints">
       </div>
       <nav class="sidebar-nav" id="sidebarNav">
         <div class="loading">
@@ -2256,7 +2263,7 @@ function getDocumentationHtml(): string {
       return '<span class="method-badge method-' + escapeHtml(m) + (className ? ' ' + className : '') + '">' + escapeHtml(String(method).toUpperCase()) + '</span>';
     }
 
-    // docs.nav.ts names icons in its own vocabulary; map them to Material Icons, as the dashboard uses.
+    // The spec's x-pipeshub-nav names icons in its own vocabulary; map them to Material Icons, as the dashboard uses.
     function moduleIconName(name) {
       const icons = {
         lock: 'lock', user: 'group', folder: 'folder', book: 'menu_book', search: 'search', code: 'hub',

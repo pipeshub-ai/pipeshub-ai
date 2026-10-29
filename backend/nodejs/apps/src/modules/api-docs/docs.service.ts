@@ -7,7 +7,6 @@ import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../../libs/services/logger.service';
-import { API_DOCS_NAV, NavCategorySpec, NavModuleSpec } from './docs.nav';
 
 /**
  * Module metadata for documentation
@@ -67,6 +66,20 @@ export interface UnifiedApiDocs {
   modules: ModuleInfo[];
   endpoints: EndpointInfo[];
   schemas: Record<string, any>;
+}
+
+/** An entry of the spec's `x-pipeshub-nav`: a sidebar heading, its nav items and their tags. */
+interface NavCategorySpec {
+  name?: string;
+  description?: string;
+  modules?: NavModuleSpec[];
+}
+
+interface NavModuleSpec {
+  name?: string;
+  description?: string;
+  icon?: string;
+  tags?: string[];
 }
 
 const specOverlays: string[] = [];
@@ -272,7 +285,7 @@ export class ApiDocsService {
   }
 
   /**
-   * Build the sidebar from API_DOCS_NAV plus any `x-pipeshub-nav` of an overlay: heading -> nav item -> tags.
+   * Build the sidebar from the spec's `x-pipeshub-nav` (overlays add to it): heading -> nav item -> tags.
    * A tag belongs to the first nav item that lists it; a tag without endpoints is
    * dropped, then an empty nav item or heading. A tag with endpoints listed nowhere
    * gets its own nav item under "Other", so no endpoint is ever left out.
@@ -282,12 +295,12 @@ export class ApiDocsService {
     const claimed = new Set<string>();
     const categories: CategoryInfo[] = [];
 
-    // An overlay's nav is unchecked YAML, so any entry of it may be missing.
-    const overlayNav: unknown = this.mergedSpec?.['x-pipeshub-nav'];
-    const navSpec = [
-      ...API_DOCS_NAV,
-      ...(Array.isArray(overlayNav) ? (overlayNav as unknown[]) : []),
-    ] as (NavCategorySpec | undefined)[];
+    // The nav is unchecked YAML, so any entry of it may be missing.
+    const nav: unknown = this.mergedSpec?.['x-pipeshub-nav'];
+    const navSpec = (Array.isArray(nav) ? nav : []) as (
+      | NavCategorySpec
+      | undefined
+    )[];
     for (const categorySpec of navSpec) {
       if (typeof categorySpec?.name !== 'string' || !categorySpec.name) continue;
       // Merge by name, so an overlay can add nav items to a heading of the base spec.

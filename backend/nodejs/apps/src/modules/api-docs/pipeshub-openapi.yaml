@@ -445,6 +445,150 @@ tags:
     description: |
       The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
       document that UI renders, and a health check. These routes are public (no token is read).
+# Sidebar of the docs page at /api/v1/docs: heading -> nav item -> tags. A tag with endpoints
+# listed nowhere here still shows, under "Other". The SDK generator ignores this key.
+x-pipeshub-nav:
+  - name: Identity & Access
+    modules:
+      - name: Authentication
+        icon: lock
+        description: User authentication, authorization, and session management
+        tags:
+          - User Account
+          - Organization Auth Config
+          - Personal Access Tokens
+      - name: OAuth App Management
+        icon: key
+        description: OAuth 2.0 authorization server, app registration, and OpenID Connect
+        tags:
+          - OAuth Provider
+          - OAuth Apps
+          - OpenID Connect
+      - name: User Management
+        icon: user
+        description: Users, service accounts, teams, groups, organizations, and notifications
+        tags:
+          - Users
+          - Service Accounts
+          - Service Tokens
+          - Teams
+          - Organizations
+          - User Groups
+          - Notifications
+  - name: Data Management
+    modules:
+      - name: Storage
+        icon: folder
+        description: Service-to-service document storage (not callable with a user token)
+        tags:
+          - Internal Storage
+      - name: Knowledge Base
+        icon: book
+        description: Knowledge bases, folders, records, and permissions
+        tags:
+          - Knowledge Base
+          - Knowledge Hub
+          - Folders
+          - Records
+          - Permissions
+          - Upload
+          - Connector
+      - name: Artifacts
+        icon: image
+        description: Generated artifacts, with preview, download, and versions
+        tags:
+          - Artifacts
+  - name: Search & AI
+    modules:
+      - name: Enterprise Search
+        icon: search
+        description: Conversational AI, semantic search, and code graphs
+        tags:
+          - Conversations
+          - Projects
+          - Code Graph
+          - Semantic Search
+          - Conversational Speech
+      - name: Agents
+        icon: cpu
+        description: Custom AI agents, agent templates, and skills
+        tags:
+          - Agents
+          - Agent Templates
+          - Agent Conversations
+          - Skills
+  - name: Integrations
+    modules:
+      - name: Connector Manager
+        icon: code
+        description: Third-party integrations, OAuth flows, and data synchronization
+        tags:
+          - Connector Registry
+          - Connector Instances
+          - Connector Configuration
+          - Connector Control
+          - Connector OAuth
+          - Connector Filters
+          - OAuth Configuration
+      - name: Toolsets
+        icon: tool
+        description: Toolsets that give agents actions in other apps or your own REST APIs
+        tags:
+          - Toolset Registry
+          - Toolset Instances
+          - Toolset Configuration
+          - Toolset OAuth
+          - API Toolsets
+      - name: MCP Servers
+        icon: server
+        description: External MCP servers that agents and users connect to
+        tags:
+          - MCP Server Catalog
+          - MCP Server Instances
+          - MCP Server Credentials
+          - MCP Server OAuth
+          - MCP Servers for Agents
+          - MCP Servers
+      - name: MCP
+        icon: layers
+        description: The PipesHub MCP endpoint at /mcp
+        tags:
+          - MCP
+  - name: System
+    modules:
+      - name: Configuration Manager
+        icon: gear
+        description: System-wide configuration management
+        tags:
+          - Storage Configuration
+          - SMTP Configuration
+          - Authentication Configuration
+          - Platform Settings
+          - AI Models Providers
+          - Configuration Manager
+          - Public URLs
+          - Web Search
+          - Metrics Collection
+      - name: Crawling Manager
+        icon: clock
+        description: Data crawling job scheduling and monitoring
+        tags:
+          - Crawling Jobs
+      - name: Mail
+        icon: mail
+        description: Service-to-service email sending and SMTP setup
+        tags:
+          - Mail
+      - name: Health
+        icon: activity
+        description: Health of the deployment, and the build that it runs
+        tags:
+          - Health
+      - name: API Documentation
+        icon: book
+        description: This API reference and the JSON it renders
+        tags:
+          - API Documentation
 components:
   parameters:
     RevealStoredSecrets:
