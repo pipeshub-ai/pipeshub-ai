@@ -71,6 +71,7 @@ from connectors.outlook.outlook_test_utils import (  # noqa: E402
     admitted,
     bool_value,
     list_value,
+    resync_while,
     run_sync_and_wait,
     sync_filters,
     wait_until_outlook_condition,
@@ -108,6 +109,10 @@ _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _APPS = CollectionNames.APPS.value
 _AUTO_INDEX_OFF = ProgressStatus.AUTO_INDEX_OFF.value
+
+# The B2 sync can read the seed group's members before Graph drops S from them.
+_MEMBERSHIP_RESYNCS = 3
+_MEMBERSHIP_RESYNC_WAIT_SEC = 30
 
 
 # --------------------------------------------------------------------------- shared helpers
@@ -1053,7 +1058,22 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
 
     await wait_until_outlook_condition(_gone, description="throwaway group gone from the group list", timeout=600)
     state["sync_count"] = await ctx.incremental_sync("B2 incremental sync")
+    state["membership_resyncs"] = await resync_while(
+        lambda: _seed_group_member_edge(ctx),
+        lambda n: ctx.incremental_sync(f"B2 re-sync {n} for S leaving the seed group"),
+        attempts=_MEMBERSHIP_RESYNCS,
+        wait_sec=_MEMBERSHIP_RESYNC_WAIT_SEC,
+        description="S's seed-group membership edge",
+    )
     return state
+
+
+async def _seed_group_member_edge(ctx: Ctx) -> bool:
+    group_node = await ctx.graph.get_user_group_by_external_id(ctx.cid, ctx.world.group_id)
+    s_node = await ctx.graph.get_user_by_source_id(ctx.s.source_id, ctx.cid)
+    if group_node is None or s_node is None:
+        return False
+    return bool(await ctx.edges(_USERS, s_node.id, _GROUPS, group_node.id, _PERMISSION))
 
 
 async def _record_ids(ctx: Ctx) -> set[str]:
