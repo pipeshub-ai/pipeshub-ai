@@ -1184,6 +1184,7 @@ class DropboxConnector(BaseConnector):
         plan = plan_shared_folders(listings)
         # A member whose list could not be read may be the one who has a folder in their Dropbox.
         self._plan_complete = len(listings) == len(users)
+        self._folder_metadata: dict[str, DropboxResponse] = {}
         if self._plan_complete:
             await self._drop_unmounted_shared_folders(plan)
         await self._resolve_parents(plan)
@@ -1197,9 +1198,7 @@ class DropboxConnector(BaseConnector):
         """
         self._parent_unknown: set[str] = set()
         for folder in [folder for folder in plan.values() if folder.parent_unknown]:
-            response = await self.data_source.sharing_get_folder_metadata(
-                shared_folder_id=folder.folder_id, team_member_id=folder.syncer
-            )
+            response = await self._shared_folder_metadata(folder)
             if not response.success:
                 self.logger.warning(f"Could not read where shared folder '{folder.name}' ({folder.folder_id}) sits: "
                                     f"{response.error}")
@@ -1238,10 +1237,16 @@ class DropboxConnector(BaseConnector):
         anyone, and its namespace still lists its files as live; Dropbox has no
         deleted flag for it. Team folders are synced from the team folder list.
         """
-        # A folder inside a team folder has no path on the team member root layout, members or not: it is
-        # reached through the team folder, so having no path does not mean it is gone.
-        for folder in [folder for folder in plan.values()
-                       if not folder.mounted and not folder.is_team_folder and not folder.inside_team_folder]:
+        gone = []
+        for folder in plan.values():
+            if folder.mounted or folder.is_team_folder:
+                continue
+            # A folder inside a team folder has no path on the team member root layout, members or not: it is
+            # reached through the team folder, so having no path does not mean it is gone. Its own id does.
+            if folder.inside_team_folder and not await self._deleted_inside_team_folder(folder):
+                continue
+            gone.append(folder)
+        for folder in gone:
             del plan[folder.folder_id]
             try:
                 stored = await self.data_entities_processor.get_record_group_by_external_id(
@@ -1254,6 +1259,32 @@ class DropboxConnector(BaseConnector):
                     )
             except Exception as e:
                 self.logger.error(f"Could not delete shared folder '{folder.name}' ({folder.folder_id}): {e}", exc_info=True)
+
+    async def _deleted_inside_team_folder(self, folder: SharedFolder) -> bool:
+        """Whether Dropbox says a shared folder inside a team folder was deleted: its folder id is not_found.
+
+        Its namespace still lists the files after the delete, and ``sharing/get_folder_metadata`` still answers,
+        so the folder's own id is the only sign. ``sharing/list_folders`` leaves that id out; the folder's metadata
+        has it. Without an answer the folder is kept.
+        """
+        metadata = await self._shared_folder_metadata(folder)
+        item_id = getattr(metadata.data, "folder_id", None) if metadata.success else None
+        answer = item_still_exists(await self.data_source.files_get_metadata(
+            path=item_id, team_member_id=folder.syncer, team_folder_id=folder.folder_id,
+        )) if item_id else None
+        if answer is None:
+            self.logger.warning(f"Could not check whether shared folder '{folder.name}' ({folder.folder_id}) "
+                                "still exists; keeping it")
+        return answer is False
+
+    async def _shared_folder_metadata(self, folder: SharedFolder) -> DropboxResponse:
+        """``sharing/get_folder_metadata`` as the folder's syncer, read once per run."""
+        cache = getattr(self, "_folder_metadata", {})
+        if folder.folder_id not in cache:
+            cache[folder.folder_id] = await self.data_source.sharing_get_folder_metadata(
+                shared_folder_id=folder.folder_id, team_member_id=folder.syncer
+            )
+        return cache[folder.folder_id]
 
     async def _list_shared_folders(self, member_id: str) -> list | None:
         """A member's shared folders, every page; None when Dropbox could not be read."""

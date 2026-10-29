@@ -265,6 +265,34 @@ class TestTeamMemberRootLayout:
             shared_folder_id="it", team_member_id="dbmid:a")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("answer", "deleted"), [
+        (DropboxResponse(success=True, data=SimpleNamespace(id="id:korean")), False),
+        (DropboxResponse(success=False, error="GetMetadataError('path', LookupError('not_found', None))"), True),
+        (DropboxResponse(success=False, error="RateLimitError"), False),
+    ])
+    async def test_a_deleted_folder_inside_a_team_folder_is_found_by_its_own_id(
+        self, connector, answer, deleted,
+    ) -> None:
+        """Live, 2026-10-29: a deleted 'Korean files' stayed in list_folders and its namespace still listed its
+        files; only its folder id stopped resolving."""
+        connector._list_shared_folders = AsyncMock(return_value=[self._entry("tf", team=True),
+                                                                 self._entry("korean", inside=True)])
+        connector.data_entities_processor.on_record_group_deleted = AsyncMock()
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        connector.data_source.files_get_metadata = AsyncMock(return_value=answer)
+        # list_folders leaves folder_id out; the folder's metadata has it.
+        connector.data_source.sharing_get_folder_metadata = AsyncMock(return_value=DropboxResponse(
+            success=True, data=SimpleNamespace(parent_shared_folder_id="tf", folder_id="id:korean",
+                                               access_inheritance=SimpleNamespace(_tag="inherit"))))
+
+        plan = await connector._plan_shared_folders([MagicMock(source_user_id="dbmid:a")])
+
+        assert ("korean" in plan) is not deleted
+        assert connector.data_entities_processor.on_record_group_deleted.await_count == int(deleted)
+        connector.data_source.files_get_metadata.assert_awaited_once_with(
+            path="id:korean", team_member_id="dbmid:a", team_folder_id="korean")
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_parent_keeps_the_stored_group_and_fails_the_run(self, connector) -> None:
         connector._list_shared_folders = AsyncMock(return_value=[self._entry("tf", team=True),
                                                                  self._entry("it", inside=True)])
