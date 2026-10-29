@@ -34,11 +34,28 @@ async def repath_descendants(
     """Rewrite ``old_prefix/...`` to ``new_prefix/...`` on every stored descendant of a folder.
 
     Returns how many were moved, and False when the walk stopped at its cap with folders left unvisited, or the
-    paths could not be written.
+    paths could not be read or written. The caller then lists the folder again from the start: the moved folder
+    is already stored under its new path, so a replay of the move would not show it again.
     """
     old_prefix, new_prefix = old_prefix.rstrip("/"), new_prefix.rstrip("/")
     if old_prefix == new_prefix:
         return 0, True
+    try:
+        return await _repath(processor, connector_id, folder_external_id, old_prefix, new_prefix, logger)
+    except Exception as e:
+        logger.error(f"Could not move the stored paths below {folder_external_id}: {e}; "
+                     "the folder is listed again from the start", exc_info=True)
+        return 0, False
+
+
+async def _repath(
+    processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    folder_external_id: str,
+    old_prefix: str,
+    new_prefix: str,
+    logger: logging.Logger,
+) -> tuple[int, bool]:
     updates: list[dict] = []
     todo, seen = [folder_external_id], {folder_external_id}
     while todo and len(seen) < _MAX_NODES:

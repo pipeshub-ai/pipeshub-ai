@@ -227,6 +227,15 @@ class TestRepathAndReconcile:
         assert await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER) == (0, False)
 
     @pytest.mark.asyncio
+    async def test_a_walk_that_raises_is_incomplete(self) -> None:
+        """The moved folder is already stored under its new path: raising would leave the cursor before a move
+        whose replay no longer shows it."""
+        processor = MagicMock()
+        processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        assert await repath_descendants(processor, "c", "id:dir", "/docs", "/documents", LOGGER) == (0, False)
+
+    @pytest.mark.asyncio
     async def test_a_walk_stopped_at_its_cap_says_so(self) -> None:
         processor = MagicMock()
         children = iter(range(10))
