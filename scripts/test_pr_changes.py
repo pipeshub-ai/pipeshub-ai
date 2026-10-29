@@ -308,7 +308,14 @@ class TestIntegrationShards(unittest.TestCase):
         self.assertEqual(shards("integration-tests/connectors/local_fs/local_fs_sim_world.py"), {"connectors-1"})
 
     def test_the_desktop_local_fs_code_runs_the_local_fs_sim_shard(self) -> None:
-        self.assertEqual(shards("frontend/electron/local-sync/manager.ts"), {"connectors-1", "core"})
+        for path in (
+            "frontend/electron/local-sync/manager.ts",
+            "frontend/electron/tsconfig.json",
+            "frontend/package.json",
+            "frontend/package-lock.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(shards(path), {"connectors-1", "core"})
         self.assertEqual(shards("frontend/electron/main.ts"), {"core"})
         self.assertEqual(shards("integration-tests/connectors/scenario_matrix.py"), ALL_SHARDS)
 

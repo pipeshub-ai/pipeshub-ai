@@ -3586,8 +3586,8 @@ class DataSourceEntitiesProcessor:
                         # Those children reach the user through the duplicate too:
                         # search walks INHERIT_PERMISSIONS up to the group, so a
                         # child left pointing at a deleted vertex is found by nobody.
-                        # A failed read raises, rolling the move back, rather than
-                        # quietly cutting them off.
+                        # A failed read raises before the duplicate is deleted, so
+                        # the children keep the edge they had rather than losing it.
                         inheriting = await tx_store.get_edges_to_node(
                             f"{CollectionNames.RECORDS.value}/{duplicate.id}",
                             CollectionNames.INHERIT_PERMISSIONS.value,

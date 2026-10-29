@@ -245,8 +245,14 @@ IT_CORE = tuple(
         "resilience", "storage", "ai_agents", "named_entities",
     )
 ) + ("frontend/**",)
-# The desktop app's Local FS code, which the local_fs_sim suite runs headless.
-IT_LOCAL_SYNC = ("frontend/electron/local-sync/**",)
+# The desktop app's Local FS code, which the local_fs_sim suite runs headless, and
+# what the desktop agent loads it with: the Electron tsconfig and the frontend's packages.
+IT_LOCAL_SYNC = (
+    "frontend/electron/local-sync/**",
+    "frontend/electron/tsconfig.json",
+    "frontend/package.json",
+    "frontend/package-lock.json",
+)
 
 # Connector code: a folder under one of these is that connector's.
 CONNECTOR_ROOTS = (
