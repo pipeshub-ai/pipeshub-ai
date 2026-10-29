@@ -203,6 +203,7 @@ async function buildQueryWithThreadContext(
   typedClient: TypedSlackClient,
   priorMessages: SlackMessagePayload[],
   query: string,
+  currentUserId?: string,
   botUserId?: string,
 ): Promise<string> {
   if (priorMessages.length === 0) {
@@ -216,7 +217,7 @@ async function buildQueryWithThreadContext(
       priorMessages,
       userLabelsById,
       typedClient,
-      typedMessage.user,
+      currentUserId,
       botUserId,
     );
   } catch (error) {
@@ -1612,6 +1613,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedClient,
       thread.messages,
       query,
+      typedMessage.user,
       typedContext.botUserId,
     );
     const threadFiles = await collectThreadFiles(
