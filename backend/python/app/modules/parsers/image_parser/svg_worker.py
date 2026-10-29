@@ -458,6 +458,11 @@ async def render_async(svg: str) -> str:
         if time.monotonic() >= deadline:
             raise DocumentProcessingError("SVG rasterising timed out waiting for a renderer")
         await asyncio.sleep(_ADMISSION_POLL_SECONDS)
+    # A slot freed after the deadline but before this poll must not admit a job
+    # that is already late.
+    if time.monotonic() >= deadline:
+        waiters.slots.release()
+        raise DocumentProcessingError("SVG rasterising timed out waiting for a renderer")
 
     def job() -> str:
         try:

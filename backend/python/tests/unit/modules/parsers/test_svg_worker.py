@@ -313,6 +313,40 @@ async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_
 
 
 @pytest.mark.asyncio
+async def test_a_slot_freed_after_the_deadline_does_not_admit_the_late_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    monkeypatch.setattr(svg_worker, "SVG_DEADLINE_SECONDS", 0.1)
+    # Polls far apart, so the slot frees after the deadline and before the next poll.
+    monkeypatch.setattr(svg_worker, "_ADMISSION_POLL_SECONDS", 0.4)
+    waiters = svg_worker._waiters
+    for _ in range(svg_worker._MAX_RENDERERS):
+        assert waiters.slots.acquire(blocking=False)
+    submitted: list[object] = []
+    monkeypatch.setattr(waiters.get(), "submit", lambda *a, **k: submitted.append(a))
+    released = False
+    try:
+        call = asyncio.ensure_future(ImageParser.svg_base64_to_png_base64_async(_b64(GOOD)))
+        await asyncio.sleep(0.2)  # past the deadline, before the next poll
+        waiters.slots.release()
+        released = True
+        with pytest.raises(DocumentProcessingError, match="waiting for a renderer"):
+            await asyncio.wait_for(call, 2)
+    finally:
+        for _ in range(svg_worker._MAX_RENDERERS - (1 if released else 0)):
+            waiters.slots.release()
+    assert submitted == []
+    held = 0
+    while waiters.slots.acquire(blocking=False):
+        held += 1
+    for _ in range(held):
+        waiters.slots.release()
+    assert held == svg_worker._MAX_RENDERERS, "the late call gave its slot back"
+
+
+@pytest.mark.asyncio
 async def test_every_path_gives_its_renderer_slot_back() -> None:
     import asyncio
 
