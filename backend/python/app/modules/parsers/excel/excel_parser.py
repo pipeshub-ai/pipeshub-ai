@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
@@ -1694,7 +1695,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Create throttled tasks for all batches
                 batch_tasks = []
                 for start_idx, batch in batches:
-                    task = asyncio.ensure_future(limited_get_rows_text(batch))
+                    task = spawn_in_request(limited_get_rows_text(batch))
                     batch_tasks.append((start_idx, batch, task))
 
                 # Wait for all batches to complete (max 10 running concurrently). A refusal by the
