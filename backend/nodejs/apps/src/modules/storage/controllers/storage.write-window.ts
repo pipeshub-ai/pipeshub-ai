@@ -8,6 +8,11 @@ import { randomBytes } from 'crypto';
 import { getDocumentRepository } from '../../../libs/repositories/document';
 import type { DocumentRepository } from '../../../libs/repositories/document';
 import { NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  makeOrgContext,
+  runWithOrgContext,
+  spawnDetached,
+} from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 
 const DEFAULT_WINDOW_MS = 300_000;
@@ -89,25 +94,42 @@ export async function withWriteWindow<T>(
   if (!(await repo.beginWrite(orgId, id, token, window)))
     throw new NotFoundError('Document does not exist');
   writeWindowHooks.onBegin?.({ documentId: id, orgId, token });
-  let beat: NodeJS.Timeout | undefined;
+  // The heartbeat is long-lived work: it starts detached (no borrowed request context) and binds the document's org itself.
+  let stopBeat: (() => void) | undefined;
   if (writeWindowHooks.heartbeat === 'auto') {
-    beat = setInterval(
-      () => {
-        repo.renewWrite(orgId, id, token, window).catch((error: unknown) => {
-          logger.warn('Could not renew a write window', {
-            documentId: id,
-            error: error instanceof Error ? error.message : String(error),
-          });
+    let stopped = false;
+    let timer: NodeJS.Timeout | undefined;
+    const interval = Math.max(10, Math.floor(window / 3));
+    const beat = (): void => {
+      if (stopped) return;
+      timer = setTimeout(() => {
+        const ctx = makeOrgContext({
+          orgId,
+          userId: null,
+          kind: 'service',
+          source: 'storage_write_window',
         });
-      },
-      Math.max(10, Math.floor(window / 3)),
-    );
-    beat.unref();
+        void runWithOrgContext(ctx, () => repo.renewWrite(orgId, id, token, window))
+          .catch((error: unknown) => {
+            logger.warn('Could not renew a write window', {
+              documentId: id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          })
+          .finally(beat);
+      }, interval);
+      timer.unref();
+    };
+    spawnDetached(beat);
+    stopBeat = () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
   }
   try {
     return await write();
   } finally {
-    if (beat) clearInterval(beat);
+    stopBeat?.();
     await boundedEnd(repo, orgId, id, token);
   }
 }

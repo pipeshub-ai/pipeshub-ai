@@ -204,7 +204,7 @@ describe('unit-of-work source lints', () => {
       expect(files.flatMap(([f, t]) => swallowedDuplicate(t).map((m) => `${f} ${m}`))).to.deep.equal([])
     })
     it('uses no Mongo write path that the store fence does not wrap', () => {
-      const own = new Set(['libs/services/mongo.service.ts', 'libs/repositories/fence.ts', 'libs/repositories/mongo.ts', 'libs/repositories/document/mongo.ts', 'modules/configuration_manager/services/migrations/delegation_log_retention.migration.ts']) // mongo.ts only kills its own session; document/mongo.ts reads the server clock with hello (read-only); the migration's collMod changes an index's TTL, not data
+      const own = new Set(['libs/services/mongo.service.ts', 'libs/repositories/fence.ts', 'libs/repositories/mongo.ts', 'libs/repositories/document/mongo.ts' /* reads the server clock with the read-only hello command */, 'modules/configuration_manager/services/migrations/delegation_log_retention.migration.ts']) // mongo.ts only kills its own session; the migration's collMod changes an index's TTL, not data
       // the migration tool owns the fence and uses the raw driver: its writers (fence document, drain, reverse copy) and its read-only
       // admin commands (hello, replSetGetStatus in the preflight, the follower and the cut's pre-checks; ping for the freeze's cluster time) are listed by file; nothing else in it is exempt
       const migrator = new Set(['fence.ts', 'drain.ts', 'reverse.ts', 'reverse-special.ts', 'reverse-follow.ts', 'preflight.ts', 'follow.ts', 'online.ts'].map((f) => `scripts/docstore-migrate/${f}`))

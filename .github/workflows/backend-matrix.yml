@@ -553,10 +553,23 @@ jobs:
           --forbid-only --forbid-pending --reporter xunit --reporter-option output="$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml"
           tests/stores/storage-fingerprint.itest.ts
 
+      # The number of cases is whatever the file defines for this leg (some exist only for local disk, some only for S3 and Azure), counted
+      # by a dry run of the same file with the same environment; the run must have executed exactly that many, none skipped or failed.
       - name: Fingerprint tests ran, none skipped
         if: always()
-        working-directory: .
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=${{ matrix.backend == 'local' && 31 || 29 }}"
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          DOC_STORE: mongo
+          MONGO_IT_URI: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: |
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --dry-run --reporter json \
+            --reporter-option output="$RUNNER_TEMP/fingerprint-defined.json" tests/stores/storage-fingerprint.itest.ts > /dev/null
+          N=$(python3 -c "import json,os; print(json.load(open(os.environ['RUNNER_TEMP'] + '/fingerprint-defined.json'))['stats']['tests'])")
+          echo "defined for ${{ matrix.backend }}: $N"
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=$N"
 
       # Every skip fails, and so does a discovered file that contributed no test.
       # The one allowance: a test that cannot apply to this store says so with a

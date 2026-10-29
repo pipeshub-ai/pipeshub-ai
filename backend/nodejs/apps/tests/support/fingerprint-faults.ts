@@ -103,6 +103,8 @@ export interface Faults {
   /** Fails the `n`th call (1-based) of an adapter method, before it reaches the store. */
   failAdapterNth: Map<string, { n: number; error: Error }>;
   adapterCalls: Record<string, number>;
+  /** adoptDirectUpload calls that did the adoption (returned true). */
+  adopted: number;
 }
 
 export const newFaults = (): Faults => ({
@@ -115,6 +117,7 @@ export const newFaults = (): Faults => ({
   failAdapterAfter: new Map(),
   failAdapterNth: new Map(),
   adapterCalls: {},
+  adopted: 0,
 });
 
 /** The real repository, with the gate points and faults of the tests around the write-state calls. */
@@ -145,11 +148,19 @@ export function faultRepository(real: DocumentRepository, f: Faults): DocumentRe
           f.gates.signal('W:afterEnd');
           return out;
         }
+        if (prop === 'adoptDirectUpload') {
+          const out = await fn(...args);
+          if (out === true) f.adopted += 1;
+          await f.gates.hit('W:afterAdopt');
+          return out;
+        }
         return fn(...args);
       };
     },
   });
 }
+
+const SYNC_ADAPTER_METHODS: ReadonlySet<string> = new Set(['getObjectUrl', 'signObjectUrl']);
 
 /** The real adapter of the leg, with the gate points and faults of the tests around its byte writes and its stat. */
 export function faultAdapter(real: StorageServiceAdapter, f: Faults): StorageServiceAdapter {
@@ -157,6 +168,8 @@ export function faultAdapter(real: StorageServiceAdapter, f: Faults): StorageSer
     get(target, prop, receiver) {
       const v = Reflect.get(target, prop, receiver) as unknown;
       if (typeof v !== 'function' || typeof prop !== 'string') return v;
+      // synchronous methods stay synchronous (a Promise where a URL string is expected is not a fault, it is a broken wrapper)
+      if (SYNC_ADAPTER_METHODS.has(prop)) return (v as (...a: unknown[]) => unknown).bind(target);
       const fn = (v as (...a: unknown[]) => Promise<unknown>).bind(target);
       return async (...args: unknown[]) => {
         f.adapterCalls[prop] = (f.adapterCalls[prop] ?? 0) + 1;
@@ -164,6 +177,7 @@ export function faultAdapter(real: StorageServiceAdapter, f: Faults): StorageSer
         if (before) throw before;
         const nth = f.failAdapterNth.get(prop);
         if (nth && f.adapterCalls[prop] === nth.n) throw nth.error;
+        if (prop === 'uploadDocumentToStorageService') await f.gates.hit('W:beforeUpload');
         const out = await fn(...args);
         const after = f.failAdapterAfter.get(prop);
         if (after) throw after;

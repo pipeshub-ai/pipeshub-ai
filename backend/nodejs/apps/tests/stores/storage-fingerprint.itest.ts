@@ -8,7 +8,12 @@
  * (tests/support/fingerprint-faults.ts) so one writer or reader of a schedule can be stopped at a named point while others run.
  * Tests that exist for one kind of file store are defined only for it at definition time (no skip, no pending).
  *
- * F12 replays the schedules of the reference model (tests/storage/fingerprint-model/model.py) on this stack.
+ * F12 replays the schedules of the reference model (tests/storage/fingerprint-model/model.py) on this stack. Two documented readings:
+ *  - The stack's begin is one atomic operation (it prunes expired tokens and adds its own), so a replay cannot stop between the model's
+ *    B1 (prune) and B2 (begin). The expectation is the model run with each writer's B1 next to its B2 (`pruneAdjacent`), a schedule of
+ *    the same model.
+ *  - A schedule in which a heartbeat is held back for longer than the window (`compliant: false`) is the documented residual: it is
+ *    replayed and counted, but its `trusted` values are not asserted.
  */
 import 'reflect-metadata';
 import { execFileSync } from 'node:child_process';
@@ -85,15 +90,15 @@ suite('document fingerprint', function () {
     const qs = new URLSearchParams(q).toString();
     return `${app.origin}/api/v1/document/internal${p}${qs ? `?${qs}` : ''}`;
   };
-  const call = async (method: string, p: string, o: { q?: Record<string, string>; body?: BodyInit; json?: unknown; actor?: string } = {}) => {
-    const headers: Record<string, string> = { ...auth };
+  const call = async (method: string, p: string, o: { q?: Record<string, string>; body?: BodyInit; json?: unknown; actor?: string; headers?: Record<string, string>; manual?: boolean } = {}) => {
+    const headers: Record<string, string> = { ...auth, ...o.headers };
     if (o.actor) headers['x-test-actor'] = o.actor;
     let body = o.body;
     if (o.json !== undefined) {
       headers['content-type'] = 'application/json';
       body = JSON.stringify(o.json);
     }
-    const res = await fetch(url(p, o.q), { method, headers, ...(body !== undefined && { body }) });
+    const res = await fetch(url(p, o.q), { method, headers, ...(body !== undefined && { body }), ...(o.manual && { redirect: 'manual' as const }) });
     const text = Buffer.from(await res.arrayBuffer());
     return { status: res.status, headers: res.headers, raw: text, text: text.toString('utf8') };
   };
@@ -107,12 +112,29 @@ suite('document fingerprint', function () {
     return f;
   };
 
-  const upload = async (bytes: Buffer | string = 'first bytes', name = `fp-${++counter}-${randomUUID().slice(0, 6)}`): Promise<Doc> => {
+  /** A PUT of raw bytes through a presigned link (no content type: the link is signed without one). */
+  const putTo = async (link: string, bytes: Buffer | string): Promise<number> => {
+    const headers: Record<string, string> = BACKEND === 'azureBlob' ? { 'x-ms-blob-type': 'BlockBlob' } : {};
+    const res = await fetch(link, { method: 'PUT', body: Buffer.from(bytes), headers });
+    await res.arrayBuffer();
+    return res.status;
+  };
+  /** Starts an upload. On local disk the bytes are stored at once; S3 and Azure answer a redirect to a presigned link (every size). */
+  const startUpload = async (bytes: Buffer | string, name: string, extra: Record<string, string> = {}, headers: Record<string, string> = {}, actor?: string) => {
     const r = await call('POST', '/upload', {
-      body: form(name, bytes, { documentPath: `PipesHub/fp/${name}`, isVersionedFile: 'true', documentName: name }),
+      body: form(name, bytes, { documentPath: `PipesHub/fp/${name}`, isVersionedFile: 'true', documentName: name, ...extra }),
+      manual: true,
+      headers,
+      actor,
     });
-    expect(r.status, r.text).to.equal(200);
-    return json(r);
+    return { ...r, doc: json(r) as Doc, link: r.headers.get('location'), id: r.headers.get('x-document-id') };
+  };
+  const upload = async (bytes: Buffer | string = 'first bytes', name = `fp-${++counter}-${randomUUID().slice(0, 6)}`): Promise<Doc> => {
+    const r = await startUpload(bytes, name);
+    if (r.status === 200) return r.doc;
+    expect(r.status, r.text).to.equal(301);
+    expect(await putTo(r.link as string, bytes)).to.be.within(200, 201);
+    return { ...(r.doc.document ?? {}), _id: r.id as string };
   };
   const putBuffer = (id: string, bytes: Buffer | string, actor?: string) => call('PUT', `/${id}/buffer`, { body: form('x', bytes), actor });
   const nextVersion = (id: string, bytes: Buffer | string) => call('POST', `/${id}/uploadNextVersion`, { body: form('x', bytes, { nextVersionNote: 'n', currentVersionNote: 'c' }) });
@@ -134,6 +156,21 @@ suite('document fingerprint', function () {
   };
   const state = (id: string) => inOrg(() => real.peekWriteState(ORG, id));
   const clock = () => inOrg(() => real.serverClockMs());
+  /** The id of the keyed upload's row (it exists as soon as the first attempt started). */
+  const row2 = async (name: string): Promise<string | undefined> => {
+    for (let i = 0; i < 100; i++) {
+      const found = pg
+        ? (await pg.admin((c) => c.query<{ id: string }>('SELECT id FROM content.documents WHERE org_id = $1 AND document_name = $2', [ORG, name]))).rows[0]?.id
+        : String((await DocumentModel.findOne({ orgId: ORG, documentName: name }).lean())?._id ?? '') || undefined;
+      if (found) return found;
+      await sleep(50);
+    }
+    return undefined;
+  };
+  const expireLease = async (id: string): Promise<void> => {
+    if (pg) await pg.admin((c) => c.query("UPDATE content.documents SET upload_lease_expires_at = now() - interval '1 minute' WHERE id = $1", [id]));
+    else await DocumentModel.updateOne({ _id: id }, { $set: { uploadLeaseExpiresAt: 1 } });
+  };
 
   before(async () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-home-'));
@@ -262,9 +299,7 @@ suite('document fingerprint', function () {
       const d = await upload('original');
       const link = async (): Promise<string> => json(await call('POST', `/${d._id}/directUpload`)).signedUrl as string;
       const put = async (u: string, b: string) => {
-        const headers: Record<string, string> = BACKEND === 'azureBlob' ? { 'x-ms-blob-type': 'BlockBlob' } : {};
-        const res = await fetch(u, { method: 'PUT', body: b, headers });
-        expect(res.status, await res.text()).to.be.within(200, 201);
+        expect(await putTo(u, b)).to.be.within(200, 201);
       };
       const e0 = (await fp(d._id)).object?.etag;
       const u0 = (await info(d._id, false)).doc.storageFingerprint as Fp;
@@ -419,17 +454,19 @@ suite('document fingerprint', function () {
     expect(await fp(d._id)).to.include({ trusted: true, settled: true });
   });
 
-  it('F13b: a reader that read the row, then a write, then a revert to the old bytes: the final value differs from every earlier trusted one', async () => {
+  it('F13b: a reader that read the row, then a write, then a revert to the old bytes (a stale link on S3/Azure, a controller write on local): the final value differs from every earlier trusted one', async () => {
     const d = await upload('bytes X');
     const trustedValues = new Set<string>([(await fp(d._id)).value]);
+    const oldLink = BACKEND === 'local' ? undefined : (json(await call('POST', `/${d._id}/directUpload`)).signedUrl as string);
     const reader = { row: faults.gates.arm('R', 'R:afterRow'), stat: faults.gates.arm('R', 'R:afterStat'), reread: faults.gates.arm('R', 'R:afterReread') };
     const slow = info(d._id, true, 'R');
     await reader.row.reached();
     expect((await putBuffer(d._id, 'bytes Y')).status).to.equal(200);
     reader.row.release();
     await reader.stat.reached();
-    // the revert: on S3/Azure through a stale link in the real world; the controller writes the old bytes again
-    expect((await putBuffer(d._id, 'bytes X')).status).to.equal(200);
+    // the revert: through a stale presigned link on S3/Azure; on local disk there is no link, the controller writes the old bytes
+    if (oldLink) expect(await putTo(oldLink, 'bytes X')).to.be.within(200, 201);
+    else expect((await putBuffer(d._id, 'bytes X')).status).to.equal(200);
     reader.stat.release();
     await reader.reread.reached();
     reader.reread.release();
@@ -548,6 +585,181 @@ suite('document fingerprint', function () {
         expect(kinds.size, `iteration ${i}: a mix of old and new bytes`).to.equal(1);
         expect(got.length).to.equal(3 * 1024 * 1024);
         await nextVersion(d._id, i % 2 === 0 ? newBytes : oldBytes); // so there is something to roll back to again
+      }
+    });
+  }
+
+
+  // ------------------------------------------------------------------------------------------ moves, flags, keyed uploads
+  it('F14: moving a tree keeps the object size; reads work afterwards (no assertion on value or lastModified)', async () => {
+    const name = `mv-${++counter}-${randomUUID().slice(0, 6)}`;
+    const r = await startUpload('moved bytes', name, { documentPath: `mv/${name}/inner` });
+    let id: string;
+    if (r.status === 200) id = r.doc._id;
+    else {
+      expect(await putTo(r.link as string, 'moved bytes')).to.be.within(200, 201);
+      id = r.id as string;
+    }
+    const before = await fp(id);
+    const moved = await call('POST', '/move-tree', { json: { oldPath: `mv/${name}`, newPath: `mv/${name}-moved` } });
+    expect(moved.status, moved.text).to.be.within(200, 204);
+    const after = await info(id);
+    expect(after.status, after.text).to.equal(200);
+    expect(after.doc.storageFingerprint?.object?.size).to.equal(before.object?.size);
+    expect(after.doc.storageFingerprint?.objectMissing).to.equal(false);
+    if (BACKEND === 's3') expect(after.doc.storageFingerprint?.object?.etag, 'a copy keeps the ETag of a single-PUT S3 object').to.equal(before.object?.etag);
+    expect(sha(await objectBytes(id))).to.equal(sha('moved bytes'));
+  });
+
+  it('F17: an artifact set has no object fingerprint and is not trusted', async () => {
+    const r = await call('POST', '/artifacts/presign', {
+      json: { virtualRecordId: `vr-${randomUUID().slice(0, 8)}`, rev: randomUUID().replace(/-/g, '').slice(0, 16), files: [{ path: 'manifest.json', contentType: 'application/json' }] },
+    });
+    expect(r.status, r.text).to.equal(200);
+    const id = json(r).documentId as string;
+    const got = await info(id);
+    expect(got.status, got.text).to.equal(200);
+    expect(got.doc.storageFingerprint).to.include({ trusted: false });
+    expect(got.doc.storageFingerprint?.object).to.equal(null);
+  });
+
+  it('F6 keyed: the late loser of an Idempotency-Key takeover writes after the winner saved; the value moves, the window held the document unsettled, and it settles after', async () => {
+    const key = `k-${randomUUID()}`;
+    const name = `keyed-${++counter}-${randomUUID().slice(0, 6)}`;
+    const gate = faults.gates.arm('L', 'W:beforeUpload');
+    const loser = startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'L');
+    await gate.reached();
+    // the loser's lease lapses; a retry with the same key takes the upload over and finishes it
+    const id = (await row2(name)) as string;
+    expect(id, 'the keyed upload created its row').to.be.a('string');
+    await expireLease(id);
+    const winner = await startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'N');
+    if (winner.status !== 200 && winner.status !== 301) throw new Error('winner ' + winner.status + ' ' + winner.text.slice(0, 300));
+    if (winner.status === 301) expect(await putTo(winner.link as string, 'same bytes')).to.be.within(200, 201);
+    else expect(winner.status).to.equal(200);
+    const mid = await fp(id);
+    expect(mid.trusted, 'the loser still holds its window').to.equal(false);
+    gate.release();
+    await loser;
+    const end = await fp(id);
+    expect(end.settled).to.equal(true);
+    expect(end.value).to.not.equal(mid.value);
+  });
+
+  // -------------------------------------------------------------------------------------------- S3 and Azure only
+  if (BACKEND !== 'local') {
+    it('F5 S3/Azure: a finished direct upload is adopted once, whoever reads first; sizes follow the object', async () => {
+      const name = `big-${++counter}-${randomUUID().slice(0, 6)}`;
+      const start = await startUpload(Buffer.alloc(1024, 'x'), name);
+      expect(start.status, start.text).to.equal(301);
+      const id = start.id as string;
+      const waiting = await info(id);
+      expect(waiting.doc.awaitingDirectUpload).to.equal(true);
+      expect(waiting.doc.storageFingerprint).to.include({ trusted: false });
+      expect(waiting.doc.storageFingerprint?.object).to.equal(null);
+      // declared 1 KiB, the client sends 5 bytes
+      expect(await putTo(start.link as string, 'five!')).to.be.within(200, 201);
+      const a = { row: faults.gates.arm('A', 'R:afterRow'), stat: faults.gates.arm('A', 'R:afterStat') };
+      const b = { row: faults.gates.arm('B', 'R:afterRow'), stat: faults.gates.arm('B', 'R:afterStat') };
+      const ra = info(id, true, 'A');
+      const rb = info(id, true, 'B');
+      await Promise.all([a.row.reached(), b.row.reached()]);
+      a.row.release(); b.row.release();
+      await Promise.all([a.stat.reached(), b.stat.reached()]);
+      a.stat.release(); b.stat.release();
+      const [x, y] = await Promise.all([ra, rb]);
+      for (const r of [x, y]) {
+        expect(r.doc.awaitingDirectUpload ?? false).to.equal(false);
+        expect(r.doc.storageFingerprint?.object?.size).to.equal(5);
+        expect(r.doc.sizeInBytes).to.equal(5);
+        expect(r.doc.storageFingerprint?.trusted).to.equal(true);
+      }
+      expect(x.doc.storageFingerprint?.value).to.equal(y.doc.storageFingerprint?.value);
+      expect(faults.adopted, 'exactly one adoption').to.equal(1);
+      // a second PUT after the adoption moves the etag
+      const before = (await fp(id)).object?.etag;
+      const again = json(await call('POST', `/${id}/directUpload`)).signedUrl as string;
+      expect(await putTo(again, 'second')).to.be.within(200, 201);
+      expect((await fp(id)).object?.etag).to.not.equal(before);
+    });
+
+    it('F5 S3/Azure: a second PUT between the stat and the adopt: the final pass reports the new size, and the stored size converges', async () => {
+      const start = await startUpload(Buffer.alloc(1024, 'x'), `big-${++counter}-${randomUUID().slice(0, 6)}`);
+      const id = start.id as string;
+      expect(await putTo(start.link as string, 'five!')).to.be.within(200, 201);
+      const g = faults.gates.arm('W2', 'R:afterStat');
+      const slow = info(id, true, 'W2');
+      await g.reached();
+      expect(await putTo(start.link as string, 'seven!!')).to.be.within(200, 201);
+      g.release();
+      const r = await slow;
+      expect(r.doc.storageFingerprint?.object?.size).to.equal(7);
+      expect(r.doc.sizeInBytes).to.equal(7);
+      await sleep(100);
+      expect((await row(id))?.sizeInBytes, 'the stored column converged').to.equal(7);
+    });
+
+    it('F5 S3/Azure: the row removed between the loser\'s adopt and its second pass: 404', async () => {
+      const start = await startUpload(Buffer.alloc(1024, 'x'), `big-${++counter}-${randomUUID().slice(0, 6)}`);
+      const id = start.id as string;
+      expect(await putTo(start.link as string, 'five!')).to.be.within(200, 201);
+      const g = faults.gates.arm('L', 'W:afterAdopt');
+      const loser = info(id, true, 'L');
+      await g.reached();
+      await inOrg(() => real.remove(id, ORG));
+      g.release();
+      expect((await loser).status).to.equal(404);
+    });
+
+    it('F5 S3/Azure: abort on an object that arrived answers 409 and leaves the adopted state', async () => {
+      const start = await startUpload(Buffer.alloc(1024, 'x'), `big-${++counter}-${randomUUID().slice(0, 6)}`);
+      const id = start.id as string;
+      expect(await putTo(start.link as string, 'five!')).to.be.within(200, 201);
+      expect((await call('POST', `/${id}/abortDirectUpload`)).status).to.equal(409);
+      const after = await info(id);
+      expect(after.doc.awaitingDirectUpload ?? false).to.equal(false);
+      expect(after.doc.storageFingerprint).to.include({ trusted: true });
+      expect(after.doc.storageFingerprint?.object?.size).to.equal(5);
+    });
+
+    if (BACKEND === 's3') {
+      it('F5b S3: a stored URL the provider cannot parse (path-style) answers 200 objectUnverifiable, not 503; other store failures still 503', async () => {
+        const d = await upload('path style');
+        await inOrg(() => real.update(ORG, d._id, { s3: { url: 'http://127.0.0.1:9000/some-bucket/some/key.txt' } }));
+        const r = await info(d._id);
+        expect(r.status, r.text).to.equal(200);
+        expect(r.doc.storageFingerprint).to.include({ objectUnverifiable: true, trusted: false, reason: 'unparseable_storage_url' });
+        expect(r.doc.storageFingerprint?.object).to.equal(null);
+        const e = await upload('store down');
+        faults.failAdapterBefore.set('statObject', new Error('head failed (test fault)'));
+        expect((await info(e._id)).status).to.equal(503);
+        faults.failAdapterBefore.clear();
+      });
+    }
+
+    it('F18 S3/Azure: a download bound by If-Match: 412 after an overwrite, and the response ETag equals object.etag', async () => {
+      const d = await upload('bytes X');
+      const f0 = await fp(d._id);
+      const signed = async (): Promise<string> => json(await call('GET', `/${d._id}/download`)).signedUrl as string;
+      const get = (u: string, etag: string) => fetch(u, { headers: { 'if-match': `"${etag}"` } });
+      const ok = await get(await signed(), f0.object?.etag as string);
+      expect(ok.status).to.equal(200);
+      expect(ok.headers.get('etag')?.replace(/^W\//, '').replace(/"/g, '')).to.equal(f0.object?.etag);
+      expect(Buffer.from(await ok.arrayBuffer()).toString()).to.equal('bytes X');
+      expect((await putBuffer(d._id, 'bytes Y')).status).to.equal(200);
+      const stale = await get(await signed(), f0.object?.etag as string);
+      await stale.arrayBuffer();
+      expect(stale.status, 'the object changed after it was verified').to.equal(412);
+      // an overwrite through the old link that puts the same bytes back
+      const link = json(await call('POST', `/${d._id}/directUpload`)).signedUrl as string;
+      expect(await putTo(link, 'bytes X')).to.be.within(200, 201);
+      const restored = await get(await signed(), f0.object?.etag as string);
+      const restoredBytes = Buffer.from(await restored.arrayBuffer()).toString();
+      if (BACKEND === 's3') {
+        expect(restored.status, 'S3 ETags follow the content').to.equal(200);
+        expect(restoredBytes).to.equal('bytes X');
+      } else {
+        expect(restored.status, 'Azure ETags change on every write').to.equal(412);
       }
     });
   }
