@@ -20,6 +20,13 @@ import { useOrgHref } from '@/lib/navigation';
 import { PDF_ZOOM_MAX, PDF_ZOOM_MIN } from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
+import {
+  PREVIEW_TOOLBAR_BAR,
+  PREVIEW_TOOLBAR_BUTTON,
+  PREVIEW_TOOLBAR_DIVIDER,
+  PREVIEW_TOOLBAR_PAGE,
+  PREVIEW_TOOLBAR_VALUE,
+} from './preview-toolbar-styles';
 
 /**
  * Props for FilePreviewInlinePanel.
@@ -43,6 +50,9 @@ export interface FilePreviewInlinePanelProps
   /** Optional inline styles applied to the root container. */
   style?: React.CSSProperties;
 }
+
+/** Radix ghost buttons have a negative margin equal to their padding; without this they overlap neighbours. */
+const GHOST_NO_BLEED: React.CSSProperties = { margin: 0 };
 
 /**
  * The body of the file-preview panel — header, tabs, renderer, citations —
@@ -183,7 +193,8 @@ export function FilePreviewInlinePanel({
           padding: '10px 12px 10px 14px',
           flexShrink: 0,
           borderBottom: '1px solid var(--olive-3)',
-          background: 'var(--olive-2)',
+          // Translucent so a frosted host (the records preview sidebar) shows through
+          background: 'var(--olive-a2)',
         }}
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
@@ -235,7 +246,7 @@ export function FilePreviewInlinePanel({
           )}
         </Flex>
 
-        <Flex align="center" gap="1">
+        <Flex align="center" gap="2">
           {onChat && (
             <Button size="1" variant="surface" onClick={onChat}>
               <MaterialIcon name="assistant" size={16} />
@@ -247,6 +258,7 @@ export function FilePreviewInlinePanel({
               variant="ghost"
               color="gray"
               size="2"
+              style={GHOST_NO_BLEED}
               onClick={() =>
                 downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob, onDownload })
               }
@@ -261,6 +273,7 @@ export function FilePreviewInlinePanel({
               variant="ghost"
               color="gray"
               size="2"
+              style={GHOST_NO_BLEED}
               onClick={onToggleFullscreen}
               title={t('recordView.openFullscreen')}
             >
@@ -269,7 +282,7 @@ export function FilePreviewInlinePanel({
           )}
 
           {onClose && (
-            <IconButton variant="ghost" color="gray" size="2" onClick={onClose} aria-label={t('filePreview.closePreview')}>
+            <IconButton variant="ghost" color="gray" size="2" style={GHOST_NO_BLEED} onClick={onClose} aria-label={t('filePreview.closePreview')}>
               <MaterialIcon name="close" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
             </IconButton>
           )}
@@ -389,13 +402,13 @@ export function FilePreviewInlinePanel({
               <Flex
                 align="center"
                 justify="center"
-                gap="2"
+                gap="1"
                 style={{
                   position: 'absolute',
                   bottom: 'var(--space-4)',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  padding: 'var(--space-2)',
+                  ...PREVIEW_TOOLBAR_BAR,
                   backgroundColor: 'var(--color-panel-solid)',
                   border: '1px solid var(--slate-3)',
                   borderRadius: 'var(--radius-1)',
@@ -411,13 +424,13 @@ export function FilePreviewInlinePanel({
                   size="1"
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
-                <Box style={{ minWidth: '40px', textAlign: 'center' }}>
+                <Box style={PREVIEW_TOOLBAR_VALUE}>
                   <Text as="span" size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
                     {Math.round(pdfScale * 100)}%
                   </Text>
@@ -429,7 +442,7 @@ export function FilePreviewInlinePanel({
                   size="1"
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
@@ -440,7 +453,7 @@ export function FilePreviewInlinePanel({
                   color="gray"
                   size="1"
                   onClick={toggleZoomLock}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-pressed={isZoomLocked}
@@ -452,15 +465,7 @@ export function FilePreviewInlinePanel({
                   />
                 </IconButton>
 
-                <Box
-                  style={{
-                    width: '1px',
-                    height: '16px',
-                    backgroundColor: 'var(--slate-4)',
-                    flexShrink: 0,
-                  }}
-                  aria-hidden
-                />
+                <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
                 <IconButton
                   variant="ghost"
@@ -468,19 +473,12 @@ export function FilePreviewInlinePanel({
                   size="1"
                   onClick={handlePrevPage}
                   disabled={currentPage === 1}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_left" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
-                <Box
-                  style={{
-                    backgroundColor: 'var(--slate-2)',
-                    border: '1px solid var(--slate-3)',
-                    borderRadius: 'var(--radius-1)',
-                    padding: '4px 12px',
-                  }}
-                >
+                <Box style={PREVIEW_TOOLBAR_PAGE}>
                   <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                     {totalPages === null ? `${currentPage}/?` : `${currentPage}/${totalPages}`}
                   </Text>
@@ -492,7 +490,7 @@ export function FilePreviewInlinePanel({
                   size="1"
                   onClick={handleNextPage}
                   disabled={totalPages === null || currentPage === totalPages}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
