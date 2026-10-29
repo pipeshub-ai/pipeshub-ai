@@ -556,7 +556,7 @@ jobs:
       - name: Fingerprint tests ran, none skipped
         if: always()
         working-directory: .
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=@N@"
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=${{ matrix.backend == 'local' && 31 || 29 }}"
 
       # Every skip fails, and so does a discovered file that contributed no test.
       # The one allowance: a test that cannot apply to this store says so with a
