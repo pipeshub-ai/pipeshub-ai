@@ -38,6 +38,7 @@ from app.agents.actions.util.attachments import (
     emit_attachment_audit,
     resolve_attachments,
 )
+from app.core import org_context
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -238,6 +239,14 @@ async def prepare_attachments(
     return prepared
 
 
+def _audit_org_id() -> str:
+    """The org the request is bound to. Without one the audit line names no org; the upload goes ahead."""
+    try:
+        return org_context.current_org_id()
+    except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+        return ""
+
+
 async def deliver_attachments(
     state: ChatState | None,
     prepared: PreparedAttachments,
@@ -258,7 +267,7 @@ async def deliver_attachments(
 
     results = await uploader.upload(target, prepared.bundle.resolved)
 
-    org_id = (state.get("org_id") if state else None) or ""
+    org_id = _audit_org_id()
     user_id = (state.get("user_id") if state else None) or ""
     sizes = {r.record_id: r.size_bytes for r in prepared.bundle.resolved}
 

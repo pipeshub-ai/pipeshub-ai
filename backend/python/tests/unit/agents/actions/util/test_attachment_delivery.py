@@ -22,6 +22,7 @@ from app.agents.actions.util.attachment_upload import (
     AttachmentUploadResult,
 )
 from app.agents.actions.util.attachments import AttachmentBundle
+from app.core.org_context import OrgContext, bind
 from app.services.record_content.models import AttachmentFailure, ResolvedRecordContent
 
 _RESOLVE = "app.agents.actions.util.attachment_delivery.resolve_attachments"
@@ -134,7 +135,7 @@ class TestDeliverAttachments:
         failed = AttachmentUploadResult(record_id="b", filename="b.png", success=False, error="HTTP 413")
         uploader = _Uploader([_ok("a"), failed])
 
-        with patch(_AUDIT) as audit:
+        with patch(_AUDIT) as audit, bind(OrgContext("org1", "user1", "user", "jwt", "req-test")):
             report = await deliver_attachments(
                 STATE, prepared, uploader, AttachmentTarget(destination_id="KAN-1"), target_app="jira"
             )
@@ -147,6 +148,17 @@ class TestDeliverAttachments:
         assert first["destination"] == "KAN-1"
         assert first["org_id"] == "org1" and first["user_id"] == "user1"
         assert audit.call_args_list[1].kwargs["size_bytes"] == 20
+
+    @pytest.mark.asyncio
+    async def test_audit_takes_the_org_from_the_request_not_the_chat_state(self) -> None:
+        prepared = PreparedAttachments(requested=1, bundle=_bundle([_resolved("a")]))
+        with patch(_AUDIT) as audit:
+            report = await deliver_attachments(
+                {"org_id": "org-from-state", "user_id": "user1"}, prepared, _Uploader([_ok("a")]),
+                AttachmentTarget(destination_id="KAN-1"), target_app="jira",
+            )
+        assert [r.record_id for r in report.uploaded] == ["a"]
+        assert audit.call_args.kwargs["org_id"] == ""
 
     @pytest.mark.asyncio
     async def test_resolution_failures_are_reported(self) -> None:
