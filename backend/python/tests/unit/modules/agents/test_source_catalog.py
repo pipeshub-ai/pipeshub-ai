@@ -338,23 +338,19 @@ class TestCanonicalKnowledgeBlock:
 
     def test_entities_paragraph_names_both_tools_when_granted(self) -> None:
         catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
-        rendered = catalog.render(
-            tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"],
-        )
+        rendered = catalog.render(tool_names=[
+            "knowledgegraph__search", "knowledgegraph__search_entities", "knowledgegraph__find_records_by_entity",
+        ])
         assert "**Entities.**" in rendered
         assert "knowledgegraph__search_entities(query=...)" in rendered
         assert "knowledgegraph__find_records_by_entity(entity_id=...)" in rendered
         assert "`knowledgegraph__search(query=..., entity_ids=[...])`" in rendered
 
-    def test_entities_paragraph_is_stable_when_find_records_unlocks(self) -> None:
+    def test_entities_paragraph_names_find_records_only_when_granted(self) -> None:
+        """A child granted search_entities alone must not be told to call it."""
         catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
-        before = catalog.render(tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"])
-        after = catalog.render(tool_names=[
-            "knowledgegraph__search",
-            "knowledgegraph__search_entities",
-            "knowledgegraph__find_records_by_entity",
-        ])
-        assert before == after
+        rendered = catalog.render(tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"])
+        assert "**Entities.**" in rendered and "find_records_by_entity" not in rendered
 
     def test_entities_paragraph_only_names_real_entity_types_and_tools(self) -> None:
         catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])

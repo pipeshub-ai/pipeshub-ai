@@ -102,7 +102,11 @@ def test_offered_adds_the_tool_and_the_named_entity_descriptions() -> None:
     assert "knowledgegraph__search_by_entities" in params["named_entity_kinds"].description
     assert "entityType 'named_entity'" in search_entities.description
     assert "named entities" in {p.name: p for p in by_name["knowledgegraph__search"].parameters}["entity_ids"].description
-    assert "mentions a named entity" in by_name["knowledgegraph__find_records_by_entity"].description
+    find_records = by_name["knowledgegraph__find_records_by_entity"]
+    assert "mentions a named entity" in find_records.description
+    # search_by_entities ends each match with this tool's call, so its ids are named as valid.
+    assert "search_entities or search_by_entities" in find_records.description
+    assert "search_by_entities" in {p.name: p for p in find_records.parameters}["entity_id"].description
     assert "rather than words" in by_name["knowledgegraph__find_records_by_value"].description
 
 

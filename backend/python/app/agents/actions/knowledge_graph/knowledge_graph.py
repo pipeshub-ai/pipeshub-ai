@@ -1029,7 +1029,7 @@ class KnowledgeGraph:
         )
 
     # -----------------------------------------------------------------------
-    # find_records_by_entity — granted once search_entities has been called
+    # find_records_by_entity
     # -----------------------------------------------------------------------
 
     @tool(

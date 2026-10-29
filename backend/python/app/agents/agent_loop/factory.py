@@ -81,6 +81,10 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.prompt_cache import CacheScope, PromptCacheSettings
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.actions.knowledge_graph.entity_search_surface import (
+    FIND_RECORDS_BY_ENTITY_TOOL_NAME,
+    SEARCH_ENTITIES_TOOL_NAME,
+)
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop import parked_turn
@@ -121,7 +125,6 @@ from app.agents.agent_loop.hooks import (
     code_graph_unlock_after_tools,
     code_graph_unlock_on_turn,
     completion_gate,
-    progressive_entity_tools,
     # repo_instructions_after_tools,
     # repo_instructions_on_turn,
     resolve_attachments_for_goal,
@@ -136,11 +139,6 @@ from app.agents.agent_loop.hooks import (
     sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
-from app.agents.agent_loop.hooks.progressive_tools import (
-    ENTITY_TOOL_NAMES,
-    PROGRESSIVE_TOOL_NAMES,
-    entity_tools_used_in_history,
-)
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
@@ -375,16 +373,14 @@ def _composed_agents_enabled() -> bool:
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
+# Entity tools are hidden when no entity store is wired: they could only fail.
+_ENTITY_TOOL_NAMES = frozenset({SEARCH_ENTITIES_TOOL_NAME, FIND_RECORDS_BY_ENTITY_TOOL_NAME})
+
+
 def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
-    """Entity tools are hidden when no entity store is wired (they could only
-    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
-    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
-    earlier turn already used an entity tool and its ids are in the history."""
     if not context.tool_state.get("entity_vector_store"):
-        return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
-    if entity_tools_used_in_history(context.previous_conversations):
-        return tool_names
-    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
+        return [n for n in tool_names if n not in _ENTITY_TOOL_NAMES]
+    return tool_names
 
 
 class PipesHubAgentFactory:
@@ -1143,7 +1139,6 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
-        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
         hooks.on(HookEvent.POST_TOOL_USE).use(code_graph_unlock_after_tools(context))
         # hooks.on(HookEvent.POST_TOOL_USE).use(repo_instructions_after_tools(context))
 

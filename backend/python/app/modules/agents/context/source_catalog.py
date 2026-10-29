@@ -289,9 +289,9 @@ class SourceCatalog:
         # Only an agent actually granted search_entities gets the Entities
         # paragraph — the exploration child renders this catalog without tool
         # names; its only entity tool, find_records_by_person, routes by its own
-        # description. find_records_by_entity is named
-        # literally: it unlocks mid-run, and the prompt text must not change.
+        # description.
         search_entities = granted("knowledgegraph.search_entities", _tool_names)
+        find_by_entity = granted("knowledgegraph.find_records_by_entity", _tool_names)
         search_by_entities = granted("knowledgegraph.search_by_entities", _tool_names)
         find_by_person = granted("knowledgegraph.find_records_by_person", _tool_names)
         content_search = (
@@ -339,15 +339,18 @@ class SourceCatalog:
                 )
             else:
                 entity_content_hint = ""
+            entity_records_hint = (
+                f"`{find_by_entity}(entity_id=...)` lists the records connected to one entity, "
+                "newest first, paging with `cursor` copied from its output. "
+                if find_by_entity else ""
+            )
             lines.extend([
                 "**Entities.** Records are tagged with departments, categories, subcategories, "
                 "topics and languages; record groups (a project, space, folder, channel) and "
                 "record titles are indexed too. When a question names one, call "
                 f"`{search_entities}(query=...)`: it returns the entity's type, the apps it "
                 "appears in, and a few openable records for the best matches. "
-                "`knowledgegraph__find_records_by_entity(entity_id=...)` (available after "
-                f"{search_entities}) lists the records connected to one entity, newest first, "
-                f"paging with `cursor` copied from its output. {entity_content_hint}".rstrip(),
+                f"{entity_records_hint}{entity_content_hint}".rstrip(),
                 *(
                     [
                         f"For named people, organizations, products or places, `{search_by_entities}"
