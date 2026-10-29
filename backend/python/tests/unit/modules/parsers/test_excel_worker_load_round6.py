@@ -36,7 +36,7 @@ def _links_on_merges() -> bytes:
     return workbook_zip(body)
 
 
-def _load_model(data: bytes, seconds: float | None):
+def _load_model(data: bytes, seconds: float | None) -> WorkbookModel:
     return load_workbook_model(
         data, module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS, seconds
     )
@@ -120,7 +120,7 @@ def test_an_explicit_heavy_parse_setting_is_used_exactly_and_logged_once(
     monkeypatch.delenv("EXCEL_LOAD_MAX_MB", raising=False)
     monkeypatch.setenv("GOVERNOR_HEAVY_PARSE_WORKING_SET_GB", "0.5")
     monkeypatch.setattr(policy_mod, "HEAVY_PARSE_WORKING_SET_GB", 0.5)
-    monkeypatch.setattr(policy_mod, "_warned_below_excel", False)
+    monkeypatch.setattr(policy_mod, "_WARNED", set())
     snap = _snapshot(cpu_quota=16.0, mem_limit_bytes=32 * 1024**3)
     with caplog.at_level(logging.WARNING, logger=policy_mod.__name__):
         assert policy_mod.heavy_parse_working_set_gb() == 0.5

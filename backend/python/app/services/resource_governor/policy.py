@@ -54,7 +54,7 @@ HEAVY_PARSE_WORKING_SET_GB = _env_float(
 
 
 _HEAVY_PARSE_WORKING_SET_DEFAULT_GB = 1.5
-_warned_below_excel = False
+_WARNED: set[str] = set()  # warnings already logged
 
 
 def _heavy_parse_working_set_is_explicit() -> bool:
@@ -69,11 +69,10 @@ def heavy_parse_working_set_gb() -> float:
     one Excel document may hold (``excel_document_memory_bytes``); that is logged once. Unset, it
     is the larger of the default and the Excel figure, so raising the Excel limits lowers the
     number of heavy parses the memory gate admits."""
-    global _warned_below_excel
     excel_gb = excel_document_memory_bytes() / 1024 ** 3
     if _heavy_parse_working_set_is_explicit():
-        if HEAVY_PARSE_WORKING_SET_GB < excel_gb and not _warned_below_excel:
-            _warned_below_excel = True
+        if HEAVY_PARSE_WORKING_SET_GB < excel_gb and "below_excel" not in _WARNED:
+            _WARNED.add("below_excel")
             _logger.warning(
                 "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=%.2f is below what one Excel document may hold "
                 "(%.2f GiB, from EXCEL_LOAD_MAX_MB and EXCEL_MAX_TEXT_MB); the setting is used as given",
