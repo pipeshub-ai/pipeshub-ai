@@ -391,8 +391,9 @@ jobs:
       NEEDS_LOCAL_FS_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'local_fs_sim')) && 'true' || 'false' }}
       # The bookstack_sim suite runs against the BookStack simulator on shard 1, beside the live bookstack suite
       # (the connector reaches it by service name; nothing else changes). CONNSIM_BOOKSTACK_REF is a
-      # connectors-simulator commit with connsim/sources/bookstack (branch sim/bookstack until it merges).
-      CONNSIM_BOOKSTACK_REF: d4120ce5d6963cd7df276765c638df2ebd1cc3b4
+      # connectors-simulator commit with connsim/sources/bookstack (sim/bookstack, pipeshub-ai/connectors-simulator#10,
+      # until it merges).
+      CONNSIM_BOOKSTACK_REF: d7369757c0272ca4bfc706ecfe039c404b5584f8
       BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
       NEEDS_BOOKSTACK_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'bookstack_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
