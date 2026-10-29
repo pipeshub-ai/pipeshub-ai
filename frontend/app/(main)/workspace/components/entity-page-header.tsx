@@ -4,7 +4,8 @@ import React from 'react';
 import { Box, Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { PAGE_PADDING_TOP } from './settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from './settings-page-container';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface EntityPageHeaderProps {
   /** Page title (e.g. "Users") */
@@ -51,8 +52,11 @@ export function EntityPageHeader({
   additionalActions,
   ctaDisabled = false,
   ctaTooltip,
-  paddingTop = PAGE_PADDING_TOP,
+  paddingTop: paddingTopProp,
 }: EntityPageHeaderProps) {
+  // Phones clear the fixed menu button, like every other settings page
+  const isMobile = useIsMobile();
+  const paddingTop = paddingTopProp ?? (isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP);
   const canHover = useCanHover();
   const ctaButton = (
     <Button

@@ -107,9 +107,10 @@ export function MobileBottomSheet({
           zIndex: 9991,
           display: 'flex',
           flexDirection: 'column',
-          backdropFilter: 'var(--frost-filter-subtle)',
-          WebkitBackdropFilter: 'var(--frost-filter-subtle)',
-          backgroundColor: 'var(--effects-translucent)',
+          // A sheet is a panel: same frost as the side panels
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
+          backgroundColor: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderBottom: 'none',
           borderTopLeftRadius: 'var(--radius-1)',

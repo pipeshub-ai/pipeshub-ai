@@ -3,6 +3,7 @@
 import { Button, DropdownMenu, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 /** The sorts the records API accepts that the table also offers on its column headers. */
 export type KbSortMenuField = 'name' | 'createdAt' | 'updatedAt' | 'size';
@@ -31,6 +32,8 @@ export function KbSortMenu({
   onChange: (next: { field: KbSortMenuField; order: 'asc' | 'desc' }) => void;
 }) {
   const { t } = useTranslation();
+  // Phones get 44px rows, like the row action menus
+  const itemStyle = useIsMobile() ? { height: 44 } : undefined;
   const current = FIELDS.find((f) => f.value === value.field);
   const label = current ? `${t('filter.sort')}: ${t(current.labelKey)}` : t('filter.sort');
 
@@ -72,7 +75,7 @@ export function KbSortMenu({
           onValueChange={(field) => onChange({ field: field as KbSortMenuField, order: value.order })}
         >
           {FIELDS.map((f) => (
-            <DropdownMenu.RadioItem key={f.value} value={f.value}>
+            <DropdownMenu.RadioItem key={f.value} value={f.value} style={itemStyle}>
               {t(f.labelKey)}
             </DropdownMenu.RadioItem>
           ))}
@@ -84,11 +87,11 @@ export function KbSortMenu({
             onChange({ field: current?.value ?? 'updatedAt', order: order as 'asc' | 'desc' })
           }
         >
-          <DropdownMenu.RadioItem value="asc">
+          <DropdownMenu.RadioItem value="asc" style={itemStyle}>
             <MaterialIcon name="arrow_upward" size={14} color="var(--slate-11)" />
             {t('filter.sortAscending')}
           </DropdownMenu.RadioItem>
-          <DropdownMenu.RadioItem value="desc">
+          <DropdownMenu.RadioItem value="desc" style={itemStyle}>
             <MaterialIcon name="arrow_downward" size={14} color="var(--slate-11)" />
             {t('filter.sortDescending')}
           </DropdownMenu.RadioItem>
