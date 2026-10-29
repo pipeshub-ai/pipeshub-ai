@@ -598,6 +598,15 @@ export function activeUnit(): Tx | undefined {
   return t?.isActive ? t : undefined;
 }
 
+/**
+ * Runs `fn` outside any unit of work open in this async context, so a unit started inside it is a new one on its own
+ * connection (it commits independently of the caller's unit). The caller of this must not itself hold a connection it
+ * waits on: it needs a second one from the pool.
+ */
+export function outsideUnit<T>(fn: () => T): T {
+  return unitStorage.exit(fn);
+}
+
 /** A unit inside a unit takes a second connection and can exhaust the pool; pass `tx` down instead. */
 function refuseNesting(): void {
   if (unitStorage.getStore()?.isActive)

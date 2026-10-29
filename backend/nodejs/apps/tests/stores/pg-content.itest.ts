@@ -23,6 +23,7 @@ import {
   inOrg,
   newId,
   scoped,
+  scopedUow,
   startPgStack,
 } from './pg-store-harness';
 
@@ -44,6 +45,15 @@ function scopedDocuments(
     removeClaimedArtifactSet: 1,
     removeAwaitingDirectUpload: 0,
     clearAwaitingDirectUpload: 0,
+    beginWrite: 0,
+    renewWrite: 0,
+    endWrite: 0,
+    bumpSeq: 0,
+    adoptDirectUpload: 0,
+    correctSize: 0,
+    markAwaitingDirectUpload: 0,
+    getWithFingerprintState: 0,
+    peekWriteState: 0,
     listByVirtualRecord: 0,
     listForRelocate: 0,
     listByFolders: 0,
@@ -131,6 +141,29 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             if (!row) throw new Error(`no row ${id} to read the write state from`);
             return { writeSeq: Number(row.write_seq), writers: row.writers };
           }),
+        rowStamp: (orgId, id) =>
+          stack.admin(async (c) => {
+            const r = await c.query<{ x: string }>(
+              'SELECT xmin::text AS x FROM content.documents WHERE org_id = $1 AND id = $2',
+              [orgId, id],
+            );
+            return r.rows[0]?.x ?? '';
+          }),
+        // a unit of work the caller holds open (and rolls back), as a service method running inside one would
+        inCallerUnit: async (orgId, body) => {
+          const rollback = new Error('rollback the caller unit');
+          try {
+            await scopedUow().run(
+              async () => {
+                await body();
+                throw rollback;
+              },
+              { org: orgId },
+            );
+          } catch (e) {
+            if (e !== rollback) throw e;
+          }
+        },
       });
     });
 

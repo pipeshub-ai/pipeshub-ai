@@ -110,9 +110,13 @@ export class PgUnitOfWork implements UnitOfWork {
 
   async run<T>(
     fn: (tx: Tx) => Promise<T>,
-    opts?: { readOnly?: boolean; preOrg?: boolean },
+    opts?: { readOnly?: boolean; preOrg?: boolean; timeoutMs?: number },
   ): Promise<T> {
-    const o = { write: !opts?.readOnly, preOrg: opts?.preOrg === true };
+    const o = {
+      write: !opts?.readOnly,
+      preOrg: opts?.preOrg === true,
+      ...(opts?.timeoutMs !== undefined && { timeoutMs: opts.timeoutMs }),
+    };
     const body = (kt: PgKernelTx): Promise<T> => fn(new PgTx(kt));
     try {
       return await (this.runtime

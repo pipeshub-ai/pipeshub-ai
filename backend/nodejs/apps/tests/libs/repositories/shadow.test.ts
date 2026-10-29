@@ -54,6 +54,37 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     for (const n of ['create', 'update', 'delete', 'markRead', 'revoke', 'upsertX', 'issueAccess', 'issueRefresh']) expect(isReadMethod(n), n).to.equal(false);
   });
 
+  it('classifies the write-state methods deliberately: only getWithFingerprintState is a read', () => {
+    expect(isReadMethod('getWithFingerprintState')).to.equal(true);
+    for (const n of ['beginWrite', 'renewWrite', 'endWrite', 'bumpSeq', 'adoptDirectUpload', 'correctSize', 'markAwaitingDirectUpload', 'peekWriteState', 'serverClockMs']) expect(isReadMethod(n), n).to.equal(false);
+  });
+
+  it('a shadow read of getWithFingerprintState compares the row only: different counters on the two stores are equal', async () => {
+    const row = { _id: 'a', documentName: 'n' };
+    const repo = shadowWrap(
+      'document',
+      { getWithFingerprintState: async () => ({ row, writeSeq: 7, writers: [{ t: 'x', until: 1 }], serverNow: 5 }) },
+      () => ({ getWithFingerprintState: async () => ({ row, writeSeq: 0, writers: [], serverNow: 99 }) }),
+      runPg,
+    );
+    await repo.getWithFingerprintState();
+    await wait(100);
+    expect(counts['document:equal']).to.equal(1);
+    expect(counts['document:diff']).to.equal(undefined);
+  });
+
+  it('a different ROW in getWithFingerprintState is still a difference', async () => {
+    const repo = shadowWrap(
+      'document',
+      { getWithFingerprintState: async () => ({ row: { _id: 'a', n: 1 }, writeSeq: 0, writers: [], serverNow: 1 }) },
+      () => ({ getWithFingerprintState: async () => ({ row: { _id: 'a', n: 2 }, writeSeq: 0, writers: [], serverNow: 1 }) }),
+      runPg,
+    );
+    await repo.getWithFingerprintState();
+    await wait(100);
+    expect(counts['document:diff']).to.equal(1);
+  });
+
   it('every repository method that looks like a read is classified (a new one must be added to the list or named so it is not one)', () => {
     const root = join(__dirname, '../../../src/libs/repositories');
     const looksRead = /^(find|get|list|count|exists?|search|lookup|has|resolve|read|fetch|load|query|check|select|stats|page)/;
