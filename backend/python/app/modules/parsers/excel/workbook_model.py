@@ -32,11 +32,10 @@ import zlib
 from array import array
 from bisect import bisect_left
 from typing import TYPE_CHECKING, Any
+from xml.etree import ElementTree
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
-from xml.etree import ElementTree
-
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
 

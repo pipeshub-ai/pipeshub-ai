@@ -27,6 +27,11 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers import parse_pool
+from app.modules.parsers.excel.limits import (
+    CELL_DICT_BYTES,
+    OUTPUT_BUDGET_FACTOR,
+    excel_max_text_bytes,
+)
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
     TableHeaders,
@@ -37,7 +42,6 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
-from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR, excel_max_text_bytes
 from app.modules.parsers.excel.workbook_model import (
     LoaderFailure,
     ModelMergedCell,

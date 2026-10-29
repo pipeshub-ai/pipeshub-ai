@@ -10,6 +10,7 @@ from app.modules.parsers.excel import excel_parser as module
 from app.modules.parsers.excel.workbook_model import (
     CELL_DICT_BYTES,
     OUTPUT_BUDGET_FACTOR,
+    WorkbookModel,
     WorkbookRefused,
     _merge_area,
     load_workbook_model,
@@ -30,7 +31,7 @@ def _workbook(refs: list[str]) -> bytes:
     return workbook_zip(body)
 
 
-def _load(refs: list[str]):
+def _load(refs: list[str]) -> WorkbookModel:
     return load_workbook_model(_workbook(refs), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, TEXT_BYTES)
 
 
@@ -72,7 +73,10 @@ def test_one_huge_merge_is_refused_in_every_spelling(spelling: str) -> None:
 def test_many_small_tables_are_charged_with_headroom_for_the_resident_overhead(monkeypatch: pytest.MonkeyPatch) -> None:
     # tracemalloc counts live objects; the resident set grew 1.12x the charge at 60 000 tables, so the
     # charge must clear the allocation by at least that much (measured: 1.32x with the round-5 constants)
-    from tests.unit.modules.parsers.test_excel_worker_load_qa_round3 import _allocated_and_charged, _many_small_tables
+    from tests.unit.modules.parsers.test_excel_worker_load_qa_round3 import (
+        _allocated_and_charged,
+        _many_small_tables,
+    )
 
     allocated, charged, _ = _allocated_and_charged(_many_small_tables(), monkeypatch)
     assert charged >= 1.2 * allocated, f"charged {charged / 1e6:.1f} MB for {allocated / 1e6:.1f} MB allocated"
