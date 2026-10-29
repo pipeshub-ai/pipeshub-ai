@@ -275,7 +275,7 @@ The UI finds logos in two ways, so there are two places to update:
 
 ## Re-enabling a disabled entry
 
-Fifteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `docusign`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow`, `stripe` and `zoom`.
+Fourteen modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `docusign`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry`, `servicenow` and `zoom`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 
