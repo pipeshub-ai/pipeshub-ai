@@ -1230,7 +1230,7 @@ async def discover_attachment(
 
 async def derive_jira_scope_counts(
     datasource: JiraDataSource, project_key: str
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Single enumeration of a project's issues → independent expected counts (live Jira, not graph).
 
     Mirrors the connector's sync-path record creation:
@@ -1244,6 +1244,7 @@ async def derive_jira_scope_counts(
       - ``parent_child_by_level``: stories that share their epic's level, filed under it only
         when that level grants the same people on every issue. That depends on the level's
         members, so these are counted apart and may or may not have an edge.
+      - ``parent_child_pairs``: ``(parent_id, child_id)`` for each edge in ``parent_child``.
 
     IT artifacts are skipped: this project is shared with any concurrently running leg,
     whose in-flight tickets would otherwise land in the baseline.
@@ -1259,6 +1260,7 @@ async def derive_jira_scope_counts(
     files = 0
     parent_child = 0
     parent_child_by_level = 0
+    parent_child_pairs: list[tuple[str, str]] = []
     for it in issues:
         if is_jira_it_artifact(it):
             continue
@@ -1268,12 +1270,15 @@ async def derive_jira_scope_counts(
         parent = f.get("parent") or {}
         if str(parent.get("key") or "").rsplit("-", 1)[0] != project_key:
             continue
+        pair = (str(parent.get("id") or ""), str(it.get("id")))
         if _is_subtask(f):
             parent_child += 1
+            parent_child_pairs.append(pair)
             continue
-        filed = _story_filed_under(f, fields_by_id.get(str(parent.get("id") or "")))
+        filed = _story_filed_under(f, fields_by_id.get(pair[0]))
         if filed:
             parent_child += 1
+            parent_child_pairs.append(pair)
         elif filed is None:
             parent_child_by_level += 1
     return {
@@ -1281,6 +1286,7 @@ async def derive_jira_scope_counts(
         "file": files,
         "parent_child": parent_child,
         "parent_child_by_level": parent_child_by_level,
+        "parent_child_pairs": parent_child_pairs,
     }
 
 
