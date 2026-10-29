@@ -299,7 +299,10 @@ function ActionCard({
 
 const floatingCard: React.CSSProperties = {
   minWidth: 178,
-  backgroundColor: 'var(--olive-2)',
+  // Frosted card for both views (actions and the role picker)
+  backgroundColor: 'var(--frost-bg-strong)',
+  backdropFilter: 'var(--frost-filter)',
+  WebkitBackdropFilter: 'var(--frost-filter)',
   border: '1px solid var(--olive-3)',
 };
 const sheetCard: React.CSSProperties = { minWidth: 0, backgroundColor: 'transparent', border: 'none' };
@@ -355,7 +358,6 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
             ...(isMobile ? sheetCard : floatingCard),
             borderRadius: 'var(--radius-1)',
             padding: 4,
-            backdropFilter: 'blur(25px)',
             display: 'flex',
             flexDirection: 'column',
             gap: 'var(--space-2)',
@@ -371,7 +373,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                 aria-disabled={isDisabled || undefined}
                 tabIndex={isDisabled ? -1 : 0}
                 align="center"
-                gap="1"
+                gap="2"
                 onClick={(e) => {
                   e.stopPropagation();
                   if (isDisabled) return;
@@ -444,12 +446,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
             style={{
               ...(isMobile
                 ? sheetCard
-                : {
-                  ...floatingCard,
-                  borderRadius: 'var(--radius-2)',
-                  boxShadow:
-                    '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
-                }),
+                : { ...floatingCard, borderRadius: 'var(--radius-1)' }),
               overflow: 'hidden',
             }}
           >

@@ -13,6 +13,7 @@ import { Oauth2PageHeader } from './components/oauth2-page-header';
 import { CreateOAuthApplicationPanel } from './components/create-oauth-application-panel';
 import { ManageOAuthApplicationPanel } from './components/manage-oauth-application-panel';
 import { OAuthApplicationCard } from './components/oauth-application-card';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 function Oauth2PageContent() {
   const { t } = useTranslation();
@@ -118,6 +119,8 @@ function Oauth2PageContent() {
         height: '100%',
         width: '100%',
         paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
         boxSizing: 'border-box',
         minWidth: 0,
       }}

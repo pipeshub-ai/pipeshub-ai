@@ -219,7 +219,7 @@ export default function MailPage() {
                   border: '1px solid var(--slate-3)',
                   borderRadius: 'var(--radius-1)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                 }}
               >
                 {/* Mail icon box */}

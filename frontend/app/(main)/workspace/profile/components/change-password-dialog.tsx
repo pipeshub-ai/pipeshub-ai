@@ -96,7 +96,6 @@ export function ChangePasswordDialog({
         style={{
           width: overlayWidth(600),
           padding: 'var(--space-5)',
-          background: 'var(--slate-2)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow: '0 16px 36px -20px var(--slate-a7, rgba(217, 237, 255, 0.25)), 0 16px 64px 0 var(--slate-a2, rgba(216, 244, 246, 0.04)), 0 12px 60px 0 var(--black-a3, rgba(0, 0, 0, 0.15))',

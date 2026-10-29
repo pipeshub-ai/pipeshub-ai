@@ -19,7 +19,7 @@ export function SettingsSection({ title, description, rightAction, children }: S
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
-        backdropFilter: 'blur(25px)',
+        backdropFilter: 'var(--frost-filter)',
         background: 'var(--olive-2)',
       }}
     >

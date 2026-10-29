@@ -10,7 +10,7 @@ import { EntityEmptyState, ConfirmationDialog, EntityRowActionMenu } from '../co
 import { useToastStore } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '../components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../components/settings-page-container';
 import { DelegationsApi, ServiceAccountsApi } from './api';
 import type { ServiceAccount } from './types';
 import { CreateServiceAccountPanel } from './components/create-service-account-panel';
@@ -167,7 +167,7 @@ function ServiceAccountsPageContent() {
         align="start"
         wrap="wrap"
         gap="3"
-        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 'var(--space-5)' }}
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP, paddingBottom: 'var(--space-5)' }}
       >
         <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>

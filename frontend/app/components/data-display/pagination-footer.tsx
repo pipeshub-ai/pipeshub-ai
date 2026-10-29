@@ -43,7 +43,8 @@ export function PaginationFooter({
       wrap="wrap"
       gap="3"
       style={{
-        padding: 'var(--space-2) var(--space-4)',
+        // 16px around the count text on every side (12px + the 24px controls' centring)
+        padding: 'var(--space-3) var(--space-4)',
         borderTop: '1px solid var(--olive-3)',
         background: 'var(--olive-2)',
         flexShrink: 0,

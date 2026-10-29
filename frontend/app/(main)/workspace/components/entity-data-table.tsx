@@ -53,6 +53,10 @@ export interface EntityDataTableProps<T> {
 // Component
 // ========================================
 
+/** Matches the people-table spec: 44px select column, 12px cell inset */
+const CHECKBOX_COL_WIDTH = 44;
+const CELL_PADDING = '0 var(--space-3)';
+
 /**
  * EntityDataTable — reusable data table for Users, Groups, Teams.
  *
@@ -230,8 +234,8 @@ export function EntityDataTable<T>({
       <Flex
         align="center"
         style={{
-          height: 'var(--space-9)',
-          borderBottom: '1px solid var(--olive-6)',
+          height: 40,
+          borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           flexShrink: 0,
           position: 'sticky',
@@ -242,12 +246,11 @@ export function EntityDataTable<T>({
         {/* Checkbox column */}
         <Flex
           align="center"
-          justify="center"
-          style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
+          style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
-            size={isMobile ? '2' : '1'}
+            size="2"
             checked={allSelected ? true : someSelected ? 'indeterminate' : false}
             onCheckedChange={handleSelectAll}
             style={{ cursor: 'pointer' }}
@@ -263,10 +266,10 @@ export function EntityDataTable<T>({
               width: col.width,
               minWidth: col.minWidth,
               flex: col.width ? undefined : 1,
-              padding: '0 8px',
+              padding: CELL_PADDING,
             }}
           >
-            <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--olive-9)' }}>
               {col.label}
             </Text>
           </Flex>
@@ -291,6 +294,8 @@ export function EntityDataTable<T>({
         {isLoading && data.length === 0 ? (
           <TableSkeleton
             rows={6}
+            checkboxWidth={CHECKBOX_COL_WIDTH}
+            cellPadding={CELL_PADDING}
             columns={columns.map<TableSkeletonColumnShape>((col, i) => ({
               width: col.width,
               minWidth: col.minWidth,
@@ -318,28 +323,29 @@ export function EntityDataTable<T>({
               onMouseEnter={() => setHoveredRowId(id)}
               onMouseLeave={() => setHoveredRowId(null)}
               onClick={() => onRowClick?.(item)}
+              className="entity-table-row"
               style={{
                 height: '60px',
-                borderBottom: '1px solid var(--olive-3)',
+                borderBottom: '1px solid var(--gray-a5)',
+                // Opaque so the sticky actions cell (backgroundColor: inherit) still covers what scrolls under it
                 backgroundColor: isSelected
                   ? 'var(--accent-3)'
                   : isHovered
-                    ? 'var(--olive-2)'
+                    ? 'var(--olive-3)'
                     : 'var(--olive-1)',
+                transition: 'background-color 120ms ease',
                 cursor: 'pointer',
                 userSelect: 'none',
-                outline: 'none',
               }}
             >
               {/* Checkbox cell */}
               <Flex
                 align="center"
-                justify="center"
-                style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
+                style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Checkbox
-                  size={isMobile ? '2' : '1'}
+                  size="2"
                   checked={isSelected}
                   onCheckedChange={() => handleSelectItem(id)}
                   style={{ cursor: 'pointer' }}
@@ -355,7 +361,7 @@ export function EntityDataTable<T>({
                     width: col.width,
                     minWidth: col.minWidth,
                     flex: col.width ? undefined : 1,
-                    padding: '0 8px',
+                    padding: CELL_PADDING,
                     overflow: 'hidden',
                   }}
                 >
