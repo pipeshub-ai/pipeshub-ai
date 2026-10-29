@@ -14,7 +14,10 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _time_range_error_message,
 )
-from app.agents.actions.knowledge_graph.ops.scope import SELECTION_BROWSE_HINT
+from app.agents.actions.knowledge_graph.ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
+    SELECTION_BROWSE_HINT,
+)
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
@@ -286,6 +289,22 @@ class TestNavigateIssueKeyUnderASelection:
         get_nodes.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_issue_key_that_matches_nothing_points_to_a_search(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        resolver = MagicMock()
+        resolver.resolve_many = AsyncMock(return_value=MagicMock(matches=[]))
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver", return_value=resolver,
+        ), patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="PP-404")
+
+        assert not success
+        assert "PP-404" in text and "knowledgegraph__search" in text and "lookup_record" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_folder_selection_does_not_narrow_children_to_other_connectors(self) -> None:
         state = _make_state(
             has_knowledge=True,
@@ -545,9 +564,8 @@ class TestNavigateDeniedNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="denied-node")
 
-        # Denied and missing must produce identical-looking output
-        assert success  # the tool itself succeeds, the result is empty
-        assert "Record ID:" not in text
+        # Denied and missing must produce identical output
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
 
 
 class TestNavigateMissingNode:
@@ -567,8 +585,48 @@ class TestNavigateMissingNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="does-not-exist")
 
-        assert success
-        assert "Record ID:" not in text
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_a_name_passed_as_node_id_is_told_what_node_id_takes(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        get_nodes = AsyncMock()
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="Launch SaaS")
+
+        assert not success
+        assert "not a name" in text and "knowledgegraph__list_files(query=...)" in text
+        assert "outside" not in text and "no items at root" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_node_in_a_switched_off_demo_app_reads_as_missing(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(
+            return_value={"nodeType": "record", "name": "Demo"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService._belongs_to",
+            new=AsyncMock(return_value=True),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="demo-node")
+
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_the_root_listing_is_unchanged_without_a_node_id(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0)),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert success and "no items at root" in text
 
 
 class TestNavigateRecordWithChildren:

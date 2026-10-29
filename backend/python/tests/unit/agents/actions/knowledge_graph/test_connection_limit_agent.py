@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.actions.knowledge_graph.knowledge_graph import _copies_outside_selection
+from app.agents.actions.knowledge_graph.knowledge_graph import (
+    KnowledgeGraph,
+    _copies_outside_selection,
+)
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
 
 _FETCH = "app.agents.actions.knowledge_graph.ops.fetch"
@@ -43,13 +46,33 @@ class TestTheFetchTool:
 
 
 class TestACopyOutsideTheConversation:
-    def test_a_connected_app_is_not_told_where_the_copy_is(self) -> None:
-        copies = [SimpleNamespace(id="rec-out", name="Board minutes", connector_name="Confluence")]
+    @pytest.mark.asyncio
+    async def test_a_copy_beyond_a_connected_apps_limit_reads_like_no_copy(self) -> None:
+        """Telling them apart would show the app what exists beyond its limit."""
+        state = {
+            "org_id": "org-1", "user_id": "user-1", "logger": MagicMock(), "filters": LIMITED,
+            "agent_knowledge": [{"connectorId": "a", "type": "JIRA"}],
+        }
+        gp = AsyncMock()
+        gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"] = gp
+        outside = SimpleNamespace(id="rec-out", name="Board minutes", connector_name="Confluence")
 
-        told = _copies_outside_selection("PA-1", copies, connected_app=True)
+        async def navigate(matches: list) -> tuple[bool, str]:
+            resolver = MagicMock()
+            resolver.resolve_many = AsyncMock(return_value=SimpleNamespace(matches=matches))
+            with patch(
+                "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver", return_value=resolver,
+            ), patch(
+                "app.agents.actions.knowledge_graph.knowledge_graph.ids_within_scope", new=AsyncMock(return_value=set()),
+            ):
+                return await KnowledgeGraph(state=state).navigate(node_id="PA-1")
 
-        assert "Board minutes" not in told and "Confluence" not in told
-        assert told == "PA-1 is outside what this conversation is limited to."
+        beyond, absent = await navigate([outside]), await navigate([])
+
+        assert beyond == absent
+        assert "Board minutes" not in beyond[1] and "Confluence" not in beyond[1]
 
     def test_a_signed_in_user_is_told_where_the_copy_is(self) -> None:
         copies = [SimpleNamespace(id="rec-out", name="Board minutes", connector_name="Confluence")]

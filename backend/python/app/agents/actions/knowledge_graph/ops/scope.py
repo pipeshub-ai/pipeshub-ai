@@ -451,9 +451,16 @@ SELECTION_BROWSE_HINT = (
     "Pass one of their ids as node_id, or call knowledgegraph__list_files(query=..., "
     "source_ids=[<id>]) to find something inside one by name."
 )
-SELECTION_OUTSIDE_MESSAGE = (
-    "That item is outside what this conversation is limited to."
+# A name passed as node_id ("Launch SaaS") lands here as often as a real id
+# outside the limit, so the text says what node_id takes.
+NODE_ID_HINT = (
+    "node_id takes an id from list_files, navigate or search results, not a name; "
+    "to find an item by name, call knowledgegraph__list_files(query=...)."
 )
+# One text whether the id is unknown or outside the limit: telling them apart
+# would show a connected app what exists beyond what it may see.
+SELECTION_OUTSIDE_MESSAGE = f"No item with that id is inside what this conversation is limited to. {NODE_ID_HINT}"
+NODE_NOT_FOUND_MESSAGE = f"No item this user can open has that id. {NODE_ID_HINT}"
 SELECTION_ALONE_MESSAGE = (
     "That item is part of this conversation on its own; what is under it is not."
 )
