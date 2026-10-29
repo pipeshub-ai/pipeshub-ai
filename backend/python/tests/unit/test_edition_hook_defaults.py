@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from app import edition_services
 from app.agents.agent_loop import error_classification
 
@@ -15,6 +17,13 @@ def test_model_decorators_return_their_input() -> None:
     assert edition_services.decorate_embeddings(embeddings, "openAI", "embed", {}) is embeddings
 
 
+def _base_installed() -> bool:
+    from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+    return edition_services.get_connector_registry_cls() is ConnectorRegistry
+
+
+@pytest.mark.skipif(not _base_installed(), reason="this build replaces the base implementation")
 def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     app, registry = MagicMock(), MagicMock()
 

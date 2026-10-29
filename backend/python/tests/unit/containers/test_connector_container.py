@@ -9,6 +9,7 @@ Covers:
   data store, schema, run_all_team_migration, non-arangodb early return
 """
 
+import contextlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -506,8 +507,14 @@ class TestBackgroundGraphMigrations:
         async def slow(**_k) -> None:
             await never.wait()
 
+        @contextlib.asynccontextmanager
+        async def single_process(*_a, **_k):  # noqa: ANN202
+            yield True
+
         before = set(module._kh_scope_tasks)
-        with patch.object(module, "run_record_link_migration", slow):
+        # The edition's bootstrap guard may wait on Redis, which the mocked config cannot reach.
+        with patch.object(module, "run_record_link_migration", slow), \
+                patch.object(module, "bootstrap_guard", single_process):
             assert await asyncio.wait_for(initialize_container(container), timeout=5) is True
             await asyncio.sleep(0)
         started = module._kh_scope_tasks - before

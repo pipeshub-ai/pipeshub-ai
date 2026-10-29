@@ -22,6 +22,7 @@ from app.connectors.core.base.token_service.toolset_token_refresh_service import
     TOKEN_REFRESH_MAX_RETRIES,
     ToolsetTokenRefreshService,
 )
+from app import edition_config
 from app.utils.oauth_config import get_oauth_config
 
 
@@ -2334,6 +2335,9 @@ def _toolset_types_with_registry_endpoints() -> list[str]:
 
 
 PERSONAL_PATH = "/services/toolsets/personal-inst/user1"
+# The module whose find_personal_instance the refresh reaches: the edition may serve its own copy
+# of the resolvers, which binds the name at import, so patching another module would miss it.
+FIND_PERSONAL_INSTANCE = f"{edition_config.get_oauth_credentials_for_toolset.__module__}.find_personal_instance"
 
 
 def _personal_sign_in(toolset_type) -> dict[str, object]:
@@ -2359,7 +2363,7 @@ async def _build_for(toolset_type, **settings) -> dict[str, object]:
 
     cs.get_config = AsyncMock(side_effect=_get_config)
     svc = _make_service(cs)
-    with patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+    with patch(FIND_PERSONAL_INSTANCE, new_callable=AsyncMock,
                return_value={"auth": own_app}):
         return await svc._build_complete_oauth_config(PERSONAL_PATH, toolset_type, {})
 
@@ -2426,7 +2430,7 @@ class TestRegistryFallbackRealRegistry:
         cs.get_config = AsyncMock(return_value=_personal_sign_in("nosuchtoolset"))
         svc = _make_service(cs)
         with (
-            patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+            patch(FIND_PERSONAL_INSTANCE, new_callable=AsyncMock,
                   return_value={"auth": {"clientId": "cid", "clientSecret": "csecret"}}),
             pytest.raises(ValueError, match="Missing tokenUrl"),
         ):
@@ -2580,7 +2584,7 @@ class TestPersonalRefreshEndToEnd:
         new_token = _make_token(access_token="new_at", refresh_token="rt")
 
         with (
-            patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+            patch(FIND_PERSONAL_INSTANCE, new_callable=AsyncMock,
                   return_value={"auth": own_app}),
             patch("app.connectors.core.base.token_service.oauth_service.OAuthProvider.refresh_access_token",
                   new_callable=AsyncMock, return_value=new_token) as refresh,
