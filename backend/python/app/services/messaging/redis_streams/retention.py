@@ -180,9 +180,17 @@ class StreamRetention:
                 stream, length, self._alert_length,
             )
         lowest = self._lowest(floors)
+        capped = bool(groups) and all(self._unread(g, floors) for g in groups)
         for group in groups:
             name = _text(_field(group, "name"))
-            if int(_field(group, "consumers") or 0) == 0:
+            if capped:
+                self._warn(
+                    f"unread:{stream}:{name}",
+                    "Consumer group %s on stream %s has no consumers and has read nothing; "
+                    "the stream is capped at %d entries until a consumer reads it",
+                    name, stream, self._no_group_maxlen,
+                )
+            elif int(_field(group, "consumers") or 0) == 0:
                 self._warn(
                     f"dead:{stream}:{name}",
                     "Consumer group %s on stream %s has no consumers; it holds back trimming "

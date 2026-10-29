@@ -115,12 +115,14 @@ async def test_stream_without_a_group_is_capped_by_length(redis) -> None:
     assert 100 <= await redis.xlen(S) < 300
 
 
-async def test_unread_group_without_consumers_is_capped_by_length(redis) -> None:
+async def test_unread_group_without_consumers_is_capped_by_length(redis, caplog) -> None:
     # A group made only to measure another pool's backlog must not lift the cap.
     await fill(redis, 300)
     await redis.xgroup_create(S, "judged", id="0")
-    await StreamRetention(redis, log, Lease(), no_group_maxlen=100).trim_once([S])
+    with caplog.at_level(logging.WARNING):
+        await StreamRetention(redis, log, Lease(), no_group_maxlen=100).trim_once([S])
     assert 100 <= await redis.xlen(S) < 300
+    assert "capped at 100 entries" in caplog.text and "holds back trimming" not in caplog.text
 
 
 async def test_group_that_has_read_is_not_capped_by_length(redis) -> None:
