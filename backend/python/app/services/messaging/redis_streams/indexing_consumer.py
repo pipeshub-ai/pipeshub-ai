@@ -26,6 +26,7 @@ from app.services.messaging.config import (
     IndexingMessageHandler,
     RedisStreamsConfig,
     StreamMessage,
+    Topic,
     compute_retry_backoff_seconds,
     messaging_env,
 )
@@ -417,6 +418,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # not given to the replicas that were; only lanes left over from a
         # larger lane count are everyone's to drain.
         subset = messaging_env.indexing_consume_lanes is not None
+        subset_base = Topic.RECORD_EVENTS.value
         lane_count = messaging_env.fair_scheduling_lane_count
         discovered: list[str] = []
         try:
@@ -426,7 +428,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     suffix = _LANE_SUFFIX.search(name)
                     if name in known or not suffix:
                         continue
-                    if subset and int(suffix.group()[1:]) < lane_count:
+                    if subset and base == subset_base and int(suffix.group()[1:]) < lane_count:
                         continue
                     if await self.redis.type(name) != _STREAM_TYPE:  # type: ignore
                         continue

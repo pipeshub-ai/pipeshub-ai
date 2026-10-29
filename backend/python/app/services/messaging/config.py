@@ -688,6 +688,11 @@ class MessagingEnvConfig:
 messaging_env = MessagingEnvConfig()
 
 
+# Far above any lane count in use; it only stops a typo such as "0-1000000000"
+# from expanding into a set that exhausts memory before the range check.
+MAX_LANE = 4095
+
+
 def parse_lane_set(raw: str) -> frozenset[int]:
     """``"0-5,7"`` -> {0, 1, 2, 3, 4, 5, 7}. Raises ValueError on anything else."""
     lanes: set[int] = set()
@@ -700,6 +705,8 @@ def parse_lane_set(raw: str) -> frozenset[int]:
             raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}") from None
         if low < 0 or high < low:
             raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}")
+        if high > MAX_LANE:
+            raise ValueError(f"Lane {high} in {raw!r} is outside 0..{MAX_LANE}")
         lanes.update(range(low, high + 1))
     return frozenset(lanes)
 

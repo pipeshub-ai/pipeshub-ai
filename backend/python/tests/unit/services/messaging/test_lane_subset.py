@@ -27,6 +27,11 @@ def test_refuses_anything_else(raw: str) -> None:
         parse_lane_set(raw)
 
 
+def test_refuses_a_huge_range_before_expanding_it() -> None:
+    with pytest.raises(ValueError, match="outside"):
+        parse_lane_set("0-1000000000")
+
+
 def test_unset_means_every_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("INDEXING_CONSUME_LANES", raising=False)
     assert messaging_env.indexing_consume_lanes is None
