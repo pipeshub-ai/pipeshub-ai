@@ -200,6 +200,7 @@ CONNECTOR_SHARDS = {
     "connectors-1": ("nextcloud", "bookstack", "mariadb", "minio", "postgres", "web", "rss", "local_fs", "github", "sharepoint"),
     "connectors-2": (
         "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
+        "servicenow",
     ),
     "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
     "connectors-4": ("google_drive_workspace", "google_drive_individual"),
@@ -265,7 +266,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
-            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "servicenow", "trello", "workday",
+            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "trello", "workday",
             "zoom",
         )
     },
@@ -290,6 +291,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "network_share": ("smb",),
     "nextcloud": ("nextcloud",),
     "rss": ("rss",),
+    "servicenow": ("servicenow",),
     "smb": ("smb",),
     "zammad": ("zammad",),
     "zendesk": ("zendesk",),
