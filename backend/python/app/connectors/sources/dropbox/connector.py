@@ -1508,8 +1508,11 @@ class DropboxConnector(BaseConnector):
             if relisting:
                 listed.update(getattr(e, "id", None) for e in entries if not isinstance(e, DeletedMetadata))
             await self._write_updates(updates, sync_log_name)
-            # A moved folder too big to walk: listed again from the start, which rewrites every path below it.
-            restart = not await self._repath_moved_folders() or restart
+            # A moved folder whose paths could not all be rewritten: listed again from the start, which writes
+            # every path below it. Saved now: replayed from an older cursor, the move would no longer show.
+            if not await self._repath_moved_folders():
+                restart = True
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": None})
 
             cursor = result.data.cursor
             # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
@@ -1519,9 +1522,6 @@ class DropboxConnector(BaseConnector):
                 await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": cursor})
             if result.data.has_more is not True:
                 break
-
-        if restart:
-            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": None})
 
         if relisting and len(self._health.problems) == problems_before:
             outcome = await remove_unlisted(
@@ -1572,6 +1572,8 @@ class DropboxConnector(BaseConnector):
         for external_id, old_path, new_path in moved:
             _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
                                                old_path, new_path, self.logger)
+            if not done:
+                self._health.skipped(f"paths below {new_path}", "could not all be rewritten; listed again next run")
             complete = complete and done
         return complete
 

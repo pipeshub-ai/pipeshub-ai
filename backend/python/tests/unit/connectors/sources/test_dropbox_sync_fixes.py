@@ -316,16 +316,24 @@ class TestTeamListing:
 
     @pytest.mark.asyncio
     async def test_a_move_too_big_to_walk_lists_the_folder_again_from_the_start(self, team) -> None:
+        """Saved at once: a later page that fails must not leave the cursor before the move, whose replay would
+        no longer show it (the folder's stored path is already the new one)."""
         team.data_source.files_list_folder = AsyncMock(return_value=page([file_entry()], cursor="c1", has_more=True))
-        team.data_source.files_list_folder_continue = AsyncMock(return_value=page([file_entry("b.txt", "id:b", "/b.txt")],
-                                                                                    cursor="c2"))
-        team._repath_moved_folders = AsyncMock(side_effect=[False, True])
+        team.data_source.files_list_folder_continue = AsyncMock(return_value=fail("InternalServerError(None, 503, 'x')"))
+        team._repath_moved_folders = AsyncMock(return_value=False)
 
         await team._sync_namespace("dbmid:a", "a@x.com", None, frozenset())
 
         saved = [call.kwargs["sync_point_data"]["cursor"]
                  for call in team.dropbox_cursor_sync_point.update_sync_point.await_args_list]
         assert saved == [None]
+
+    @pytest.mark.asyncio
+    async def test_paths_not_all_rewritten_leave_the_run_incomplete(self, team) -> None:
+        team._moved_folders = [("id:dir", "/docs", "/documents")]
+        with patch("app.connectors.sources.dropbox.connector.repath_descendants", AsyncMock(return_value=(0, False))):
+            assert await team._repath_moved_folders() is False
+        assert not team._health.complete
 
     @pytest.mark.asyncio
     async def test_owed_deletes_are_saved_when_the_run_stops_part_way(self, team) -> None:

@@ -872,8 +872,12 @@ class DropboxIndividualConnector(BaseConnector):
             for external_id, old_path, new_path in moved:
                 _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
                                                    old_path, new_path, self.logger)
-                # A moved folder too big to walk: listed again from the start, which rewrites every path below it.
-                restart = restart or not done
+                if not done:
+                    # Listed again from the start, which writes every path below it. Saved now: replayed from an
+                    # older cursor, the move would no longer show.
+                    self._health.skipped(f"paths below {new_path}", "could not all be rewritten; listed again next run")
+                    restart = True
+                    await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': None})
 
             cursor = result.data.cursor
             # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
@@ -884,8 +888,6 @@ class DropboxIndividualConnector(BaseConnector):
             if result.data.has_more is not True:
                 break
 
-        if restart:
-            await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': None})
         if relisting and len(self._health.problems) == problems_before:
             self._note_delete_outcome(await remove_unlisted(
                 self.data_entities_processor, self.connector_id, user_id, listed, self._item_still_exists,
