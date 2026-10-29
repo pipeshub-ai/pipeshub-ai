@@ -57,6 +57,16 @@
 /* Light Mode */
 :root, .light, .light-theme {
   --effects-translucent: rgba(255, 255, 255, 0.8);
+
+  /* Frosted glass, used by every frosted surface. Change these to retune them all.
+     --frost-bg: side panels and drawers. --frost-bg-strong: menus, popovers and floating
+     bars, which sit over text and need more tint. --frost-filter-subtle: sticky list headers. */
+  --frost-filter: blur(24px) saturate(160%);
+  --frost-filter-subtle: blur(8px);
+  --frost-bg: rgba(255, 255, 255, 0.62);
+  --frost-bg-strong: rgba(255, 255, 255, 0.7);
+  /* Dim behind a frosted side panel: light, so the page still shows through the frost */
+  --frost-scrim: rgba(8, 10, 12, 0.3);
   --neutral-9: #8b8d98;
   --neutral-11: #60646c;
   --neutral-12: #1c2024;
@@ -108,6 +118,8 @@
 [data-is-root-theme="true"].dark,
 :root[class~="dark"] {
   --effects-translucent: rgba(29, 29, 33, 0.70);
+  --frost-bg: rgba(29, 29, 33, 0.58);
+  --frost-bg-strong: rgba(29, 29, 33, 0.6);
   --neutral-9: #696e77;
   --neutral-11: #b0b4ba;
   --neutral-12: #edeef0;
@@ -314,11 +326,144 @@ body {
   background-color: var(--red-3) !important;
   color: var(--red-11) !important;
 }
+
+/* Row action menus (records table) match the settings tables' row menu: a translucent
+   hover that keeps the item's own colours instead of the solid highlight above. */
+.row-action-menu.row-action-menu [role="menuitem"][data-highlighted] {
+  background-color: var(--slate-a3) !important;
+  color: inherit !important;
+}
+.row-action-menu.row-action-menu [role="menuitem"][data-accent-color="red"][data-highlighted] {
+  background-color: var(--red-a3) !important;
+}
+/* One olive-3 border like the settings menu: drop Radix's extra 1px grey ring (part of its shadow) */
+.row-action-menu.row-action-menu {
+  box-shadow: none;
+}
+/* Sidebar workspace menu rows: hover is inline; keyboard focus gets a visible ring */
+.workspace-menu-item {
+  outline: none;
+}
+.workspace-menu-item:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: -2px;
+}
+
+/* Records table column boundaries (kb-column-widths.tsx): a hairline appears on hover / drag */
+.kb-col-resize::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 3.5px;
+  width: 1px;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+.kb-col-resize:hover::after,
+.kb-col-resize:active::after {
+  background: var(--accent-8);
+}
+
+/* Settings entity tables (users, groups, teams): keyboard focus on a row, hover on the page-size pill */
+.entity-table-row:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: -2px;
+}
+.entity-pager-select {
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.entity-pager-select:hover {
+  background-color: var(--olive-3) !important;
+  border-color: var(--olive-5) !important;
+}
+
+/* SegmentedTabs (app/components/ui/segmented-tabs.tsx): soft hover on unselected segments */
+.segmented-tab {
+  background: transparent;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.segmented-tab[data-state="off"]:not(:disabled):hover {
+  background: var(--gray-a3);
+}
+/* The selected pill slides and resizes between segments */
+.segmented-tab-indicator.is-animated {
+  transition: transform 180ms ease, width 180ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .segmented-tab-indicator.is-animated {
+    transition: none;
+  }
+}
+/* Reserve the selected (500) label width so segments don't shift when selection changes */
+.segmented-tab-label::after {
+  content: attr(data-label);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 500;
+}
+.segmented-tab:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: -2px;
+}
+
+/* Every Radix Dialog / AlertDialog (confirmations, forms, side panels) is frosted, over the
+   light frost scrim instead of Radix's heavy overlay so the frost has something to show.
+   Doubled class: the portaled content carries .radix-themes itself. */
+.rt-BaseDialogContent.rt-BaseDialogContent {
+  background-color: var(--frost-bg-strong);
+  -webkit-backdrop-filter: var(--frost-filter);
+  backdrop-filter: var(--frost-filter);
+}
+.rt-BaseDialogOverlay::before {
+  background-color: var(--frost-scrim);
+}
+
+/* Workspace side panels (WorkspaceRightPanel): the frost tokens below, one layer only;
+   header, body and footer stay transparent so the tint doesn't stack. */
+.workspace-drawer-frost {
+  background: var(--frost-bg);
+  -webkit-backdrop-filter: var(--frost-filter);
+  backdrop-filter: var(--frost-filter);
+}
+
+/* Workspace menu card: rises out of the footer button on open, sinks back on close */
+.workspace-menu-card {
+  transform-origin: bottom left;
+  animation: workspace-menu-in 180ms ease both;
+}
+.workspace-menu-card.is-closing {
+  animation: workspace-menu-out 120ms ease both;
+}
+@keyframes workspace-menu-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes workspace-menu-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-menu-card,
+  .workspace-menu-card.is-closing {
+    animation: none;
+  }
+}
+
 .rt-DropdownMenuViewport {
   padding: 4px !important;
   border-radius: 3px !important;
   gap: 4px !important;
-  backdrop-filter: blur(25px) !important;
+}
+
+/* Every Radix dropdown / context menu is frosted with the shared frost tokens.
+   Doubled class, not `.radix-themes ...`: the portaled menu carries .radix-themes itself. */
+.rt-BaseMenuContent.rt-BaseMenuContent {
+  --base-menu-bg: var(--frost-bg-strong);
+  -webkit-backdrop-filter: var(--frost-filter);
+  backdrop-filter: var(--frost-filter);
 }
 
 /* Multi-line agent strategy options: Radix menu items default to a fixed single-line height */
@@ -877,28 +1022,6 @@ li > blockquote {
   font-family: 'Material Symbols Outlined' !important;
   font-weight: 300;
   font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 40 !important;
-}
-
-/* Full-width segmented control: equal columns that may shrink below their text, which then ends in an ellipsis. */
-.rt-SegmentedControlRoot.segmented-fill {
-  grid-auto-columns: minmax(0, 1fr);
-}
-.segmented-fill .rt-SegmentedControlItemLabel {
-  min-width: 0;
-  overflow: hidden;
-}
-.segmented-fill .rt-SegmentedControlItemLabelActive,
-.segmented-fill .rt-SegmentedControlItemLabelInactive {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  max-width: 100%;
-}
-.segmented-fill-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Icon-only segmented controls: square items instead of 12px side padding around a glyph. */
