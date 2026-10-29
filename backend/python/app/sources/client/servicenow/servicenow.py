@@ -158,7 +158,7 @@ class ServiceNowResponse(BaseModel):
 class ServiceNowRESTClientViaUsernamePassword(HTTPClient):
     """ServiceNow REST client via username and password (Basic Auth)
     Args:
-        instance_url: The ServiceNow instance URL (e.g., https://dev12345.service-now.com)
+        instance_url: The ServiceNow instance URL (e.g., https://acme.service-now.com)
         username: The username to use for authentication
         password: The password to use for authentication
         resilience: Rate limit and retry policy applied below every request

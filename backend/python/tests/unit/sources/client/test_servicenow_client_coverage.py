@@ -38,7 +38,7 @@ def mock_config_service():
     return AsyncMock()
 
 
-INSTANCE_URL = "https://dev12345.service-now.com"
+INSTANCE_URL = "https://acme.service-now.com"
 
 
 # ============================================================================

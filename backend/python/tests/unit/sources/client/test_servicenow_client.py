@@ -45,7 +45,7 @@ def mock_config_service():
     return AsyncMock()
 
 
-INSTANCE_URL = "https://dev12345.service-now.com"
+INSTANCE_URL = "https://acme.service-now.com"
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ async def test_api_key_is_not_sent_to_a_redirect_target(monkeypatch, status) -> 
         await datasource.get_now_table_tableName(tableName="kb_knowledge")
 
     assert raised.value.message == REDIRECT_MESSAGE and raised.value.status_code == status
-    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]
+    assert [r.url.host for r in seen] == ["acme.service-now.com"]
 
 
 @pytest.mark.asyncio
@@ -567,7 +567,7 @@ async def test_token_post_is_not_resent_to_a_redirect_target(monkeypatch, send) 
     with pytest.raises(BadRequestError):
         await send()
 
-    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]
+    assert [r.url.host for r in seen] == ["acme.service-now.com"]
 
 
 @pytest.mark.asyncio
@@ -581,4 +581,4 @@ async def test_attachment_download_does_not_follow_a_redirect(monkeypatch) -> No
     with pytest.raises(ServiceNowAPIError):
         await datasource.stream_attachment("f" * 32)
 
-    assert [r.url.host for r in seen] == ["dev12345.service-now.com"]
+    assert [r.url.host for r in seen] == ["acme.service-now.com"]

@@ -258,7 +258,7 @@ def _connector(sc, inst: Instance, *, apply_article_criteria: bool = False, bloc
     sc.servicenow_client = MagicMock()
     sc._register_authenticated_identity = AsyncMock()
     sc._get_fresh_datasource = AsyncMock(return_value=inst.fake)
-    sc.instance_url = "https://dev00000.service-now.com"
+    sc.instance_url = "https://acme.service-now.com"
     sc.user_sync_point = MemorySyncPoint()
     sc.org_entity_sync_points = {k: MemorySyncPoint() for k in sc.org_entity_sync_points}
     sc.article_sync_point = migrated_sync_point()
