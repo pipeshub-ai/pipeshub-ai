@@ -178,8 +178,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             RedisConnectionConfig.from_redis_config(config)
         )
         self._planner = StreamReadPlanner(self._provider)
-        # Lanes this replica only judges (a lane subset): their group, once made.
-        self._judged_groups: set[str] = set()
         # PEL ownership is keyed by consumer name; sharing one across replicas
         # lets one process re-read another process's still-active messages.
         self.consumer_name = f"{tagged(config.client_id)}-{uuid.uuid4().hex}"
@@ -719,10 +717,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Create the group, from the start, on lanes another pool consumes, so
         their backlog can be read before that pool has started: a lane that
         cannot be read fails the whole reading. The pool's replicas then join
-        this group, as they would one they made."""
+        this group, as they would one they made. Made on every read, not once,
+        so a group deleted by hand comes back instead of failing the reading."""
         for stream in streams:
-            if stream in self._judged_groups:
-                continue
             try:
                 await self.redis.xgroup_create(  # type: ignore[union-attr]
                     stream, self.config.group_id, id="0", mkstream=True
@@ -730,7 +727,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             except Exception as e:
                 if _BUSYGROUP_ERROR not in str(e):
                     raise
-            self._judged_groups.add(stream)
 
     async def __read_lane_map(self, topic: str) -> "Mapping[str, LaneEntry] | None":
         """The lane map, once per backlog read; None if it cannot be read,

@@ -295,6 +295,11 @@ class TestIndexingConsumerLaneBacklog:
         groups = await provider.get_client().xinfo_groups(f"{TOPIC}.{stable_lane(BUSY, LANES)}")
         assert len(groups) == 1
 
+        # A group deleted by hand (the retention warning suggests it) comes back.
+        await provider.get_client().xgroup_destroy(f"{TOPIC}.{stable_lane(BUSY, LANES)}", GROUP)
+        backlog = await subset.lane_backlog(TOPIC)
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
+
     async def test_work_on_the_base_stream_is_waiting_for_every_connector(
         self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
     ) -> None:
