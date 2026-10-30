@@ -524,6 +524,14 @@ def test_token_url_other_host_rejected() -> None:
             "token URL": "https://evil.example.com/oauth_token.do", "authorize URL": None})
     check_servicenow_instance_url("https://acme.service-now.com", same_host={
         "token URL": "https://ACME.service-now.com/oauth_token.do"})
+    # The scheme's default port, written or not, is the same address.
+    check_servicenow_instance_url("https://acme.service-now.com:443", same_host={
+        "token URL": "https://acme.service-now.com/oauth_token.do"})
+    check_servicenow_instance_url("https://acme.service-now.com", same_host={
+        "token URL": "https://acme.service-now.com:443/oauth_token.do"})
+    with pytest.raises(ValueError, match="token URL must be on the instance's address"):
+        check_servicenow_instance_url("https://acme.service-now.com", same_host={
+            "token URL": "https://acme.service-now.com:8443/oauth_token.do"})
 
 
 def test_http_allowed_only_with_the_opt_in(monkeypatch) -> None:

@@ -25,6 +25,7 @@ from app.utils.url_fetcher import (
 
 # Server-wide opt-in for an instance reached over plain http (a local test server).
 ALLOW_INSECURE_HTTP_ENV = "SERVICENOW_ALLOW_INSECURE_HTTP"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | None] | None = None) -> str:
@@ -39,7 +40,7 @@ def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | Non
     url = (url or "").strip().rstrip("/")
     try:
         parts = urlsplit(url)
-        port = parts.port
+        port = parts.port or _DEFAULT_PORTS.get(parts.scheme)
     except ValueError as e:
         raise ValueError(f"The ServiceNow instance URL {url!r} is not a valid URL") from e
     if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -68,7 +69,8 @@ def check_servicenow_instance_url(url: str, *, same_host: Mapping[str, str | Non
             continue
         try:
             theirs = urlsplit(other.strip())
-            same = (theirs.scheme, theirs.hostname, theirs.port) == (parts.scheme, parts.hostname, port)
+            their_port = theirs.port or _DEFAULT_PORTS.get(theirs.scheme)
+            same = (theirs.scheme, theirs.hostname, their_port) == (parts.scheme, parts.hostname, port)
         except ValueError:
             same = False
         if not same:
