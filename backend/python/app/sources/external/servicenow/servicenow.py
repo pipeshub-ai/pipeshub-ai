@@ -11834,8 +11834,10 @@ class ServiceNowDataSource:
         )
         response = await client.send(request, stream=True)
         if response.status_code >= _FIRST_REDIRECT_STATUS:  # a redirect is not the file either
-            body = (await response.aread()).decode("utf-8", "replace")
-            await response.aclose()
+            try:
+                body = (await response.aread()).decode("utf-8", "replace")
+            finally:
+                await response.aclose()
             raise ServiceNowAPIError(
                 status_code=response.status_code,
                 message=f"Failed to download attachment {attachment_sys_id}",

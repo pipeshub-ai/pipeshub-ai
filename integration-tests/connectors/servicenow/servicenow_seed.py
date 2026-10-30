@@ -96,7 +96,9 @@ class ServiceNowRest:
         for attempt in range(4):
             resp = self.session.request(method, self.base_url + path, timeout=self.timeout, **kwargs)
             if resp.status_code in (429, 502, 503) and attempt < 3:
-                time.sleep(min(int(resp.headers.get("Retry-After", "5") or 5), 30))
+                retry_after = resp.headers.get("Retry-After", "")
+                # An HTTP-date (or anything else) falls back to 5 s.
+                time.sleep(min(int(retry_after) if retry_after.isdigit() else 5, 30))
                 continue
             return resp
         return resp
