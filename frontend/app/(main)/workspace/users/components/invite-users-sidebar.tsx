@@ -721,7 +721,7 @@ export function InviteUsersSidebar({
           />
           {isGrantingAdmin ? (
             <Box mt="2">
-              <Callout.Root color="amber" variant="soft" size="1">
+              <Callout.Root color="amber" variant="soft" size="1" role="alert">
                 <Callout.Icon>
                   <MaterialIcon name="warning" size={16} />
                 </Callout.Icon>

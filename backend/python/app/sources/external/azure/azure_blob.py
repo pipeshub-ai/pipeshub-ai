@@ -32,14 +32,12 @@ from app.utils.url_redaction import redact_urls_in_text
 
 _ERROR_TEXT_LIMIT = 300
 
-# How resolvers word a host that does not exist, which is what a mistyped AccountName gives.
-_NAME_NOT_RESOLVED = (
+# How resolvers word a host that does not exist (EAI_NONAME / EAI_NODATA), which is what a
+# mistyped AccountName gives. A temporary failure (EAI_AGAIN) is worded differently and is left as is.
+_HOST_NOT_FOUND = (
     "name or service not known",
     "nodename nor servname",
-    "failed to resolve",
-    "name resolution",
-    "getaddrinfo failed",
-    "no address associated",
+    "no address associated with hostname",
 )
 
 
@@ -58,13 +56,12 @@ def azure_error_text(error: BaseException) -> str:
     code = getattr(code, "value", code)
     if code == "AuthenticationFailed":
         return f"{CREDENTIALS_REFUSED} (HTTP {status or 403} AuthenticationFailed)"
-    if isinstance(error, ServiceRequestError) and any(
-        phrase in str(error).lower() for phrase in _NAME_NOT_RESOLVED
-    ):
-        return ACCOUNT_NOT_FOUND
     message = (str(error).strip().splitlines() or [type(error).__name__])[0]
     head = " ".join(str(part) for part in (f"HTTP {status}" if status else None, code) if part)
     text = f"{head}: {message}" if head else message
+    if isinstance(error, ServiceRequestError) and any(phrase in message.lower() for phrase in _HOST_NOT_FOUND):
+        # The resolver's own reason stays: it names the host that was looked up.
+        text = f"{ACCOUNT_NOT_FOUND} ({text})"
     return redact_urls_in_text(text)[:_ERROR_TEXT_LIMIT]
 
 

@@ -7,14 +7,14 @@ INVALID_ACCOUNT_KEY = (
 
 # A key or SAS that is well formed but that Azure does not accept, told apart from one that is malformed.
 CREDENTIALS_REFUSED = (
-    "Azure refused the credentials: the AccountKey or SAS token in the connection string is wrong, "
-    "has expired or was revoked. Copy the connection string again from the storage account's "
-    "Access keys (or Shared access signature) page in the Azure portal."
+    "Azure refused the credentials: they are wrong, have expired or were revoked. For a connection "
+    "string, copy it again from the storage account's Access keys (or Shared access signature) page "
+    "in the Azure portal; for Entra ID, check the app registration's tenant, client ID and secret."
 )
 
 ACCOUNT_NOT_FOUND = (
-    "No storage account answers at the endpoint in the connection string. Check the AccountName "
-    "(and EndpointSuffix, if set) against the storage account in the Azure portal."
+    "The storage account's host name does not exist. Check the AccountName (and EndpointSuffix, "
+    "if set) against the storage account in the Azure portal."
 )
 
 

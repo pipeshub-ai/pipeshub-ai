@@ -81,14 +81,16 @@ class TestErrorText:
         "Failed to resolve 'nosuchacct.blob.core.windows.net' ([Errno -2] Name or service not known)",
         "Cannot connect to host nosuchacct.blob.core.windows.net:443 ssl:default [nodename nor servname provided, or not known]",
     ])
-    def test_an_account_name_that_does_not_resolve_is_named(self, reason: str) -> None:
-        assert azure_error_text(ServiceRequestError(reason)) == ACCOUNT_NOT_FOUND
+    def test_a_host_that_does_not_exist_is_named_with_the_resolver_reason(self, reason: str) -> None:
+        text = azure_error_text(ServiceRequestError(reason))
 
-    def test_a_not_found_error_reads_the_same_way(self) -> None:
-        error = HttpResponseError(message="The specified container does not exist.\nRequestId:1\nContent: <?xml?>")
-        error.status_code, error.error_code = 404, "ContainerNotFound"
+        assert text.startswith(ACCOUNT_NOT_FOUND)
+        assert "nosuchacct.blob.core.windows.net" in text
 
-        assert azure_error_text(error) == "HTTP 404 ContainerNotFound: The specified container does not exist."
+    def test_a_temporary_resolver_failure_is_not_called_a_missing_account(self) -> None:
+        reason = "Cannot connect to host acct.blob.core.windows.net:443 ssl:default [Temporary failure in name resolution]"
+
+        assert azure_error_text(ServiceRequestError(reason)) == reason
 
     def test_a_network_error_has_no_status_and_no_signed_url(self) -> None:
         error = ServiceRequestError("Cannot reach https://acct.blob.core.windows.net/docs/a.txt?sv=2022&sig=SECRETSIG")

@@ -139,7 +139,7 @@ describe('inviting admins', () => {
   it('warns that everyone on the list becomes an admin when the role is Admin', () => {
     openPanel(tags(['a@x.com', true], ['b@x.com', true]), 'Admin');
 
-    expect(screen.getByText(warning)).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(warning);
   });
 
   it('shows no warning for members', () => {
