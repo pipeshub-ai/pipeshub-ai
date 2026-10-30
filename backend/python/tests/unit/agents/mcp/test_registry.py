@@ -84,6 +84,25 @@ class TestMCPRegistry:
         assert "clickup" in type_ids
         assert "context7" in type_ids
         assert "huggingface" in type_ids
+        assert "square" in type_ids
+        assert "paypal" in type_ids
+
+    def test_paypal_template_schema_and_dcr(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        template = registry.get_template("paypal")
+        assert template is not None
+        assert template.type_id == "paypal"
+        assert template.display_name == "PayPal"
+        assert template.transport == MCPTransport.STREAMABLE_HTTP
+        assert template.default_url == "https://mcp.paypal.com/mcp"
+        assert template.default_auth_mode == MCPAuthMode.OAUTH
+        assert template.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert template.authorization_url == "https://mcp.paypal.com/authorize"
+        assert template.token_url == "https://mcp.paypal.com/token"
+        assert template.supports_dcr is True
+        assert template.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
+        assert template.icon == "/icons/connectors/paypal.svg"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode
