@@ -57,7 +57,7 @@ def _envelopes(bs: BlobStorage, by_doc: dict[str, Any]) -> list[str]:
     """Gateway answers per document id: a dict is the envelope, an exception is raised."""
     asked: list[str] = []
 
-    async def fetch(session, url, headers, vrid) -> dict:
+    async def fetch(session, url, headers, vrid, decode=None) -> dict:
         doc = url.split("/internal/")[1].split("/")[0]
         asked.append(doc)
         outcome = by_doc[doc]
@@ -152,7 +152,7 @@ class TestSignedUrlOfThisCall:
         _envelopes(bs, {"old": _signed("https://blob/old"), "new": _signed("https://blob/new")})
         reads: list[str] = []
 
-        async def from_url(session, url, size, vrid, lease=None) -> dict:
+        async def from_url(session, url, size, vrid, lease=None, decode=None) -> dict:
             reads.append(url)
             if url.endswith("/old"):
                 raise SignedUrlReadError(f"Failed to retrieve record: status {status}", status)
@@ -172,7 +172,7 @@ class TestSignedUrlOfThisCall:
         bs = _bs(_lookup("new"))
         _envelopes(bs, {"old": _signed("https://blob/old"), "new": _signed("https://blob/new")})
 
-        async def from_url(session, url, size, vrid, lease=None) -> dict:
+        async def from_url(session, url, size, vrid, lease=None, decode=None) -> dict:
             if url.endswith("/old"):
                 raise SignedUrlReadError("Both parallel and fallback downloads failed: x", 404, ranged=True)
             return {"record_name": "new"}
@@ -219,7 +219,7 @@ class TestSignedUrlOfThisCall:
         _envelopes(bs, {"old": _signed("https://blob/fresh")})
         seen: list[str] = []
 
-        async def from_url(session, url, size, vrid, lease=None) -> dict:
+        async def from_url(session, url, size, vrid, lease=None, decode=None) -> dict:
             seen.append(url)
             if url.endswith("cached"):
                 raise SignedUrlReadError("Failed to retrieve record: status 403", 403)

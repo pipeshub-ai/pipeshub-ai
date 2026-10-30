@@ -49,6 +49,18 @@ def test_qdrant_legs() -> None:
     assert [leg.limit for leg in query.prefetch] == [600, 600]
 
 
+def test_qdrant_asks_only_for_the_named_payload_fields() -> None:
+    from qdrant_client.conversions.conversion import RestToGrpc
+
+    query = QdrantUtils.search_request_to_qdrant(_request(with_payload=["page_content", "metadata"]))
+
+    assert query.with_payload == ["page_content", "metadata"]
+    # The service talks gRPC: the list must survive into its include selector.
+    grpc = RestToGrpc.convert_query_request(query, "c")
+    assert list(grpc.with_payload.include.fields) == ["page_content", "metadata"]
+    assert QdrantUtils.search_request_to_qdrant(_request()).with_payload is True
+
+
 def test_opensearch_window_and_k() -> None:
     body = OpenSearchUtils.build_hybrid_query(_request(text_query="quarterly revenue"))
 

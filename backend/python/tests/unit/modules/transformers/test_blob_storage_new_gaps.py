@@ -3,6 +3,7 @@
 1935-2008, 2026-2052, 2066-2075, 2108-2143, 2157-2169.
 """
 
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ def _resp(status=200, json_value=None, text_value=""):
     r = AsyncMock()
     r.status = status
     r.json = AsyncMock(return_value=json_value if json_value is not None else {})
+    r.read = AsyncMock(return_value=json.dumps(json_value if json_value is not None else {}).encode())
     r.text = AsyncMock(return_value=text_value)
     r.content_type = "application/json"
     r.__aenter__ = AsyncMock(return_value=r)

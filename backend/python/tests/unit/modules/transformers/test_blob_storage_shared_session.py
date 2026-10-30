@@ -6,6 +6,7 @@ stamped fresh on every call (it must never be cached alongside the token).
 """
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -167,7 +168,7 @@ class TestSharedSession:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -237,7 +238,7 @@ class TestLookupPassthrough:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -263,7 +264,7 @@ class TestLookupPassthrough:
         record = {"id": "rec-1"}
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(return_value={"record": record})
+        resp.read = AsyncMock(return_value=json.dumps({"record": record}).encode())
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -310,12 +311,18 @@ class TestEnvelopeDecoding:
         ).encode()
         assert bs_mod._decode_json(raw) == _json.loads(raw.decode("utf-8"))
 
+    def test_decodes_unescaped_non_ascii_bytes(self) -> None:
+        """Records are stored with ensure_ascii=False and decoded from the raw body."""
+        record = {"record": {"text": "Borgartún 日本語 😀"}}
+        raw = json.dumps(record, ensure_ascii=False).encode("utf-8")
+        assert bs_mod._decode_json(raw) == record
+
     def test_falls_back_to_stdlib_when_msgspec_rejects(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A record msgspec cannot parse is still worth trying to read."""
         def _boom(_raw) -> None:
             raise ValueError("nope")
 
-        monkeypatch.setattr(bs_mod.msgspec.json, "decode", _boom)
+        monkeypatch.setattr(bs_mod, "_JSON_DECODER", MagicMock(decode=_boom))
         assert bs_mod._decode_json(b'{"record": {"x": 1}}') == {"record": {"x": 1}}
 
 

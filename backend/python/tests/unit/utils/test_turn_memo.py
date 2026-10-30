@@ -136,3 +136,53 @@ async def test_closing_the_stream_early_stops_lookups_after_the_inner_stream_end
     assert await chunks.__anext__() == "first"
     await chunks.aclose()
     assert order == ["inner finished", "lookup cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_memo_each_asks_only_for_keys_nobody_has_asked_about() -> None:
+    asked: list[list[str]] = []
+    release = asyncio.Event()
+
+    async def compute(keys: list[str]) -> dict:
+        asked.append(keys)
+        await release.wait()
+        return {k: k.upper() for k in keys if k != "gone"}
+
+    async def turn() -> list:
+        turn_memo.begin_turn()
+        first = asyncio.ensure_future(turn_memo.memo_each("ns", ["a", "b"], compute))
+        await asyncio.sleep(0)
+        second = asyncio.ensure_future(turn_memo.memo_each("ns", ["b", "c", "gone"], compute))
+        await asyncio.sleep(0)
+        release.set()
+        return [await first, await second, await turn_memo.memo_each("ns", ["a", "c"], compute)]
+
+    first, second, third = await asyncio.create_task(turn())
+    assert asked == [["a", "b"], ["c", "gone"]]
+    assert first == {"a": "A", "b": "B"}
+    assert second == {"b": "B", "c": "C", "gone": None}
+    assert third == {"a": "A", "c": "C"}
+
+
+@pytest.mark.asyncio
+async def test_memo_each_retries_a_failed_batch_and_keeps_turns_apart() -> None:
+    asked: list[list[str]] = []
+
+    async def compute(keys: list[str]) -> dict:
+        asked.append(keys)
+        if len(asked) == 1:
+            raise RuntimeError("graph down")
+        return dict.fromkeys(keys, 1)
+
+    async def turn() -> dict:
+        turn_memo.begin_turn()
+        if not asked:
+            with pytest.raises(RuntimeError):
+                await turn_memo.memo_each("ns", ["a"], compute)
+        await turn_memo.memo_each("ns", ["a"], compute)
+        return await turn_memo.memo_each("ns", ["a"], compute)
+
+    assert await asyncio.create_task(turn()) == {"a": 1}
+    assert await asyncio.create_task(turn()) == {"a": 1}
+    assert asked == [["a"], ["a"], ["a"]]
+    assert await turn_memo.memo_each("ns", ["a", "a"], compute) == {"a": 1}

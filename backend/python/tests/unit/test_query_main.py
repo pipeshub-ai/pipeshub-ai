@@ -588,103 +588,160 @@ class TestLifespan:
 
 
 # ===========================================================================
-# authenticate_requests middleware
+# AuthenticateRequests middleware
 # ===========================================================================
 
 
+def _http_scope(path: str = "/api/v1/search") -> dict:
+    return dict(request_with_host(path).scope)
+
+
+async def _run_asgi(middleware, scope: dict) -> list[dict]:
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await middleware(scope, receive, send)
+    return sent
+
+
+def _status_and_json(sent: list[dict]) -> tuple[int, dict]:
+    import json
+
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return sent[0]["status"], json.loads(body)
+
+
+class _InnerApp:
+    """Stands in for the routes below the middleware; records what it saw."""
+
+    def __init__(self, fail: BaseException | None = None, fail_after_start: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.fail = fail
+        self.fail_after_start = fail_after_start
+
+    async def __call__(self, scope, receive, send) -> None:
+        from starlette.requests import Request
+
+        self.calls.append(scope)
+        if self.fail is not None and not self.fail_after_start:
+            raise self.fail
+        user = getattr(Request(scope).state, "user", None)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"chunk", "more_body": True})
+        if self.fail is not None:
+            raise self.fail
+        await send({"type": "http.response.body", "body": repr(user).encode(), "more_body": False})
+
+
 class TestAuthenticateRequests:
-    """Tests for the authenticate_requests HTTP middleware."""
+    """Tests for the AuthenticateRequests ASGI middleware."""
 
-    async def test_excluded_path_skips_auth(self):
+    def _middleware(self, inner: object) -> object:
+        from app.query_main import AuthenticateRequests
+
+        return AuthenticateRequests(inner)
+
+    async def test_excluded_path_skips_auth(self) -> None:
         """Requests to /health bypass authentication entirely."""
-        from app.query_main import authenticate_requests
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            sent = await _run_asgi(self._middleware(inner), _http_scope("/health"))
+        auth.assert_not_awaited()
+        assert len(inner.calls) == 1 and sent[0]["status"] == 200
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/health"
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+    async def test_authenticated_request_reaches_the_route_with_its_state(self) -> None:
+        """The route sees request.state.user as set by authMiddleware."""
+        inner = _InnerApp()
 
-        result = await authenticate_requests(mock_request, call_next)
-        assert result is mock_response
-        call_next.assert_awaited_once_with(mock_request)
+        async def _auth(request: object) -> object:
+            request.state.user = {"orgId": "org-1"}
+            return request
 
-    async def test_authenticated_request_succeeds(self):
-        """Successful authMiddleware passes request to call_next."""
-        from app.query_main import authenticate_requests
+        with patch("app.query_main.authMiddleware", side_effect=_auth):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        authed_request = MagicMock()
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+        assert sent[0]["status"] == 200
+        assert sent[-1]["body"] == repr({"orgId": "org-1"}).encode()
 
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=authed_request):
-            result = await authenticate_requests(mock_request, call_next)
+    async def test_streamed_chunks_pass_through_unchanged(self) -> None:
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
+        assert [m["type"] for m in sent] == [
+            "http.response.start", "http.response.body", "http.response.body",
+        ]
+        assert sent[1] == {"type": "http.response.body", "body": b"chunk", "more_body": True}
 
-        assert result is mock_response
-        call_next.assert_awaited_once_with(authed_request)
-
-    async def test_http_exception_returns_error_json(self):
+    async def test_http_exception_returns_error_json(self) -> None:
         """HTTPException from authMiddleware returns proper JSON error."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
+        inner = _InnerApp()
         with patch(
             "app.query_main.authMiddleware",
             new_callable=AsyncMock,
             side_effect=HTTPException(status_code=401, detail="Unauthorized"),
         ):
-            result = await authenticate_requests(mock_request, call_next)
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 401
+        assert _status_and_json(sent) == (401, {"detail": "Unauthorized"})
+        assert inner.calls == [], "the route never runs"
 
-    async def test_unexpected_exception_returns_500(self):
+    async def test_unexpected_auth_exception_returns_500(self) -> None:
         """Unexpected exception returns 500 Internal Server Error."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
         with patch(
             "app.query_main.authMiddleware",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = await authenticate_requests(mock_request, call_next)
+            sent = await _run_asgi(self._middleware(_InnerApp()), _http_scope())
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 500
+        assert _status_and_json(sent) == (500, {"detail": "Internal server error"})
+
+    async def test_route_exception_before_the_response_returns_500_and_is_logged(self) -> None:
+        from app import query_main
+
+        logger = MagicMock()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock), \
+             patch.object(query_main.container, "logger", return_value=logger):
+            sent = await _run_asgi(self._middleware(_InnerApp(fail=RuntimeError("route"))), _http_scope())
+
+        assert _status_and_json(sent) == (500, {"detail": "Internal server error"})
+        logger.exception.assert_called_once()
+
+    async def test_route_exception_after_the_response_started_propagates(self) -> None:
+        """Nothing can replace a response already on the wire; the server
+        closes the connection, as it did under BaseHTTPMiddleware."""
+        inner = _InnerApp(fail=RuntimeError("mid-stream"), fail_after_start=True)
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock), \
+             pytest.raises(RuntimeError, match="mid-stream"):
+            await _run_asgi(self._middleware(inner), _http_scope())
+
+    async def test_non_http_scopes_pass_through(self) -> None:
+        inner = AsyncMock()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            await self._middleware(inner)({"type": "lifespan"}, AsyncMock(), AsyncMock())
+        auth.assert_not_awaited()
+        inner.assert_awaited_once()
+
+    async def test_registered_on_the_app(self) -> None:
+        from app.query_main import AuthenticateRequests, app
+
+        assert AuthenticateRequests in [m.cls for m in app.user_middleware]
 
     @pytest.mark.parametrize("host", POISONED_HOSTS)
-    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+    async def test_poisoned_host_header_does_not_skip_auth(self, host) -> None:
         """A Host header naming an excluded path does not replace the request path."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/api/v1/x", host)
-        call_next = AsyncMock()
-
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=request) as auth:
-            await authenticate_requests(request, call_next)
-
-        auth.assert_awaited_once_with(request)
-
-    async def test_health_path_of_a_real_request_skips_auth(self):
-        """The exclusion still applies to a real request for /health."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/health")
-        call_next = AsyncMock()
+        scope = dict(request_with_host("/api/v1/x", host).scope)
 
         with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
-            await authenticate_requests(request, call_next)
+            await _run_asgi(self._middleware(_InnerApp()), scope)
 
-        auth.assert_not_awaited()
-        call_next.assert_awaited_once_with(request)
+        auth.assert_awaited_once()
+        assert auth.await_args.args[0].url.path == "/api/v1/x"
 
 
 # ===========================================================================

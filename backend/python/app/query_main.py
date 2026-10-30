@@ -1,8 +1,9 @@
 import asyncio
+import gc
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -422,6 +423,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
+    # Each answer allocates and drops many short-lived objects; a gen-0 threshold
+    # of 10,000 (default 700) makes young collections rarer while generations 1
+    # and 2 keep their default ratios.
+    gc.set_threshold(10_000, 10, 10)
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
@@ -514,35 +520,64 @@ configure_app(app, "query")
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
 
-@app.middleware("http")
-async def authenticate_requests(request: Request, call_next) -> JSONResponse:
-    # Check if path should be excluded from authentication
-    if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
-        return await call_next(request)
+class AuthenticateRequests:
+    """Authenticates every request outside EXCLUDE_PATHS.
 
-    try:
-        # Apply authentication
-        authenticated_request = await authMiddleware(request)
-        # Continue with the request
-        return await call_next(authenticated_request)
+    Plain ASGI rather than ``@app.middleware("http")``: ``BaseHTTPMiddleware``
+    pushes every chunk of a streamed answer through an anyio memory stream.
+    """
 
-    except HTTPException as exc:
-        # Handle authentication errors
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception:
-        # Handle unexpected errors. This wraps every route, so an uncaught
-        # exception anywhere in the app ends up here: log it with its
-        # traceback, otherwise the only trace of a crashing route is a
-        # generic 500 and nothing in the server logs.
-        container.logger().exception(
-            "Unhandled exception while processing %s %s",
-            request.method,
-            request.url.path,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
+            await self.app(scope, receive, send)
+            return
+
+        started = False
+
+        async def send_tracking(message: dict) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            # request.state lives in the scope, so the route sees what auth set.
+            await authMiddleware(request)
+            await self.app(scope, receive, send_tracking)
+            return
+        except HTTPException as exc:
+            # Past the response start there is nothing left to replace, as
+            # with BaseHTTPMiddleware, whose call_next had already returned.
+            if started:
+                raise
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        except Exception:
+            if started:
+                raise
+            # This wraps every route, so an uncaught exception anywhere in the
+            # app ends up here: log it with its traceback, otherwise the only
+            # trace of a crashing route is a generic 500 and nothing in the
+            # server logs.
+            container.logger().exception(
+                "Unhandled exception while processing %s %s",
+                request.method,
+                request.url.path,
+            )
+            response = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "Internal server error"},
+            )
+        await response(scope, receive, send)
+
+
+app.add_middleware(AuthenticateRequests)
 
 
 # Trace context — outermost, before auth.

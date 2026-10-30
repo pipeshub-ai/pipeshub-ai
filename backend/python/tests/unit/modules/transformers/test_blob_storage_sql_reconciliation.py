@@ -1,6 +1,7 @@
 """Tests for BlobStorage upload_next_version, save_reconciliation_metadata,
 _create_metadata_document, and get_reconciliation_metadata paths."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +34,7 @@ def _resp(status=200, json_value=None):
     r = AsyncMock()
     r.status = status
     r.json = AsyncMock(return_value=json_value or {})
+    r.read = AsyncMock(return_value=json.dumps(json_value or {}).encode())
     r.__aenter__ = AsyncMock(return_value=r)
     r.__aexit__ = AsyncMock(return_value=False)
     return r

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import functools
 import json as json_mod
 import logging
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import orjson
 import regex
 from pydantic import BaseModel, Field
 
@@ -406,6 +408,64 @@ _VRID_IN_TEXT_RE = re.compile(r"record_([0-9a-f\-]+)\.json", re.IGNORECASE)
 _GREP_COUNT_RE = re.compile(r"^(.*\.json):(\d+)$", re.IGNORECASE)
 
 
+_ACCESS_UNVERIFIED = (
+    "Error: cannot verify record access (permission service "
+    "unavailable). Refusing to return records."
+)
+
+
+def _record_lines(output: str) -> list[tuple[str, str, int]]:
+    """(path, vrid, match count) of every record file named in *output*, most matches first.
+
+    Handles both grep -l output (plain paths) and grep -c output (path:count)
+    so results can be ranked by keyword density. Cheap regex, no file opens.
+    """
+    line_vrids: list[tuple[str, str, int]] = []
+    append = line_vrids.append
+    count_match = _GREP_COUNT_RE.match
+    name_match = _RECORD_FILENAME_RE.match
+    for raw in output.splitlines():
+        line = raw.strip()
+        # A NUL joins two paths into one line (`find -print0`): the vrid would come
+        # from the last one and the file read for ranking from the first.
+        if not line or raw.startswith("[...output truncated") or "\0" in line:
+            continue
+        path = line
+        match_count = 1  # default for grep -l (no count info)
+        # Only a line ending in a digit can be grep -c output; skip the regex otherwise.
+        csm = count_match(line) if line[-1].isdecimal() else None
+        if csm:
+            count = int(csm.group(2))
+            if count == 0:
+                continue
+            # A line ending in :<count> is not itself a record file name.
+            path = csm.group(1)
+            match_count = count
+        # posixpath.basename, inlined: this runs once per line of the output.
+        fm = name_match(path, path.rfind("/") + 1)
+        if fm:
+            append((path, fm.group(1), match_count))
+    # Most matches first, so the most relevant files win the max_results cap
+    # instead of arbitrary filesystem-order files.
+    line_vrids.sort(key=lambda x: x[2], reverse=True)
+    return line_vrids
+
+
+def _with_search_paths(command: str, paths: list[str]) -> str | None:
+    """*command* with its first stage's trailing ``.`` search path replaced by
+    *paths*, or None when the first stage does not end in a bare ``.``."""
+    stages = _split_pipeline_stages(command)
+    first = stages[0]
+    if not first.endswith(" ."):
+        return None
+    try:
+        if shlex.split(first) != [*shlex.split(first[:-1]), "."]:
+            return None
+    except ValueError:
+        return None
+    return " | ".join([first[:-1] + " ".join(shlex.quote(p) for p in paths), *stages[1:]])
+
+
 class FindRecordsInput(BaseModel):
     connector_id: str = Field(
         description=(
@@ -511,6 +571,8 @@ def _split_pipeline_stages(command: str) -> list[str]:
     return stages
 
 
+# Pure in the command string; run_pattern_match sends one command to ~48 connectors.
+@functools.lru_cache(maxsize=1024)
 def _validate_command(command: str) -> tuple[bool, str]:
     """Validate command string against allowlist and security rules.
 
@@ -679,6 +741,7 @@ def _short_options(family: str, arg: str) -> list[str]:
     return options
 
 
+@functools.lru_cache(maxsize=1024)
 def _listing_command_error(command: str) -> str | None:
     """Why *command* is not a pure file listing (see _LISTING_BINARIES), or None.
 
@@ -958,6 +1021,109 @@ def _trim_to_last_record(data: bytes) -> bytes:
     return data[: cut + 1] if cut >= 0 else b""
 
 
+# O_PATH opens without reading, so a FIFO cannot block; NOFOLLOW makes a
+# symlinked leaf open as the link itself, which _resolves_inside then refuses.
+_NOFOLLOW_PROBE_FLAGS = (
+    getattr(os, "O_PATH", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+)
+
+
+class _OpenHow(ctypes.Structure):
+    _fields_ = [("flags", ctypes.c_uint64), ("mode", ctypes.c_uint64), ("resolve", ctypes.c_uint64)]
+
+
+_OPENAT2 = 437  # same on every arch
+_AT_FDCWD = -100
+_RESOLVE_NO_SYMLINKS = 0x04  # implies RESOLVE_NO_MAGICLINKS
+_NO_SYMLINKS_HOW = _OpenHow(getattr(os, "O_PATH", 0) | getattr(os, "O_CLOEXEC", 0), 0, _RESOLVE_NO_SYMLINKS)
+# For reading: NONBLOCK so a FIFO opens at once (and is then refused), NOFOLLOW
+# so a symlinked leaf fails to open at all.
+_READ_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+)
+_READ_NO_SYMLINKS_HOW = _OpenHow(_READ_FLAGS, 0, _RESOLVE_NO_SYMLINKS)
+
+
+@functools.cache
+def _openat2() -> object | None:
+    """``syscall`` bound for openat2(2), or None when the kernel lacks it or a
+    seccomp filter refuses it."""
+    if not hasattr(os, "O_PATH"):
+        return None
+    try:
+        call = ctypes.CDLL(None, use_errno=True).syscall
+    except (OSError, AttributeError):
+        return None
+    call.restype = ctypes.c_long
+    call.argtypes = [ctypes.c_long, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
+    fd = call(_OPENAT2, _AT_FDCWD, b"/", ctypes.addressof(_NO_SYMLINKS_HOW), ctypes.sizeof(_NO_SYMLINKS_HOW))
+    if fd < 0:
+        return None
+    os.close(fd)
+    return call
+
+
+def _open_inside(path: str, real_dir: str, *, read: bool = False) -> int | None:
+    """A descriptor of *path* if it exists, is not a symlink, and resolves
+    inside *real_dir*, else None: O_PATH, or with *read* one to read from
+    (``_READ_FLAGS``), so the file checked is the file read. The caller closes it.
+
+    *real_dir* must already be a real path, so it holds no symlink. With
+    openat2's RESOLVE_NO_SYMLINKS the kernel refuses a symlink anywhere in
+    *path*, leaf included; a path with no '..' that is lexically under
+    *real_dir* then resolves inside it, in one path walk (record paths are
+    14-22 components deep). Without openat2 the path is opened and its
+    descriptor's target read back through /proc: that refuses a symlinked leaf
+    and anything resolving outside, but follows a directory link that stays in.
+    """
+    if ".." in path.split(os.sep):
+        return None
+    path = os.path.normpath(path)
+    if path != real_dir and not path.startswith(real_dir + os.sep):
+        return None
+    call = _openat2()
+    if call is not None:
+        how = _READ_NO_SYMLINKS_HOW if read else _NO_SYMLINKS_HOW
+        fd = call(_OPENAT2, _AT_FDCWD, os.fsencode(path), ctypes.addressof(how), ctypes.sizeof(how))
+        return fd if fd >= 0 else None
+    try:
+        fd = os.open(path, _READ_FLAGS if read else _NOFOLLOW_PROBE_FLAGS)
+    except OSError:
+        return None
+    try:
+        if stat.S_ISLNK(os.fstat(fd).st_mode):
+            real = ""
+        else:
+            try:
+                real = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:  # no /proc (macOS)
+                real = os.path.realpath(path)
+    except OSError:
+        real = ""
+    if real == real_dir or real.startswith(real_dir + os.sep):
+        return fd
+    os.close(fd)
+    return None
+
+
+def _resolves_inside(path: str, real_dir: str) -> bool:
+    """Whether *path* exists, is not a symlink, and resolves inside *real_dir*
+    (a real path); see ``_open_inside``."""
+    fd = _open_inside(path, real_dir)
+    if fd is None:
+        return False
+    os.close(fd)
+    return True
+
+
+def _confined_join(real_dir: str, rel: str) -> str | None:
+    """*real_dir*/*rel*, or None when *rel* is absolute or has a '..' component."""
+    if not rel or "\0" in rel or os.path.isabs(rel) or ".." in rel.split(os.sep):
+        return None
+    return os.path.join(real_dir, os.path.normpath(rel))
+
+
 def _sanitize_xargs_input(data: bytes, cwd: str) -> bytes:
     """Confine the stdin feeding an ``xargs`` stage to safe in-scope file paths.
 
@@ -968,7 +1134,7 @@ def _sanitize_xargs_input(data: bytes, cwd: str) -> bytes:
     could otherwise hand ``xargs`` an absolute path (``cat /proc/self/environ``),
     a traversal path, or a ``-exec`` flag (``find`` code execution).
 
-    Every surviving token is a real, existing path that stays inside *cwd* and
+    Every surviving token is an existing, non-symlink path that stays inside *cwd* and
     is neither a flag nor absolute nor contains ``..`` — i.e. exactly the record
     files a legitimate ``grep -l`` / ``find`` stage emits. Anything else is
     dropped, so the xargs sub-command can only ever act on in-scope records.
@@ -980,7 +1146,6 @@ def _sanitize_xargs_input(data: bytes, cwd: str) -> bytes:
     # path may legitimately contain spaces, so never split on whitespace.
     sep = b"\0" if b"\0" in data else b"\n"
     real_cwd = os.path.realpath(cwd)
-    prefix = real_cwd + os.sep
     kept: list[bytes] = []
     for raw in data.split(sep):
         token = raw[:-1] if raw.endswith(b"\r") else raw
@@ -996,10 +1161,7 @@ def _sanitize_xargs_input(data: bytes, cwd: str) -> bytes:
             continue
         if _TRAVERSAL_RE.search(item):
             continue
-        full = os.path.realpath(os.path.join(cwd, item))
-        if full != real_cwd and not full.startswith(prefix):
-            continue
-        if not os.path.exists(full):
+        if not _resolves_inside(os.path.join(real_cwd, item), real_cwd):
             continue
         kept.append(item.encode("utf-8"))
     return b"\0".join(kept)
@@ -1051,7 +1213,9 @@ async def _run_subprocess(
     timeout: int = _EXEC_TIMEOUT_SECS,
     max_stdout_bytes: int = 0,
     max_output_chars: int = _MAX_OUTPUT_CHARS,
-    confine_to: str | None = None,
+    confine_to: str | tuple[str, ...] | None = None,
+    stage_stdout_bytes: int = 0,
+    fail_on_truncation: bool = False,
 ) -> tuple[bool, str]:
     """Execute a validated pipeline without a shell and return (success, output).
 
@@ -1065,10 +1229,14 @@ async def _run_subprocess(
     The whole pipeline shares a single ``timeout`` deadline; every spawned
     process is killed if it is exceeded.
 
-    Every stage's stdout is capped (``_MAX_STAGE_STDOUT_BYTES``) and the
+    Every stage's stdout is capped (*stage_stdout_bytes*, else
+    ``_MAX_STAGE_STDOUT_BYTES``) and the
     stage is killed once it passes the cap. When *max_stdout_bytes* > 0 the
     **first** stage uses that smaller cap instead, so a grep over 100K+ files
-    stops once the first few hundred matches are in.
+    stops once the first few hundred matches are in. With *fail_on_truncation*
+    a stage reaching its cap fails the call instead.
+
+    *confine_to* is the directory, or directories, every stage may read.
     """
     stage_tokens: list[list[str]] = []
     for stage in _split_pipeline_stages(command):
@@ -1102,7 +1270,8 @@ async def _run_subprocess(
             if confine_to is not None:
                 # Landlock: the stage (and whatever it starts) may read only
                 # confine_to and the system's programs, write nothing, no network.
-                stage_argv = [sys.executable, "-I", "-S", _LANDLOCK_EXEC, confine_to, "--", *stage_argv]
+                readable = (confine_to,) if isinstance(confine_to, str) else confine_to
+                stage_argv = [sys.executable, "-I", "-S", _LANDLOCK_EXEC, *readable, "--", *stage_argv]
             proc = await asyncio.create_subprocess_exec(
                 *stage_argv,
                 stdin=asyncio.subprocess.PIPE,
@@ -1118,12 +1287,14 @@ async def _run_subprocess(
             if remaining <= 0:
                 raise TimeoutError
 
-            cap = max_stdout_bytes if (i == 0 and max_stdout_bytes > 0) else _MAX_STAGE_STDOUT_BYTES
+            cap = max_stdout_bytes if (i == 0 and max_stdout_bytes > 0) else stage_stdout_bytes or _MAX_STAGE_STDOUT_BYTES
             stdout_bytes, stderr_bytes, truncated = await asyncio.wait_for(
                 _communicate_capped(proc, stdin_data if i > 0 else None, cap),
                 timeout=remaining,
             )
             if truncated:
+                if fail_on_truncation:
+                    return False, "Error: command output reached its cap"
                 killed_early = True
                 capped = True
                 # A half-written path would reach the next stage as a bogus file name.
@@ -1278,7 +1449,8 @@ def grep_stage(stage: str) -> GrepStage | None:
     )
 
 
-def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
+@functools.lru_cache(maxsize=1024)
+def _grep_search_regexes(command: str) -> tuple[regex.Pattern[str], ...]:
     """Compile each search alternative of every non-inverted grep stage.
 
     ``grep a . | xargs grep "b\\|c"`` yields regexes for a, b and c, so a
@@ -1292,7 +1464,7 @@ def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
         for pattern in stage.patterns:
             regexes.extend(_compile_alternatives(pattern, fixed=stage.fixed, extended=stage.extended))
     # A term repeated across stages or alternatives must count once.
-    return list({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
+    return tuple({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
 
 
 def _compile_alternatives(
@@ -1360,10 +1532,15 @@ def _record_search_text(raw: str) -> str:
     snippets. A file that does not parse (e.g. cut at the read cap) yields
     only its block data strings.
     """
-    if isinstance(raw, _ScoredRecord):
-        return raw.search_text
     try:
-        rec = json_mod.loads(raw).get("record")
+        try:
+            doc = orjson.loads(raw)
+        except orjson.JSONDecodeError:
+            # orjson refuses NaN/Infinity, lone surrogates and nesting past 1024,
+            # which json accepts. (Ints past 64 bits come back as floats; only
+            # strings reach the text, so that cannot change it.)
+            doc = json_mod.loads(raw)
+        rec = doc.get("record")
     except (ValueError, AttributeError, RecursionError):
         return "\n".join(_unescaped_block_data(raw))
     if not isinstance(rec, dict):
@@ -1387,30 +1564,97 @@ def _unescaped_block_data(raw: str) -> list[str]:
     return out
 
 
-class _ScoredRecord(str):
-    """A record file's contents that already carry their extracted search text."""
+class _ScoredRecord:
+    """What scoring needs of a record file, without the file: its search text,
+    that lowercased (see ``_ascii_folded``), and how many characters were read
+    (charged to the ranking budget)."""
 
-    __slots__ = ("search_text",)
+    __slots__ = ("search_text", "folded_text", "read")
+
+    def __init__(self, search_text: str, read: int) -> None:
+        self.search_text = search_text
+        self.folded_text = _ascii_folded(search_text)
+        self.read = read
+
+
+# Non-ASCII characters that match an ASCII letter case-insensitively, or
+# lowercase to one, so lowercasing would not line up with the regex engine.
+_ASCII_CASE_EXCEPTIONS = ("İ", "ı", "ſ", "K")
+_REGEX_SPECIAL = frozenset(".^$*+?{}[]|()")
+_CASE_FLAGS = regex.IGNORECASE | regex.FULLCASE | regex.VERBOSE | regex.V1
+
+
+def _ascii_folded(text: str) -> str | None:
+    """``text.lower()`` when it lines up character for character with how an
+    ASCII pattern matches *text* case-insensitively, else None."""
+    if any(ch in text for ch in _ASCII_CASE_EXCEPTIONS):
+        return None
+    folded = text.lower()
+    return folded if len(folded) == len(text) else None
+
+
+@functools.lru_cache(maxsize=1024)
+def _ascii_literal(pattern: str, flags: int) -> str | None:
+    """The lowercased ASCII text a case-insensitive *pattern* matches and nothing else, or None."""
+    if flags & _CASE_FLAGS != regex.IGNORECASE:
+        return None
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            nxt = pattern[i + 1:i + 2]
+            # \b, \s, \d, \1 ... are not literals; any other escaped character is.
+            if not nxt or nxt.isalnum():
+                return None
+            out.append(nxt)
+            i += 2
+            continue
+        if ch in _REGEX_SPECIAL:
+            return None
+        out.append(ch)
+        i += 1
+    literal = "".join(out)
+    return literal.lower() if literal and literal.isascii() else None
 
 
 # Record files by (path, mtime, size): every grep hit's file was read and
 # JSON-parsed in full to score it, again on each search of every turn, and grep
-# keeps returning the same files. Scoring runs on worker threads.
+# keeps returning the same files. Scoring runs on worker threads. Only the
+# search text and its lowercased copy are kept (the raw file is several times
+# larger), charged what they occupy plus ~200 bytes for the entry, key and slot.
 _scored_record_cache: SizeBoundedCache[_ScoredRecord] = SizeBoundedCache(
-    max_size=200_000_000, size_of=lambda v: len(v) + len(v.search_text),
+    max_size=200_000_000,
+    size_of=lambda v: sys.getsizeof(v.search_text) + sys.getsizeof(v.folded_text or "") + 200,
 )
 
 
-def _read_scored_record(full_path: str) -> str:
-    st = os.stat(full_path)
-    key = (full_path, st.st_mtime_ns, st.st_size)
-    hit = _scored_record_cache.get(key)
-    if hit is None:
-        with open(full_path, encoding="utf-8", errors="replace") as f:
+def _read_scored_record(full_path: str, confine_to: str | None = None) -> _ScoredRecord:
+    """*full_path*'s search text, read for scoring. With *confine_to* (a real
+    path) the file is opened once, inside it and not through a symlink, and
+    read from that descriptor only if it is a regular file."""
+    if confine_to is None:
+        fd = os.open(full_path, _READ_FLAGS & ~getattr(os, "O_NOFOLLOW", 0))
+    else:
+        fd = _open_inside(full_path, confine_to, read=True)
+        if fd is None:
+            raise PermissionError(f"not a file inside the connector directory: {full_path}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PermissionError(f"not a regular file: {full_path}")
+        key = (full_path, st.st_mtime_ns, st.st_size)
+        hit = _scored_record_cache.get(key)
+        if hit is not None:
+            return hit
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            fd = -1  # closed with f
             raw = f.read(_MAX_SCORE_READ_BYTES)
-        hit = _ScoredRecord(raw)
-        hit.search_text = _record_search_text(raw)
-        _scored_record_cache.put(key, hit)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    hit = _ScoredRecord(_record_search_text(raw), len(raw))
+    _scored_record_cache.put(key, hit)
     return hit
 
 
@@ -1419,19 +1663,21 @@ def _score_record_file(
     regexes: list[regex.Pattern[str]],
     *,
     timeout: float = _RANK_MATCH_TIMEOUT_SECS,
+    confine_to: str | None = None,
 ) -> tuple[int, int, str, int]:
     """Return (distinct alternatives matched, total matches, snippet, bytes read).
 
     The snippet is taken around the rarest matched alternative — the term
     that most distinguishes this record, e.g. "billion" rather than the
-    company name that appears everywhere.
+    company name that appears everywhere. With *confine_to* (a real path), a
+    file that is a symlink or resolves outside it is not read.
     """
     try:
-        raw = _read_scored_record(full_path)
+        rec = _read_scored_record(full_path, confine_to)
     except OSError:
         return 0, 0, "", 0
-    distinct, total, snippet = score_text(_record_search_text(raw), regexes, timeout=timeout)
-    return distinct, total, snippet, len(raw)
+    distinct, total, snippet = _score_folded(rec.search_text, rec.folded_text, regexes, timeout)
+    return distinct, total, snippet, rec.read
 
 
 def score_text(
@@ -1444,32 +1690,59 @@ def score_text(
 
     A regex that runs past *timeout* scores the text as no match at all.
     """
+    return _score_folded(text, _ascii_folded(text), regexes, timeout)
+
+
+def _score_folded(
+    text: str, folded: str | None, regexes: list[regex.Pattern[str]], timeout: float,
+) -> tuple[int, int, str]:
+    """``score_text`` given *text* lowercased by ``_ascii_folded`` (None when it cannot be)."""
     distinct = total = 0
-    rarest: tuple[int, regex.Match[str]] | None = None
+    rarest: tuple[int, tuple[int, int]] | None = None
+    # Plain terms are counted with str.count on the lowercased text: the same
+    # non-overlapping matches finditer finds, at the same offsets.
     try:
         for rx in regexes:
-            matches = list(rx.finditer(text, timeout=timeout, concurrent=True))
-            if not matches:
-                continue
+            literal = _ascii_literal(rx.pattern, rx.flags) if folded is not None else None
+            if literal is not None:
+                count = folded.count(literal)
+                if not count:
+                    continue
+                first = folded.find(literal)
+                span = (first, first + len(literal))
+            else:
+                matches = list(rx.finditer(text, timeout=timeout, concurrent=True))
+                if not matches:
+                    continue
+                count, span = len(matches), matches[0].span()
             distinct += 1
-            total += len(matches)
-            if rarest is None or len(matches) < rarest[0]:
-                rarest = (len(matches), matches[0])
+            total += count
+            if rarest is None or count < rarest[0]:
+                rarest = (count, span)
     except TimeoutError:
         return 0, 0, ""
     if rarest is None:
         return 0, 0, ""
-    m = rarest[1]
-    start, end = max(0, m.start() - _SNIPPET_RADIUS), min(len(text), m.end() + _SNIPPET_RADIUS)
+    m_start, m_end = rarest[1]
+    start, end = max(0, m_start - _SNIPPET_RADIUS), min(len(text), m_end + _SNIPPET_RADIUS)
     snippet = " ".join(text[start:end].split())
     snippet = f"{'…' if start else ''}{snippet}{'…' if end < len(text) else ''}"
     return distinct, total, snippet
+
+
+class _RankBudget:
+    """Read and time budget for one ranking call, shared when it covers several connectors."""
+
+    def __init__(self) -> None:
+        self.bytes = _MAX_SCORE_TOTAL_BYTES
+        self.deadline = time.monotonic() + _RANK_TOTAL_SECS
 
 
 def _rank_candidates(
     candidates: list[tuple[str, str, int]],
     connector_dir: str,
     regexes: list[regex.Pattern[str]],
+    shared: _RankBudget | None = None,
 ) -> list[tuple[str, str, int, int, str]]:
     """Order (path, vrid, grep_count) by real matches in the record text.
 
@@ -1479,18 +1752,19 @@ def _rank_candidates(
     read or time budget, or outside the connector directory, keep grep's order.
     """
     real_dir = os.path.realpath(connector_dir)
-    budget = _MAX_SCORE_TOTAL_BYTES
-    deadline = time.monotonic() + _RANK_TOTAL_SECS
+    b = shared or _RankBudget()
     scored: list[tuple[int, int, int, str, str, str]] = []
     for order, (path, vrid, grep_count) in enumerate(candidates):
-        full_path = os.path.realpath(os.path.join(connector_dir, path))
+        # Lexical here; the read refuses symlinks and anything resolving outside real_dir.
+        full_path = _confined_join(real_dir, path)
         distinct, total, snippet = 0, grep_count, ""
-        remaining = deadline - time.monotonic()
-        if regexes and budget > 0 and remaining > 0 and full_path.startswith(real_dir + os.sep):
+        remaining = b.deadline - time.monotonic()
+        if regexes and b.bytes > 0 and remaining > 0 and full_path is not None:
             distinct, total, snippet, read = _score_record_file(
                 full_path, regexes, timeout=min(_RANK_MATCH_TIMEOUT_SECS, remaining),
+                confine_to=real_dir,
             )
-            budget -= read
+            b.bytes -= read
         scored.append((distinct, total, -order, path, vrid, snippet))
     scored.sort(reverse=True)
     return [(path, vrid, d, total, snippet) for d, total, _o, path, vrid, snippet in scored]
@@ -1620,6 +1894,8 @@ class StoragePatternMatch:
         # (the tool instance does not outlive it), so repeated commands and the
         # output filter do not ask again.
         self._access_by_vrid: dict[str, str | None] = {}
+        # (records dir, its real path): the same for every connector, read once.
+        self._records_root: tuple[str | None, str | None] | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1635,6 +1911,39 @@ class StoragePatternMatch:
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', connector_id):
             return None, f"Error: invalid connector_id '{connector_id}'"
 
+        root = self._records_root or await self._read_records_root()
+        records_dir, base_dir = root
+        if records_dir is None:
+            return None, base_dir
+        self._records_root = root
+        # Path mirrors getFullDocumentPath() in Node.js: orgId/PipesHub/records/<cid>
+        connector_dir = os.path.join(records_dir, connector_id)
+
+        # A real directory directly under the real records dir is inside it;
+        # anything else (a link, nothing there) takes the full check below.
+        try:
+            if stat.S_ISDIR(os.lstat(os.path.join(base_dir, connector_id)).st_mode):
+                return connector_dir, None
+        except OSError:
+            pass
+
+        # Defense-in-depth against path traversal: even though connector_id is
+        # already validated against a strict charset above, verify the resolved
+        # real path never escapes the connector's records base directory.
+        resolved_dir = os.path.realpath(connector_dir)
+        if resolved_dir != base_dir and not resolved_dir.startswith(base_dir + os.sep):
+            return None, "Error: connector path escapes base directory"
+
+        if not os.path.isdir(connector_dir):
+            return None, (
+                f"Error: no records directory found for connector '{connector_id}'. "
+                "Verify the connector_id is correct and records have been indexed."
+            )
+
+        return connector_dir, None
+
+    async def _read_records_root(self) -> tuple[str | None, str | None]:
+        """(this org's records directory, its real path), or (None, error)."""
         config_service = self.state.get("config_service")
         org_id = self.state.get("org_id", "")
 
@@ -1645,7 +1954,7 @@ class StoragePatternMatch:
 
         try:
             storage_cfg = await config_service.get_config(
-                config_node_constants.STORAGE.value
+                config_node_constants.STORAGE.value, use_cache=True
             )
         except Exception as exc:
             return None, f"Error: could not read storage config: {exc}"
@@ -1659,27 +1968,8 @@ class StoragePatternMatch:
             )
 
         mount_name = (storage_cfg or {}).get("mountName", "PipesHub")
-        mount_root = _resolve_mount_root(mount_name)
-        # Path mirrors getFullDocumentPath() in Node.js: orgId/PipesHub/records/<cid>
-        connector_dir = os.path.join(
-            mount_root, org_id, "PipesHub", "records", connector_id
-        )
-
-        # Defense-in-depth against path traversal: even though connector_id is
-        # already validated against a strict charset above, verify the resolved
-        # real path never escapes the connector's records base directory.
-        base_dir = os.path.realpath(os.path.join(mount_root, org_id, "PipesHub", "records"))
-        resolved_dir = os.path.realpath(connector_dir)
-        if resolved_dir != base_dir and not resolved_dir.startswith(base_dir + os.sep):
-            return None, "Error: connector path escapes base directory"
-
-        if not os.path.isdir(connector_dir):
-            return None, (
-                f"Error: no records directory found for connector '{connector_id}'. "
-                "Verify the connector_id is correct and records have been indexed."
-            )
-
-        return connector_dir, None
+        records_dir = os.path.join(_resolve_mount_root(mount_name), org_id, "PipesHub", "records")
+        return records_dir, os.path.realpath(records_dir)
 
     def _scope_connector_ids(self) -> frozenset[str] | None:
         """The agent's knowledge scope (apps ∪ KBs), or None when it has none.
@@ -1728,7 +2018,7 @@ class StoragePatternMatch:
         wanted = list(dict.fromkeys(vrids))
         missing = [v for v in wanted if v not in self._access_by_vrid]
         if missing:
-            fetched = await self._fetch_accessible_vrids(missing)
+            fetched = await self._fetch_accessible_vrids_for_turn(missing)
             if fetched is None:
                 return None
             for vrid in missing:
@@ -1738,9 +2028,33 @@ class StoragePatternMatch:
             if (record_id := self._access_by_vrid[vrid]) is not None
         }
 
+    async def _fetch_accessible_vrids_for_turn(self, vrids: list[str]) -> dict[str, str] | None:
+        """``_fetch_accessible_vrids``, shared by every instance in this chat turn:
+        one search runs several grep commands over the same records at once."""
+        from app.utils.turn_memo import memo_each
+
+        async def fetch(missing: list[str]) -> dict[str, str]:
+            fetched = await self._fetch_accessible_vrids(missing)
+            if fetched is None:
+                raise PermissionError("record access could not be verified")
+            return fetched
+
+        namespace = (
+            "storage_vrid_access", self.state.get("user_id", ""), self._org_id(),
+            self._scope_connector_ids(),
+        )
+        try:
+            by_vrid = await memo_each(namespace, vrids, fetch)
+        except PermissionError:
+            return None
+        return {vrid: record_id for vrid, record_id in by_vrid.items() if record_id is not None}
+
+    def _org_id(self) -> str:
+        return self.state.get("org_id", "")
+
     async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
-        org_id = self.state.get("org_id", "")
+        org_id = self._org_id()
         graph_provider = self.state.get("graph_provider")
         if not user_id or not org_id or graph_provider is None:
             logger.info(
@@ -1748,7 +2062,7 @@ class StoragePatternMatch:
                 user_id, org_id, graph_provider is not None,
             )
             return None
-        logger.info(
+        logger.debug(
             "[_check_accessible_vrids] checking %d vrids for user=%s org=%s",
             len(vrids), user_id, org_id,
         )
@@ -1766,7 +2080,7 @@ class StoragePatternMatch:
                 exc_info=True,
             )
             return None
-        logger.info(
+        logger.debug(
             "[_check_accessible_vrids] result: %d/%d accessible",
             len(accessible) if accessible else 0, len(vrids),
         )
@@ -2049,6 +2363,206 @@ class StoragePatternMatch:
         )
         return success, output
 
+    async def _records_by_connector(
+        self, outputs: dict[str, tuple[str, str]], command: str, max_results: int,
+    ) -> dict[str, tuple[list[dict[str, str]], int]] | None:
+        """{connector_id: (records, paths found)} from each connector's
+        (connector_dir, command output), or None when access cannot be
+        verified (callers fail closed).
+
+        One access check, one ranking thread and one record lookup per round
+        serve every connector; each connector still gets its own *max_results*.
+        """
+        org_id = self._org_id()
+        lines = {cid: _record_lines(output) for cid, (_dir, output) in outputs.items()}
+        # Permission gate: keep only records the requesting user may access.
+        accessible = await self._check_accessible_vrids(
+            [vrid for found in lines.values() for _p, vrid, _c in found]
+        )
+        if accessible is None:
+            return None
+
+        candidates: dict[str, list[tuple[str, str, int]]] = {}
+        for cid, found in lines.items():
+            seen: set[str] = set()
+            candidates[cid] = []
+            for path, vrid, match_count in found:
+                if vrid in accessible and vrid not in seen:
+                    seen.add(vrid)
+                    candidates[cid].append((path, vrid, match_count))
+
+        def _rank_all() -> dict[str, list[tuple[str, str, int, int, str]]]:
+            # One budget for the whole batch: the per-connector runs ranked in
+            # parallel threads, so a budget per connector here would add up
+            # serially and outlast the pattern-match timeout.
+            shared = _RankBudget()
+            ranked_by: dict[str, list[tuple[str, str, int, int, str]]] = {}
+            for cid, cands in candidates.items():
+                try:
+                    ranked_by[cid] = _rank_candidates(cands, outputs[cid][0], _grep_search_regexes(command), shared)
+                except Exception:
+                    # Ranking only improves order; never lose the results over it.
+                    logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
+                    ranked_by[cid] = [(path, vrid, 0, count, "") for path, vrid, count in cands]
+            return ranked_by
+
+        ranked = await asyncio.to_thread(_rank_all) if any(candidates.values()) else {cid: [] for cid in candidates}
+
+        graph_provider = self.state.get("graph_provider")
+        # Only the first max_results that the graph still holds are shown, so
+        # look them up a slice at a time, in rank order, rather than all at
+        # once; each round asks for every connector's next slice in one query.
+        by_id: dict = {}
+        record_ids: dict[str, list[str]] = {}
+        position: dict[str, dict[str, int]] = {}
+        next_row = dict.fromkeys(ranked, 0)
+        fetched = dict.fromkeys(ranked, 0)
+        records: dict[str, list[dict[str, str]]] = {cid: [] for cid in ranked}
+        for cid, rows in ranked.items():
+            record_ids[cid] = list(dict.fromkeys(accessible[vrid] for _p, vrid, *_rest in rows if accessible[vrid]))
+            position[cid] = {record_id: i for i, record_id in enumerate(record_ids[cid])}
+        while True:
+            wanted: list[str] = []
+            for cid, rows in ranked.items():
+                while next_row[cid] < len(rows) and len(records[cid]) < max_results:
+                    _path, vrid, matched_terms, match_count, snippet = rows[next_row[cid]]
+                    record_id = accessible[vrid]
+                    if record_id and position[cid][record_id] >= fetched[cid]:
+                        batch = record_ids[cid][fetched[cid]:fetched[cid] + 2 * max_results]
+                        fetched[cid] += len(batch)
+                        wanted.extend(batch)
+                        break  # this row again once the batch is in
+                    next_row[cid] += 1
+                    graph_rec = by_id.get(record_id) if record_id else None
+                    if not graph_rec:
+                        continue
+                    # Named from the record the permission check chose, never from the
+                    # storage path, whose folders can belong to other records or groups.
+                    meta: dict[str, str] = {
+                        "record_id": record_id,
+                        "record_name": graph_rec.get("recordName") or "",
+                        "virtual_record_id": vrid,
+                    }
+                    if matched_terms:
+                        meta["matched_terms"] = str(matched_terms)
+                    if match_count > 1:
+                        meta["match_count"] = str(match_count)
+                    if snippet:
+                        meta["match_preview"] = snippet
+                    records[cid].append(meta)
+            if not wanted:
+                break
+            try:
+                graph_records = await graph_provider.get_records_by_record_ids(
+                    record_ids=list(dict.fromkeys(wanted)), org_id=org_id,
+                )
+            except Exception:
+                logger.warning("[find_records] record lookup failed", exc_info=True)
+                return None
+            by_id.update(
+                (r.get("_key") or r.get("id"), r) for r in graph_records or [] if isinstance(r, dict)
+            )
+        return {cid: (records[cid], len(candidates[cid])) for cid in outputs}
+
+    async def find_records_batch(
+        self,
+        searches: dict[str, tuple[str, list[str]]],
+        command: str,
+        *,
+        max_results: int = 10,
+        max_stdout_bytes: int = 0,
+        max_output_chars: int = _MAX_OUTPUT_CHARS,
+        timeout: int = _EXEC_TIMEOUT_SECS,
+        capped: set[str] | None = None,
+    ) -> dict[str, list[dict[str, str]]] | None:
+        """``find_records`` for several connectors with one run of *command*.
+
+        *capped*, when given, receives each connector whose output was cut or
+        matched more records than it returns.
+
+        *searches* maps connector_id to (connector_dir, search paths relative
+        to it, ``"."`` for all of it); the directories must share one parent.
+        The pipeline runs once from that parent over every search path,
+        confined to exactly those connector directories, and its output is
+        split back per connector. Every stage cap is the per-connector cap
+        times the number of connectors, and a stage reaching it fails the call,
+        so no connector loses its share to another; each connector's output is
+        then cut to *max_output_chars* as its own run would be.
+
+        Returns {connector_id: records}, records as in ``find_records``. None
+        when the batch cannot stand in for one run per connector (no Landlock,
+        no trailing ``.`` search path to replace, an invalid command, a
+        failure, a cap, a timeout, access that cannot be verified): the caller
+        then runs ``find_records`` per connector, which reports each failure.
+        """
+        searches = {cid: v for cid, v in searches.items() if not self._out_of_scope_error(cid)}
+        dirs = {cid: connector_dir for cid, (connector_dir, _rels) in searches.items()}
+        parents = {os.path.dirname(os.path.normpath(d)) for d in dirs.values()}
+        # Unconfined, only the validator would keep a stage inside these directories.
+        if not searches or len(parents) != 1 or _landlock_abi() < 1:
+            return None
+        max_results = min(max(max_results, 1), _MAX_FIND_RECORDS)
+        paths: list[str] = []
+        real_parent = os.path.realpath(next(iter(parents)))
+        for cid, (connector_dir, rels) in searches.items():
+            if os.path.basename(os.path.normpath(connector_dir)) != cid:
+                return None
+            # A linked connector directory is a symlink under the shared parent, and
+            # the xargs sanitizer (RESOLVE_NO_SYMLINKS) would drop all its paths.
+            if os.path.realpath(connector_dir) != os.path.join(real_parent, cid):
+                return None
+            for rel in rels:
+                if _confined_join(connector_dir, rel) is None:
+                    return None
+                paths.append("./" + os.path.normpath(os.path.join(cid, rel)))
+        batch_cmd = _with_search_paths(command, paths)
+        if batch_cmd is None or not _validate_command(batch_cmd)[0] or _listing_command_error(batch_cmd):
+            return None
+
+        n = len(searches)
+        success, output = await _run_subprocess(
+            batch_cmd, cwd=parents.pop(), timeout=timeout,
+            max_stdout_bytes=max_stdout_bytes * n,
+            stage_stdout_bytes=_MAX_STAGE_STDOUT_BYTES * n,
+            max_output_chars=_MAX_STAGE_STDOUT_BYTES * n,
+            confine_to=tuple(dirs.values()),
+            fail_on_truncation=True,
+        )
+        if not success:
+            return None
+        sections: dict[str, list[str]] = {cid: [] for cid in searches}
+        if output.strip() != "No matches found.":
+            for line in output.splitlines():
+                if not line.strip():
+                    continue
+                cid, sep, rest = line.strip().removeprefix("./").partition("/")
+                if not (sep and cid in sections):
+                    # Output not attributable to a connector (e.g. `ls -R` prints
+                    # bare names under a header): run it per connector instead.
+                    return None
+                sections[cid].append("./" + rest)
+        texts = {cid: "\n".join(lines) for cid, lines in sections.items()}
+        found = await self._records_by_connector(
+            {cid: (dirs[cid], _truncate(text, max_output_chars)) for cid, text in texts.items()},
+            command, max_results,
+        )
+        if found is None:
+            # Access could not be verified: a run per connector reports that as a failure.
+            return None
+        if capped is not None:
+            capped.update(
+                cid for cid, (records, paths_found) in found.items()
+                if len(texts[cid]) > max_output_chars or paths_found > len(records)
+            )
+        for records, _paths_found in found.values():
+            if records:
+                remember_record_ids(
+                    self.state,
+                    [meta["record_id"] for meta in records],
+                    names={meta["record_id"]: meta["record_name"] for meta in records},
+                )
+        return {cid: records for cid, (records, _paths_found) in found.items()}
+
     # ------------------------------------------------------------------
     # find_records tool
     # ------------------------------------------------------------------
@@ -2124,7 +2638,7 @@ class StoragePatternMatch:
         are not reported, only a constant hint that results may be incomplete.
         """
         org_id = self.state.get("org_id", "")
-        logger.info(
+        logger.debug(
             "[storage_pattern_match.find_records] org_id=%s connector_id=%s command_len=%d max_results=%d",
             org_id, connector_id, len(command), max_results,
         )
@@ -2147,7 +2661,7 @@ class StoragePatternMatch:
         if path_err:
             logger.info("[find_records] path error for %s: %s", connector_id, path_err)
             return False, path_err
-        logger.info("[find_records] connector_dir=%s", connector_dir)
+        logger.debug("[find_records] connector_dir=%s", connector_dir)
 
         # Same rule as run_command: this command reads every record of the
         # connector, readable or not, so it runs confined or not at all.
@@ -2185,7 +2699,7 @@ class StoragePatternMatch:
             )
             # Not even at DEBUG: this stdout is from before the permission check,
             # so it can name records the user may not read.
-            logger.info(
+            logger.debug(
                 "[find_records] subprocess result: connector_id=%s success=%s output_len=%d",
                 connector_id, success, len(output),
             )
@@ -2201,113 +2715,23 @@ class StoragePatternMatch:
             if output.strip() == "No matches found.":
                 return True, _no_accessible_match(output_truncated=False, may_be_incomplete=not raw_cut_is_safe)
 
-            # Extract candidate record file paths (cheap regex, no file opens).
-            # Handles both grep -l output (plain paths) and grep -c output
-            # (path:count) so results can be ranked by keyword density.
-            all_lines = [line.strip() for line in output.splitlines() if line.strip()]
-            lines = [line for line in all_lines if not line.startswith(_TRUNCATION_MARKER_PREFIX)]
-            output_truncated = len(lines) < len(all_lines) or (
-                max_output_lines is not None and len(lines) >= max_output_lines
-            )
-            if not raw_cut_is_safe:
-                output_truncated = False
-            line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
-            for line in lines:
-                path = line
-                match_count = 1  # default for grep -l (no count info)
-
-                csm = _GREP_COUNT_RE.match(line)
-                if csm:
-                    candidate_path = csm.group(1)
-                    count = int(csm.group(2))
-                    if count == 0:
-                        continue
-                    if _RECORD_FILENAME_RE.match(os.path.basename(candidate_path)):
-                        path = candidate_path
-                        match_count = count
-
-                fm = _RECORD_FILENAME_RE.match(os.path.basename(path))
-                if fm:
-                    line_vrids.append((path, fm.group(1), match_count))
-
-            # Sort by match count descending so the most relevant files win
-            # the max_results cap instead of arbitrary filesystem-order files.
-            line_vrids.sort(key=lambda x: x[2], reverse=True)
-
-            logger.info(
-                "[find_records] lines=%d line_vrids=%d", len(lines), len(line_vrids),
+            output_truncated = raw_cut_is_safe and (
+                _TRUNCATION_MARKER_PREFIX in output
+                or (
+                    max_output_lines is not None
+                    and sum(
+                        1 for line in output.splitlines()
+                        if line.strip() and not line.strip().startswith(_TRUNCATION_MARKER_PREFIX)
+                    ) >= max_output_lines
+                )
             )
 
-            if not line_vrids:
-                return True, _no_accessible_match(output_truncated=output_truncated, may_be_incomplete=not raw_cut_is_safe)
-
-            # Permission gate: keep only records the requesting user may access.
-            # Fail closed if the check cannot be performed.
-            accessible = await self._check_accessible_vrids([v for _, v, _c in line_vrids])
-            if accessible is None:
-                return False, (
-                    "Error: cannot verify record access (permission service "
-                    "unavailable). Refusing to return records."
-                )
-
-            candidates: list[tuple[str, str, int]] = []
-            seen: set[str] = set()
-            for path, vrid, match_count in line_vrids:
-                if vrid in accessible and vrid not in seen:
-                    seen.add(vrid)
-                    candidates.append((path, vrid, match_count))
-            paths_found = len(candidates)
-            try:
-                ranked = await asyncio.to_thread(
-                    _rank_candidates, candidates, run_dir, _grep_search_regexes(command),
-                )
-            except Exception:
-                # Ranking only improves order; never lose the results over it.
-                logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
-                ranked = [(path, vrid, 0, count, "") for path, vrid, count in candidates]
-
-            graph_provider = self.state.get("graph_provider")
-            try:
-                graph_records = await graph_provider.get_records_by_record_ids(
-                    record_ids=list(dict.fromkeys(accessible[vrid] for _p, vrid, *_rest in ranked if accessible[vrid])),
-                    org_id=org_id,
-                )
-            except Exception:
-                logger.warning("[find_records] record lookup failed", exc_info=True)
-                return False, (
-                    "Error: cannot verify record access (permission service "
-                    "unavailable). Refusing to return records."
-                )
-            by_id = {
-                r.get("_key") or r.get("id"): r for r in graph_records or [] if isinstance(r, dict)
-            }
-
-            records: list[dict[str, str]] = []
-            for _path, vrid, matched_terms, match_count, snippet in ranked:
-                if len(records) >= max_results:
-                    break
-                record_id = accessible[vrid]
-                graph_rec = by_id.get(record_id) if record_id else None
-                if not graph_rec:
-                    continue
-                # Named from the record the permission check chose, never from the
-                # storage path, whose folders can belong to other records or groups.
-                meta: dict[str, str] = {
-                    "record_id": record_id,
-                    "record_name": graph_rec.get("recordName") or "",
-                    "virtual_record_id": vrid,
-                }
-                if matched_terms:
-                    meta["matched_terms"] = str(matched_terms)
-                if match_count > 1:
-                    meta["match_count"] = str(match_count)
-                if snippet:
-                    meta["match_preview"] = snippet
-                records.append(meta)
-
+            found = await self._records_by_connector({connector_id: (run_dir, output)}, command, max_results)
+            if found is None:
+                return False, _ACCESS_UNVERIFIED
+            records, paths_found = found[connector_id]
             if not records:
                 return True, _no_accessible_match(output_truncated=output_truncated, may_be_incomplete=not raw_cut_is_safe)
-
 
             remember_record_ids(
                 self.state,
@@ -2339,7 +2763,7 @@ class StoragePatternMatch:
                 "success": True,
             }
 
-            logger.info(
+            logger.debug(
                 "[storage_pattern_match.find_records] paths_found=%d returned=%d",
                 paths_found, len(records),
             )

@@ -13,12 +13,14 @@ from PIL import Image
 from app.utils.image_utils import (
     EXT_TO_MIME,
     _fetch_image_as_base64,
+    _normalized_head,
     downscale_to_limits,
     get_extension_from_mimetype,
     get_image_info_from_url,
     get_mime_type_from_base64,
     mime_to_extension,
     normalize_image_to_base64,
+    read_image_dimensions,
     supported_mime_types,
     is_below_content_size,
     is_extreme_aspect_ratio,
@@ -493,3 +495,47 @@ class TestDecorativeImage:
         self, width: int, height: int, expected: bool
     ) -> None:
         assert is_decorative_image(width, height) is expected
+
+
+class TestHeaderOnlyNormalization:
+    """Dimensions read the first 512 base64 chars; normalizing the whole
+    payload to get them cost ~2 ms per MB."""
+
+    @staticmethod
+    def _png_b64(width: int, height: int) -> str:
+        import io
+
+        pillow = pytest.importorskip("PIL.Image")
+        buffer = io.BytesIO()
+        pillow.effect_noise((width, height), 64).save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    @pytest.mark.parametrize("length", [4, 512])
+    def test_head_matches_the_full_normalization(self, length: int) -> None:
+        b64 = self._png_b64(300, 200)
+        mime = "\r\n".join(b64[i:i + 76] for i in range(0, len(b64), 76))
+        for uri in (
+            f"data:image/png;base64,{b64}",
+            f"  data:image/png;base64,{mime}\n",
+            b64,
+            "data:image/png;base64," + "\n" * 2000 + b64,
+            "data:image/png;base64,aW1hZ2U",
+            "data:image/svg+xml,<svg></svg>",
+            "data:image/png;base64,<not base64>",
+            "",
+            None,
+        ):
+            full = normalize_image_to_base64(uri)
+            assert _normalized_head(uri, length) == (full[:length] if full else None)
+
+    def test_dimensions_through_mime_line_breaks(self) -> None:
+        b64 = self._png_b64(300, 200)
+        mime = "\r\n".join(b64[i:i + 76] for i in range(0, len(b64), 76))
+        assert read_image_dimensions(f"data:image/png;base64,{mime}") == (300, 200)
+
+    def test_downscale_output_is_unchanged(self) -> None:
+        uri = "data:image/png;base64," + self._png_b64(900, 300)
+        out = downscale_to_limits(uri, max_long_edge_px=450, max_bytes=10**9)
+        assert out.startswith("data:image/jpeg;base64,")
+        assert read_image_dimensions(out) == (450, 150)
+        assert downscale_to_limits(uri, max_long_edge_px=900, max_bytes=10**9) is uri

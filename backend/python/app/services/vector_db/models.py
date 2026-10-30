@@ -234,7 +234,9 @@ class HybridSearchRequest:
     filter: FilterExpression | None = None
     limit: int = 10
     fusion_method: FusionMethod = FusionMethod.RRF
-    with_payload: bool = True
+    # Top-level payload keys to return, or True for all. A backend that cannot
+    # select fields returns all of them.
+    with_payload: bool | list[str] = True
 
 
 @dataclass

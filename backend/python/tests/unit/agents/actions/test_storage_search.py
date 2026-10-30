@@ -15,9 +15,12 @@ Covers all 9 test categories from the plan:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import platform
+import shutil
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,6 +48,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
 
@@ -714,6 +718,8 @@ class TestConnectorPathResolution:
         assert err is None
         assert path is not None
         assert os.path.isdir(path)
+        # Read once per connector per pipeline; the config cache is invalidated on write.
+        assert state["config_service"].get_config.await_args.kwargs == {"use_cache": True}
 
     @pytest.mark.asyncio
     async def test_nonexistent_connector_returns_error(self, tmp_path):
@@ -1310,6 +1316,29 @@ class TestFinding3PermissionCheck:
         assert _json.loads(output)["records"] == []
 
     @pytest.mark.asyncio
+    async def test_find_records_looks_up_only_the_records_it_can_show(self, tmp_path) -> None:
+        import json as _json
+        vrids = [f"{i:08x}-0000-0000-0000-000000000000" for i in range(25)]
+        for vrid in vrids:
+            (tmp_path / f"record_{vrid}.json").write_text("secretword")
+        tool = _make_perm_tool(str(tmp_path), {v: f"rec-{v}" for v in vrids})
+        batches: list[list[str]] = []
+
+        async def _lookup(record_ids, org_id) -> list[dict[str, str]]:
+            batches.append(record_ids)
+            # The first slice is gone from the graph, so a second one is needed.
+            return [] if len(batches) == 1 else [{"_key": r, "recordName": r} for r in record_ids]
+
+        tool.state["graph_provider"].get_records_by_record_ids = AsyncMock(side_effect=_lookup)
+
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .', max_results=3)
+
+        assert success is True
+        assert [len(b) for b in batches] == [6, 6]
+        assert not set(batches[0]) & set(batches[1])
+        assert [r["record_id"] for r in _json.loads(output)["records"]] == batches[1][:3]
+
+    @pytest.mark.asyncio
     async def test_find_records_fails_closed_when_record_lookup_fails(self, tmp_path):
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
@@ -1770,6 +1799,21 @@ class TestXargsArgInjection:
         # realpath of the symlink resolves outside the scope → dropped.
         assert _sanitize_xargs_input(b"link.json", str(scope)) == b""
 
+    def test_sanitize_drops_paths_through_a_symlinked_directory_or_link(self, tmp_path) -> None:
+        scope = tmp_path / "scope"
+        (scope / "real").mkdir(parents=True)
+        (scope / "real" / "a.json").write_text("{}")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "b.json").write_text("secret")
+        try:
+            os.symlink(outside, scope / "out")
+            os.symlink(scope / "real" / "a.json", scope / "inner.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        data = b"\0".join([b"real/a.json", b"out/b.json", b"inner.json", b"real", b"."])
+        assert _sanitize_xargs_input(data, str(scope)) == b"real/a.json\0real\0."
+
     def test_force_null_inserts_zero_before_subcommand(self):
         assert _force_xargs_null_delimited(["xargs", "cat"]) == ["xargs", "-0", "cat"]
 
@@ -1806,6 +1850,28 @@ class TestRankingIsBounded:
         assert time.monotonic() - started < 1.0
         assert [r[1] for r in ranked] == [vrid]
 
+    def test_a_shared_budget_spent_by_earlier_connectors_keeps_grep_order(self, tmp_path) -> None:
+        """The batch ranks every connector in one thread: one deadline for all of them."""
+        from app.agents.actions.storage_search.storage_search import (
+            _grep_search_regexes,
+            _rank_candidates,
+            _RankBudget,
+        )
+
+        vrids = ["dddddddd-0000-0000-0000-000000000000", "eeeeeeee-0000-0000-0000-000000000000"]
+        for vrid, text in zip(vrids, ("alpha", "alpha alpha alpha")):
+            (tmp_path / f"record_{vrid}.json").write_text(
+                json.dumps({"record": {"block_containers": {"blocks": [{"data": text}]}}})
+            )
+        cands = [(f"./record_{v}.json", v, 1) for v in vrids]
+        regexes = _grep_search_regexes('grep -rli "alpha" .')
+
+        assert [r[1] for r in _rank_candidates(cands, str(tmp_path), regexes, _RankBudget())] == vrids[::-1]
+        spent = _RankBudget()
+        spent.deadline = 0.0
+        ranked = _rank_candidates(cands, str(tmp_path), regexes, spent)
+        assert [r[1] for r in ranked] == vrids and all(r[2] == 0 for r in ranked)
+
     @pytest.mark.timeout(5)
     def test_timed_out_match_scores_zero_but_reports_bytes_read(self, tmp_path):
         import time
@@ -1822,12 +1888,46 @@ class TestRankingIsBounded:
         assert _score_record_file(str(path), [rx], timeout=0.2) == (0, 0, "", 5001)
         assert time.monotonic() - started < 1.0
 
+    def test_only_files_inside_the_connector_are_read(self, tmp_path) -> None:
+        from app.agents.actions.storage_search.storage_search import (
+            _grep_search_regexes,
+            _rank_candidates,
+        )
+
+        body = '{"record": {"block_containers": {"blocks": [{"data": "needle"}]}}}'
+        connector = tmp_path / "connector"
+        (connector / "doc").mkdir(parents=True)
+        (connector / "doc" / "record_in.json").write_text(body)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "record_out.json").write_text(body)
+        try:
+            os.symlink(outside / "record_out.json", connector / "doc" / "record_leaf.json")
+            os.symlink(outside, connector / "linked")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        paths = [
+            "./doc/record_in.json",
+            "../outside/record_out.json",
+            str(outside / "record_out.json"),
+            "doc/../../outside/record_out.json",
+            "./doc/record_leaf.json",
+            "linked/record_out.json",
+        ]
+        ranked = _rank_candidates(
+            [(p, f"v{i}", 1) for i, p in enumerate(paths)], str(connector),
+            _grep_search_regexes('grep -rci "needle" .'),
+        )
+        matched = {path: terms for path, _v, terms, _c, _s in ranked}
+        # Unread files keep their place in the results, unscored.
+        assert matched == {p: int(p == "./doc/record_in.json") for p in paths}
+
     def test_alternatives_and_pattern_length_are_capped(self):
         from app.agents.actions.storage_search.storage_search import _grep_search_regexes
 
         many = r"\|".join(f"term{i}" for i in range(100))
         assert len(_grep_search_regexes(f'grep -rci "{many}" .')) == 32
-        assert _grep_search_regexes(f'grep -rci "{"a" * 600}" .') == []
+        assert _grep_search_regexes(f'grep -rci "{"a" * 600}" .') == ()
 
     def test_a_file_is_parsed_once_until_it_changes(self, tmp_path) -> None:
         import json
@@ -1839,7 +1939,7 @@ class TestRankingIsBounded:
         path = tmp_path / "record_cached.json"
         path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": "alpha beta"}]}}}))
         rx = [regex.compile("alpha", regex.IGNORECASE)]
-        with patch.object(mod.json_mod, "loads", wraps=mod.json_mod.loads) as parse:
+        with patch.object(mod.orjson, "loads", wraps=mod.orjson.loads) as parse:
             first = mod._score_record_file(str(path), rx)
             assert mod._score_record_file(str(path), rx) == first
             assert parse.call_count == 1
@@ -1847,6 +1947,72 @@ class TestRankingIsBounded:
             assert mod._score_record_file(str(path), rx)[:2] == (0, 0)
             assert parse.call_count == 2
 
+
+    @pytest.mark.parametrize("command", [
+        'grep -rci "billion\\|Valuation\\|pipeshub" .',
+        'grep -rciF "1.5 b" .',
+        'grep -rciE "a.b|c+d|\\$9|(x|y)z" .',
+        'grep -rci "\\<word\\>\\|wo rd\\|s\\|k\\|i" .',
+        'grep -rci "café\\|naïve" .',
+        'grep -rliZ "Pipes" . | xargs -0 grep -Hci "hub"',
+    ])
+    @pytest.mark.parametrize("text", [
+        "Pipeshub valuation is 1 billion. PIPESHUB, pipesHub! a.b c+d $9 xz 1.5 B",
+        "word wo rd WORD k K s S i I café CAFÉ naïve",
+        "Kſ İiıI keys sails",  # case-fold exceptions near ASCII letters
+        "ß straße ΣΑΣ σας hub",
+        "",
+    ])
+    def test_literal_scoring_matches_the_regex_engine(self, tmp_path, command, text) -> None:
+        import json
+
+        from app.agents.actions.storage_search import storage_search as mod
+
+        path = tmp_path / "record_lit.json"
+        path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": text * 3}]}}}))
+        regexes = mod._grep_search_regexes(command)
+        mod._scored_record_cache.clear()
+        fast = mod._score_record_file(str(path), regexes)
+        assert mod._score_record_file(str(path), regexes) == fast  # from the cache
+        with patch.object(mod, "_ascii_literal", return_value=None):
+            assert mod._score_record_file(str(path), regexes) == fast
+
+    def test_the_cache_keeps_and_is_charged_only_the_search_text(self, tmp_path) -> None:
+        import json
+        import sys
+
+        from app.agents.actions.storage_search import storage_search as mod
+
+        path = tmp_path / "record_small.json"
+        body = json.dumps({"record": {
+            "block_containers": {"blocks": [{"data": "Alpha beta", "metadata": {"pad": "x" * 50_000}}]},
+            "semantic_metadata": {"summary": "Gamma"},
+        }})
+        path.write_text(body)
+        mod._scored_record_cache.clear()
+        rec = mod._read_scored_record(str(path))
+        assert (rec.search_text, rec.folded_text, rec.read) == ("Alpha beta\nGamma", "alpha beta\ngamma", len(body))
+        assert not hasattr(rec, "__dict__")  # nothing else, e.g. the raw file, rides along
+        assert mod._scored_record_cache._size == sys.getsizeof(rec.search_text) + sys.getsizeof(rec.folded_text) + 200
+        assert mod._read_scored_record(str(path)) is rec
+        assert mod._score_record_file(str(path), mod._grep_search_regexes('grep -rci "beta" .'))[3] == len(body)
+        path.write_text(body.replace("Gamma", "İ"))
+        assert mod._read_scored_record(str(path)).folded_text is None
+
+    def test_plain_terms_are_counted_without_the_regex_engine(self) -> None:
+        import regex
+
+        from app.agents.actions.storage_search.storage_search import (
+            _ascii_literal,
+            _grep_search_regexes,
+        )
+
+        literals = [_ascii_literal(rx.pattern, rx.flags) for rx in _grep_search_regexes(
+            'grep -rci "Billion\\|1\\.5 b\\|a.b\\|\\<w\\>\\|café\\|x\\+" .'
+        )]
+        assert literals == ["billion", "1.5 b", None, None, None, None]
+        assert _ascii_literal("abc", 0) is None  # case-sensitive
+        assert _ascii_literal("abc", regex.IGNORECASE | regex.FULLCASE) is None
 
 class TestLogging:
     """Record content stays out of the INFO log and search terms out of every log;
@@ -2119,6 +2285,25 @@ class TestFindRecordsListsOnly:
         import json as _json
         assert [r["virtual_record_id"] for r in _json.loads(output)["records"]] == [_VRID_ACCESSIBLE]
 
+
+    @pytest.mark.asyncio
+    async def test_per_command_checks_run_once_and_still_reject(self, tmp_path) -> None:
+        from app.agents.actions.storage_search import storage_search as mod
+
+        for fn in (mod._validate_command, mod._listing_command_error, mod._grep_search_regexes):
+            fn.cache_clear()
+        vrid = "aaaaaaaa-0000-0000-0000-000000000000"
+        _write_record(tmp_path, vrid, "needle")
+        tool = _make_perm_tool(str(tmp_path), {vrid: "rec-1"})
+        command = 'grep -rcil "needle" .'
+        for _ in range(3):
+            assert (await tool.find_records("c", command))[0] is True
+        for fn in (mod._validate_command, mod._listing_command_error, mod._grep_search_regexes):
+            assert fn.cache_info().misses == 1
+        for _ in range(2):  # a cached rejection is still a rejection
+            ok, err = await tool.find_records("c", 'grep -r "x" . ; cat /etc/passwd')
+            assert ok is False and "not allowed" in err
+            assert (await tool.find_records("c", 'grep -rl "x" . | sort'))[0] is False
 
 class TestViewHygiene:
     """L15 / L25: views never copy, never follow symlinks, never outlive a crash."""
@@ -2503,3 +2688,409 @@ def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
         sweep_orphan_views(str(tmp_path))
 
     assert not (tmp_path / "org-2" / "PipesHub" / _VIEWS_DIR_NAME / "old").exists()
+
+
+_needs_grep_and_landlock = pytest.mark.skipif(
+    shutil.which("grep") is None
+    or __import__("app.agents.actions.storage_search.landlock_exec", fromlist=["abi_version"]).abi_version() < 1,
+    reason="needs grep and Landlock",
+)
+
+
+class TestFindRecordsBatch:
+    """One pipeline run for several connectors gives each connector what its own run would."""
+
+    @staticmethod
+    def _tree(tmp_path: Path) -> dict[str, Path]:
+        base = tmp_path / "records"
+        dirs = {cid: base / cid for cid in ("c1", "c2", "c3")}
+        for d in dirs.values():
+            d.mkdir(parents=True)
+        for i in range(3):
+            _write_record(dirs["c1"] / "groupA", f"a{i}a{i}a{i}a{i}", "alpha one")
+        _write_record(dirs["c1"] / "groupB", "b0b0b0b0", "alpha two")
+        _write_record(dirs["c1"], "f0f0f0f0", "alpha forbidden")
+        _write_record(dirs["c2"], "c0c0c0c0", "alpha three alpha")
+        _write_record(dirs["c2"], "c1c1c1c1", "beta only")
+        _write_record(dirs["c3"], "d0d0d0d0", "alpha not searched")
+        return dirs
+
+    @staticmethod
+    def _tool(graph_records: set[str] | None = None) -> StoragePatternMatch:
+        graph = _make_graph_provider()
+        graph.filter_accessible_virtual_record_ids = AsyncMock(
+            side_effect=lambda vrids, *_a, **_k: {v: f"rec-{v}" for v in vrids if v != "f0f0f0f0"}
+        )
+        graph.get_records_by_record_ids = AsyncMock(side_effect=lambda record_ids, **_k: [
+            {"_key": r, "recordName": f"name-{r}"} for r in record_ids
+            if graph_records is None or r in graph_records
+        ])
+        return _make_tool(graph_provider=graph)
+
+    @_needs_grep_and_landlock
+    @pytest.mark.asyncio
+    async def test_matches_one_run_per_connector_with_one_check_and_one_lookup(self, tmp_path) -> None:
+        dirs = self._tree(tmp_path)
+        cmd = 'grep -rli "alpha" .'
+        tool = self._tool()
+        batch = await tool.find_records_batch(
+            {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])}, cmd,
+        )
+
+        alone = {}
+        for cid in ("c1", "c2"):
+            single = _make_tool(connector_dir=str(dirs[cid]), graph_provider=self._tool().state["graph_provider"])
+            ok, out = await single.find_records(cid, cmd)
+            alone[cid] = json.loads(out)["records"] if ok else None
+        assert batch == alone
+        assert {r["virtual_record_id"] for r in batch["c1"]} == {"a0a0a0a0", "a1a1a1a1", "a2a2a2a2", "b0b0b0b0"}
+        assert [r["virtual_record_id"] for r in batch["c2"]] == ["c0c0c0c0"]
+        graph = tool.state["graph_provider"]
+        assert graph.filter_accessible_virtual_record_ids.await_count == 1
+        assert graph.get_records_by_record_ids.await_count == 1
+
+    @_needs_grep_and_landlock
+    @pytest.mark.asyncio
+    async def test_scoped_paths_and_per_connector_max_results(self, tmp_path) -> None:
+        dirs = self._tree(tmp_path)
+        batch = await self._tool().find_records_batch(
+            {"c1": (str(dirs["c1"]), ["./groupA"]), "c2": (str(dirs["c2"]), ["."])},
+            'grep -rli "alpha" .', max_results=2,
+        )
+        assert len(batch["c1"]) == 2
+        assert {r["virtual_record_id"] for r in batch["c1"]} <= {"a0a0a0a0", "a1a1a1a1", "a2a2a2a2"}
+        assert [r["virtual_record_id"] for r in batch["c2"]] == ["c0c0c0c0"]
+
+    @_needs_grep_and_landlock
+    @pytest.mark.asyncio
+    async def test_a_record_missing_from_the_graph_is_looked_past(self, tmp_path) -> None:
+        dirs = self._tree(tmp_path)
+        batch = await self._tool(graph_records={"rec-b0b0b0b0", "rec-c0c0c0c0"}).find_records_batch(
+            {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])},
+            'grep -rli "alpha" .', max_results=1,
+        )
+        assert [r["record_id"] for r in batch["c1"]] == ["rec-b0b0b0b0"]
+        assert [r["record_id"] for r in batch["c2"]] == ["rec-c0c0c0c0"]
+
+    @_needs_grep_and_landlock
+    @pytest.mark.asyncio
+    async def test_a_capped_stage_hands_back_to_per_connector_runs(self, tmp_path) -> None:
+        dirs = self._tree(tmp_path)
+        batch = await self._tool().find_records_batch(
+            {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])},
+            'grep -rli "alpha" .', max_stdout_bytes=20,
+        )
+        assert batch is None
+
+    @pytest.mark.asyncio
+    async def test_hands_back_whatever_it_cannot_run_as_one(self, tmp_path, monkeypatch) -> None:
+        dirs = self._tree(tmp_path)
+        both = {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])}
+        tool = self._tool()
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock) as run:
+            # no trailing "." to replace; a path escaping the connector; directories with different parents
+            assert await tool.find_records_batch(both, 'grep -rli "alpha" ./x') is None
+            assert await tool.find_records_batch({"c1": (str(dirs["c1"]), ["./../c3"])}, 'grep -rli "a" .') is None
+            assert await tool.find_records_batch(
+                {"c1": (str(dirs["c1"]), ["."]), "c2": (str(tmp_path / "c2"), ["."])}, 'grep -rli "a" .',
+            ) is None
+            monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 0)
+            assert await tool.find_records_batch(both, 'grep -rli "alpha" .') is None
+        run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_output_it_cannot_attribute_to_a_connector_hands_back(self, tmp_path, monkeypatch) -> None:
+        """`ls -R` over several paths prints `./c1/...:` headers then bare names."""
+        dirs = self._tree(tmp_path)
+        both = {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])}
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 1)
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock,
+                   return_value=(True, "./c1/groupA:\nrecord_a0a0a0a0.json\n")):
+            assert await self._tool().find_records_batch(both, 'grep -rli "alpha" .') is None
+
+    @pytest.mark.asyncio
+    async def test_runs_once_from_the_parent_confined_to_the_searched_connectors(self, tmp_path, monkeypatch) -> None:
+        dirs = self._tree(tmp_path)
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 7)
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock, return_value=(True, "No matches found.")) as run:
+            batch = await self._tool().find_records_batch(
+                {"c1": (str(dirs["c1"]), ["./groupA", "./groupB"]), "c2": (str(dirs["c2"]), ["."])},
+                'grep -rliZ "alpha" . | xargs -0 grep -li "one"',
+            )
+        assert batch == {"c1": [], "c2": []}
+        assert run.await_args.args[0] == (
+            'grep -rliZ "alpha" ./c1/groupA ./c1/groupB ./c2 | xargs -0 grep -li "one"'
+        )
+        assert run.await_args.kwargs["cwd"] == str(tmp_path / "records")
+        assert run.await_args.kwargs["confine_to"] == (str(dirs["c1"]), str(dirs["c2"]))
+        assert run.await_args.kwargs["fail_on_truncation"] is True
+
+    @pytest.mark.asyncio
+    async def test_leaves_a_failed_access_check_to_the_per_connector_runs(self, tmp_path, monkeypatch) -> None:
+        # None (not an empty result) so each connector's own run reports the failure.
+        dirs = self._tree(tmp_path)
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 7)
+        tool = self._tool()
+        tool.state["graph_provider"].filter_accessible_virtual_record_ids = AsyncMock(side_effect=RuntimeError)
+        out = "./c1/doc-a0a0a0/record_a0a0a0a0.json\n./c2/doc-c0c0c0/record_c0c0c0c0.json\n"
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock, return_value=(True, out)):
+            batch = await tool.find_records_batch(
+                {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])}, 'grep -rli "alpha" .',
+            )
+        assert batch is None
+
+    @pytest.mark.asyncio
+    async def test_reports_connectors_whose_matches_were_cut(self, tmp_path, monkeypatch) -> None:
+        dirs = self._tree(tmp_path)
+        monkeypatch.setattr("app.agents.actions.storage_search.storage_search._landlock_abi", lambda: 7)
+        out = "./c1/doc-a0a0a0/record_a0a0a0a0.json\n./c1/doc-a1a1a1/record_a1a1a1a1.json\n"
+        capped: set[str] = set()
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess",
+                   new_callable=AsyncMock, return_value=(True, out)):
+            await self._tool().find_records_batch(
+                {"c1": (str(dirs["c1"]), ["."]), "c2": (str(dirs["c2"]), ["."])}, 'grep -rli "alpha" .',
+                max_results=1, capped=capped,
+            )
+        assert capped == {"c1"}
+
+    @pytest.mark.skipif(
+        __import__("app.agents.actions.storage_search.landlock_exec", fromlist=["abi_version"]).abi_version() < 1,
+        reason="kernel without Landlock",
+    )
+    @pytest.mark.asyncio
+    async def test_a_stage_reads_every_given_directory_and_nothing_else(self, tmp_path) -> None:
+        for name in ("a", "b", "c"):
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "f.txt").write_text(name)
+        readable = (str(tmp_path / "a"), str(tmp_path / "b"))
+        ok, out = await _run_subprocess("cat a/f.txt b/f.txt", cwd=str(tmp_path), confine_to=readable)
+        assert ok is True and out == "ab"
+        ok, out = await _run_subprocess("cat c/f.txt", cwd=str(tmp_path), confine_to=readable)
+        assert ok is False and "Permission denied" in out
+class TestResolvesInside:
+    """The containment check behind xargs input and ranking reads refuses a
+    symlink anywhere in the path, with openat2 and without it."""
+
+    @pytest.fixture(params=["openat2", "fallback"])
+    def mode(self, request, monkeypatch) -> str:
+        from app.agents.actions.storage_search import storage_search as mod
+
+        if request.param == "openat2" and mod._openat2() is None:
+            pytest.skip("kernel without openat2")
+        if request.param == "fallback":
+            monkeypatch.setattr(mod, "_openat2", lambda: None)
+        return request.param
+
+    @staticmethod
+    def _tree(tmp_path: Path) -> tuple[str, str]:
+        scope = tmp_path / "scope"
+        (scope / "a" / "b" / "doc1").mkdir(parents=True)
+        (scope / "a" / "b" / "doc1" / "record_1.json").write_text("{}")
+        outside = tmp_path / "outside"
+        (outside / "doc").mkdir(parents=True)
+        (outside / "doc" / "record_2.json").write_text("secret")
+        (outside / "record_3.json").write_text("secret")
+        try:
+            os.symlink(outside, scope / "a" / "out")
+            os.symlink(scope / "a" / "b", scope / "a" / "alias")
+            os.symlink(outside / "record_3.json", scope / "a" / "b" / "doc1" / "record_3.json")
+            os.symlink(scope / "a" / "b" / "doc1" / "record_1.json", scope / "a" / "b" / "inner.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        return os.path.realpath(scope), os.path.realpath(outside)
+
+    def test_symlinked_directories_and_leaves_are_refused(self, tmp_path, mode) -> None:
+        from app.agents.actions.storage_search.storage_search import _resolves_inside
+
+        scope, outside = self._tree(tmp_path)
+        assert _resolves_inside(os.path.join(scope, "a", "b", "doc1", "record_1.json"), scope)
+        assert _resolves_inside(scope, scope)
+        assert _resolves_inside(os.path.join(scope, "a", "./b//doc1"), scope)
+        for refused in (
+            os.path.join(scope, "a", "out", "doc", "record_2.json"),  # through a directory link leaving scope
+            os.path.join(scope, "a", "b", "doc1", "record_3.json"),  # leaf link leaving scope
+            os.path.join(scope, "a", "b", "inner.json"),  # leaf link inside scope
+            os.path.join(scope, "a", "out"),  # the link itself
+            os.path.join(scope, "a", "b", "missing.json"),
+            os.path.join(scope, "a", "b", "..", "b", "doc1", "record_1.json"),  # any '..'
+            os.path.join(outside, "record_3.json"),
+            scope + "-sibling",
+        ):
+            assert not _resolves_inside(refused, scope), refused
+        # A directory link that stays inside: only openat2 sees it at all.
+        alias = os.path.join(scope, "a", "alias", "doc1", "record_1.json")
+        assert _resolves_inside(alias, scope) is (mode == "fallback")
+
+    @pytest.mark.timeout(5)
+    def test_ranking_reads_only_regular_files_inside(self, tmp_path, mode) -> None:
+        from app.agents.actions.storage_search.storage_search import _read_scored_record
+
+        scope, _outside = self._tree(tmp_path)
+        doc = os.path.join(scope, "a", "b", "doc1")
+        os.mkfifo(os.path.join(doc, "record_4.json"))
+        for name in ("record_4.json", "record_3.json", "missing.json"):
+            with pytest.raises(PermissionError):
+                _read_scored_record(os.path.join(doc, name), scope)
+        assert _read_scored_record(os.path.join(doc, "record_1.json"), scope).read == len("{}")
+        with pytest.raises(PermissionError):
+            _read_scored_record(os.path.join(scope, "a", "out", "doc", "record_2.json"), scope)
+
+    @pytest.mark.timeout(5)
+    def test_the_file_read_is_the_file_checked(self, tmp_path, mode, monkeypatch) -> None:
+        from app.agents.actions.storage_search import storage_search as mod
+
+        scope, outside = self._tree(tmp_path)
+        leaf = os.path.join(scope, "a", "b", "doc1", "record_1.json")
+        real_open = mod._open_inside
+
+        def swap_after_check(path: str, real_dir: str, **kwargs: bool) -> int | None:
+            fd = real_open(path, real_dir, **kwargs)
+            # Between the check and the read, the leaf becomes a link to a file outside the connector.
+            os.rename(leaf, leaf + ".old")
+            os.symlink(os.path.join(outside, "record_3.json"), leaf)
+            return fd
+
+        monkeypatch.setattr(mod, "_open_inside", swap_after_check)
+        assert mod._read_scored_record(leaf, scope).read == len("{}")
+
+    @pytest.mark.timeout(5)
+    def test_an_unconfined_read_refuses_a_fifo_without_blocking(self, tmp_path) -> None:
+        from app.agents.actions.storage_search.storage_search import _read_scored_record
+
+        os.mkfifo(tmp_path / "record_5.json")
+        with pytest.raises(PermissionError):
+            _read_scored_record(str(tmp_path / "record_5.json"))
+
+    def test_no_descriptor_is_left_open(self, tmp_path, mode) -> None:
+        from app.agents.actions.storage_search.storage_search import _resolves_inside
+
+        scope, _outside = self._tree(tmp_path)
+        before = len(os.listdir("/proc/self/fd"))
+        from app.agents.actions.storage_search.storage_search import _read_scored_record
+
+        os.mkfifo(os.path.join(scope, "a", "b", "doc1", "record_4.json"))
+        for _ in range(50):
+            with contextlib.suppress(PermissionError):
+                _read_scored_record(os.path.join(scope, "a", "b", "doc1", "record_4.json"), scope)
+            _read_scored_record(os.path.join(scope, "a", "b", "doc1", "record_1.json"), scope)
+            _resolves_inside(os.path.join(scope, "a", "b", "doc1", "record_1.json"), scope)
+            _resolves_inside(os.path.join(scope, "a", "b", "inner.json"), scope)
+            _resolves_inside(os.path.join(scope, "a", "out", "doc", "record_2.json"), scope)
+        assert len(os.listdir("/proc/self/fd")) == before
+class TestConnectorPathResolutionPerCall:
+    """The records root is read once per tool; each connector then costs one lstat."""
+
+    @pytest.mark.asyncio
+    async def test_storage_config_is_read_once_and_links_still_get_the_full_check(self, tmp_path) -> None:
+        records = tmp_path / "org-1" / "PipesHub" / "records"
+        (records / "plain").mkdir(parents=True)
+        (records / "target").mkdir()
+        (tmp_path / "elsewhere").mkdir()
+        try:
+            os.symlink(records / "target", records / "inside-link")
+            os.symlink(tmp_path / "elsewhere", records / "outside-link")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        state = _make_state(org_id="org-1")
+        tool = StoragePatternMatch(state)
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value=str(tmp_path),
+        ):
+            assert await tool._resolve_connector_path("plain") == (str(records / "plain"), None)
+            assert await tool._resolve_connector_path("inside-link") == (str(records / "inside-link"), None)
+            path, err = await tool._resolve_connector_path("outside-link")
+            assert path is None and "escapes" in err
+            path, err = await tool._resolve_connector_path("missing")
+            assert path is None and "no records directory" in err
+            (records / "file").write_text("x")
+            path, err = await tool._resolve_connector_path("file")
+            assert path is None and "no records directory" in err
+
+        assert state["config_service"].get_config.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_config_read_is_not_kept(self, tmp_path) -> None:
+        (tmp_path / "org-1" / "PipesHub" / "records" / "c").mkdir(parents=True)
+        state = _make_state(org_id="org-1")
+        state["config_service"].get_config = AsyncMock(
+            side_effect=[RuntimeError("etcd down"), {"storageType": "local", "mountName": "PipesHub"}]
+        )
+        tool = StoragePatternMatch(state)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._resolve_mount_root",
+            return_value=str(tmp_path),
+        ):
+            path, err = await tool._resolve_connector_path("c")
+            assert path is None and "could not read storage config" in err
+            path, err = await tool._resolve_connector_path("c")
+        assert err is None and path.endswith(os.path.join("records", "c"))
+
+class TestAccessSharedWithinATurn:
+    """Every StoragePatternMatch of one chat turn shares its access answers:
+    a search runs several grep commands over the same records at once."""
+
+    @staticmethod
+    async def _in_turn[T](fn: Callable[[], Awaitable[T]]) -> T:
+        from app.utils import turn_memo
+
+        async def run() -> T:
+            turn_memo.begin_turn()
+            return await fn()
+
+        return await asyncio.create_task(run())
+
+    @pytest.mark.asyncio
+    async def test_a_second_instance_asks_only_for_new_vrids(self) -> None:
+        graph_provider = _make_graph_provider()
+        first, second = (_make_tool(graph_provider=graph_provider) for _ in range(2))
+
+        async def turn() -> tuple[dict[str, str] | None, dict[str, str] | None]:
+            return (await first._check_accessible_vrids(["v1", "v2"]),
+                    await second._check_accessible_vrids(["v2", "v3"]))
+
+        a, b = await self._in_turn(turn)
+        assert a == {"v1": "rec-v1", "v2": "rec-v2"}
+        assert b == {"v2": "rec-v2", "v3": "rec-v3"}
+        asked = [c.args[0] for c in graph_provider.filter_accessible_virtual_record_ids.await_args_list]
+        assert asked == [["v1", "v2"], ["v3"]]
+
+    @pytest.mark.asyncio
+    async def test_other_users_scopes_and_turns_are_asked_again(self) -> None:
+        graph_provider = _make_graph_provider()
+        tools = [
+            _make_tool(graph_provider=graph_provider),
+            _make_tool(graph_provider=graph_provider, user_id="someone-else"),
+            _make_tool(graph_provider=graph_provider, filters={"strictScope": True, "apps": ["c"]}),
+        ]
+
+        async def turn() -> None:
+            for tool in tools:
+                await tool._check_accessible_vrids(["v1"])
+
+        await self._in_turn(turn)
+        await self._in_turn(lambda: _make_tool(graph_provider=graph_provider)._check_accessible_vrids(["v1"]))
+        assert graph_provider.filter_accessible_virtual_record_ids.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_a_denied_vrid_stays_denied_and_a_failed_check_is_retried(self) -> None:
+        graph_provider = _make_graph_provider()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+            side_effect=[RuntimeError("db"), {"v1": "rec-v1"}],
+        )
+
+        async def turn() -> tuple[dict[str, str] | None, ...]:
+            failed = await _make_tool(graph_provider=graph_provider)._check_accessible_vrids(["v1", "v2"])
+            ok = await _make_tool(graph_provider=graph_provider)._check_accessible_vrids(["v1", "v2"])
+            again = await _make_tool(graph_provider=graph_provider)._check_accessible_vrids(["v2"])
+            return failed, ok, again
+
+        failed, ok, again = await self._in_turn(turn)
+        assert failed is None
+        assert ok == {"v1": "rec-v1"}
+        assert again == {}
+        assert graph_provider.filter_accessible_virtual_record_ids.await_count == 2

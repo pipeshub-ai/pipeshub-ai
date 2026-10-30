@@ -3,12 +3,14 @@ import base64
 import concurrent.futures
 import contextlib
 import errno
+import functools
 import json
 import os
 import random
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
@@ -67,6 +69,7 @@ from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
 from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.turn_memo import in_turn, memo
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
@@ -98,6 +101,9 @@ LARGE_DECODE_SLOTS = 1
 _MAX_DECODED_BYTES_ENV = "PIPESHUB_RECORD_MAX_DECODED_BYTES"
 
 
+_JSON_DECODER = msgspec.json.Decoder()
+
+
 def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records are free-form
     """Decode a stored-record envelope.
 
@@ -107,16 +113,72 @@ def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records ar
     stdlib json module, which measured 12% of query-service CPU. msgspec is
     ~1.9x faster on a real 48KB record and is already a dependency.
 
-    Accepts str so it can be passed to ``resp.json(loads=...)``; the UTF-8
-    decode aiohttp does first costs ~2us on that record, well inside the win.
+    Pass the response bytes (``await resp.read()``), not ``resp.json(loads=...)``:
+    records keep non-ASCII text unescaped, and decoding the body to str only for
+    msgspec to re-encode it to UTF-8 made a 1MB non-ASCII record ~3x slower
+    (3.55ms vs 1.10ms).
 
     Falls back to the stdlib rather than failing the fetch: a record msgspec
     rejects is still worth trying to read.
     """
     try:
-        return msgspec.json.decode(raw)
+        return _JSON_DECODER.decode(raw)
     except Exception:
         return json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+class _StoredRecordHead(msgspec.Struct):
+    """The record fields linked-record context reads (create_record_instance_from_dict,
+    _merge_graph_into_blob_record). msgspec skips the others, block_containers
+    included, without building them."""
+
+    id: Any = msgspec.UNSET
+    org_id: Any = msgspec.UNSET
+    record_name: Any = msgspec.UNSET
+    record_type: Any = msgspec.UNSET
+    external_record_id: Any = msgspec.UNSET
+    parent_external_record_id: Any = msgspec.UNSET
+    version: Any = msgspec.UNSET
+    origin: Any = msgspec.UNSET
+    connector_name: Any = msgspec.UNSET
+    connector_id: Any = msgspec.UNSET
+    mime_type: Any = msgspec.UNSET
+    source_created_at: Any = msgspec.UNSET
+    source_updated_at: Any = msgspec.UNSET
+    source_timestamp_origin: Any = msgspec.UNSET
+    created_at: Any = msgspec.UNSET
+    location: Any = msgspec.UNSET
+    weburl: Any = msgspec.UNSET
+    hide_weburl: Any = msgspec.UNSET
+    semantic_metadata: Any = msgspec.UNSET
+
+
+class _StoredEnvelopeHead(msgspec.Struct):
+    # A compressed record is a base64 string and is decoded whole.
+    record: "_StoredRecordHead | str | None" = None
+    isCompressed: Any = None
+    signedUrl: Any = None
+
+
+_HEAD_DECODER = msgspec.json.Decoder(_StoredEnvelopeHead)
+
+
+def _decode_record_head(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records are free-form
+    """``_decode_json`` with the record cut to the fields of ``_StoredRecordHead``."""
+    try:
+        envelope = _HEAD_DECODER.decode(raw)
+    except Exception:
+        return _decode_json(raw)
+    record = envelope.record
+    if isinstance(record, _StoredRecordHead):
+        record = {
+            name: value
+            for name in record.__struct_fields__
+            if (value := getattr(record, name)) is not msgspec.UNSET
+        }
+        if not record:
+            return _decode_json(raw)
+    return {"record": record, "isCompressed": envelope.isCompressed, "signedUrl": envelope.signedUrl}
+
+
 _COMPRESSION_THRESHOLD_ENV = "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES"
 
 
@@ -282,6 +344,99 @@ def signed_url_cache_seconds() -> int:
         return max(min(int(raw), 3000), 0)
     except ValueError:
         return _SIGNED_URL_CACHE_SECONDS_DEFAULT
+
+
+_RECORD_CACHE_ENV = "PIPESHUB_RECORD_CACHE_BYTES"
+# 512 MiB: at 1 worker / 64 users on a 9.6k-record corpus this held the
+# reuse (126 rpm vs 104 at 32 MiB) for ~0.2 GB more RSS; 1.5 GiB gained nothing.
+_RECORD_CACHE_BYTES_DEFAULT = 512 * 1024 * 1024
+# Backstop for writes that change a record's content without touching its
+# mapping (see _record_cache_key).
+_RECORD_CACHE_TTL_SECONDS = 60.0
+# Decoded dicts of block records measured ~3.1x their JSON on the load-test
+# corpus; entries are charged that, so the budget approximates resident memory.
+_DECODED_BYTES_PER_JSON_BYTE = 3
+# Absolute per-entry cap (charged bytes), however large the budget is set.
+_RECORD_CACHE_MAX_ENTRY_BYTES = 24 * 1024 * 1024
+
+
+def record_cache_bytes() -> int:
+    """Approximate resident bytes the decoded-record cache may hold; 0 disables it.
+
+    Entries are charged their downloaded JSON length times
+    ``_DECODED_BYTES_PER_JSON_BYTE``; compressed records are not cached.
+    """
+    raw = os.getenv(_RECORD_CACHE_ENV)
+    if raw is None:
+        return _RECORD_CACHE_BYTES_DEFAULT
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return _RECORD_CACHE_BYTES_DEFAULT
+
+
+class _DecodedRecordCache:
+    """Decoded stored records shared across requests: LRU by stored size, each kept ``ttl_seconds``."""
+
+    def __init__(self, ttl_seconds: float, clock: "Callable[[], float]" = time.monotonic) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._entries: OrderedDict[tuple, tuple[dict, int, float]] = OrderedDict()
+        self._bytes = 0
+        # BlobStorage runs on more than one event loop (see get_shared_session).
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple) -> dict | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            record, size, expires_at = entry
+            if expires_at <= self._clock():
+                del self._entries[key]
+                self._bytes -= size
+                return None
+            self._entries.move_to_end(key)
+            return record
+
+    def put(self, key: tuple, record: dict, size: int, max_bytes: int) -> None:
+        # One record over a quarter of the cache would flush most of it.
+        if size > min(max_bytes // 4, _RECORD_CACHE_MAX_ENTRY_BYTES):
+            return
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._bytes -= previous[1]
+            self._entries[key] = (record, size, self._clock() + self._ttl_seconds)
+            self._bytes += size
+            while self._bytes > max_bytes:
+                _, (_, evicted_size, _) = self._entries.popitem(last=False)
+                self._bytes -= evicted_size
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+_DECODED_RECORDS = _DecodedRecordCache(_RECORD_CACHE_TTL_SECONDS)
+
+
+def _record_cache_key(org_id: str, virtual_record_id: str, lookup: dict) -> tuple | None:
+    """The cache key for a stored record, or None when it must be downloaded.
+
+    Every stored write switches the mapping by compare-and-set, bumping
+    ``switchSeq`` and ``updatedAt`` (an in-place overwrite does so before and
+    after it rewrites the document), so a rewrite changes the key. Only chat
+    turns use the cache: indexing reads records to rewrite them, which must
+    never see an old copy.
+    """
+    document_id = lookup.get("record_doc_id")
+    size = lookup.get("fileSizeBytes")
+    updated_at = lookup.get("updatedAt")
+    if not in_turn() or not document_id or not isinstance(size, int) or updated_at is None:
+        return None
+    return (org_id, virtual_record_id, document_id, size, updated_at, lookup.get("switchSeq"))
 
 
 # Must expire before Node closes an idle keep-alive socket, or we reuse one the
@@ -815,6 +970,7 @@ class BlobStorage(Transformer):
         file_size_bytes: int | None,
         virtual_record_id: str,
         lease: _DecodeSlotLease | None = None,
+        decode: "Callable[[bytes], Any]" = _decode_json,
     ) -> dict | None:
         """Download and decode a record from an already-signed storage URL.
 
@@ -832,13 +988,13 @@ class BlobStorage(Transformer):
                     raise SignedUrlReadError(
                         f"Failed to retrieve record: status {res.status}", res.status
                     )
-                return await res.json(content_type=None, loads=_decode_json)
+                return decode(await res.read())
 
         try:
             if use_parallel:
                 # Not kept in a local: a reader waiting for a decode slot would hold
                 # the raw download alongside the parsed envelope it was parsed into.
-                data = _decode_json(await self._download_with_range_requests(
+                data = decode(await self._download_with_range_requests(
                     session, signed_url, chunk_size_mb=2, max_connections=6
                 ))
             else:
@@ -2824,6 +2980,9 @@ class BlobStorage(Transformer):
         ):
             if doc.get(key):
                 result[key] = doc[key]
+        # Part of the decoded-record cache key: a rewrite of the record bumps it.
+        if doc.get("updatedAt") is not None:
+            result["updatedAt"] = doc["updatedAt"]
         return result
 
     async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
@@ -3053,6 +3212,8 @@ class BlobStorage(Transformer):
         virtual_record_id: str,
         org_id: str,
         lookup_result: dict[str, Any] | None = None,
+        *,
+        head_only: bool = False,
     ) -> dict[str, Any] | None:
         """
         Retrieve a record's content from blob storage using the virtual_record_id.
@@ -3062,9 +3223,68 @@ class BlobStorage(Transformer):
                 fetching many records resolve the whole batch in one graph query
                 (see ``get_document_ids_by_virtual_record_ids``) and pass the entry
                 in, which skips the per-record lookup below.
+            head_only: return only the fields of ``_StoredRecordHead`` (metadata
+                and semantic_metadata, no blocks), which decodes in a fraction
+                of the time. A compressed record still comes back whole.
 
         Returns:
             str: The content of the record if found, else an empty string.
+
+        Within a chat turn each stored document is downloaded and decoded once
+        (``app.utils.turn_memo``): prefetch, the search tool and linked-record
+        context each asked for the same records again. A decoded record is
+        also reused by later turns for up to ``_RECORD_CACHE_TTL_SECONDS``
+        while its mapping is unchanged (see ``_record_cache_key``). Every
+        caller gets its own top-level copy, since callers set ``id``,
+        ``record_name`` and the like on the record they get; nested values
+        are shared and only read.
+        """
+        if lookup_result is None:
+            try:
+                lookup_result = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception:
+                self.logger.exception(
+                    "❌ Error retrieving record from storage (virtual_record_id=%s)",
+                    virtual_record_id,
+                )
+                raise
+        if not lookup_result:
+            self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
+            return None
+        max_bytes = record_cache_bytes()
+        cache_key = _record_cache_key(org_id, virtual_record_id, lookup_result) if max_bytes else None
+        # A whole record serves a head_only call too; a head is never cached as a record.
+        if cache_key is not None and (cached := _DECODED_RECORDS.get(cache_key)) is not None:
+            return dict(cached)
+        document_id = lookup_result.get("record_doc_id")
+        if not document_id:
+            return await self._download_record(virtual_record_id, org_id, lookup_result, head_only=head_only)
+        sizing: dict = {}
+        record = await memo(
+            # The cache key carries the mapping's version, so a rewrite in this turn is read anew.
+            ("stored_record", *(cache_key or (org_id, virtual_record_id, document_id)), head_only),
+            lambda: self._download_record(
+                virtual_record_id, org_id, lookup_result, head_only=head_only, sizing=sizing,
+            ),
+        )
+        # Only the caller whose download ran knows its size; the others skip the put.
+        if cache_key is not None and not head_only and isinstance(record, dict) and sizing.get("bytes"):
+            _DECODED_RECORDS.put(cache_key, record, sizing["bytes"] * _DECODED_BYTES_PER_JSON_BYTE, max_bytes)
+        return dict(record) if isinstance(record, dict) else record
+
+    async def _download_record(
+        self,
+        virtual_record_id: str,
+        org_id: str,
+        lookup_result: dict | None = None,
+        *,
+        head_only: bool = False,
+        sizing: dict | None = None,
+    ) -> dict | None:
+        """``get_record_from_storage`` without the per-turn memo or the decoded-record cache.
+
+        ``sizing["bytes"]`` is set to the downloaded JSON length when the record
+        came inline and uncompressed, the only case the decoded-record cache keeps.
         """
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
@@ -3085,7 +3305,8 @@ class BlobStorage(Transformer):
 
             try:
                 return await self._read_stored_document(
-                    org_id, virtual_record_id, document_id, file_size_bytes, headers, nodejs_endpoint
+                    org_id, virtual_record_id, document_id, file_size_bytes, headers, nodejs_endpoint,
+                    head_only=head_only, sizing=sizing,
                 )
             except (StorageDocumentNotFoundError, SignedUrlReadError) as first_error:
                 if isinstance(first_error, SignedUrlReadError) and not first_error.may_be_retired:
@@ -3102,9 +3323,12 @@ class BlobStorage(Transformer):
                 if fresh is None:
                     raise
                 try:
+                    # No sizing: this record belongs to the replacement mapping, so it
+                    # must not be cached under the caller's lookup.
                     record = await self._read_stored_document(
                         org_id, virtual_record_id, fresh["record_doc_id"],
                         fresh.get("fileSizeBytes"), headers, nodejs_endpoint,
+                        head_only=head_only, sizing=None,
                     )
                 except Exception:
                     record_reader_relookup("failed", trigger)
@@ -3161,10 +3385,17 @@ class BlobStorage(Transformer):
         file_size_bytes: int | None,
         headers: dict,
         nodejs_endpoint: str,
+        *,
+        head_only: bool = False,
+        sizing: dict | None = None,
     ) -> dict[str, Any]:
-        """Read one stored document: the cached signed URL, else the gateway."""
+        """Read one stored document: the cached signed URL, else the gateway.
+
+        ``sizing["bytes"]`` is set as ``_download_record`` describes.
+        """
         download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
         session = get_shared_session()
+        decode = _decode_record_head if head_only else _decode_json
 
         lease = (
             _DecodeSlotLease(await _acquire_decode_slot())
@@ -3178,7 +3409,7 @@ class BlobStorage(Transformer):
             if cached_url:
                 try:
                     record = await self._record_from_signed_url(
-                        session, cached_url, file_size_bytes, virtual_record_id, lease
+                        session, cached_url, file_size_bytes, virtual_record_id, lease, decode=decode,
                     )
                     if record is not None:
                         return record
@@ -3191,12 +3422,24 @@ class BlobStorage(Transformer):
                         "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
                     )
 
-            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+            body_bytes: list[int] = []
+            if sizing is not None and not head_only:
+                inner = decode
+
+                @functools.wraps(inner)
+                def decode(raw: bytes) -> Any:  # noqa: ANN401 - stored records are free-form
+                    body_bytes.append(len(raw))  # sizes the decoded-record cache entry
+                    return inner(raw)
+
+            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id, decode)
             if data.get("signedUrl"):
                 await self._store_signed_url(org_id, document_id, data["signedUrl"])
 
             if data.get("record"):
                 record = await self._decode_record(data, lease)
+                if sizing is not None and not data.get("isCompressed") and body_bytes:
+                    # Only inline JSON: its body length is what decoding cost.
+                    sizing["bytes"] = body_bytes[-1]
                 self.logger.debug(
                     "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
                     record.get("record_name"), virtual_record_id,
@@ -3204,7 +3447,7 @@ class BlobStorage(Transformer):
                 return record
             if data.get("signedUrl"):
                 record = await self._record_from_signed_url(
-                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease, decode=decode,
                 )
                 if record is not None:
                     return record
@@ -3215,7 +3458,12 @@ class BlobStorage(Transformer):
                 lease.release()
 
     async def _fetch_record_envelope(
-        self, session: aiohttp.ClientSession, download_url: str, headers: dict, virtual_record_id: str
+        self,
+        session: aiohttp.ClientSession,
+        download_url: str,
+        headers: dict,
+        virtual_record_id: str,
+        decode: "Callable[[bytes], Any]" = _decode_json,
     ) -> dict:
         """GET the record envelope from the gateway; transient failures retried."""
         async def _attempt() -> dict:
@@ -3224,7 +3472,7 @@ class BlobStorage(Transformer):
                     raise _storage_status_error(
                         resp.status, f"Failed to retrieve record from storage: status {resp.status}"
                     )
-                return await resp.json(loads=_decode_json)
+                return decode(await resp.read())
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
@@ -4054,12 +4302,12 @@ class BlobStorage(Transformer):
             session = get_shared_session()
             async with session.get(download_url, headers=headers) as resp:
                 if resp.status == HttpStatusCode.SUCCESS.value:
-                    data = await resp.json(loads=_decode_json)
+                    data = _decode_json(await resp.read())
                     if data.get("signedUrl"):
                         signed_url = data.get("signedUrl")
                         async with session.get(URL(signed_url, encoded=True)) as signed_resp:
                             if signed_resp.status == HttpStatusCode.SUCCESS.value:
-                                data = await signed_resp.json(content_type=None)
+                                data = _decode_json(await signed_resp.read())
                             else:
                                 self.logger.warning(
                                     "⚠️ Failed to fetch metadata from signed URL: status %s, virtual_record_id: %s",

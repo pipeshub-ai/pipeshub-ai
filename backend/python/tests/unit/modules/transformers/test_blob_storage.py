@@ -707,7 +707,7 @@ class TestGetRecordFromStorage:
         record_data = {"id": "rec-1", "content": "hello"}
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"record": record_data})
+        mock_resp.read = AsyncMock(return_value=json.dumps({"record": record_data}).encode())
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -1236,18 +1236,14 @@ class TestGetRecordFromStorageSignedUrl:
         # First response: signedUrl
         first_resp = AsyncMock()
         first_resp.status = 200
-        first_resp.json = AsyncMock(
-            return_value={"signedUrl": "https://s3.example.com/signed"}
-        )
+        first_resp.read = AsyncMock(return_value=json.dumps({"signedUrl": "https://s3.example.com/signed"}).encode())
         first_resp.__aenter__ = AsyncMock(return_value=first_resp)
         first_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Second response: actual data from signed URL
         second_resp = AsyncMock()
         second_resp.status = 200
-        second_resp.json = AsyncMock(
-            return_value={"record": record_data, "isCompressed": False}
-        )
+        second_resp.read = AsyncMock(return_value=json.dumps({"record": record_data, "isCompressed": False}).encode())
         second_resp.__aenter__ = AsyncMock(return_value=second_resp)
         second_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -1291,9 +1287,7 @@ class TestGetRecordFromStorageSignedUrl:
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(
-            return_value={"record": b64_encoded, "isCompressed": True}
-        )
+        mock_resp.read = AsyncMock(return_value=json.dumps({"record": b64_encoded, "isCompressed": True}).encode())
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -1327,7 +1321,7 @@ class TestGetRecordFromStorageSignedUrl:
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"unexpected": "data"})
+        mock_resp.read = AsyncMock(return_value=json.dumps({"unexpected": "data"}).encode())
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
