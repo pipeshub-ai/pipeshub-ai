@@ -99,6 +99,7 @@ from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.smb.connector import SmbConnector
+from app.connectors.sources.odoo.connector import OdooConnector
 
 
 if TYPE_CHECKING:
@@ -163,6 +164,7 @@ class ConnectorFactory:
         "githubteams": GitHubTeamsConnector,
         "mariadb": MariaDBConnector,
         "snowflake": SnowflakeConnector,
+        "odoo": OdooConnector,
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,
         "smb": SmbConnector,

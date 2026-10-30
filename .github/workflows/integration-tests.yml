@@ -476,7 +476,7 @@ jobs:
       # Gmail suites are on shard 2 too: they need the simulator image Jira's
       # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint or odoo"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
