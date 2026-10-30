@@ -160,7 +160,7 @@ class TestValidatePackages:
         "pandas>=1,<2", "chart.js@^4.4.1", "chart.js@~4.4.1", "chart.js@*", "chart.js@4",
         "chart.js@latest", "@types/node@next",
     ])
-    def test_rejects_ranges_and_tags(self, spec) -> None:
+    def test_rejects_ranges_and_tags(self, spec: str) -> None:
         from app.sandbox.models import validate_packages
         with pytest.raises(ValueError, match="Invalid package name"):
             validate_packages([spec])
