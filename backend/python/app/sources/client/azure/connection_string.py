@@ -12,9 +12,11 @@ CREDENTIALS_REFUSED = (
     "in the Azure portal; for Entra ID, check the app registration's tenant, client ID and secret."
 )
 
+# Covers both sign-in methods: a connection string names the host through AccountName and
+# EndpointSuffix, Entra ID through the Blob Endpoint URL.
 ACCOUNT_NOT_FOUND = (
-    "The storage account's host name does not exist. Check the AccountName (and EndpointSuffix, "
-    "if set) against the storage account in the Azure portal."
+    "The storage account's host name does not exist. Check the AccountName and EndpointSuffix "
+    "in the connection string, or the Blob Endpoint for Entra ID."
 )
 
 
