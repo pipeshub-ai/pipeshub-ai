@@ -232,3 +232,48 @@ async def test_a_value_imported_through_a_package_resolves_the_same_incrementall
     want = code_edges(expected)
     assert any("get_model" in line for line in describe(expected, want)), "the full build links the call"
     assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))
+
+
+async def test_an_inherited_method_resolves_the_same_incrementally() -> None:
+    """`Service().ping()` where Service, in a file this build does not re-resolve,
+    inherits the `Base` it imports and another file defines a `Base` too."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/a/__init__.py": "",
+        "pkg/a/base.py": "class Base:\n    def ping(self):\n        pass\n",
+        "pkg/b/__init__.py": "",
+        "pkg/b/base.py": "class Base:\n    def ping(self):\n        pass\n",
+        "pkg/svc.py": "from pkg.a.base import Base\n\n\nclass Service(Base):\n    pass\n",
+        "pkg/use.py": "from pkg.svc import Service\n\n\ndef run():\n    return Service().ping()\n",
+    }
+    parser = CodeFileParser()
+
+    async def put(graph: Graph, path: str, source: str) -> None:
+        record = f"rec-{path}"
+        container = parser.parse_to_blocks(source.encode(), path.rsplit("/", 1)[-1], path, "python")
+        graph.code_files[record] = path
+        graph.blobs[record] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+        await write_code_file_blocks_to_graph(
+            graph_provider=graph,
+            context=BlockProjectionContext(org_id=ORG_ID, record_id=record, record_group_id=GROUP_ID,
+                                           connector_id="conn1", language="python", file_path=path),
+            block_containers=container,
+        )
+
+    async def full() -> Graph:
+        graph = Graph()
+        for path, source in files.items():
+            await put(graph, path, source)
+        await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                     facts_source=graph)
+        return graph
+
+    graph = await full()
+    files["pkg/use.py"] += "\n\ndef other():\n    return Service().ping()\n"
+    await put(graph, "pkg/use.py", files["pkg/use.py"])
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-pkg/use.py"}, facts_source=graph)
+    expected = await full()
+    want = code_edges(expected)
+    assert any("a/base.py::method:Base.ping" in line for line in describe(expected, want)), "the full build links the call"
+    assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))

@@ -107,7 +107,7 @@ _MAX_REEXPORT_HOPS = 4
 # Languages where a bare call inside a method may be a call on `this`.
 _IMPLICIT_THIS_FAMILIES = frozenset({"jvm", "csharp"})
 _MIN_MISSING_FACTS_TO_ABORT = 5
-# Resolve again at most this often for type tables an incremental build had not loaded.
+# Resolve again at most this often for type tables and bindings an incremental build lacked.
 _TYPE_TABLE_ROUNDS = 3
 
 logger = logging.getLogger(__name__)
@@ -298,6 +298,21 @@ def _receiver_segments(expr: str) -> list[tuple[str, bool, str]] | None:
     return out
 
 
+class _BindingMap(dict[str, Any]):
+    """File -> what its imports bind. In an incremental build, notes the files it is
+    asked about whose imports this build did not bind (``bound`` is None: all are)."""
+
+    def __init__(self, misses: set[str]) -> None:
+        super().__init__()
+        self.bound: set[str] | None = None
+        self._misses = misses
+
+    def get(self, key: str, default: Any = None) -> Any:  # noqa: ANN401 -- a dict's own get
+        if self.bound is not None and key not in self.bound:
+            self._misses.add(key)
+        return super().get(key, default)
+
+
 class _Builder:
     def __init__(self, index: SymbolIndex, org_id: str, record_group_id: str,
                  log: logging.Logger, repo_paths: set[str] | None = None) -> None:
@@ -312,16 +327,18 @@ class _Builder:
         # was most of a large build's heap (SC-1).
         self.edges: dict[tuple[str, str, str], tuple[str, str | None, int | None]] = {}
         self.external_nodes: dict[str, dict] = {}
+        # Files whose import bindings a resolution read but this build did not bind.
+        self.bindings_missing: set[str] = set()
         # file -> imported module files, the evidence a module-level reference uses
-        self.module_imports: dict[str, set[str]] = {}
+        self.module_imports: dict[str, set[str]] = _BindingMap(self.bindings_missing)
         # file -> local name -> what the file's imports bind it to: a block for
         # `from m import f`, a file for `import m` / `import * as m`, or
         # `_EXTERNAL`. Calls resolve through these before any name matching.
-        self.symbol_bindings: dict[str, dict[str, str]] = {}
-        self.module_bindings: dict[str, dict[str, str]] = {}
+        self.symbol_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing)
+        self.module_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing)
         # Python: file -> local name -> (file, name) of a module-level value it imports
         # (`from django.apps import apps`), whose type that file's assignment gives.
-        self.value_imports: dict[str, dict[str, tuple[str, str]]] = {}
+        self.value_imports: dict[str, dict[str, tuple[str, str]]] = _BindingMap(self.bindings_missing)
         self._py_classes: dict[str, list[str]] | None = None
         self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
@@ -341,6 +358,17 @@ class _Builder:
         for block_id, row in index.rows.items():
             if row.name:
                 self._by_record_name.setdefault((row.record_id, row.name), []).append(block_id)
+
+    def track_unloaded(self, reresolve: set[str], types_loaded: set[str]) -> None:
+        """Incremental: only ``reresolve``'s imports are bound and ``types_loaded``'s
+        type tables loaded; note what a resolution reads beyond them."""
+        self.types_loaded = types_loaded
+        bound = {self.index.file_by_record.get(r) or "" for r in reresolve}
+        # Not `re_exports`: `_collect_re_exports` reads every row's resident facts, so it
+        # is complete in an incremental build too.
+        for bindings in (self.module_imports, self.symbol_bindings, self.module_bindings,
+                         self.value_imports):
+            bindings.bound = bound  # type: ignore[attr-defined]
 
     def _types(self, record_id: str | None) -> dict[str, str]:
         """A file's type table, noting it when this build has not loaded it."""
@@ -1728,22 +1756,32 @@ async def build_code_graph_edges(
         reresolve -= unknown
         builder.result.files_reresolved = len(reresolve)
 
-    if facts_source is not None and touched_record_ids is not None:
-        builder.types_loaded = set(reresolve)
+    incremental = facts_source is not None and touched_record_ids is not None
+    if incremental:
+        builder.track_unloaded(reresolve, set(reresolve))
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
-    for _ in range(_TYPE_TABLE_ROUNDS):
-        # A chain through another file (`apps.get_model()` with `apps = Apps()` there)
-        # read a type table this incremental build had not loaded: load the ones it
-        # read and resolve again, so the result is the one a full build gets.
-        missing = builder.types_missing - builder.types_loaded if builder.types_loaded is not None else set()
-        if not missing:
+    for _ in range(_TYPE_TABLE_ROUNDS if incremental else 0):
+        # A chain through another file read what this incremental build had not
+        # loaded: its type table (`apps.get_model()` with `apps = Apps()` there), or
+        # its import bindings (`Service().ping()` with Service inheriting an imported
+        # Base). Load the tables, re-resolve the files whose bindings were read, and
+        # resolve again, so the result is the one a full build gets.
+        missing_types = builder.types_missing - builder.types_loaded
+        unbound = {index.record_by_file.get(f) for f in builder.bindings_missing}
+        unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve
+        if not missing_types and not unbound:
             break
-        await _load_type_tables(facts_source, index, org_id, missing)
-        loaded = builder.types_loaded | missing
+        if unbound:
+            reresolve |= unbound - await _load_facts(facts_source, index, org_id, unbound,
+                                                     builder.result, log)
+        await _load_type_tables(facts_source, index, org_id, missing_types - reresolve)
+        loaded = builder.types_loaded | missing_types | reresolve
         result = replace(builder.result, pending_edges_seen=0, ambiguous_skipped=0,
-                         edges_by_type={}, external_refs=0, unresolved=0)
+                         edges_by_type={}, external_refs=0, unresolved=0,
+                         files_reresolved=len(reresolve))
         builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
-        builder.result, builder.types_loaded = result, loaded
+        builder.result = result
+        builder.track_unloaded(reresolve, loaded)
         edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
     called_fields = builder.called_field_records(edges)
     if facts_source is None:
