@@ -18,6 +18,8 @@ on:
     paths:
       - 'backend/nodejs/apps/src/modules/storage/**'
       - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'scripts/assert_no_skips.py'
       - 'backend/nodejs/apps/src/modules/user_management/services/user-admin.service.ts'
       - 'backend/nodejs/apps/src/modules/user_management/repositories/**'
       - 'backend/nodejs/apps/src/modules/user_management/schema/**'
@@ -171,4 +173,10 @@ jobs:
           MONGO_IT_URI: ${{ matrix.uri }}
           REPLICA_SET_AVAILABLE: ${{ matrix.rs_available }}
           TS_NODE_PROJECT: tsconfig.test.json
-        run: npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts
+        run: npx mocha --no-config --require ts-node/register --exit --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-junit.xml" tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts tests/stores/mongo-document.itest.ts
+
+      - name: No unexpected skips, and the document store contract ran
+        if: ${{ always() }}
+        working-directory: .
+        # the leak test must have run (3 cases per topology); the whole contract is not counted here, a skip or failure fails the step
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/mongo-junit.xml" --expect-suite "MongoDocumentRepository against a real MongoDB document store contract (state hidden)=3"

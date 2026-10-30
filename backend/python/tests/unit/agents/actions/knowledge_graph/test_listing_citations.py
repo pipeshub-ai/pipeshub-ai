@@ -1,6 +1,6 @@
 """A record a listing showed can be cited for what the listing said about it."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -228,3 +228,35 @@ async def test_a_listing_that_states_nothing_new_keeps_the_earlier_facts() -> No
     await cite_listed_records(state, graph, "org", {"r1": "Created 2026-10-26"})
     await cite_listed_records(state, graph, "org", {"r1": ""})
     assert [r["_listed_facts"] for r in state["tool_records"] if r.get("id") == "r1"] == ["Created 2026-10-26"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("filters", "named"), [
+    ({}, "Eng wiki"),
+    ({"connectionApps": ["c-wiki"], "connectionRecordGroups": [], "connectionRecords": []}, "Eng wiki"),
+    ({"connectionApps": [], "connectionRecordGroups": [], "connectionRecords": ["r1"]}, ""),
+])
+async def test_a_listed_records_citation_names_its_connector_inside_the_limit(filters: dict, named: str) -> None:
+    graph = _graph({**_doc("r1", "Checklist"), "connectorId": "c-wiki"})
+    graph.get_document.return_value = {"_key": "c-wiki", "name": "Eng wiki"}
+    state = _state(filters=filters)
+    refs = await cite_listed_records(state, graph, "org", {"r1": "Created 2026-10-26"})
+
+    _, citations = normalize_citations_and_chunks(
+        f"Done [source]({refs['r1']}).", [], state["tool_records"],
+        ref_to_url=state["citation_ref_mapper"].ref_to_url,
+    )
+
+    assert citations[0]["metadata"]["connectorInstanceName"] == named
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_async_lookups_still_cites_the_listed_record() -> None:
+    graph = MagicMock()
+    graph.get_records_by_record_ids = AsyncMock(return_value=[{**_doc("r1", "Checklist"), "connectorId": "c-sync"}])
+    state = _state()
+
+    refs = await cite_listed_records(state, graph, "org", {"r1": "Created 2026-10-26"})
+
+    assert set(refs) == {"r1"}
+    assert "connectorInstanceName" not in state["tool_records"][0]

@@ -42,8 +42,12 @@ from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import cached_tools_for_owner, discover_tools_for_owner
-from app.agents.mcp.errors import MCPUrlBlockedError
-from app.agents.mcp.failure import classify_mcp_failure
+from app.agents.mcp.errors import MCPUrlBlockedError, insufficient_scope
+from app.agents.mcp.failure import (
+    SIGN_IN_FAILURES,
+    MCPFailureReason,
+    classify_mcp_failure,
+)
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
@@ -1763,6 +1767,26 @@ async def update_oauth_config(
 
 
 _REAUTH_REQUIRED = "Authentication with this MCP server has expired. Reconnect it to continue."
+# No token can fix this one: only whoever can edit the instance (an administrator, or a personal
+# server's owner) choosing the auth mode the server needs.
+_SIGN_IN_WITHOUT_AUTH = "This server asks for a sign-in, but it's set to No authentication."
+
+
+def _failure_reason(instance: dict[str, Any], error: Exception) -> MCPFailureReason:
+    """`classify_mcp_failure`, except for a server set to No authentication that answers 403
+    `insufficient_scope`: with a sign-in, a new one can't fix that refusal, but here nothing is
+    signed in, so only an auth mode that signs in can carry the scope it wants."""
+    reason = classify_mcp_failure(error)
+    if (
+        reason is MCPFailureReason.UNREACHABLE and instance.get("authMode") == MCPAuthMode.NONE.value
+        and insufficient_scope(error) is not None
+    ):
+        return MCPFailureReason.NEEDS_PERMISSION
+    return reason
+
+
+def _asks_for_sign_in_without_auth(instance: dict[str, Any], error: Exception) -> bool:
+    return instance.get("authMode") == MCPAuthMode.NONE.value and _failure_reason(instance, error) in SIGN_IN_FAILURES
 
 
 def _connection_error_text(error: Exception, *, is_admin: bool) -> str:
@@ -1838,8 +1862,11 @@ async def _discover_listing_tools(
         except asyncio.TimeoutError:
             _report_listing_timeout(entry, cut_by_deadline=budget < LISTING_DISCOVERY_BUDGET_SECONDS)
         except MCPConnectionError as e:
-            entry["toolsErrorCode"] = classify_mcp_failure(e).value
-            entry["toolsError"] = _connection_error_text(e, is_admin=is_admin)
+            entry["toolsErrorCode"] = _failure_reason(instance, e).value
+            entry["toolsError"] = (
+                _SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e)
+                else _connection_error_text(e, is_admin=is_admin)
+            )
         except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
             logger.warning(f"MCP token refresh during discovery failed for instance {instance['_id']}: {e}")
             entry["toolsErrorCode"] = "auth_expired"
@@ -1959,6 +1986,13 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         # Live (Refresh, or nothing cached), and what it finds replaces the cached tools.
         tools, _ = await discover_tools_for_owner(instance, effective_auth, owner_id, config_service, namespace=namespace)
     except MCPConnectionError as e:
+        if _failure_reason(instance, e) in SIGN_IN_FAILURES:
+            logger.info("MCP instance %s asks for a sign-in (auth mode %s): %s", instance_id, instance.get("authMode"), e)
+            # 409, not 502: the gateway passes a 409's reason on, so the panel can say what fixes it.
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=_SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e) else _REAUTH_REQUIRED,
+            ) from e
         logger.warning("Tool discovery failed for MCP instance %s: %s", instance_id, e, exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),

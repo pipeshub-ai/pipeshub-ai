@@ -5242,6 +5242,30 @@ class TestEnrichVirtualRecordIdFKChildren:
         rec.update(overrides)
         return rec
 
+    @pytest.mark.parametrize(("limit", "named"), [
+        (None, "Warehouse DB"),
+        ({"apps": ["c-db"], "recordGroups": [], "records": []}, "Warehouse DB"),
+        ({"apps": [], "recordGroups": [], "records": ["rec-sql-1", "rec-child"]}, None),
+    ])
+    @pytest.mark.asyncio
+    async def test_a_related_table_names_its_connector_inside_the_limit(self, limit, named) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-child", "childTable": "orders"}], vrid_map={"rec-child": "vr-child"},
+        )
+        gp.get_document = AsyncMock(side_effect=lambda key, collection: (
+            {"_key": "c-db", "name": "Warehouse DB"} if collection == "apps" else {"connectorId": "c-db"}
+        ))
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-child", record_id="rec-child"))
+
+        with patch("app.modules.retrieval.selection_scope.outside_connection", AsyncMock(return_value=set())):
+            await enrich_virtual_record_id_to_result_with_fk_children(
+                vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=[], user_id="user-1",
+                connection_sources=limit,
+            )
+
+        assert vr_map["vr-child"]["connector_instance_name"] == named
+
     @pytest.mark.asyncio
     async def test_skips_when_no_graph_provider(self):
         vr_map = {"vr-1": self._sql_table_record()}

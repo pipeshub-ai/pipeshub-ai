@@ -224,13 +224,28 @@ async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: di
     sam = _candidate("e-sam", "Sam", kind="person")
     (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
     wired["linking"] = _linking(
-        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[_candidate("e-lee", "Sam Lee", kind="person")]),
+        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[
+            Candidate("e-lee", "person", "Sam Lee", CandidateSource.PREFIX, ({"_key": "r1"},), False),
+        ]),
         LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], more_longer_names=True),
     )
     wired["scope"] = RecordScope(per_name=[NameRecords("Sam", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
     text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Sam", "kind": "person"}, "Sam Q"])
     assert "Longer names that may be the same could not be checked and were not used: Sam Lee (person)" in text
     assert "Many more readable names start with it" in text
+
+
+
+@pytest.mark.asyncio
+async def test_related_names_cut_by_the_cap_say_which_kind_to_ask_for(wired: dict[str, Any]) -> None:
+    (mention,) = parse_mentions([{"name": "Halcyon", "kind": "product"}]).mentions
+    wired["linking"] = _linking(LinkResult(mention, LinkStatus.NOT_FOUND, more_related_names=True))
+    wired["scope"] = RecordScope(per_name=[NameRecords("Halcyon", [], True)], record_ids=[], virtual_record_ids=[])
+    _, text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Halcyon", "kind": "product"}])
+    assert (
+        '"Halcyon" (product): no readable entity by this name. More readable names filed as organization '
+        "start with it and were not checked; call again with that kind or the full name to include them."
+    ) in text
 
 
 @pytest.mark.asyncio
@@ -561,3 +576,4 @@ def test_a_namesake_only_answer_neither_says_absent_nor_ends_with_nothing_found(
 def test_a_resolved_name_gives_the_call_that_lists_every_record() -> None:
     text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e-acme", "Acme")]))
     assert 'Every record: knowledgegraph__find_records_by_entity(entity_id="e-acme", entity_type="named_entity").' in text
+

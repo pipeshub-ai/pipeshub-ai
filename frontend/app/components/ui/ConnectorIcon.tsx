@@ -58,6 +58,7 @@ export type ConnectorType =
   | 'google-slides'
   | 'google-forms'
   | 'ms-onenote'
+  | 'microsoft-learn'
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
@@ -88,6 +89,7 @@ export type ConnectorType =
   | 'lumos'
   // MCP / AI tools
   | 'exa'
+  | 'context7'
   | 'atlassian'
   | 'discord'
   | 'posthog'
@@ -152,6 +154,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides': { svg: svg('slides'), fallback: 'slideshow' },
   'google-forms': { svg: svg('forms'), fallback: 'quiz' },
   'ms-onenote': { svg: svg('ms-onenote'), fallback: 'note' },
+  'microsoft-learn': { svg: svg('microsoft-learn'), fallback: 'menu_book' },
   'kb': { svg: svg('kb'), fallback: 'folder' },
   'knowledge-base': { svg: svg('kb'), fallback: 'folder' },
   // Project & Issue Tracking (keys sorted A–Z)
@@ -184,6 +187,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
   // MCP / AI tools
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
+  'context7': { svg: svg('context7'), fallback: 'menu_book' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },

@@ -84,7 +84,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
-from app.connectors.core.registry.code_indexing_flags import code_indexing_filters_changed
+from app.connectors.core.registry.code_indexing_flags import (
+    code_indexing_filters_changed,
+    sync_filters_changed_beyond_branch,
+)
 from app.connectors.services.reindex_events import build_reindex_event
 from app.edition_config import (
     allowed_connector_list_scopes,
@@ -1002,7 +1005,7 @@ def _trim_config_values(
 
     # Fields that should NOT be trimmed (they may contain intentional whitespace)
     skip_trim_fields = {
-        'certificate', 'privatekey', 'private_key', 'credentials', 'oauth',
+        'certificate', 'privatekey', 'private_key', 'privatekeypassphrase', 'credentials', 'oauth',
         'json', 'jsondata', 'client_secret', 'clientsecret', 'secret',
         'token', 'accesstoken', 'refreshtoken'
     }
@@ -5677,7 +5680,7 @@ async def update_connector_instance_filters_sync_config(
         # Only delete sync points and edges when sync filters change
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
-        sync_filters_changed = old_sync_filters != new_sync_filters
+        sync_filters_changed = sync_filters_changed_beyond_branch(old_sync_filters, new_sync_filters)
         # Turning "Index Test Files" on applies to files already synced only if
         # they are synced again: a record's indexing status is set at sync time (P-6).
         code_filters_changed = code_indexing_filters_changed(
@@ -8898,6 +8901,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="auth must be an object"
         )
+    # The form holds only the chosen type's fields; which type was chosen comes beside them.
+    auth_type = body.get("authType")
+    if isinstance(auth_type, str) and auth_type and "authType" not in auth:
+        auth = {**auth, "authType": auth_type}
     auth = _without_masked_secrets(
         _without_server_set_auth_fields(auth),
         await _secret_auth_field_names(connector_registry, connector_type),
@@ -8915,6 +8922,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
         config_service = resolve_config_service(container, org_id)
         saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
         stored_auth = _auth_section(cast(object, saved))
+        # The auth type is fixed once a connector exists: the instance's wins.
+        fixed_type = instance.get("authType") or stored_auth.get("authType")
+        if fixed_type:
+            auth = {**auth, "authType": fixed_type}
     # The save would refuse these settings anyway; the form says why before it tries.
     problem = _auth_save_problem(connector_type, auth, stored_auth)
     if problem:

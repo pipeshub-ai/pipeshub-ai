@@ -66,7 +66,8 @@ def ensure_written(result: bool | None, what: str) -> None:
         raise GraphWriteError(f"The graph database did not save {what}")
 
 
-_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b')
+# "[1200]" is how a batch reports one, e.g. "[1200] timeout waiting to lock key".
+_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b|\[1200\]')
 
 
 def is_write_conflict(exception: Exception) -> bool:
@@ -734,6 +735,8 @@ class GraphTransactionStore(TransactionStore):
             return True
 
         except Exception as e:
+            if self.graph_provider.is_transient_error(e) is True:
+                raise  # the transaction is aborted; its owner runs it again
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True

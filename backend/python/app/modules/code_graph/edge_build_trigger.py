@@ -46,6 +46,7 @@ __all__ = [
     "claim_publish",
     "group_has_unfinished_records",
     "is_code_record",
+    "record_scope",
     "publishable_scope",
     "records_updated_since",
     "release_build_lock",
@@ -123,6 +124,11 @@ def publishable_scope(
     status = record.get("indexingStatus")
     if status is None or status in BLOCKING_STATUSES:
         return None
+    return record_scope(record)
+
+
+def record_scope(record: "Mapping[str, Any]") -> tuple[str, str, str] | None:
+    """The record's own ``(org, connector, record group)``, or ``None`` if one is missing."""
     scope = (
         record.get("orgId"),
         record.get("connectorId"),

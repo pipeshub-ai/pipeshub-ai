@@ -131,6 +131,77 @@ async def test_nothing_changed_settles_without_building() -> None:
     assert _point(graph)["lastEdgeBuildAt"] == 1000
 
 
+def _deleted(graph: FakeSyncPoints, key: str, names: list[str]) -> None:
+    graph.points[key] = {"syncPointKey": key, "orgId": "org", "recordGroupId": "g",
+                         "recordId": f"rec-{key}", "syncDataPointType": "codeEdgeDeletedFile",
+                         "deletedNames": names}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_file_alone_runs_an_incremental_build_on_its_names() -> None:
+    """A deletion used to owe a full rebuild of the repo; a branch switch
+    deletes many files at once."""
+    runner, graph = _runner(OWED, touched=())
+    _deleted(graph, "d1", ["helper", "module:pkg/util"])
+    _deleted(graph, "d2", ["Parser"])
+    build = AsyncMock(return_value=EdgeBuildResult())
+    await _run(runner, build)
+    assert build.await_args.kwargs["touched_record_ids"] == set()
+    assert build.await_args.kwargs["deleted_names"] == {"helper", "module:pkg/util", "Parser"}
+    assert "d1" not in graph.points and "d2" not in graph.points
+    assert _point(graph)["lastEdgeBuildAt"] > 1000
+
+
+@pytest.mark.asyncio
+async def test_a_file_deleted_during_the_build_is_left_for_the_next() -> None:
+    runner, graph = _runner(OWED)
+    _deleted(graph, "d1", ["helper"])
+
+    async def build(**_) -> EdgeBuildResult:
+        _deleted(graph, "d2", ["late"])
+        return EdgeBuildResult()
+
+    await _run(runner, build)
+    assert "d1" not in graph.points
+    assert graph.points["d2"]["deletedNames"] == ["late"]
+
+
+@pytest.mark.asyncio
+async def test_names_kept_before_a_delete_commits_wait_for_it() -> None:
+    """Served while the file's blocks were still there, they would re-resolve
+    its callers to it and be gone before the delete."""
+    runner, graph = _runner(OWED, touched=())
+    _deleted(graph, "d1", ["helper"])
+    graph.records.add("rec-d1")
+    build = AsyncMock(return_value=EdgeBuildResult())
+    await _run(runner, build)
+    build.assert_not_awaited()
+    assert "d1" in graph.points
+
+    graph.records.discard("rec-d1")
+    await _run(runner, build)
+    assert build.await_args.kwargs["deleted_names"] == {"helper"}
+    assert "d1" not in graph.points
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_skipped_files_keeps_the_deleted_names() -> None:
+    runner, graph = _runner(OWED)
+    _deleted(graph, "d1", ["helper"])
+    await _run(runner, AsyncMock(return_value=EdgeBuildResult(facts_missing=1)))
+    assert "d1" in graph.points
+
+
+@pytest.mark.asyncio
+async def test_a_full_build_serves_the_deleted_files_too() -> None:
+    runner, graph = _runner({**OWED, "edgeBuildFullRequestId": "full-1"})
+    _deleted(graph, "d1", ["helper"])
+    build = AsyncMock(return_value=EdgeBuildResult())
+    await _run(runner, build)
+    assert build.await_args.kwargs["touched_record_ids"] is None
+    assert "d1" not in graph.points
+
+
 @pytest.mark.asyncio
 async def test_files_still_indexing_defer_the_build_and_keep_it_owed() -> None:
     runner, graph = _runner(OWED, drained=False)

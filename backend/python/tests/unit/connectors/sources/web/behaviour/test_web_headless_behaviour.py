@@ -351,6 +351,43 @@ async def test_opening_a_page_gives_the_browser_back_when_it_fails(
     assert crawl4ai_fetcher._ref_count == 0
 
 
+async def test_pages_opened_before_any_sync_keep_their_cookies_to_their_own_connector(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home")
+    browser.html("http://site.test/guide", "Guide", text="Live through the browser")
+    first = await make_connector(use_headless_browser=True)
+    second = await make_connector(use_headless_browser=True, connector_id="web-2")
+
+    for connector in (first, second, first):
+        await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    first_key, second_key, first_again = browser.browser_context_keys
+    assert first_key is not None
+    assert first_again == first_key
+    assert second_key not in (None, first_key)
+
+
+async def test_a_sync_starts_a_browser_context_of_its_own_that_later_pages_opened_join(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/guide")
+    browser.html("http://site.test/guide", "Guide", text="Live through the browser")
+    connector = await make_connector(use_headless_browser=True)
+    await connector.stream_record(_legacy_record("http://site.test/guide"))
+    [live_key] = browser.browser_context_keys
+
+    await connector.run_sync()
+    sync_keys = set(browser.browser_context_keys[1:])
+    await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    assert len(sync_keys) == 1
+    assert None not in sync_keys
+    assert live_key is not None
+    assert live_key not in sync_keys
+    assert browser.browser_context_keys[-1] in sync_keys
+
+
 async def test_robust_mode_stores_a_redirected_page_once(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

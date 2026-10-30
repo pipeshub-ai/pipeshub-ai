@@ -11,7 +11,11 @@ import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import { StorageController } from '../../../../src/modules/storage/controllers/storage.controller'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
-import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../../../src/modules/storage/constants/constants'
+import {
+  endpoint as ENDPOINTS_KEY,
+  STORAGE_WRITE_FAILED_MESSAGE,
+  storageEtcdPaths,
+} from '../../../../src/modules/storage/constants/constants'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
@@ -55,8 +59,12 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} }
   }
 
+  // Where LocalStorageAdapter puts the mount on this platform.
+  const mountParent = (): string =>
+    path.join(home, process.platform === 'darwin' ? 'Library' : process.platform === 'win32' ? 'AppData' : '.local')
+
   const filesOnDisk = (): string[] => {
-    const root = path.join(home, '.local', MOUNT)
+    const root = path.join(mountParent(), MOUNT)
     if (!fs.existsSync(root)) return []
     return (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((p) => fs.statSync(path.join(root, p)).isFile())
@@ -182,6 +190,18 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     expect((r.body.error as { message: string }).message).to.contain("The user id in the storage token isn't valid")
     expect(documents.size).to.equal(0)
     expect(filesOnDisk()).to.have.length(0)
+  })
+
+  it('says the file was not saved, with 503 and no document, when the storage folder cannot be made', async () => {
+    // A plain file where the mount folder belongs: every attempt to make it fails.
+    fs.mkdirSync(mountParent(), { recursive: true })
+    fs.writeFileSync(path.join(mountParent(), MOUNT), '')
+
+    const r = await upload()
+
+    expect(r.status).to.equal(503)
+    expect(r.body.error).to.deep.include({ code: 'HTTP_SERVICE_UNAVAILABLE', message: STORAGE_WRITE_FAILED_MESSAGE })
+    expect(documents.size).to.equal(0)
   })
 
   const configCalls = () => backend.callsTo('GET', '/api/v1/configurationManager/internal/storageConfig')

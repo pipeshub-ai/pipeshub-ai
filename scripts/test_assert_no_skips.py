@@ -21,6 +21,21 @@ class AssertNoSkips(unittest.TestCase):
     def test_empty_run_fails(self) -> None:
         self.assertEqual(main([self._report("<testsuites/>")]), 1)
 
+    def test_expect_suite_counts_cases_by_title_prefix_and_fails_on_a_failure(self) -> None:
+        f = self._report(
+            '<testsuites><testsuite><testcase classname="s one" name="a"/><testcase classname="s one two" name="b"/>'
+            '<testcase classname="other" name="c"/></testsuite></testsuites>'
+        )
+        self.assertEqual(main([f, "--expect-suite", "s one=2"]), 0)
+        self.assertEqual(main([f, "--expect-suite", "s one=3"]), 1)
+        self.assertEqual(main([f, "--expect-suite", "missing=1"]), 1)
+        # A suite with no cases is never a pass, so a count of 0 is refused.
+        self.assertEqual(main([f, "--expect-suite", "missing=0"]), 1)
+        self.assertEqual(main([f, "--expect-suite", "s one=0"]), 1)
+        self.assertEqual(main([f, "--expect-suite", "s one"]), 1)
+        broken = self._report('<testsuites><testsuite><testcase classname="s" name="a"><failure/></testcase></testsuite></testsuites>')
+        self.assertEqual(main([broken, "--expect-suite", "s=1"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

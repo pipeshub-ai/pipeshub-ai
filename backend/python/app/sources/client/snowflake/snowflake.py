@@ -14,11 +14,18 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urlunparse
 
-from pydantic import BaseModel, Field, ValidationError  # type: ignore
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
+from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
+from app.sources.client.snowflake.keypair import (
+    KeyPairSigner,
+    account_host_label,
+    load_private_key,
+)
 from app.utils.sql_limits import SQL_QUERY_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -31,84 +38,54 @@ try:
 except ImportError:
     snowflake_connector = None
 
+# Above the SQL API's 45 s synchronous wait, so a slow statement comes back as a
+# 202 with a handle to poll rather than as a client-side timeout.
+DEFAULT_TIMEOUT_S = 60.0
+
 _ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
 
 class AuthType(str, Enum):
     """Authentication type for Snowflake connector."""
 
     OAUTH = "OAUTH"
     PAT = "PAT"
+    KEY_PAIR = "KEY_PAIR"
+
+
+def sql_api_base_url(account_identifier: str) -> str:
+    """The SQL API base URL for an account identifier, a hostname or a URL."""
+    parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
+    host = parsed.netloc or parsed.path.split("/")[0]
+    suffix = ".snowflakecomputing.com"
+    account = host[: -len(suffix)] if host.lower().endswith(suffix) else host
+    # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
+    # would let the value choose another server.
+    if not _ACCOUNT_NAME.fullmatch(account):
+        raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
+    return urlunparse(("https", f"{account}.snowflakecomputing.com", "/api/v2", "", "", ""))
 
 
 class SnowflakeRESTClientViaOAuth(HTTPClient):
     """Snowflake REST client via OAuth token.
 
-    Uses Snowflake's OAuth authentication where an access token is obtained
-    through the OAuth flow (e.g., Snowflake OAuth, External OAuth).
-
     OAuth Documentation: https://docs.snowflake.com/en/user-guide/oauth-intro
-
-    Args:
-        account_identifier: Snowflake account identifier
-        oauth_token: OAuth access token
-        timeout: Request timeout in seconds
     """
 
     def __init__(
         self,
         account_identifier: str,
         oauth_token: str,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_S,
     ) -> None:
-        """Initialize Snowflake REST client with OAuth token.
-
-        Args:
-            account_identifier: Snowflake account identifier
-            oauth_token: OAuth access token obtained through Snowflake OAuth flow
-            timeout: Request timeout in seconds
-        """
         super().__init__(token=oauth_token, token_type="Bearer", timeout=timeout)
         self.account_identifier = account_identifier
         self.oauth_token = oauth_token
-        self._base_url = self._build_base_url(account_identifier)
+        self._base_url = sql_api_base_url(account_identifier)
 
     @staticmethod
     def _build_base_url(account_identifier: str) -> str:
-        """Build the Snowflake SQL API base URL from account identifier.
-
-        Args:
-            account_identifier: Snowflake account identifier (can be a full URL,
-                partial URL, or just the account name)
-
-        Returns:
-            Base URL for Snowflake SQL API
-        """
-        # Parse the account identifier as a URL
-        parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
-        # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0]
-        # Remove the .snowflakecomputing.com suffix if present
-        if netloc.endswith(".snowflakecomputing.com"):
-            account = netloc[:-len(".snowflakecomputing.com")]
-        else:
-            # If no suffix, assume netloc is the account name
-            account = netloc
-
-        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
-        # would let the value choose another server.
-        if not _ACCOUNT_NAME.fullmatch(account):
-            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
-
-        # Build the base URL using urlunparse for proper URL construction
-        base_url = urlunparse((
-            "https",
-            f"{account}.snowflakecomputing.com",
-            "/api/v2",
-            "",
-            "",
-            ""
-        ))
-        return base_url
+        return sql_api_base_url(account_identifier)
 
     def get_base_url(self) -> str:
         """Get the base URL for Snowflake API."""
@@ -122,128 +99,74 @@ class SnowflakeRESTClientViaOAuth(HTTPClient):
 class SnowflakeRESTClientViaPAT(HTTPClient):
     """Snowflake REST client via Personal Access Token (PAT).
 
-    Uses Snowflake's PAT authentication where a programmatic access token
-    is generated for API access.
-
     PAT Documentation: https://docs.snowflake.com/en/user-guide/programmatic-access-tokens
-
-    Args:
-        account_identifier: Snowflake account identifier
-        pat_token: Personal Access Token
-        timeout: Request timeout in seconds
     """
 
     def __init__(
         self,
         account_identifier: str,
         pat_token: str,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_TIMEOUT_S,
     ) -> None:
-        """Initialize Snowflake REST client with Personal Access Token.
-
-        Args:
-            account_identifier: Snowflake account identifier
-            pat_token: Personal Access Token for authentication
-            timeout: Request timeout in seconds
-        """
-        logger.debug(f"🔧 [PAT] SnowflakeRESTClientViaPAT.__init__ called")
-        logger.debug(f"🔧 [PAT] account_identifier: '{account_identifier}'")
-        logger.debug(f"🔧 [PAT] pat_token present: {bool(pat_token)}")
-        logger.debug(f"🔧 [PAT] timeout: {timeout}")
-        
-        # Initialize with PAT token using Bearer format
-        # When using X-Snowflake-Authorization-Token-Type header, Snowflake expects Bearer format
-        # See: https://docs.snowflake.com/en/user-guide/programmatic-access-tokens
         super().__init__(token=pat_token, token_type="Bearer", timeout=timeout)
-        
-        # Required header for PAT authentication with REST API v2
-        # This tells Snowflake the type of token being used
+        # Tells the SQL API which kind of bearer token this is.
         self.headers["X-Snowflake-Authorization-Token-Type"] = "PROGRAMMATIC_ACCESS_TOKEN"
-        
         self.account_identifier = account_identifier
         self.pat_token = pat_token
-        self._base_url = self._build_base_url(account_identifier)
-        
-        # The header values carry the PAT itself.
-        logger.debug(f"🔧 [PAT] Final header names: {sorted(self.headers)}")
-        logger.debug(f"🔧 [PAT] Final base_url: '{self._base_url}'")
-        logger.info(f"🔧 [PAT] SnowflakeRESTClientViaPAT initialized successfully with base_url: '{self._base_url}'")
+        self._base_url = sql_api_base_url(account_identifier)
 
     @staticmethod
     def _build_base_url(account_identifier: str) -> str:
-        """Build the Snowflake SQL API base URL from account identifier.
-
-        Args:
-            account_identifier: Snowflake account identifier (can be a full URL,
-                partial URL, or just the account name)
-
-        Returns:
-            Base URL for Snowflake SQL API
-        """
-        logger.debug(f"🔧 [PAT] _build_base_url called with account_identifier: '{account_identifier}'")
-        
-        # Parse the account identifier as a URL
-        parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
-        logger.debug(f"🔧 [PAT] Parsed URL: scheme='{parsed.scheme}', netloc='{parsed.netloc}', path='{parsed.path}'")
-
-        # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0]
-        logger.debug(f"🔧 [PAT] Extracted netloc: '{netloc}'")
-
-        # Remove the .snowflakecomputing.com suffix if present
-        if netloc.endswith(".snowflakecomputing.com"):
-            account = netloc[:-len(".snowflakecomputing.com")]
-            logger.debug(f"🔧 [PAT] Removed .snowflakecomputing.com suffix, account: '{account}'")
-        else:
-            # If no suffix, assume netloc is the account name
-            account = netloc
-            logger.debug(f"🔧 [PAT] No .snowflakecomputing.com suffix found, using netloc as account: '{account}'")
-
-        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
-        # would let the value choose another server.
-        if not _ACCOUNT_NAME.fullmatch(account):
-            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
-
-        # Build the base URL using urlunparse for proper URL construction
-        base_url = urlunparse((
-            "https",
-            f"{account}.snowflakecomputing.com",
-            "/api/v2",
-            "",
-            "",
-            ""
-        ))
-        logger.debug(f"🔧 [PAT] Built base_url: '{base_url}'")
-        return base_url
+        return sql_api_base_url(account_identifier)
 
     def get_base_url(self) -> str:
         """Get the base URL for Snowflake API."""
-        logger.debug(f"🔧 [PAT] get_base_url() returning: '{self._base_url}'")
         return self._base_url
 
     def get_account_identifier(self) -> str:
         """Get the Snowflake account identifier."""
-        logger.debug(f"🔧 [PAT] get_account_identifier() returning: '{self.account_identifier}'")
+        return self.account_identifier
+
+
+class SnowflakeRESTClientViaKeyPair(HTTPClient):
+    """Snowflake REST client via key-pair JWT (D-501).
+
+    A JWT lives at most an hour and a sync can run longer, so every request
+    gets a current token: the data source copies the headers when it builds
+    a request, and that copy would otherwise carry the old one.
+    """
+
+    def __init__(
+        self,
+        account_identifier: str,
+        signer: KeyPairSigner,
+        timeout: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
+        super().__init__(token=signer.token(), token_type="Bearer", timeout=timeout)
+        self.headers["X-Snowflake-Authorization-Token-Type"] = "KEYPAIR_JWT"
+        self.account_identifier = account_identifier
+        self.signer = signer
+        self._base_url = sql_api_base_url(account_identifier)
+
+    async def execute(self, request: HTTPRequest, **kwargs: Any) -> HTTPResponse:  # noqa: ANN401
+        authorization = f"Bearer {self.signer.token()}"
+        self.headers["Authorization"] = authorization
+        request.headers["Authorization"] = authorization
+        return await super().execute(request, **kwargs)
+
+    def get_base_url(self) -> str:
+        return self._base_url
+
+    def get_account_identifier(self) -> str:
         return self.account_identifier
 
 
 class SnowflakeOAuthConfig(BaseModel):
-    """Configuration for Snowflake client via OAuth token.
+    """Configuration for Snowflake client via OAuth token."""
 
-    OAuth flow endpoints depend on the OAuth provider (Snowflake OAuth or External OAuth).
-
-    Args:
-        account_identifier: Snowflake account identifier
-        oauth_token: OAuth access token
-        timeout: Request timeout in seconds
-    """
-
-    account_identifier: str = Field(
-        ...,
-        description="Snowflake account identifier"
-    )
+    account_identifier: str = Field(..., description="Snowflake account identifier")
     oauth_token: str = Field(..., description="OAuth access token")
-    timeout: float = Field(default=30.0, description="Request timeout in seconds", gt=0)
+    timeout: float = Field(default=DEFAULT_TIMEOUT_S, description="Request timeout in seconds", gt=0)
 
     def create_client(self) -> SnowflakeRESTClientViaOAuth:
         """Create a Snowflake REST client with OAuth authentication."""
@@ -255,20 +178,11 @@ class SnowflakeOAuthConfig(BaseModel):
 
 
 class SnowflakePATConfig(BaseModel):
-    """Configuration for Snowflake client via Personal Access Token (PAT).
+    """Configuration for Snowflake client via Personal Access Token (PAT)."""
 
-    Args:
-        account_identifier: Snowflake account identifier
-        pat_token: Personal Access Token
-        timeout: Request timeout in seconds
-    """
-
-    account_identifier: str = Field(
-        ...,
-        description="Snowflake account identifier"
-    )
+    account_identifier: str = Field(..., description="Snowflake account identifier")
     pat_token: str = Field(..., description="Personal Access Token")
-    timeout: float = Field(default=30.0, description="Request timeout in seconds", gt=0)
+    timeout: float = Field(default=DEFAULT_TIMEOUT_S, description="Request timeout in seconds", gt=0)
 
     def create_client(self) -> SnowflakeRESTClientViaPAT:
         """Create a Snowflake REST client with PAT authentication."""
@@ -279,65 +193,111 @@ class SnowflakePATConfig(BaseModel):
         )
 
 
-class AuthConfig(BaseModel):
-    """Authentication configuration for Snowflake connector."""
+class SnowflakeConnectionSettings(BaseModel):
+    """What a Snowflake connector's stored config says about connecting.
 
-    authType: AuthType = Field(default=AuthType.PAT, description="Authentication type (OAUTH or PAT)")
-    patToken: Optional[str] = Field(default=None, description="Personal Access Token for PAT auth")
+    Secrets are ``SecretStr``: a repr, log line or validation error never shows them.
+    """
+
+    account_identifier: str
+    warehouse: str
+    auth_type: AuthType
+    token: SecretStr = SecretStr("")
+    user: str = ""
+    private_key: SecretStr = SecretStr("")
+    passphrase: SecretStr = SecretStr("")
+    # None: the user's default role (D-502).
+    role: str | None = None
+
+    _signer: KeyPairSigner | None = PrivateAttr(default=None)
+
+    def signer(self) -> KeyPairSigner:
+        """The JWT signer for key-pair auth, built once. Raises ValueError for a key or user that cannot be used."""
+        if self._signer is None:
+            key = load_private_key(self.private_key.get_secret_value(), self.passphrase.get_secret_value() or None)
+            self._signer = KeyPairSigner(self.account_identifier, self.user, key)
+        return self._signer
+
+    def create_client(self, timeout: float = DEFAULT_TIMEOUT_S) -> "SnowflakeClient":
+        if self.auth_type == AuthType.KEY_PAIR:
+            return SnowflakeClient(
+                SnowflakeRESTClientViaKeyPair(self.account_identifier, self.signer(), timeout=timeout),
+            )
+        if self.auth_type == AuthType.OAUTH:
+            config: SnowflakeOAuthConfig | SnowflakePATConfig = SnowflakeOAuthConfig(
+                account_identifier=self.account_identifier, oauth_token=self.token.get_secret_value(),
+                timeout=timeout,
+            )
+        else:
+            config = SnowflakePATConfig(
+                account_identifier=self.account_identifier, pat_token=self.token.get_secret_value(),
+                timeout=timeout,
+            )
+        return SnowflakeClient.build_with_config(config)
 
 
-class CredentialsConfig(BaseModel):
-    """Credentials configuration for Snowflake connector."""
+# The setup form's auth types: PAT under ACCESS_KEY (saved connectors carry it), and key pair.
+# PAT itself is what configs written through the API carried.
+_FORM_AUTH_TYPES = {"ACCESS_KEY": AuthType.PAT, "PAT": AuthType.PAT, "KEY_PAIR": AuthType.KEY_PAIR}
 
-    access_token: Optional[str] = Field(default=None, description="OAuth access token")
 
+def parse_connection_settings(config: dict[str, Any]) -> SnowflakeConnectionSettings:
+    """Read a connector's stored config; ``auth`` holds the account, warehouse, role and credentials.
 
-class SnowflakeConnectorConfig(BaseModel):
-    """Configuration model for Snowflake connector from services."""
+    Raises ValueError with a message the user can act on, and never one that
+    holds a secret. A form without ``authType`` is key pair when it carries a
+    private key, else PAT.
+    """
+    auth = config.get("auth") or {}
+    if not isinstance(auth, dict):
+        raise ValueError("The Snowflake connector configuration has no auth settings.")
+    form_type = auth.get("authType") or ("KEY_PAIR" if auth.get("privateKey") else "ACCESS_KEY")
+    auth_type = _FORM_AUTH_TYPES.get(str(form_type).upper())
+    if auth_type is None:
+        raise ValueError(
+            f"Snowflake does not support the auth type {form_type!r}. "
+            "Edit the connector to use a personal access token or a key pair."
+        )
+    account = (auth.get("accountIdentifier") or "").strip()
+    warehouse = (auth.get("warehouse") or "").strip()
+    role = (auth.get("role") or "").strip() or None
 
-    accountIdentifier: str = Field(..., description="Snowflake account identifier")
-    auth: AuthConfig = Field(default_factory=AuthConfig, description="Authentication configuration")
-    credentials: Optional[CredentialsConfig] = Field(
-        default=None, description="Credentials configuration"
+    if not account:
+        raise ValueError("The Snowflake account identifier is missing.")
+    account_host_label(account)
+    if not warehouse:
+        raise ValueError("A Snowflake warehouse is required to read the catalog and run queries.")
+    if auth_type == AuthType.KEY_PAIR:
+        user = (auth.get("user") or "").strip()
+        if not user:
+            raise ValueError("The Snowflake user (its login name) is missing.")
+        settings = SnowflakeConnectionSettings(
+            account_identifier=account, warehouse=warehouse, auth_type=auth_type, role=role, user=user,
+            private_key=SecretStr(auth.get("privateKey") or ""),
+            passphrase=SecretStr(auth.get("privateKeyPassphrase") or ""),
+        )
+        # Read the key now, so a bad one fails before any request.
+        settings.signer()
+        return settings
+    pat_token = (auth.get("patToken") or "").strip()
+    if not pat_token:
+        raise ValueError("The Snowflake personal access token is missing.")
+    return SnowflakeConnectionSettings(
+        account_identifier=account, warehouse=warehouse, auth_type=auth_type, role=role,
+        token=SecretStr(pat_token),
     )
-    timeout: float = Field(default=30.0, description="Request timeout in seconds", gt=0)
 
 
 class SnowflakeClient(IClient):
-    """Builder class for Snowflake clients with different construction methods.
-
-    This class provides a unified interface for creating Snowflake clients
-    using either OAuth or Personal Access Token (PAT) authentication.
-
-    Example usage with OAuth:
-        config = SnowflakeOAuthConfig(
-            account_identifier="your_account_identifier",
-            oauth_token="your_oauth_token"
-        )
-        client = SnowflakeClient.build_with_config(config)
-        rest_client = client.get_client()
-
-    Example usage with PAT:
-        config = SnowflakePATConfig(
-            account_identifier="your_account_identifier",
-            pat_token="your_pat_token"
-        )
-        client = SnowflakeClient.build_with_config(config)
-        rest_client = client.get_client()
-    """
+    """Builder for Snowflake REST clients (OAuth or PAT)."""
 
     def __init__(
         self,
-        client: Union[SnowflakeRESTClientViaOAuth, SnowflakeRESTClientViaPAT],
+        client: SnowflakeRESTClientViaOAuth | SnowflakeRESTClientViaPAT | SnowflakeRESTClientViaKeyPair,
     ) -> None:
-        """Initialize with a Snowflake REST client.
-
-        Args:
-            client: Snowflake REST client (OAuth or PAT)
-        """
         self._client = client
 
-    def get_client(self) -> Union[SnowflakeRESTClientViaOAuth, SnowflakeRESTClientViaPAT]:
+    def get_client(self) -> SnowflakeRESTClientViaOAuth | SnowflakeRESTClientViaPAT | SnowflakeRESTClientViaKeyPair:
         """Return the Snowflake REST client object."""
         return self._client
 
@@ -354,14 +314,6 @@ class SnowflakeClient(IClient):
         cls,
         config: Union[SnowflakeOAuthConfig, SnowflakePATConfig],
     ) -> "SnowflakeClient":
-        """Build SnowflakeClient with configuration.
-
-        Args:
-            config: Snowflake configuration instance (OAuth or PAT)
-
-        Returns:
-            SnowflakeClient instance
-        """
         return cls(client=config.create_client())
 
     @classmethod
@@ -371,74 +323,12 @@ class SnowflakeClient(IClient):
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
     ) -> "SnowflakeClient":
-        """Build SnowflakeClient using configuration service.
+        """Build a client from the connector instance's stored config.
 
-        This method retrieves Snowflake connector configuration from
-        the configuration service (etcd) and creates the appropriate client.
-
-        Args:
-            logger: Logger instance for error reporting
-            config_service: Configuration service instance
-            connector_instance_id: Optional connector instance ID
-
-        Returns:
-            SnowflakeClient instance
-
-        Raises:
-            ValueError: If configuration is missing or invalid
+        Raises ValueError if the config is missing or incomplete.
         """
-        try:
-            logger.debug(f"🔧 [SnowflakeClient] build_from_services called with connector_instance_id: {connector_instance_id}")
-            
-            config_dict = await cls._get_connector_config(
-                logger, config_service, connector_instance_id
-            )
-            logger.debug(f"🔧 [SnowflakeClient] Raw config_dict keys: {list(config_dict.keys()) if config_dict else 'None'}")
-
-            config = SnowflakeConnectorConfig.model_validate(config_dict)
-            logger.debug(f"🔧 [SnowflakeClient] Validated config - accountIdentifier: '{config.accountIdentifier}'")
-            logger.debug(f"🔧 [SnowflakeClient] Validated config - auth.authType: '{config.auth.authType}'")
-            logger.debug(f"🔧 [SnowflakeClient] Validated config - timeout: {config.timeout}")
-
-            auth_type = config.auth.authType
-            account_identifier = config.accountIdentifier
-            timeout = config.timeout
-
-            if auth_type == AuthType.OAUTH:
-                logger.debug(f"🔧 [SnowflakeClient] Using OAuth authentication")
-                if not config.credentials or not config.credentials.access_token:
-                    raise ValueError("OAuth access token required for OAuth auth type")
-                client = SnowflakeRESTClientViaOAuth(
-                    account_identifier=account_identifier,
-                    oauth_token=config.credentials.access_token,
-                    timeout=timeout,
-                )
-
-            elif auth_type == AuthType.PAT:
-                logger.debug(f"🔧 [SnowflakeClient] Using PAT authentication")
-                logger.debug(f"🔧 [SnowflakeClient] patToken present: {bool(config.auth.patToken)}")
-                if not config.auth.patToken:
-                    raise ValueError("PAT token required for PAT auth type")
-                client = SnowflakeRESTClientViaPAT(
-                    account_identifier=account_identifier,
-                    pat_token=config.auth.patToken,
-                    timeout=timeout,
-                )
-
-            else:
-                raise ValueError(f"Unsupported auth type: {auth_type}")
-
-            logger.info(f"🔧 [SnowflakeClient] Successfully built client with base_url: '{client.get_base_url()}'")
-            return cls(client=client)
-
-        except ValidationError as e:
-            # str(e) echoes each rejected input, which can be a credential.
-            fields = [".".join(map(str, err["loc"])) for err in e.errors(include_input=False)]
-            logger.error(f"Invalid Snowflake connector configuration: fields {fields}")
-            raise ValueError("Invalid Snowflake connector configuration") from e
-        except Exception as e:
-            logger.error(f"Failed to build Snowflake client from services: {str(e)}")
-            raise
+        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
+        return parse_connection_settings(config).create_client()
 
     @staticmethod
     async def _get_connector_config(
@@ -448,38 +338,22 @@ class SnowflakeClient(IClient):
     ) -> Dict[str, Any]:
         """Fetch connector config from etcd for Snowflake.
 
-        Args:
-            logger: Logger instance
-            config_service: Configuration service instance
-            connector_instance_id: Connector instance ID
-
-        Returns:
-            Configuration dictionary
-
         Raises:
             ValueError: If configuration cannot be retrieved
         """
+        instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
         try:
             config = await config_service.get_config(
                 f"/services/connectors/{connector_instance_id}/config"
             )
-            if not config:
-                instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
-                raise ValueError(
-                    f"Failed to get Snowflake connector configuration{instance_msg}"
-                )
-            if not isinstance(config, dict):
-                instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
-                raise ValueError(
-                    f"Invalid Snowflake connector configuration format{instance_msg}"
-                )
-            return config
         except Exception as e:
-            logger.error(f"Failed to get Snowflake connector config: {e}")
-            instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
-            raise ValueError(
-                f"Failed to get Snowflake connector configuration{instance_msg}"
-            ) from e
+            logger.error(f"Failed to get Snowflake connector config{instance_msg}: {e}")
+            raise ValueError(f"Failed to get Snowflake connector configuration{instance_msg}") from e
+        if not config:
+            raise ValueError(f"Failed to get Snowflake connector configuration{instance_msg}")
+        if not isinstance(config, dict):
+            raise ValueError(f"Invalid Snowflake connector configuration format{instance_msg}")
+        return config
 
 
 class SnowflakeResponse(BaseModel):
@@ -505,6 +379,10 @@ class SnowflakeResponse(BaseModel):
     statement_handle: Optional[str] = Field(
         default=None, description="Statement handle for async queries"
     )
+    # Snowflake's own error code from the body ("390144"), which 401s and 403s carry without a SQLSTATE.
+    code: str | None = Field(default=None, description="Snowflake error code from the response body")
+    # When the call never got an answer: the exception's class ("ConnectTimeout"), as its text may be empty.
+    exception_type: str | None = Field(default=None, description="Exception class when no response came")
 
     class Config:
         """Pydantic configuration."""
@@ -538,7 +416,7 @@ class SnowflakeSDKClient:
         warehouse: Optional[str] = None,
         database: Optional[str] = None,
         schema: Optional[str] = None,
-        role: Optional[str] = None,
+        role: str | None = None,
         oauth_token: Optional[str] = None,
         user: Optional[str] = None,
         password: Optional[str] = None,

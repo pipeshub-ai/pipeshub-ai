@@ -117,6 +117,13 @@ class OAuthTokenSource:
         self._load = load
         self._lock = _REFRESH_LOCKS.setdefault(lock_key, asyncio.Lock()) if lock_key else asyncio.Lock()
 
+    @property
+    def can_refresh(self) -> bool:
+        """Whether a new token can be had without the user: a sign-in with no refresh token
+        (the API didn't grant offline access) can't, so its 401 is the API's answer to report."""
+        tokens = self._credentials.oauth
+        return self._scheme.type is AuthType.OAUTH2_CLIENT_CREDENTIALS or bool(tokens and tokens.refresh_token)
+
     async def access_token(self, *, force_refresh: bool = False) -> str:
         async with self._lock:
             tokens = self._credentials.oauth
@@ -182,7 +189,7 @@ class OAuth2Auth(AuthApplier):
 
     @property
     def can_refresh(self) -> bool:
-        return True
+        return self._tokens.can_refresh
 
 
 def build_auth(

@@ -20,7 +20,7 @@ import { ConnectRow } from './connect-row';
 
 type SignInState = Extract<
   McpConnectionState,
-  'needs_connect' | 'needs_reconnect' | 'waiting_for_admin' | 'shared_credential_missing'
+  'needs_connect' | 'needs_reconnect' | 'waiting_for_admin' | 'shared_credential_missing' | 'needs_auth_mode'
 >;
 
 // The ones this person can fix here come first.
@@ -28,6 +28,7 @@ const SIGN_IN_ORDER: Record<SignInState, number> = {
   needs_reconnect: 0,
   needs_connect: 1,
   shared_credential_missing: 2,
+  needs_auth_mode: 2,
   waiting_for_admin: 3,
 };
 

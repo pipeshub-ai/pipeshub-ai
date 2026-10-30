@@ -762,8 +762,10 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Create all edges in batch
             if edges:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    # Run again on a write conflict: a later sync does not revisit these mails.
+                    await self.data_store_provider.execute_in_transaction(
+                        lambda tx_store: tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    )
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0

@@ -8,10 +8,15 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import functools
+import inspect
 import json
+import random
+import re
 import threading
+from collections.abc import Awaitable, Callable
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 
 import aiohttp
 
@@ -48,6 +53,76 @@ class ArangoQueryError(Exception):
             error_num = cast(dict[str, object], parsed).get("errorNum")
             if isinstance(error_num, int):
                 self.error_num = error_num
+
+
+# Every form a 1200 takes in this client's errors: the server's JSON body, and the
+# "[1200]" the per-document checks write.
+_CONFLICT_RE = re.compile(r'"errorNum"\s*:\s*1200\b|\[1200\]')
+_WRITE_CONFLICT_ATTEMPTS = 6
+
+_W = TypeVar("_W")
+_Reply = list[Any] | dict[str, Any]  # per-item answers, or one answer for the whole call
+
+
+def is_write_conflict(error: BaseException | str) -> bool:
+    """ArangoDB errorNum 1200: a write-write conflict, or a lock timeout on the key."""
+    if isinstance(error, ArangoQueryError) and error.error_num is not None:
+        return error.error_num == ARANGO_CONFLICT
+    return bool(_CONFLICT_RE.search(str(error)))
+
+
+def _retries_write_conflicts(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """Run a write outside a transaction again when it fails with errorNum 1200.
+
+    Another writer held the document or its lock, and the failed write did not land.
+    Inside a transaction the conflict aborted it, so the transaction's owner reruns
+    it and the error is raised at once. Batches use ``_send_until_landed`` instead.
+    """
+    signature = inspect.signature(write)
+
+    @functools.wraps(write)
+    async def run(*args: object, **kwargs: object) -> _W:
+        if signature.bind(*args, **kwargs).arguments.get("txn_id"):
+            return await write(*args, **kwargs)
+        attempt = 0
+        while True:
+            try:
+                return await write(*args, **kwargs)
+            except Exception as exc:
+                attempt += 1
+                if attempt >= _WRITE_CONFLICT_ATTEMPTS or not is_write_conflict(exc):
+                    raise
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+
+    return run
+
+
+def _lost_a_conflict(answer: object) -> bool:
+    return isinstance(answer, dict) and bool(answer.get("error")) and answer.get("errorNum") == ARANGO_CONFLICT
+
+
+async def _send_until_landed(
+    items: list[_W], txn_id: Optional[str], send: Callable[[list[_W]], Awaitable[_Reply]]
+) -> _Reply:
+    """Send a batch, then send again only the items that lost a write conflict.
+
+    The other items landed, and sending them again could undo a newer write by
+    someone else. Inside a transaction the conflict aborted it, so nothing is sent
+    again. A per-item reply comes back as one answer per item, in order.
+    """
+    answers: list[Any] = [None] * len(items)
+    pending = list(range(len(items)))
+    for attempt in range(1, _WRITE_CONFLICT_ATTEMPTS + 1):
+        sent = await send([items[i] for i in pending])
+        if not isinstance(sent, list):  # not a per-item reply, nothing to pick out
+            return sent
+        for i, answer in zip(pending, sent):
+            answers[i] = answer
+        pending = [i for i in pending if _lost_a_conflict(answers[i])]
+        if txn_id or not pending or attempt == _WRITE_CONFLICT_ATTEMPTS:
+            break
+        await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+    return answers
 
 
 class ArangoHTTPClient:
@@ -391,6 +466,7 @@ class ArangoHTTPClient:
                 raise
             return None
 
+    @_retries_write_conflicts
     async def create_document(
         self,
         collection: str,
@@ -423,6 +499,10 @@ class ArangoHTTPClient:
                     self._check_response_for_errors(result, "Create document")
                     return result
                 elif resp.status == HttpStatusCode.CONFLICT.value:
+                    error = await resp.text()
+                    # 409 is also a write conflict: the document was not written.
+                    if is_write_conflict(error):
+                        raise Exception(f"Failed to create document (status={resp.status}): {error}")
                     # Document already exists, treat as success
                     return {"_key": document.get("_key")}
                 else:
@@ -434,6 +514,7 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating document: {str(e)}")
             raise
 
+    @_retries_write_conflicts
     async def update_document(
         self,
         collection: str,
@@ -476,6 +557,7 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error updating document: {str(e)}")
             raise
 
+    @_retries_write_conflicts
     async def delete_document(
         self,
         collection: str,
@@ -523,6 +605,7 @@ class ArangoHTTPClient:
 
     # ==================== Query Operations ====================
 
+    @_retries_write_conflicts
     async def execute_aql(
         self,
         query: str,
@@ -643,51 +726,54 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
+        async def send(batch: list[dict[str, Any]]) -> _Reply:
             session = await self._get_session()
             async with session.post(
                 url,
-                json=documents,
+                json=batch,
                 params=params,
                 headers=headers
             ) as resp:
                 if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self.logger.debug(f"✅ Batch insert response: status={resp.status}, result={result}")
+                    return result
+                error = await resp.text()
+                self.logger.error(f"❌ Batch insert failed (status={resp.status}): {error}")
+                raise Exception(f"Batch insert failed (status={resp.status}): {error}")
 
-                    # Check for errors in response
-                    self._check_response_for_errors(result, "Batch insert")
+        try:
+            result = await _send_until_landed(documents, txn_id, send)
 
-                    # Count created vs updated based on response
-                    created_count = 0
-                    updated_count = 0
-                    error_count = 0
+            # Check for errors in response
+            self._check_response_for_errors(result, "Batch insert")
 
-                    if isinstance(result, list):
-                        for item in result:
-                            if isinstance(item, dict):
-                                if item.get("error"):
-                                    error_count += 1
-                                elif item.get("_oldRev"):
-                                    # Document had a previous revision = updated
-                                    updated_count += 1
-                                else:
-                                    # New document = created
-                                    created_count += 1
-                    else:
-                        # Single document response
-                        created_count = 1
+            # Count created vs updated based on response
+            created_count = 0
+            updated_count = 0
+            error_count = 0
 
-                    return {
-                        "created": created_count,
-                        "updated": updated_count,
-                        "errors": error_count,
-                        "result": result
-                    }
-                else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Batch insert failed (status={resp.status}): {error}")
-                    raise Exception(f"Batch insert failed (status={resp.status}): {error}")
+            if isinstance(result, list):
+                for item in result:
+                    if isinstance(item, dict):
+                        if item.get("error"):
+                            error_count += 1
+                        elif item.get("_oldRev"):
+                            # Document had a previous revision = updated
+                            updated_count += 1
+                        else:
+                            # New document = created
+                            created_count += 1
+            else:
+                # Single document response
+                created_count = 1
+
+            return {
+                "created": created_count,
+                "updated": updated_count,
+                "errors": error_count,
+                "result": result
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Batch insert error: {str(e)}")
@@ -724,46 +810,48 @@ class ArangoHTTPClient:
         # Construct full document IDs
         document_ids = [f"{collection}/{key}" for key in keys]
 
-        try:
+        async def send(batch: list[str]) -> _Reply:
             session = await self._get_session()
             async with session.delete(
                 url,
                 headers=headers,
-                json=document_ids  # Send array of document IDs in request body
+                json=batch  # Send array of document IDs in request body
             ) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value]:
-                    results = await resp.json()
+                    return await resp.json()
+                error_text = await resp.text()
+                self.logger.error(f"❌ Batch delete failed with status {resp.status}: {error_text}")
+                raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
 
-                    # Results is an array of deletion results
-                    deleted_count = 0
-                    errors = []
+        try:
+            # A delete of an array always answers with one result per document.
+            results = cast(list[dict[str, Any]], await _send_until_landed(document_ids, txn_id, send))
 
-                    for idx, result in enumerate(results):
-                        # Check if this deletion was successful
-                        if result.get("error"):
-                            # Handle 404 as success (document already deleted)
-                            error_num = result.get("errorNum")
-                            if error_num == ARANGO_ERROR_DOCUMENT_NOT_FOUND:  # Document not found
-                                deleted_count += 1
-                                self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
-                            else:
-                                error_msg = result.get("errorMessage", "Unknown error")
-                                errors.append(f"Document {document_ids[idx]}: (errorNum={error_num}) {error_msg}")
-                        else:
-                            deleted_count += 1
+            # Results is an array of deletion results
+            deleted_count = 0
+            errors = []
 
-                    if errors:
-                        error_details = "; ".join(errors)
-                        self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
-                        raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
-
-                    self.logger.info(f"✅ Batch deleted {deleted_count} documents from {collection}")
-                    return deleted_count
-
+            for idx, result in enumerate(results):
+                # Check if this deletion was successful
+                if result.get("error"):
+                    # Handle 404 as success (document already deleted)
+                    error_num = result.get("errorNum")
+                    if error_num == ARANGO_ERROR_DOCUMENT_NOT_FOUND:  # Document not found
+                        deleted_count += 1
+                        self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
+                    else:
+                        error_msg = result.get("errorMessage", "Unknown error")
+                        errors.append(f"Document {document_ids[idx]}: [{error_num}] {error_msg}")
                 else:
-                    error_text = await resp.text()
-                    self.logger.error(f"❌ Batch delete failed with status {resp.status}: {error_text}")
-                    raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
+                    deleted_count += 1
+
+            if errors:
+                error_details = "; ".join(errors)
+                self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
+                raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
+
+            self.logger.info(f"✅ Batch deleted {deleted_count} documents from {collection}")
+            return deleted_count
 
         except Exception as e:
             self.logger.error(f"❌ Batch delete failed: {str(e)}")
@@ -771,6 +859,7 @@ class ArangoHTTPClient:
 
     # ==================== Edge Operations ====================
 
+    @_retries_write_conflicts
     async def create_edge(
         self,
         edge_collection: str,
@@ -811,6 +900,10 @@ class ArangoHTTPClient:
                     self._check_response_for_errors(result, "Create edge")
                     return result
                 elif resp.status == HttpStatusCode.CONFLICT.value:
+                    error = await resp.text()
+                    # 409 is also a write conflict: the edge was not written.
+                    if is_write_conflict(error):
+                        raise Exception(f"Failed to create edge (status={resp.status}): {error}")
                     # Edge already exists
                     return {"_key": edge_doc.get("_key")}
                 else:

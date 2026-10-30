@@ -1456,6 +1456,7 @@ async def build_code_graph_edges(
     org_id: str,
     record_group_id: str,
     touched_record_ids: set[str] | None = None,
+    deleted_names: set[str] = frozenset(),
     facts_source: CodeFactsSource | None = None,
     dry_run: bool = False,
     log: logging.Logger | None = None,
@@ -1465,7 +1466,9 @@ async def build_code_graph_edges(
 
     ``touched_record_ids`` selects an incremental run: the symbol table is still
     built from *every* block, but only the touched files and their dependents are
-    re-resolved.
+    re-resolved. It may be empty when only files were deleted: ``deleted_names``,
+    the names those files defined (see ``deleted_files``), select the files
+    that referenced them.
 
     ``facts_source`` supplies the full facts of the files being re-resolved;
     their nodes carry only the resident relations. Without one, node facts are
@@ -1498,6 +1501,8 @@ async def build_code_graph_edges(
     builder.result.files_total = len(index.blocks_by_record)
 
     changed_names = await _names_changed_by(graph_provider, index, org_id, touched_record_ids)
+    if touched_record_ids is not None:
+        changed_names |= deleted_names
     reresolve = await asyncio.to_thread(
         _select_reresolve_set, index, touched_record_ids, changed_names,
     )
@@ -1660,7 +1665,7 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
     reference should now resolve. Neither shows up in A's own timestamp, and a
     deleted name is no longer in B's blocks -- ``changed_names`` carries it.
     """
-    if not touched:
+    if touched is None:
         return set(index.blocks_by_record)
 
     selected = set(touched)

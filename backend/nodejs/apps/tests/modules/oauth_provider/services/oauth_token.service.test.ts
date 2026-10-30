@@ -1422,7 +1422,7 @@ describe('OAuthTokenService - branch coverage', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidGrantError)
       }
-      expect(findOne.calledOnce).to.be.true
+      expect(findOne.called).to.be.false
     })
 
     it('should throw InvalidTokenError when stored refresh token not found', async () => {
@@ -1431,9 +1431,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthRefreshToken, 'findOne')
-        .onFirstCall().resolves({} as any) // verifyRefreshToken check
-        .onSecondCall().resolves(null) // refreshTokens check
+      sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
 
       try {
         await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
@@ -1492,12 +1490,17 @@ describe('OAuthTokenService - branch coverage', () => {
         createdBy: new Types.ObjectId(),
       }) as any
 
-      it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
-        const stored = storedRefreshToken('client-a')
+      it('revokes the live grant when an already-rotated refresh token is presented again', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
         sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
-        rotate.resolves({ modifiedCount: 0 } as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
 
         let error: unknown
         try {
@@ -1509,13 +1512,112 @@ describe('OAuthTokenService - branch coverage', () => {
         expect((error as Error).message).to.include('already been used')
         expect(accessCreate.called).to.be.false
         expect(refreshCreate.called).to.be.false
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
+      })
+
+      it('does not family-revoke when a different client presents a rotated token', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('not issued to this client')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
+      it('does not family-revoke when the refresh token was revoked by the user', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidTokenError)
+        expect((error as Error).message).to.equal('Refresh token has been revoked')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
+      it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        rotate.resolves({ modifiedCount: 0 } as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
+        expect(accessFamily.firstCall.args[1]).to.include({
+          revokedReason: 'refresh_reuse_detected',
+        })
+      })
+
+      it('revokes the minted pair when the old token is replayed during rotation', async () => {
+        const stored = storedRefreshToken('client-a')
+        const replayed = {
+          ...stored,
+          isRevoked: true,
+          revokedReason: 'refresh_reuse_detected',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(replayed as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 1 } as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.calledOnce).to.be.true
+        expect(refreshCreate.calledOnce).to.be.true
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
       })
 
       it('rotates and issues new tokens when the presenting client matches the issuing client', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1526,6 +1628,7 @@ describe('OAuthTokenService - branch coverage', () => {
         const [filter, update] = rotate.firstCall.args as any[]
         expect(filter).to.deep.equal({ _id: stored._id, isRevoked: false })
         expect(update.$set.isRevoked).to.equal(true)
+        expect(update.$set.revokedReason).to.equal('rotated')
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
       })
@@ -1534,9 +1637,7 @@ describe('OAuthTokenService - branch coverage', () => {
         const agreed = { apps: ['app-1'], recordGroups: [], records: [] }
         const widened = { apps: ['app-1', 'app-2'], recordGroups: [], records: [] }
         const stored = { ...storedRefreshToken('client-a'), knowledgeLimit: agreed }
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
@@ -1557,9 +1658,7 @@ describe('OAuthTokenService - branch coverage', () => {
         const agreed = { apps: ['app-1', 'app-2'], recordGroups: [], records: [] }
         const narrowed = { apps: ['app-1'], recordGroups: [], records: [] }
         const stored = { ...storedRefreshToken('client-a'), knowledgeLimit: agreed }
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
@@ -1577,9 +1676,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it("gives a refresh token stored without a limit the app's current one", async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
@@ -1597,9 +1694,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('drops scopes the app no longer allows from the refreshed tokens', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1613,9 +1708,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('does not rotate when the app no longer allows any granted scope', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create')
 
         try {
@@ -1635,9 +1728,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('does not rotate when the requested scopes do not overlap the grant', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
 
         try {
           await service.refreshTokens(
@@ -1656,9 +1747,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('rejects a refresh token issued to a different client with invalid_grant', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1675,9 +1764,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('does not rotate or revoke the stored token when a different client is rejected', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1697,9 +1784,7 @@ describe('OAuthTokenService - branch coverage', () => {
         // client-a must still be rejected for client-b: the database row is
         // the source of truth for who the grant was issued to.
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 

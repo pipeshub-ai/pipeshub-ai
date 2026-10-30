@@ -74,6 +74,7 @@ class TestMCPRegistry:
         # Active catalog representatives — one per transport/auth combination among
         # currently enabled servers (others are temporarily commented out).
         assert "github" in type_ids
+        assert "microsoft_learn" in type_ids
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
@@ -81,6 +82,7 @@ class TestMCPRegistry:
         assert "exa" in type_ids
         assert "box" in type_ids
         assert "clickup" in type_ids
+        assert "context7" in type_ids
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

@@ -112,6 +112,25 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       describeDocumentContract({
         repo: scopedDocuments(new PgDocumentRepository(), ledger),
         newId,
+        // a superuser session, outside the row policies, as a raw statement against the table
+        setHiddenState: (orgId, id, state) =>
+          stack.admin(async (c) => {
+            const r = await c.query(
+              'UPDATE content.documents SET write_seq = $3, writers = $4::jsonb WHERE org_id = $1 AND id = $2',
+              [orgId, id, state.writeSeq, JSON.stringify(state.writers)],
+            );
+            if (r.rowCount !== 1) throw new Error(`no row ${id} to set the write state on`);
+          }),
+        getHiddenState: (orgId, id) =>
+          stack.admin(async (c) => {
+            const r = await c.query<{ write_seq: string; writers: { t: string; until: number }[] }>(
+              'SELECT write_seq, writers FROM content.documents WHERE org_id = $1 AND id = $2',
+              [orgId, id],
+            );
+            const row = r.rows[0];
+            if (!row) throw new Error(`no row ${id} to read the write state from`);
+            return { writeSeq: Number(row.write_seq), writers: row.writers };
+          }),
       });
     });
 

@@ -20,12 +20,20 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
   });
 
+  it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
+    expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
+  });
+
   it('goes by the catalog type when the server was renamed', () => {
     expect(logo(<McpServerIcon typeId="linear" name="Team tracker" />)).toBe('linear icon');
   });
 
   it('shows the logo of the service a custom server is named after', () => {
     expect(logo(<McpServerIcon typeId={null} name="Notion" />)).toBe('notion icon');
+  });
+
+  it("shows Context7's logo", () => {
+    expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
   });
 
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {

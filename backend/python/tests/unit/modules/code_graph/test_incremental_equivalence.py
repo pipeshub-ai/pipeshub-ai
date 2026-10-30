@@ -4,10 +4,11 @@ Each seed grows a small Python repo, then applies random edits -- definitions
 added, removed and moved, calls retargeted, imports changed, files added and
 deleted -- as a sync would. After every edit the changed files are re-projected,
 deleted ones dropped, and an incremental build runs on exactly what production
-would hand it: the records updated since the last build. A deleted record is
-gone from the graph, so it is never among them; a deletion asks for a full
-build instead. The result is compared with a fresh full build over the same
-files.
+would hand it: the records updated since the last build, and the names each
+deleted file defined, kept just before it was deleted (a deleted record is gone
+from the graph, so it is never among the updated ones). A step applies one to
+three edits at once, as a sync or a branch switch does. The result is compared
+with a fresh full build over the same files.
 """
 import os
 import random
@@ -18,6 +19,7 @@ from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
     write_code_file_blocks_to_graph,
 )
+from app.modules.code_graph.deleted_files import defined_names
 from app.modules.code_graph.edge_builder import build_code_graph_edges
 from app.modules.parsers.code_parser import CodeFileParser
 
@@ -27,6 +29,7 @@ NAMES = [f"f{i}" for i in range(6)]
 # CODE_GRAPH_EQ_SEEDS / _STEPS widen the search when changing the builder.
 SEEDS = range(int(os.environ.get("CODE_GRAPH_EQ_SEEDS", "40")))
 STEPS = int(os.environ.get("CODE_GRAPH_EQ_STEPS", "12"))
+MAX_EDITS = int(os.environ.get("CODE_GRAPH_EQ_MAX_EDITS", "3"))
 
 
 Graph = FakeGraphProvider
@@ -148,22 +151,34 @@ async def test_incremental_build_matches_full_build(seed: int) -> None:
     history: list[str] = []
 
     for step in range(STEPS):
-        changed, deleted = repo.edit()
+        changed: set[str] = set()
+        deleted: set[str] = set()
+        for _ in range(rng.randint(1, MAX_EDITS)):
+            more_changed, more_deleted = repo.edit()
+            changed |= more_changed
+            deleted |= more_deleted
+        # What the step left: a file dropped after an edit is deleted, and one
+        # dropped and added again under its name is edited.
+        touched_mods = changed | deleted
+        changed = touched_mods & set(repo.modules)
+        deleted = touched_mods - set(repo.modules)
         history.append(f"step {step}: changed {sorted(changed)} deleted {sorted(deleted)}")
+        deleted_names: set[str] = set()
         for mod in deleted:
+            deleted_names |= await defined_names(graph, ORG_ID, rid(mod))
             await graph.delete_blocks_for_records([rid(mod)])
             graph.code_files.pop(rid(mod), None)
             graph.blobs.pop(rid(mod), None)
             graph.referenced_names.pop(rid(mod), None)
         for mod in changed:
             await project(graph, parser, repo, mod)
-        # As the runner decides: a deletion asks for a full build; otherwise
-        # the records updated since the last one, if any.
-        touched = None if deleted else {rid(m) for m in changed}
-        if touched is None or touched:
+        # As the runner decides: the records updated since the last build and
+        # the deleted files' names; nothing to do when there are neither.
+        touched = {rid(m) for m in changed}
+        if touched or deleted:
             await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID,
                                          record_group_id=GROUP_ID, touched_record_ids=touched,
-                                         facts_source=graph)
+                                         deleted_names=deleted_names, facts_source=graph)
 
         expected = await full_graph(parser, repo)
         got, want = code_edges(graph), code_edges(expected)

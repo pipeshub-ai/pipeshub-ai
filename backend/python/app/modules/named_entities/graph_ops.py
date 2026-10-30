@@ -840,7 +840,7 @@ class NamedEntityGraph:
             return {}
         found: dict[str, list[str]] = {}
         statement = VALUES_IN_RECORDS_AQL if self._dialect == "arango" else VALUES_IN_RECORDS_CYPHER
-        for parts in _predicates(None, query):
+        for parts in filter_constraints(None, query):
             for part in parts:
                 if part.source != "value":
                     continue
@@ -900,7 +900,7 @@ class NamedEntityGraph:
             # A stored id keeps working after a merge: its survivor's mentions count too.
             survivors = await self.resolve_redirects(org_id, list(entity_ids))
             entity_ids = list(dict.fromkeys([*entity_ids, *survivors.values()]))
-        predicates = _predicates(entity_ids, query)
+        predicates = filter_constraints(entity_ids, query)
         if not predicates:
             return {"hits": [], "truncated": False}
         if within is not None:
@@ -1315,7 +1315,7 @@ class _Part:
     binds: dict[str, Any]
 
 
-def _predicates(entity_ids: list[str] | None, query: NamedEntityQueryLike | None) -> list[list[_Part]]:
+def filter_constraints(entity_ids: list[str] | None, query: NamedEntityQueryLike | None) -> list[list[_Part]]:
     """The filter's constraints, each a union of parts; every constraint must hold."""
     kinds = [str(kind) for kind in ((query.kinds if query else None) or [])]
     prefix = ((query.name_prefix if query else "") or "").strip().lower()

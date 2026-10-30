@@ -81,13 +81,40 @@ class TestSyncRouting:
             _PROJECT_ID, "head-sha", _PROJECT_PATH, "release/2.x",
         )
 
-    async def test_switching_branch_rewalks_the_tree(self) -> None:
+    async def test_switching_branch_syncs_the_difference(self) -> None:
         _c, repos = _routed(_branch_filters(["release/2.x"]), ("old-sha", _PROJECT_PATH, "main"))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
 
-        repos._sync_repo_full.assert_awaited_once()
+        repos._sync_repo_incremental.assert_awaited_once_with(
+            _PROJECT_ID, _PROJECT_PATH, "old-sha", "head-sha",
+        )
+        repos._sync_repo_full.assert_not_awaited()
+        repos._update_code_repo_checkpoint.assert_awaited_once_with(
+            _PROJECT_ID, "head-sha", _PROJECT_PATH, "release/2.x",
+        )
+
+    async def test_switching_branch_falls_back_to_a_walk_at_its_head(self) -> None:
+        _c, repos = _routed(_branch_filters(["release/2.x"]), ("old-sha", _PROJECT_PATH, "main"))
+        repos._sync_repo_incremental = AsyncMock(return_value=False)
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+
+        repos._sync_repo_full.assert_awaited_once_with(_PROJECT_ID, _PROJECT_PATH, "head-sha")
+        repos._update_code_repo_checkpoint.assert_awaited_once_with(
+            _PROJECT_ID, "head-sha", _PROJECT_PATH, "release/2.x",
+        )
+
+    async def test_switching_to_a_branch_at_the_same_commit_only_moves_the_checkpoint(self) -> None:
+        _c, repos = _routed(_branch_filters(["release/2.x"]), ("head-sha", _PROJECT_PATH, "main"))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+
         repos._sync_repo_incremental.assert_not_awaited()
+        repos._sync_repo_full.assert_not_awaited()
+        repos._update_code_repo_checkpoint.assert_awaited_once_with(
+            _PROJECT_ID, "head-sha", _PROJECT_PATH, "release/2.x",
+        )
 
     async def test_checkpoint_from_before_branches_counts_as_default_branch(self) -> None:
         _c, repos = _routed(None, ("old-sha", _PROJECT_PATH, None))
@@ -97,13 +124,13 @@ class TestSyncRouting:
         repos._sync_repo_incremental.assert_awaited_once()
         repos._sync_repo_full.assert_not_awaited()
 
-    async def test_old_checkpoint_with_a_chosen_branch_rewalks(self) -> None:
+    async def test_old_checkpoint_with_a_chosen_branch_syncs_the_difference(self) -> None:
         _c, repos = _routed(_branch_filters(["release/2.x"]), ("old-sha", _PROJECT_PATH, None))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
 
-        repos._sync_repo_full.assert_awaited_once()
-        repos._sync_repo_incremental.assert_not_awaited()
+        repos._sync_repo_incremental.assert_awaited_once()
+        repos._sync_repo_full.assert_not_awaited()
 
     async def test_missing_branch_is_a_sync_problem_and_keeps_records(self) -> None:
         c, repos = _routed(_branch_filters(["gone"]), ("old-sha", _PROJECT_PATH, "gone"))

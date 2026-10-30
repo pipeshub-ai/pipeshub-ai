@@ -2,7 +2,7 @@
 
 The admin may pick any branch in the "Branch" sync filter; unset keeps the
 repository's default branch. Covers the filter read, the sync routing (which
-branch is read, when a branch switch re-walks the tree, a branch that does not
+branch is read, a branch switch syncing only the difference, a branch that does not
 exist), links and the streaming ref, commit dates, and the branch picker.
 """
 from __future__ import annotations
@@ -109,7 +109,7 @@ class TestSyncRouting:
             "last_commit_sha": "head-sha", "default_branch": "release/2.x", "full_name": "acme/widgets",
         }
 
-    async def test_switching_branch_rewalks_the_tree(self) -> None:
+    async def test_switching_branch_syncs_the_difference(self) -> None:
         c = make_mock_connector()
         c.sync_filters = _branch_filters(["release/2.x"])
         c.runtime.ds_call = AsyncMock(return_value=_branch("head-sha"))
@@ -119,10 +119,46 @@ class TestSyncRouting:
         c.record_sync_point.update_sync_point = AsyncMock()
         sync = _sync(c)
 
-        await sync.run(make_repo(default_branch="main"))
+        assert await sync.run(make_repo(default_branch="main")) is True
+
+        sync._incremental_sync.assert_awaited_once()
+        assert sync._incremental_sync.await_args.args[1:] == ("old-sha", "head-sha")
+        sync._full_sync.assert_not_awaited()
+        checkpoint = c.record_sync_point.update_sync_point.await_args.args[1]
+        assert checkpoint["last_commit_sha"] == "head-sha"
+        assert checkpoint["default_branch"] == "release/2.x"
+
+    async def test_switching_branch_falls_back_to_a_walk(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _branch_filters(["release/2.x"])
+        c.runtime.ds_call = AsyncMock(return_value=_branch("head-sha"))
+        c.record_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_commit_sha": "old-sha", "default_branch": "main"},
+        )
+        c.record_sync_point.update_sync_point = AsyncMock()
+        sync = _sync(c)
+        sync._incremental_sync = AsyncMock(return_value=False)
+
+        assert await sync.run(make_repo(default_branch="main")) is True
 
         sync._full_sync.assert_awaited_once()
+        assert c.record_sync_point.update_sync_point.await_args.args[1]["default_branch"] == "release/2.x"
+
+    async def test_switching_to_a_branch_at_the_same_commit_only_moves_the_checkpoint(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _branch_filters(["release/2.x"])
+        c.runtime.ds_call = AsyncMock(return_value=_branch("head-sha"))
+        c.record_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_commit_sha": "head-sha", "default_branch": "main"},
+        )
+        c.record_sync_point.update_sync_point = AsyncMock()
+        sync = _sync(c)
+
+        assert await sync.run(make_repo(default_branch="main")) is True
+
         sync._incremental_sync.assert_not_awaited()
+        sync._full_sync.assert_not_awaited()
+        assert c.record_sync_point.update_sync_point.await_args.args[1]["default_branch"] == "release/2.x"
 
     async def test_same_branch_stays_incremental(self) -> None:
         c = make_mock_connector()

@@ -528,6 +528,11 @@ export function McpInstanceConfigPanel({
   // How the server is doing, corrected by what the tool list just said.
   const connectionState: McpConnectionState = useMemo(() => {
     if (!liveInstance) return 'ready';
+    if (toolsLoad.status === 'error' && toolsLoad.code === 'reauth' && liveInstance.authMode === 'none') {
+      // The 409 says the server asks for a sign-in, which only its auth mode can give it. It is
+      // newer than the listing, so it wins over a listing that timed out or couldn't connect.
+      return mcpConnectionState({ ...liveInstance, toolsErrorCode: 'unauthorized' }, { isAdmin: !isPersonal });
+    }
     const base = mcpConnectionState(liveInstance, { isAdmin: !isPersonal });
     if (base !== 'ready' || toolsLoad.status !== 'error') return base;
     if (toolsLoad.code === 'reauth') return usesSharedCredential(liveInstance) ? 'shared_credential_missing' : 'needs_reconnect';
@@ -1035,6 +1040,7 @@ export function McpInstanceConfigPanel({
                   onRefresh={() => void loadTools(false)}
                   onAuthenticate={() => onAuthenticate(liveInstance)}
                   onReauthenticate={() => onReauthenticate(liveInstance)}
+                  onEditServer={isReadOnly ? undefined : () => setActiveTab('configuration')}
                 />
               ) : (
                 <Text size="2" style={{ color: 'var(--gray-10)' }}>

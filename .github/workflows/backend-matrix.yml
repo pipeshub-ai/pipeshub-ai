@@ -78,6 +78,7 @@ on:
       - 'backend/nodejs/apps/src/libs/services/keyValueStore.service.ts'
       - 'backend/nodejs/apps/src/libs/services/logger.service.ts'
       - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/src/libs/repositories/**'
       - 'backend/nodejs/apps/tests/support/**'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'

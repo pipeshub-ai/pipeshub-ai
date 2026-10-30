@@ -136,6 +136,7 @@ class FakeWeb:
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
+        self.browser_context_keys: list[str | None] = []  # the context each of ``browser_visits`` loaded in
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
@@ -406,6 +407,8 @@ def browser_crawler_class(site: FakeWeb) -> type:
                 return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
                                        error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
+            # crawl4ai keys a context by its run config, which carries the key as the proxy username.
+            site.browser_context_keys.append(getattr(getattr(config, "proxy_config", None), "username", None))
             final_url, page = site.render(url)
             if page.kills_browser:
                 site.kill_browser()

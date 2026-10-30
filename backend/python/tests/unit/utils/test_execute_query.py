@@ -458,173 +458,99 @@ class TestExecutePostgresQuery:
 
 
 class TestExecuteSnowflakeQuery:
+    CONFIG = {"auth": {"accountIdentifier": "acc-1", "warehouse": "WH_1", "patToken": "pat-123"}}
+
+    @staticmethod
+    def _patches(config, run=None) -> tuple:
+        from app.sources.external.snowflake.statements import (
+            SnowflakeColumn,
+            SnowflakeResult,
+        )
+
+        runner = MagicMock()
+        runner.run = run or AsyncMock(return_value=SnowflakeResult(
+            columns=[SnowflakeColumn("N", "fixed", 0)], rows=[[42]],
+        ))
+        data_source = MagicMock()
+        data_source.http.close = AsyncMock()
+        return runner, data_source, (
+            patch(
+                "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
+                new_callable=AsyncMock, return_value=config,
+            ),
+            patch("app.sources.external.snowflake.warehouse.SnowflakeDataSource", return_value=data_source),
+            patch("app.sources.external.snowflake.warehouse.SnowflakeStatementRunner", return_value=runner),
+        )
+
     @pytest.mark.asyncio
-    async def test_pat_auth_success(self):
+    async def test_runs_through_the_sql_api_with_a_timeout_and_closes_the_client(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_sdk_client = MagicMock()
-        mock_sdk_client.execute_query_raw.return_value = (["col1"], [(42,)])
-        mock_sdk_client.__enter__ = MagicMock(return_value=mock_sdk_client)
-        mock_sdk_client.__exit__ = MagicMock(return_value=False)
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "PAT"
-        mock_auth.patToken = "token-123"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeSDKClient",
-            return_value=mock_sdk_client,
-        ):
+        runner, data_source, patches = self._patches(self.CONFIG)
+        with patches[0], patches[1], patches[2] as runner_cls:
             result = await _execute_snowflake_query("SELECT 1", MagicMock(), "conn-sf")
 
-        assert result["ok"] is True
-        assert result["rows"] == [(42,)]
+        assert result == {"ok": True, "columns": ["N"], "rows": [[42]]}
+        runner.run.assert_awaited_once_with("SELECT 1", timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1)
+        kwargs = runner_cls.call_args.kwargs
+        assert kwargs["warehouse"] == "WH_1"
+        assert kwargs["session_parameters"] == {"QUERY_TAG": "pipeshub:agent"}
+        assert kwargs["slots"] is not None
+        data_source.http.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_oauth_auth_success(self):
+    async def test_missing_warehouse_fails_before_any_call(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_sdk_client = MagicMock()
-        mock_sdk_client.execute_query_raw.return_value = (["x"], [(1,)])
-        mock_sdk_client.__enter__ = MagicMock(return_value=mock_sdk_client)
-        mock_sdk_client.__exit__ = MagicMock(return_value=False)
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "OAUTH"
-
-        mock_credentials = MagicMock()
-        mock_credentials.access_token = "oauth-token"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-        mock_config.credentials = mock_credentials
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeSDKClient",
-            return_value=mock_sdk_client,
-        ):
+        config = {"auth": {"accountIdentifier": "acc-1", "patToken": "pat-123"}}
+        runner, _, patches = self._patches(config)
+        with patches[0], patches[1], patches[2]:
             result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
-        assert result["ok"] is True
+        assert result["ok"] is False
+        assert "warehouse" in result["error"]
+        runner.run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_pat_missing_token(self):
+    async def test_missing_token_is_reported(self) -> None:
         from app.utils.execute_query import _execute_snowflake_query
 
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "PAT"
-        mock_auth.patToken = None
+        config = {"auth": {"accountIdentifier": "acc-1", "warehouse": "WH"}}
+        _, _, patches = self._patches(config)
+        with patches[0], patches[1], patches[2]:
+            result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
+        assert result["ok"] is False
+        assert "personal access token" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_statement_is_reported_and_the_client_closed(self) -> None:
+        from app.sources.external.snowflake.statements import SnowflakeFetchError
+        from app.utils.execute_query import _execute_snowflake_query
+
+        run = AsyncMock(side_effect=SnowflakeFetchError("Object 'X' does not exist", sqlstate="42S02"))
+        _, data_source, patches = self._patches(self.CONFIG, run=run)
+        with patches[0], patches[1], patches[2]:
+            result = await _execute_snowflake_query("SELECT * FROM X", MagicMock())
+
+        assert result["ok"] is False
+        assert "does not exist" in result["error"]
+        data_source.http.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_config_is_reported(self) -> None:
+        from app.utils.execute_query import _execute_snowflake_query
 
         with patch(
             "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
+            new_callable=AsyncMock, side_effect=ValueError("Failed to get Snowflake connector configuration"),
         ):
             result = await _execute_snowflake_query("SELECT 1", MagicMock())
 
         assert result["ok"] is False
-        assert "PAT token" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_oauth_missing_access_token(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "OAUTH"
-
-        mock_credentials = MagicMock()
-        mock_credentials.access_token = None
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-        mock_config.credentials = mock_credentials
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "OAuth access token" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_unsupported_auth_type(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        mock_auth = MagicMock()
-        mock_auth.authType.value = "BASIC"
-
-        mock_config = MagicMock()
-        mock_config.accountIdentifier = "acc-1"
-        mock_config.warehouse = "WH_1"
-        mock_config.auth = mock_auth
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            return_value={},
-        ), patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate",
-            return_value=mock_config,
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "Unsupported" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        from app.utils.execute_query import _execute_snowflake_query
-
-        with patch(
-            "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("boom"),
-        ):
-            result = await _execute_snowflake_query("SELECT 1", MagicMock())
-
-        assert result["ok"] is False
-        assert "boom" in result["error"]
+        assert "configuration" in result["error"]
 
 
-# ===========================================================================
-# _execute_mariadb_query
 # ===========================================================================
 
 
@@ -1501,20 +1427,10 @@ async def test_mariadb_executor_asks_for_the_bounds() -> None:
 
 @pytest.mark.asyncio
 async def test_snowflake_executor_asks_for_the_bounds() -> None:
-    sdk = MagicMock()
-    sdk.execute_query_raw.return_value = (["id"], [(1,)])
-    sdk.__enter__ = MagicMock(return_value=sdk)
-    sdk.__exit__ = MagicMock(return_value=False)
-    config = MagicMock()
-    config.auth.authType.value = "PAT"
-    with patch(
-        "app.sources.client.snowflake.snowflake.SnowflakeClient._get_connector_config",
-        new_callable=AsyncMock, return_value={},
-    ), patch(
-        "app.sources.client.snowflake.snowflake.SnowflakeConnectorConfig.model_validate", return_value=config
-    ), patch("app.sources.client.snowflake.snowflake.SnowflakeSDKClient", return_value=sdk):
+    runner, _, patches = TestExecuteSnowflakeQuery._patches(TestExecuteSnowflakeQuery.CONFIG)
+    with patches[0], patches[1], patches[2]:
         await eq._execute_snowflake_query("SELECT 1", MagicMock(), "c")
-    assert sdk.execute_query_raw.call_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
+    assert runner.run.await_args.kwargs == {"timeout_s": SQL_QUERY_TIMEOUT_S, "max_rows": SQL_MAX_ROWS + 1}
 
 
 @pytest.mark.asyncio

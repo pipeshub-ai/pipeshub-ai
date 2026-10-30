@@ -26,6 +26,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
     accessible_node_ids,
     accessible_node_ids_for_enrichment,
+    attach_connector_instance_names,
     collection_map,
     create_record_instance_from_dict,
     enrich_read_records_with_address_links,
@@ -412,6 +413,8 @@ class _RecordResolver:
             return None
         blob_store = await self._ensure_blob_store()
         await self._ensure_frontend_url(blob_store)
+        # May name a shared map entry in place: the limit is the same all turn.
+        await attach_connector_instance_names(self._graph_provider, [graph_record], self._connection_sources)
         await get_record(
             vrid, self._map, blob_store, self._org_id, {vrid: graph_record},
             self._graph_provider, self._frontend_url,

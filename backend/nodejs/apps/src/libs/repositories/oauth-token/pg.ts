@@ -27,6 +27,8 @@ import {
 } from '../oauth-app/pg-org';
 import {
   OAuthDeviceCodeStatus,
+  REFRESH_ROTATED,
+  REFRESH_REUSE_DETECTED,
   type AccessTokenDto,
   type AuthorizationCodeDto,
   type DeviceCodeDto,
@@ -321,10 +323,22 @@ export class PgOAuthTokenRepository implements OAuthTokenRepository {
     return inUnit(undefined, { write: true }, async (k) => {
       const now = new Date();
       const r = await k.query(
-        `/* pipeshub:oauth.refresh_rotate */ UPDATE oauth.refresh_tokens SET is_revoked = true, revoked_at = $3, updated_at = $3 WHERE org_id = $1 AND id = $2 AND NOT is_revoked`,
-        [k.orgId, rid, now],
+        `/* pipeshub:oauth.refresh_rotate */ UPDATE oauth.refresh_tokens SET is_revoked = true, revoked_at = $3, updated_at = $3, revoked_reason = $4 WHERE org_id = $1 AND id = $2 AND NOT is_revoked`,
+        [k.orgId, rid, now, REFRESH_ROTATED],
       );
       return r.rowCount === 1;
+    });
+  }
+
+  async flagRefreshReplayed(id: string): Promise<void> {
+    const rid = id24(id);
+    if (!rid) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      const now = new Date();
+      await k.query(
+        `/* pipeshub:oauth.refresh_flag_replayed */ UPDATE oauth.refresh_tokens SET revoked_reason = $3, updated_at = $4 WHERE org_id = $1 AND id = $2`,
+        [k.orgId, rid, REFRESH_REUSE_DETECTED, now],
+      );
     });
   }
 

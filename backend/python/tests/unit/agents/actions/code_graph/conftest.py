@@ -15,6 +15,7 @@ from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 BLOCKS = CollectionNames.BLOCKS.value
 CODE_FILES = CollectionNames.CODE_FILES.value
 RECORDS = CollectionNames.RECORDS.value
+RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 ORG = "org-1"
 USER = "user-1"
 CONN = "conn-1"
@@ -85,6 +86,8 @@ class FakeGraphProvider:
             rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}"}
             for rid in ("rec-a", "rec-b", "rec-c", "rec-d")
         }
+        self.record_groups = {"repo-1": {"_key": "repo-1", "orgId": ORG, "connectorId": CONN,
+                                         "groupName": "acme/shop"}}
 
     def _code_file_docs(self) -> list[dict]:
         return [
@@ -116,6 +119,8 @@ class FakeGraphProvider:
             docs = self.records.values()
         elif collection == CODE_FILES:
             docs = self._code_file_docs()
+        elif collection == RECORD_GROUPS:
+            docs = self.record_groups.values()
         else:
             docs = self.blocks.values()
         return [d for d in docs if d.get(field_name) in wanted]

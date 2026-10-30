@@ -67,6 +67,9 @@ class LinkResult:
     namesakes: list[Candidate] = field(default_factory=list)
     """Readable people whose full name starts with a first name asked on its own:
     each may be the one meant, so none is chosen and none is "not the same"."""
+    more_related_names: bool = False
+    """More names under a kind related to the asked one start with it than one
+    check takes, so some were not considered (see ``MentionCandidates.more_related``)."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,8 @@ class EntityLinker:
             if shared:
                 namesakes[len(results)] = shared
             pool = [c for c in entry.candidates if c not in shared]
+            # The same name under a related kind (a product filed as its company) is
+            # taken too: the extractor files one thing under either, so it is not a look-alike.
             exact = [
                 c for c in pool
                 if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
@@ -188,6 +193,10 @@ class EntityLinker:
                 mention, status, accepted=[*settled, *picked], rejected=rejected, left_out=left_out,
             )
 
+        for position, entry in enumerate(found.per_mention):
+            result = results[position]
+            if entry.more_related and result is not None:
+                results[position] = replace(result, more_related_names=True)
         for position, shared in namesakes.items():
             result = results[position]
             if result is not None:

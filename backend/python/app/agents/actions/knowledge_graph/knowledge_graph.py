@@ -49,6 +49,7 @@ from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
     _has_selection,
     browsable_app_ids,
     ids_within_scope,
@@ -213,14 +214,16 @@ def _time_range_error_message(error_json: str) -> str:
         return error_json
 
 
-def _copies_outside_selection(identifier: str, matches: list, *, connected_app: bool = False) -> str:
-    """Where the readable copies of an issue key or URL live, when none of
-    them is inside this conversation. Success, not a failed tool call.
+def _no_readable_match(identifier: str) -> str:
+    return (
+        f"No record matching {identifier} can be opened in this conversation. Search for it "
+        "with knowledgegraph__search, or find it by name with knowledgegraph__list_files(query=...)."
+    )
 
-    A connected app's limit is the most it may learn about, so a copy outside
-    it is not named (``connected_app``)."""
-    if connected_app:
-        return f"{identifier} is outside what this conversation is limited to."
+
+def _copies_outside_selection(identifier: str, matches: list) -> str:
+    """Where the readable copies of an issue key or URL live, when none of
+    them is inside this conversation. Success, not a failed tool call."""
     places = []
     for match in matches:
         name = getattr(match, "name", None) or match.id
@@ -506,21 +509,23 @@ class KnowledgeGraph:
                     excluded_app_ids=excluded_app_ids(state),
                 )
                 result = await resolver.resolve_many([node_id])
-                if result.matches:
-                    # The same issue key can exist on more than one connector.
-                    # The copy inside this conversation wins; another connector's
-                    # copy is named so the miss is not a broken tool.
-                    inside = await ids_within_scope(
-                        state, graph_provider, user_key, org_id,
-                        [match.id for match in result.matches],
-                    )
-                    chosen = next((match for match in result.matches if match.id in inside), None)
-                    if chosen is None:
-                        return True, _copies_outside_selection(
-                            node_id, result.matches,
-                            connected_app=connection_sources_of(state.get("filters")) is not None,
-                        )
-                    node_id = chosen.id
+                if not result.matches:
+                    return False, _no_readable_match(node_id)
+                # The same issue key can exist on more than one connector.
+                # The copy inside this conversation wins; another connector's
+                # copy is named so the miss is not a broken tool.
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id,
+                    [match.id for match in result.matches],
+                )
+                chosen = next((match for match in result.matches if match.id in inside), None)
+                if chosen is None:
+                    # A connected app's limit is the most it may learn about: a copy
+                    # beyond it reads exactly like no copy at all.
+                    if connection_sources_of(state.get("filters")) is not None:
+                        return False, _no_readable_match(node_id)
+                    return True, _copies_outside_selection(node_id, result.matches)
+                node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
         if refusal:
@@ -550,6 +555,8 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
+            if node_id and view.current is None:
+                return False, NODE_NOT_FOUND_MESSAGE
             # The listing names every ancestor the user can open, and every
             # child under the opened node. Neither is the conversation's
             # limit: a parent above a selected group would be named and

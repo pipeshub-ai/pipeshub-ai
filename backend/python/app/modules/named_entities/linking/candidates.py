@@ -86,6 +86,9 @@ class MentionCandidates:
     candidates: list[Candidate] = field(default_factory=list)
     ambiguous: bool = False
     """More readable prefix matches than can be told apart; ask for the full name."""
+    more_related: bool = False
+    """Longer names under a related kind were cut by the candidate cap, so the
+    check never saw them; asking for that kind reaches them."""
 
 
 @dataclass
@@ -164,10 +167,14 @@ class CandidateFinder:
             for index in prefixes.get((str(row.get("kind")), str(row.get("key"))), ()):
                 prefix_hits[index].append(row)
         for index, hits in enumerate(prefix_hits):
-            if len(hits) > MAX_CANDIDATES:
+            # Only the asked kind can make a name ambiguous; rows of a related kind
+            # come after it, so the candidate cap below drops them first.
+            asked = [r for r in hits if mentions[index].settles(str(r.get("kind")))]
+            if len(asked) > MAX_CANDIDATES:
                 per_mention[index].ambiguous = True
                 continue
-            for row in sorted(hits, key=lambda r: str(r.get("normKey"))):
+            related = [r for r in hits if not mentions[index].settles(str(r.get("kind")))]
+            for row in [*sorted(asked, key=_norm_key), *sorted(related, key=_norm_key)]:
                 _add(index, row, CandidateSource.PREFIX)
         for index, hits in enumerate(near):
             for row in sorted(hits, key=lambda r: str(r.get("normKey"))):
@@ -187,6 +194,10 @@ class CandidateFinder:
             exact = [c for c in ordered if c.source is CandidateSource.EXACT]
             others = [c for c in ordered if c.source is not CandidateSource.EXACT]
             entry.candidates = [*exact, *others[:MAX_CANDIDATES]]
+            entry.more_related = any(
+                c.source is CandidateSource.PREFIX and not entry.mention.settles(c.kind)
+                for c in others[MAX_CANDIDATES:]
+            )
         return CandidateSet(per_mention=per_mention, timed_out=timed_out)
 
     async def _dense_for(self, mention: Mention) -> tuple[list[EntityHit], bool]:
@@ -231,3 +242,7 @@ def _near_spelling(mention: Mention, row: dict[str, Any]) -> bool:
         if SequenceMatcher(None, asked_rest, stored_rest).ratio() >= FUZZY_MIN_RATIO:
             return True
     return False
+
+
+def _norm_key(row: dict[str, Any]) -> str:
+    return str(row.get("normKey"))

@@ -33,6 +33,16 @@ def mock_data_entities_processor():
     return processor
 
 
+
+def _runs_in_its_transaction(provider: MagicMock) -> MagicMock:
+    """execute_in_transaction runs the block in the mock's own transaction()."""
+    async def execute_in_transaction(func, *args, **kwargs) -> object:
+        async with provider.transaction() as tx_store:
+            return await func(tx_store, *args, **kwargs)
+    provider.execute_in_transaction = execute_in_transaction
+    return provider
+
+
 @pytest.fixture
 def mock_data_store_provider():
     provider = MagicMock()
@@ -42,7 +52,7 @@ def mock_data_store_provider():
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.delete_record_by_external_id = AsyncMock()
     provider.transaction.return_value = tx
-    return provider
+    return _runs_in_its_transaction(provider)
 
 
 @pytest.fixture

@@ -107,3 +107,49 @@ class TestPdfParserWiring:
 
         assert isinstance(parser._primary, plumber_cls)
         assert parser._large is None
+
+
+class TestLifespan:
+    async def test_shutdown_clears_parse_pool_governor_and_pool(self) -> None:
+        """A governor left set makes the next parse in this process start a new pool."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from app.modules.parsers import parse_pool
+        from app.modules.parsers.pdf import docling_processor, pdf_rasterizer
+        from app.parsing_main import lifespan
+
+        container = MagicMock()
+        governor = MagicMock()
+        governor.run = AsyncMock()
+        governor.ceilings = SimpleNamespace(heavy=1, light=1)
+        app = MagicMock()
+        pool = MagicMock()
+
+        # The lifespan also hands the governor to these two; a later test expects them unset.
+        saved = (
+            parse_pool._State.governor,
+            parse_pool._State.pool,
+            docling_processor._resource_governor,
+            pdf_rasterizer._resource_governor,
+        )
+        try:
+            with (
+                patch("app.parsing_main._get_initialized_container", new=AsyncMock(return_value=container)),
+                patch("app.parsing_main._build_registry", return_value=MagicMock()),
+                patch("app.parsing_main.is_local_cpu_embedding_configured", new=AsyncMock(return_value=False)),
+                patch("app.parsing_main.ResourceGovernor", return_value=governor),
+            ):
+                async with lifespan(app):
+                    assert parse_pool._State.governor is governor
+                    parse_pool._State.pool = pool  # a pool started by a parse
+            assert parse_pool._State.governor is None
+            assert parse_pool._State.pool is None
+            pool.shutdown.assert_called_once()
+        finally:
+            (
+                parse_pool._State.governor,
+                parse_pool._State.pool,
+                docling_processor._resource_governor,
+                pdf_rasterizer._resource_governor,
+            ) = saved

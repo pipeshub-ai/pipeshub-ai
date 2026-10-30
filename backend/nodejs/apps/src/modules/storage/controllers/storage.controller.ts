@@ -358,6 +358,30 @@ export class StorageController {
   }
 
   /**
+   * The adapter for a route that saves a file. Storage that cannot be opened
+   * (a local mount that cannot be made, say) raises a StorageError, which the
+   * error middleware turns into a generic "something went wrong" because its
+   * message names our internals; for a save, the reader is told the file was
+   * not saved and what to check instead.
+   */
+  private async initializeStorageAdapterForWrite(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  ): Promise<StorageServiceAdapter> {
+    try {
+      return await this.initializeStorageAdapter(req);
+    } catch (error) {
+      if (!(error instanceof StorageError)) {
+        throw error;
+      }
+      this.logger.error('Could not open storage to save a file', {
+        error: error.message,
+        metadata: error.metadata,
+      });
+      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+    }
+  }
+
+  /**
    * getStorageConfig's cached return shape (AzureBlobStorageConfig |
    * LocalStorageConfig | S3StorageConfig) doesn't carry `storageType` --
    * mirror uploadDocument's pattern of reading it straight from etcd instead.
@@ -377,7 +401,7 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const adapter = await this.initializeStorageAdapter(req);
+      const adapter = await this.initializeStorageAdapterForWrite(req);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
       const { storageType } = JSON.parse(storageConfig);
@@ -2161,7 +2185,7 @@ export class StorageController {
         throw new DocumentRetiredError();
       }
 
-      const adapter = await this.initializeStorageAdapter(req);
+      const adapter = await this.initializeStorageAdapterForWrite(req);
       let uploadResult: StorageServiceResponse<string>;
       try {
         uploadResult = await adapter.updateBuffer(buffer, document);
@@ -2272,7 +2296,7 @@ export class StorageController {
         );
       }
 
-      const adapter = await this.initializeStorageAdapter(req);
+      const adapter = await this.initializeStorageAdapterForWrite(req);
       const basePath = getDocumentRootPath(
         orgId,
         document._id,
@@ -2649,7 +2673,7 @@ export class StorageController {
       if (!document?.documentPath) {
         throw new NotFoundError('Document / Document Path does not exist');
       }
-      const adapter = await this.initializeStorageAdapter(req);
+      const adapter = await this.initializeStorageAdapterForWrite(req);
       const basePath = document.documentPath.endsWith(String(documentId))
         ? document.documentPath
         : `${document.documentPath}/${documentId}`;

@@ -32,6 +32,8 @@ column content.documents.upload_lease_expires_at type=timestamp with time zone n
 column content.documents.upload_lease_token type=text notnull=false identity= generated= default=-
 column content.documents.version type=integer notnull=true identity= generated= default=0
 column content.documents.version_history type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column content.documents.write_seq type=bigint notnull=true identity= generated= default=0
+column content.documents.writers type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column content.project_members.added_at type=timestamp with time zone notnull=true identity= generated= default=-
 column content.project_members.added_by type=content.oid24 notnull=true identity= generated= default=-
 column content.project_members.org_id type=text notnull=true identity= generated= default=-

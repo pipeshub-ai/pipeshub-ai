@@ -451,82 +451,34 @@ async def _execute_snowflake_query(
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute a query against Snowflake.
-    
-    Args:
-        query: SQL query to execute
-        config_service: Configuration service for retrieving connection details
-        connector_instance_id: Optional connector instance ID
-        
+    """Execute a query against Snowflake through the SQL API.
+
+    Snowflake has no read-only transaction: what keeps this read-only is the
+    query check, the API's one-statement-per-request default and the
+    connector's role.
+
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
     """
     try:
-        from app.sources.client.snowflake.snowflake import (
-            SnowflakeSDKClient,
-            SnowflakeClient,
-            SnowflakeConnectorConfig,
-        )
-        
-        # Get connection config
-        config_dict = await SnowflakeClient._get_connector_config(
+        from app.sources.external.snowflake.warehouse import connector_runner
+
+        async with connector_runner(
             logger=logger,
             config_service=config_service,
-            connector_instance_id=connector_instance_id,
-        )
-        
-        config = SnowflakeConnectorConfig.model_validate(config_dict)
-        account_identifier = config.accountIdentifier
-        warehouse = config.warehouse
-        
-        # Build SDK client based on auth type
-        auth_config = config.auth
-        auth_type = auth_config.authType.value if hasattr(auth_config.authType, 'value') else str(auth_config.authType)
-        
-        if auth_type == "PAT":
-            # PAT auth - use SDK client with token
-            pat_token = auth_config.patToken
-            if not pat_token:
-                return {
-                    "ok": False,
-                    "error": "PAT token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=pat_token,  # PAT tokens work with oauth authenticator
+            connector_id=connector_instance_id,
+            query_tag="pipeshub:agent",
+        ) as runner:
+            result = await runner.run(
+                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
             )
-        elif auth_type == "OAUTH":
-            # OAuth auth
-            credentials = config.credentials
-            if not credentials or not credentials.access_token:
-                return {
-                    "ok": False,
-                    "error": "OAuth access token not configured for Snowflake connector"
-                }
-            
-            sdk_client = SnowflakeSDKClient(
-                account_identifier=account_identifier,
-                warehouse=warehouse,
-                oauth_token=credentials.access_token,
-            )
-        else:
-            return {
-                "ok": False,
-                "error": f"Unsupported Snowflake auth type: {auth_type}"
-            }
-        
-        with sdk_client:
-            columns, rows = sdk_client.execute_query_raw(
-                query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
-            )
-            return {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
-            
+
+        return {
+            "ok": True,
+            "columns": result.column_names,
+            "rows": result.rows,
+        }
+
     except Exception as e:
         logger.error(f"Snowflake query execution failed: {e}")
         return {

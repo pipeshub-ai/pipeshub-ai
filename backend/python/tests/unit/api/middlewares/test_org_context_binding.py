@@ -190,3 +190,41 @@ def test_per_router_dependency_binds_for_sync_and_async_endpoints() -> None:
 def test_no_context_outside_a_request() -> None:
     with pytest.raises(MissingOrgContext):
         current_or_system()
+
+
+@pytest.fixture(scope="module")
+def log_org_client() -> TestClient:
+    """Binds a request context first, as the services' context middleware does."""
+    from app.utils.request_context import get_org_id, reset_context, set_context
+
+    app = FastAPI()
+    app.container = SimpleNamespace(
+        logger=lambda: logging.getLogger("test-org-context"), config_service=_ConfigService
+    )
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next) -> object:
+        token = set_context("req-log-org")
+        try:
+            try:
+                await authMiddleware(request)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            return await call_next(request)
+        finally:
+            reset_context(token)
+
+    @app.get("/log-org")
+    async def log_org() -> dict:
+        return {"org": get_org_id()}
+
+    return TestClient(app)
+
+
+def test_log_lines_carry_the_verified_org(log_org_client) -> None:
+    assert log_org_client.get("/log-org", headers=_auth(_SESSION)).json() == {"org": "org_a"}
+
+
+def test_an_org_id_claim_does_not_name_the_log_org(log_org_client) -> None:
+    claims = {"userId": "user-a", "org_id": "org_b", "role": "member"}
+    assert log_org_client.get("/log-org", headers=_auth(claims)).json() == {"org": None}
