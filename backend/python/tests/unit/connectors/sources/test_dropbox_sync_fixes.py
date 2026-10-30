@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata
+from dropbox.team_log import EventCategory
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import FilterCollection
@@ -152,6 +153,53 @@ class TestHandleRecordUpdates:
         p.get_record_by_external_id.assert_awaited_once_with(conn.connector_id, "id:a")
         p.on_record_deleted.assert_awaited_once_with(record_id="rec-1")
         p.on_new_records.assert_not_awaited()
+
+
+class TestOwedGroupRemovals:
+    """A group cursor that resets keeps the removals still owed: Dropbox does not list their events again."""
+
+    GROUP_EVENTS = "user_group_events"
+
+    @pytest.mark.asyncio
+    async def test_a_reset_keeps_them_with_the_new_cursor(self, team: DropboxConnector) -> None:
+        stored = {"cursor": "old", "pendingGroupDeletes": ["g:gone"], "pendingGroupMemberReads": []}
+        team.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value=stored)
+        team.data_entities_processor.on_user_group_deleted = AsyncMock(side_effect=RuntimeError("db down"))
+        team.data_source.team_log_get_events_continue = AsyncMock(return_value=fail(RESET))
+        team.data_source.team_log_get_events = AsyncMock(return_value=ok(SimpleNamespace(cursor="new")))
+        team._sync_user_groups = AsyncMock()
+
+        await team._sync_group_changes_with_cursor()
+
+        team.dropbox_cursor_sync_point.update_sync_point.assert_awaited_once()
+        _, written = team.dropbox_cursor_sync_point.update_sync_point.await_args.args
+        assert written == {"cursor": "new", "pendingGroupMemberReads": [], "pendingGroupDeletes": ["g:gone"]}
+        team._sync_user_groups.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_new_cursor_keeps_them_with_the_old_one(self, team: DropboxConnector) -> None:
+        stored = {"cursor": "old", "pendingGroupDeletes": ["g:gone"]}
+        team.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value=stored)
+        team.data_entities_processor.on_user_group_deleted = AsyncMock(side_effect=RuntimeError("db down"))
+        team.data_source.team_log_get_events_continue = AsyncMock(return_value=fail(RESET))
+        team.data_source.team_log_get_events = AsyncMock(return_value=fail("InternalServerError 503"))
+        team._sync_user_groups = AsyncMock()
+
+        await team._sync_group_changes_with_cursor()
+
+        written = team.dropbox_cursor_sync_point.update_sync_point.await_args.kwargs["sync_point_data"]
+        assert written == {"cursor": "old", "pendingGroupMemberReads": [], "pendingGroupDeletes": ["g:gone"]}
+
+    @pytest.mark.asyncio
+    async def test_a_new_cursor_keeps_what_is_stored(self, team: DropboxConnector) -> None:
+        team.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
+            return_value={"cursor": "old", "pendingGroupDeletes": ["g:gone"], "other": 1})
+        team.data_source.team_log_get_events = AsyncMock(return_value=ok(SimpleNamespace(cursor="new")))
+
+        assert await team._initialize_event_cursor("k", EventCategory.groups) is None
+
+        team.dropbox_cursor_sync_point.update_sync_point.assert_awaited_once_with(
+            "k", {"cursor": "new", "pendingGroupDeletes": ["g:gone"]})
 
 
 class TestAskParent:

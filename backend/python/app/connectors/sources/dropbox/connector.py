@@ -1769,9 +1769,13 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Dropbox full sync completed.")
 
     async def _initialize_event_cursor(self, sync_key: str, category: EventCategory,
-                                       start_time: datetime | None = None) -> str | None:
+                                       start_time: datetime | None = None,
+                                       pending: dict[str, list[str]] | None = None) -> str | None:
         """
         Take a cursor of the team's activity log from now (or from ``start_time``) on.
+
+        A write replaces the stored document, so the work still owed beside the cursor (its ``pending*`` lists)
+        is written with the new cursor: ``pending`` when given, else what is stored.
 
         Returns Dropbox's error when the log cannot be read (a plan without it, or no events.read), else None.
         """
@@ -1787,8 +1791,11 @@ class DropboxConnector(BaseConnector):
             )
 
             if response.success and hasattr(response.data, 'cursor') and response.data.cursor:
+                if pending is None:
+                    stored = await self.dropbox_cursor_sync_point.read_sync_point(sync_key) or {}
+                    pending = {key: value for key, value in stored.items() if key.startswith("pending")}
                 await self.dropbox_cursor_sync_point.update_sync_point(
-                    sync_key, {"cursor": response.data.cursor}
+                    sync_key, {"cursor": response.data.cursor, **pending}
                 )
                 self.logger.info(f"✓ Initialized cursor for {category} from {current_time}")
                 return None
@@ -1904,7 +1911,14 @@ class DropboxConnector(BaseConnector):
                         self.logger.error(f"⚠️ Error fetching team event log: {response.error}")
                         if is_cursor_reset(response.error):
                             # Events since the cursor are lost: read every group again, and take a new cursor.
-                            await self._initialize_event_cursor(sync_point_key, EventCategory.groups)
+                            # Removals still owed are kept with it: Dropbox does not list their events again.
+                            pending = {"pendingGroupMemberReads": owed_member_reads,
+                                       "pendingGroupDeletes": owed_deletes}
+                            if await self._initialize_event_cursor(sync_point_key, EventCategory.groups,
+                                                                   pending=pending) is not None:
+                                # No new cursor: the old one, which resets again next run, keeps them.
+                                await self.dropbox_cursor_sync_point.update_sync_point(
+                                    sync_point_key, sync_point_data={"cursor": cursor, **pending})
                             await self._sync_user_groups()
                             return
                         self._health.skipped("group changes", response.error)
