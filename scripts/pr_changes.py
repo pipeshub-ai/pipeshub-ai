@@ -208,7 +208,7 @@ CONNECTOR_SHARDS = {
         "servicenow",
     ),
     "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
-    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+    "connectors-4": ("google_drive_workspace", "google_drive_individual", "servicenow_sim"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -304,7 +304,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "network_share": ("smb",),
     "nextcloud": ("nextcloud",),
     "rss": ("rss",),
-    "servicenow": ("servicenow",),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
     "zammad": ("zammad",),
     "zendesk": ("zendesk",),
@@ -314,6 +314,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
+    "servicenow": ("servicenow", "servicenow_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

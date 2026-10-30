@@ -2,7 +2,9 @@
 
 This suite runs against a real ServiceNow instance (a free developer instance works), the running
 PipesHub stack and its graph. ServiceNow is never mocked. Each test module seeds its own objects,
-syncs them with its own connectors, changes them, and removes everything at the end.
+syncs them with its own connectors, changes them, and removes everything at the end. The
+`servicenow_sim` suite in this folder runs against the ServiceNow simulator instead and needs no
+instance: [SERVICENOW_SIM_ITS.md](SERVICENOW_SIM_ITS.md).
 
 | File | What it covers |
 | --- | --- |
@@ -180,3 +182,8 @@ from the secrets named in `.github/workflows/integration-tests.yml` (the `SERVIC
 above); until they exist in the protected environments the suite skips, and on the nightly it fails
 instead (`PIPESHUB_REQUIRE_CONNECTOR_SECRETS`). A developer instance hibernates after a few days
 without use: the suite then fails at setup with "did not answer as admin".
+
+The `servicenow_sim` suite runs on the `connectors-4` shard, and alone when the workflow is
+dispatched with `servicenow_sim`. It needs no secrets: the job builds the simulator image at
+`CONNSIM_SERVICENOW_REF` and starts it with the `docker-compose.integration.servicenow-sim.yml`
+override.
