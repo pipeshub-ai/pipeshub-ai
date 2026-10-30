@@ -10,6 +10,7 @@ import re
 
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.mentions import RawMention
+from app.modules.named_entities.normalizers.dates import ORDINAL as _ORDINAL
 from app.modules.named_entities.normalizers.money import ISO_4217, SCALE_WORDS
 from app.modules.named_entities.text import TextUnit
 
@@ -17,16 +18,35 @@ _MONTH = (
     r"January|February|March|April|May|June|July|August|September|October|November|December|"
     r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
 )
-_DATE = re.compile(
-    rf"\b(?:Q[1-4]\s*(?:FY\s*)?\d{{2,4}}|FY\s?(?:\d{{4}}|\d{{2}})|(?:{_MONTH})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{{4}})?|"
-    rf"\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_MONTH})\b(?:(?:,\s*|\s+)\d{{4}})?|"
-    rf"(?:{_MONTH})\.?\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}}(?:[T ]\d{{2}}:\d{{2}}(?::\d{{2}})?(?:Z|[+-]\d{{2}}:?\d{{2}})?)?|"
+_RANGE_MONTH = rf"(?:{_MONTH})\b\.?"
+_RANGE_YEAR = r"(?:,\s*|\s+)\d{4}"
+_ISO = r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?"
+_TO = r"(?:\s{0,2}[–—‒-]\s{0,2}|\s{1,3}(?:to|through|thru|until|till)\s{1,3})"
+# A day that ends a range is not the hour of "Sep 9 – 11:00" or "May 3 – 5 PM", or
+# the count of "20-30 minutes".
+_LAST_DAY = (
+    rf"\d{{1,2}}{_ORDINAL}(?![:.]\d|\s*(?:[ap]\.?m\b\.?|o'?clock\b)"
+    rf"|\s+(?:days?|weeks?|months?|years?|hours?|minutes?|mins?|hrs?)\b)"
+)
+# Tried first, so a range is one span and not its last end alone ("11 September 2025"
+# of "9–11 September 2025"). The normalizer fills in what one end leaves out.
+_DATE_RANGE = (
+    rf"{_ISO}(?:\s{{0,2}}/\s{{0,2}}|{_TO}){_ISO}(?![:.]\d)"
+    rf"|{_RANGE_MONTH}\s+\d{{1,2}}{_ORDINAL}(?:{_RANGE_YEAR})?{_TO}(?:{_RANGE_MONTH}\s+)?{_LAST_DAY}(?:{_RANGE_YEAR})?"
+    rf"|\d{{1,2}}{_ORDINAL}(?:\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?)?{_TO}\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?"
+    rf"|{_RANGE_MONTH}(?:\s+\d{{4}})?{_TO}{_RANGE_MONTH}\s+\d{{4}}"
+)
+_ONE_DATE = (
+    rf"Q[1-4]\s*(?:FY\s*)?\d{{2,4}}|FY\s?(?:\d{{4}}|\d{{2}})|(?:{_MONTH})\.?\s+\d{{1,2}}{_ORDINAL}(?:(?:,\s*|\s+)\d{{4}})?|"
+    rf"\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?(?:{_MONTH})\b(?:(?:,\s*|\s+)\d{{4}})?|"
+    rf"(?:{_MONTH})\.?\s+\d{{4}}|{_ISO}|"
     rf"\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}|(?:next|last|this)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|week|month|quarter|year)|"
     rf"\d+\s+(?:days?|weeks?|months?|years?|hours?|minutes?)|"
     # Short time units; bare "s" and "h" stay out ("1990s", "10s of thousands").
-    rf"\d+(?:\.\d+)?\s?(?:ms|msecs?|milliseconds?|secs?|seconds?|mins?|hrs?))\b",
-    re.IGNORECASE,
+    rf"\d+(?:\.\d+)?\s?(?:ms|msecs?|milliseconds?|secs?|seconds?|mins?|hrs?)"
 )
+_SINGLE_DATE = re.compile(rf"\b(?:{_ONE_DATE})\b", re.IGNORECASE)
+_DATE = re.compile(rf"\b(?:(?P<range>{_DATE_RANGE})|{_ONE_DATE})\b", re.IGNORECASE)
 # Codes that are also common words in capitals ("TOP 10", "ALL 100 EMPLOYEES").
 _WORD_CODES = frozenset({"ALL", "CUP", "SOS", "TOP"})
 _CODES = "|".join(sorted(ISO_4217 - _WORD_CODES))
@@ -107,9 +127,14 @@ class ValueCandidateRecognizer:
         date_kinds = {EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, EntityKind.DURATION}
         if date_kinds & self._enabled:
             for match in _DATE.finditer(unit.text):
-                surface = match.group(0)
-                kind = _date_kind(surface)
-                self._add(out, unit, kind, match)
+                if not match.group("range"):
+                    self._add(out, unit, _date_kind(match.group(0)), match)
+                    continue
+                self._add(out, unit, EntityKind.DATE_RANGE, match)
+                # A range that does not read ("3-1 May 2025", a score) is dropped
+                # later; the dates inside it still count.
+                for inner in _SINGLE_DATE.finditer(unit.text, match.start(), match.end()):
+                    self._add(out, unit, _date_kind(inner.group(0)), inner)
         if EntityKind.CURRENCY in self._enabled:
             for match in _MONEY.finditer(unit.text):
                 self._add(out, unit, EntityKind.CURRENCY, match)
