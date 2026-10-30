@@ -94,6 +94,12 @@ class MCPServerTemplate(MCPCamelModel):
 
     # SSE / Streamable HTTP
     default_url: Optional[str] = None
+    # The admin types the server URL. Every other catalog entry locks `default_url`.
+    # Transport, command and args stay locked either way.
+    url_editable: bool = False
+    # The setup form always asks for a client ID and secret, even when the provider
+    # advertises a registration endpoint that rejects anonymous clients.
+    require_oauth_client: bool = False
 
     # OAuth
     authorization_url: Optional[str] = None

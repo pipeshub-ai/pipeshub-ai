@@ -85,6 +85,37 @@ class TestMCPRegistry:
         assert "stripe" in type_ids
         assert "context7" in type_ids
         assert "huggingface" in type_ids
+        assert "docusign" in type_ids
+        assert "okta" in type_ids
+
+    def test_okta_and_docusign_catalog_entries(self) -> None:
+        """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.
+        DocuSign is one production host, and its scopes are the ones that host publishes."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        okta = registry.get_template("okta")
+        assert okta is not None
+        assert okta.url_editable is True
+        assert okta.require_oauth_client is True
+        assert okta.default_url is None
+        assert okta.supports_dcr is False
+        assert okta.default_scopes == ["okta.users.read", "okta.groups.read"]
+
+        docusign = registry.get_template("docusign")
+        assert docusign is not None
+        assert docusign.url_editable is False
+        assert docusign.default_url == "https://mcp.docusign.com/mcp"
+        assert docusign.supports_dcr is False
+        assert docusign.authorization_url == "https://account.docusign.com/oauth/auth"
+        assert docusign.token_url == "https://account.docusign.com/oauth/token"
+        assert set(docusign.default_scopes) == {
+            "signature",
+            "aow_manage",
+            "adm_store_unified_repo_read",
+            "spring_read",
+            "spring_write",
+            "cors",
+        }
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode
@@ -107,10 +138,12 @@ class TestMCPRegistry:
                 assert template.command, f"{template.type_id}: STDIO template missing command"
                 if template.default_auth_mode == MCPAuthMode.API_TOKEN:
                     assert template.required_env, f"{template.type_id}: API_TOKEN template missing required_env"
+            elif template.url_editable:
+                assert not template.default_url, f"{template.type_id}: a per-customer URL must not be fixed on the template"
             else:
                 assert template.default_url, f"{template.type_id}: HTTP/SSE template missing default_url"
 
-            if template.default_auth_mode == MCPAuthMode.OAUTH:
+            if template.default_auth_mode == MCPAuthMode.OAUTH and not template.url_editable:
                 assert template.authorization_url, f"{template.type_id}: OAuth template missing authorization_url"
                 assert template.token_url, f"{template.type_id}: OAuth template missing token_url"
 

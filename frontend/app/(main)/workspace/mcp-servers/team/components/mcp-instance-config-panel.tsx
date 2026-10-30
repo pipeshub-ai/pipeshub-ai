@@ -266,7 +266,10 @@ export function McpInstanceConfigPanel({
 
   // The URL to probe for live OAuth metadata — for catalog servers this is fixed (their
   // defaultUrl/stored url); for custom servers it's whatever the admin is currently typing.
-  const oauthProbeUrl = isTemplateBased ? (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '') : url.trim();
+  const urlEditable = Boolean(resolvedTemplate?.urlEditable);
+  const oauthProbeUrl = urlEditable || !isTemplateBased
+    ? url.trim()
+    : (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '');
 
   const [dcrProbe, setDcrProbe] = useState<DcrProbeState>({ status: 'idle' });
 
@@ -356,7 +359,8 @@ export function McpInstanceConfigPanel({
       setRevealingOAuthClient(false);
     }
   };
-  const oauthClientRequired = isOauthClientRequired(authMode, dcrSupported);
+  const oauthClientRequired =
+    isOauthClientRequired(authMode, dcrSupported) || Boolean(resolvedTemplate?.requireOauthClient);
   const oauthClientMissing = isOauthClientMissing(
     oauthClientRequired,
     hasExistingOAuthClient,
@@ -376,8 +380,11 @@ export function McpInstanceConfigPanel({
     connectTimeoutInput.valid &&
     callTimeoutInput.valid &&
     name.trim().length > 0 &&
-    (isTemplateBased ||
-      (transport === 'stdio' ? command.trim().length > 0 : url.trim().length > 0)) &&
+    (isTemplateBased
+      ? !urlEditable || url.trim().length > 0
+      : transport === 'stdio'
+        ? command.trim().length > 0
+        : url.trim().length > 0) &&
     !oauthPairError &&
     !oauthClientMissing &&
     !customStdioBlocked;
@@ -438,7 +445,9 @@ export function McpInstanceConfigPanel({
     useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
     description: description.trim() || null,
     ...(isTemplateBased
-      ? {}
+      ? urlEditable
+        ? { url: url.trim() }
+        : {}
       : transport === 'stdio'
         ? {
             command: command.trim(),
@@ -733,14 +742,19 @@ export function McpInstanceConfigPanel({
         </>
       )}
 
-      {!isTemplateBased && transport !== 'stdio' && (
+      {(urlEditable || (!isTemplateBased && transport !== 'stdio')) && (
         <FormField label={t('workspace.mcpServers.form.url')} required>
           <TextField.Root
             size="2"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com/mcp"
+            placeholder={urlEditable ? 'https://your-company.okta.com/mcp' : 'https://example.com/mcp'}
           />
+          {urlEditable && resolvedTemplate?.authHint?.helpText && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {resolvedTemplate.authHint.helpText}
+            </Text>
+          )}
         </FormField>
       )}
 
