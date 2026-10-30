@@ -782,6 +782,8 @@ class _Builder:
                 continue
             base = to_key.rpartition("/")[2]
             child = from_key.rpartition("/")[2]
+            # The base chain read here is the child's dependency, as in `resolve_rest`.
+            self.resolving = self.index.record_by_block.get(child)
             for method_name, block_id in methods_by_owner.get(child, ()):
                 # Start at the base, not the child: the child's own method
                 # would otherwise match and the edge would be a self-loop.
@@ -795,6 +797,7 @@ class _Builder:
                     # plus an exact name match on the base chain.
                     confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE,
                 )
+        self.resolving = None
 
     def _resolve_within_record(self, record_id: str, name: str) -> str | None:
         for block_id in self.index.blocks_by_record.get(record_id, ()):
@@ -1833,7 +1836,8 @@ async def build_code_graph_edges(
         if not unbound and not missing_types and not stale:
             break
         reresolve -= stale
-        loaded = builder.types_loaded | missing_types | reresolve
+        # Not the unreadable ones: the next round must still note who reads them.
+        loaded = (builder.types_loaded | missing_types | reresolve) - unreadable
         result = replace(builder.result, pending_edges_seen=0, ambiguous_skipped=0,
                          edges_by_type={}, external_refs=0, unresolved=0,
                          files_reresolved=len(reresolve))

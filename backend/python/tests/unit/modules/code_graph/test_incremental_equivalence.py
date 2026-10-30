@@ -371,3 +371,66 @@ async def test_a_long_chain_of_imported_bases_resolves_the_same_incrementally() 
     want = code_edges(expected)
     assert any("a5/m.py::method:L5.ping" in line for line in describe(expected, want)), "the full build links the call"
     assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))
+
+
+async def _keeps_edges_without(files: dict[str, str], unreadable: str, touched: str, marker: str) -> None:
+    """Build in full, make `unreadable`'s facts unreadable, rebuild `touched` alone: the
+    edges from the records that read the unreadable file stay as they were."""
+    parser = CodeFileParser()
+
+    async def put(graph: Graph, path: str, source: str) -> None:
+        record = f"rec-{path}"
+        container = parser.parse_to_blocks(source.encode(), path.rsplit("/", 1)[-1], path, "python")
+        graph.code_files[record] = path
+        graph.blobs[record] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+        await write_code_file_blocks_to_graph(
+            graph_provider=graph,
+            context=BlockProjectionContext(org_id=ORG_ID, record_id=record, record_group_id=GROUP_ID,
+                                           connector_id="conn1", language="python", file_path=path),
+            block_containers=container,
+        )
+
+    graph = Graph()
+    for path, source in files.items():
+        await put(graph, path, source)
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID, facts_source=graph)
+    before = set(describe(graph, code_edges(graph)))
+    assert marker in before, "the full build makes the edge"
+    del graph.blobs[f"rec-{unreadable}"]
+    await put(graph, touched, files[touched])
+    await asyncio.wait_for(build_code_graph_edges(
+        graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+        touched_record_ids={f"rec-{touched}"}, facts_source=graph), timeout=20)
+    after = set(describe(graph, code_edges(graph)))
+    assert before == after, "\n".join(sorted(before ^ after))
+
+
+async def test_a_file_reresolved_in_a_later_round_keeps_its_edges_when_a_type_table_cannot_be_read() -> None:
+    """`use.py` reads `svc.py`'s bindings, so a second round re-resolves `svc.py`, which
+    reads the type table of `x.py` that cannot be read. `svc.py` keeps its edges."""
+    await _keeps_edges_without({
+        "pkg/__init__.py": "",
+        "pkg/base.py": "class Base:\n    def ping(self):\n        pass\n",
+        "pkg/x.py": "class Y:\n    def go(self):\n        pass\n\n\nthing = Y()\n",
+        # A second `go`, so only x.py's type table says which one `thing.go()` is.
+        "pkg/z.py": "class Z:\n    def go(self):\n        pass\n",
+        "pkg/svc.py": ("from pkg.base import Base\nfrom pkg.x import thing\n\n\nclass Service(Base):\n"
+                       "    def run(self):\n        return thing.go()\n"),
+        "pkg/use.py": ("from pkg.svc import Service\nfrom pkg.x import thing\n\n\ndef run():\n"
+                       "    Service().ping()\n    return thing.go()\n"),
+    }, unreadable="pkg/x.py", touched="pkg/use.py",
+        marker="pkg/svc.py::method:Service.run -CALLS-> pkg/x.py::method:Y.go")
+
+
+async def test_a_class_keeps_its_overrides_when_its_base_file_cannot_be_read() -> None:
+    """`C.run` overrides `A.run` through `B`, whose file cannot be read: the override is
+    found by walking `B`'s bases, so `c.py` keeps the edge rather than losing it."""
+    await _keeps_edges_without({
+        "pkg/__init__.py": "",
+        "pkg/a.py": "class A:\n    def run(self):\n        pass\n",
+        # A second `A`, so only b.py's import says which base `B` has.
+        "pkg/other.py": "class A:\n    def run(self):\n        pass\n",
+        "pkg/b.py": "from pkg.a import A\n\n\nclass B(A):\n    pass\n",
+        "pkg/c.py": "from pkg.b import B\n\n\nclass C(B):\n    def run(self):\n        pass\n",
+    }, unreadable="pkg/b.py", touched="pkg/c.py",
+        marker="pkg/c.py::method:C.run -OVERRIDES-> pkg/a.py::method:A.run")
