@@ -232,6 +232,17 @@ def test_an_unsuccessful_listing_is_the_folders_own_failure() -> None:
     assert "unsuccessful" in str(raised.value).lower()
 
 
+def test_a_folder_named_logon_is_not_a_refused_sign_in() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_UNSUCCESSFUL, r"\\10.0.0.5\share\logon"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(DirectoryListingError):
+            client.list_directory("share", "logon")
+
+
 class _Refused(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"Received unexpected status from the server: 0x{status:08x}")

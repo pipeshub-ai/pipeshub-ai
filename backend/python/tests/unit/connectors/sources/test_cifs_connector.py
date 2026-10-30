@@ -369,6 +369,17 @@ class TestCifsDialectGuard:
             with pytest.raises(DirectoryListingError):
                 client.list_directory(SHARE, "private")
 
+    def test_a_folder_named_logon_is_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Failed to list /logon on public: Unable to open directory")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "logon")
+
     def test_reconnect_succeeds_on_second_attempt(self):
         with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
             conn = MagicMock()

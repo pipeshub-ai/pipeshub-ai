@@ -19,7 +19,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
-from app.sources.client.smb.errors import describe, is_sign_in_refusal
+from app.sources.client.smb.errors import describe, is_sign_in_refusal, nt_status
 from app.sources.client.smb.share_enum import enumerate_shares
 from app.utils.url_fetcher import (
     HostCheckError,
@@ -252,8 +252,9 @@ class SmbClient(IClient):
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(target) from exc
             # The walk stops on an auth error, so only a logon failure may become one; "access
-            # denied" or "unsuccessful" here is this folder's own failure.
-            if "logon" in message:
+            # denied" or "unsuccessful" here is this folder's own failure. An error with an NT
+            # status was judged above, and its text names the path, which may contain "logon".
+            if nt_status(exc) is None and "logon" in message:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
         return entries
