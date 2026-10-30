@@ -517,6 +517,8 @@ export class Application {
     this.app.use(
       helmet({
         crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
+        // The from-source UI runs on another port; same-site still covers it and keeps other sites out.
+        crossOriginResourcePolicy: { policy: 'same-site' },
         contentSecurityPolicy: {
           directives: {
             defaultSrc: ["'self'"],
