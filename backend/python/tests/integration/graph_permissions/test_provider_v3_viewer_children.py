@@ -63,6 +63,13 @@ def _graph() -> tuple[list, list]:
         nr("vc-mixed", "vc-hidden"), bt("vc-hidden", SPACE),
         nr("vc-closed", "vc-hidden-only"), bt("vc-hidden-only", SPACE),
     ]
+    # Collections: one holding only a trashed, a placeholder and another organisation's record, one with a live record.
+    nodes += [
+        app("vc-kb-dead", "Dead", connector="KB", app_group="KB"), app("vc-kb-live", "Live", connector="KB", app_group="KB"),
+        rec("vc-kb-d1", "d1", isDeleted=True), rec("vc-kb-d2", "d2", isPlaceholder=True),
+        rec("vc-kb-d3", "d3", orgId="org-2"), rec("vc-kb-l1", "l1"),
+    ]
+    edges += [bt(k, "vc-kb-dead") for k in ("vc-kb-d1", "vc-kb-d2", "vc-kb-d3")] + [bt("vc-kb-l1", "vc-kb-live")]
     return nodes, edges
 
 
@@ -134,3 +141,12 @@ async def test_linked_records_report_only_readable_children(children_graph, prov
 
     assert {item["id"]: item["hasChildren"] for item in linked} == {"vc-mixed": True, "vc-closed": False}
     assert all("childIds" not in item for item in linked)
+
+
+async def test_a_collection_with_no_live_record_has_no_arrow(children_graph, provider) -> None:
+    envelope = await provider.get_knowledge_hub_root_nodes_v2(
+        user_key=USER_U, org_id=ORG, user_app_ids=["vc-kb-dead", "vc-kb-live"], limit=100,
+    )
+    rows = envelope["partitions"][0]["rows"] if "partitions" in envelope else envelope["rows"]
+
+    assert {r["id"]: r["hasChildren"] for r in rows} == {"vc-kb-dead": False, "vc-kb-live": True}

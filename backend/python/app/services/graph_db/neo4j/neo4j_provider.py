@@ -19279,7 +19279,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Existence, not a count. A connector always answers yes: whether it has groups the
             # viewer can open is not this row's to say, and "any group exists" would tell them.
             children_and_role = f"""WITH app, u,
-             CASE WHEN app.type = 'KB' THEN EXISTS {{ (:Record)-[:BELONGS_TO]->(app) }}
+             CASE WHEN app.type = 'KB' THEN EXISTS {{ (kh_r:Record)-[:BELONGS_TO]->(app)
+                       WHERE NOT coalesce(kh_r.isDeleted, false) AND NOT coalesce(kh_r.isPlaceholder, false)
+                         AND kh_r.orgId = $org_id }}
                   WHEN app.type IS NULL THEN false
                   ELSE true
              END AS has_children
@@ -23182,11 +23184,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self.client.execute_query(
             """
             UNWIND $ids AS pid
-            MATCH (p:Record {id: pid})-[r:NODE_RELATION]->(c:Record)
-            WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-              AND NOT coalesce(c.isDeleted, false) AND c.orgId = $org_id
-            WITH pid, c.id AS cid ORDER BY cid
-            RETURN pid, collect(cid)[$skip..$skip + $limit] AS childIds
+            // Per parent, so the sort keeps only skip + limit ids instead of every child.
+            CALL (pid) {
+                MATCH (p:Record {id: pid})-[r:NODE_RELATION]->(c:Record)
+                WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                  AND NOT coalesce(c.isDeleted, false) AND c.orgId = $org_id
+                WITH c.id AS cid ORDER BY cid SKIP $skip LIMIT $limit
+                RETURN collect(cid) AS childIds
+            }
+            RETURN pid, childIds
             """,
             parameters={"ids": parent_ids, "org_id": org_id, "skip": skip, "limit": limit},
             txn_id=transaction,

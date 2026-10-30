@@ -18937,6 +18937,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR edge IN belongsTo
                         FILTER edge._to == app._id
                         AND STARTS_WITH(edge._from, "records/")
+                        // A trashed, placeholder or other-org record is not a child the viewer can open.
+                        LET kh_r = DOCUMENT(edge._from)
+                        FILTER kh_r.isDeleted != true AND kh_r.isPlaceholder != true AND kh_r.orgId == @org_id
                         LIMIT 1 RETURN 1
                 ) > 0) : true
                 {permission_role}
