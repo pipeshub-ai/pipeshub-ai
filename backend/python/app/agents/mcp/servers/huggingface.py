@@ -22,7 +22,10 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         # the UI-hint defaults; the authorize flow always re-discovers live (see dcr.py).
         authorization_url="https://huggingface.co/oauth/authorize",
         token_url="https://huggingface.co/oauth/token",
-        default_scopes=[],
+        # Read-only. The server's metadata also lists `contribute-repos`, `jobs` and
+        # `inference-api`; confirmed live that without them all six tools are still listed
+        # and the consent page asks only for "Read repositories" and "MCP tools".
+        default_scopes=["openid", "profile", "read-mcp", "read-repos"],
         supports_dcr=True,
         documentation_url="https://huggingface.co/docs/hub/en/hf-mcp-server",
         auth_hint=AuthHint(
