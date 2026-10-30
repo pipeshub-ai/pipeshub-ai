@@ -57,9 +57,9 @@ _ALWAYS_GRANTED = frozenset({
     "knowledgegraph__fetch_record", "knowledgegraph__list_files", "knowledgegraph__navigate",
     "knowledgegraph__search", "start_block",
 })
-# `find_records_by_entity` is not here: it is granted only after
-# `search_entities` has returned an entity id.
-_GRANTED_WITH_ENTITY_STORE = frozenset({"knowledgegraph__search_entities", "entity_ids"})
+_GRANTED_WITH_ENTITY_STORE = frozenset({
+    "knowledgegraph__search_entities", "knowledgegraph__find_records_by_entity", "entity_ids",
+})
 
 _ALL_COMBINATIONS = list(itertools.product((False, True), repeat=3))
 

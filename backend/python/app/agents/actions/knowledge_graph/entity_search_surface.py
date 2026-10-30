@@ -125,6 +125,7 @@ _VARIANTS: dict[str, _Variant] = {
     ),
     FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
         description=(
+            _Edit("Given an entityId from search_entities,", "Given an entityId from search_entities or search_by_entities,"),
             _Edit(
                 "every record directly inside a record_group, or the record itself",
                 "every record directly inside a record_group, every record that mentions a "
@@ -132,6 +133,7 @@ _VARIANTS: dict[str, _Variant] = {
             ),
         ),
         parameters=(
+            ("entity_id", (_Edit("The entityId from search_entities.", "The entityId from search_entities or search_by_entities."),)),
             ("entity_type", (_Edit(
                 "'language', 'record_group' or 'record'. Optional",
                 "'language', 'record_group', 'record' or 'named_entity'. Optional",

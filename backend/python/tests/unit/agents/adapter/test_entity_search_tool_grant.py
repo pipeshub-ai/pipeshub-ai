@@ -20,6 +20,9 @@ import pytest
 
 from app.agent_loop_lib.agent.tool_loop import tool_schemas_for_turn
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.knowledge_graph.entity_search_surface import (
+    FIND_RECORDS_BY_ENTITY_TOOL_NAME,
+)
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
@@ -29,9 +32,6 @@ from app.agents.agent_loop.entity_search_tool import (
     entity_search_tool_offered,
 )
 from app.agents.agent_loop.factory import PipesHubAgentFactory
-from app.agents.agent_loop.hooks.progressive_tools import (
-    PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
-)
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 _NER_FLAG = "app.agents.agent_loop.factory.is_named_entity_extraction_enabled"
@@ -215,17 +215,12 @@ class TestGrantPerMode:
         assert not runtime.tool_registry.has(SEARCH_BY_ENTITIES_TOOL_NAME)
 
     @pytest.mark.asyncio
-    async def test_it_unlocks_nothing_mid_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Its result shows no entity ids, so it does not grant
-        find_records_by_entity, and the tool list stays what the run began with."""
+    async def test_the_tool_its_result_points_to_is_granted_with_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Its result ends with a find_records_by_entity call per matched entity."""
         monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
         _context, agent, _runtime, _ = await _create()
-        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names
-        from app.agents.agent_loop.hooks.progressive_tools import (
-            _ENTITY_SEARCH_TRIGGER_NAMES,
-        )
-
-        assert SEARCH_BY_ENTITIES_TOOL_NAME not in _ENTITY_SEARCH_TRIGGER_NAMES
+        assert SEARCH_BY_ENTITIES_TOOL_NAME in agent.spec.tool_names
+        assert FIND_RECORDS_BY_ENTITY_TOOL_NAME in agent.spec.tool_names
 
 
 class TestLazyDisclosure:

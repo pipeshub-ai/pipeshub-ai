@@ -15,7 +15,7 @@ from app.agent_loop_lib.tools.base import (
 from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.global_fallback import GlobalCatalogFallback
 from app.agent_loop_lib.tools.index import KeywordToolIndex, ToolIndex
-from app.agent_loop_lib.tools.registry import ToolDeferral, ToolRegistry
+from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.special_route import RouteContext
 
 if TYPE_CHECKING:
@@ -31,26 +31,8 @@ def _grant_set(spec: "AgentSpec") -> set[str] | None:
     return set(spec.tool_names) if spec.tool_names else None
 
 
-def _withheld(registry: ToolRegistry, grant: set[str], denied: list[str]) -> dict[str, Any]:
-    """Tools outside the grant, split into those a granted tool unlocks later
-    and those this agent never gets. A model that looks up a deferred tool
-    before running what unlocks it would otherwise conclude it is unavailable."""
-    deferred: dict[str, ToolDeferral] = {}
-    for name in denied:
-        deferral = registry.deferral(name)
-        if deferral is not None and deferral.unlocked_by in grant:
-            deferred[name] = deferral
-    withheld: dict[str, Any] = {}
-    never = [name for name in denied if name not in deferred]
-    if never:
-        withheld["denied"] = {"reason": "not_granted_to_this_agent", "tools": never}
-    if deferred:
-        withheld["deferred"] = [
-            {"tool": name, "available_after": d.unlocked_by, "condition": d.condition,
-             "message": f"{name} is not callable yet. It becomes callable once {d.unlocked_by} {d.condition}."}
-            for name, d in deferred.items()
-        ]
-    return withheld
+def _withheld(denied: list[str]) -> dict[str, Any]:
+    return {"denied": {"reason": "not_granted_to_this_agent", "tools": denied}} if denied else {}
 
 
 class ListToolsetsTool(Tool):
@@ -204,7 +186,7 @@ class FetchToolsTool(Tool):
             data = {
                 **data,
                 "tools": [t for t in data["tools"] if t.get("name") in allowed],
-                **_withheld(self._registry, grant or set(), denied),
+                **_withheld(denied),
             }
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
@@ -356,7 +338,7 @@ class SearchToolsTool(Tool):
                     "reason": f"over the {MAX_TOOLS_PER_REQUEST} tools one request can carry",
                 }
             if denied:
-                content.update(_withheld(self._registry, grant or set(), denied))
+                content.update(_withheld(denied))
             unavailable = result.data.get("unavailable")
             if unavailable:
                 content["unavailable"] = unavailable

@@ -55,8 +55,6 @@ _SEARCH_AGAIN = (
 
 # Only when the entity tools are granted: the mode text is not filtered by the
 # grant the way Finding Information is, so it must not name a withheld tool.
-# `find_records_by_entity` is left to `search_entities`' own schema: it is
-# granted only once that tool has returned an entity id.
 _SEARCH_ENTITIES = (
     " When the question names a specific team, customer, project, product, system or "
     "document, also look it up with `knowledgegraph__search_entities` (in a document's terms "
