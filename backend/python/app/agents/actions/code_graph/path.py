@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
@@ -127,6 +128,21 @@ async def find_symbol_path_impl(
                                          [start, end])
         if gap := coverage_for([start, end]):
             missed["coverage"] = gap
+        if _AB_PATHNOTE and not undirected:
+            callers = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=[end_key], node_collection=_BLOCKS,
+                relationship_types=[RecordRelations.CALLS.value], direction="inbound", limit=1,
+            ) or []
+            missed["unproven"] = (
+                ("Nothing in the graph calls the second symbol: every call to it is one the graph "
+                 "could not link (through getattr, a callback, or a value of unknown type), so "
+                 "this search cannot tell whether the first reaches it. " if not callers else
+                 "No chain of linked calls joins them, but calls the graph could not link (on "
+                 "values of unknown type, through getattr or callbacks) can. ")
+                + "Before answering that it is not reached, read the calls the first symbol makes "
+                "and follow them; a call counts even when it sits in a branch only some "
+                "arguments take."
+            )
         if capped:
             missed["capped"] = True
             missed["note"] = (
@@ -307,6 +323,9 @@ async def _neighbour_rows(
 # Where a directed path is in its shape: climbing out of the start symbol's
 # containers, crossing along outbound edges, or descending into a container.
 _CLIMBING, _CROSSING, _DESCENDING = 0, 1, 2
+_AB_PATH = os.environ.get("CG_AB_PATH") == "1"
+# A/B (CG_AB_PATHNOTE): say what an absent path does and does not show.
+_AB_PATHNOTE = os.environ.get("CG_AB_PATHNOTE") == "1"
 
 
 def _next_phase(phase: int, row: dict[str, Any], *, undirected: bool) -> int | None:
@@ -317,7 +336,9 @@ def _next_phase(phase: int, row: dict[str, Any], *, undirected: bool) -> int | N
     if structural and not outbound:
         return _CLIMBING if phase == _CLIMBING else None
     if structural:
-        return _DESCENDING
+        # A/B (CG_AB_PATH): a call into a class is its constructor, not a call of each of
+        # its methods, so only a path still climbing out of the start may step down.
+        return None if _AB_PATH and phase != _CLIMBING else _DESCENDING
     if outbound and phase != _DESCENDING:
         return _CROSSING
     return None

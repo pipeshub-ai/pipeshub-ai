@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from app.modules.artifacts.reader import record_artifact_reader
@@ -43,11 +44,22 @@ SEARCH_MODES = ("identifier", "text", "regex")
 DEFAULT_SEARCH_LIMIT = 50
 MAX_SEARCH_LIMIT = 200
 # Files whose source a text search reads, and how many at once: each is a
-# blob fetch (~3 ms). The cap is reported, never applied silently; it matches
-# the path scan's own limit, so a directory's files are read, not a sample.
-_TEXT_SEARCH_FILES = 400
+# blob fetch (~3 ms), and repeat scans are served from the line cache below.
+# The cap is reported, never applied silently.
+_TEXT_SEARCH_FILES = 1000
+# Paths a text search lists before reading: key and path only, so a whole repo's
+# list is cheap, and its data and locale files cannot crowd its code out of the cap.
+_TEXT_SCAN_LIMIT = 20000
 _IDENTIFIER_ROWS = 400
 _BLOB_CONCURRENCY = 8
+# A file's lines by (virtual record id, record update time): a repo's text is
+# scanned again and again (every caller list scans it for unlinked call sites),
+# and a blob fetch is the whole cost. Only indexed records go in, so a reindex,
+# which moves the record off COMPLETED first, never serves the old text.
+# shortcut: one process-local LRU bounded by characters; move to a shared cache if workers multiply.
+_LINE_CACHE: OrderedDict[tuple[str, Any], list[tuple[int, str]]] = OrderedDict()
+_LINE_CACHE_CHARS = 64_000_000
+_line_cache_size = 0
 # A model-written regex runs in-process; these bound what one can cost.
 _MAX_PATTERN = 200
 _MAX_LINE = 1000
@@ -164,28 +176,41 @@ async def _by_text(
         tests = {k for k in records if roles.get(k) == TEST_ROLE}
         hidden, records = len(tests), {k: r for k, r in records.items() if k not in tests}
 
-    ordered = sorted(records, key=lambda k: paths[k])
+    # Only records with stored source count toward the cap: a repo's images, locale
+    # and data files would otherwise take the slots and leave its code unread.
+    ordered = sorted((k for k in records if records[k].get("virtualRecordId")), key=lambda k: paths[k])
     files_capped = len(ordered) > _TEXT_SEARCH_FILES
     ordered = ordered[:_TEXT_SEARCH_FILES]
     semaphore = asyncio.Semaphore(_BLOB_CONCURRENCY)
     reader = record_artifact_reader(blob_store)
 
-    async def load(key: str) -> tuple[str, dict[str, Any] | None]:
+    async def load(key: str) -> tuple[str, list[tuple[int, str]] | None]:
+        record = records[key]
+        cache_key = (record.get("virtualRecordId"), record.get("updatedAtTimestamp"))
+        if (lines := _LINE_CACHE.get(cache_key)) is not None:
+            _LINE_CACHE.move_to_end(cache_key)
+            return key, lines
         async with semaphore:
             try:
-                return key, await reader.read_record(records[key].get("virtualRecordId"), org_id)
+                blob = await reader.read_record(record.get("virtualRecordId"), org_id)
             except Exception:
                 logger.warning("search_code: blob for %s unreadable", paths[key], exc_info=True)
                 return key, None
+        if blob is None:
+            return key, None
+        lines = list(_source_lines(blob))
+        if record.get("indexingStatus") == "COMPLETED":
+            _remember(cache_key, lines)
+        return key, lines
 
-    loaded = await asyncio.gather(*(load(k) for k in ordered if records[k].get("virtualRecordId")))
+    loaded = await asyncio.gather(*(load(k) for k in ordered))
     matches: list[dict[str, Any]] = []
     unreadable = 0
-    for key, record in sorted(loaded, key=lambda kv: paths[kv[0]]):
-        if record is None:
+    for key, lines in sorted(loaded, key=lambda kv: paths[kv[0]]):
+        if lines is None:
             unreadable += 1
             continue
-        for line_no, text in _source_lines(record):
+        for line_no, text in lines:
             if matcher.search(text[:_MAX_LINE]):
                 matches.append({"file_path": paths[key], "line": line_no, "text": text.strip()[:200]})
     out: dict[str, Any] = {
@@ -229,11 +254,12 @@ async def _scoped_files(
             break
         candidates.append("/".join(parts[i:]))
     for candidate in candidates:
-        paths, capped = await files_by_pattern(graph_provider, org_id, candidate)
+        paths, capped = await files_by_pattern(graph_provider, org_id, candidate, scan_limit=_TEXT_SCAN_LIMIT)
         readable = await access.readable(paths)
         rows = await graph_provider.get_nodes_by_field_in(
             collection=_RECORDS, field_name="_key", field_values=sorted(readable),
-            return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId"],
+            return_fields=["_key", "orgId", "connectorId", "recordGroupId", "virtualRecordId",
+                           "updatedAtTimestamp", "indexingStatus"],
             raise_on_error=True,
         ) if readable else []
         records = {
@@ -269,6 +295,17 @@ async def _missing_path_message(
             return (f"No indexed file is under {path!r}; nothing was searched. "
                     f"{prefix or 'The repo root'!s} holds: {shown}. Paths are repo-relative.")
     return f"No indexed file is under {path!r}; nothing was searched."
+
+
+def _remember(key: tuple[str, Any], lines: list[tuple[int, str]]) -> None:
+    global _line_cache_size  # noqa: PLW0603
+    if key in _LINE_CACHE:
+        return
+    _LINE_CACHE[key] = lines
+    _line_cache_size += sum(len(t) + 50 for _, t in lines)
+    while _line_cache_size > _LINE_CACHE_CHARS and len(_LINE_CACHE) > 1:
+        _, old = _LINE_CACHE.popitem(last=False)
+        _line_cache_size -= sum(len(t) + 50 for _, t in old)
 
 
 def _source_lines(record: dict[str, Any]) -> Iterator[tuple[int, str]]:

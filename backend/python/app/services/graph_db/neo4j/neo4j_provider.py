@@ -3314,6 +3314,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         try:
             label = collection_to_label(collection)
@@ -3321,17 +3322,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             filter_conditions, parameters = self._filter_conditions(filters)
             conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
             parameters.update({"prefix": prefix, "limit": limit})
+            return_expr = ", ".join(
+                f"n.{'id' if field == '_key' else field} AS {field}" for field in return_fields
+            ) if return_fields else "n"
             query = f"""
             MATCH (n:{label})
             WHERE {" AND ".join(conditions)}
-            RETURN n
+            RETURN {return_expr}
             LIMIT $limit
             """
             rows = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction
             )
             return [
-                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                self._neo4j_to_arango_node(
+                    {field: row.get(field) for field in return_fields} if return_fields
+                    else dict(row.get("n", {})),
+                    collection,
+                )
                 for row in rows or []
             ]
         except Exception as e:
