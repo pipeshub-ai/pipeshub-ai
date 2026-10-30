@@ -768,9 +768,12 @@ def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
     try:
         yield
     finally:
-        with contextlib.suppress(ValueError, OSError):
-            resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
-        signal.signal(signal.SIGXCPU, previous)
+        # Both must be undone for the worker's next job, even if one of them fails.
+        try:
+            with contextlib.suppress(ValueError, OSError, MemoryError):
+                resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
+        finally:
+            signal.signal(signal.SIGXCPU, previous)
 
 
 def load_workbook_model(
@@ -797,12 +800,19 @@ def load_workbook_model(
     with _GrowthWatcher() as growth:
         try:
             with _cpu_limited(max_seconds):
-                _precheck(
-                    file_binary,
-                    max_xml_bytes,
-                    None if max_text_bytes is None else max_merged_positions(max_text_bytes),
-                )
-                model = _extract(file_binary)
+                try:
+                    _precheck(
+                        file_binary,
+                        max_xml_bytes,
+                        None if max_text_bytes is None else max_merged_positions(max_text_bytes),
+                    )
+                    model = _extract(file_binary)
+                finally:
+                    # The memory cap comes off first: undoing the CPU limit under it can itself
+                    # fail with MemoryError and leave the next job on this worker CPU-limited.
+                    if restore is not None:
+                        restore()
+                        restore = None
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
