@@ -274,3 +274,43 @@ def use():
     targets = _targets(graph, CALLS, "pkg/result.py")
     assert "pkg/result.py::method:Ok.unwrap" in targets
     assert "pkg/result.py::method:Pending.unwrap" not in targets
+
+
+@pytest.mark.asyncio
+async def test_super_follows_the_enclosing_classs_mro(graph, index_file) -> None:
+    """`super(A, self).ping()` in `Child(A, B)` runs `B.ping`: B comes after A in
+    Child's MRO, though A itself does not inherit B. `super()` in a diamond follows the MRO too."""
+    await _index(index_file, {
+        "pkg/mro.py": b'''
+class A:
+    pass
+
+class B:
+    def ping(self):
+        pass
+
+class Child(A, B):
+    def ping(self):
+        return super(A, self).ping()
+
+class Root:
+    def save(self):
+        pass
+
+class Left(Root):
+    pass
+
+class Right(Root):
+    def save(self):
+        pass
+
+class Leaf(Left, Right):
+    def save(self):
+        return super().save()
+''',
+    })
+    await _build(graph)
+    targets = _targets(graph, CALLS, "pkg/mro.py")
+    assert "pkg/mro.py::method:B.ping" in targets
+    assert "pkg/mro.py::method:Right.save" in targets
+    assert "pkg/mro.py::method:Root.save" not in targets

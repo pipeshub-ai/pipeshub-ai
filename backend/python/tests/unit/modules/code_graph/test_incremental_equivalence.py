@@ -280,9 +280,10 @@ async def test_an_inherited_method_resolves_the_same_incrementally() -> None:
     assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))
 
 
-async def test_a_dependency_whose_facts_are_unreadable_does_not_stall_the_build() -> None:
-    """The retry re-resolves files whose bindings a chain read; one whose stored facts
-    cannot be read is tried once, and the build still finishes."""
+async def test_a_caller_keeps_its_edges_when_a_dependency_cannot_be_read() -> None:
+    """The retry re-resolves files whose bindings a chain read. When one cannot be
+    read, the build still finishes, and the caller that needed it keeps the edges it
+    had rather than being rewritten without them."""
     files = {
         "pkg/__init__.py": "",
         "pkg/a/__init__.py": "",
@@ -315,13 +316,15 @@ async def test_a_dependency_whose_facts_are_unreadable_does_not_stall_the_build(
         return graph
 
     graph = await full()
+    before = {line for line in describe(graph, code_edges(graph)) if "use.py::function:run -CALLS->" in line}
+    assert "pkg/use.py::function:run -CALLS-> pkg/a/base.py::method:Base.ping" in before
     del graph.blobs["rec-pkg/svc.py"]
-    files["pkg/use.py"] += "\n\ndef other():\n    return Service().ping()\n"
     await put(graph, "pkg/use.py", files["pkg/use.py"])
-    result = await asyncio.wait_for(build_code_graph_edges(
+    await asyncio.wait_for(build_code_graph_edges(
         graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
         touched_record_ids={"rec-pkg/use.py"}, facts_source=graph), timeout=20)
-    assert result.files_reresolved >= 1
+    after = {line for line in describe(graph, code_edges(graph)) if "use.py::function:run -CALLS->" in line}
+    assert after == before
 
 
 

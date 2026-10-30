@@ -298,16 +298,20 @@ def _receiver_segments(expr: str) -> list[tuple[str, bool, str]] | None:
 
 class _BindingMap(dict[str, Any]):
     """File -> what its imports bind. In an incremental build, notes the files it is
-    asked about whose imports this build did not bind (``bound`` is None: all are)."""
+    asked about whose imports this build did not bind (``bound`` is None: all are),
+    and which record was being resolved when it was asked."""
 
-    def __init__(self, misses: set[str]) -> None:
+    def __init__(self, misses: dict[str, set[str]], reader: Callable[[], str | None]) -> None:
         super().__init__()
         self.bound: set[str] | None = None
         self._misses = misses
+        self._reader = reader
 
     def get(self, key: str, default: Any = None) -> Any:  # noqa: ANN401 -- a dict's own get
         if self.bound is not None and key not in self.bound:
-            self._misses.add(key)
+            readers = self._misses.setdefault(key, set())
+            if (reader := self._reader()) is not None:
+                readers.add(reader)
         return super().get(key, default)
 
 
@@ -326,17 +330,19 @@ class _Builder:
         self.edges: dict[tuple[str, str, str], tuple[str, str | None, int | None]] = {}
         self.external_nodes: dict[str, dict] = {}
         # Files whose import bindings a resolution read but this build did not bind.
-        self.bindings_missing: set[str] = set()
+        self.bindings_missing: dict[str, set[str]] = {}
+        # The record whose facts are being resolved: what it reads, it depends on.
+        self.resolving: str | None = None
         # file -> imported module files, the evidence a module-level reference uses
-        self.module_imports: dict[str, set[str]] = _BindingMap(self.bindings_missing)
+        self.module_imports: dict[str, set[str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
         # file -> local name -> what the file's imports bind it to: a block for
         # `from m import f`, a file for `import m` / `import * as m`, or
         # `_EXTERNAL`. Calls resolve through these before any name matching.
-        self.symbol_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing)
-        self.module_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing)
+        self.symbol_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
+        self.module_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
         # Python: file -> local name -> (file, name) of a module-level value it imports
         # (`from django.apps import apps`), whose type that file's assignment gives.
-        self.value_imports: dict[str, dict[str, tuple[str, str]]] = _BindingMap(self.bindings_missing)
+        self.value_imports: dict[str, dict[str, tuple[str, str]]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
         self._py_classes: dict[str, list[str]] | None = None
         self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
@@ -346,7 +352,7 @@ class _Builder:
         # An incremental build loads only the re-resolved files' tables, so the
         # others a resolution reads are noted, loaded, and resolved again.
         self.types_loaded: set[str] | None = None
-        self.types_missing: set[str] = set()
+        self.types_missing: dict[str, set[str]] = {}
         self._expr_memo: dict[tuple, str | None] = {}
         self._named_memo: dict[tuple[str, str | None], list[str]] = {}
         self._bases_memo: dict[str, list[str]] = {}
@@ -371,8 +377,18 @@ class _Builder:
     def _types(self, record_id: str | None) -> dict[str, str]:
         """A file's type table, noting it when this build has not loaded it."""
         if record_id and self.types_loaded is not None and record_id not in self.types_loaded:
-            self.types_missing.add(record_id)
+            readers = self.types_missing.setdefault(record_id, set())
+            if self.resolving is not None:
+                readers.add(self.resolving)
         return self.index.type_table_by_record.get(record_id, {}) if record_id else {}
+
+    def readers_of(self, record_ids: set[str]) -> set[str]:
+        """The records whose resolution read these records' bindings or type tables."""
+        readers: set[str] = set()
+        for record_id in record_ids:
+            readers |= self.types_missing.get(record_id, set())
+            readers |= self.bindings_missing.get(self.index.file_by_record.get(record_id) or "", set())
+        return readers
 
     # -- emit -----------------------------------------------------------
 
@@ -466,6 +482,7 @@ class _Builder:
             if relation not in _MODULE_RELATIONS:
                 continue
             record_id = self.index.record_by_block.get(block_id, "")
+            self.resolving = record_id
             from_file = self.index.file_by_record.get(record_id)
             family = self.index.family_by_block.get(block_id) or lang_family(None, from_file)
             specifier = fact.get("toName") or ""
@@ -502,7 +519,9 @@ class _Builder:
         # repo, become an edge to the definition itself.
         for block_id, fact in work:
             if fact.get("relation") == RecordRelations.IMPORTS.value:
+                self.resolving = self.index.record_by_block.get(block_id)
                 self._bind_symbol_import(block_id, fact)
+        self.resolving = None
 
     def _bind_symbol_import(self, block_id: str, fact: dict) -> None:
         record_id = self.index.record_by_block.get(block_id, "")
@@ -635,6 +654,7 @@ class _Builder:
 
     def resolve_rest(self, work: list[tuple[str, dict]]) -> None:
         for block_id, fact in work:
+            self.resolving = self.index.record_by_block.get(block_id)
             relation = fact.get("relation")
             if relation == _LEGACY_EXTENDS:
                 relation = RecordRelations.INHERITS.value
@@ -954,10 +974,21 @@ class _Builder:
             # `super().__init__()`, `super.save()`: the nearest base that defines it.
             # `super(C, self).m()` starts above C, which need not be the enclosing class.
             owner = self._enclosing_type(block_id)
+            start = owner
             if two_arg:
                 named = self._type_candidates(two_arg.group(1), record_id, family)
-                owner = named[0] if len(named) == 1 else None
-            for base in self._base_types_of(owner) if owner else ():
+                start = named[0] if len(named) == 1 else None
+            if family == "py" and owner and start:
+                # The classes after `start` in the enclosing class's MRO: `super(A, self)` in
+                # `Child(A, B)` reaches B even though A does not inherit it.
+                mro = self._py_mro(owner)
+                order = mro[mro.index(start) + 1:] if start in mro else self._py_mro(start)[1:]
+                for cls in order:
+                    target = self.index.method_index.get((cls, name)) or self._method_by_owner_name(cls, name)
+                    if target:
+                        return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+                return None, CONFIDENCE_INFERRED, None
+            for base in self._base_types_of(start) if start else ():
                 target = self._resolve_self_method(base, name)
                 if target:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
@@ -1500,6 +1531,23 @@ class _Builder:
             queue.extend(self._base_types_of(base))
         return None
 
+    def _py_mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        """A Python class's method resolution order (C3) over the bases the graph resolved.
+        A cycle or an order C3 cannot make falls back to the class and its bases in order."""
+        if cls in seen:
+            return [cls]
+        bases = self._base_types_of(cls)
+        seqs = [self._py_mro(b, seen | {cls}) for b in bases] + [list(bases)]
+        out = [cls]
+        while any(seqs):
+            seqs = [q for q in seqs if q]
+            head = next((q[0] for q in seqs if not any(q[0] in other[1:] for other in seqs)), None)
+            if head is None:
+                return [cls, *dict.fromkeys(b for q in seqs for b in q)]
+            out.append(head)
+            seqs = [q[1:] if q[0] == head else q for q in seqs]
+        return out
+
     def _method_by_owner_name(self, owner: str, method_name: str) -> str | None:
         """A method declared outside its type's body (Go `func (c *Context) Render`):
         named `method:Context.Render`, in the type's own package (its folder)."""
@@ -1759,6 +1807,7 @@ async def build_code_graph_edges(
         builder.track_unloaded(reresolve, set(reresolve))
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
     tried: set[str] = set()
+    unreadable: set[str] = set()
     while incremental:
         # A chain through another file read what this incremental build had not
         # loaded: its type table (`apps.get_model()` with `apps = Apps()` there), or
@@ -1766,16 +1815,24 @@ async def build_code_graph_edges(
         # Base). Load the tables, re-resolve the files whose bindings were read, and
         # resolve again until nothing is missing, so what is written is what a full
         # build writes. Each round loads files no earlier round tried, so it ends.
-        missing_types = builder.types_missing - builder.types_loaded
         unbound = {index.record_by_file.get(f) for f in builder.bindings_missing}
         unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve - tried
-        if not missing_types and not unbound:
-            break
-        tried |= unbound
+        missing_types = set(builder.types_missing) - builder.types_loaded - tried
+        tried |= unbound | missing_types
         if unbound:
-            reresolve |= unbound - await _load_facts(facts_source, index, org_id, unbound,
-                                                     builder.result, log)
-        await _load_type_tables(facts_source, index, org_id, missing_types - reresolve)
+            unknown = await _load_facts(facts_source, index, org_id, unbound, builder.result, log)
+            reresolve |= unbound - unknown
+            unreadable |= unknown
+        if missing_types - reresolve:
+            readable = await _load_type_tables(facts_source, index, org_id, missing_types - reresolve)
+            unreadable |= missing_types - reresolve - readable
+        # A record whose resolution read a file that could not be read would be written
+        # without what that file says, and lose edges a full build keeps: as a file whose
+        # own facts are unreadable does, it keeps the edges it has.
+        stale = builder.readers_of(unreadable) & reresolve
+        if not unbound and not missing_types and not stale:
+            break
+        reresolve -= stale
         loaded = builder.types_loaded | missing_types | reresolve
         result = replace(builder.result, pending_edges_seen=0, ambiguous_skipped=0,
                          edges_by_type={}, external_refs=0, unresolved=0,
@@ -1825,6 +1882,7 @@ def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list
     builder.result.pending_edges_seen = len(work)
     builder.resolve_imports(work)
     builder.resolve_rest(work)
+    builder.resolving = None
     builder.link_overrides()
     return builder.prune_dangling()
 
