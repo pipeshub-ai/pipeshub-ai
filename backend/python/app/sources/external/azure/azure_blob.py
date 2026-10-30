@@ -1,11 +1,9 @@
+import socket
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 try:
-    from azure.core.exceptions import (  # type: ignore
-        ClientAuthenticationError,
-        ServiceRequestError,
-    )
+    from azure.core.exceptions import ClientAuthenticationError  # type: ignore
     from azure.storage.blob import (  # type: ignore
         AccountSasPermissions,
         BlobSasPermissions,
@@ -28,17 +26,37 @@ from app.sources.client.azure.connection_string import (
     CREDENTIALS_REFUSED,
     INVALID_ACCOUNT_KEY,
 )
+from app.utils.url_fetcher import UnresolvableHostError
 from app.utils.url_redaction import redact_urls_in_text
 
 _ERROR_TEXT_LIMIT = 300
 
-# How resolvers word a host that does not exist (EAI_NONAME / EAI_NODATA), which is what a
-# mistyped AccountName gives. A temporary failure (EAI_AGAIN) is worded differently and is left as is.
-_HOST_NOT_FOUND = (
-    "name or service not known",
-    "nodename nor servname",
-    "no address associated with hostname",
+# Resolver answers that mean the name does not exist, as opposed to EAI_AGAIN (try again).
+_HOST_NOT_FOUND = frozenset(
+    code for code in (getattr(socket, "EAI_NONAME", None), getattr(socket, "EAI_NODATA", None)) if code is not None
 )
+
+
+def _account_host_not_found(error: BaseException) -> bool:
+    """Whether the address guard found that the account's host does not exist.
+
+    Only the guard's lookup is trusted: it checks the account endpoint itself before the SDK
+    connects, and is skipped when a proxy is configured. A DNS error the SDK reports names
+    whichever host it tried, which behind a proxy is the proxy.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, UnresolvableHostError):
+            cause = current.__cause__
+            # No resolver error: the name resolved to no addresses at all.
+            return not isinstance(cause, socket.gaierror) or cause.errno in _HOST_NOT_FOUND
+        pending += [current.__cause__, current.__context__]
+    return False
 
 
 def azure_error_text(error: BaseException) -> str:
@@ -59,8 +77,8 @@ def azure_error_text(error: BaseException) -> str:
     message = (str(error).strip().splitlines() or [type(error).__name__])[0]
     head = " ".join(str(part) for part in (f"HTTP {status}" if status else None, code) if part)
     text = f"{head}: {message}" if head else message
-    if isinstance(error, ServiceRequestError) and any(phrase in message.lower() for phrase in _HOST_NOT_FOUND):
-        # The resolver's own reason stays: it names the host that was looked up.
+    if _account_host_not_found(error):
+        # The guard's own reason stays: it names the host that was looked up.
         text = f"{ACCOUNT_NOT_FOUND} ({text})"
     return redact_urls_in_text(text)[:_ERROR_TEXT_LIMIT]
 

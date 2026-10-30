@@ -7,6 +7,7 @@ error code and the first line of the message may leave the data source.
 
 import base64
 import logging
+import socket
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -76,22 +77,6 @@ class TestErrorText:
         assert text != INVALID_ACCOUNT_KEY
         assert azure_error_code(auth_failure()) == "AuthenticationFailed"
 
-    @pytest.mark.parametrize("reason", [
-        "Cannot connect to host nosuchacct.blob.core.windows.net:443 ssl:default [Name or service not known]",
-        "Failed to resolve 'nosuchacct.blob.core.windows.net' ([Errno -2] Name or service not known)",
-        "Cannot connect to host nosuchacct.blob.core.windows.net:443 ssl:default [nodename nor servname provided, or not known]",
-    ])
-    def test_a_host_that_does_not_exist_is_named_with_the_resolver_reason(self, reason: str) -> None:
-        text = azure_error_text(ServiceRequestError(reason))
-
-        assert text.startswith(ACCOUNT_NOT_FOUND)
-        assert "nosuchacct.blob.core.windows.net" in text
-
-    def test_a_temporary_resolver_failure_is_not_called_a_missing_account(self) -> None:
-        reason = "Cannot connect to host acct.blob.core.windows.net:443 ssl:default [Temporary failure in name resolution]"
-
-        assert azure_error_text(ServiceRequestError(reason)) == reason
-
     def test_a_network_error_has_no_status_and_no_signed_url(self) -> None:
         error = ServiceRequestError("Cannot reach https://acct.blob.core.windows.net/docs/a.txt?sv=2022&sig=SECRETSIG")
 
@@ -105,6 +90,46 @@ class TestErrorText:
 
     def test_an_empty_message_names_the_error_type(self) -> None:
         assert azure_error_text(TimeoutError()) == "TimeoutError"
+
+
+class TestUnknownAccount:
+    """A mistyped AccountName fails in the address guard, before the SDK sends anything."""
+
+    @pytest.fixture(autouse=True)
+    def no_proxy(self, monkeypatch) -> None:
+        for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            monkeypatch.delenv(name, raising=False)
+
+    @staticmethod
+    async def list_with_resolver_error(monkeypatch, errno: int) -> str:
+        def getaddrinfo(host, *args, **kwargs):
+            raise socket.gaierror(errno, "resolver says no")
+
+        monkeypatch.setattr("app.utils.url_fetcher.socket.getaddrinfo", getaddrinfo)
+        ds = AzureBlobDataSource(AzureBlobClient(AzureBlobRESTClient(AzureBlobConnectionStringConfig(PUBLIC))))
+        response = await ds.list_containers()
+        assert not response.success
+        return response.error
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_does_not_exist_is_named_with_the_host(self, monkeypatch) -> None:
+        text = await self.list_with_resolver_error(monkeypatch, socket.EAI_NONAME)
+
+        assert text.startswith(ACCOUNT_NOT_FOUND)
+        assert "acct.blob.core.windows.net" in text
+
+    @pytest.mark.asyncio
+    async def test_a_temporary_resolver_failure_is_not_called_a_missing_account(self, monkeypatch) -> None:
+        text = await self.list_with_resolver_error(monkeypatch, socket.EAI_AGAIN)
+
+        assert ACCOUNT_NOT_FOUND not in text
+        assert "acct.blob.core.windows.net" in text
+
+    def test_a_dns_error_from_the_sdk_is_not_blamed_on_the_account(self) -> None:
+        # Behind a proxy the guard does not look the account up; the host that failed may be the proxy.
+        reason = "Cannot connect to host proxy.corp:3128 ssl:default [Name or service not known]"
+
+        assert azure_error_text(ServiceRequestError(reason)) == reason
 
 
 class TestDataSourceResponses:
