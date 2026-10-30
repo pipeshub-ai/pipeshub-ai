@@ -20540,15 +20540,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         def has_children(row_from_app: str) -> str:
             rule = self._kh_v3_child_rule(
                 "kh_ch", "node", from_app=row_from_app, opens=app_opens, state=state, grant_once=grant_once)
-            if probe is not None and not listing_by_probe:
-                # $grantedIds holds only the App's direct children here: test deeper grants from the node.
-                rule = self._kh_grants_by_probe(rule)
             container = (
                 "(node:RecordGroup OR node:KhFolder)" if state else
                 "(node:RecordGroup OR node.mimeType IN $folder_mime_types "
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
-            return _cypher_kh_has_children("node", rule, app_opens, placeholder_test("kh_ch"), container)
+            expr = _cypher_kh_has_children("node", rule, app_opens, placeholder_test("kh_ch"), container)
+            # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
+            # cheap reject's alike, is read from the node.
+            return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         if scoped_start:
             slim_from_app, row_from_app = "fromApp", "coalesce(item.fa, false)"

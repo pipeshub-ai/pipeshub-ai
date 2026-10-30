@@ -6,6 +6,10 @@ other-org children, and a linked record with many hidden children before a
 readable one. Record groups, folders and Apps answer with a constant (finding out
 reads every hidden child, and a group's expansion also lists chain-tops), so
 they are not compared; ``test_a_container_does_not_say_what_it_holds`` pins that.
+
+Every test runs twice: with the viewer's grants handed in, and in the shape
+production calls with (grants read from the node, ``probe``), where a grant test
+must be rewritten wherever it appears.
 """
 
 from __future__ import annotations
@@ -118,6 +122,44 @@ def _graph() -> tuple[list, list]:
             nodes.append(rec(f"{target}-z{i}", "v", **_r(a)))
             edges += [nr(target, f"{target}-z{i}"), ip(f"{target}-z{i}", target)]
 
+    # a child granted to the viewer without an inheritance edge (directly, or through a group).
+    a = "ae-grant"
+    nodes += [
+        app(a, "Grant", connector=DRIVE, app_group="G"),
+        rec("ae-gp", "p", **_r(a)), rec("ae-gc", "c", rule="STRICT", **_r(a)),
+        rec("ae-gq", "q", **_r(a)), rec("ae-gc2", "c2", **_r(a)),
+    ]
+    edges += [
+        user_app(USER_U, a), nr(a, "ae-gp"), ip("ae-gp", a), nr(a, "ae-gq"), ip("ae-gq", a),
+        nr("ae-gp", "ae-gc"), perm(USER_U, "ae-gc"),
+        nr("ae-gq", "ae-gc2"), perm(GROUP_G, "ae-gc2", grant_type="GROUP"),
+    ]
+
+    # a record listed under an undeclared group that also belongs to a declared one: its own
+    # expansion uses that scope, the row's arrow only the browse's (so it can under-show, never over-show).
+    a = "ae-two"
+    nodes += [
+        app(a, "Two", connector=DRIVE, app_group="G"), rg("ae-tg", "g", **_g(a)),
+        rg("ae-td", "d", permissionModel=RGL, **_g(a)), rec("ae-tr", "r", **_r(a)), rec("ae-ts", "s", **_r(a)),
+    ]
+    edges += [
+        user_app(USER_U, a), nr(a, "ae-tg"), ip("ae-tg", a), nr(a, "ae-td"), perm(GROUP_G, "ae-td", grant_type="GROUP"),
+        nr("ae-tg", "ae-tr"), ip("ae-tr", "ae-tg"), bt("ae-tr", "ae-td"), nr("ae-tr", "ae-ts"), bt("ae-ts", "ae-td"),
+    ]
+
+    # an App that opens everything: a record with a live filed record has an arrow, one with only a
+    # deleted filed record does not.
+    a = "ae-open"
+    nodes += [
+        app(a, "Open", connector=DRIVE, app_group="G", permissionModel="APP_LEVEL"), rg("ae-og", "g", **_g(a)),
+        rec("ae-of1", "f1", **_r(a)), rec("ae-of2", "f2", **_r(a)),
+        rec("ae-ok1", "k1", **_r(a)), rec("ae-ok2", "k2", isDeleted=True, **_r(a)),
+    ]
+    edges += [
+        user_app(USER_U, a), nr(a, "ae-og"), nr("ae-og", "ae-of1"), nr("ae-og", "ae-of2"),
+        bt("ae-ok1", "ae-of1"), bt("ae-ok2", "ae-of2"),
+    ]
+
     # folders: the arrow is a constant, so it cannot depend on what is hidden inside.
     a = "ae-big"
     nodes += [app(a, "Big", connector=DRIVE, app_group="G"), rg("ae-bg", "g", **_g(a))]
@@ -135,7 +177,7 @@ def _graph() -> tuple[list, list]:
     return nodes, edges
 
 
-APPS = ("ae-seed", "ae-decl", "ae-mix", "ae-link", "ae-big")
+APPS = ("ae-seed", "ae-decl", "ae-mix", "ae-link", "ae-big", "ae-grant")
 
 
 @pytest.fixture(scope="module")
@@ -159,12 +201,22 @@ def provider(request: pytest.FixtureRequest) -> object:
     return request.getfixturevalue(f"{request.param}_provider")
 
 
+_MODE = {"probe": False}
+
+
+@pytest.fixture(params=["grants", "probe"], autouse=True)
+def _mode(request: pytest.FixtureRequest) -> None:
+    _MODE["probe"] = request.param == "probe"
+
+
 async def _browse(provider: Any, app_id: str, start_id: str, start_type: str, **kw: Any) -> list[dict]:  # noqa: ANN401
     access = await provider.get_knowledge_hub_access_v3(user_key=USER_U, org_id=ORG)
+    # Production passes no grants and a user key: Neo4j then tests grants from the node.
+    grants = {"granted_ids": None, "user_key": USER_U} if _MODE["probe"] else {"grants_by_connector": access["by_connector"]}
     page = await provider.get_knowledge_hub_connector_page_v3(
         app_id=app_id, org_id=ORG, grantee_ids=access["grantee_ids"], gated_app_ids=access["gated_app_ids"],
-        grants_by_connector=access["by_connector"], limit=500, flatten=kw.pop("flatten", False),
-        sort_field="name", sort_dir="ASC", include_total=True, start_id=start_id, start_type=start_type, **kw,
+        limit=500, flatten=kw.pop("flatten", False), sort_field="name", sort_dir="ASC", include_total=True,
+        start_id=start_id, start_type=start_type, **grants, **kw,
     )
     return page["rows"]
 
@@ -240,3 +292,24 @@ async def test_a_container_does_not_say_what_it_holds(arrows_graph, provider) ->
 
     # One folder holds only hidden children, one holds nothing, one a readable child.
     assert {rows[f]["hasChildren"] for f in ("ae-fo-hidden", "ae-fo-empty", "ae-fo-open")} == {True}
+
+
+async def test_a_child_granted_without_inheritance_gives_its_parent_an_arrow(arrows_graph, provider) -> None:
+    rows = {r["id"]: r["hasChildren"] for r in await _browse(provider, "ae-grant", "ae-grant", "app")}
+
+    assert rows == {"ae-gp": True, "ae-gq": True}
+
+
+async def test_a_record_in_two_groups_never_shows_an_arrow_for_nothing(arrows_graph, provider) -> None:
+    tree = await _tree(provider, "ae-two")
+    row, listed = tree["ae-tr"]
+
+    # Its own expansion lists the sub-record; the arrow may under-show, never over-show.
+    assert listed == ["ae-ts"]
+    assert not row["hasChildren"] or listed
+
+
+async def test_in_an_open_app_a_live_filed_record_gives_an_arrow(arrows_graph, provider) -> None:
+    rows = {r["id"]: r["hasChildren"] for r in await _browse(provider, "ae-open", "ae-og", "recordGroup")}
+
+    assert rows == {"ae-of1": True, "ae-of2": False}
