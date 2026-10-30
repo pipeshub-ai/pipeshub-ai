@@ -251,7 +251,9 @@ class SmbClient(IClient):
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(target) from exc
-            if "logon" in message or "access denied" in message or "unsuccessful" in message:
+            # The walk stops on an auth error, so only a logon failure may become one; "access
+            # denied" or "unsuccessful" here is this folder's own failure.
+            if "logon" in message:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
         return entries

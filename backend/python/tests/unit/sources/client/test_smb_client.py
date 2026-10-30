@@ -218,6 +218,20 @@ def test_another_listing_failure_is_not_access_denied() -> None:
     assert not isinstance(raised.value, AccessDeniedError)
 
 
+def test_an_unsuccessful_listing_is_the_folders_own_failure() -> None:
+    # The walk stops on a sign-in refusal, so one folder's STATUS_UNSUCCESSFUL must not become one.
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_UNSUCCESSFUL, r"\\10.0.0.5\share\odd"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(DirectoryListingError) as raised:
+            client.list_directory("share", "odd")
+
+    assert "unsuccessful" in str(raised.value).lower()
+
+
 class _Refused(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"Received unexpected status from the server: 0x{status:08x}")

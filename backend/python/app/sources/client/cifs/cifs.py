@@ -209,7 +209,9 @@ class CifsClient(IClient):
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(path) from exc
-            if "logon" in message or "access denied" in message:
+            # The walk stops on an auth error, so a folder the account may not list stays a
+            # listing error.
+            if "logon" in message:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
 

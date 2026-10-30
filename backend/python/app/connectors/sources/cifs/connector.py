@@ -299,7 +299,12 @@ class CifsConnector(BaseConnector):
         )
 
     async def run_sync(self) -> None:
-        await self._sync(prune=True)
+        try:
+            await self._sync(prune=True)
+        except NetworkShareAuthError as exc:
+            # The walk stops on a refused sign-in and removes nothing; say so, then fail the run.
+            await self._auth_error("Sign-in refused", str(exc))
+            raise
 
     async def run_incremental_sync(self) -> None:
         # The scheduler calls run_sync. There is no change journal, and a
