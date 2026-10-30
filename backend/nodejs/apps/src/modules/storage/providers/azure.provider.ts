@@ -22,6 +22,7 @@ import {
   StorageDownloadError,
   StorageNotFoundError,
   StorageValidationError,
+  StorageUrlParseError,
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
@@ -297,11 +298,10 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
    */
   async statObject(document: Document): Promise<ObjectStat | null> {
     if (!document.azureBlob?.url) return null;
+    const blobPath = this.getBlobPath(document.azureBlob.url);
     await this.waitForContainer();
     try {
-      const props = await this.blobAt(
-        this.getBlobPath(document.azureBlob.url),
-      ).getProperties();
+      const props = await this.blobAt(blobPath).getProperties();
       const etag = normalizeEtag(props.etag);
       if (etag === '' || typeof props.contentLength !== 'number')
         throw new StorageDownloadError(
@@ -744,15 +744,12 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       }
       return name;
     } catch (error) {
-      throw new StorageValidationError(
-        'Invalid Azure Blob Storage URL format',
-        {
-          url,
-          container: this.containerName,
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
-        },
-      );
+      // A URL outside the configured container cannot be checked, which a verified read says as "unverifiable", not as an outage.
+      throw new StorageUrlParseError('Invalid Azure Blob Storage URL format', {
+        url,
+        container: this.containerName,
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
     }
   }
 }

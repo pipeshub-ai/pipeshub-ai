@@ -35188,11 +35188,18 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Document'
                   - type: object
+                    required:
+                      - storageFingerprint
                     properties:
                       storageFingerprint:
                         $ref: '#/components/schemas/StorageFingerprint'
         '503':
-          description: The object store (or the document store) could not be read. Never a 200 with no object.
+          description: |
+            The object store (or the document store) could not be read. A verified read still answers 200 with
+            `trusted: false` and no `object` when the object is missing (`objectMissing`), when its stored URL cannot be
+            parsed (`objectUnverifiable`), when the document is awaiting its direct upload or is a deleted, retired or
+            artifact-set row, and when the store clock is unavailable (the `reason` says why). Only a failed read of the
+            object store is a 503.
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's

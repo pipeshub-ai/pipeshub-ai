@@ -569,6 +569,23 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=$N"
 
+      # The mocha report is a file, so a red run would say only "exit code N"; this prints each failed case and its message.
+      - name: Show the failed fingerprint cases
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          import xml.etree.ElementTree as ET
+          path = os.path.join(os.environ["RUNNER_TEMP"], "fingerprint-${{ matrix.backend }}.xml")
+          if not os.path.exists(path):
+              sys.exit(0)
+          for case in ET.parse(path).getroot().iter("testcase"):
+              for bad in list(case.findall("failure")) + list(case.findall("error")):
+                  print("FAILED:", case.get("name"))
+                  print((bad.get("message") or "")[:600])
+                  print((bad.text or "")[:1500])
+          PY
+
       # Every skip fails, and so does a discovered file that contributed no test.
       # The one allowance: a test that cannot apply to this store says so with a
       # reason beginning "not applicable on <store>:", counted only on that leg.

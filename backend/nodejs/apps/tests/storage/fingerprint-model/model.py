@@ -209,7 +209,7 @@ def ci():
     print('design (compliant schedules):', d, '| non-compliant (documented residual):', m)
     if any(k != 'runs' for k in d): bad += 1; print('FAIL design violates')
     nc15 = next(schedules('s8_nc15')); nc, _ = violations(nc15, 'token', 'coarse', 'reread_no_seq', 0); ok, _ = violations(nc15, 'token', 'coarse', None, 0)
-    print('NC15 fixed schedule: mutant', dict(nc), 'design', dict(ok))
+    print('NC15 fixed schedule: the mutant breaks', len(nc), 'properties; the design breaks', len(ok))  # counts only: the dicts are keyed by property names
     if not nc or ok: bad += 1; print('FAIL NC15 fixed schedule')
     for mu in MUTANTS:
         r, _ = check(mu)

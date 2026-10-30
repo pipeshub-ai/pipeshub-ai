@@ -85,7 +85,7 @@ export class StorageValidationError extends StorageError {
  */
 export class StorageUrlParseError extends StorageValidationError {
   constructor(message: string, metadata?: ErrorMetadata) {
-    super(message, metadata, 'S3_KEY_UNPARSEABLE');
+    super(message, metadata, 'STORAGE_URL_UNPARSEABLE');
   }
 }
 

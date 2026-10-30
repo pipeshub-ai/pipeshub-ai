@@ -409,6 +409,8 @@ suite('document fingerprint', function () {
 
   it('F16: the object is gone: 200 objectMissing, not trusted; the object store failing: 503', async () => {
     const d = await upload('will vanish');
+    // on S3 and Azure a finished upload is adopted by the first verified read; "missing" is said of an adopted document
+    await fp(d._id);
     const doc = (await row(d._id)) as any;
     await realAdapter.deleteObject(doc);
     const gone = await info(d._id);
@@ -422,7 +424,7 @@ suite('document fingerprint', function () {
   });
 
   // ------------------------------------------------------------------------------------------------------------------ races
-  it('F11: 20 parallel writers, 20 times: writeSeq ends exactly start + 40 and no token is left; mutationCount shows the known lost update', async () => {
+  it('F11: 20 parallel writers, 20 times: writeSeq ends exactly start + 40 and no token is left', async () => {
     let lost = 0;
     for (let round = 0; round < 20; round++) {
       const d = await upload(`round ${round}`);
@@ -435,8 +437,9 @@ suite('document fingerprint', function () {
       expect(end?.writers).to.deep.equal([]);
       if ((((await row(d._id))?.mutationCount as number) - startMutations) < 20) lost++;
     }
-    // the control: a counter read, incremented and saved by each writer loses updates; the sequence did not
-    expect(lost, 'rounds where mutationCount lost an increment').to.be.greaterThan(0);
+    // the control, informational: a counter read, incremented and saved by each writer can lose updates (it depends on timing, so it
+    // is reported and not asserted); the sequence did not lose any
+    process.stdout.write(`F11 control: mutationCount lost an increment in ${lost} of 20 rounds\n`);
   });
 
   it('F13a: a writer paused after its bytes: the unverified value differs and is not settled; a verified read is not trusted', async () => {
@@ -575,16 +578,19 @@ suite('document fingerprint', function () {
       const newBytes = Buffer.alloc(3 * 1024 * 1024, 'n');
       const d = await upload(oldBytes);
       expect((await nextVersion(d._id, newBytes)).status).to.equal(200);
+      // every iteration flips the current file between the two contents, so every download overlaps a write that changes the bytes
+      let current: 'o' | 'n' = 'n';
       for (let i = 0; i < 12; i++) {
-        const target = i % 2 === 0 ? 0 : 1; // back to v0 (old), then forward to the new one again
+        const target = current === 'n' ? 0 : 1; // version 0 holds the old bytes, version 1 the new ones
         const dl = fetch(url(`/${d._id}/download`), { headers: auth });
-        const [res, rb] = await Promise.all([dl, rollBack(d._id, target === 0 ? 0 : 0)]);
-        expect(rb.status, rb.text).to.be.within(200, 400);
+        const [res, rb] = await Promise.all([dl, rollBack(d._id, target)]);
+        expect(rb.status, rb.text).to.equal(200);
+        current = current === 'n' ? 'o' : 'n';
         const got = Buffer.from(await res.arrayBuffer());
         const kinds = new Set(got.toString('latin1').split('').filter((c, k) => k % 4099 === 0));
         expect(kinds.size, `iteration ${i}: a mix of old and new bytes`).to.equal(1);
         expect(got.length).to.equal(3 * 1024 * 1024);
-        await nextVersion(d._id, i % 2 === 0 ? newBytes : oldBytes); // so there is something to roll back to again
+        expect((await objectBytes(d._id))[0], `iteration ${i}: the rollback changed the bytes`).to.equal(current.charCodeAt(0));
       }
     });
   }
@@ -623,28 +629,32 @@ suite('document fingerprint', function () {
     expect(got.doc.storageFingerprint?.object).to.equal(null);
   });
 
-  it('F6 keyed: the late loser of an Idempotency-Key takeover writes after the winner saved; the value moves, the window held the document unsettled, and it settles after', async () => {
-    const key = `k-${randomUUID()}`;
-    const name = `keyed-${++counter}-${randomUUID().slice(0, 6)}`;
-    const gate = faults.gates.arm('L', 'W:beforeUpload');
-    const loser = startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'L');
-    await gate.reached();
-    // the loser's lease lapses; a retry with the same key takes the upload over and finishes it
-    const id = (await row2(name)) as string;
-    expect(id, 'the keyed upload created its row').to.be.a('string');
-    await expireLease(id);
-    const winner = await startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'N');
-    if (winner.status !== 200 && winner.status !== 301) throw new Error(`winner ${String(winner.status)} ${winner.text.slice(0, 300)}`);
-    if (winner.status === 301) expect(await putTo(winner.link as string, 'same bytes')).to.be.within(200, 201);
-    else expect(winner.status).to.equal(200);
-    const mid = await fp(id);
-    expect(mid.trusted, 'the loser still holds its window').to.equal(false);
-    gate.release();
-    await loser;
-    const end = await fp(id);
-    expect(end.settled).to.equal(true);
-    expect(end.value).to.not.equal(mid.value);
-  });
+  // Only a proxied upload has a late loser writing bytes after a takeover; on S3 and Azure every upload is a link the caller PUTs
+  // to (F4/F5 cover those bytes), so there is no server-side write to hold.
+  if (BACKEND === 'local') {
+    it('F6 keyed: the late loser of an Idempotency-Key takeover writes after the winner saved; the value moves, the window held the document unsettled, and it settles after', async () => {
+      const key = `k-${randomUUID()}`;
+      const name = `keyed-${++counter}-${randomUUID().slice(0, 6)}`;
+      const gate = faults.gates.arm('L', 'W:beforeUpload');
+      const loser = startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'L');
+      await gate.reached();
+      // the loser's lease lapses; a retry with the same key takes the upload over and finishes it
+      const id = (await row2(name)) as string;
+      expect(id, 'the keyed upload created its row').to.be.a('string');
+      await expireLease(id);
+      const winner = await startUpload('same bytes', name, {}, { 'idempotency-key': key }, 'N');
+      if (winner.status !== 200 && winner.status !== 301) throw new Error(`winner ${String(winner.status)} ${winner.text.slice(0, 300)}`);
+      if (winner.status === 301) expect(await putTo(winner.link as string, 'same bytes')).to.be.within(200, 201);
+      else expect(winner.status).to.equal(200);
+      const mid = await fp(id);
+      expect(mid.trusted, 'the loser still holds its window').to.equal(false);
+      gate.release();
+      await loser;
+      const end = await fp(id);
+      expect(end.settled).to.equal(true);
+      expect(end.value).to.not.equal(mid.value);
+    });
+  }
 
   // -------------------------------------------------------------------------------------------- S3 and Azure only
   if (BACKEND !== 'local') {
@@ -737,6 +747,17 @@ suite('document fingerprint', function () {
       });
     }
 
+    if (BACKEND === 'azureBlob') {
+      it('F5b Azure: a stored URL outside the container answers 200 objectUnverifiable, not 503', async () => {
+        const d = await upload('other container');
+        await inOrg(() => real.update(ORG, d._id, { azureBlob: { url: 'http://127.0.0.1:10000/devstoreaccount1/some-other-container/some/key.txt' } }));
+        const r = await info(d._id);
+        expect(r.status, r.text).to.equal(200);
+        expect(r.doc.storageFingerprint).to.include({ objectUnverifiable: true, trusted: false, reason: 'unparseable_storage_url' });
+        expect(r.doc.storageFingerprint?.object).to.equal(null);
+      });
+    }
+
     it('F18 S3/Azure: a download bound by If-Match: 412 after an overwrite, and the response ETag equals object.etag', async () => {
       const d = await upload('bytes X');
       const f0 = await fp(d._id);
@@ -812,6 +833,8 @@ suite('document fingerprint', function () {
     writeWindowHooks.onBegin = (i) => { tokens[actorOf()] = i.token; };
     const d = await upload('c0 content');
     const id = d._id;
+    // on S3 and Azure a finished upload is adopted by the first verified read; the schedules start from the adopted document
+    await fp(id);
     for (const [w, steps] of Object.entries(sch.writers)) if (!steps.includes('E1')) faults.crashed.add(w);
     const wg: Record<string, Record<string, ReturnType<Faults['gates']['arm']>>> = {};
     for (const w of Object.keys(sch.writers))

@@ -123,6 +123,11 @@ async def test_p13_every_python_write_path_moves_the_verified_fingerprint(
     await blob.upload_next_version(ORG_ID, "r1", doc_id, {"id": "r1", "n": 2}, "vr-1")
     await check("upload_next_version")
 
+    # on S3 and Azure `upload_next_version` PUTs to the current object and keeps no history, so the version a rollBack goes back to is
+    # made by the route that records one (the same route on every vendor)
+    await blob.upload_artifact_version(ORG_ID, doc_id, "v.json", b'{"n": 3}', "application/json")
+    await check("upload_artifact_version")
+
     assert await _post_json(config, f"/{doc_id}/rollBack", {"version": 0, "note": "back"}) == 200
     await check("rollBack")
 

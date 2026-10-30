@@ -24,6 +24,7 @@ function world(initial: Record<string, unknown> = {}) {
     clockDown: false,
     // runs before the named step returns (a write landing in the middle of a pass)
     during: {} as Record<string, () => void>,
+    statError: undefined as Error | undefined,
   }
   const repo = {
     async getWithFingerprintState() {
@@ -52,7 +53,7 @@ function world(initial: Record<string, unknown> = {}) {
     if (w.statError) throw w.statError
     return w.stat ? { ...w.stat } : null
   }
-  return Object.assign(w, { repo, statFn: stat as (d: any) => Promise<ObjectStat | null>, statError: undefined as Error | undefined })
+  return Object.assign(w, { repo, statFn: stat as (d: any) => Promise<ObjectStat | null> })
 }
 
 const read = (w: ReturnType<typeof world>, verify = true) =>
