@@ -17,7 +17,7 @@ import pdfplumber
 import pytest
 
 from app.models.blocks import BlockType
-from app.modules.parsers.pdf import vlm_ocr_strategy
+from app.modules.parsers.pdf import pdfplumber_opencv_processor, vlm_ocr_strategy
 from app.modules.parsers.pdf.layout_pages import ParsedPageData
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegion,
@@ -27,6 +27,7 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from app.utils.table_enrichment import TableEnrichmentResult
 from tests.support.pdf_samples import blank_pdf
 
 if TYPE_CHECKING:
@@ -209,3 +210,27 @@ class TestTableRows:
             assert container.block_groups[0].children.block_ranges[-1].end == n - 1
         assert big.blocks[2499].data["row_natural_language_text"] == "A: a2499, B: b2499"
         assert all(b.parent_index == 0 for b in big.blocks)
+
+    @pytest.mark.parametrize("rows", [10, 2500])  # below and above the offload threshold
+    async def test_rows_with_empty_enriched_text_are_skipped(
+        self, rows: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        texts = ["" if i % 3 == 0 else f"t{i}" for i in range(rows)]
+
+        async def enrich(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            return [TableEnrichmentResult(summary="s", headers=["h"], descriptions=texts) for _ in grids]
+
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", enrich)
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["h"]] + [["x"] for _ in range(rows)],
+        )
+        container = await _processor().create_blocks([_page(region)])
+        kept = [(i + 1, t) for i, t in enumerate(texts) if t]
+        assert [b.index for b in container.blocks] == list(range(len(kept)))
+        assert [b.data["row_number"] for b in container.blocks] == [n for n, _ in kept]
+        assert [b.data["row_natural_language_text"] for b in container.blocks] == [t for _, t in kept]
