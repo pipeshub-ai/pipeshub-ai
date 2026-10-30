@@ -93,6 +93,10 @@ class TestErrorText:
         assert azure_error_text(TimeoutError()) == "TimeoutError"
 
 
+# What the address guard reports for the account endpoint, wrapped by the client builder.
+GUARD_REASON = "Failed to create AsyncBlobServiceClient: Could not find a server named 'acct.blob.core.windows.net'."
+
+
 class TestUnknownAccount:
     """A mistyped AccountName fails in the address guard, before the SDK sends anything."""
 
@@ -116,15 +120,13 @@ class TestUnknownAccount:
     async def test_a_host_that_does_not_exist_is_named_with_the_host(self, monkeypatch) -> None:
         text = await self.list_with_resolver_error(monkeypatch, socket.EAI_NONAME)
 
-        assert text.startswith(ACCOUNT_NOT_FOUND)
-        assert "acct.blob.core.windows.net" in text
+        assert text == f"{ACCOUNT_NOT_FOUND} ({GUARD_REASON})"
 
     @pytest.mark.asyncio
     async def test_a_temporary_resolver_failure_is_not_called_a_missing_account(self, monkeypatch) -> None:
         text = await self.list_with_resolver_error(monkeypatch, socket.EAI_AGAIN)
 
-        assert ACCOUNT_NOT_FOUND not in text
-        assert "acct.blob.core.windows.net" in text
+        assert text == GUARD_REASON
 
     def test_a_dns_error_from_the_sdk_is_not_blamed_on_the_account(self) -> None:
         # Behind a proxy the guard does not look the account up; the host that failed may be the proxy.
