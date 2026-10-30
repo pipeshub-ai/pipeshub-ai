@@ -35195,11 +35195,11 @@ paths:
                         $ref: '#/components/schemas/StorageFingerprint'
         '503':
           description: |
-            The object store (or the document store) could not be read. A verified read still answers 200 with
-            `trusted: false` and no `object` when the object is missing (`objectMissing`), when its stored URL cannot be
-            parsed (`objectUnverifiable`), when the document is awaiting its direct upload or is a deleted, retired or
-            artifact-set row, and when the store clock is unavailable (the `reason` says why). Only a failed read of the
-            object store is a 503.
+            The object store or the document store could not be read. A verified read still answers 200 with
+            `trusted: false` when the object is missing (`objectMissing`, no `object`), when its stored URL cannot be
+            parsed (`objectUnverifiable`, no `object`), when the document is awaiting its direct upload or is a deleted or
+            retired row (`object` holds the stored object's size and ETag when there is one), when it is an artifact set
+            (no `object`), and when the store clock is unavailable (no `object`; the `reason` says why).
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
