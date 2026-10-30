@@ -36,6 +36,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
   });
 
+  it("shows Asana's logo", () => {
+    expect(logo(<McpServerIcon typeId="asana" name="Asana" />)).toBe('asana icon');
+  });
+
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {
     const { container } = render(<McpServerIcon name="Acme internal" />);
 
