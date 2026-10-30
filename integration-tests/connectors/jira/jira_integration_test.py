@@ -350,13 +350,13 @@ class TestJiraConnector:
             f"PARENT_CHILD {pc}: Jira has {expected_pc} sub-tasks and stories filed under their parent"
             + (f", plus up to {by_level} stories that share their epic's level" if by_level else "")
         )
-        # The range alone would let one of those stories stand in for a missing edge.
-        missing = [
-            (parent_id, child_id)
-            for parent_id, child_id in jira_connector["expected_parent_child_pairs"]
-            if parent_id not in await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
-        ]
-        assert not missing, f"PARENT_CHILD parent → child missing for {len(missing)}: {missing[:10]}"
+        # The range alone would let one of those stories stand in for a missing or a wrong edge.
+        wrong = {}
+        for parent_id, child_id in jira_connector["expected_parent_child_pairs"]:
+            parents = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
+            if parents != [parent_id]:
+                wrong[child_id] = {"expected": parent_id, "graph": parents}
+        assert not wrong, f"PARENT_CHILD parents differ from Jira for {len(wrong)} children: {dict(list(wrong.items())[:10])}"
 
         # Independent: record-group count from filter scope (primary only).
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
