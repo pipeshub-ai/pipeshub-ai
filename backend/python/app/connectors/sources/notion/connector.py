@@ -74,6 +74,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.notion.block_parser import NotionBlockParser, property_items_fetcher
 from app.connectors.sources.notion.common.apps import NotionApp
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -3752,6 +3753,7 @@ class NotionConnector(BaseConnector):
 
                 if record_type == RecordType.FILE:
                     minimal_record = FileRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3782,6 +3784,7 @@ class NotionConnector(BaseConnector):
                             parent_record_type = RecordType.WEBPAGE
 
                     minimal_record = WebpageRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3805,16 +3808,18 @@ class NotionConnector(BaseConnector):
                     )
 
                 records_to_create.append((minimal_record, []))
-                # Pre-populate mapping (record.id is set before on_new_records)
-                child_record_map[ext_id] = ChildRecord(
-                    child_type=ChildType.RECORD,
-                    child_id=minimal_record.id,
-                    child_name=minimal_record.record_name
-                )
 
             # Batch create all missing records in one call
             await self.data_entities_processor.on_new_records(records_to_create)
             self.logger.info(f"Created {len(records_to_create)} placeholder records")
+            # After the write: a record the sync stored since the lookup keeps its id, and the
+            # processor hands that id back on the record, so the block points at what is stored.
+            for minimal_record, _ in records_to_create:
+                child_record_map[minimal_record.external_record_id] = ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=minimal_record.id,
+                    child_name=minimal_record.record_name
+                )
 
         return child_record_map
 
@@ -4868,6 +4873,7 @@ class NotionConnector(BaseConnector):
             workspace_group_id = self.workspace_id if self.workspace_id else None
 
             return WebpageRecord(
+                id=new_record_id(self.connector_id, obj_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=title,
                 record_type=record_type,
@@ -4990,6 +4996,7 @@ class NotionConnector(BaseConnector):
             source_updated_at = self._parse_iso_timestamp(last_edited_time) if last_edited_time else None
 
             return FileRecord(
+                id=new_record_id(self.connector_id, file_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,
@@ -5325,6 +5332,7 @@ class NotionConnector(BaseConnector):
 
             self.logger.debug(f"Record not found: {external_id}, creating a placeholder")
             minimal_record = WebpageRecord(
+                id=new_record_id(self.connector_id, external_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=page_title or ("Database Row" if parent_data_source_id else f"Page {external_id[:8]}"),
                 record_type=RecordType.WEBPAGE,
