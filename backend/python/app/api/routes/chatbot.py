@@ -751,6 +751,11 @@ async def upload_chat_attachments(
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
+            except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
+                # Same as the PDF branch: a worker that overran or died is most likely out of
+                # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
             except ParseError as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 if e.message == EXCEL_TOO_LARGE:

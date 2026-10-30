@@ -330,6 +330,51 @@ async def test_a_too_large_xlsx_attachment_says_it_is_too_large() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cause", ["timed_out", "crashed", "memory"])
+async def test_an_xlsx_parse_worker_that_overran_or_died_is_too_heavy_not_unreadable(cause: str) -> None:
+    from fastapi import HTTPException
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.parsers.parse_pool import ParseWorkerError
+
+    xlsx_bytes = b"PK\x03\x04fake"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "big.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(xlsx_bytes),
+                "contentBase64": base64.b64encode(xlsx_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot._build_excel_blocks",
+        new_callable=AsyncMock,
+        side_effect=ParseWorkerError("internal", cause),
+    ), pytest.raises(HTTPException) as raised:
+        blob = AsyncMock()
+        blob.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = blob
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert raised.value.status_code == 422
+    assert "big.xlsx is too large or complex to read right now" in raised.value.detail
+
+
+@pytest.mark.asyncio
 async def test_upload_docx_dispatches_to_docling():
     from app.api.routes.chatbot import upload_chat_attachments
 
