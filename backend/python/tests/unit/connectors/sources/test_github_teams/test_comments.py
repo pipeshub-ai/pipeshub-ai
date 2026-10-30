@@ -1314,3 +1314,55 @@ class TestAttachmentIndexingFilter:
         ru = helper._attachment_file_update(self._ATTACH, self._parent("TICKET"), None, None)
 
         assert ru.record.indexing_status != "AUTO_INDEX_OFF"
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """The issue or pull request sync and the stream of the same issue (indexing reads
+    it while the sync goes on) can each look for an attachment before either has stored
+    it. Each then created its own record, so the graph held two records for one upload.
+    The next full sync rewrote the one its lookup found and unlinked the other, which
+    lost its parent issue and the access it inherits."""
+
+    BODY = f"[spec.pdf]({_PDF_ATTACHMENT['href']})"
+
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        c = make_mock_connector()
+        stored_parent = _parent_ticket()
+        # The sync builds the issue afresh; the processor swaps in the stored id later.
+        synced_parent = stored_parent.model_copy(update={"id": "freshly-built"})
+        # Both writers look before either has stored the attachment.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: (
+                stored_parent if external_record_id == stored_parent.external_record_id else None))
+        helper = CommentsHelper(c)
+
+        synced = await helper.make_file_records_from_list([_PDF_ATTACHMENT], synced_parent)
+        children, streamed = await helper.make_child_records_of_attachments(self.BODY, stored_parent)
+        stored = {update.record.id: update.record for update in [*synced, *streamed]}
+
+        assert [r.external_record_id for r in stored.values()] == [
+            f"{_PDF_ATTACHMENT['href']}#{stored_parent.external_record_id}"
+        ], f"one attachment stored as {len(stored)} records: {sorted(stored)}"
+        assert [child.child_id for child in children] == list(stored)
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self) -> None:
+        async def ids(helper: CommentsHelper) -> list[str]:
+            listed = await helper.make_file_records_from_list([_PDF_ATTACHMENT], _parent_ticket())
+            _, from_body = await helper.make_child_records_of_attachments(self.BODY, _parent_ticket())
+            _, from_review = await helper.make_block_comment_of_attachments(self.BODY, _parent_ticket())
+            return [u.record.id for u in [*listed, *from_body, *from_review]]
+
+        first = await ids(CommentsHelper(make_mock_connector()))
+        second = await ids(CommentsHelper(make_mock_connector()))
+        assert first == second
+        assert len(set(first)) == 1
+
+    async def test_a_stored_attachment_keeps_its_id(self) -> None:
+        c = make_mock_connector()
+        stored = SimpleNamespace(id="stored-node", source_created_at=1, is_deleted=False)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[None, stored])
+        helper = CommentsHelper(c)
+
+        (update,) = await helper.make_file_records_from_list([_PDF_ATTACHMENT], _parent_ticket())
+
+        assert update.record.id == "stored-node"
