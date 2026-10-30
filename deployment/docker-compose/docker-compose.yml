@@ -5,7 +5,7 @@
 # Manual quick-start — env.template ships a working slim stack (Neo4j, Redis
 # Streams, Redis KV). Set the passwords in it, then start:
 #
-#   cp env.template .env && $EDITOR .env      # set NEO4J_PASSWORD and MONGO_PASSWORD
+#   cp env.template .env && $EDITOR .env      # set SECRET_KEY, NEO4J_PASSWORD, MONGO_PASSWORD, QDRANT_API_KEY
 #   docker compose -p pipeshub-ai up -d
 #
 # Do not pass COMPOSE_PROFILES on the command line: it replaces the value in

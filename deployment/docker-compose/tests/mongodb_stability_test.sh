@@ -63,6 +63,30 @@ PY
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+# env.template leaves the secrets blank and docker-compose.prod-legacy.yml has
+# no fallback for them, so the renders below need placeholder values.
+LEGACY_SECRETS=(SECRET_KEY ARANGO_PASSWORD MONGO_PASSWORD QDRANT_API_KEY)
+for var in "${LEGACY_SECRETS[@]}"; do export "$var=test-$var"; done
+
+# The legacy file must refuse to render while a secret is missing, and name it.
+legacy="$COMPOSE_DIR/docker-compose.prod-legacy.yml"
+unset_all=()
+for var in "${LEGACY_SECRETS[@]}"; do unset_all+=(-u "$var"); done
+if err="$(env "${unset_all[@]}" docker compose -f "$legacy" --env-file /dev/null config -q 2>&1)"; then
+  printf 'FAIL: legacy compose rendered with no secrets set\n' >&2; exit 1
+fi
+for var in "${LEGACY_SECRETS[@]}"; do
+  grep -q "required variable $var is missing" <<<"$err" \
+    || { printf 'FAIL: legacy compose error does not name %s:\n%s\n' "$var" "$err" >&2; exit 1; }
+  if err_one="$(env -u "$var" docker compose -f "$legacy" --env-file /dev/null config -q 2>&1)"; then
+    printf 'FAIL: legacy compose rendered without %s\n' "$var" >&2; exit 1
+  fi
+  grep -q "required variable $var is missing" <<<"$err_one" \
+    || { printf 'FAIL: legacy compose error does not name %s:\n%s\n' "$var" "$err_one" >&2; exit 1; }
+done
+docker compose -f "$legacy" --env-file /dev/null config -q \
+  || { printf 'FAIL: legacy compose did not render with every secret set\n' >&2; exit 1; }
+
 for compose_file in "${COMPOSE_FILES[@]}"; do
   rendered="$tmp_dir/${compose_file}.default.json"
   render_compose "$compose_file" "$rendered"
