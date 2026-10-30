@@ -100,7 +100,9 @@ class CifsClient(IClient):
         share: str | None = None,
         use_ntlm_v2: bool = True,
         logger: Logger | None = None,
+        public_only: bool = False,
     ) -> None:
+        self.public_only = public_only
         self.server = server
         self.port = port
         self.username = username
@@ -143,7 +145,7 @@ class CifsClient(IClient):
         conn = self._new_connection()
         try:
             # The address SMB checks for its sessions: loopback, link-local and metadata never.
-            ok = conn.connect(dial_address(self.server), self.port)
+            ok = conn.connect(dial_address(self.server, public_only=self.public_only), self.port)
         except Exception as exc:
             with suppress(Exception):
                 conn.close()
@@ -282,6 +284,8 @@ class CifsClient(IClient):
         logger: Logger,
         config_service: ConfigurationService,
         connector_instance_id: str,
+        *,
+        public_only: bool = False,
     ) -> "CifsClient":
         config = await config_service.get_config(
             ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
@@ -309,6 +313,7 @@ class CifsClient(IClient):
             share=share,
             use_ntlm_v2=ntlm != "v1",
             logger=logger,
+            public_only=public_only,
         )
         await asyncio.to_thread(client.connect)
         return client

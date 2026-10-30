@@ -284,7 +284,9 @@ class TestEveryConnectionGoesThroughTheAddressPolicy:
 
     async def test_the_setup_check_refuses_a_private_host_while_the_switch_is_on(self, driver_connect, monkeypatch):
         monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        result = await PostgreSQLConnector.check_connection({**BASIC, "host": "10.0.0.1"}, _LOGGER)
+        result = await PostgreSQLConnector.check_connection(
+            {**BASIC, "host": "10.0.0.1"}, _LOGGER, public_only=False
+        )
         assert result.success is False
         assert "private or internal address" in result.message
         driver_connect.assert_not_called()
@@ -295,7 +297,9 @@ class TestEveryConnectionGoesThroughTheAddressPolicy:
 
         lookups = MagicMock(side_effect=no_such_host)
         monkeypatch.setattr(socket, "getaddrinfo", lookups)
-        result = await PostgreSQLConnector.check_connection({**BASIC, "host": "db.example.invalid"}, _LOGGER)
+        result = await PostgreSQLConnector.check_connection(
+            {**BASIC, "host": "db.example.invalid"}, _LOGGER, public_only=False
+        )
         assert result.message == 'Could not find a server named "db.example.invalid". Check the host name.'
         lookups.assert_called_once()
         driver_connect.assert_not_called()

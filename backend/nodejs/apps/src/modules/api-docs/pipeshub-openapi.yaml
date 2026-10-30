@@ -51762,7 +51762,14 @@ paths:
         <b>Editing an instance:</b><br>
         Pass <code>connectorId</code> to lay the settings over the instance's saved
         ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
-        caller must be allowed to update that instance.
+        caller must be allowed to update that instance.<br><br>
+        <b>Addresses:</b><br>
+        A check runs under the rules of the connector it is for. A personal
+        connector (any check by a non-admin, or with the <code>connectorId</code> of
+        a personal instance) can only reach servers on public addresses; any other
+        host gets <code>200</code> with <code>success: false</code> and one message
+        for every refused host. A team connector follows the deployment's
+        address policy.
       operationId: testConnectorConnection
       x-pipeshub-sdk: true
       security:
@@ -51859,6 +51866,8 @@ paths:
             Docs, Zendesk, Airtable) while the platform feature flag
             `ENABLE_BETA_CONNECTORS` is off (the default), with the message
             `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
+            Also returned to a non-admin for a connector type that only supports team
+            scope, with the message `Only administrators can set up <type> connectors`.
           content:
             application/json:
               schema:

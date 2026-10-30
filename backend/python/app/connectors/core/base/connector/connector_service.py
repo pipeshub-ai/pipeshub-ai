@@ -305,11 +305,15 @@ class BaseConnector(ABC):
 
     @classmethod
     async def check_connection(
-        cls, auth_config: dict[str, Any], logger: Logger
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
     ) -> ConnectionCheckResult:
         """Try auth settings the user has typed but not saved, without creating an instance.
 
-        Connectors that override this get a connection check in the setup form."""
+        Connectors that override this get a connection check in the setup form.
+
+        ``public_only`` is the address rule of the scope being set up: personal scope may
+        reach public addresses only, team scope follows the deployment setting. A connector
+        that dials a host the user typed must apply it before dialling."""
         raise NotImplementedError(f"{cls.__name__} has no connection check")
 
     @classmethod

@@ -3200,7 +3200,9 @@ class OneDriveConnector(BaseConnector):
 
     @classmethod
     @override
-    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
+    ) -> ConnectionCheckResult:
         """Sign in with the credentials on the setup form before they are saved.
 
         Fails only on an answer that settles it: credentials Microsoft rejects, or a

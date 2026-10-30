@@ -15,6 +15,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
@@ -249,6 +250,7 @@ class SmbConnector(BaseConnector):
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
+            public_only=public_only_for_scope(self.scope),
         )
         return SmbDataSource(client)
 
@@ -271,7 +273,9 @@ class SmbConnector(BaseConnector):
         return auth_problems(auth_config)
 
     @classmethod
-    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
+    ) -> ConnectionCheckResult:
         problems = auth_problems(auth_config)
         if problems:
             return ConnectionCheckResult(success=False, message=problems[0])
@@ -295,6 +299,7 @@ class SmbConnector(BaseConnector):
             domain=str(auth_config.get("domain") or "").strip(),
             share=share,
             logger=logger,
+            public_only=public_only,
         )
         try:
             await asyncio.to_thread(client.list_directory, share, "")

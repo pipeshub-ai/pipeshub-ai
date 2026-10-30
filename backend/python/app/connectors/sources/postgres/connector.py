@@ -32,6 +32,7 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
@@ -666,6 +667,11 @@ class PostgreSQLConnector(BaseConnector):
             self.database_name = connection_kwargs["database"]
             self.server_address = f"{(connection_kwargs.get('host') or '').lower()}:{connection_kwargs.get('port')}"
             self.database_oid = None
+            # A personal connector may be saved by any user, so it dials public addresses only.
+            # Either record naming it personal is enough.
+            public_only = public_only_for_scope(self.scope) or public_only_for_scope(
+                config.get("scope", self.scope)
+            )
             self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
@@ -673,6 +679,7 @@ class PostgreSQLConnector(BaseConnector):
             pg_config_kwargs: dict[str, Any] = {
                 **connection_kwargs,
                 "timeout": int(config.get("timeout", 30)),
+                "public_only": public_only,
             }
             if config.get("min_pool_size") is not None:
                 pg_config_kwargs["min_pool_size"] = int(config["min_pool_size"])
@@ -1769,10 +1776,12 @@ class PostgreSQLConnector(BaseConnector):
     @staticmethod
     async def _try_connection(
         kwargs: dict[str, Any],
+        *,
+        public_only: bool = False,
     ) -> tuple[PostgreSQLResponse | None, BaseException | None]:
         """The test query's response, or the driver error that stopped the connection."""
         client = PostgreSQLConfig(
-            **kwargs, timeout=CONNECTION_CHECK_TIMEOUT_S, max_pool_size=1
+            **kwargs, timeout=CONNECTION_CHECK_TIMEOUT_S, max_pool_size=1, public_only=public_only
         ).create_client()
         try:
             await client.connect()
@@ -1784,7 +1793,7 @@ class PostgreSQLConnector(BaseConnector):
 
     @classmethod
     async def check_connection(
-        cls, auth_config: dict[str, Any], logger: Logger
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
     ) -> ConnectionCheckResult:
         try:
             kwargs = connection_kwargs_from_auth(auth_config)
@@ -1792,9 +1801,11 @@ class PostgreSQLConnector(BaseConnector):
             return ConnectionCheckResult(success=False, message=str(e))
 
         host, port, database, user = kwargs["host"], kwargs["port"], kwargs["database"], kwargs["user"]
-        response, cause = await cls._try_connection(kwargs)
+        response, cause = await cls._try_connection(kwargs, public_only=public_only)
         if cause is not None and _is_ssl_only_server_refusal(cause, kwargs["sslmode"]):
-            ssl_response, ssl_cause = await cls._try_connection({**kwargs, "sslmode": "require"})
+            ssl_response, ssl_cause = await cls._try_connection(
+                {**kwargs, "sslmode": "require"}, public_only=public_only
+            )
             # A server without SSL fails the retry before the login, and then the
             # first answer is the real one.
             if ssl_cause is None or isinstance(ssl_cause, asyncpg.PostgresError):

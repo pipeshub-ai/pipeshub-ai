@@ -61,6 +61,8 @@ async def scenario_adapter(
         graph=graph_provider,
         connector_type="SMB",
         connector_config=smb_connector_config(),
+        # The test share is on a private address, which personal connectors cannot reach.
+        scope="team",
     ) as adapter:
         yield adapter
 
