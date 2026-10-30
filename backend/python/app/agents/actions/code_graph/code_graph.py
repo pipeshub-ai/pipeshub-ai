@@ -91,8 +91,10 @@ _CONNECTOR_ID_DESC = (
     "indexed repo and has to be told which one."
 )
 
-# Call sites a caller list did not link, named from a text search: at most this many.
+# Call sites a caller list did not link, named from a text search: at most this many,
+# chosen after dropping the linked ones from up to _SITES_SCANNED matches.
 _SITES_SHOWN = 15
+_SITES_SCANNED = 5000
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 _REPO_DESC = (
@@ -276,7 +278,7 @@ class CodeGraph:
                 graph_provider=self._graph_provider, blob_store=self._blob_store,
                 connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
                 pattern=call, mode="regex", path="**", repo=repo,
-                limit=200, include_tests=include_tests,
+                limit=_SITES_SCANNED, max_limit=_SITES_SCANNED, include_tests=include_tests,
             )
         except Exception:
             self._log.warning("codegraph: unlinked call sites unavailable", exc_info=True)
@@ -302,6 +304,9 @@ class CodeGraph:
                 "sites": [{"file_path": m["file_path"], "line": m["line"], "text": (m.get("text") or "").strip()[:160]}
                           for m in sites[:_SITES_SHOWN]],
             }
+            if found.get("truncated"):
+                # Not every file or match was read: the count is a floor.
+                result["unlinked_call_sites"]["truncated"] = True
         return result
 
     async def _anchor_path(
@@ -1050,8 +1055,9 @@ class CodeGraph:
             ),
             "Failed to compute the impact",
         )
-        result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
-                                                 include_tests=include_tests, target_path=path)
+        if not edge_types or "CALLS" in edge_types:
+            result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
+                                                     include_tests=include_tests, target_path=path)
         return self._to_output(result)
 
     @tool(

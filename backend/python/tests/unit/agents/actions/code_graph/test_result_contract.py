@@ -114,3 +114,41 @@ async def test_a_caller_list_names_the_call_sites_the_graph_did_not_link(monkeyp
                                                 include_tests=False, target_path="src/b.py")
     assert "linked or not" in unchecked["unlinked_call_sites"]["note"]
     assert unchecked["unlinked_call_sites"]["count"] == 2
+
+
+async def test_call_sites_are_chosen_after_the_linked_ones_are_dropped(monkeypatch) -> None:
+    """A repo whose first 200 matches are all linked still names the unlinked 201st:
+    the scan asks for more than a model's search may, and says when even that fell short."""
+    asked = {}
+
+    async def search(**kwargs) -> dict:
+        asked.update(kwargs)
+        linked = [{"file_path": "src/a.py", "line": n, "text": "thing.run()"} for n in range(1, 251)]
+        return {"matches": [*linked, {"file_path": "src/c.py", "line": 7, "text": "worker.run()"}],
+                "truncated": True}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    known = {("src/a.py", n) for n in range(1, 251)}
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run", known,
+                                          include_tests=False, target_path="src/b.py")
+    assert asked["limit"] > 200 and asked["max_limit"] >= asked["limit"]
+    assert out["unlinked_call_sites"]["sites"] == [{"file_path": "src/c.py", "line": 7, "text": "worker.run()"}]
+    assert out["unlinked_call_sites"]["truncated"] is True
+
+
+async def test_impact_over_other_relations_adds_no_call_sites(monkeypatch) -> None:
+    """`edge_types=["INHERITS"]` asks for subclasses; text-matched calls are not that."""
+    async def search(**_kwargs) -> dict:
+        return {"matches": [{"file_path": "src/c.py", "line": 7, "text": "target()"}]}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": QueryGraphProvider(), "blob_store": object()})
+    _ok, inherits = await tool.impact(CONN, file_path="src/b.py", qualified_name="function:target",
+                                      edge_types=["INHERITS"])
+    _ok, calls = await tool.impact(CONN, file_path="src/b.py", qualified_name="function:target",
+                                   edge_types=["CALLS"])
+    assert "unlinked_call_sites" not in json.loads(inherits)
+    assert "unlinked_call_sites" in json.loads(calls)

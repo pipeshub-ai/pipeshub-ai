@@ -81,13 +81,16 @@ async def search_code_impl(
     repo: str | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
     include_tests: bool = False,
+    max_limit: int = MAX_SEARCH_LIMIT,
 ) -> dict[str, Any]:
+    """``max_limit`` lifts the cap on ``limit`` for in-process callers that filter the
+    matches themselves; a model's request is held to MAX_SEARCH_LIMIT."""
     pattern = (pattern or "").strip()
     if not pattern:
         return {"error": "pattern is required"}
     if mode not in SEARCH_MODES:
         return {"error": f"mode must be one of {', '.join(SEARCH_MODES)}"}
-    limit = max(1, min(int(limit or DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT))
+    limit = max(1, min(int(limit or DEFAULT_SEARCH_LIMIT), max_limit))
     access = RecordAccess(graph_provider, org_id, user_id)
     if mode == "identifier":
         return await _by_identifier(graph_provider, org_id, connector_id, pattern, path, repo,
