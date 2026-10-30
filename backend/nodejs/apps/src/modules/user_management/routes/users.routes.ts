@@ -206,7 +206,8 @@ const emailIdValidationSchema = z.object({
 const epochMsParam = z
   .string()
   .optional()
-  .refine((val) => val === undefined || /^\d{1,15}$/.test(val), {
+  // Signed: a day before 1970, which the date picker allows, is a negative epoch.
+  .refine((val) => val === undefined || /^-?\d{1,15}$/.test(val), {
     message: 'date filters must be epoch milliseconds',
   });
 

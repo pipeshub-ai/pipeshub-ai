@@ -150,7 +150,7 @@ function normalizedEmail(value: unknown): string {
 // `[from, to)` from two epoch-millisecond query values; undefined when neither is set.
 function timeRange(from: unknown, to: unknown): TimeRange | undefined {
   const at = (value: unknown): Date | undefined =>
-    typeof value === 'string' && /^\d+$/.test(value)
+    typeof value === 'string' && /^-?\d+$/.test(value)
       ? new Date(Number(value))
       : undefined;
   const range: TimeRange = { from: at(from), to: at(to) };

@@ -246,6 +246,17 @@ describe('UserController', () => {
       expect(count.firstCall.args[0]).to.deep.equal(filter);
     });
 
+    it('keeps a bound before 1970, which is a negative epoch', async () => {
+      req.query = { joinedTo: '-157766400000' };
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.createdAt).to.deep.equal({ $lt: new Date(-157766400000) });
+    });
+
     it('leaves the dates unfiltered when no date is given', async () => {
       const find = stubUsersFind([]);
       stubUsersCount(0);
