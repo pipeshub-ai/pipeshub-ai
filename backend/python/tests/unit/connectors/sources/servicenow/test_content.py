@@ -434,11 +434,12 @@ async def test_images_past_the_articles_budget_stay_links(servicenow_connector, 
 
 @pytest.mark.asyncio
 async def test_external_image_not_fetched(servicenow_connector) -> None:
-    fetch = _with_image(servicenow_connector, "https://cdn.example.com/sys_attachment.do?sys_id=" + IMG)
+    url = "https://cdn.example.com/sys_attachment.do?sys_id=" + IMG
+    fetch = _with_image(servicenow_connector, url)
 
     data = block_groups(await servicenow_connector._fetch_article_content(KB1))[0]["data"]
 
-    assert "https://cdn.example.com/" in data
+    assert data.count(url) == 1  # left as the link it was
     fetch.assert_not_awaited()
 
 

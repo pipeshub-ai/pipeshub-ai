@@ -763,9 +763,7 @@ class ServiceNowConnector(BaseConnector):
                 )
 
             # Initialize ServiceNow OAuth client
-            self.logger.info(
-                f"🔗 Connecting to ServiceNow instance: {self.instance_url}"
-            )
+            self.logger.info("🔗 Connecting to the ServiceNow instance")
             await self._close_client()
             self.servicenow_client = ServiceNowRESTClientViaOAuthAuthorizationCode(
                 instance_url=self.instance_url,
