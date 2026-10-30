@@ -35,11 +35,16 @@ _CODES = "|".join(sorted(ISO_4217 - _WORD_CODES))
 # run of "123 456 ..." costs O(n^2), hours for a numeric CSV.
 # A plain space groups thousands only where the currency follows ("1 250 €");
 # "$5 100 times" is five dollars.
-_NUMBER = r"(?>\d{1,3}(?:[,.\u00a0\u202f]\d{3})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
-_SPACED_NUMBER = r"(?>\d{1,3}(?:[,.\u00a0\u202f ]\d{3})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+# Indian grouping ("2,50,000", "12,34,56,789"), tried first: the thousands
+# alternative stops at ",50," and the plain one then reads "2,50" as 2.50. Each
+# repeat ends in its comma so it cannot eat the last group.
+_INDIAN_NUMBER = r"\d{1,2},(?:\d{2},)++\d{3}(?!,\d)(?:\.\d{1,2})?+"
+_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+_SPACED_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f ]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
 _SCALE = rf"(?:\s?(?i:{SCALE_WORDS})\b)?"
-# "CAD 3D" and "$5MM" are not an amount followed by more letters.
-_END = r"(?![A-Za-z\d])"
+# "CAD 3D" and "$5MM" are not an amount followed by more letters, and a number
+# cut short of its next group ("₹2,50" of "₹2,50,000,000") is no amount at all.
+_END = r"(?![A-Za-z\d]|[.,]\d)"
 _MONEY = re.compile(
     rf"(?<![A-Za-z0-9.])(?:"
     rf"(?:US\$|R\$|C\$|A\$|HK\$|NZ\$|S\$|CN¥|RMB|Rs\.?|[$€£¥₹₩₽₺₪₫₱])\s?{_NUMBER}{_SCALE}{_END}"
