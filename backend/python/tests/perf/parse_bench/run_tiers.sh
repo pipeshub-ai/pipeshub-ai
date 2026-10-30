@@ -44,8 +44,9 @@ mixes=${BENCH_MIXES:-"cpu-heavy io-heavy laptop-typical"}
 busy_retries=${BENCH_BUSY_RETRIES:-10}
 busy_wait=${BENCH_BUSY_WAIT:-60}
 pdf_parser=${BENCH_PDF_PARSER:-pdfplumber}
-host_cpus=$(nproc)
-host_mem_gb=$(awk '/MemTotal/{printf "%d", $2/1024/1024}' /proc/meminfo)
+# Overridable so the dry run can be checked the same way on any machine.
+host_cpus=${BENCH_HOST_CPUS:-$(nproc)}
+host_mem_gb=${BENCH_HOST_MEM_GB:-$(awk '/MemTotal/{printf "%d", $2/1024/1024}' /proc/meminfo)}
 uid_gid="$(id -u):$(id -g)"
 
 run() { if ((dry)); then printf '%q ' "$@"; echo; else "$@"; fi; }

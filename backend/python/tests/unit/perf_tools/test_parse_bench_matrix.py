@@ -83,7 +83,10 @@ class TestRunTiersScript:
     def _dry(self, tmp_path: Path, **env: str) -> str:
         (tmp_path / "corpus").mkdir(exist_ok=True)
         (tmp_path / "corpus" / "manifest.json").write_text("{}")
-        full = {**os.environ, "BENCH_OUT": str(tmp_path / "out"), "BENCH_CORPUS": str(tmp_path / "corpus"), **env}
+        # A fixed, roomy host, so the result does not depend on the machine running the test
+        # (CI runners have 2 CPUs); a test that wants a small host passes its own.
+        host = {"BENCH_HOST_CPUS": "64", "BENCH_HOST_MEM_GB": "256"}
+        full = {**os.environ, **host, "BENCH_OUT": str(tmp_path / "out"), "BENCH_CORPUS": str(tmp_path / "corpus"), **env}
         done = subprocess.run(["bash", str(RUN_TIERS), "--dry-run"], capture_output=True, text=True, env=full, check=True)
         return done.stdout
 
@@ -91,6 +94,14 @@ class TestRunTiersScript:
         out = self._dry(tmp_path, BENCH_TIERS="T-small:2:4 T-laptop:4:8", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy")
         assert "--cpus 2 --memory 4g --memory-swap 4g" in out
         assert "--cpus 4 --memory 8g --memory-swap 8g" in out
+
+    def test_a_tier_too_big_for_a_small_host_is_skipped(self, tmp_path: Path) -> None:
+        out = self._dry(
+            tmp_path, BENCH_TIERS="T-small:2:4 T-laptop:4:8", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy",
+            BENCH_HOST_CPUS="2", BENCH_HOST_MEM_GB="15",
+        )
+        assert "--cpus 2 --memory 4g --memory-swap 4g" in out
+        assert "skip T-laptop: needs 4 CPUs and 12 GB, this host has 2 and 15" in out
 
     def test_a_fresh_container_per_run_so_memory_peak_is_that_runs(self, tmp_path: Path) -> None:
         out = self._dry(tmp_path, BENCH_TIERS="T-small:2:4", BENCH_REPEATS="3", BENCH_MIXES="cpu-heavy io-heavy")
