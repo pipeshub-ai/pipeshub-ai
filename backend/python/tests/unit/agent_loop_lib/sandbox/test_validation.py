@@ -64,8 +64,40 @@ class TestVersionedSpecs:
         assert package_name("lodash@4.17.21", "typescript") == "lodash"
 
     def test_versioned_capitalized_spec_matches_allowlist(self) -> None:
-        name = package_name("Pillow>=10", "python")
+        name = package_name("Pillow==10.4.0", "python")
         assert matches_package_set(name, {"pillow"}, "python")
+
+
+class TestExactPinsOnly:
+    """Only a bare name or an exact version installs: a range or a tag lets
+    the registry hand over whatever release is newest at install time."""
+
+    def test_pypi_bare_and_exact_pins_accepted(self) -> None:
+        for spec in ["pandas", "Pillow", "python_docx", "numpy==1.26.0", "numpy==2.0", "pydantic==2.0.0rc1"]:
+            assert validate_package_spec(spec, "python"), spec
+
+    def test_pypi_ranges_and_wildcards_refused(self) -> None:
+        for spec in [
+            "numpy>=1.26", "numpy<2", "numpy~=1.26", "numpy!=1.0", "numpy>1",
+            "numpy==1.26.*", "numpy===1.26.0", "numpy>=1,<2", "numpy==", "numpy=1.0",
+        ]:
+            assert not validate_package_spec(spec, "python"), spec
+
+    def test_npm_bare_and_exact_pins_accepted(self) -> None:
+        for spec in ["lodash", "lodash@4.17.21", "@types/node", "@types/node@20.11.5", "pkg@1.0.0-beta.1"]:
+            assert validate_package_spec(spec, "typescript"), spec
+
+    def test_npm_ranges_and_tags_refused(self) -> None:
+        for spec in [
+            "lodash@^4.17.21", "lodash@~4.17.21", "lodash@*", "lodash@4", "lodash@4.17",
+            "lodash@4.x", "lodash@latest", "lodash@next", "@types/node@^20.0.0", "@types/node@latest",
+        ]:
+            assert not validate_package_spec(spec, "typescript"), spec
+
+    def test_url_git_file_and_flags_still_refused(self) -> None:
+        for spec in ["git+https://x/y.git", "https://x/y.tgz", "file:../y", "-e", "--index-url=x", "a;b"]:
+            assert not validate_package_spec(spec, "python"), spec
+            assert not validate_package_spec(spec, "typescript"), spec
 
 
 class TestEnvironmentManagerAllowlist:
@@ -120,10 +152,57 @@ class TestHookBackendConsistency:
         from app.sandbox.package_policy import enforce_package_allowlist
 
         combined = set(_curated_package_allowlist())
-        for spec in ["Pillow", "ReportLab", "python_docx", "Jinja2", "pandas>=1.5", "FPDF2"]:
+        for spec in ["Pillow", "ReportLab", "python_docx", "Jinja2", "pandas==2.2.3", "FPDF2"]:
             enforce_package_allowlist([spec], SandboxLanguage.PYTHON)  # hook layer: must not raise
             name = package_name(spec, "python")
             assert matches_package_set(name, combined, "python"), (
                 f"{spec!r} passes the PRE_TOOL_USE policy but would be rejected "
                 f"by the backend allowlist check"
             )
+
+
+class TestInstallCommandFlags:
+    """pip installs wheels only (an sdist runs its build script on install)
+    and npm never runs lifecycle scripts."""
+
+    async def test_environment_manager_pip_is_binary_only(self, tmp_path) -> None:
+        from unittest.mock import AsyncMock
+
+        from app.agent_loop_lib.sandbox.base import ExecResult
+        from app.agent_loop_lib.sandbox.coding.environment import EnvironmentManager
+
+        manager = EnvironmentManager(str(tmp_path))
+        manager.ensure_python_venv = AsyncMock()
+        manager._run_confined = AsyncMock(return_value=ExecResult(stdout="", stderr="", exit_code=0))
+        assert (await manager.install_packages(["six==1.17.0"], "python")).success
+        cmd = manager._run_confined.call_args.args[0]
+        assert cmd[1:] == ["install", "--no-cache-dir", "--only-binary=:all:", "six==1.17.0"]
+
+    async def test_environment_manager_npm_ignores_scripts(self, tmp_path) -> None:
+        from unittest.mock import AsyncMock
+
+        from app.agent_loop_lib.sandbox.base import ExecResult
+        from app.agent_loop_lib.sandbox.coding.environment import EnvironmentManager
+
+        manager = EnvironmentManager(str(tmp_path))
+        manager.ensure_typescript_runtime = AsyncMock()
+        manager._run_confined = AsyncMock(return_value=ExecResult(stdout="", stderr="", exit_code=0))
+        assert (await manager.install_packages(["lodash@4.17.21"], "typescript")).success
+        cmd = manager._run_confined.call_args.args[0]
+        assert cmd[:3] == ["npm", "install", "--ignore-scripts"]
+
+    async def test_e2b_install_commands(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
+
+        sandbox = E2BCodingSandbox()
+        sandbox._sbx = MagicMock()
+        sandbox._ensure_node_project = AsyncMock()
+        sandbox._run_command = AsyncMock(return_value=("", "", 0))
+        assert (await sandbox.install_packages(["six==1.17.0"], "python")).success
+        assert sandbox._run_command.call_args.args[0] == (
+            "pip install --no-cache-dir --only-binary=:all: six==1.17.0"
+        )
+        assert (await sandbox.install_packages(["lodash@4.17.21"], "typescript")).success
+        assert sandbox._run_command.call_args.args[0].startswith("npm install --ignore-scripts ")

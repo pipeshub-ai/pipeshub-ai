@@ -305,11 +305,12 @@ class E2BCodingSandbox(CodingSandboxBackend):
         if not to_install:
             return InstallResult(success=True, installed=[])
 
+        # shortcut: no hash pinning (agent picks packages at runtime); upgrade by installing the allowlist from a hashed lock or baking it into the sandbox image
         if language == "typescript":
             await self._ensure_node_project()
             cmd = "npm install --ignore-scripts --no-audit --no-fund " + _shell_words(to_install)
         else:
-            cmd = "pip install --no-cache-dir " + _shell_words(to_install)
+            cmd = "pip install --no-cache-dir --only-binary=:all: " + _shell_words(to_install)
 
         stdout, stderr, exit_code = await self._run_command(cmd, timeout=float(self._e2b_timeout))
         success = exit_code == 0

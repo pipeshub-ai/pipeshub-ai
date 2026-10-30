@@ -24,10 +24,12 @@ __all__ = [
 
 # Deliberately restrictive character classes — anything outside these
 # (git+, http://, file:, leading '-', whitespace, shell metacharacters)
-# fails validation rather than being escaped/interpreted.
-_NPM_SCOPED_RE = re.compile(r"^(@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*)(@[a-zA-Z0-9._\-^~*]+)?$")
-_NPM_UNSCOPED_RE = re.compile(r"^([a-z0-9][a-z0-9._-]*)(@[a-zA-Z0-9._\-^~*]+)?$")
-_PYPI_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)([<>=!~]=?[A-Za-z0-9.*,]*)?$")
+# fails validation rather than being escaped/interpreted. Versions are exact
+# pins only: a range or dist-tag installs whatever was published last.
+_NPM_EXACT_VERSION = r"(@[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)?"
+_NPM_SCOPED_RE = re.compile(r"^(@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*)" + _NPM_EXACT_VERSION + "$")
+_NPM_UNSCOPED_RE = re.compile(r"^([a-z0-9][a-z0-9._-]*)" + _NPM_EXACT_VERSION + "$")
+_PYPI_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(==[0-9][A-Za-z0-9.]*)?$")
 
 
 def _validate_npm_spec(spec: str) -> bool:
@@ -45,7 +47,8 @@ def _validate_pypi_spec(spec: str) -> bool:
 def validate_package_spec(spec: str, language: CodingLanguage) -> bool:
     """True iff `spec` is a safe npm ("pkg", "pkg@1.2.3", "@scope/pkg") or
     PyPI ("pkg", "pkg==1.2.3") package spec — no shell metacharacters, no
-    `git+`/`file:`/URL specs, no leading `-flag` injection."""
+    `git+`/`file:`/URL specs, no leading `-flag` injection, and no version
+    ranges or dist-tags."""
     validator = _validate_npm_spec if language == "typescript" else _validate_pypi_spec
     return validator(spec)
 

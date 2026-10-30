@@ -150,9 +150,27 @@ class TestValidatePackages:
         from app.sandbox.models import validate_packages
         assert validate_packages(["@types/node"]) == ["@types/node"]
 
-    def test_valid_package_with_version(self):
+    def test_valid_package_with_exact_version(self):
         from app.sandbox.models import validate_packages
-        assert validate_packages(["pandas>=1.5.0"]) == ["pandas>=1.5.0"]
+        specs = ["pandas==2.2.3", "chart.js@4.4.1", "@types/node@20.11.5"]
+        assert validate_packages(specs) == specs
+
+    @pytest.mark.parametrize("spec", [
+        "pandas>=1.5.0", "pandas<2", "pandas~=2.2", "pandas!=2.0", "pandas==2.*", "pandas===2.2.3",
+        "pandas>=1,<2", "chart.js@^4.4.1", "chart.js@~4.4.1", "chart.js@*", "chart.js@4",
+        "chart.js@latest", "@types/node@next",
+    ])
+    def test_rejects_ranges_and_tags(self, spec):
+        from app.sandbox.models import validate_packages
+        with pytest.raises(ValueError, match="Invalid package name"):
+            validate_packages([spec])
+
+    def test_exact_pins_pass_the_allowlist(self):
+        from app.sandbox.models import validate_packages
+        assert validate_packages(["pandas==2.2.3"], language=SandboxLanguage.PYTHON) == ["pandas==2.2.3"]
+        assert validate_packages(
+            ["chart.js@4.4.1"], language=SandboxLanguage.TYPESCRIPT,
+        ) == ["chart.js@4.4.1"]
 
     def test_valid_package_with_dots(self):
         from app.sandbox.models import validate_packages

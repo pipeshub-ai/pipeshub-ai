@@ -165,6 +165,28 @@ class TestLocalExecutorPython:
             assert "reportlab" in err
 
     @pytest.mark.asyncio
+    async def test_release_without_a_wheel_is_not_reported_as_offline(self, executor):
+        pip_result = ExecutionResult(
+            success=False,
+            stderr=(
+                "ERROR: Could not find a version that satisfies the requirement reportlab==1.0 (from versions: none)\n"
+                "ERROR: No matching distribution found for reportlab==1.0"
+            ),
+            exit_code=1,
+        )
+
+        with patch(
+            "app.sandbox.local_executor._split_host_installed_python",
+            return_value=([], ["reportlab==1.0"]),
+        ), patch.object(executor, "_subprocess", new_callable=AsyncMock, return_value=pip_result):
+            result = await executor.execute(
+                "import reportlab", SandboxLanguage.PYTHON, packages=["reportlab==1.0"],
+            )
+        assert result.success is False
+        assert "pip install failed" in (result.error or "")
+        assert "cannot reach PyPI" not in (result.error or "")
+
+    @pytest.mark.asyncio
     async def test_python_non_allowlisted_package_rejected(self, executor):
         """An unknown package must be rejected BEFORE any pip call."""
         with patch.object(executor, "_subprocess", new_callable=AsyncMock) as mock_sub:
@@ -210,6 +232,7 @@ class TestLocalExecutorPython:
         assert os.path.dirname(deps_dir) == captured_calls[0]["cwd"]
         # pip must NOT be asked to touch the host global site-packages.
         assert "--user" not in pip_cmd
+        assert "--only-binary=:all:" in pip_cmd
 
         # Run step must have PYTHONPATH pointing at the same deps dir.
         run_env = captured_calls[1]["env"]
@@ -270,6 +293,7 @@ class TestLocalExecutorTypescript:
         assert npm_cmd[0] == "npm"
         assert "install" in npm_cmd
         assert "--prefix" in npm_cmd
+        assert "--ignore-scripts" in npm_cmd
         prefix_idx = npm_cmd.index("--prefix")
         work_dir = npm_cmd[prefix_idx + 1]
         # npm must NOT be asked to save to a host package.json.
