@@ -7189,6 +7189,12 @@ class TestRetireDatabaseContainer:
         assert ds_child.parent_record_type == RecordType.WEBPAGE
         assert row.parent_external_record_id == "ds-real"
         assert row.parent_record_type == RecordType.DATASOURCE
+        # Only the parent field, so a rerun can't write back state indexing changed since.
+        sent = [node for c in conn._mock_tx.batch_update_nodes.await_args_list for node in c.args[0]]
+        assert sorted(sent, key=lambda n: n["_key"]) == sorted([
+            {"_key": ds_child.id, "externalParentId": "page-parent"},
+            {"_key": row.id, "externalParentId": "ds-real"},
+        ], key=lambda n: n["_key"])
         conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(ds_child.id)
         conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(row.id)
         conn._mock_tx.create_record_relation.assert_any_await(

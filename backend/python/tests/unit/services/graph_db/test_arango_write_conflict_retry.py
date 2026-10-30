@@ -90,29 +90,51 @@ async def test_an_aql_write_that_lost_runs_again(client) -> None:
     assert session.post.call_count == 2
 
 
-async def test_a_batch_whose_document_lost_runs_again(client) -> None:
-    """The batch's other documents landed; it is an upsert, so sending them again
-    rewrites the same values."""
-    lost = [{"_key": "a"}, {"error": True, "errorNum": 1200, "errorMessage": "write-write conflict"}]
-    session = _session(
-        "post", _Resp(202, lost), _Resp(202, [{"_key": "a", "_oldRev": "1"}, {"_key": "b", "_oldRev": "2"}])
-    )
+LOST = {"error": True, "errorNum": 1200, "errorMessage": "write-write conflict"}
 
-    result = await _call(client, session, lambda: client.batch_insert_documents("apps", [{"_key": "a"}, {"_key": "b"}]))
+
+async def test_only_the_batch_documents_that_lost_are_sent_again(client) -> None:
+    """The others landed; sending them again could undo someone's newer write."""
+    session = _session(
+        "post",
+        _Resp(202, [{"_key": "a"}, LOST, {"_key": "c"}]),
+        _Resp(202, [LOST]),
+        _Resp(202, [{"_key": "b", "_oldRev": "2"}]),
+    )
+    docs = [{"_key": "a"}, {"_key": "b"}, {"_key": "c"}]
+
+    result = await _call(client, session, lambda: client.batch_insert_documents("apps", docs))
 
     assert result["errors"] == 0
-    assert session.post.call_count == 2
+    assert [c.kwargs["json"] for c in session.post.call_args_list] == [docs, [{"_key": "b"}], [{"_key": "b"}]]
+    assert result["result"] == [{"_key": "a"}, {"_key": "b", "_oldRev": "2"}, {"_key": "c"}]
 
 
-async def test_a_batch_delete_whose_document_lost_runs_again(client) -> None:
-    lost = [{"_key": "a"}, {"error": True, "errorNum": 1200, "errorMessage": "write-write conflict"}]
-    already_gone = [{"error": True, "errorNum": 1202, "errorMessage": "not found"}, {"_key": "b"}]
-    session = _session("delete", _Resp(200, lost), _Resp(200, already_gone))
+async def test_only_the_batch_deletes_that_lost_are_sent_again(client) -> None:
+    session = _session("delete", _Resp(200, [{"_key": "a"}, LOST]), _Resp(200, [{"_key": "b"}]))
 
     deleted = await _call(client, session, lambda: client.batch_delete_documents("records", ["a", "b"]))
 
     assert deleted == 2
-    assert session.delete.call_count == 2
+    assert [c.kwargs["json"] for c in session.delete.call_args_list] == [["records/a", "records/b"], ["records/b"]]
+
+
+async def test_a_batch_that_keeps_losing_is_raised(client) -> None:
+    session = _session("post", *[_Resp(202, [{"_key": "a"}, LOST])] + [_Resp(202, [LOST])] * 5)
+
+    with pytest.raises(Exception, match=r"\[1200\]"):
+        await _call(client, session, lambda: client.batch_insert_documents("apps", [{"_key": "a"}, {"_key": "b"}]))
+    assert session.post.call_count == 6
+
+
+async def test_a_batch_in_a_transaction_is_left_to_its_owner(client) -> None:
+    session = _session("post", _Resp(202, [{"_key": "a"}, LOST]), _Resp(202, [{"_key": "b"}]))
+
+    with pytest.raises(Exception, match=r"\[1200\]"):
+        await _call(
+            client, session, lambda: client.batch_insert_documents("apps", [{"_key": "a"}, {"_key": "b"}], txn_id="t1")
+        )
+    assert session.post.call_count == 1
 
 
 async def test_a_delete_that_lost_runs_again(client) -> None:

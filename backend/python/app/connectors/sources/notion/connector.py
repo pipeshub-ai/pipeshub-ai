@@ -1109,7 +1109,8 @@ class NotionConnector(BaseConnector):
         for child in children:
             child.parent_external_record_id = None
             child.parent_record_type = None
-            nodes.append(child.to_arango_base_record())
+            # Only the parent field: a rerun must not write back state indexing changed since.
+            nodes.append({"_key": child.id, "externalParentId": None})
 
         # Base node only — batch_upsert_records would also rewrite the type doc, and
         # these come back as base Records whose type payload is the wrong shape.
@@ -1156,7 +1157,8 @@ class NotionConnector(BaseConnector):
         for child in children:
             child.parent_external_record_id = new_parent_external_id
             child.parent_record_type = new_parent_type
-            nodes.append(child.to_arango_base_record())
+            # Only the parent field: a rerun must not write back state indexing changed since.
+            nodes.append({"_key": child.id, "externalParentId": new_parent_external_id})
 
         async def rehome(tx_store: TransactionStore) -> None:
             if nodes:
