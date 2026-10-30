@@ -48,7 +48,7 @@ function rowWithoutState(doc: unknown): DocumentRow {
 }
 
 const seqOf = (doc: unknown): number =>
-  Number((doc as { writeSeq?: number } | null)?.writeSeq ?? 0);
+  (doc as { writeSeq?: number } | null)?.writeSeq ?? 0;
 
 // A virtual record's envelope documents wherever they are filed, plus anything
 // at the flat path older records used, and (with `withRevisions`) every content
@@ -140,9 +140,9 @@ export class MongoDocumentRepository implements DocumentRepository {
       if (!admin) throw new Error('no database connection');
       let reply: { localTime?: unknown };
       try {
-        reply = (await admin.command({ hello: 1 })) as typeof reply;
+        reply = await admin.command({ hello: 1 });
       } catch {
-        reply = (await admin.command({ isMaster: 1 })) as typeof reply;
+        reply = await admin.command({ isMaster: 1 });
       }
       const t =
         reply.localTime instanceof Date
@@ -186,7 +186,8 @@ export class MongoDocumentRepository implements DocumentRepository {
       .select('+writeSeq')
       .maxTimeMS(TOKEN_MAX_TIME_MS);
     if (begun) return { writeSeq: seqOf(begun) };
-    if (await DocumentModel.exists({ _id: id, orgId })) throw new DocumentBusy();
+    if (await DocumentModel.exists({ _id: id, orgId }))
+      throw new DocumentBusy();
     return null;
   }
 
@@ -264,7 +265,7 @@ export class MongoDocumentRepository implements DocumentRepository {
   ): Promise<{ row: DocumentRow; writeSeq: number } | null> {
     const marked = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId },
-      { $set: patch as Record<string, unknown>, $inc: { writeSeq: 1 } },
+      { $set: patch, $inc: { writeSeq: 1 } },
       { new: true },
     ).select('+writeSeq');
     return marked
@@ -276,8 +277,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     orgId: string,
     id: string,
   ): Promise<
-    | ({ row: DocumentRow; serverNow: number } & FingerprintState)
-    | null
+    ({ row: DocumentRow; serverNow: number } & FingerprintState) | null
   > {
     const serverNow = await this.serverClockMs();
     const doc = await DocumentModel.findOne({ _id: id, orgId }).select(
@@ -288,7 +288,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     return {
       row: rowWithoutState(doc),
       serverNow,
-      writeSeq: Number(state.writeSeq ?? 0),
+      writeSeq: state.writeSeq ?? 0,
       writers: (state.writers ?? []).map((w) => ({ t: w.t, until: w.until })),
     };
   }
@@ -303,7 +303,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     if (!doc) return null;
     const state = doc as unknown as Partial<FingerprintState>;
     return {
-      writeSeq: Number(state.writeSeq ?? 0),
+      writeSeq: state.writeSeq ?? 0,
       writers: (state.writers ?? []).map((w) => ({ t: w.t, until: w.until })),
     };
   }

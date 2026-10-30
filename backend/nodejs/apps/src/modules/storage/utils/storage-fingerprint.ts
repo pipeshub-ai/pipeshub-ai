@@ -43,8 +43,7 @@ export function isSettled(
 export function normalizeEtag(raw: string | null | undefined): string {
   let t = (raw ?? '').trim();
   if (t.startsWith('W/')) t = t.slice(2);
-  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"'))
-    t = t.slice(1, -1);
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1);
   return t;
 }
 

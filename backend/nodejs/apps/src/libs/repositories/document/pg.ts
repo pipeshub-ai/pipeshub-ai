@@ -638,7 +638,10 @@ export class PgDocumentRepository implements DocumentRepository {
         p,
         stripNul(patch as Record<string, unknown>, 'document', 'patch'),
       );
-      sets.push('write_seq = write_seq + 1', `updated_at = ${p.add(new Date())}`);
+      sets.push(
+        'write_seq = write_seq + 1',
+        `updated_at = ${p.add(new Date())}`,
+      );
       const { rows } = await k.query<Row & { write_seq: string }>(
         fill(
           `/* pipeshub:content.document_mark_awaiting */ UPDATE content.documents SET @{A}

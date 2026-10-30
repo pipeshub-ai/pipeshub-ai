@@ -333,7 +333,9 @@ export interface DocumentRepository {
   getWithFingerprintState(
     orgId: string,
     id: string,
-  ): Promise<({ row: DocumentRow; serverNow: number } & FingerprintState) | null>;
+  ): Promise<
+    ({ row: DocumentRow; serverNow: number } & FingerprintState) | null
+  >;
   /** Only the write state (the re-read of a verified pass). */
   peekWriteState(orgId: string, id: string): Promise<FingerprintState | null>;
   /** The store's clock in epoch ms. Throws `ServerClockUnavailable`. */
