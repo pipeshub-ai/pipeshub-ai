@@ -32,6 +32,7 @@ on:
             - sharepoint_sim
             - bookstack_sim
             - salesforce
+            - servicenow_sim
             - confluence
             - jira
             - zendesk
@@ -406,6 +407,14 @@ jobs:
       CONNSIM_SALESFORCE_REF: c40c2911a800b46d87a47283c7197fe8c18e7ac2
       SALESFORCE_SIM_IMAGE: pipeshub/connectors-simulator:salesforce-it
       NEEDS_SALESFORCE_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'salesforce')) && 'true' || 'false' }}
+      # The servicenow_sim suite runs against the ServiceNow simulator on shard 4. It needs no secrets: the
+      # simulator generates its instance, and the connector reaches it by service name over http, which the
+      # override allows. So it never shares the live servicenow suite's shard 2, whose TC-SEC-01 must see an
+      # http instance URL refused. CONNSIM_SERVICENOW_REF is connectors-simulator's main with the ServiceNow simulator
+      # (pipeshub-ai/connectors-simulator#12).
+      CONNSIM_SERVICENOW_REF: 822e257268957c31ecfca5abb1c8acd7d911657e
+      SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
+      NEEDS_SERVICENOW_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'servicenow_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -505,8 +514,9 @@ jobs:
       # shard 5 ~238 min. Those totals count GitLab (shard 4) at ~33 min and
       # Zendesk (shard 2) at ~15 min, what they take when they work; today
       # their tests fail at setup and cost about a minute, so shards 2 and 4
-      # finish earlier until they are fixed. servicenow's 60 min (shard 2) is
-      # still an estimate.
+      # finish earlier until they are fixed. servicenow's 60 min (shard 2) and
+      # servicenow_sim's 25 min (shard 4, ~261 min with it) are still
+      # estimates.
       # Shard 1 keeps nextcloud and bookstack, the only suites needing
       # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
       # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
@@ -516,14 +526,16 @@ jobs:
       # simulator answers Microsoft's host names for the whole stack, so the
       # live sharepoint and outlook suites must stay off shard 3. Jira and
       # Confluence need the Atlassian simulators, which start on shards 2
-      # and 3 only. Shards 4 and 5 start nothing extra: google_drive_workspace
-      # alone is ~184 min, so it shares shard 5 with s3 only.
+      # and 3 only. Shard 4 starts the ServiceNow simulator, which must stay
+      # off shard 2 (see NEEDS_SERVICENOW_SIM). Shard 5 starts nothing extra:
+      # google_drive_workspace alone is ~184 min, so it shares shard 5 with s3
+      # only.
       # Rebalance with scripts/shard_balance.py when a suite grows, and keep
       # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
       CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
       CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
-      CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear"
+      CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear or servicenow_sim"
       CONN_SHARD_5: "google_drive_workspace or s3"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
@@ -732,6 +744,24 @@ jobs:
           echo "SALESFORCE_SIM_COMPOSE=-f docker-compose.integration.salesforce-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/salesforce_sim.env >> "$GITHUB_ENV"
 
+      - name: Check out the ServiceNow simulator
+        if: env.NEEDS_SERVICENOW_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_SERVICENOW_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-servicenow
+          persist-credentials: false
+
+      # No dataset: the simulator generates its instance.
+      - name: Use the ServiceNow simulator
+        if: env.NEEDS_SERVICENOW_SIM == 'true'
+        run: |
+          docker build -q -t "$SERVICENOW_SIM_IMAGE" connectors-simulator-servicenow
+          echo "SERVICENOW_SIM_COMPOSE=-f docker-compose.integration.servicenow-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/servicenow_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -810,7 +840,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -980,10 +1010,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1003,13 +1033,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1154,10 +1184,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1177,7 +1207,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'
