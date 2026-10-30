@@ -499,9 +499,11 @@ async def _write_in_flight(
 
 class _WriteDuringWrite:
     """Sends the record's writes to the topic while another writer holds it,
-    and releases that writer once one of them fails (ArangoDB refuses a locked
-    key at once) or ``HOLD_SECONDS`` after the first was sent (Neo4j queues
-    them behind the lock)."""
+    and releases that writer once one of them fails or ``HOLD_SECONDS`` after
+    the first was sent. Neo4j queues the writes behind the lock; ArangoDB
+    refuses the locked key with errorNum 1200, and its client retries the
+    refusal for up to about 1.5 s, so the write is either still retrying when
+    the holder is released or fails with the 1200 first."""
 
     def __init__(self, release: Callable[[], Awaitable[None]]) -> None:
         self._release = release
@@ -613,9 +615,10 @@ class TestConcurrentEnrichmentOfOneNewTopic:
             await overlap.release()
         first = await enrich(0)
 
-        # The second record's write really ran into the first one's.
+        # The second record's write really ran into the first one's: it was still
+        # waiting when the holder let go, or (ArangoDB, retries spent) refused with 1200.
         if isinstance(provider, ArangoHTTPProvider):
-            assert "1200" in str(overlap.first_error), overlap.first_error
+            assert overlap.queued_behind_lock or "1200" in str(overlap.first_error), overlap.first_error
         else:
             assert overlap.first_error is None and overlap.queued_behind_lock
         assert not isinstance(second, BaseException), second

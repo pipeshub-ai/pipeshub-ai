@@ -1,6 +1,6 @@
 {
   "_comment": "Connectors knowingly shipping without integration coverage. --check fails when a connector appears that is not listed here, so this list may shrink freely but should only grow deliberately.",
-  "covered": 37,
+  "covered": 38,
   "total": 48,
   "uncovered_connectors": [
     "box",
@@ -9,7 +9,6 @@
     "drupalwiki",
     "onedrive",
     "salesforce",
-    "servicenow",
     "slack",
     "slackworkspace",
     "snowflake",

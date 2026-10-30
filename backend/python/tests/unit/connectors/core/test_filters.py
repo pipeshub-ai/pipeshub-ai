@@ -1147,6 +1147,11 @@ class TestSyncFilterKeyChannelTypes:
         assert SyncFilterKey.CHANNEL_IDS == "channel_ids"
 
 
+class TestSyncFilterKeyKnowledgeBases:
+    def test_knowledge_bases_exists(self) -> None:
+        assert SyncFilterKey.KNOWLEDGE_BASES == "knowledge_bases"
+
+
 class TestIndexingFilterKeySlackValues:
     def test_threads_exists(self):
         assert hasattr(IndexingFilterKey, "THREADS")

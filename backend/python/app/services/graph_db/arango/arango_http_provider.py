@@ -4448,15 +4448,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         filter_conditions, bind_vars = self._filter_conditions(filters)
         conditions = [f"STARTS_WITH(doc.{field_name}, @prefix)", *filter_conditions]
         bind_vars.update({"prefix": prefix, "limit": limit})
+        return_expr = "{" + ", ".join(
+            "id: doc._key" if f == "id" else f"{f}: doc.{f}" for f in return_fields
+        ) + "}" if return_fields is not None else "doc"
         query = f"""
         FOR doc IN {collection}
             FILTER {" AND ".join(conditions)}
             LIMIT @limit
-            RETURN doc
+            RETURN {return_expr}
         """
         try:
             return await self.http_client.execute_aql(

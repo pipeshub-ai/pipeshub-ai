@@ -1,12 +1,15 @@
 """Extended coverage tests for ServiceNow connector."""
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from servicenow_fakes import block_groups, file_response
 
+from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.servicenow.servicenow.connector import (
     ORGANIZATIONAL_ENTITIES,
     ServiceNowConnector,
@@ -46,8 +49,10 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _table_api_response(records: list) -> TableAPIResponse:
-    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
+def _table_api_response(records: list, total: int | None = None) -> TableAPIResponse:
+    # total: X-Total-Count, the rows the query matches from here on (default: these rows)
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records],
+                            total_count=len(records) if total is None else total)
 
 
 @pytest.fixture()
@@ -66,6 +71,8 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
+    proc.full_sync_running = MagicMock(return_value=False)
+    proc.reindex_existing_records = AsyncMock()
     return proc
 
 
@@ -111,14 +118,7 @@ class TestOrganizationalEntities:
         assert "company" in ORGANIZATIONAL_ENTITIES
         assert "department" in ORGANIZATIONAL_ENTITIES
         assert "location" in ORGANIZATIONAL_ENTITIES
-        assert "cost_center" in ORGANIZATIONAL_ENTITIES
-
-    def test_entity_has_required_fields(self):
-        for entity_type, config in ORGANIZATIONAL_ENTITIES.items():
-            assert "table" in config
-            assert "fields" in config
-            assert "prefix" in config
-            assert "sync_point_key" in config
+        assert "cost_center" not in ORGANIZATIONAL_ENTITIES  # no such user_criteria field
 
 
 # ===========================================================================
@@ -128,7 +128,8 @@ class TestServiceNowInit:
     @pytest.mark.asyncio
     async def test_init_no_config(self, connector):
         connector.config_service.get_config = AsyncMock(return_value=None)
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="no saved settings"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_no_oauth_config_id(self, connector):
@@ -142,7 +143,8 @@ class TestServiceNowInit:
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="was not found"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -153,7 +155,8 @@ class TestServiceNowInit:
                 # Missing clientSecret, instanceUrl, redirectUri
             }
         }
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="missing the instance URL"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -170,7 +173,8 @@ class TestServiceNowInit:
             "auth": {"oauthConfigId": "oauth-1"},
             "credentials": {},
         })
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="not authorized yet"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -183,8 +187,9 @@ class TestServiceNowInit:
             },
             "redirectUri": "http://localhost/callback",
         }
-        connector.test_connection_and_access = AsyncMock(return_value=False)
-        assert await connector.init() is False
+        connector.test_connection_and_access = AsyncMock(side_effect=ConnectorInitError("cannot read user_criteria"))
+        with pytest.raises(ConnectorInitError, match="cannot read user_criteria"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -257,16 +262,18 @@ class TestServiceNowTestConnection:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            side_effect=ServiceNowAPIError(401, "Unauthorized", None)
+            side_effect=ServiceNowAPIError(403, "User Not Authorized", None)
         )
         connector._get_fresh_datasource.return_value = mock_ds
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="answered HTTP 403"):
+            await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
         connector.servicenow_client = MagicMock()
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("boom"))
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(Exception, match="boom"):
+            await connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -275,7 +282,7 @@ class TestServiceNowTestConnection:
 class TestServiceNowStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self, connector):
-        connector._fetch_article_content = AsyncMock(return_value="<h1>Test</h1>")
+        connector._fetch_article_content = AsyncMock(return_value=b'{"block_groups": []}')
         record = MagicMock()
         record.record_type = RecordType.WEBPAGE
         record.record_name = "Test Article"
@@ -283,11 +290,16 @@ class TestServiceNowStreamRecord:
         record.mime_type = "text/html"
         record.id = "r-1"
         response = await connector.stream_record(record)
-        assert response.media_type == "text/html"
+        assert response.media_type == MimeTypes.BLOCKS.value
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
-        connector._fetch_attachment_content = AsyncMock(return_value=b"file-bytes")
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"file-"
+            yield b"bytes"
+
+        connector._open_attachment = AsyncMock(return_value=chunks())
+        connector._current_attachment = AsyncMock(return_value="att-123")
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.record_name = "attachment.pdf"
@@ -295,7 +307,10 @@ class TestServiceNowStreamRecord:
         record.mime_type = "application/pdf"
         record.id = "r-2"
         response = await connector.stream_record(record)
-        assert response is not None
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        assert body == b"file-bytes"
+        assert response.media_type == "application/pdf"
+        connector._open_attachment.assert_awaited_once_with("att-123", is_html=False)
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, connector):
@@ -334,7 +349,8 @@ class TestFetchArticleContent:
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
-        assert "<p>Hello</p>" in content
+        assert block_groups(content)[0]["data"].startswith("# Test\n\n")
+        assert block_groups(content)[0]["data"].endswith("Hello")
 
     @pytest.mark.asyncio
     async def test_empty_content(self, connector):
@@ -345,7 +361,7 @@ class TestFetchArticleContent:
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
-        assert "No content" in content
+        assert b"No content" not in content
 
     @pytest.mark.asyncio
     async def test_no_result(self, connector):
@@ -380,29 +396,30 @@ class TestFetchAttachmentContent:
     async def test_success(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=b"file-content")
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"file-content"))
         connector._get_fresh_datasource.return_value = mock_ds
-        content = await connector._fetch_attachment_content("att-1")
-        assert content == b"file-content"
+        chunks = await connector._open_attachment("att-1")
+        assert b"".join([c async for c in chunks]) == b"file-content"
 
     @pytest.mark.asyncio
-    async def test_empty_content(self, connector):
+    async def test_html_page_for_a_pdf_is_rejected(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=None)
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"<html>sign in</html>", "text/html"))
         connector._get_fresh_datasource.return_value = mock_ds
         with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-missing")
-        assert exc_info.value.status_code == 404
+            await connector._open_attachment("att-1")  # a PDF answered with an HTML page
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(side_effect=RuntimeError("net"))
+        mock_ds.stream_attachment = AsyncMock(side_effect=RuntimeError("net"))
         connector._get_fresh_datasource.return_value = mock_ds
+        record = MagicMock(record_type=RecordType.FILE, external_record_id="att-1", mime_type="application/pdf")
         with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-1")
+            await connector.stream_record(record)
         assert exc_info.value.status_code == 500
 
 
@@ -415,15 +432,11 @@ class TestServiceNowMisc:
         assert connector.get_signed_url(record) is None
 
     @pytest.mark.asyncio
-    async def test_handle_webhook_returns_true(self, connector):
-        result = await connector.handle_webhook_notification("org-1", {"type": "test"})
-        assert result is True
-
-    @pytest.mark.asyncio
     async def test_cleanup(self, connector):
-        connector.servicenow_client = MagicMock()
+        client = connector.servicenow_client = MagicMock(close=AsyncMock())
         connector.servicenow_datasource = MagicMock()
         await connector.cleanup()
+        client.close.assert_awaited_once()  # the connection pool is closed, not just dropped
         assert connector.servicenow_client is None
         assert connector.servicenow_datasource is None
 
@@ -432,8 +445,8 @@ class TestServiceNowMisc:
         await connector.reindex_records([])  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_get_filter_options_raises(self, connector):
-        with pytest.raises(NotImplementedError):
+    async def test_get_filter_options_unknown_key_raises(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("key")
 
     @pytest.mark.asyncio
@@ -456,8 +469,9 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_orchestration(self, connector):
         connector.servicenow_client = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[])
+        connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()
@@ -470,9 +484,9 @@ class TestServiceNowRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_with_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
-        admin_user = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[admin_user])
+        connector._get_admin_users = AsyncMock(return_value={"admin-1"})
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()

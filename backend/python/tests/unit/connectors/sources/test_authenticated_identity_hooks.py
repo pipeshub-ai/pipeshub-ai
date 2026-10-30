@@ -138,7 +138,11 @@ class TestServiceNow:
     def _conn(self, rows: list) -> MagicMock:
         datasource = MagicMock()
         datasource.get_now_table_tableName = AsyncMock(return_value=SimpleNamespace(result=rows))
-        return _connector(ServiceNowConnector, _get_fresh_datasource=AsyncMock(return_value=datasource))
+        conn = _connector(ServiceNowConnector, _get_fresh_datasource=AsyncMock(return_value=datasource),
+                          servicenow_client=None, refresh_token=None)
+        conn._table_get = partial(ServiceNowConnector._table_get, conn)
+        conn._with_token_retry = partial(ServiceNowConnector._with_token_retry, conn)
+        return conn
 
     async def test_registers_the_user_the_token_belongs_to(self) -> None:
         conn = self._conn([TableAPIRecord(sys_id="6816f79cc0a8016401c5a33be04be441", email=" admin@corp.com ")])

@@ -11,13 +11,20 @@ from app.agents.actions.code_graph.ops import STRUCTURAL_RELATIONS
 from app.agents.actions.code_graph.path import MAX_PATH_DEPTH, find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 
-from .conftest import BLOCKS, CONN, ORG, USER, FakeGraphProvider
+from .conftest import BLOCKS, CONN, ORG, USER, FakeGraphProvider, _block
 
 pytestmark = pytest.mark.asyncio
 
 CALLER = ("src/a.py", "function:caller")
 RUN = ("src/b.py", "method:run")
+THING = ("src/b.py", "class:Thing")
 PANEL = ("web/ui/panel.ts", "function:renderPanel")
+
+
+def _add(graph, key: str, name: str, kind: str, *, parent: str) -> None:
+    block = _block(key, "rec-b", "src/b.py", f"src_b_{name}", name, kind)
+    block.pop("filePath")  # the fake keeps paths per record
+    graph.blocks[key] = {**block, "parentBlockId": parent}
 
 
 async def _path(graph, a=CALLER, b=RUN, **kwargs) -> dict:
@@ -32,11 +39,39 @@ async def _path(graph, a=CALLER, b=RUN, **kwargs) -> dict:
 
 class TestPath:
     async def test_finds_the_chain_across_relation_types(self, graph) -> None:
-        """caller -CALLS-> target -INHERITS-> Thing -CONTAINS-> run."""
-        result = await _path(graph)
+        """caller -CALLS-> target -INHERITS-> Thing."""
+        result = await _path(graph, b=THING)
+        assert result["found"] is True
+        assert [h["relation"] for h in result["hops"]] == ["CALLS", "INHERITS"]
+        assert "capped" not in result
+
+    async def test_reaching_a_class_does_not_reach_each_of_its_methods(self, graph) -> None:
+        """A call into a class is its constructor; stepping on from Thing into `run`
+        made every method of every class a call reached look called."""
+        assert (await _path(graph))["found"] is False
+
+    async def test_a_call_into_a_class_reaches_its_constructor(self, graph) -> None:
+        """`Thing()` is an edge to the class; the path to `Thing.__init__` is that call
+        and the one step down into the constructor, though no other method is reached."""
+        _add(graph, "k_init", "__init__", "method", parent="k_class")
+        graph.edges.append({"_from": f"{BLOCKS}/k_class", "_to": f"{BLOCKS}/k_init",
+                            "relationshipType": "CONTAINS"})
+        result = await _path(graph, b=("src/b.py", "method:__init__"))
         assert result["found"] is True
         assert [h["relation"] for h in result["hops"]] == ["CALLS", "INHERITS", "CONTAINS"]
-        assert "capped" not in result
+        assert result["hops"][-1]["to"]["qualified_name"] == "method:__init__"
+
+    async def test_a_path_goes_on_down_through_nested_definitions(self, graph) -> None:
+        """Out of `run` to its class, then down through a nested definition's own."""
+        _add(graph, "k_inner", "Inner", "class", parent="k_class")
+        _add(graph, "k_leaf", "leaf", "field", parent="k_inner")
+        graph.edges += [
+            {"_from": f"{BLOCKS}/k_class", "_to": f"{BLOCKS}/k_inner", "relationshipType": "DEFINES"},
+            {"_from": f"{BLOCKS}/k_inner", "_to": f"{BLOCKS}/k_leaf", "relationshipType": "DEFINES"},
+        ]
+        result = await _path(graph, a=RUN, b=("src/b.py", "field:leaf"))
+        assert result["found"] is True
+        assert [h["relation"] for h in result["hops"]][-2:] == ["DEFINES", "DEFINES"]
 
     async def test_an_exhausted_search_is_a_plain_miss(self, graph) -> None:
         assert await _path(graph, b=PANEL) == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}

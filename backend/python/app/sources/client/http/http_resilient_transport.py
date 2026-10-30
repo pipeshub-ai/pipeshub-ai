@@ -62,7 +62,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
 
             note_status = getattr(policy, "note_response_status", None)
             if note_status is not None:
-                note_status(response.status_code)
+                note_status(response.status_code, response.headers)
             try:
                 delay = policy.note_retry(attempt, parse_retry_after(response.headers))
             except BaseException:

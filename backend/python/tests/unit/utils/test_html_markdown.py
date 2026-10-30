@@ -12,6 +12,11 @@ from app.utils import html_markdown
 from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 
+def _own(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    # Only this module's records: a client another test leaked may log meanwhile.
+    return [r for r in caplog.records if r.name == html_markdown.logger.name]
+
+
 def test_returns_markdown_text_not_a_result_object() -> None:
     out = html_to_markdown("<h1>Title</h1><p>a <b>bold</b> word</p>")
     assert isinstance(out, str)
@@ -90,7 +95,7 @@ def test_oversized_blocks_are_reported_once_per_document(caplog: pytest.LogCaptu
     big = f"<p>{_links(html_markdown.MAX_ELEMENTS_PER_BLOCK + 1)}</p>"
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         html_to_markdown(big + "<p>between</p>" + big)
-    assert [r.getMessage() for r in caplog.records] == [
+    assert [r.getMessage() for r in _own(caplog)] == [
         f"html_to_markdown: 2 block(s) over {html_markdown.MAX_ELEMENTS_PER_BLOCK} elements were reduced to plain text"
     ]
 
@@ -213,7 +218,7 @@ def test_xml_declaration_does_not_break_the_split_path(caplog: pytest.LogCapture
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         out = html_to_markdown('<?xml version="1.0" encoding="utf-8"?>' + "<p><b>a</b></p>" * _MANY)
     assert out.count("**a**") == _MANY  # converted with markup, not reduced to text
-    assert caplog.records == []
+    assert _own(caplog) == []
 
 
 @pytest.mark.parametrize("prefix", ["\ufeff", "\ufeff<!doctype html>\n", "\ufeff\ufeff"])
@@ -221,7 +226,7 @@ def test_a_leading_byte_order_mark_keeps_the_markup(prefix: str, caplog: pytest.
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         out = html_to_markdown(prefix + "<p><b>a</b></p>" * _MANY)
     assert out.count("**a**") == _MANY
-    assert caplog.records == []
+    assert _own(caplog) == []
 
 
 @pytest.mark.parametrize("filler", ["<!--x-->", " ", "<!-- c --> \n"])
@@ -236,7 +241,7 @@ def test_deep_nesting_keeps_every_word(caplog: pytest.LogCaptureFixture) -> None
         out = html_to_markdown(html)
     assert "deep text" in out
     assert out.split().count("x") == _MANY
-    assert [r.getMessage() for r in caplog.records] == [
+    assert [r.getMessage() for r in _own(caplog)] == [
         "html_to_markdown: document lost text while parsing, converted as plain text"
     ]
 
@@ -291,7 +296,7 @@ def test_input_over_the_size_cap_is_text_only_and_not_empty(
     assert out.count("Title") == 30
     assert out.count("one two") == 30
     assert "BAD" not in out
-    assert [r.getMessage() for r in caplog.records] == [
+    assert [r.getMessage() for r in _own(caplog)] == [
         "html_to_markdown: document is over 1000 characters, converted as plain text"
     ]
 
@@ -333,7 +338,7 @@ def test_fallback_input_is_cut_and_the_cut_is_reported(
 
     assert "word0000" in out
     assert "word0199" not in out
-    assert [r.getMessage() for r in caplog.records][-1] == (
+    assert [r.getMessage() for r in _own(caplog)][-1] == (
         f"html_to_markdown: plain text taken from the first 500 of {len(html)} characters"
     )
 
@@ -357,7 +362,7 @@ def test_text_lost_by_the_parser_triggers_the_plain_text_fallback(
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         out = html_to_markdown(html)
     assert out.count("LOSTWORD") == words
-    assert [r.getMessage() for r in caplog.records] == [
+    assert [r.getMessage() for r in _own(caplog)] == [
         "html_to_markdown: document lost text while parsing, converted as plain text"
     ]
 
@@ -372,7 +377,7 @@ def test_greater_than_in_an_attribute_does_not_cause_a_fallback(
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         out = html_to_markdown(f"<p {attribute}><b>w</b> text</p>" * _MANY)
     assert out.count("**w** text") == _MANY
-    assert caplog.records == []
+    assert _own(caplog) == []
 
 
 def _fixture_html_files() -> list[Path]:

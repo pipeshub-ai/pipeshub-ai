@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from servicenow_fakes import block_groups, file_response
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
@@ -64,8 +65,16 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _table_api_response(records: list) -> TableAPIResponse:
-    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
+def _table_api_response(records: list, total: int | None = None) -> TableAPIResponse:
+    # total: X-Total-Count, the rows the query matches from here on (default: these rows)
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records],
+                            total_count=len(records) if total is None else total)
+
+def _listing(*pages: list) -> list[TableAPIResponse]:
+    """Responses of one Table API listing: these pages, each with the X-Total-Count of the rows
+    left from it on, so the last one ends the listing (one empty page if there are none)."""
+    return [_table_api_response(p, sum(map(len, pages[i:]))) for i, p in enumerate(pages)] or [_table_api_response([])]
+
 
 
 def _sys_user_row(**fields: object) -> dict:
@@ -101,6 +110,8 @@ def mock_data_entities_processor():
     proc.create_user_group_membership = AsyncMock()
     proc.get_user_by_source_id = AsyncMock(return_value=None)
     proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.full_sync_running = MagicMock(return_value=False)
+    proc.reindex_existing_records = AsyncMock()
     return proc
 
 
@@ -318,7 +329,7 @@ class TestTransformToArticleWebpageRecord:
     def test_valid_article_with_category(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-1",
+            sys_id="art-1", number="KB-art-1",
             short_description="KB Article Title",
             kb_category="cat-1",
             kb_knowledge_base="kb-1",
@@ -334,7 +345,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_without_category_falls_back_to_kb(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-2",
+            sys_id="art-2", number="KB-art-2",
             short_description="No Category Article",
             kb_category="",
             kb_knowledge_base="kb-1",
@@ -347,7 +358,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_without_category_or_kb_returns_none(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-3",
+            sys_id="art-3", number="KB-art-3",
             short_description="Orphan Article",
             kb_category="",
             kb_knowledge_base="",
@@ -356,19 +367,23 @@ class TestTransformToArticleWebpageRecord:
         assert result is None
 
     def test_article_missing_sys_id(self, connector):
-        data = {"short_description": "No ID"}
+        data = KBKnowledge(sys_id="", number="KB1", short_description="No ID", kb_knowledge_base="kb-1")
         result = connector._transform_to_article_webpage_record(data)
         assert result is None
 
-    def test_article_missing_description(self, connector):
-        data = KBKnowledge(sys_id="art-4", short_description="")
+    def test_article_missing_description_is_named_by_number(self, connector) -> None:
+        data = KBKnowledge(sys_id="art-4", number="KB-art-4", short_description="", kb_knowledge_base="kb-1")
         result = connector._transform_to_article_webpage_record(data)
-        assert result is None
+        assert result.record_name == "KB-art-4"
+
+    def test_article_missing_number(self, connector) -> None:
+        data = KBKnowledge(sys_id="art-4", short_description="Title", kb_knowledge_base="kb-1")
+        assert connector._transform_to_article_webpage_record(data) is None
 
     def test_article_with_string_category_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-5",
+            sys_id="art-5", number="KB-art-5",
             short_description="String Category",
             kb_category="cat-str",
         )
@@ -379,7 +394,7 @@ class TestTransformToArticleWebpageRecord:
     def test_article_with_string_kb_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-6",
+            sys_id="art-6", number="KB-art-6",
             short_description="String KB",
             kb_category="",
             kb_knowledge_base="kb-str",
@@ -391,17 +406,17 @@ class TestTransformToArticleWebpageRecord:
     def test_web_url_generated(self, connector):
         connector.instance_url = "https://test.service-now.com"
         data = KBKnowledge(
-            sys_id="art-7",
+            sys_id="art-7", number="KB-art-7",
             short_description="URL Test",
             kb_category="cat-1",
         )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
-        assert "art-7" in result.weburl
+        assert result.weburl.endswith("?id=kb_article_view&sysparm_article=KB-art-7")
 
     def test_no_web_url_when_instance_url_none(self, connector):
         connector.instance_url = None
-        data = KBKnowledge(sys_id="art1", short_description="Title", kb_category="cat1")
+        data = KBKnowledge(sys_id="art1", number="KB-art1", short_description="Title", kb_category="cat1")
         result = connector._transform_to_article_webpage_record(data)
         assert result.weburl is None
 
@@ -422,16 +437,19 @@ class TestTransformToAttachmentFileRecord:
             sys_created_on="2023-01-01 00:00:00",
             sys_updated_on="2023-06-01 00:00:00",
         )
+        article = connector._transform_to_article_webpage_record(
+            KBKnowledge(sys_id="art-1", number="KB-art-1", short_description="A", kb_category="cat-1"))
         result = connector._transform_to_attachment_file_record(
             data,
             parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
-            parent_external_record_group_id="cat-1"
+            parent_external_record_group_id="cat-1",
+            article=article,
         )
         assert result is not None
         assert result.record_name == "document.pdf"
         assert result.extension == "pdf"
         assert result.size_in_bytes == 1024
-        assert result.parent_external_record_id == "art-1"
+        assert result.parent_external_record_id == "KB-art-1"  # the article, not this version of it
 
     def test_attachment_missing_sys_id(self, connector):
         data = AttachmentMetadata(
@@ -502,7 +520,7 @@ class TestTransformToAttachmentFileRecord:
         result = connector._transform_to_attachment_file_record(data)
         assert result.mime_type == MimeTypes.PDF.value
 
-    def test_unknown_mime_type_returns_none(self, connector):
+    def test_unknown_mime_type_keeps_the_attachment(self, connector):
         data = AttachmentMetadata(
             sys_id="att2",
             file_name="data.xyz",
@@ -513,7 +531,10 @@ class TestTransformToAttachmentFileRecord:
             sys_updated_on="2023-06-01 00:00:00",
         )
         result = connector._transform_to_attachment_file_record(data)
-        assert result is None
+        # A type outside MimeTypes used to drop the file; it is kept with the type it has.
+        assert result is not None
+        assert result.mime_type == "application/x-unknown"
+        assert result.extension == "xyz"
 
     def test_no_web_url_when_instance_url_none(self, connector):
         connector.instance_url = None
@@ -584,9 +605,10 @@ class TestSyncUsers:
             return_value={"last_sync_time": "2023-06-01 00:00:00"}
         )
         connector.user_sync_point.update_sync_point = AsyncMock()
+        connector._users_gone = AsyncMock(return_value=set())  # the reconcile listing has tests of its own
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             _sys_user_row(
                 sys_id="u1",
                 email="u1@test.com",
@@ -622,14 +644,11 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
         mock_ds = AsyncMock()
-        page1 = [{"sys_id": f"g{i}", "name": "G"} for i in range(100)]
-        mock_ds.get_now_table_tableName = AsyncMock(side_effect=[
-            _table_api_response(page1),
-            _table_api_response([{"sys_id": "g100", "name": "G"}]),
-        ])
+        page1 = [{"sys_id": f"g{i:03d}", "name": "G"} for i in range(1000)]
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing(page1, [{"sys_id": "g9999", "name": "G"}]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
-        assert len(groups) == 101
+        assert len(groups) == 1001
 
     @pytest.mark.asyncio
     async def test_empty_result(self, connector):
@@ -662,7 +681,7 @@ class TestFetchAllMemberships:
         connector.group_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2023-07-01"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -677,7 +696,7 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_dict_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"user": "u1"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -692,7 +711,7 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_string_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+        mock_ds.get_now_table_tableName = AsyncMock(side_effect=_listing([
             {"user": "u1-str"},
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -708,7 +727,7 @@ class TestGetAdminUsers:
         connector.data_store_provider.transaction = _transaction
 
         admins = await connector._get_admin_users()
-        assert len(admins) == 0
+        assert admins == {"u1-str"}  # granted only if synced (_users_to_permissions)
 
     @pytest.mark.asyncio
     async def test_admin_users_api_failure(self, connector) -> None:
@@ -734,8 +753,9 @@ class TestRunSyncComprehensive:
     @pytest.mark.asyncio
     async def test_run_sync_with_no_admin_users(self, connector):
         connector.servicenow_client = MagicMock()
+        connector._read_access_state = AsyncMock(return_value=(None, True))
         connector._sync_users_and_groups = AsyncMock()
-        connector._get_admin_users = AsyncMock(return_value=[])
+        connector._get_admin_users = AsyncMock(return_value=set())
         connector._sync_knowledge_bases = AsyncMock()
         connector._sync_categories = AsyncMock()
         connector._sync_articles = AsyncMock()
@@ -743,7 +763,7 @@ class TestRunSyncComprehensive:
         await connector.run_sync()
 
         connector._sync_users_and_groups.assert_awaited_once()
-        connector._sync_knowledge_bases.assert_awaited_once_with([])
+        connector._sync_knowledge_bases.assert_awaited_once_with(set(), grants=True)
         connector._sync_categories.assert_awaited_once()
         connector._sync_articles.assert_awaited_once()
 
@@ -756,22 +776,11 @@ class TestMiscComprehensive:
         assert connector.get_signed_url(MagicMock()) is None
 
     @pytest.mark.asyncio
-    async def test_handle_webhook_returns_true(self, connector):
-        result = await connector.handle_webhook_notification("org-1", {})
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_handle_webhook_exception(self, connector):
-        result = await connector.handle_webhook_notification("org-1", None)
-        # Should catch exception and return False
-        # Actually the method logs and returns True. Let's test normal case.
-        assert result is True
-
-    @pytest.mark.asyncio
     async def test_cleanup(self, connector):
-        connector.servicenow_client = MagicMock()
+        client = connector.servicenow_client = MagicMock(close=AsyncMock())
         connector.servicenow_datasource = MagicMock()
         await connector.cleanup()
+        client.close.assert_awaited_once()  # the connection pool is closed, not just dropped
         assert connector.servicenow_client is None
         assert connector.servicenow_datasource is None
 
@@ -780,8 +789,8 @@ class TestMiscComprehensive:
         await connector.reindex_records([])  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_get_filter_options_raises(self, connector):
-        with pytest.raises(NotImplementedError):
+    async def test_get_filter_options_unknown_key_raises(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("any_key")
 
     @pytest.mark.asyncio
@@ -803,9 +812,9 @@ class TestStreamRecord:
         record.record_name = "Test Article"
         record.mime_type = "text/html"
 
-        connector._fetch_article_content = AsyncMock(return_value="<p>Content</p>")
+        connector._fetch_article_content = AsyncMock(return_value=b'{"block_groups": []}')
         response = await connector.stream_record(record)
-        assert response is not None
+        assert response.media_type == MimeTypes.BLOCKS.value
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
@@ -816,11 +825,16 @@ class TestStreamRecord:
         record.mime_type = "application/pdf"
         record.id = "rec-1"
 
-        connector._fetch_attachment_content = AsyncMock(return_value=b"file bytes")
+        chunks = iter([b"file bytes"])
+        connector._open_attachment = AsyncMock(return_value=chunks)
+        connector._current_attachment = AsyncMock(return_value="att-1")
         with patch("app.connectors.sources.servicenow.servicenow.connector.create_stream_record_response") as mock_stream:
             mock_stream.return_value = MagicMock()
             response = await connector.stream_record(record)
-            assert response is not None
+
+        assert response is mock_stream.return_value
+        mock_stream.assert_called_once_with(chunks, filename="test.pdf", mime_type="application/pdf",
+                                            fallback_filename="record_rec-1")
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, connector):
@@ -843,7 +857,7 @@ class TestFetchContent:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
-        assert "<p>Article content</p>" in content
+        assert block_groups(content)[0]["data"].endswith("Article content")
 
     @pytest.mark.asyncio
     async def test_fetch_article_empty_content(self, connector):
@@ -853,7 +867,7 @@ class TestFetchContent:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
-        assert "No content" in content
+        assert b"No content" not in content
 
     @pytest.mark.asyncio
     async def test_fetch_article_not_found(self, connector):
@@ -867,19 +881,18 @@ class TestFetchContent:
     @pytest.mark.asyncio
     async def test_fetch_attachment_success(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=b"file data")
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b"file data"))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        content = await connector._fetch_attachment_content("att-1")
-        assert content == b"file data"
+        chunks = await connector._open_attachment("att-1")
+        assert b"".join([c async for c in chunks]) == b"file data"
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_empty(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.download_attachment = AsyncMock(return_value=None)
+        mock_ds.stream_attachment = AsyncMock(return_value=file_response(b""))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._fetch_attachment_content("att-missing")
-        assert exc_info.value.status_code == 404
+        chunks = await connector._open_attachment("att-empty")
+        assert [c async for c in chunks] == []  # an empty file streams empty, not 404
 
 
 # ===========================================================================

@@ -1,6 +1,10 @@
+# Generated from the ServiceNow OpenAPI specifications, with hand-maintained parts to keep when
+# regenerating: _vendor_reason, _handle_table_response and stream_attachment.
 import json
 import logging
 from typing import Any
+
+import httpx
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.http.http_request import HTTPRequest
@@ -9,9 +13,25 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowResponse,
 )
 from app.sources.external.servicenow.models import (
+    PARSE_ERROR_MESSAGE,
+    REDIRECT_MESSAGE,
     ServiceNowAPIError,
     TableAPIResponse,
 )
+from app.utils.url_redaction import redact_urls_in_text
+
+_FIRST_REDIRECT_STATUS = 300
+
+
+def _vendor_reason(body: str) -> str | None:
+    """``error.message`` and ``error.detail`` of a ServiceNow error body, or None if it has neither."""
+    try:
+        error = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(error, dict):
+        return None
+    return ": ".join(str(error[k]) for k in ("message", "detail") if error.get(k)) or None
 
 
 class ServiceNowDataSource:
@@ -90,26 +110,39 @@ class ServiceNowDataSource:
         Raises:
             ServiceNowAPIError: If the API returns an error or response parsing fails
         """
+        if _FIRST_REDIRECT_STATUS <= response.status < HttpStatusCode.BAD_REQUEST.value:
+            raise ServiceNowAPIError(status_code=response.status, message=REDIRECT_MESSAGE)
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             error_body = response.text()
-            self.logger.error(f"ServiceNow Table API error: HTTP {response.status} - {error_body[:500]}")
+            # A 401 is refreshed and retried, and some 403s are expected (a table the account may
+            # not read): the connector logs what it does about them.
+            log = self.logger.debug if response.status in (
+                HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
+            ) else self.logger.error
+            log(
+                f"ServiceNow Table API error: HTTP {response.status} - {redact_urls_in_text(error_body[:300])}"
+            )
             raise ServiceNowAPIError(
                 status_code=response.status,
-                message=f"HTTP {response.status}",
+                message=redact_urls_in_text(_vendor_reason(error_body) or "") or f"HTTP {response.status}",
                 details=error_body
             )
 
+        # Rows the query matches before ACLs hide any; a listing needs it to know where it ends.
+        count = (response.headers or {}).get("x-total-count")
+        total_count = int(count) if isinstance(count, str) and count.isdigit() else None
+
         if response.status == HttpStatusCode.NO_CONTENT or not response.text():
-            return TableAPIResponse(result=[])
+            return TableAPIResponse(result=[], total_count=total_count)
 
         try:
             data = response.json()
-            return TableAPIResponse(**data)
+            return TableAPIResponse(**{**data, "total_count": total_count})
         except Exception as e:
             self.logger.error(f"Failed to parse ServiceNow Table API response: {e}")
             raise ServiceNowAPIError(
                 status_code=500,
-                message="Failed to parse API response",
+                message=PARSE_ERROR_MESSAGE,
                 details=str(e)
             )
 
@@ -11781,32 +11814,33 @@ class ServiceNowDataSource:
                 success=False, error=str(e), message="Failed to parse response"
             )
 
-    async def download_attachment(self, attachment_sys_id: str) -> bytes:
+    async def stream_attachment(self, attachment_sys_id: str) -> httpx.Response:
         """
-        Download attachment file content from ServiceNow.
+        Open an attachment's file for streaming: GET /api/now/attachment/{sys_id}/file.
 
-        Args:
-            attachment_sys_id: The sys_id of the attachment
-
-        Returns:
-            bytes: Binary file content
+        The status is checked before this returns, so a failed download raises before the
+        caller has sent anything. The body is not read: the caller reads it in chunks
+        (``aiter_bytes``), with a long read timeout, and closes the response.
 
         Raises:
-            ServiceNowAPIError: If download fails
+            ServiceNowAPIError: If the download fails
         """
-        url = self._build_url(f"/attachment/{attachment_sys_id}/file")
-
-        request = HTTPRequest(
-            method="GET", url=url, headers=self.client.headers, query_params={}
+        client = await self.client._ensure_client()
+        request = client.build_request(
+            "GET",
+            self._build_url(f"/attachment/{attachment_sys_id}/file"),
+            headers=self.client.headers,
+            timeout=httpx.Timeout(30.0, read=600.0),
         )
-        response = await self.client.execute(request)
-
-        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+        response = await client.send(request, stream=True)
+        if response.status_code >= _FIRST_REDIRECT_STATUS:  # a redirect is not the file either
+            try:
+                body = (await response.aread()).decode("utf-8", "replace")
+            finally:
+                await response.aclose()
             raise ServiceNowAPIError(
-                status_code=response.status,
+                status_code=response.status_code,
                 message=f"Failed to download attachment {attachment_sys_id}",
-                details=response.text()
+                details=body,
             )
-
-        # Return binary content
-        return response.response.content
+        return response

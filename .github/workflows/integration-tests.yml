@@ -34,6 +34,7 @@ on:
             - confluence
             - jira
             - zendesk
+            - servicenow
             - linear
             - github_teams
             - github
@@ -408,6 +409,30 @@ jobs:
       SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
       SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
       ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
+      # ServiceNow (live instance, connectors/servicenow/README.md): an admin account, the OAuth app the
+      # connector signs in with (password grant), and the passwords of the instance's test users.
+      SERVICENOW_TEST_INSTANCE_URL: ${{ secrets.SERVICENOW_TEST_INSTANCE_URL }}
+      SERVICENOW_TEST_USERNAME: ${{ secrets.SERVICENOW_TEST_USERNAME }}
+      SERVICENOW_TEST_PASSWORD: ${{ secrets.SERVICENOW_TEST_PASSWORD }}
+      SERVICENOW_TEST_CLIENT_ID: ${{ secrets.SERVICENOW_TEST_CLIENT_ID }}
+      SERVICENOW_TEST_CLIENT_SECRET: ${{ secrets.SERVICENOW_TEST_CLIENT_SECRET }}
+      SERVICENOW_TEST_INTEGRATION_USERNAME: ${{ secrets.SERVICENOW_TEST_INTEGRATION_USERNAME }}
+      SERVICENOW_TEST_INTEGRATION_PASSWORD: ${{ secrets.SERVICENOW_TEST_INTEGRATION_PASSWORD }}
+      SERVICENOW_TEST_API_KEY: ${{ secrets.SERVICENOW_TEST_API_KEY }}
+      SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_PLAIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_HR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_HR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ENG2_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ENG2_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_CONTRIB_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KBMGR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OWNER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OWNER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KADMIN_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_KMANAGER_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_OGROUP_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_AUTHOR_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEDIRECT_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_ROLEC_PASSWORD }}
+      SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD: ${{ secrets.SERVICENOW_TEST_PERSONA_INACTIVE_PASSWORD }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -466,18 +491,18 @@ jobs:
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~175 min, shard 3
+      # times out at 300 min): shard 1 ~194 min, shard 2 ~235 min (with servicenow's estimate), shard 3
       # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
       # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
       # and shard 3 zammad (zammad-source). The two Google Drive suites have
       # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on the lightest shard (outlook went on
-      # shard 2, which was lightest); check with scripts/shard_balance.py. The
+      # A new connector suite goes on the lightest shard (outlook and then
+      # servicenow went on shard 2, which was lightest); check with scripts/shard_balance.py. The
       # Gmail suites are on shard 2 too: they need the simulator image Jira's
       # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted

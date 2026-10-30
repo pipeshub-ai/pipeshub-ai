@@ -73,6 +73,7 @@ from app.services.model_identity.boundary import (
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
+from app.services.parsing.interface import ParseError
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -91,6 +92,7 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import EXCEL_TOO_LARGE
 from app.utils.user_lookup import get_user_or_503
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -749,6 +751,16 @@ async def upload_chat_attachments(
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
+            except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
+                # Same as the PDF branch: a worker that overran or died is most likely out of
+                # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
+            except ParseError as e:
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                if e.message == EXCEL_TOO_LARGE:
+                    raise HTTPException(status_code=400, detail=EXCEL_TOO_LARGE) from e
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet")) from e
             except Exception as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))

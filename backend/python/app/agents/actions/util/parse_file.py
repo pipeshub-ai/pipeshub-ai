@@ -15,6 +15,7 @@ Only the extensions in ``SUPPORTED_BLOCK_FILE_EXTENSIONS`` are accepted.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from pathlib import Path
@@ -303,7 +304,7 @@ class FileContentParser:
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:
         llm, _ = await get_llm_for_role(self._config, "indexing", reasoning_effort="low")
         excel = ExcelParser(self._logger, self._config)
-        excel.load_workbook_from_binary(raw)
+        await asyncio.to_thread(excel.load_workbook_from_binary, raw)
         return await excel.create_blocks(llm)
 
     async def handle_csv(self, raw: bytes, file_name: str) -> BlocksContainer:

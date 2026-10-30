@@ -7,14 +7,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.models.blocks import Block, BlockType, BlocksContainer, DataFormat
+from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 
 def test_supported_mime_types_include_office_formats():
-    from app.api.routes.chatbot import _attachment_extension, _is_supported_attachment_mime
+    from app.api.routes.chatbot import (
+        _attachment_extension,
+        _is_supported_attachment_mime,
+    )
     from app.utils.attachment_mime_types import (
         DELIMITED_MIME_TYPES as _DELIMITED_MIME_TYPES,
+    )
+    from app.utils.attachment_mime_types import (
         DOCX_MIME_TYPES as _DOCX_MIME_TYPES,
+    )
+    from app.utils.attachment_mime_types import (
         SPREADSHEET_MIME_TYPES as _SPREADSHEET_MIME_TYPES,
     )
 
@@ -52,7 +59,9 @@ def test_supported_mime_types_include_office_formats():
 
 def test_doc_attachment_mime_types_in_resolver():
     from app.agents.chat_modes.attachments import _is_doc
-    from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES as _DOC_ATTACHMENT_MIME_TYPES
+    from app.utils.attachment_mime_types import (
+        DOC_ATTACHMENT_MIME_TYPES as _DOC_ATTACHMENT_MIME_TYPES,
+    )
 
     assert _is_doc("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     assert _is_doc("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -272,6 +281,97 @@ async def test_upload_xlsx_dispatches_to_lightweight_parser():
     assert out["attachments"][0]["extension"] == "xlsx"
     assert out["attachments"][0]["parseMode"] == "excel_lightweight"
     assert out["attachments"][0]["ocrMode"] == "excel_lightweight"
+
+
+@pytest.mark.asyncio
+async def test_a_too_large_xlsx_attachment_says_it_is_too_large() -> None:
+    from fastapi import HTTPException
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.services.parsing.interface import ParseError, ParseErrorCode
+    from app.utils.user_errors import EXCEL_TOO_LARGE
+
+    xlsx_bytes = b"PK\x03\x04fake"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "huge.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(xlsx_bytes),
+                "contentBase64": base64.b64encode(xlsx_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot._build_excel_blocks",
+        new_callable=AsyncMock,
+        side_effect=ParseError(ParseErrorCode.INVALID_INPUT, EXCEL_TOO_LARGE),
+    ), pytest.raises(HTTPException) as raised:
+        blob = AsyncMock()
+        blob.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = blob
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == EXCEL_TOO_LARGE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cause", ["timed_out", "crashed", "memory"])
+async def test_an_xlsx_parse_worker_that_overran_or_died_is_too_heavy_not_unreadable(cause: str) -> None:
+    from fastapi import HTTPException
+
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.parsers.parse_pool import ParseWorkerError
+
+    xlsx_bytes = b"PK\x03\x04fake"
+    payload = {
+        "attachments": [
+            {
+                "fileName": "big.xlsx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(xlsx_bytes),
+                "contentBase64": base64.b64encode(xlsx_bytes).decode("ascii"),
+            }
+        ],
+    }
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    cont = MagicMock()
+    cont.logger.return_value = MagicMock()
+    req.app.container = cont
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_create_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()), patch(
+        "app.api.routes.chatbot._build_excel_blocks",
+        new_callable=AsyncMock,
+        side_effect=ParseWorkerError("internal", cause),
+    ), pytest.raises(HTTPException) as raised:
+        blob = AsyncMock()
+        blob.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = blob
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    assert raised.value.status_code == 422
+    assert "big.xlsx is too large or complex to read right now" in raised.value.detail
 
 
 @pytest.mark.asyncio

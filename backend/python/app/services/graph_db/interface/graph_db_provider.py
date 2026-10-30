@@ -1664,8 +1664,9 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
-        """Get nodes whose field starts with a prefix."""
+        """Get nodes whose field starts with a prefix; only *return_fields* when given."""
         pass
 
     @abstractmethod

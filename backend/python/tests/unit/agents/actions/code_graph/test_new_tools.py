@@ -106,6 +106,21 @@ async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None
     assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
 
 
+async def test_files_without_stored_source_do_not_use_up_the_file_cap(monkeypatch) -> None:
+    """A repo's images and data files sort among its code; counted toward the cap they
+    left most of a large directory unread."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SEARCH_FILES", 2)  # src/ holds a.py and b.py
+    graph = QueryGraphProvider()
+    graph.code_files["rec-img"] = "src/a_logo.png"  # sorts between them
+    graph.records["rec-img"] = {"_key": "rec-img", "orgId": ORG, "connectorId": CONN}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="src/")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert not out.get("truncated")
+
+
 async def test_impact_groups_what_reaches_a_symbol_by_file() -> None:
     out = without_marker(await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/b.py",
                                            qualified_name="function:target"))
@@ -188,3 +203,51 @@ async def test_a_capped_depth_is_reported_and_impact_walks_five_levels() -> None
     assert "depth_capped" not in five
     seven = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=7)
     assert "7 asked, 5 walked" in seven["depth_capped"]
+
+
+async def test_text_search_reuses_an_indexed_files_lines_until_the_record_changes(monkeypatch) -> None:
+    """Every caller list scans the repo's text; the blob fetch is the whole cost, so an
+    indexed file's lines are kept, and a newer record (reindexed) is read again."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_LINE_CACHE", type(search._LINE_CACHE)())
+    graph = QueryGraphProvider()
+    graph.records["rec-b"].update(indexingStatus="COMPLETED", updatedAtTimestamp=1)
+    blobs = _blobs()
+    reads = []
+    original = blobs.get_record_from_storage
+
+    async def counted(virtual_record_id, org_id, lookup_result=None) -> dict | None:
+        reads.append(virtual_record_id)
+        return await original(virtual_record_id, org_id, lookup_result)
+
+    blobs.get_record_from_storage = counted
+    for _ in range(2):
+        out = await search_code_impl(**_ctx(graph), blob_store=blobs,
+                                     pattern='"payments"', mode="text", path="src/b.py")
+        assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert reads == ["v-b"]
+    graph.records["rec-b"]["updatedAtTimestamp"] = 2
+    await search_code_impl(**_ctx(graph), blob_store=blobs, pattern='"payments"', mode="text", path="src/b.py")
+    assert reads == ["v-b", "v-b"]
+
+
+async def test_text_search_can_be_held_to_one_language_across_the_repo() -> None:
+    """`*.py` reads every Python file and nothing else, at any depth."""
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    none = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                  pattern='"payments"', mode="text", path="*.ts")
+    assert not none.get("matches")
+
+
+async def test_a_capped_scan_that_matched_no_file_says_it_was_capped(monkeypatch) -> None:
+    """The path scan stops at its limit before the glob is applied: finding no file
+    there is not finding none in the repo."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SCAN_LIMIT", 1)
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.tsx")
+    assert "error" in out and out["truncated"] is True
