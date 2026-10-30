@@ -97,6 +97,39 @@ class TestDownload:
         assert success is True and body["truncated"] is True
         assert len(body["content"]) == module._MAX_DOWNLOAD_BYTES
         http.close.assert_called_once()
+        assert body["encoding"] == "utf-8"
+
+    def test_a_binary_file_comes_back_unchanged_as_base64(self) -> None:
+        import base64
+
+        from app.sources.client.dropbox.dropbox_ import DropboxResponse
+
+        raw = bytes(range(256))
+        http = MagicMock()
+        http.iter_content = MagicMock(return_value=iter([raw]))
+        data_source = MagicMock()
+        data_source.files_download = AsyncMock(return_value=DropboxResponse(success=True, data=(None, http)))
+
+        success, payload = asyncio.run(_tool_with(data_source).download_file(path="/photo.png"))
+
+        body = json.loads(payload)
+        assert success is True and body["encoding"] == "base64" and body["truncated"] is False
+        assert base64.b64decode(body["content"]) == raw
+
+    def test_a_cut_through_a_character_keeps_the_text(self) -> None:
+        from app.agents.actions.dropbox import dropbox as module
+        from app.sources.client.dropbox.dropbox_ import DropboxResponse
+
+        text = ("a" * (module._MAX_DOWNLOAD_BYTES - 1) + "é").encode()  # the bound falls inside "é"
+        http = MagicMock()
+        http.iter_content = MagicMock(return_value=iter([text, b"more"]))
+        data_source = MagicMock()
+        data_source.files_download = AsyncMock(return_value=DropboxResponse(success=True, data=(None, http)))
+
+        success, payload = asyncio.run(_tool_with(data_source).download_file(path="/notes.txt"))
+
+        body = json.loads(payload)
+        assert body["encoding"] == "utf-8" and body["content"] == "a" * (module._MAX_DOWNLOAD_BYTES - 1)
 
 
 class TestSharedLink:

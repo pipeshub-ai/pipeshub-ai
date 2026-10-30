@@ -137,6 +137,30 @@ class TestParentResolver:
         assert ask.await_count == 1, "a parent asked for once is remembered"
 
 
+class TestAskParent:
+    """Only Dropbox's not_found means "no parent": a failed lookup raises, so the entry is held, not put at the root."""
+
+    @pytest.mark.asyncio
+    async def test_team(self, team: DropboxConnector) -> None:
+        team.data_source.files_get_metadata = AsyncMock(return_value=ok(SimpleNamespace(id="id:p")))
+        assert await team._ask_parent_id("/p", "m1", None) == "id:p"
+        team.data_source.files_get_metadata = AsyncMock(return_value=fail("ApiError: path/not_found/"))
+        assert await team._ask_parent_id("/p", "m1", None) is None
+        team.data_source.files_get_metadata = AsyncMock(return_value=fail("InternalServerError 503"))
+        with pytest.raises(RuntimeError, match="could not read the parent folder /p"):
+            await team._ask_parent_id("/p", "m1", None)
+
+    @pytest.mark.asyncio
+    async def test_personal(self, personal: DropboxIndividualConnector) -> None:
+        personal.data_source.files_get_metadata = AsyncMock(return_value=ok(SimpleNamespace(id="id:p")))
+        assert await personal._ask_parent_id("/p") == "id:p"
+        personal.data_source.files_get_metadata = AsyncMock(return_value=fail("ApiError: path/not_found/"))
+        assert await personal._ask_parent_id("/p") is None
+        personal.data_source.files_get_metadata = AsyncMock(return_value=fail("RateLimitError"))
+        with pytest.raises(RuntimeError, match="could not read the parent folder /p"):
+            await personal._ask_parent_id("/p")
+
+
 class TestWebLinks:
     @pytest.mark.asyncio
     async def test_a_stored_link_is_kept_without_a_call(self) -> None:

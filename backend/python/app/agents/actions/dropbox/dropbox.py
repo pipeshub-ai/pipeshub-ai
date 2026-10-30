@@ -1,9 +1,12 @@
 import asyncio
+import base64
+import codecs
 import json
 import logging
 import threading
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
+import requests
 from dropbox.files import SearchOptions
 from dropbox.sharing import LinkAudience, SharedLinkSettings
 
@@ -29,6 +32,29 @@ logger = logging.getLogger(__name__)
 
 # The most of a file download_file returns to the agent.
 _MAX_DOWNLOAD_BYTES = 1024 * 1024
+
+
+def _read_bounded(http_response: requests.Response) -> bytes:
+    """The body up to one byte past the bound, so a large file cannot fill the agent's memory or context."""
+    data = b""
+    try:
+        for chunk in http_response.iter_content(chunk_size=64 * 1024):
+            data += chunk
+            if len(data) > _MAX_DOWNLOAD_BYTES:
+                break
+    finally:
+        http_response.close()
+    return data
+
+
+def _content_fields(data: bytes, *, truncated: bool) -> dict[str, str]:
+    """Text as text; anything that is not UTF-8 as base64, so its bytes come back unchanged."""
+    try:
+        # A cut can split the last character: an incomplete tail is dropped, not refused.
+        text = codecs.getincrementaldecoder("utf-8")().decode(data, final=not truncated)
+        return {"content": text, "encoding": "utf-8"}
+    except UnicodeDecodeError:
+        return {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"}
 
 # Define tools
 tools: List[ToolDefinition] = [
@@ -354,19 +380,12 @@ class Dropbox:
             if not response.success:
                 return False, response.to_json()
             metadata, http_response = response.data
-            # The body is read up to a bound, so a large file cannot fill the agent's memory or context.
-            data = b""
-            try:
-                for chunk in http_response.iter_content(chunk_size=64 * 1024):
-                    data += chunk
-                    if len(data) > _MAX_DOWNLOAD_BYTES:
-                        break
-            finally:
-                http_response.close()
+            # Read in a worker thread, so a slow body does not hold the event loop.
+            data = await asyncio.to_thread(_read_bounded, http_response)
             truncated = len(data) > _MAX_DOWNLOAD_BYTES
             return True, json.dumps({
                 "metadata": to_plain(metadata),
-                "content": data[:_MAX_DOWNLOAD_BYTES].decode("utf-8", errors="replace"),
+                **_content_fields(data[:_MAX_DOWNLOAD_BYTES], truncated=truncated),
                 "truncated": truncated,
             })
         except Exception as e:
@@ -557,8 +576,9 @@ class Dropbox:
     @tool(
         path="/tools/dropbox/get_shared_link",
         short_description="Get a shared link for a Dropbox file or folder",
-        description=("Get a link to a file or folder in Dropbox. The link opens the item only for people who "
-                     "already have access to it; it does not share the item with anyone new."),
+        description=("Get a link to a file or folder in Dropbox. If the item already has a link, that link is "
+                     "returned as it is, with whatever audience it was given. Otherwise a new link is made that "
+                     "opens the item only for people who already have access to it."),
         parameters=[
             ToolParameter(
                 name="path",

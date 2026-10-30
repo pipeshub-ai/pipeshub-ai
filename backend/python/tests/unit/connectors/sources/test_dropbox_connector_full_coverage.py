@@ -350,7 +350,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://link"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -372,7 +372,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -390,7 +390,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -426,7 +426,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -442,7 +442,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         members_data = MagicMock()
         members_data.users = []
@@ -465,7 +465,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         user_membership = MagicMock()
@@ -504,7 +504,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         group_membership = MagicMock()
@@ -535,7 +535,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector._convert_dropbox_permissions_to_permissions = AsyncMock(
             side_effect=Exception("permission error")
@@ -571,7 +571,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_file_members = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(users=[], groups=[]))
@@ -599,7 +599,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_folder_members = AsyncMock(
             return_value=_make_dropbox_response(success=False)
@@ -794,7 +794,7 @@ class TestRunSyncWithYield:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://url"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_file_members = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(users=[], groups=[]))

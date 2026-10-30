@@ -154,7 +154,7 @@ def _make_connector(existing_record=None):
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()
-    c.data_source.files_get_metadata = AsyncMock(return_value=_make_response(False))
+    c.data_source.files_get_metadata = AsyncMock(return_value=_make_response(False, error="path/not_found/"))
     c.dropbox_cursor_sync_point = AsyncMock()
     c.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     c.dropbox_cursor_sync_point.update_sync_point = AsyncMock()

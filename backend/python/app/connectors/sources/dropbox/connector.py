@@ -648,7 +648,11 @@ class DropboxConnector(BaseConnector):
         metadata = await self.data_source.files_get_metadata(
             parent_path, team_member_id=member_id, team_folder_id=team_folder_id,
         )
-        return metadata.data.id if metadata.success else None
+        found = item_still_exists(metadata)
+        if found is None:
+            # Unknown is not "no parent": the entry would be written at the root and Dropbox lists it once.
+            raise RuntimeError(f"could not read the parent folder {parent_path}: {metadata.error}")
+        return metadata.data.id if found else None
 
     async def _team_item_still_exists(self, record: Record, member_id: str | None) -> bool | None:
         """Whether a deleted path's record still resolves by id for anyone who can open it.
