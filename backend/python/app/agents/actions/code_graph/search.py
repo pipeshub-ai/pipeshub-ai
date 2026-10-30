@@ -172,7 +172,8 @@ async def _by_text(
     path, paths, records, scan_capped = await _scoped_files(
         graph_provider, org_id, connector_id, path, repo, access)
     if not records:
-        return {"error": await _missing_path_message(graph_provider, org_id, asked, access)}
+        return {"error": await _missing_path_message(graph_provider, org_id, asked, access),
+                **({"truncated": True} if scan_capped else {})}
     hidden = 0
     if not include_tests and records:
         roles = await get_record_roles(graph_provider, org_id, set(records))
@@ -256,8 +257,10 @@ async def _scoped_files(
         if "*" in parts[i]:
             break
         candidates.append("/".join(parts[i:]))
+    any_capped = False
     for candidate in candidates:
         paths, capped = await files_by_pattern(graph_provider, org_id, candidate, scan_limit=_TEXT_SCAN_LIMIT)
+        any_capped = any_capped or capped
         readable = await access.readable(paths)
         rows = await graph_provider.get_nodes_by_field_in(
             collection=_RECORDS, field_name="_key", field_values=sorted(readable),
@@ -275,7 +278,8 @@ async def _scoped_files(
                        if _repo_matches(repo, r.get("recordGroupId"), names)}
         if records:
             return candidate, paths, records, capped
-    return path, {}, {}, False
+    # A capped scan that matched nothing may have stopped short of the files asked for.
+    return path, {}, {}, any_capped
 
 
 async def _missing_path_message(

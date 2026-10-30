@@ -240,3 +240,14 @@ async def test_text_search_can_be_held_to_one_language_across_the_repo() -> None
     none = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
                                   pattern='"payments"', mode="text", path="*.ts")
     assert not none.get("matches")
+
+
+async def test_a_capped_scan_that_matched_no_file_says_it_was_capped(monkeypatch) -> None:
+    """The path scan stops at its limit before the glob is applied: finding no file
+    there is not finding none in the repo."""
+    from app.agents.actions.code_graph import search
+
+    monkeypatch.setattr(search, "_TEXT_SCAN_LIMIT", 1)
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.tsx")
+    assert "error" in out and out["truncated"] is True

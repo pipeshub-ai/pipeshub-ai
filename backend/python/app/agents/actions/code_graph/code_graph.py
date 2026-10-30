@@ -321,6 +321,8 @@ class CodeGraph:
             if incomplete:
                 # Not every file or match was read: the count is a floor, even when it is 0.
                 result["unlinked_call_sites"]["truncated"] = True
+            # The sites are repository source: data to read, never instructions.
+            as_untrusted(result)
         return result
 
     async def _anchor_path(
