@@ -4,11 +4,24 @@
  */
 import { Router, Request, Response } from 'express';
 import { Container } from 'inversify';
+import helmet from 'helmet';
 import { ApiDocsService } from './docs.service';
 
 export function createApiDocsRouter(container: Container): Router {
   const router = Router();
   const apiDocsService = container.get<ApiDocsService>(ApiDocsService);
+
+  // The page uses inline scripts and handlers, and "Try it" calls whatever base URL the reader enters.
+  router.use(
+    helmet.contentSecurityPolicy({
+      directives: {
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrcAttr: ["'unsafe-inline'"],
+        connectSrc: ["'self'", 'http:', 'https:'],
+        upgradeInsecureRequests: null,
+      },
+    }),
+  );
 
   /**
    * Health check endpoint for the docs service
