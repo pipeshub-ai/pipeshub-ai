@@ -36,36 +36,46 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AccessRule, Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import (
-    AuthFieldKeys,
-    CommonStrings,
-    CONNECTOR_EMAIL_IDENTITY_INFO,
-    ConnectorRegistryCategories,
-    IconPaths,
-    OAuthConfigKeys,
-    OAuthDefaults,
-    OAuthRedirectPaths,
+from app.config.constants.arangodb import (
+    AccessRule,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import (
     ActionItem,
     BaseConnector,
     ConnectorInitError,
     oauth_app_not_linked_error,
 )
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
     not_found_at_source,
     to_stream_error,
 )
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
+from app.connectors.core.base.sync_point.sync_point import (
+    FailedItems,
+    SyncDataPointType,
+    SyncPoint,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.sync_point.sync_point import FailedItems, SyncDataPointType, SyncPoint
 from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+    AuthFieldKeys,
+    CommonStrings,
+    ConnectorRegistryCategories,
+    IconPaths,
+    OAuthConfigKeys,
+    OAuthDefaults,
+    OAuthRedirectPaths,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -96,6 +106,21 @@ from app.connectors.core.registry.filters import (
 from app.connectors.core.registry.types import FieldType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.servicenow.common.apps import ServicenowApp
+from app.connectors.sources.servicenow.servicenow.constants import (
+    ORGANIZATIONAL_ENTITIES,
+    OrganizationalEntityConfig,
+    ServiceNowConfigPaths,
+    ServiceNowConnectorMetadata,
+    ServiceNowDefaults,
+    ServiceNowDictKeys,
+    ServiceNowFields,
+    ServiceNowPrefixes,
+    ServiceNowQueryValues,
+    ServiceNowRoles,
+    ServiceNowSyncPointKeys,
+    ServiceNowTables,
+    ServiceNowURLPatterns,
+)
 from app.models.blocks import (
     BlockGroup,
     BlockGroupChildren,
@@ -134,7 +159,6 @@ from app.sources.client.servicenow.servicenow import (
     check_servicenow_instance_url,
     rate_limit_reset_label,
 )
-from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 from app.sources.external.servicenow.models import (
     PARSE_ERROR_MESSAGE,
     REDIRECT_MESSAGE,
@@ -150,27 +174,11 @@ from app.sources.external.servicenow.models import (
     TableAPIRecord,
     TableAPIResponse,
 )
+from app.sources.external.servicenow.servicenow import ServiceNowDataSource
 from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
 from app.utils.url_redaction import redact_urls_in_text
-from app.connectors.sources.servicenow.servicenow.constants import (
-    ORGANIZATIONAL_ENTITIES,
-    OrganizationalEntityConfig,
-    ServiceNowConfigPaths,
-    ServiceNowConnectorMetadata,
-    ServiceNowDefaults,
-    ServiceNowDictKeys,
-    ServiceNowFields,
-    ServiceNowPrefixes,
-    ServiceNowQueryValues,
-    ServiceNowRoles,
-    ServiceNowSyncPointKeys,
-    ServiceNowTables,
-    ServiceNowURLPatterns,
-)
-
-
 
 T = TypeVar("T")
 
@@ -2617,7 +2625,7 @@ class ServiceNowConnector(BaseConnector):
                     if org_id := getattr(row, field, None):
                         members[str(org_id)].add(row.sys_id)
         # Department, location and company criteria match exactly these (see _members_of).
-        self._held.update({field: (members, listing.partial) for field in _ORG_GROUP_PREFIXES})
+        self._held.update(dict.fromkeys(_ORG_GROUP_PREFIXES, (members, listing.partial)))
         users = {u.source_user_id: u for u in await self._all_app_users()}
         await self.data_entities_processor.on_new_user_groups([
             (group, [users[s] for s in sorted(members.get(group.source_user_group_id, ())) if s in users])

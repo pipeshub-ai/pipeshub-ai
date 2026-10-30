@@ -1,6 +1,7 @@
 """Extended coverage tests for ServiceNow connector."""
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -293,7 +294,7 @@ class TestServiceNowStreamRecord:
 
     @pytest.mark.asyncio
     async def test_stream_file_record(self, connector):
-        async def chunks():
+        async def chunks() -> AsyncIterator[bytes]:
             yield b"file-"
             yield b"bytes"
 

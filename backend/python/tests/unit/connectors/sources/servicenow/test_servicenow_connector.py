@@ -7,37 +7,44 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from servicenow_fakes import (
-    make_tx_store,
     block_groups,
     file_response,
     keyset_page,
+    make_tx_store,
     migrated_sync_point,
 )
 
 from app.config.constants.arangodb import AccessRule, MimeTypes
-from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
-from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector, _CriteriaUnreadable
-from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordGroupType, RecordType, WebpageRecord
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.servicenow.servicenow.connector import (
+    ServiceNowConnector,
+    _CriteriaUnreadable,
+)
+from app.connectors.sources.servicenow.servicenow.constants import (
+    ORGANIZATIONAL_ENTITIES,
+)
+from app.models.entities import (
+    AppUser,
+    AppUserGroup,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.servicenow.servicenow import ServiceNowRESTClientViaOAuthAuthorizationCode
+from app.sources.client.servicenow.servicenow import (
+    ServiceNowRESTClientViaOAuthAuthorizationCode,
+)
 from app.sources.external.servicenow.models import (
+    AttachmentMetadata,
+    KBKnowledge,
     ServiceNowAPIError,
     SysUserGroup,
     SysUserGroupMembership,
     SysUserRole,
     SysUserRoleAssignment,
     SysUserRoleContains,
-    AttachmentMetadata,
-    KBKnowledge,
-    KBKnowledgeBase,
-    KBCategory,
-    SysUser,
-    UserCriteria,
     TableAPIRecord,
     TableAPIResponse,
 )
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1780,10 +1787,10 @@ class TestCriteriaGrants:
     user gets none), its groups, roles, departments, locations and companies as group grants."""
 
     @staticmethod
-    def _grants(sc, row: dict, permission_type: PermissionType = PermissionType.READ):
+    async def _grants(sc, row: dict, permission_type: PermissionType = PermissionType.READ) -> list[Permission]:
         sc._criteria_rows["c1"] = TableAPIRecord(sys_id="c1", active="true", **row)
         sc._email_by_source_id = {"u1": "u1@x.com", "u2": "u2@x.com"}
-        return sc._process_criteria_permissions(["c1"], permission_type)
+        return await sc._process_criteria_permissions(["c1"], permission_type)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("field", ["group", "role", "department", "location", "company"])

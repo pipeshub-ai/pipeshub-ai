@@ -29,12 +29,12 @@ def fresh_notice_state() -> Iterator[None]:
 
 
 @pytest.fixture()
-def mock_logger():
+def mock_logger() -> logging.Logger:
     return logging.getLogger("test.servicenow")
 
 
 @pytest.fixture()
-def mock_data_entities_processor():
+def mock_data_entities_processor() -> object:
     class _Proc:
         org_id = "org-sn-1"
 
@@ -60,12 +60,12 @@ def mock_data_entities_processor():
 
 
 @pytest.fixture()
-def mock_data_store_provider():
+def mock_data_store_provider() -> MagicMock:
     return make_data_store_provider()
 
 
 @pytest.fixture()
-def mock_config_service():
+def mock_config_service() -> AsyncMock:
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
@@ -81,7 +81,7 @@ def mock_config_service():
 
 @pytest.fixture()
 def servicenow_connector(mock_logger, mock_data_entities_processor,
-                          mock_data_store_provider, mock_config_service):
+                          mock_data_store_provider, mock_config_service) -> ServiceNowConnector:
     with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"):
         connector = ServiceNowConnector(
             logger=mock_logger,

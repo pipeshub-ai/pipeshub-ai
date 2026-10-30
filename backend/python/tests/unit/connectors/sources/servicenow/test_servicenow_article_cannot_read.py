@@ -4,12 +4,21 @@ from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import pytest
-from servicenow_fakes import FakeServiceNow, article_row, migrated_sync_point, wire_listing
+from servicenow_fakes import (
+    FakeServiceNow,
+    article_row,
+    migrated_sync_point,
+    wire_listing,
+)
 from test_servicenow_connector import TestCriteriaDenyAndMatchAll as T
 
 from app.config.constants.arangodb import AccessRule
 from app.models.permission import PermissionType
-from app.sources.external.servicenow.models import AttachmentMetadata, KBKnowledge, TableAPIResponse
+from app.sources.external.servicenow.models import (
+    AttachmentMetadata,
+    KBKnowledge,
+    TableAPIResponse,
+)
 
 
 def _art(**kw) -> KBKnowledge:

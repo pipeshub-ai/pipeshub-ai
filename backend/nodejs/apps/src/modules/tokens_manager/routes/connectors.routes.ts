@@ -108,7 +108,10 @@ axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
   retryCondition: (error) => {
-    if (error.response?.status === 429 && retryAfter(error) > MAX_RETRY_AFTER_MS) {
+    if (
+      error.response?.status === 429 &&
+      retryAfter(error) > MAX_RETRY_AFTER_MS
+    ) {
       return false;
     }
     return !!(
