@@ -61,6 +61,7 @@ _CONFLICT_RE = re.compile(r'"errorNum"\s*:\s*1200\b|\[1200\]')
 _WRITE_CONFLICT_ATTEMPTS = 6
 
 _W = TypeVar("_W")
+_Reply = list[Any] | dict[str, Any]  # per-item answers, or one answer for the whole call
 
 
 def is_write_conflict(error: BaseException | str) -> bool:
@@ -101,15 +102,15 @@ def _lost_a_conflict(answer: object) -> bool:
 
 
 async def _send_until_landed(
-    items: list[_W], txn_id: Optional[str], send: Callable[[list[_W]], Awaitable[object]]
-) -> object:
+    items: list[_W], txn_id: Optional[str], send: Callable[[list[_W]], Awaitable[_Reply]]
+) -> _Reply:
     """Send a batch, then send again only the items that lost a write conflict.
 
     The other items landed, and sending them again could undo a newer write by
     someone else. Inside a transaction the conflict aborted it, so nothing is sent
     again. A per-item reply comes back as one answer per item, in order.
     """
-    answers: list[object] = [None] * len(items)
+    answers: list[Any] = [None] * len(items)
     pending = list(range(len(items)))
     for attempt in range(1, _WRITE_CONFLICT_ATTEMPTS + 1):
         sent = await send([items[i] for i in pending])
@@ -725,7 +726,7 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        async def send(batch: list[dict[str, Any]]) -> object:
+        async def send(batch: list[dict[str, Any]]) -> _Reply:
             session = await self._get_session()
             async with session.post(
                 url,
@@ -809,7 +810,7 @@ class ArangoHTTPClient:
         # Construct full document IDs
         document_ids = [f"{collection}/{key}" for key in keys]
 
-        async def send(batch: list[str]) -> object:
+        async def send(batch: list[str]) -> _Reply:
             session = await self._get_session()
             async with session.delete(
                 url,
@@ -823,7 +824,8 @@ class ArangoHTTPClient:
                 raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
 
         try:
-            results = await _send_until_landed(document_ids, txn_id, send)
+            # A delete of an array always answers with one result per document.
+            results = cast(list[dict[str, Any]], await _send_until_landed(document_ids, txn_id, send))
 
             # Results is an array of deletion results
             deleted_count = 0
