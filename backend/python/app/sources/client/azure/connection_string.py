@@ -5,6 +5,18 @@ INVALID_ACCOUNT_KEY = (
     "string again from the storage account's Access keys page in the Azure portal."
 )
 
+# A key or SAS that is well formed but that Azure does not accept, told apart from one that is malformed.
+CREDENTIALS_REFUSED = (
+    "Azure refused the credentials: the AccountKey or SAS token in the connection string is wrong, "
+    "has expired or was revoked. Copy the connection string again from the storage account's "
+    "Access keys (or Shared access signature) page in the Azure portal."
+)
+
+ACCOUNT_NOT_FOUND = (
+    "No storage account answers at the endpoint in the connection string. Check the AccountName "
+    "(and EndpointSuffix, if set) against the storage account in the Azure portal."
+)
+
 
 def account_key_problem(connection_string: str, client_cls: type) -> str | None:
     """INVALID_ACCOUNT_KEY when the SDK would sign requests with a key it cannot decode, else None.

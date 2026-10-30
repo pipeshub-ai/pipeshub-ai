@@ -4411,7 +4411,7 @@
                     },
                     {
                         "title": "Pipeshub Documentation",
-                        "url": "https://docs.pipeshub.com/connectors/azure/azureblob",
+                        "url": "https://docs.pipeshub.com/connectors/azure-blob/azure-blob",
                         "type": "pipeshub"
                     }
                 ],

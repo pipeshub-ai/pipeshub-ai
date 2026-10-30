@@ -29,6 +29,11 @@ from app.sources.client.azure.azure_blob import (
     AzureBlobConnectionStringConfig,
     AzureBlobRESTClient,
 )
+from app.sources.client.azure.connection_string import (
+    ACCOUNT_NOT_FOUND,
+    CREDENTIALS_REFUSED,
+    INVALID_ACCOUNT_KEY,
+)
 from app.sources.external.azure.azure_blob import (
     AzureBlobDataSource,
     azure_error_code,
@@ -64,14 +69,20 @@ def assert_nothing_secret(text: str) -> None:
 
 class TestErrorText:
 
-    def test_an_auth_failure_keeps_status_code_and_first_line_only(self) -> None:
+    def test_refused_credentials_say_so_and_keep_status_and_code(self) -> None:
         text = azure_error_text(auth_failure())
 
-        assert text == (
-            "HTTP 403 AuthenticationFailed: Server failed to authenticate the request. Make sure the value "
-            "of Authorization header is formed correctly including the signature."
-        )
+        assert text == f"{CREDENTIALS_REFUSED} (HTTP 403 AuthenticationFailed)"
+        assert text != INVALID_ACCOUNT_KEY
         assert azure_error_code(auth_failure()) == "AuthenticationFailed"
+
+    @pytest.mark.parametrize("reason", [
+        "Cannot connect to host nosuchacct.blob.core.windows.net:443 ssl:default [Name or service not known]",
+        "Failed to resolve 'nosuchacct.blob.core.windows.net' ([Errno -2] Name or service not known)",
+        "Cannot connect to host nosuchacct.blob.core.windows.net:443 ssl:default [nodename nor servname provided, or not known]",
+    ])
+    def test_an_account_name_that_does_not_resolve_is_named(self, reason: str) -> None:
+        assert azure_error_text(ServiceRequestError(reason)) == ACCOUNT_NOT_FOUND
 
     def test_a_not_found_error_reads_the_same_way(self) -> None:
         error = HttpResponseError(message="The specified container does not exist.\nRequestId:1\nContent: <?xml?>")
@@ -114,7 +125,7 @@ class TestDataSourceResponses:
         response = await self.failing(container=auth_failure()).get_container_properties("docs")
 
         assert not response.success
-        assert response.error.startswith("HTTP 403 AuthenticationFailed: Server failed to authenticate")
+        assert response.error.startswith(CREDENTIALS_REFUSED)
         assert response.error_code == "AuthenticationFailed"
         assert_nothing_secret(response.error)
 
@@ -160,7 +171,7 @@ class TestConnectionTest:
         with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorInitError) as raised:
             await c.test_connection_and_access()
 
-        assert "Cannot list blobs in docs: HTTP 403 AuthenticationFailed: Server failed to authenticate" in str(raised.value)
+        assert f"Cannot list blobs in docs: {CREDENTIALS_REFUSED}" in str(raised.value)
         assert_nothing_secret(str(raised.value))
         assert_nothing_secret(c.notify.await_args.kwargs["message"])
         assert_nothing_secret(caplog.text)

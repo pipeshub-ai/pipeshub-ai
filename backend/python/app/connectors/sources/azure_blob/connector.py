@@ -420,7 +420,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/azure/azureblob',
+            'https://docs.pipeshub.com/connectors/azure-blob/azure-blob',
             'pipeshub'
         ))
         .add_filter_field(FilterField(

@@ -2,7 +2,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 try:
-    from azure.core.exceptions import ClientAuthenticationError  # type: ignore
+    from azure.core.exceptions import (  # type: ignore
+        ClientAuthenticationError,
+        ServiceRequestError,
+    )
     from azure.storage.blob import (  # type: ignore
         AccountSasPermissions,
         BlobSasPermissions,
@@ -20,10 +23,24 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.sources.client.azure.azure_blob import AzureBlobClient, AzureBlobResponse
-from app.sources.client.azure.connection_string import INVALID_ACCOUNT_KEY
+from app.sources.client.azure.connection_string import (
+    ACCOUNT_NOT_FOUND,
+    CREDENTIALS_REFUSED,
+    INVALID_ACCOUNT_KEY,
+)
 from app.utils.url_redaction import redact_urls_in_text
 
 _ERROR_TEXT_LIMIT = 300
+
+# How resolvers word a host that does not exist, which is what a mistyped AccountName gives.
+_NAME_NOT_RESOLVED = (
+    "name or service not known",
+    "nodename nor servname",
+    "failed to resolve",
+    "name resolution",
+    "getaddrinfo failed",
+    "no address associated",
+)
 
 
 def azure_error_text(error: BaseException) -> str:
@@ -39,6 +56,12 @@ def azure_error_text(error: BaseException) -> str:
     status = getattr(error, "status_code", None)
     code = getattr(error, "error_code", None)
     code = getattr(code, "value", code)
+    if code == "AuthenticationFailed":
+        return f"{CREDENTIALS_REFUSED} (HTTP {status or 403} AuthenticationFailed)"
+    if isinstance(error, ServiceRequestError) and any(
+        phrase in str(error).lower() for phrase in _NAME_NOT_RESOLVED
+    ):
+        return ACCOUNT_NOT_FOUND
     message = (str(error).strip().splitlines() or [type(error).__name__])[0]
     head = " ".join(str(part) for part in (f"HTTP {status}" if status else None, code) if part)
     text = f"{head}: {message}" if head else message
