@@ -237,3 +237,40 @@ def convert(field, value):
     assert _targets(graph, CALLS, "app/core/serializers/python.py") == {
         "app/db/models/fields/__init__.py::method:Field.to_python"}
     assert _targets(graph, CALLS, "app/core/both.py") == set()
+
+
+@pytest.mark.asyncio
+async def test_app_code_never_guesses_a_class_only_a_test_file_defines(graph, index_file) -> None:
+    await _index(index_file, {
+        "tests/fakes.py": b"class Client:\n    def fetch_page(self):\n        pass\n",
+        "pkg/sync.py": b"class Sync:\n    def run(self):\n        return self.client.fetch_page()\n",
+    })
+    await _build(graph)
+    assert _targets(graph, CALLS, "pkg/sync.py") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_constructor_returned_is_not_taken_for_a_local_of_its_last_letters(graph, index_file) -> None:
+    """`return Ok()` is an `Ok`; it was read as `=Ok` cut to `k`, and a local `k` won."""
+    await _index(index_file, {
+        "pkg/result.py": b'''
+class Ok:
+    def unwrap(self):
+        pass
+
+class Pending:
+    def unwrap(self):
+        pass
+
+def make(value):
+    k = Pending()
+    return Ok()
+
+def use():
+    return make(1).unwrap()
+''',
+    })
+    await _build(graph)
+    targets = _targets(graph, CALLS, "pkg/result.py")
+    assert "pkg/result.py::method:Ok.unwrap" in targets
+    assert "pkg/result.py::method:Pending.unwrap" not in targets

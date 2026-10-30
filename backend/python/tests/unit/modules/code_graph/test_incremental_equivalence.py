@@ -188,3 +188,47 @@ async def test_incremental_build_matches_full_build(seed: int) -> None:
             + "missing: " + "; ".join(describe(expected, want - got)) + "\n"
             + "extra: " + "; ".join(describe(graph, got - want))
         )
+
+
+async def test_a_value_imported_through_a_package_resolves_the_same_incrementally() -> None:
+    """`from pkg import app_registry`, with pkg/__init__.py re-exporting `app_registry = Apps()`: an
+    incremental build that re-resolves only the caller must follow the `__init__` as a
+    full build does, though the `__init__` itself was not re-resolved."""
+    # `app_registry` spells no class and `get_model` is defined twice, so only the import chain types it.
+    files = {
+        "pkg/__init__.py": "from pkg.registry import app_registry\n",
+        "pkg/registry.py": "class Apps:\n    def get_model(self, name):\n        return name\n\napp_registry = Apps()\n",
+        "pkg/other.py": "class Cache:\n    def get_model(self, name):\n        return None\n",
+        "pkg/use.py": "from pkg import app_registry\n\n\ndef run():\n    return app_registry.get_model('a')\n",
+    }
+    parser = CodeFileParser()
+
+    async def put(graph: Graph, path: str, source: str) -> None:
+        record = f"rec-{path}"
+        container = parser.parse_to_blocks(source.encode(), path.rsplit("/", 1)[-1], path, "python")
+        graph.code_files[record] = path
+        graph.blobs[record] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+        await write_code_file_blocks_to_graph(
+            graph_provider=graph,
+            context=BlockProjectionContext(org_id=ORG_ID, record_id=record, record_group_id=GROUP_ID,
+                                           connector_id="conn1", language="python", file_path=path),
+            block_containers=container,
+        )
+
+    async def full() -> Graph:
+        graph = Graph()
+        for path, source in files.items():
+            await put(graph, path, source)
+        await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                     facts_source=graph)
+        return graph
+
+    graph = await full()
+    files["pkg/use.py"] += "\n\ndef other():\n    return app_registry.get_model('b')\n"
+    await put(graph, "pkg/use.py", files["pkg/use.py"])
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-pkg/use.py"}, facts_source=graph)
+    expected = await full()
+    want = code_edges(expected)
+    assert any("get_model" in line for line in describe(expected, want)), "the full build links the call"
+    assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))

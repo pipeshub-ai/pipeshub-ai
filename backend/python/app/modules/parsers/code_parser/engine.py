@@ -903,7 +903,7 @@ def _py_function_types(func: Node, src: bytes, table: dict[str, str], cfg: Langu
             if expr is None or (expr.type == "none"):
                 continue
             value = _py_value(expr, src)
-            if value and value[1:] in locals_:  # `return clone` with `clone = self._chain()`
+            if value and value.startswith("=") and value[1:] in locals_:  # `return clone` with `clone = self._chain()`
                 value = locals_[value[1:]]
             values.add(value)
         if len(values) == 1 and None not in values:

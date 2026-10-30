@@ -107,6 +107,8 @@ _MAX_REEXPORT_HOPS = 4
 # Languages where a bare call inside a method may be a call on `this`.
 _IMPLICIT_THIS_FAMILIES = frozenset({"jvm", "csharp"})
 _MIN_MISSING_FACTS_TO_ABORT = 5
+# Resolve again at most this often for type tables an incremental build had not loaded.
+_TYPE_TABLE_ROUNDS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +327,13 @@ class _Builder:
         self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
+        # Files whose type tables are in the index; None when all are (a full build).
+        # An incremental build loads only the re-resolved files' tables, so the
+        # others a resolution reads are noted, loaded, and resolved again.
+        self.types_loaded: set[str] | None = None
+        self.types_missing: set[str] = set()
         self._expr_memo: dict[tuple, str | None] = {}
+        self._named_memo: dict[tuple[str, str | None], list[str]] = {}
         self._bases_memo: dict[str, list[str]] = {}
         # (record, name) -> blocks: the same-file and imported-module rungs look
         # up one file's definitions instead of filtering every same-named block.
@@ -333,6 +341,12 @@ class _Builder:
         for block_id, row in index.rows.items():
             if row.name:
                 self._by_record_name.setdefault((row.record_id, row.name), []).append(block_id)
+
+    def _types(self, record_id: str | None) -> dict[str, str]:
+        """A file's type table, noting it when this build has not loaded it."""
+        if record_id and self.types_loaded is not None and record_id not in self.types_loaded:
+            self.types_missing.add(record_id)
+        return self.index.type_table_by_record.get(record_id, {}) if record_id else {}
 
     # -- emit -----------------------------------------------------------
 
@@ -897,7 +911,7 @@ class _Builder:
         # return type; the chain is evaluated whole below instead.
         chained_call = receiver.endswith(")") and fact.get("qualifiedPrefix") != receiver if receiver else False
         if not receiver_type and receiver and not scoped and not chained_call:
-            receiver_type = self.index.type_table_by_record.get(record_id, {}).get(receiver)
+            receiver_type = self._types(record_id).get(receiver)
         if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
             receiver_type = None
         family = self._family_of(block_id)
@@ -1029,7 +1043,7 @@ class _Builder:
             # `IObservable<Foo>`'s argument, for a `read(): T` called on it next. A scoped
             # head keeps its own scope's argument: another function's `v` may differ.
             declared_arg = None if called or head == "this" else head_type_arg if head_type else \
-                self.index.type_table_by_record.get(record_id, {}).get(f"{head}<>")
+                self._types(record_id).get(f"{head}<>")
             type_arg = self._declared_type(declared_arg, record_id, this_type, depth) if declared_arg else None
             for name, called, first_arg in rest:
                 if called and name in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
@@ -1054,7 +1068,7 @@ class _Builder:
 
     def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
         """A bare name: a typed variable, else a class it names (`Ctl.get()` is static)."""
-        declared = self.index.type_table_by_record.get(record_id, {}).get(name)
+        declared = self._types(record_id).get(name)
         if declared:
             return self._declared_type(declared, record_id, this_type, depth)
         family = lang_family(None, self.index.file_by_record.get(record_id))
@@ -1068,17 +1082,38 @@ class _Builder:
 
     def _py_imported_value(self, record_id: str, name: str, depth: int) -> str | None:
         """The type of a module-level value a Python file imports, read from the
-        assignment in the module that defines it (through re-exporting `__init__`s)."""
+        assignment in the module that defines it (through re-exporting `__init__`s).
+
+        The calling file's own binding is resolved in this build; every later hop
+        reads a package `__init__.py`'s IMPORTS facts, as `_follow_reexport` does, so
+        an incremental build that did not re-resolve the `__init__` agrees with a full one.
+        """
         file = self.index.file_by_record.get(record_id) or ""
+        ref = self.value_imports.get(file, {}).get(name)
         for _ in range(_EXPR_DEPTH):
-            ref = self.value_imports.get(file, {}).get(name)
             if ref is None:
                 return None
             file, name = ref
             target_record = self.index.record_by_file.get(file)
-            declared = self.index.type_table_by_record.get(target_record, {}).get(name) if target_record else None
+            declared = self._types(target_record).get(name)
             if declared:
                 return self._declared_type(declared, target_record, None, depth + 1)
+            ref = self._py_init_import(file, name)
+        return None
+
+    def _py_init_import(self, file_path: str, name: str) -> tuple[str, str] | None:
+        """``(module, name there)`` a package `__init__.py` imports ``name`` from."""
+        if not file_path.endswith("__init__.py"):
+            return None
+        record = self.index.record_by_file.get(file_path)
+        for block_id in self.index.blocks_by_record.get(record, ()):
+            row = self.index.rows.get(block_id)
+            for fact in row.pending_edges if row else ():
+                if (fact.get("relation") == RecordRelations.IMPORTS.value
+                        and (fact.get("localName") or fact.get("toName")) == name):
+                    source = self.imports.resolve(fact.get("qualifiedPrefix") or "", file_path, "py")
+                    if source and source != file_path:
+                        return source, fact.get("toName") or name
         return None
 
     def _py_named_like(self, name: str, method: str | None = None, call_file: str | None = None) -> str | None:
@@ -1099,8 +1134,8 @@ class _Builder:
                 row = self.index.rows.get(cid)
                 if row is not None and row.name and self._family_of(cid) == "py":
                     self._py_classes.setdefault(row.name.replace("_", "").lower(), []).append(cid)
-        memo_key = ("named", name, method)
-        if memo_key not in self._expr_memo:
+        memo_key = (name, method)
+        if memo_key not in self._named_memo:
             words = [w for w in name.lower().split("_") if w]
             tries = [("".join(words), True)] + ([("".join(words), False), (words[-1], True)] if len(words) > 1 else [])
             roots: list[str] = []
@@ -1114,8 +1149,11 @@ class _Builder:
                 roots = self._py_roots(hits)
                 if roots:
                     break
-            self._expr_memo[memo_key] = roots
-        roots = self._expr_memo[memo_key]
+            self._named_memo[memo_key] = roots
+        roots = self._named_memo[memo_key]
+        if call_file and not is_test_path(call_file):
+            # App code never resolves into a test file, even when one class matches.
+            roots = [cid for cid in roots if not is_test_path(self.index.file_by_block.get(cid) or "")]
         if len(roots) > 1 and call_file:
             roots = [cid for cid in roots if self._py_reachable(call_file, cid)]
         # Several unrelated classes the caller can all see: a guess would be a coin toss.
@@ -1198,7 +1236,7 @@ class _Builder:
             seen.add(current)
             row = self.index.rows.get(current)
             if row is not None and row.name:
-                declared = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}.{field_name}{suffix}")
+                declared = self._types(row.record_id).get(f"{row.name}.{field_name}{suffix}")
                 if declared:
                     return self._declared_type(declared, row.record_id, current, depth)
             queue.extend(self._base_types_of(current))
@@ -1212,7 +1250,7 @@ class _Builder:
         owner = self._enclosing_type(target)
         owner_row = self.index.rows.get(owner) if owner else None
         key = f"{owner_row.name}.{row.name}()" if owner_row is not None else f"{row.name}()"
-        return self.index.type_table_by_record.get(row.record_id, {}).get(key), owner
+        return self._types(row.record_id).get(key), owner
 
     def _return_type(self, target: str | None, depth: int) -> str | None:
         declared, owner = self._declared_return(target)
@@ -1396,7 +1434,7 @@ class _Builder:
         row = self.index.rows.get(alias)
         if row is None or row.kind != "type_alias" or not row.name or depth > 3:
             return []
-        value = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}|") or ""
+        value = self._types(row.record_id).get(f"{row.name}|") or ""
         family = self._family_of(alias)
         members: list[str] = []
         for name in filter(None, value.split("|")):
@@ -1591,7 +1629,7 @@ class _Builder:
     def _function_valued(self, row: BlockRow) -> bool:
         owner = self.index.rows.get(row.parent_block_id) if row.parent_block_id else None
         return owner is not None and \
-            f"{owner.name}.{row.name}=>" in self.index.type_table_by_record.get(row.record_id, {})
+            f"{owner.name}.{row.name}=>" in self._types(row.record_id)
 
     @staticmethod
     def _endpoint_live(key: str, live_blocks: set[str], live_records: set[str]) -> bool:
@@ -1690,7 +1728,23 @@ async def build_code_graph_edges(
         reresolve -= unknown
         builder.result.files_reresolved = len(reresolve)
 
+    if facts_source is not None and touched_record_ids is not None:
+        builder.types_loaded = set(reresolve)
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
+    for _ in range(_TYPE_TABLE_ROUNDS):
+        # A chain through another file (`apps.get_model()` with `apps = Apps()` there)
+        # read a type table this incremental build had not loaded: load the ones it
+        # read and resolve again, so the result is the one a full build gets.
+        missing = builder.types_missing - builder.types_loaded if builder.types_loaded is not None else set()
+        if not missing:
+            break
+        await _load_type_tables(facts_source, index, org_id, missing)
+        loaded = builder.types_loaded | missing
+        result = replace(builder.result, pending_edges_seen=0, ambiguous_skipped=0,
+                         edges_by_type={}, external_refs=0, unresolved=0)
+        builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
+        builder.result, builder.types_loaded = result, loaded
+        edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
     called_fields = builder.called_field_records(edges)
     if facts_source is None:
         known = {r for r in called_fields if r in index.type_table_by_record}
