@@ -15,7 +15,7 @@ from typing import (
     Set,
     Tuple,
 )
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -99,6 +99,7 @@ from app.connectors.sources.linear.team_access import (
     team_permissions,
     visibility,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -204,20 +205,6 @@ MAX_HELD_RUNS: int = 3
 
 def file_record_id(url: str, parent_external_id: str) -> str:
     return f"{url}{FILE_PARENT_MARK}{parent_external_id}"
-
-
-_CHILD_RECORD_NAMESPACE = uuid5(NAMESPACE_URL, "pipeshub:linear:child-record")
-
-
-def new_child_record_id(connector_id: str, external_record_id: str) -> str:
-    """The id a new attachment, document or file record is created with.
-
-    The sync and the stream of the parent issue (indexing reads it while the sync
-    goes on) can both find the child unstored and create it. A random id gave them
-    two records for one child, and every full sync then unlinked the one its lookup
-    did not return. Derived from the source id, both write the same record.
-    """
-    return str(uuid5(_CHILD_RECORD_NAMESPACE, f"{connector_id}\x1f{external_record_id}"))
 
 
 def file_record_url(external_record_id: str) -> str:
@@ -3710,7 +3697,7 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else new_child_record_id(
+        record_id = existing_record.id if existing_record else new_record_id(
             self.connector_id, attachment_id)
 
         if is_new:
@@ -3798,7 +3785,7 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning: use existing record's id and increment version if changed
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else new_child_record_id(
+        record_id = existing_record.id if existing_record else new_record_id(
             self.connector_id, document_id)
 
         if is_new:
@@ -3878,7 +3865,7 @@ class LinearConnector(BaseConnector):
 
         # Handle versioning
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else new_child_record_id(
+        record_id = existing_record.id if existing_record else new_record_id(
             self.connector_id, file_record_id(file_url, parent_external_id))
 
         if is_new:
