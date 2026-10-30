@@ -56,10 +56,10 @@ afterEach(() => {
 });
 
 describe('WorkspaceSidebar — API documentation', () => {
-  it('opens the API reference on the API host in a new tab', () => {
+  it.each(['https://api.pipeshub.test', 'https://api.pipeshub.test/'])('opens the API reference on %s in a new tab', (base) => {
     userState = { profile: { isAdmin: false } };
     flagsState = { flags: {} };
-    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.pipeshub.test');
+    vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', base);
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
 
     render(

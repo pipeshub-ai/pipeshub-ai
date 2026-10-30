@@ -254,7 +254,7 @@ export default function WorkspaceSidebar() {
           <WorkspaceSidebarItem
             icon={<MaterialIcon name="menu_book" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
             label={t('workspace.sidebar.nav.apiDocumentation')}
-            onClick={() => window.open(`${getApiBaseUrl()}/api/v1/docs`, '_blank', 'noopener,noreferrer')}
+            onClick={() => window.open(`${getApiBaseUrl().replace(/\/+$/, '')}/api/v1/docs`, '_blank', 'noopener,noreferrer')}
             rightSlot={<MaterialIcon name="open_in_new" size={ICON_SIZE_DEFAULT} color="var(--slate-9)" />}
           />
         </Flex>
