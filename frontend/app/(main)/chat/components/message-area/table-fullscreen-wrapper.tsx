@@ -86,6 +86,8 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
 
         <Dialog.Content
           style={{
+            // Solid, not the shared dialog frost: a viewer needs its content fully readable
+            backgroundColor: 'var(--color-panel-solid)',
             maxWidth: '92vw',
             width: '92vw',
             // No fixed height: a short table gets a short dialog; the scroller below takes over at the max.

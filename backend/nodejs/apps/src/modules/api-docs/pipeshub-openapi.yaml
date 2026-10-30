@@ -445,6 +445,150 @@ tags:
     description: |
       The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
       document that UI renders, and a health check. These routes are public (no token is read).
+# Sidebar of the docs page at /api/v1/docs: heading -> nav item -> tags. A tag with endpoints
+# listed nowhere here still shows, under "Other". The SDK generator ignores this key.
+x-pipeshub-nav:
+  - name: Identity & Access
+    modules:
+      - name: Authentication
+        icon: lock
+        description: User authentication, authorization, and session management
+        tags:
+          - User Account
+          - Organization Auth Config
+          - Personal Access Tokens
+      - name: OAuth App Management
+        icon: key
+        description: OAuth 2.0 authorization server, app registration, and OpenID Connect
+        tags:
+          - OAuth Provider
+          - OAuth Apps
+          - OpenID Connect
+      - name: User Management
+        icon: user
+        description: Users, service accounts, teams, groups, organizations, and notifications
+        tags:
+          - Users
+          - Service Accounts
+          - Service Tokens
+          - Teams
+          - Organizations
+          - User Groups
+          - Notifications
+  - name: Data Management
+    modules:
+      - name: Storage
+        icon: folder
+        description: Service-to-service document storage (not callable with a user token)
+        tags:
+          - Internal Storage
+      - name: Knowledge Base
+        icon: book
+        description: Knowledge bases, folders, records, and permissions
+        tags:
+          - Knowledge Base
+          - Knowledge Hub
+          - Folders
+          - Records
+          - Permissions
+          - Upload
+          - Connector
+      - name: Artifacts
+        icon: image
+        description: Generated artifacts, with preview, download, and versions
+        tags:
+          - Artifacts
+  - name: Search & AI
+    modules:
+      - name: Enterprise Search
+        icon: search
+        description: Conversational AI, semantic search, and code graphs
+        tags:
+          - Conversations
+          - Projects
+          - Code Graph
+          - Semantic Search
+          - Conversational Speech
+      - name: Agents
+        icon: cpu
+        description: Custom AI agents, agent templates, and skills
+        tags:
+          - Agents
+          - Agent Templates
+          - Agent Conversations
+          - Skills
+  - name: Integrations
+    modules:
+      - name: Connector Manager
+        icon: code
+        description: Third-party integrations, OAuth flows, and data synchronization
+        tags:
+          - Connector Registry
+          - Connector Instances
+          - Connector Configuration
+          - Connector Control
+          - Connector OAuth
+          - Connector Filters
+          - OAuth Configuration
+      - name: Toolsets
+        icon: tool
+        description: Toolsets that give agents actions in other apps or your own REST APIs
+        tags:
+          - Toolset Registry
+          - Toolset Instances
+          - Toolset Configuration
+          - Toolset OAuth
+          - API Toolsets
+      - name: MCP Servers
+        icon: server
+        description: External MCP servers that agents and users connect to
+        tags:
+          - MCP Server Catalog
+          - MCP Server Instances
+          - MCP Server Credentials
+          - MCP Server OAuth
+          - MCP Servers for Agents
+          - MCP Servers
+      - name: MCP
+        icon: layers
+        description: The PipesHub MCP endpoint at /mcp
+        tags:
+          - MCP
+  - name: System
+    modules:
+      - name: Configuration Manager
+        icon: gear
+        description: System-wide configuration management
+        tags:
+          - Storage Configuration
+          - SMTP Configuration
+          - Authentication Configuration
+          - Platform Settings
+          - AI Models Providers
+          - Configuration Manager
+          - Public URLs
+          - Web Search
+          - Metrics Collection
+      - name: Crawling Manager
+        icon: clock
+        description: Data crawling job scheduling and monitoring
+        tags:
+          - Crawling Jobs
+      - name: Mail
+        icon: mail
+        description: Service-to-service email sending and SMTP setup
+        tags:
+          - Mail
+      - name: Health
+        icon: activity
+        description: Health of the deployment, and the build that it runs
+        tags:
+          - Health
+      - name: API Documentation
+        icon: book
+        description: This API reference and the JSON it renders
+        tags:
+          - API Documentation
 components:
   parameters:
     RevealStoredSecrets:
@@ -59281,7 +59425,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The caller hasn't connected this server, or its authorization expired
+          description: |
+            The caller hasn't connected this server, or the server asks for a sign-in: its authorization
+            expired, it answered `401`, or it wants more scopes ("Authentication with this MCP server has
+            expired. Reconnect it to continue."). A server set to No authentication that asks for a sign-in
+            is answered "This server asks for a sign-in, but it's set to No authentication.": whoever can
+            edit it has to choose the auth mode it needs, an administrator for an organization server and
+            the owner for a personal one.
           content:
             application/json:
               schema:
@@ -59289,12 +59439,10 @@ paths:
         '500':
           description: |
             Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or refused the connection (the connectors service answers `502`, which the
-            gateway reports as `500`).
+            could not be reached or answered with an error other than a sign-in request (the connectors
+            service answers `502`, which the gateway reports as `500`).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or refused the connection: the connectors service answers `502`, which the gateway reports as `500`.
           content:
             application/json:
               schema:
@@ -70514,11 +70662,11 @@ paths:
         - MCP
       summary: MCP SSE streaming endpoint
       description: |
-        Opens the standalone server-to-client SSE stream of the Streamable HTTP transport.
-        PipesHub runs the transport in stateless mode, where nothing is ever sent on this stream:
-        it answers `200` with `text/event-stream` and then stays open, with no events, until the
-        client closes it. (The route comment in the code says stateless mode answers `405`; it
-        does not.)
+        The standalone server-to-client SSE stream of the Streamable HTTP transport. PipesHub runs
+        the transport stateless, with a new server for every request, so this stream could never
+        carry an event: an authenticated `GET` is answered `405` with `Allow: POST`, which the MCP
+        specification lets a client read as "this server offers no SSE stream". Clients send every
+        message with `POST /mcp`.
       operationId: handleMCPStreamingRequest
       servers:
         - url: "{instance_url}"
@@ -70528,40 +70676,50 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: []
-      parameters:
-        - name: Mcp-Protocol-Version
-          in: header
-          required: false
-          description: |
-            MCP protocol version the client speaks. A value outside this list is refused with `400`.
-          schema:
-            type: string
-            enum: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
       responses:
-        '200':
-          description: An SSE stream that stays open and never carries an event
-          content:
-            text/event-stream:
+        '405':
+          description: This server offers no SSE stream; send messages with `POST /mcp`
+          headers:
+            Allow:
+              description: Always `POST`.
               schema:
                 type: string
+                enum: [POST]
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                        enum: ["Method not allowed."]
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
         '400':
           description: |
-            The Streamable HTTP transport rejected the request, for example because the
-            `Mcp-Protocol-Version` header names a protocol version the server does not support.
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned before authentication when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/McpTransportError'
-                  - $ref: '#/components/schemas/ErrorResponse'
-        '406':
-          description: Not Acceptable - the `Accept` header does not include `text/event-stream`
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpTransportError'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           headers:

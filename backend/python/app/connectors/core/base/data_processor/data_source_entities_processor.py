@@ -6159,12 +6159,15 @@ class DataSourceEntitiesProcessor:
                 return True
 
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             self.logger.error(
                 f"Failed to add user {user_email} to group {external_group_id}: {str(e)}",
                 exc_info=True
             )
             return False
 
+    @retry_on_deadlock()
     async def create_user_group_membership(
         self,
         user_source_id: str,
@@ -6198,6 +6201,8 @@ class DataSourceEntitiesProcessor:
                     self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
                 return created
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             if tracking:
                 self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
             self.logger.error(
@@ -6757,6 +6762,8 @@ class DataSourceEntitiesProcessor:
             return True
 
         except Exception as e:
+            if self._must_propagate(e, None):
+                raise
             self.logger.error(
                 f"Failed to delete record group with external ID {external_group_id}: {str(e)}",
                 exc_info=True

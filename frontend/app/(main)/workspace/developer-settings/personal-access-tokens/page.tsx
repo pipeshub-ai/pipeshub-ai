@@ -12,7 +12,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { asArray } from '@/lib/utils/safe';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '../../components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../../components/settings-page-container';
 import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
@@ -140,7 +140,7 @@ function PersonalAccessTokensPageContent() {
         align="start"
         wrap="wrap"
         gap="3"
-        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 'var(--space-5)' }}
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP, paddingBottom: 'var(--space-5)' }}
       >
         <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>

@@ -1775,8 +1775,8 @@ export function ChatInput({
           pointerEvents: 'auto',
           background: 'color-mix(in srgb, var(--olive-1) 42%, transparent)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRadius: 'var(--radius-1)',
           padding: '7px 8px',
           boxSizing: 'border-box',
@@ -1940,9 +1940,9 @@ export function ChatInput({
         pointerEvents: 'auto',
         fontFamily: 'Manrope, sans-serif',
         backdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         WebkitBackdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         background: dockGlass
           ? 'color-mix(in srgb, var(--olive-1) 42%, transparent)'
           : composerActive || message.trim() || isListening

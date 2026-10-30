@@ -260,9 +260,13 @@ export function PlusMenuButton({
         style={{
           width: 216,
           padding: 6,
-          backgroundColor: 'var(--color-panel-solid)',
-          borderRadius: 'var(--radius-3)',
-          boxShadow: 'var(--shadow-4)',
+          // Same surface as the settings row menus: frosted, one olive-3 border, no ring shadow
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          boxShadow: 'none',
         }}
       >
         <PlusMenuContent

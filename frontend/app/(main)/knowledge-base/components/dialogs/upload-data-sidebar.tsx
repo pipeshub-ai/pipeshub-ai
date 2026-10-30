@@ -275,7 +275,7 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
           borderRadius: 'var(--radius-1)',
           background: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           flex: 1,
           height: '100%',
         }}
@@ -879,10 +879,10 @@ export function UploadDataSidebar({
           ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderRadius: isMobile ? 0 : 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: ' 0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
           display: 'flex',
@@ -902,8 +902,6 @@ export function UploadDataSidebar({
           style={{
             padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
-            backdropFilter: 'blur(8px)',
-            backgroundColor: 'var(--effects-translucent)',
             minWidth: 0,
             overflow: 'hidden',
             flexShrink: 0,
@@ -927,6 +925,8 @@ export function UploadDataSidebar({
             </Button>
             <IconButton
               variant="ghost"
+              // Radix ghost buttons pull out by their padding; keep the header's own inset
+              style={{ margin: 0 }}
               color="gray"
               size="2"
               aria-label={t('common.close')}
@@ -948,8 +948,6 @@ export function UploadDataSidebar({
             minWidth: 0,
             width: '100%',
             padding: 'var(--space-4)',
-            backgroundColor: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           {/* Upload Files Section */}

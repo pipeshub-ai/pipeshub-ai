@@ -210,6 +210,7 @@
       "next": "Weiter",
       "enterPipeshub": "Pipeshub betreten",
       "finishing": "Abschließen…",
+      "finishFailed": "Die Einrichtung konnte nicht abgeschlossen werden. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "saveLlmFirst": "Speichern Sie zuerst den KI-Modell-Schritt, um fortzufahren"
     },
     "save": "Speichern",
@@ -388,7 +389,10 @@
     "sources": "Quellen",
     "sizes": "Größen",
     "clearFilter": "Filter löschen",
-    "applyFilters": "Filter anwenden"
+    "applyFilters": "Filter anwenden",
+    "sort": "Sortieren",
+    "sortAscending": "Aufsteigend",
+    "sortDescending": "Absteigend"
   },
   "form": {
     "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
@@ -433,6 +437,7 @@
   },
   "table": {
     "fileName": "Dateiname",
+    "resizeColumn": "Breite der Spalte {{column}} ändern",
     "name": "Name",
     "status": "Status",
     "size": "Größe",
@@ -2665,8 +2670,8 @@
       "continueToConfiguration": "Weiter zur Konfiguration →",
       "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
       "authRequiredBeforeConfig": "Schließen Sie die OAuth-Autorisierung ab, bevor Sie Synchronisierung und Filter konfigurieren",
-      "backToCredentials": "← Zurück zu den Anmeldedaten",
-      "backFromConfigure": "← Zurück",
+      "backToCredentials": "Zurück zu den Anmeldedaten",
+      "backFromConfigure": "Zurück",
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
       "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
@@ -3298,6 +3303,7 @@
         "reconnectNeeded": "Neue Verbindung nötig",
         "waitingForAdmin": "Wartet auf Admin",
         "sharedCredentialMissing": "Gemeinsame Anmeldedaten fehlen",
+        "needsAuthMode": "Anmeldung erforderlich",
         "blocked": "Durch Richtlinie blockiert",
         "unreachable": "Server nicht erreichbar",
         "slow": "Antwortet langsam",
@@ -3434,6 +3440,9 @@
         "signInExpired": "Anmeldung abgelaufen",
         "sharedMissing": "Gemeinsame Anmeldung fehlt",
         "signInExpiredBody": "Tools dieses Servers können erst wieder laufen, wenn sich jemand erneut anmeldet.",
+        "asksForSignIn": "Dieser Server verlangt eine Anmeldung",
+        "asksForSignInBody": "Er ist auf „No authentication“ eingestellt. Bearbeiten Sie ihn und wählen Sie den Authentifizierungsmodus, den der Server braucht.",
+        "editServer": "Server bearbeiten",
         "notSignedIn": "Nicht angemeldet",
         "notSignedInDetail": "Melden Sie sich an, um die Tools dieses Servers zu nutzen.",
         "signedIn": "Angemeldet",

@@ -495,7 +495,10 @@ export function FilterDropdown({
           padding: '8px',
           minWidth: '180px',
           maxWidth: '240px',
-          backgroundColor: 'var(--olive-2)',
+          // Frosted like the action menus (shared frost tokens in globals.css)
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',
           boxShadow:

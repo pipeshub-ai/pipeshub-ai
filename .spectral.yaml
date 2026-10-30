@@ -80,3 +80,8 @@ overrides:
       - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1toolsets~1%7BtoolsetId%7D~1oauth~1authorize/get/responses"
     rules:
       operation-success-response: "off"
+  # The MCP transport is stateless, so GET /mcp offers no SSE stream: an authenticated GET answers 405.
+  - files:
+      - "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml#/paths/~1mcp/get/responses"
+    rules:
+      operation-success-response: "off"

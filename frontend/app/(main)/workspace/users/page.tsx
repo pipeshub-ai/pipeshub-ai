@@ -36,6 +36,7 @@ import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Constants
@@ -1111,6 +1112,9 @@ function UsersPageContent() {
         height: '100%',
         width: '100%',
         paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
+        boxSizing: 'border-box',
       }}
     >
       {/* Header */}
@@ -1141,8 +1145,9 @@ function UsersPageContent() {
         style={{
           flex: 1,
           overflow: 'hidden',
-          border: '1px solid var(--slate-6)',
-          borderRadius: 'var(--radius-3)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-1)',
         }}
       >
         {/* Filter bar */}

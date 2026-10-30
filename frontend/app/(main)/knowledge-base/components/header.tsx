@@ -14,6 +14,7 @@ import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { PermissionLockIcon } from '@/config';
 import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 
 
 // Radix offsets ghost buttons by their own padding; these set their own, so the
@@ -369,7 +370,7 @@ export function Header({
         // breadcrumb does not sit underneath it.
         padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
         borderBottom: '1px solid var(--olive-3)',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
         backgroundColor: 'var(--effects-translucent)',
         flexShrink: 0,
       }}
@@ -388,6 +389,8 @@ export function Header({
           flex: 1,
         }}
       >
+        {/* Restores a collapsed nav sidebar; without it the app-shell fallback floats over the breadcrumb */}
+        <SidebarExpandButton placement="inline" />
         {isSearchActive ? (
           <Flex align="center" gap="2">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>

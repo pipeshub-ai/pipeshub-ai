@@ -14,8 +14,10 @@ const FAILED_COLOR = 'var(--red-11)';
 // Wide enough that a single failure among thousands still shows.
 const MIN_SEGMENT_PX = 4;
 const CHEVRON_SIZE = 18;
+// Header side inset: matches the (44 - 20) / 2 = 12px above and below the title.
+const HEADER_INSET_X = 'var(--space-3)';
 // Lines the body up under the title, past the chevron.
-const BODY_INDENT = `calc(var(--space-1) + ${CHEVRON_SIZE}px + var(--space-2))`;
+const BODY_INDENT = `calc(${HEADER_INSET_X} + ${CHEVRON_SIZE}px + var(--space-2))`;
 
 export interface AiEnrichmentSectionProps {
   classification: StageProgress;
@@ -77,7 +79,7 @@ export function AiEnrichmentSection({
           gap: 'var(--space-2)',
           width: '100%',
           minHeight: 44,
-          padding: '0 var(--space-1)',
+          padding: `0 ${HEADER_INSET_X}`,
           border: 'none',
           borderRadius: 'var(--radius-2)',
           backgroundColor: isHeaderHovered ? 'var(--olive-3)' : 'transparent',
@@ -106,7 +108,7 @@ export function AiEnrichmentSection({
           id={bodyId}
           direction="column"
           gap="4"
-          style={{ padding: `0 var(--space-1) var(--space-1) ${BODY_INDENT}` }}
+          style={{ padding: `0 ${HEADER_INSET_X} var(--space-1) ${BODY_INDENT}` }}
         >
           <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.overview.enrichment.description')}

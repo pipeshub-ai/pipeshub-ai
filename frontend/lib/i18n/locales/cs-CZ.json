@@ -330,6 +330,7 @@
       "next": "Další",
       "enterPipeshub": "Vstoupit do PipesHub",
       "finishing": "Dokončování…",
+      "finishFailed": "Nastavení se nepodařilo dokončit. Zkontrolujte připojení a zkuste to znovu.",
       "saveLlmFirst": "Pro pokračování nejprve uložte krok Model AI"
     },
     "save": "Uložit",
@@ -508,7 +509,10 @@
     "sources": "Zdroje",
     "sizes": "Velikosti",
     "clearFilter": "Vymazat filtr",
-    "applyFilters": "Použít filtry"
+    "applyFilters": "Použít filtry",
+    "sort": "Řazení",
+    "sortAscending": "Vzestupně",
+    "sortDescending": "Sestupně"
   },
   "form": {
     "leaveBlankToKeep": "Ponechte prázdné, chcete-li zachovat stávající hodnotu.",
@@ -553,6 +557,7 @@
   },
   "table": {
     "fileName": "Název souboru",
+    "resizeColumn": "Změnit šířku sloupce {{column}}",
     "name": "Název",
     "status": "Stav",
     "size": "Velikost",
@@ -2913,8 +2918,8 @@
       "continueToConfiguration": "Pokračovat ke konfiguraci →",
       "oauthSigningIn": "Dokončete přihlášení u svého poskytovatele…",
       "authRequiredBeforeConfig": "Před nastavením synchronizace a filtrů dokončete autorizaci OAuth",
-      "backToCredentials": "← Zpět k přihlašovacím údajům",
-      "backFromConfigure": "← Zpět",
+      "backToCredentials": "Zpět k přihlašovacím údajům",
+      "backFromConfigure": "Zpět",
       "configPanelTitle": "Konfigurace {{name}}",
       "instance": "Instance",
       "emailVisibilityDocLink": "Průvodce nastavením viditelnosti e-mailů →",
@@ -3550,6 +3555,7 @@
         "reconnectNeeded": "Vyžaduje opětovné připojení",
         "waitingForAdmin": "Čeká na správce",
         "sharedCredentialMissing": "Chybí sdílené přihlašovací údaje",
+        "needsAuthMode": "Vyžaduje přihlášení",
         "blocked": "Blokováno zásadami",
         "unreachable": "Server není dostupný",
         "slow": "Pomalá odezva",
@@ -3692,6 +3698,9 @@
         "signInExpired": "Přihlášení vypršelo",
         "sharedMissing": "Chybí sdílené přihlášení",
         "signInExpiredBody": "Nástroje z tohoto serveru nelze spustit, dokud se někdo znovu nepřihlásí.",
+        "asksForSignIn": "Tento server vyžaduje přihlášení",
+        "asksForSignInBody": "Je nastaven na „No authentication“. Upravte ho a zvolte režim ověření, který server potřebuje.",
+        "editServer": "Upravit server",
         "notSignedIn": "Nepřihlášeno",
         "notSignedInDetail": "Přihlaste se, abyste mohli používat nástroje tohoto serveru.",
         "signedIn": "Přihlášeno",

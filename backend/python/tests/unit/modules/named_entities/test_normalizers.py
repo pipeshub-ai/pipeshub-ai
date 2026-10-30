@@ -190,6 +190,77 @@ def test_money_recognizer_does_not_join_separate_numbers():
     assert [m.surface for m in mentions] == ["$5"]
 
 
+def _money_mentions(text: str) -> list[tuple[str, str]]:
+    mentions = ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize([TextUnit(0, "b", text)])
+    found = []
+    for mention in mentions:
+        value = normalize_money(mention.surface)
+        found.append((mention.surface, value and f"{value.currency}:{value.amount}"))
+    return found
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Paid ₹2,50,000,000 today", "Paid Rs 1,23,456,789 today", "Net ₹12,34,56,789.123 paid", "Paid ₹1,23,4567"],
+)
+def test_a_malformed_grouping_gives_no_amount(text) -> None:
+    """Better no value than the leading "₹2,50" read as 2.50 rupees."""
+    assert _money_mentions(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "key"),
+    [
+        ("Paid ₹2,50,000 today", "₹2,50,000", "INR:250000"),
+        ("Fee Rs. 1,85,297 due", "Rs. 1,85,297", "INR:185297"),
+        ("Budget INR 12,34,56,789", "INR 12,34,56,789", "INR:123456789"),
+        ("Total 2,50,000 INR", "2,50,000 INR", "INR:250000"),
+        ("Owed 1,85,297 rupees", "1,85,297 rupees", "INR:185297"),
+        ("Net ₹2,50,000.50 paid", "₹2,50,000.50", "INR:250000.50"),
+        ("Net ₹10,00,000.00 paid", "₹10,00,000.00", "INR:1000000.00"),
+        ("Rs 2,50,000/- only", "Rs 2,50,000", "INR:250000"),
+        ("Capex ₹1,50,000 crore", "₹1,50,000 crore", "INR:1500000000000"),
+        # Not only rupees: the grouping says how to read the digits.
+        ("Quote $1,23,456 sent", "$1,23,456", "USD:123456"),
+    ],
+)
+def test_indian_digit_grouping_is_read_whole(text, surface, key) -> None:
+    """'₹2,50,000' used to be cut at '₹2,50' and stored as 2.50 rupees."""
+    assert _money_mentions(text) == [(surface, key)]
+
+
+def test_an_indian_grouped_range_gives_both_ends() -> None:
+    assert _money_mentions("Budget ₹1,00,000-₹2,00,000") == [
+        ("₹1,00,000", "INR:100000"), ("₹2,00,000", "INR:200000"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "key"),
+    [
+        ("Paid $1,250,000", "$1,250,000", "USD:1250000"),
+        ("Paid €2,50", "€2,50", "EUR:2.50"),
+        ("Budget is EUR 1.250,00 total", "EUR 1.250,00", "EUR:1250.00"),
+        ("We owe 12,345 USD", "12,345 USD", "USD:12345"),
+        ("Fee ₹25,000", "₹25,000", "INR:25000"),
+        ("Fee ₹5 lakh", "₹5 lakh", "INR:500000"),
+    ],
+)
+def test_thousands_and_decimal_groupings_are_unchanged(text, surface, key) -> None:
+    assert _money_mentions(text) == [(surface, key)]
+
+
+@pytest.mark.parametrize("text", ["Sold 1,50,000 ₹10 tickets", "Sold 1,500 ₹10 tickets"])
+def test_a_symbol_that_starts_the_next_amount_is_not_a_suffix(text) -> None:
+    assert _money_mentions(text) == [("₹10", "INR:10")]
+
+
+def test_an_indian_amount_reaches_the_indexed_values() -> None:
+    found = _deterministic([TextUnit(0, "b", "Invoice total ₹1,85,297")], default_enabled_kinds(), NormalizationContext())
+    assert [(mention.kind, mention.surface) for mention in found] == [(EntityKind.CURRENCY, "₹1,85,297")]
+    assert normalize_money(found[0].surface).amount == 185297
+
+
 def test_celsius_converts_to_kelvin():
     value = normalize_quantity("20 °C")
     assert value is not None
@@ -306,8 +377,10 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "123 " * 10_000,
         ",".join(str(100 + i % 900) for i in range(10_000)),
         "a." * 20_000,
+        "₹" + "1,23," * 20_000,
+        "1" + ",23" * 10_000 + " INR",
     ],
-    ids=["space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at"],
+    ids=["space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix", "indian-suffix"],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
     import time

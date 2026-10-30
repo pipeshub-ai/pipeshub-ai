@@ -973,12 +973,9 @@ class TestHandleStartSync:
             # left everything it had not reached readable by nobody.
             service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
             
-            # Verify pendingFullSync was cleared after successful schedule
-            service.graph_provider.update_node.assert_awaited_once_with(
-                "c1",
-                CollectionNames.APPS.value,
-                {ConnectorStateKeys.PENDING_FULL_SYNC: False},
-            )
+            # The sync task clears pendingFullSync in its first status write. A
+            # second write from here raced it on the same app doc.
+            service.graph_provider.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_manual_full_sync_without_pending_skips_flag_clear(self, service):

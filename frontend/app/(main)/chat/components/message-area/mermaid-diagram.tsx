@@ -952,6 +952,8 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
         <Dialog.Content
           style={{
+            // Solid, not the shared dialog frost: a viewer needs its content fully readable
+            backgroundColor: 'var(--color-panel-solid)',
             maxWidth: '92vw', width: '92vw',
             maxHeight: '88vh', height: '88vh',
             padding: 0, overflow: 'hidden',

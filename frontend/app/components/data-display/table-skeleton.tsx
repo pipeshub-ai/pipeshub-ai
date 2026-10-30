@@ -27,6 +27,8 @@ export interface TableSkeletonProps {
   checkboxWidth?: number;
   /** Row height in px. Default: 60 (matches EntityDataTable) */
   rowHeight?: number;
+  /** Horizontal padding of each data cell. Default: '0 8px' */
+  cellPadding?: string;
 }
 
 /**
@@ -45,6 +47,7 @@ export function TableSkeleton({
   checkboxWidth = 38,
   rowHeight = 60,
   actionsWidth = 80,
+  cellPadding = '0 8px',
 }: TableSkeletonProps) {
   return (
     <Box aria-busy="true" aria-live="polite" style={{ width: '100%' }}>
@@ -87,7 +90,7 @@ export function TableSkeleton({
                   width: col.width,
                   minWidth: col.minWidth,
                   flex: col.width ? undefined : 1,
-                  padding: '0 8px',
+                  padding: cellPadding,
                 }}
               >
                 <Box

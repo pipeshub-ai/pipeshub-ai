@@ -217,6 +217,7 @@
       "next": "Siguiente",
       "enterPipeshub": "Entrar a Pipeshub",
       "finishing": "Finalizando…",
+      "finishFailed": "No se pudo completar la configuración. Comprueba tu conexión e inténtalo de nuevo.",
       "saveLlmFirst": "Guarda el paso de modelo de IA primero para continuar"
     },
     "save": "Guardar",
@@ -395,7 +396,10 @@
     "sources": "Orígenes",
     "sizes": "Tamaños",
     "clearFilter": "Limpiar filtros",
-    "applyFilters": "Aplicar filtros"
+    "applyFilters": "Aplicar filtros",
+    "sort": "Ordenar",
+    "sortAscending": "Ascendente",
+    "sortDescending": "Descendente"
   },
   "form": {
     "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
@@ -440,6 +444,7 @@
   },
   "table": {
     "fileName": "Nombre de archivo",
+    "resizeColumn": "Cambiar el ancho de la columna {{column}}",
     "name": "Nombre",
     "status": "Estado",
     "size": "Tamaño",
@@ -2697,8 +2702,8 @@
       "continueToConfiguration": "Continuar a la configuración →",
       "oauthSigningIn": "Termine de iniciar sesión con su proveedor…",
       "authRequiredBeforeConfig": "Complete la autorización OAuth antes de configurar la sincronización y los filtros",
-      "backToCredentials": "← Volver a credenciales",
-      "backFromConfigure": "← Atrás",
+      "backToCredentials": "Volver a credenciales",
+      "backFromConfigure": "Atrás",
       "configPanelTitle": "Configurar {{name}}",
       "instance": "Instance",
       "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
@@ -3331,6 +3336,7 @@
         "reconnectNeeded": "Hay que volver a conectar",
         "waitingForAdmin": "Esperando al administrador",
         "sharedCredentialMissing": "Falta la credencial compartida",
+        "needsAuthMode": "Requiere inicio de sesión",
         "blocked": "Bloqueado por política",
         "unreachable": "No se puede acceder al servidor",
         "slow": "Responde despacio",
@@ -3470,6 +3476,9 @@
         "signInExpired": "El inicio de sesión caducó",
         "sharedMissing": "Falta el inicio de sesión compartido",
         "signInExpiredBody": "Las herramientas de este servidor no pueden ejecutarse hasta que alguien vuelva a iniciar sesión.",
+        "asksForSignIn": "Este servidor pide iniciar sesión",
+        "asksForSignInBody": "Está configurado como «No authentication». Edítalo y elige el modo de autenticación que necesita el servidor.",
+        "editServer": "Editar servidor",
         "notSignedIn": "Sin iniciar sesión",
         "notSignedInDetail": "Inicia sesión para usar las herramientas de este servidor.",
         "signedIn": "Sesión iniciada",
