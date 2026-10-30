@@ -30,6 +30,7 @@ from app.agent_loop_lib.transport.openai import (
     OpenAITransport,
     RequestDefaults,
     client_timeout,
+    shared_client,
 )
 
 if TYPE_CHECKING:
@@ -101,7 +102,7 @@ class AzureOpenAITransport(OpenAITransport):
             client_kwargs["max_retries"] = max_retries
         if http_client is not None:
             client_kwargs["http_client"] = http_client
-        self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
+        self._client = shared_client(_openai.AsyncAzureOpenAI, **client_kwargs)
         self._init_prompt_cache(cache_plan, on_cache_rejected)
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0

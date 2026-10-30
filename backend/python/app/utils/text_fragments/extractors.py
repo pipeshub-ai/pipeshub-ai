@@ -8,6 +8,7 @@ raw string, which may carry markdown or HTML syntax the page never shows.
 from __future__ import annotations
 
 import re
+from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
 import tinycss2
@@ -17,7 +18,7 @@ from selectolax.lexbor import LexborHTMLParser, LexborNode
 from app.utils.text_fragments.models import SourceFormat
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 
 class BlockTextExtractor(Protocol):
@@ -43,19 +44,37 @@ class PlainTextBlockExtractor:
 
 class MarkdownBlockExtractor:
     def __init__(self) -> None:
-        self._parser = MarkdownIt("commonmark").enable(["table", "strikethrough"])
+        # Block pass only: `extract_groups` runs the inline pass per token, on demand.
+        self._parser = MarkdownIt("commonmark").enable(["table", "strikethrough"]).disable(["inline", "text_join"])
         self._html = HtmlBlockExtractor()
 
     def extract(self, text: str) -> list[str]:
-        blocks: list[str] = []
-        for token in self._parser.parse(text):
+        return [block for group in self.extract_groups(text) for block in group() if block.strip()]
+
+    def extract_groups(self, text: str) -> list[Callable[[], list[str]]]:
+        """One callable per block-level token, in document order, returning that token's blocks.
+
+        Inline markup is parsed only when a token's callable runs, so a caller
+        that needs only some blocks does not pay to parse the rest.
+        """
+        env: dict = {}
+        groups: list[Callable[[], list[str]]] = []
+        for token in self._parser.parse(text, env):
             if token.type == "inline":
-                blocks.extend(self._inline_blocks(token.children or []))
+                groups.append(partial(self._inline_token_blocks, token.content, env))
             elif token.type in ("fence", "code_block"):
-                blocks.extend(line for line in token.content.splitlines() if line.strip())
+                groups.append(partial(_code_lines, token.content))
             elif token.type == "html_block":
-                blocks.extend(self._html.extract(token.content))
-        return [block for block in blocks if block.strip()]
+                groups.append(partial(self._html.extract, token.content))
+        return groups
+
+    def _inline_token_blocks(self, content: str, env: dict) -> list[str]:
+        children = self._parser.inline.parse(content, self._parser, env, [])
+        for child in children:
+            # What the core `text_join` rule does; escapes and entities are text.
+            if child.type == "text_special":
+                child.type = "text"
+        return self._inline_blocks(children)
 
     @staticmethod
     def _inline_blocks(children: list) -> list[str]:
@@ -78,6 +97,10 @@ class MarkdownBlockExtractor:
                 flush()
         flush()
         return blocks
+
+
+def _code_lines(content: str) -> list[str]:
+    return [line for line in content.splitlines() if line.strip()]
 
 
 _BLOCK_TAGS = frozenset(

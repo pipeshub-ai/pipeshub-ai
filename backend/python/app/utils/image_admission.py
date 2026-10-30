@@ -49,6 +49,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 from app.utils.bounded_cache import SizeBoundedCache
@@ -184,8 +185,9 @@ class ImageCandidate:
             return self.width * self.height
         return _UNKNOWN_AREA_PX
 
-    @property
+    @cached_property
     def hash(self) -> str:
+        # Frozen, and `replace()` builds a new instance, so the cache cannot go stale.
         return content_hash(self.data_uri)
 
 
@@ -279,6 +281,9 @@ class ImageAdmission:
         # Hashes of images in a format the provider rejects that could not be
         # converted (a corrupt SVG, unknown bytes). They degrade to text.
         self._unsendable_hashes: set[str] = set()
+        # Source URI -> content_hash. The same URI is hashed by `warm`, by
+        # admission and again by every render, at ~0.7 ms per MB each time.
+        self._digests: dict[str, str] = {}
 
     def trial(self) -> "ImageAdmission":
         """An arbiter that decides exactly as this one would from here on,
@@ -296,7 +301,14 @@ class ImageAdmission:
         clone._normalized_by_hash = self._normalized_by_hash
         clone._normalization_checked = self._normalization_checked
         clone._unsendable_hashes = self._unsendable_hashes
+        clone._digests = self._digests
         return clone
+
+    def _digest(self, data_uri: str) -> str:
+        digest = self._digests.get(data_uri)
+        if digest is None:
+            digest = self._digests[data_uri] = content_hash(data_uri)
+        return digest
 
     @property
     def allows_images(self) -> bool:
@@ -386,7 +398,7 @@ class ImageAdmission:
                 continue
             # Decided before the slot is spent: an image no provider will
             # accept would otherwise take a slot and then 400 the request.
-            self._decide_normalization(candidate.data_uri)
+            self._decide_normalization(candidate.data_uri, candidate.hash)
             if candidate.hash in self._unsendable_hashes:
                 degraded.append(DegradedImage(candidate, DegradeReason.UNSUPPORTED_FORMAT))
                 continue
@@ -424,7 +436,7 @@ class ImageAdmission:
         than at each renderer so every delivery path (tool result, user
         message, history replay) gets it from one place.
         """
-        self._decide_normalization(candidate.data_uri)
+        self._decide_normalization(candidate.data_uri, candidate.hash)
         normalized = self._normalized_by_hash.get(candidate.hash)
         if normalized is None:
             return candidate
@@ -432,7 +444,7 @@ class ImageAdmission:
         # letting a later token estimate quote the original raster.
         return replace(candidate, data_uri=normalized, width=None, height=None)
 
-    def _decide_normalization(self, data_uri: str) -> None:
+    def _decide_normalization(self, data_uri: str, digest: str | None = None) -> None:
         """Work out the admitted bytes for `data_uri`, once.
 
         Pure apart from the caches it fills, and safe to run on a worker
@@ -442,7 +454,7 @@ class ImageAdmission:
         """
         from app.utils.image_utils import downscale_to_limits, to_llm_image_format
 
-        digest = content_hash(data_uri)
+        digest = digest or self._digest(data_uri)
         if digest in self._normalization_checked or self._adopt_shared(digest):
             return
         sendable = to_llm_image_format(data_uri, max_long_edge_px=self.policy.max_long_edge_px)
@@ -495,7 +507,7 @@ class ImageAdmission:
         todo = [
             uri for uri in dict.fromkeys(data_uris)
             if uri and not (
-                (digest := content_hash(uri)) in self._normalization_checked
+                (digest := self._digest(uri)) in self._normalization_checked
                 or self._adopt_shared(digest)
             )
         ]
@@ -523,7 +535,7 @@ class ImageAdmission:
         has to skip what its own `admit()` returned as degraded first, or it
         re-emits the copy that call just rejected.
         """
-        digest = content_hash(data_uri)
+        digest = self._digest(data_uri)
         if digest not in self._admitted_hashes:
             return None
         return self._normalized_by_hash.get(digest, data_uri)
@@ -538,7 +550,7 @@ class ImageAdmission:
         """
         if not data_uri:
             return data_uri
-        return self._normalized_by_hash.get(content_hash(data_uri), data_uri)
+        return self._normalized_by_hash.get(self._digest(data_uri), data_uri)
 
 
 def admission_from_state(state: "dict[str, object] | None") -> ImageAdmission:

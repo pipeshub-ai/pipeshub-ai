@@ -1,5 +1,6 @@
 """Targeted tests to raise coverage for blob_storage.py remaining branches."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -30,6 +31,7 @@ def _resp(status=200, json_value=None, text_value=""):
     r = AsyncMock()
     r.status = status
     r.json = AsyncMock(return_value=json_value if json_value is not None else {})
+    r.read = AsyncMock(return_value=json.dumps(json_value if json_value is not None else {}).encode())
     r.text = AsyncMock(return_value=text_value)
     r.__aenter__ = AsyncMock(return_value=r)
     r.__aexit__ = AsyncMock(return_value=False)

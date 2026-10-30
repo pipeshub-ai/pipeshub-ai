@@ -41,7 +41,7 @@ _KEY_SUFFIX = ":cancel"
 # Bounds a leaked key if a producer's `finally` never runs (process killed
 # mid-run) — not the normal cleanup path, `unregister()` deletes it.
 _TTL_SECONDS = 600
-_POLL_INTERVAL_SECONDS = 1.0
+_POLL_INTERVAL_SECONDS = 2.0
 _POLL_WARNING_KEY = "cancellation:kv_poll_failed"
 _POLL_WARNING_INTERVAL_SECONDS = 60.0
 
