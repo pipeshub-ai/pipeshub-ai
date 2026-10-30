@@ -15,7 +15,8 @@
     "sharepoint_sim": "Measured locally, not in CI: 11.2 min on Neo4j and 10.8 min on ArangoDB of pytest time (40 tests) against the SharePoint simulator, 2026-10-24. Replace with the minutes from the first nightly that runs it.",
     "servicenow": "Estimated, not measured: this suite is new (four test modules against a live developer instance, about a dozen syncs of the whole instance's users per graph leg, scenario matrix on Neo4j only). Sized from jira and zendesk plus the instance's publish scripts and the per-person permission oracle. Replace with the minutes from the first nightly that runs it.",
     "local_fs_sim": "Measured locally, not in CI: 9.6 min on Neo4j and 13.3 min on ArangoDB of pytest time (22 tests, 2 workers), three runs each on fresh stacks, 2026-10-29. Replace with the minutes from the first nightly that runs it.",
-    "bookstack_sim": "Measured locally, not in CI: 9.5 min on Neo4j and 9.0 min on ArangoDB of pytest time (27 tests, 2 workers), three runs each on fresh stacks, 2026-10-29. Replace with the minutes from the first nightly that runs it."
+    "bookstack_sim": "Measured locally, not in CI: 9.5 min on Neo4j and 9.0 min on ArangoDB of pytest time (27 tests, 2 workers), three runs each on fresh stacks, 2026-10-29. Replace with the minutes from the first nightly that runs it.",
+    "servicenow_sim": "Measured locally on one leg, not in CI: 9.5 min of pytest time on Neo4j (12 tests) against the ServiceNow simulator on a dev stack, 2026-10-30, plus about 4 min to make the probed people's accounts on a fresh stack; the ArangoDB leg is assumed similar. Replace with the minutes from the first nightly that runs it."
   },
   "minutes": {
     "notion": 84.1,
@@ -47,6 +48,7 @@
     "sharepoint_sim": 22.0,
     "servicenow": 60.0,
     "local_fs_sim": 23.0,
-    "bookstack_sim": 18.5
+    "bookstack_sim": 18.5,
+    "servicenow_sim": 25.0
   }
 }
