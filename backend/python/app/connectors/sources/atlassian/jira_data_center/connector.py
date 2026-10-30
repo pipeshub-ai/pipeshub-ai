@@ -76,6 +76,7 @@ from app.connectors.sources.atlassian.core.read_outcome import (
     StoredAccessReadError,
     is_inconclusive_status,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -5381,7 +5382,7 @@ class JiraDataCenterConnector(BaseConnector):
         external_record_id = f"{external_id_prefix}{attachment_id}"
 
         file_record = FileRecord(
-            id=record_id or str(uuid4()),
+            id=record_id or new_record_id(self.connector_id, external_record_id),
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,
