@@ -250,6 +250,11 @@ def test_thousands_and_decimal_groupings_are_unchanged(text, surface, key) -> No
     assert _money_mentions(text) == [(surface, key)]
 
 
+@pytest.mark.parametrize("text", ["Sold 1,50,000 ₹10 tickets", "Sold 1,500 ₹10 tickets"])
+def test_a_symbol_that_starts_the_next_amount_is_not_a_suffix(text) -> None:
+    assert _money_mentions(text) == [("₹10", "INR:10")]
+
+
 def test_an_indian_amount_reaches_the_indexed_values() -> None:
     found = _deterministic([TextUnit(0, "b", "Invoice total ₹1,85,297")], default_enabled_kinds(), NormalizationContext())
     assert [(mention.kind, mention.surface) for mention in found] == [(EntityKind.CURRENCY, "₹1,85,297")]

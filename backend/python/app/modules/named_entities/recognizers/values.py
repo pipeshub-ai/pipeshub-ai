@@ -49,7 +49,7 @@ _MONEY = re.compile(
     rf"(?<![A-Za-z0-9.])(?:"
     rf"(?:US\$|R\$|C\$|A\$|HK\$|NZ\$|S\$|CN¥|RMB|Rs\.?|[$€£¥₹₩₽₺₪₫₱])\s?{_NUMBER}{_SCALE}{_END}"
     rf"|(?:{_CODES})\s?{_NUMBER}{_SCALE}{_END}"
-    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\s?(?:(?:{_CODES})\b|[€£₹]|(?i:dollar|euro|yen|rupee)s?\b))",
+    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\s?(?:(?:{_CODES})\b|[€£₹](?!\d)|(?i:dollar|euro|yen|rupee)s?\b))",
 )
 # A grouped number is read whole, so "1,000%" is never "000%".
 _GROUPED = r"(?>\d{1,3}(?:,\d{3})++|\d++)(?:\.\d++)?+"
