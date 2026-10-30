@@ -56,8 +56,9 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
-      # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
-      - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
+      # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network. The
+      # Dropbox connectors stream files from temporary links the Dropbox simulator serves (dropbox-sim profile).
+      - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures,dropbox-sim.internal
       # The Jira Cloud API-token connector only talks to Atlassian sites; jira-sim stands in for one.
       - PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS=jira-sim.internal
       # Unset: the Notion connector calls api.notion.com. The Notion suite sets it to the notion-sim service.
@@ -83,6 +84,9 @@ services:
       # Empty unless the Gmail suites run (gmail-sim profile): then the Gmail connectors, and only they,
       # call the Gmail simulator instead of Google (integration-tests/connectors/gmail/DESIGN.md).
       - GMAIL_GOOGLE_API_BASE_URL=${GMAIL_GOOGLE_API_BASE_URL:-}
+      # Empty unless the Dropbox suites run (dropbox-sim profile): then the Dropbox connectors call the Dropbox
+      # simulator instead of Dropbox (integration-tests/connectors/dropbox_sim/DESIGN.md).
+      - DROPBOX_API_BASE_URL=${DROPBOX_API_BASE_URL:-}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -415,6 +419,26 @@ services:
       default:
         aliases:
           - gmail-sim.internal
+    mem_limit: 512m
+
+  # The Dropbox simulator for the Dropbox suites (dropbox-sim profile). The connectors reach it by alias through
+  # DROPBOX_API_BASE_URL, the test process on the published port. Temporary links point back at the alias, so a
+  # stream goes through the same address guard as Dropbox's own links would. It holds no data until a test loads
+  # a scenario.
+  dropbox-sim:
+    image: ${DROPBOX_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["dropbox-sim"]
+    restart: always
+    command: ["dropbox"]
+    environment:
+      CONNSIM_SOURCES: dropbox
+      CONNSIM_DROPBOX_LINK_BASE_URL: http://dropbox-sim.internal
+    ports:
+      - "127.0.0.1:8109:80"
+    networks:
+      default:
+        aliases:
+          - dropbox-sim.internal
     mem_limit: 512m
 
   mcp-fixture:

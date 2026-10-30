@@ -61,7 +61,8 @@ ALIASES = {
     "gmail": {"gmail_individual"},
     "gmailworkspace": {"gmail", "gmail_workspace"},
     "notionpersonal": {"notion"},
-    "dropboxpersonal": {"dropbox"},
+    "dropbox": {"dropbox_sim"},
+    "dropboxpersonal": {"dropbox", "dropbox_sim"},
     "gitlabpersonal": {"gitlab"},
     # Not "github": a test directory by that name would shadow the PyGithub package.
     "github": {"github_personal"},

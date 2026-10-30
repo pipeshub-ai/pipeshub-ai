@@ -208,7 +208,7 @@ CONNECTOR_SHARDS = {
         "servicenow",
     ),
     "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
-    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+    "connectors-4": ("google_drive_workspace", "google_drive_individual", "dropbox_sim"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -290,7 +290,8 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "cifs": ("smb",),
     "demo": ("demo",),
     # external/bookstack imports external/dropbox.
-    "dropbox": ("bookstack", "bookstack_sim"),
+    "dropbox": ("bookstack", "bookstack_sim", "dropbox_sim"),
+    "dropbox_individual": ("dropbox_sim",),
     "gcs": ("gcs",),
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
