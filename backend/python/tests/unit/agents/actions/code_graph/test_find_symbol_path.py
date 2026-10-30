@@ -17,6 +17,7 @@ pytestmark = pytest.mark.asyncio
 
 CALLER = ("src/a.py", "function:caller")
 RUN = ("src/b.py", "method:run")
+THING = ("src/b.py", "class:Thing")
 PANEL = ("web/ui/panel.ts", "function:renderPanel")
 
 
@@ -32,11 +33,16 @@ async def _path(graph, a=CALLER, b=RUN, **kwargs) -> dict:
 
 class TestPath:
     async def test_finds_the_chain_across_relation_types(self, graph) -> None:
-        """caller -CALLS-> target -INHERITS-> Thing -CONTAINS-> run."""
-        result = await _path(graph)
+        """caller -CALLS-> target -INHERITS-> Thing."""
+        result = await _path(graph, b=THING)
         assert result["found"] is True
-        assert [h["relation"] for h in result["hops"]] == ["CALLS", "INHERITS", "CONTAINS"]
+        assert [h["relation"] for h in result["hops"]] == ["CALLS", "INHERITS"]
         assert "capped" not in result
+
+    async def test_reaching_a_class_does_not_reach_each_of_its_methods(self, graph) -> None:
+        """A call into a class is its constructor; stepping on from Thing into `run`
+        made every method of every class a call reached look called."""
+        assert (await _path(graph))["found"] is False
 
     async def test_an_exhausted_search_is_a_plain_miss(self, graph) -> None:
         assert await _path(graph, b=PANEL) == {"found": False, "hops": [], "searched_hops": MAX_PATH_DEPTH}
