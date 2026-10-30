@@ -167,3 +167,33 @@ async def test_a_cut_short_scan_says_so_even_when_every_match_was_linked(monkeyp
     out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run",
                                           {("src/a.py", 3)}, include_tests=False, target_path="src/b.py")
     assert out["unlinked_call_sites"] | {"note": None} == {"note": None, "count": 0, "sites": [], "truncated": True}
+
+
+async def test_a_typescript_target_reads_its_tsx_callers_too(monkeypatch) -> None:
+    """A `.tsx` view calls a `.ts` helper: both are read, each under its own cap."""
+    paths = []
+
+    async def search(**kwargs) -> dict:
+        paths.append(kwargs["path"])
+        return {"matches": [{"file_path": "web/view.tsx", "line": 4, "text": "fmt.render()"}]
+                if kwargs["path"] == "*.tsx" else []}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Fmt.render", set(),
+                                          include_tests=False, target_path="web/fmt.ts")
+    assert set(paths) == {"*.ts", "*.tsx", "*.mts", "*.cts"}
+    assert [s["file_path"] for s in out["unlinked_call_sites"]["sites"]] == ["web/view.tsx"]
+
+
+async def test_an_unreadable_file_marks_the_scan_incomplete(monkeypatch) -> None:
+    async def search(**_kwargs) -> dict:
+        return {"matches": [], "files_unreadable": 2}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run", set(),
+                                          include_tests=False, target_path="src/b.py")
+    assert out["unlinked_call_sites"]["truncated"] is True and out["unlinked_call_sites"]["count"] == 0

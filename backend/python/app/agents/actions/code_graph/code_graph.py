@@ -95,6 +95,12 @@ _CONNECTOR_ID_DESC = (
 # chosen after dropping the linked ones from up to _SITES_SCANNED matches.
 _SITES_SHOWN = 15
 _SITES_SCANNED = 5000
+# Extensions whose files can call a definition in a file of this one (a `.tsx` view
+# calls a `.ts` helper); any other extension is searched alone.
+_CALLER_EXTENSIONS = {
+    **dict.fromkeys(("ts", "tsx", "mts", "cts"), ("ts", "tsx", "mts", "cts")),
+    **dict.fromkeys(("js", "jsx", "mjs", "cjs"), ("js", "jsx", "mjs", "cjs")),
+}
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 _REPO_DESC = (
@@ -277,20 +283,27 @@ class CodeGraph:
         # Python `set`), so only the target's own files are read: others would use up the cap.
         file_name = (target_path or "").rsplit("/", 1)[-1]
         ext = file_name.rpartition(".")[2] if "." in file_name else ""
+        globs = [f"*.{e}" for e in _CALLER_EXTENSIONS.get(ext, (ext,))] if ext.isalnum() else ["**"]
+        matches: list[dict[str, Any]] = []
+        incomplete = False
         try:
-            found = await search_code_impl(
-                graph_provider=self._graph_provider, blob_store=self._blob_store,
-                connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
-                pattern=call, mode="regex", path=f"*.{ext}" if ext.isalnum() else "**", repo=repo,
-                limit=_SITES_SCANNED, max_limit=_SITES_SCANNED, include_tests=include_tests,
-            )
+            for glob in globs:
+                found = await search_code_impl(
+                    graph_provider=self._graph_provider, blob_store=self._blob_store,
+                    connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
+                    pattern=call, mode="regex", path=glob, repo=repo,
+                    limit=_SITES_SCANNED, max_limit=_SITES_SCANNED, include_tests=include_tests,
+                )
+                matches += found.get("matches") or []
+                # A capped scan or an unreadable file: there may be calls this did not see.
+                incomplete = incomplete or bool(found.get("truncated") or found.get("files_unreadable"))
         except Exception:
             self._log.warning("codegraph: unlinked call sites unavailable", exc_info=True)
             return result
         definition = re.compile(rf"^\s*(async\s+)?(def|class|function)\s+{name}\b")
-        sites = [m for m in found.get("matches") or []
+        sites = [m for m in matches
                  if (m.get("file_path"), m.get("line")) not in known and not definition.match(m.get("text") or "")]
-        if sites or found.get("truncated"):
+        if sites or incomplete:
             result["unlinked_call_sites"] = {
                 # Without `known` (impact, path) the lines are not checked against the answer.
                 "note": (f"Lines that call something named {name} but are not linked here: the "
@@ -305,7 +318,7 @@ class CodeGraph:
                 "sites": [{"file_path": m["file_path"], "line": m["line"], "text": (m.get("text") or "").strip()[:160]}
                           for m in sites[:_SITES_SHOWN]],
             }
-            if found.get("truncated"):
+            if incomplete:
                 # Not every file or match was read: the count is a floor, even when it is 0.
                 result["unlinked_call_sites"]["truncated"] = True
         return result
