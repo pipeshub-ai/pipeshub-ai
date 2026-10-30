@@ -83,6 +83,7 @@ class TestMCPRegistry:
         assert "box" in type_ids
         assert "clickup" in type_ids
         assert "context7" in type_ids
+        assert "huggingface" in type_ids
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

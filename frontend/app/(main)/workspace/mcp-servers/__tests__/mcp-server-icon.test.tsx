@@ -36,6 +36,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="context7" name="Context7" />)).toBe('context7 icon');
   });
 
+  it("shows Hugging Face's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
+    expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');
+  });
+
   it('keeps the MCP mark for a custom server with no logo, not a stock icon', () => {
     const { container } = render(<McpServerIcon name="Acme internal" />);
 
