@@ -1673,6 +1673,10 @@ class DropboxConnector(BaseConnector):
         self._health = SyncHealth()
         self._external_emails = set()
         self._activity_log_missing: str | None = None
+        # Found again each run from what is stored: a folder is listed from the start only in the run that finds
+        # it fresh, and a move a stopped run did not finish is listed again, its cursor not having passed it.
+        self._fresh_folders = set()
+        self._moved_folders = []
         try:
             await self._sync_steps()
         except Exception as ex:

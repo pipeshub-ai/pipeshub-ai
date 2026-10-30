@@ -202,6 +202,22 @@ class TestOwedGroupRemovals:
             "k", {"cursor": "new", "pendingGroupDeletes": ["g:gone"]})
 
 
+class TestRunState:
+    @pytest.mark.asyncio
+    async def test_a_run_starts_with_no_fresh_or_moved_folders(self, team: DropboxConnector) -> None:
+        """Left over, a fresh folder would be listed from the start on every later run of the same connector."""
+        team._fresh_folders = {"ns:old"}
+        team._moved_folders = [("id:f", "/a", "/b")]
+        seen: dict[str, object] = {}
+
+        async def steps() -> None:
+            seen["fresh"], seen["moved"] = set(team._fresh_folders), list(team._moved_folders)
+
+        team._sync_steps = steps
+        await team.run_sync()
+        assert seen == {"fresh": set(), "moved": []}
+
+
 class TestAskParent:
     """Only Dropbox's not_found means "no parent": a failed lookup raises, so the entry is held, not put at the root."""
 
