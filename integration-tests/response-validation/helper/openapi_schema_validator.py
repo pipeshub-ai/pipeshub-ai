@@ -1,5 +1,6 @@
 """
-Validate JSON response bodies against schemas defined in ``pipeshub-openapi.yaml``.
+Validate JSON response bodies against the OpenAPI document the server publishes
+(``pipeshub-openapi.yaml`` plus its overlays, see ``helper.openapi_spec``).
 
 Uses ``jsonschema`` Draft 7 with a ``referencing.Registry`` rooted at the full
 OpenAPI document so ``#/components/schemas/...`` resolves. Adapts OpenAPI 3.0
@@ -11,27 +12,14 @@ from __future__ import annotations
 import copy
 import re
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import referencing.exceptions
-import yaml
 from jsonschema import Draft7Validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
 
-# integration-tests/response-validation/helper/ → repo root is parents[3]
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_OPENAPI_PATH = (
-    _REPO_ROOT
-    / "backend"
-    / "nodejs"
-    / "apps"
-    / "src"
-    / "modules"
-    / "api-docs"
-    / "pipeshub-openapi.yaml"
-)
+from helper.openapi_spec import load_spec
 
 SPEC_URI = "urn:pipeshub:openapi"
 
@@ -78,15 +66,8 @@ def adapt_openapi_nullable(obj: Any) -> Any:
     return result
 
 
-@lru_cache(maxsize=1)
 def load_openapi_document() -> dict[str, Any]:
-    if not _OPENAPI_PATH.is_file():
-        raise FileNotFoundError(f"OpenAPI spec not found: {_OPENAPI_PATH}")
-    with _OPENAPI_PATH.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
-    if not isinstance(raw, dict):
-        raise ValueError("OpenAPI YAML root must be a mapping")
-    return raw
+    return load_spec()
 
 
 def _make_registry(adapted_root: dict[str, Any]) -> Registry:
