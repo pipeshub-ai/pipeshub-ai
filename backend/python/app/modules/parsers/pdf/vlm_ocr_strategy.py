@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import logging
 import os
 import re
@@ -588,6 +589,55 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info(f"✅ Completed processing {len(pages)} pages")
         return result
 
+    @staticmethod
+    def _open_pdf_sync(content: bytes) -> "tuple[str, Any, int]":
+        """Write *content* to a temp file and open it. Returns (path, doc, page count).
+
+        Cleans up after itself when it fails, so a caller only owns what it gets back.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
+        )
+        doc = None
+        try:
+            try:
+                tmp.write(content)
+                tmp.flush()
+            finally:
+                tmp.close()
+            doc = pdfplumber.open(tmp.name)
+            return tmp.name, doc, len(doc.pages)
+        except BaseException:
+            if doc is not None:
+                doc.close()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+            raise
+
+    @staticmethod
+    def _release_pdf_sync(path: Optional[str], doc: object) -> None:
+        if doc is not None:
+            with contextlib.suppress(Exception):
+                doc.close()
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    async def _open_pdf_off_loop(self, content: bytes) -> "tuple[str, Any, int]":
+        """Run ``_open_pdf_sync`` in a thread without leaking its file on cancellation."""
+        fut = asyncio.get_running_loop().run_in_executor(None, self._open_pdf_sync, content)
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            # The thread cannot be interrupted; release what it produces once done.
+            def _release(done: "asyncio.Future") -> None:
+                if not done.cancelled() and done.exception() is None:
+                    path, doc, _ = done.result()
+                    self._release_pdf_sync(path, doc)
+
+            fut.add_done_callback(_release)
+            raise
+
     async def load_document(self, content: bytes) -> None:
         """
         Load PDF document and initialize LLM
@@ -599,17 +649,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         try:
             self.logger.debug("📄 Loading PDF with pdfplumber")
-            tmp = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
-            )
-            try:
-                tmp.write(content)
-                tmp.flush()
-            finally:
-                tmp.close()
-            self._pdf_path = tmp.name
-            self.doc = pdfplumber.open(self._pdf_path)
-            page_count = len(self.doc.pages)
+            # Writing the file and parsing its page tree is blocking work that grows
+            # with the PDF; scanned and damaged files make it the slowest part.
+            self._pdf_path, self.doc, page_count = await self._open_pdf_off_loop(content)
             self.logger.info(f"📚 Loaded PDF with {page_count} pages")
             max_pages = vlm_ocr_max_pages()
             if page_count > max_pages:
@@ -629,13 +671,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error loading document: {str(e)}")
             raise
         finally:
-            if self.doc:
-                self.doc.close()
-                self.doc = None
-            if self._pdf_path:
-                try:
-                    os.unlink(self._pdf_path)
-                except OSError:
-                    pass
-                self._pdf_path = None
-            self._page_images = {}
+            doc, path = self.doc, self._pdf_path
+            self.doc = None
+            self._pdf_path = None
+            if doc is not None or path:
+                await asyncio.shield(
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self._release_pdf_sync, path, doc
+                    )
+                )

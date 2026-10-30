@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import re
 import uuid
 from collections import Counter
 from io import BytesIO
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple, TypeVar
 
 from app.models.blocks import (
     Block,
@@ -40,6 +41,8 @@ from app.utils.table_enrichment import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.config.configuration_service import ConfigurationService
 
 
@@ -139,6 +142,61 @@ def _normalize_bbox_to_points(
         Point(x=x1 / page_width, y=y1 / page_height),
         Point(x=x0 / page_width, y=y1 / page_height),
     ]
+
+
+T = TypeVar("T")
+
+# A table row costs ~30 us to turn into a block, so this many rows is ~60 ms: below
+# it the thread hop costs more than it saves.
+_TABLE_OFFLOAD_MIN_ROWS = 2000
+
+
+async def _run_sized(fn: Callable[..., T], n_rows: int, *args: object) -> T:
+    """Run ``fn(*args)`` in a thread for a big table, inline for a small one."""
+    if n_rows >= _TABLE_OFFLOAD_MIN_ROWS:
+        return await asyncio.to_thread(fn, *args)
+    return fn(*args)
+
+
+def _plain_row_texts(raw_headers: list[str], data_rows: list[list]) -> list[str]:
+    """``column: value`` text for each row, with the first row's cells as column names."""
+    texts: list[str] = []
+    for row in data_rows:
+        row_dict = {
+            (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
+                cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
+            )
+            for i, cell in enumerate(row)
+        }
+        texts.append(generate_simple_row_text(row_dict))
+    return texts
+
+
+def _table_row_blocks(
+    row_texts: list[str], first_index: int, parent_index: int, citation: CitationMetadata
+) -> list[Block]:
+    """One TABLE_ROW block per non-empty row text, indexed from ``first_index``."""
+    out: list[Block] = []
+    for i, row_text in enumerate(row_texts):
+        if not row_text:
+            continue
+        out.append(
+            Block(
+                id=str(uuid.uuid4()),
+                index=first_index + len(out),
+                type=BlockType.TABLE_ROW,
+                format=DataFormat.JSON,
+                comments=[],
+                parent_index=parent_index,
+                data={
+                    "row_natural_language_text": row_text,
+                    "row_number": i + 1,
+                },
+                citation_metadata=citation,
+            )
+        )
+    return out
+
 
 class PDFPlumberOpenCVProcessor:
     """PDF parser combining pdfplumber with OpenCV layout analysis (opencv_layout_analyzer).
@@ -334,15 +392,9 @@ class PDFPlumberOpenCVProcessor:
                 for cell in first_row
             ]
             data_rows = grid[1:] if grid else []
-            table_rows_text = []
-            for row in data_rows:
-                row_dict = {
-                    (raw_headers[i] if i < len(raw_headers) else f"Column_{i + 1}"): (
-                        cell.get("text", "") if isinstance(cell, dict) else str(cell or "")
-                    )
-                    for i, cell in enumerate(row)
-                }
-                table_rows_text.append(generate_simple_row_text(row_dict))
+            table_rows_text = await _run_sized(
+                _plain_row_texts, len(data_rows), raw_headers, data_rows
+            )
         else:
             if enrichment is None:
                 # The pre-pass and this walk are meant to visit the same table
@@ -384,26 +436,11 @@ class PDFPlumberOpenCVProcessor:
             citation_metadata=citation,
         )
 
-        row_indices: List[int] = []
-        for i, row_text in enumerate(table_rows_text):
-            if not row_text:
-                continue
-            idx = len(blocks)
-            block = Block(
-                id=str(uuid.uuid4()),
-                index=idx,
-                type=BlockType.TABLE_ROW,
-                format=DataFormat.JSON,
-                comments=[],
-                parent_index=bg.index,
-                data={
-                    "row_natural_language_text": row_text,
-                    "row_number": i + 1,
-                },
-                citation_metadata=citation,
-            )
-            blocks.append(block)
-            row_indices.append(idx)
+        row_blocks = await _run_sized(
+            _table_row_blocks, len(table_rows_text), table_rows_text, len(blocks), bg.index, citation
+        )
+        row_indices = [b.index for b in row_blocks]
+        blocks.extend(row_blocks)
 
         bg.children = BlockGroupChildren.from_indices(block_indices=row_indices)
         block_groups.append(bg)
