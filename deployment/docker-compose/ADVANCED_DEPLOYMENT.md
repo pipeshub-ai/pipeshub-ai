@@ -197,7 +197,8 @@ Your existing data was written with whatever values the stack ran with. Do not g
    ```bash
    read -rs CURRENT_MONGO_PW && read -rs CURRENT_ARANGO_PW   # type the current passwords
    NEW_MONGO_PW=$(openssl rand -hex 32) NEW_ARANGO_PW=$(openssl rand -hex 32)
-   export MONGO_USERNAME CURRENT_MONGO_PW NEW_MONGO_PW NEW_ARANGO_PW   # MONGO_USERNAME from step 1, admin unless you set it
+   MONGO_USERNAME=$(sed -n 's/^MONGO_USERNAME=//p' .env); MONGO_USERNAME=${MONGO_USERNAME:-admin}   # from step 1
+   export MONGO_USERNAME CURRENT_MONGO_PW NEW_MONGO_PW NEW_ARANGO_PW
 
    # MongoDB
    docker exec -e MONGO_USERNAME -e CURRENT_MONGO_PW -e NEW_MONGO_PW mongodb mongosh --quiet --nodb \
