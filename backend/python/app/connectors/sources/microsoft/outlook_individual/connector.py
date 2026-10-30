@@ -1461,6 +1461,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
                 inherit_permissions=True,
+                preview_renderable=False,
                 subject=message.subject or OutlookDefaults.SUBJECT,
                 from_email=self._extract_email_from_recipient(message.from_),
                 to_emails=[self._extract_email_from_recipient(r) for r in (message.to_recipients or [])],
