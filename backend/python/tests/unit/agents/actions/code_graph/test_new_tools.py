@@ -230,3 +230,13 @@ async def test_text_search_reuses_an_indexed_files_lines_until_the_record_change
     graph.records["rec-b"]["updatedAtTimestamp"] = 2
     await search_code_impl(**_ctx(graph), blob_store=blobs, pattern='"payments"', mode="text", path="src/b.py")
     assert reads == ["v-b", "v-b"]
+
+
+async def test_text_search_can_be_held_to_one_language_across_the_repo() -> None:
+    """`*.py` reads every Python file and nothing else, at any depth."""
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="*.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    none = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                  pattern='"payments"', mode="text", path="*.ts")
+    assert not none.get("matches")

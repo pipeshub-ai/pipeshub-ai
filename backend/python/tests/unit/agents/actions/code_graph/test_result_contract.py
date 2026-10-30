@@ -92,13 +92,15 @@ async def test_a_read_cites_the_lines_at_the_commit_they_were_read_from(url, sta
 
 async def test_a_caller_list_names_the_call_sites_the_graph_did_not_link(monkeypatch) -> None:
     """An untyped receiver's call is not an edge; a list that leaves it out read as
-    complete. The lines a text search finds are named, minus the linked ones, the
-    definition itself, and calls in another language."""
-    async def search(**_kwargs) -> dict:
+    complete. The lines a text search of the target's own language finds are named,
+    minus the linked ones and the definition itself."""
+    asked = {}
+
+    async def search(**kwargs) -> dict:
+        asked.update(kwargs)
         return {"matches": [
             {"file_path": "src/a.py", "line": 3, "text": "    thing.run()"},       # linked
             {"file_path": "src/b.py", "line": 2, "text": "    def run(self):"},   # the definition
-            {"file_path": "web/x.js", "line": 9, "text": "job.run();"},           # another language
             {"file_path": "src/c.py", "line": 7, "text": "    worker.run()"},      # not linked
         ]}
 
@@ -108,6 +110,7 @@ async def test_a_caller_list_names_the_call_sites_the_graph_did_not_link(monkeyp
     out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run",
                                           {("src/a.py", 3)}, include_tests=False, target_path="src/b.py")
     sites = out["unlinked_call_sites"]
+    assert asked["path"] == "*.py", "other languages' files would use up the read cap"
     assert sites["sites"] == [{"file_path": "src/c.py", "line": 7, "text": "worker.run()"}]
     assert "not linked here" in sites["note"]
     unchecked = await tool._with_unlinked_sites({}, CONN, None, "method:Thing.run", set(),
@@ -152,3 +155,15 @@ async def test_impact_over_other_relations_adds_no_call_sites(monkeypatch) -> No
                                    edge_types=["CALLS"])
     assert "unlinked_call_sites" not in json.loads(inherits)
     assert "unlinked_call_sites" in json.loads(calls)
+
+
+async def test_a_cut_short_scan_says_so_even_when_every_match_was_linked(monkeypatch) -> None:
+    async def search(**_kwargs) -> dict:
+        return {"matches": [{"file_path": "src/a.py", "line": 3, "text": "thing.run()"}], "truncated": True}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run",
+                                          {("src/a.py", 3)}, include_tests=False, target_path="src/b.py")
+    assert out["unlinked_call_sites"] | {"note": None} == {"note": None, "count": 0, "sites": [], "truncated": True}

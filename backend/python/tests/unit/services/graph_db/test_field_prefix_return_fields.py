@@ -34,3 +34,22 @@ async def test_neo4j_returns_only_the_fields_asked_for() -> None:
     assert [(r.get("_key"), r.get("filePath")) for r in rows] == [("rec-1", "src/a.py")]
     query = p.client.execute_query.call_args.args[0]
     assert "n.id AS _key" in query and "n.filePath AS filePath" in query
+
+
+async def test_an_empty_projection_returns_no_fields_and_an_id_is_rebuilt() -> None:
+    """`return_fields=[]` is a projection, not "everything"; Neo4j has no `_id` property,
+    so the handle Arango returns is rebuilt from the collection and the key."""
+    arango = ArangoHTTPProvider(logger=MagicMock(spec=logging.Logger), config_service=MagicMock())
+    arango.http_client = AsyncMock()
+    arango.http_client.execute_aql = AsyncMock(return_value=[{}])
+    await arango.get_nodes_by_field_prefix("codeFiles", "filePath", "src/", return_fields=[])
+    assert "RETURN {}" in arango.http_client.execute_aql.call_args.args[0]
+
+    neo = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+    neo.client = AsyncMock()
+    neo.client.execute_query = AsyncMock(return_value=[{"_id": "rec-1"}])
+    assert await neo.get_nodes_by_field_prefix("codeFiles", "filePath", "src/",
+                                               return_fields=["_id"]) == [{"_id": "codeFiles/rec-1"}]
+    assert "n.id AS _id" in neo.client.execute_query.call_args.args[0]
+    neo.client.execute_query = AsyncMock(return_value=[{"_": None}])
+    assert await neo.get_nodes_by_field_prefix("codeFiles", "filePath", "src/", return_fields=[]) == [{}]

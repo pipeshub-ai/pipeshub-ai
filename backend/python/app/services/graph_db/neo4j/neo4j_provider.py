@@ -3322,9 +3322,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             filter_conditions, parameters = self._filter_conditions(filters)
             conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
             parameters.update({"prefix": prefix, "limit": limit})
-            return_expr = ", ".join(
-                f"n.{'id' if field == '_key' else field} AS {field}" for field in return_fields
-            ) if return_fields else "n"
+            # Arango's `_key`, `_id` and `id` are all Neo4j's `id`; `_id` gains its collection below.
+            return_expr = (", ".join(
+                f"n.{'id' if field in ('_key', '_id', 'id') else field} AS {field}" for field in return_fields
+            ) or "null AS _") if return_fields is not None else "n"
             query = f"""
             MATCH (n:{label})
             WHERE {" AND ".join(conditions)}
@@ -3334,14 +3335,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             rows = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction
             )
-            return [
-                self._neo4j_to_arango_node(
-                    {field: row.get(field) for field in return_fields} if return_fields
-                    else dict(row.get("n", {})),
-                    collection,
-                )
-                for row in rows or []
-            ]
+            if return_fields is not None:
+                return [
+                    self._decode_json_fields(
+                        {field: (f"{collection}/{row.get(field)}" if field == "_id" and row.get(field) is not None
+                                 else row.get(field)) for field in return_fields},
+                        collection,
+                    )
+                    for row in rows or []
+                ]
+            return [self._neo4j_to_arango_node(dict(row.get("n", {})), collection) for row in rows or []]
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
             if raise_on_error:

@@ -273,23 +273,24 @@ class CodeGraph:
             return result
         # A method is called on something; a function by its bare name.
         call = rf"\.{name}\s*\(" if "." in qualified else rf"(?<![\w.]){name}\s*\("
+        # A call in another language never reaches this definition (a JS `.set(` is not a
+        # Python `set`), so only the target's own files are read: others would use up the cap.
+        file_name = (target_path or "").rsplit("/", 1)[-1]
+        ext = file_name.rpartition(".")[2] if "." in file_name else ""
         try:
             found = await search_code_impl(
                 graph_provider=self._graph_provider, blob_store=self._blob_store,
                 connector_id=connector_id, org_id=self._org_id, user_id=self._user_id,
-                pattern=call, mode="regex", path="**", repo=repo,
+                pattern=call, mode="regex", path=f"*.{ext}" if ext.isalnum() else "**", repo=repo,
                 limit=_SITES_SCANNED, max_limit=_SITES_SCANNED, include_tests=include_tests,
             )
         except Exception:
             self._log.warning("codegraph: unlinked call sites unavailable", exc_info=True)
             return result
         definition = re.compile(rf"^\s*(async\s+)?(def|class|function)\s+{name}\b")
-        # A call in another language never reaches this definition (a JS `.set(` is not a Python `set`).
-        ext = (target_path or "").rsplit(".", 1)[-1] if target_path and "." in target_path else None
         sites = [m for m in found.get("matches") or []
-                 if (m.get("file_path"), m.get("line")) not in known and not definition.match(m.get("text") or "")
-                 and (ext is None or (m.get("file_path") or "").endswith("." + ext))]
-        if sites:
+                 if (m.get("file_path"), m.get("line")) not in known and not definition.match(m.get("text") or "")]
+        if sites or found.get("truncated"):
             result["unlinked_call_sites"] = {
                 # Without `known` (impact, path) the lines are not checked against the answer.
                 "note": (f"Lines that call something named {name} but are not linked here: the "
@@ -305,7 +306,7 @@ class CodeGraph:
                           for m in sites[:_SITES_SHOWN]],
             }
             if found.get("truncated"):
-                # Not every file or match was read: the count is a floor.
+                # Not every file or match was read: the count is a floor, even when it is 0.
                 result["unlinked_call_sites"]["truncated"] = True
         return result
 
