@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from functools import cache, partial
+from typing import TYPE_CHECKING
+
 from app.utils.logger import create_logger
 from app.utils.text_fragments.extractors import ExtractorRegistry
 from app.utils.text_fragments.models import (
@@ -14,6 +17,9 @@ from app.utils.text_fragments.strategies import (
     HybridDirectiveStrategy,
 )
 from app.utils.text_fragments.url import append_directive, has_fragment_directive
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 logger = create_logger(__name__)
 
@@ -49,14 +55,39 @@ class TextFragmentGenerator:
     def build_directive(
         self, snippet: str, source_format: SourceFormat | None = None
     ) -> TextDirective | None:
-        segmented: list[SegmentedBlock] = []
-        for block in self.rendered_blocks(snippet, source_format):
-            candidate = self._segmenter.segment(block)
-            if candidate is not None and self._segmenter.is_eligible(candidate):
-                segmented.append(candidate)
-        if not segmented:
+        groups = self._block_groups(snippet, source_format)
+        blocks_of = cache(lambda group: groups[group]())
+        forward = (
+            (group, index, raw) for group in range(len(groups)) for index, raw in enumerate(blocks_of(group))
+        )
+        first = self._first_eligible(forward)
+        if first is None:
             return None
+        # Strategies read only the first and last eligible block, so the blocks
+        # between them are never parsed, normalized or segmented.
+        backward = (
+            (group, index, raw)
+            for group in range(len(groups) - 1, first[0] - 1, -1)
+            for index, raw in reversed(list(enumerate(blocks_of(group))))
+        )
+        last = self._first_eligible(backward)
+        picked = [first[2]] if last[:2] == first[:2] else [first[2], last[2]]
+        segmented: list[SegmentedBlock] = [self._segmenter.segment(block) for block in picked]
         return self._strategy.build(segmented)
+
+    def _block_groups(self, snippet: str, source_format: SourceFormat | None) -> list[Callable[[], list[str]]]:
+        """Raw blocks in document order, as callables an extractor can evaluate lazily."""
+        extractor = self._registry.get(source_format)
+        extract_groups = getattr(extractor, "extract_groups", None)
+        return extract_groups(snippet) if extract_groups else [partial(extractor.extract, snippet)]
+
+    def _first_eligible(self, blocks: Iterator[tuple[int, int, str]]) -> tuple[int, int, str] | None:
+        """Position and normalized text of the first eligible block in `blocks`."""
+        for group, index, raw in blocks:
+            block = self._normalizer.normalize(raw)
+            if self._segmenter.is_eligible_text(block):
+                return group, index, block
+        return None
 
     def build_url(
         self, base_url: str, snippet: str, source_format: SourceFormat | None = None

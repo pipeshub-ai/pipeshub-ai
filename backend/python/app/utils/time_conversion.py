@@ -1,5 +1,6 @@
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone, tzinfo
+from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MAX_TIMESTAMP_LENGTH = 13
@@ -116,8 +117,7 @@ def reset_llm_time_zone(token: Token[str | None]) -> None:
     _llm_time_zone.reset(token)
 
 
-def _llm_zone() -> tzinfo:
-    name = _llm_time_zone.get()
+def _zone(name: str | None) -> tzinfo:
     if not name:
         return timezone.utc
     try:
@@ -126,7 +126,18 @@ def _llm_zone() -> tzinfo:
         return timezone.utc
 
 
+def _llm_zone() -> tzinfo:
+    return _zone(_llm_time_zone.get())
+
+
 def format_epoch_ms_for_llm(epoch_ms: float) -> str:
+    """See `_format_epoch_ms`; the zone comes from this context."""
+    return _format_epoch_ms(epoch_ms, _llm_time_zone.get())
+
+
+# Pure in (epoch_ms, zone name); ~1.6 ms of CPU per answer uncached.
+@lru_cache(maxsize=4096)
+def _format_epoch_ms(epoch_ms: float, zone_name: str | None) -> str:
     """A source timestamp as the model should read it, weekday worked out here.
 
     ``2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)``: the UTC
@@ -137,7 +148,7 @@ def format_epoch_ms_for_llm(epoch_ms: float) -> str:
     from a bare date.
     """
     utc = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
-    local = utc.astimezone(_llm_zone())
+    local = utc.astimezone(_zone(zone_name))
     hour = local.hour % _NOON or _NOON
     meridiem = "AM" if local.hour < _NOON else "PM"
     readable = (

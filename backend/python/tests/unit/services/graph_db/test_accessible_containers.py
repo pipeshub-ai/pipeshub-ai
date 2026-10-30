@@ -38,7 +38,8 @@ METHOD = "get_accessible_containers"
 
 SOURCES = {
     "arango": ("app/services/graph_db/arango/arango_http_provider.py", METHOD),
-    "neo4j": ("app/services/graph_db/neo4j/neo4j_provider.py", METHOD),
+    # The body behind the per-turn memo.
+    "neo4j": ("app/services/graph_db/neo4j/neo4j_provider.py", "_get_accessible_containers"),
 }
 BACKENDS = sorted(SOURCES)
 

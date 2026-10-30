@@ -138,6 +138,9 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 DEFAULT_SEARCH_LIMIT = 20
 
 _RETRIEVAL_EMBED_MAX_RETRIES = 3
+# All a hit is read for (`_point_to_result`, `point_record_id`); the membership
+# arrays beside them are only filtered on, and converting them cost CPU per hit.
+_SEARCH_PAYLOAD_FIELDS = ["page_content", "metadata"]
 
 # Caps concurrent per-collection queries during search fan-out. One under the
 # default SingleCollectionStrategy; a multi-collection strategy must not turn
@@ -2762,6 +2765,7 @@ class RetrievalService:
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
                 scope_filter=_SHADOW_SCOPE_FILTER.get() or (plan.scope_filter if plan is not None else None),
+                with_payload=_SEARCH_PAYLOAD_FIELDS,
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -198,6 +199,7 @@ def _response(status: int, body: dict | None = None) -> MagicMock:
     resp = MagicMock()
     resp.status = status
     resp.json = AsyncMock(return_value=body or {})
+    resp.read = AsyncMock(return_value=json.dumps(body or {}).encode())
     resp.text = AsyncMock(return_value="")
     return resp
 

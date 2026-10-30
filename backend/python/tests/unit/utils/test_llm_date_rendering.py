@@ -69,6 +69,18 @@ class TestFormatEpochMsForLlm:
         assert format_epoch_ms_for_llm(MON_0300_UTC).endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
 
 
+class TestMemoized:
+    def test_repeat_is_a_cache_hit_and_zones_do_not_collide(self, zone) -> None:
+        from app.utils.time_conversion import _format_epoch_ms
+
+        utc = format_epoch_ms_for_llm(MON_0300_UTC)
+        hits = _format_epoch_ms.cache_info().hits
+        assert format_epoch_ms_for_llm(MON_0300_UTC) == utc
+        assert _format_epoch_ms.cache_info().hits == hits + 1
+        zone("America/Los_Angeles")
+        assert format_epoch_ms_for_llm(MON_0300_UTC).endswith("(Sun, Jul 26, 2026, 8:00 PM PDT)")
+
+
 class TestZoneIsScopedToTheRun:
     async def test_zone_set_in_a_task_does_not_leak_out(self) -> None:
         async def _run() -> str:
