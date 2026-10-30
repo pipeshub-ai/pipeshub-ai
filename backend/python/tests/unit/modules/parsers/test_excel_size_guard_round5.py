@@ -173,7 +173,12 @@ def test_an_entry_that_cannot_be_read_does_not_hide_the_workbook_behind_it(varia
     assert_refused_as_too_large(_with_unreadable_first_entry(variant, 2000))
 
 
-def test_calc_chain_does_not_make_formula_workbooks_too_large() -> None:
+def test_calc_chain_does_not_make_formula_workbooks_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This workbook needs about 26 MB of worker growth on one platform, so the file's 32 MB
+    # allowance left it a 6 MB margin that an allocator or interpreter difference (CI saw a
+    # refusal) can eat. It is a workbook that must load, so it gets an allowance it cannot
+    # come near; the refusal tests above keep the small one.
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_BYTES", 256 * 1024 * 1024)
     # False refusal under the old guard: calcChain.xml (never loaded) cost a cell per formula,
     # so 2 M formula cells (732 MB to load) were refused. Here 40 000 formula cells + calcChain load.
     n = 40_000
