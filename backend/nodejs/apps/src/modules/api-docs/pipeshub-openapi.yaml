@@ -1737,14 +1737,24 @@ components:
           pattern: '^$|^\+?[0-9]{10,15}$'
         designation:
           type: string
+        slackUserId:
+          type: string
+          description: On a Slack-only account, the Slack user it was created for.
+        slackTeamId:
+          type: string
+          description: On a Slack-only account, the Slack workspace that user belongs to.
         kind:
           type: string
-          enum: [human, service]
+          enum: [human, service, slack]
           description: |
             Whether this account is a person who signs in (`human`) or a
-            machine identity that automation authenticates as (`service`).
-            Absent on records written before service accounts existed, which
-            are all human.
+            machine identity that automation authenticates as (`service`), or
+            a Slack-only account (`slack`) that a Slack bot created and that
+            can only chat with that bot's service agent from Slack until it is
+            invited, added, or signs in with SSO while just-in-time
+            provisioning is on. Absent on
+            records written before service accounts existed, which are all
+            human.
         description:
           type: string
           description: Free text explaining what a service account is for. Unused for people.
@@ -4072,14 +4082,24 @@ components:
         designation:
           type: string
           description: Job title/designation
+        slackUserId:
+          type: string
+          description: On a Slack-only account, the Slack user it was created for.
+        slackTeamId:
+          type: string
+          description: On a Slack-only account, the Slack workspace that user belongs to.
         kind:
           type: string
-          enum: [human, service]
+          enum: [human, service, slack]
           description: |
             Whether this account is a person who signs in (`human`) or a
-            machine identity that automation authenticates as (`service`).
-            Absent on records written before service accounts existed, which
-            are all human.
+            machine identity that automation authenticates as (`service`), or
+            a Slack-only account (`slack`) that a Slack bot created and that
+            can only chat with that bot's service agent from Slack until it is
+            invited, added, or signs in with SSO while just-in-time
+            provisioning is on. Absent on
+            records written before service accounts existed, which are all
+            human.
         description:
           type: string
           description: Free text explaining what a service account is for. Unused for people.
@@ -4178,14 +4198,24 @@ components:
         designation:
           type: string
           description: Job title/designation
+        slackUserId:
+          type: string
+          description: On a Slack-only account, the Slack user it was created for.
+        slackTeamId:
+          type: string
+          description: On a Slack-only account, the Slack workspace that user belongs to.
         kind:
           type: string
-          enum: [human, service]
+          enum: [human, service, slack]
           description: |
             Whether this account is a person who signs in (`human`) or a
-            machine identity that automation authenticates as (`service`).
-            Absent on records written before service accounts existed, which
-            are all human.
+            machine identity that automation authenticates as (`service`), or
+            a Slack-only account (`slack`) that a Slack bot created and that
+            can only chat with that bot's service agent from Slack until it is
+            invited, added, or signs in with SSO while just-in-time
+            provisioning is on. Absent on
+            records written before service accounts existed, which are all
+            human.
         description:
           type: string
           description: Free text explaining what a service account is for. Unused for people.
@@ -23504,11 +23534,24 @@ components:
             Agent to link. It is stored as given (trimmed) and never looked up. An empty or
             whitespace-only value links no agent. `null` is refused. One agent can be linked to
             only one config: a second link answers `400 HTTP_BAD_REQUEST`.
+        createAccountsForSlackUsers:
+          type: boolean
+          description: |
+            Off by default. When on, and the linked agent is a service agent, a
+            full member of the bot's own Slack workspace (not a guest, not from
+            another workspace, with a confirmed email) who has no account gets a
+            Slack-only account the first time they message the bot. That
+            account can only chat with this agent from Slack: it cannot sign in,
+            hold a token or be an admin, and is in no group, until it is
+            upgraded, keeping its id: an admin invites or adds the address, or
+            the person signs in with Google or Microsoft while just-in-time
+            provisioning is on for that method. Left out on a PUT, the stored
+            value is kept.
     SlackBotConfig:
       type: object
       description: A Slack bot configuration as admins see it. Credentials are always masked.
       additionalProperties: false
-      required: [id, name, agentId, createdAt, updatedAt, botToken, signingSecret]
+      required: [id, name, agentId, createAccountsForSlackUsers, createdAt, updatedAt, botToken, signingSecret]
       properties:
         id:
           type: string
@@ -23520,6 +23563,9 @@ components:
           type: string
           nullable: true
           description: The linked agent, or null when none is linked.
+        createAccountsForSlackUsers:
+          type: boolean
+          description: See SlackBotConfigRequest. `false` when never set.
         createdAt:
           type: string
           format: date-time
@@ -28577,6 +28623,19 @@ paths:
           schema:
             type: string
             enum: ['true', 'false']
+        - name: includeSlackOnlyAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns Slack-only accounts (`kind: "slack"`): people a
+            Slack bot created an account for, who can only chat with that bot's
+            service agent from Slack until they are invited, added, or sign in
+            with SSO while just-in-time provisioning is on. They are left out
+            of this list otherwise, so no people picker offers them. Honoured
+            only for an organisation administrator, ignored for anyone else.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users retrieved successfully
@@ -28621,7 +28680,7 @@ paths:
                           format: email
                         kind:
                           type: string
-                          enum: [human, service]
+                          enum: [human, service, slack]
                           description: |
                             What sort of principal this is. Absent on records
                             written before the field existed, which are people.

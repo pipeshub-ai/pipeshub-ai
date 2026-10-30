@@ -2,9 +2,17 @@
 
 import React from 'react';
 import { Badge } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import type { BadgeProps } from '@radix-ui/themes';
 
-export type UserStatus = 'Active' | 'Inactive' | 'Pending' | 'Expired' | 'Deactivated' | 'Blocked';
+export type UserStatus =
+  | 'Active'
+  | 'Inactive'
+  | 'Pending'
+  | 'Expired'
+  | 'Deactivated'
+  | 'Blocked'
+  | 'SlackOnly';
 
 /**
  * Map status to Radix Badge color.
@@ -17,6 +25,7 @@ export type UserStatus = 'Active' | 'Inactive' | 'Pending' | 'Expired' | 'Deacti
  * | Expired      | red     |
  * | Deactivated  | gray    |
  * | Blocked      | red     |
+ * | SlackOnly    | violet  |
  */
 const STATUS_COLOR_MAP: Record<UserStatus, BadgeProps['color']> = {
   Active: 'jade',
@@ -25,6 +34,7 @@ const STATUS_COLOR_MAP: Record<UserStatus, BadgeProps['color']> = {
   Expired: 'red',
   Deactivated: 'gray',
   Blocked: 'red',
+  SlackOnly: 'violet',
 };
 
 export interface StatusBadgeProps {
@@ -36,9 +46,10 @@ export interface StatusBadgeProps {
  * StatusBadge — color-coded status badge for the Users table.
  */
 export function StatusBadge({ status }: StatusBadgeProps) {
+  const { t } = useTranslation();
   return (
     <Badge variant="soft" color={STATUS_COLOR_MAP[status] ?? 'gray'} size="1">
-      {status}
+      {status === 'SlackOnly' ? t('workspace.users.status.slackOnly') : status}
     </Badge>
   );
 }

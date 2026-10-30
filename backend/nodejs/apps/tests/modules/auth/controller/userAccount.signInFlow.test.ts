@@ -23,6 +23,7 @@ import {
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/utils/generateAuthToken';
+import { SLACK_ONLY_SIGN_IN_MESSAGE } from '../../../../src/modules/user_management/services/slack-only-accounts.service';
 import { SessionService } from '../../../../src/modules/auth/services/session.service';
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
@@ -160,6 +161,7 @@ describe('UserAccountController sign-in flow', () => {
   let configService: StubbedService<'getConfig'>;
   let jitService: StubbedService<
     | 'provisionUser'
+    | 'upgradeSlackOnlyUser'
     | 'extractGoogleUserDetails'
     | 'extractMicrosoftUserDetails'
   >;
@@ -260,6 +262,7 @@ describe('UserAccountController sign-in flow', () => {
     configService = { getConfig: sinon.stub() };
     jitService = {
       provisionUser: sinon.stub(),
+      upgradeSlackOnlyUser: sinon.stub().resolves(),
       extractGoogleUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
       extractMicrosoftUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
     };
@@ -1435,6 +1438,91 @@ describe('UserAccountController sign-in flow', () => {
 
       expect(caught).to.be.instanceOf(BadRequestError);
       expect((caught as Error).message).to.equal(EMAIL_MISMATCH);
+    });
+  });
+
+  describe('a Slack-only account cannot sign in', () => {
+    const sam = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      orgId,
+      email: 'sam@acme.test',
+      fullName: 'Sam from Slack',
+      hasLoggedIn: false,
+      kind: 'slack',
+    } as DirectoryUser & { kind: string };
+    beforeEach(() => {
+      directory[sam.email] = sam;
+    });
+    afterEach(() => {
+      delete directory[sam.email];
+    });
+
+    it('answers a password exactly like a wrong password, even if a password were stored', async () => {
+      await givePassword(sam);
+      const token = await initAuth([['password']], sam.email);
+
+      const { res, error } = await authenticate(token, {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+
+      expect(error).to.be.instanceOf(BadRequestError);
+      expect(error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      expect(res.body).to.be.undefined;
+    });
+
+    it('is sent no sign-in code, and a code is refused', async () => {
+      const res = makeRes();
+      await controller.getLoginOtp(fakeRequest({ body: { email: sam.email }, ip: '1.1.1.1' }), fakeResponse(res));
+      await settle();
+      expect(res.body).to.equal(SIGN_IN_CODE_REQUESTED);
+      expect(mailService.sendMail.called).to.be.false;
+
+      await giveOtp(sam, '123456');
+      const token = await initAuth([['otp']], sam.email);
+      const { error } = await authenticate(token, { method: 'otp', credentials: { otp: '123456' } });
+      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error.message).to.equal(WRONG_SIGN_IN_CODE);
+    });
+
+    it('is sent no password reset email', async () => {
+      const res = makeRes();
+      await controller.forgotPasswordEmail(
+        fakeRequest({ body: { email: sam.email }, ip: '1.1.1.1' }),
+        fakeResponse(res),
+        sinon.stub(),
+      );
+      await settle();
+      expect(mailService.sendMail.called).to.be.false;
+    });
+
+    it('is refused Google sign-in, and not upgraded, when JIT is off', async () => {
+      configService.getConfig.resolves({ data: { clientId: 'google-client' } });
+      const token = await initAuth([['google']], sam.email);
+      googleSignsInAs(sam.email);
+
+      const { res, error } = await authenticate(token, { method: 'google', credentials: 'id-token' });
+
+      expect(error).to.be.instanceOf(ForbiddenError);
+      expect(error.message).to.equal(SLACK_ONLY_SIGN_IN_MESSAGE);
+      expect(jitService.upgradeSlackOnlyUser.called).to.be.false;
+      expect(res.body).to.be.undefined;
+    });
+
+    it('is upgraded in place and signed in by Google when JIT is on', async () => {
+      configService.getConfig.resolves({ data: { clientId: 'google-client', enableJit: true } });
+      const token = await initAuth([['google']], sam.email);
+      googleSignsInAs(sam.email);
+
+      const { res, error } = await authenticate(token, { method: 'google', credentials: 'id-token' });
+
+      expect(error).to.be.undefined;
+      expect(jitService.upgradeSlackOnlyUser.calledOnce).to.be.true;
+      expect(String(jitService.upgradeSlackOnlyUser.firstCall.args[0]._id)).to.equal(sam._id);
+      expect(jitService.provisionUser.called).to.be.false;
+      expect(res.body?.message).to.equal('Fully authenticated');
+      const claims = jwt.decode(res.body?.accessToken as string) as TokenClaims;
+      expect(claims.userId).to.equal(sam._id);
     });
   });
 });

@@ -77,10 +77,43 @@ export interface SlackUserProfile {
 
 export interface SlackUserRecord {
   id?: string;
+  team_id?: string;
   name?: string;
   real_name?: string;
   profile?: SlackUserProfile;
   tz?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_restricted?: boolean;
+  is_ultra_restricted?: boolean;
+  is_stranger?: boolean;
+  is_email_confirmed?: boolean;
+}
+
+/**
+ * Whether `users.info` shows a full member of the bot's own workspace with a
+ * confirmed email: not a bot, not deactivated, not a guest, not someone from
+ * another workspace in a shared channel. Missing fields count against.
+ */
+export function isSlackFullMemberOfTeam(
+  user: SlackUserRecord | undefined,
+  botTeamId: string | undefined,
+): boolean {
+  const email = user?.profile?.email;
+  return (
+    user !== undefined &&
+    botTeamId !== undefined &&
+    botTeamId !== '' &&
+    user.team_id === botTeamId &&
+    user.is_bot !== true &&
+    user.deleted !== true &&
+    user.is_restricted !== true &&
+    user.is_ultra_restricted !== true &&
+    user.is_stranger !== true &&
+    user.is_email_confirmed === true &&
+    typeof email === 'string' &&
+    email !== ''
+  );
 }
 
 export interface TypedSlackClient {

@@ -203,6 +203,7 @@ column identity.used_reset_links.updated_at type=timestamp with time zone notnul
 column identity.used_reset_links.user_id type=text notnull=true identity= generated= default=-
 column identity.user_activities.activity_type type=text notnull=true identity= generated= default=-
 column identity.user_activities.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.user_activities.details type=text notnull=false identity= generated= default=-
 column identity.user_activities.email type=text notnull=false identity= generated= default=-
 column identity.user_activities.id type=identity.oid24 notnull=true identity= generated= default=-
 column identity.user_activities.ip_address type=text notnull=true identity= generated= default=-
@@ -263,6 +264,8 @@ column identity.users.mobile type=text notnull=false identity= generated= defaul
 column identity.users.org_id type=text notnull=true identity= generated= default=-
 column identity.users.restore_op_id type=text notnull=false identity= generated= default=-
 column identity.users.role type=text notnull=true identity= generated= default='member'::text
+column identity.users.slack_team_id type=text notnull=false identity= generated= default=-
+column identity.users.slack_user_id type=text notnull=false identity= generated= default=-
 column identity.users.slug type=text notnull=true identity= generated= default=-
 column identity.users.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column identity.users.version type=integer notnull=true identity= generated= default=0
@@ -685,12 +688,13 @@ constraint identity.user_pictures user_pictures_pkey p def=7af4d2e7a783879e0f508
 constraint identity.users org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint identity.users org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint identity.users users_email_check c def=a4e0e6241499324c1ed3ffcb91520b98
-constraint identity.users users_kind_check c def=dd855886a277093cbfffdd00d35b9e6b
+constraint identity.users users_kind_check c def=cc54c65373c30c0849d09849dba3a3bb
 constraint identity.users users_org_id_email_key u def=34636ff68b9df4aa453cde31c49e7ebc
 constraint identity.users users_org_id_slug_key u def=604326b322daba494e39338ca6eeb282
 constraint identity.users users_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint identity.users users_role_check c def=530fa89e9e34a78c5b46fd2dce6f13ed
 constraint identity.users users_service_is_not_admin c def=006f4640951535757575c70cc4d37108
+constraint identity.users users_slack_is_not_admin c def=202469e1295d6e2459168cd7ee6f1cca
 constraint integrations.slack_threads org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint integrations.slack_threads org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint integrations.slack_threads slack_threads_pkey p def=954fbca781352d0fe805d090cbb4f012

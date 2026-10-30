@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { getUserRepository } from '../../../../src/libs/repositories/user'
+import { getGroupRepository } from '../../../../src/libs/repositories/group'
 import {
   JitProvisioningService,
   JitUserDetails,
@@ -357,6 +359,39 @@ describe('JitProvisioningService - additional coverage', () => {
     it('should accept saml as a valid provider', () => {
       const provider: JitProvider = 'saml'
       expect(provider).to.equal('saml')
+    })
+  })
+
+  describe('upgradeSlackOnlyUser', () => {
+    const user = { _id: '65a000000000000000000001', orgId: '65a000000000000000000002', email: 'sam@acme.test' }
+    afterEach(() => sinon.restore())
+
+    it('upgrades the same record, joins everyone and announces the new user', async () => {
+      const users = getUserRepository()
+      const upgrade = sinon.stub(users, 'upgradeSlackOnly').resolves(true)
+      sinon.stub(users, 'getLive').resolves({ ...user, fullName: '' } as any)
+      const profile = sinon.stub(users, 'updateProfile').resolves(null)
+      const everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()
+      const publish = sinon.stub().resolves()
+      jitService = new JitProvisioningService(mockLogger, { start: sinon.stub().resolves(), stop: sinon.stub().resolves(), publishEvent: publish } as any)
+
+      await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam Smith' }, 'google')
+
+      expect(upgrade.firstCall.args).to.deep.equal([user.orgId, user._id])
+      expect(profile.firstCall.args).to.deep.equal([user.orgId, user._id, { fullName: 'Sam Smith' }])
+      expect(everyone.firstCall.args).to.deep.equal([user.orgId, user._id, { liveOnly: true }])
+      expect(publish.firstCall.args[0].payload).to.include({ userId: user._id, email: user.email })
+    })
+
+    it('does nothing more when another sign-in already upgraded it', async () => {
+      sinon.stub(getUserRepository(), 'upgradeSlackOnly').resolves(false)
+      const everyone = sinon.stub(getGroupRepository(), 'addToEveryone').resolves()
+      mockEventService.publishEvent.resetHistory()
+
+      await jitService.upgradeSlackOnlyUser(user, { fullName: 'Sam' }, 'microsoft')
+
+      expect(everyone.called).to.equal(false)
+      expect(mockEventService.publishEvent.called).to.equal(false)
     })
   })
 })

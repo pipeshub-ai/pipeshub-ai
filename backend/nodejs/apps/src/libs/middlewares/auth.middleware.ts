@@ -274,7 +274,9 @@ export class AuthMiddleware {
     // the guarantee is worth holding at the point the role is actually read,
     // not only at the points it is written.
     role =
-      user.role === 'admin' && user.kind !== 'service' ? 'admin' : 'member';
+      user.role === 'admin' && user.kind !== 'service' && user.kind !== 'slack'
+        ? 'admin'
+        : 'member';
 
     if (!accountType && isClientCredentials) {
       try {

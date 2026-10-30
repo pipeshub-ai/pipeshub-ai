@@ -310,8 +310,12 @@ export class MongoUserRepository implements UserRepository {
       isDeleted: { $ne: true },
     };
 
-    if (!q.includeServiceAccounts) {
-      filter.kind = { $ne: 'service' };
+    const hiddenKinds = [
+      ...(q.includeServiceAccounts ? [] : ['service']),
+      ...(q.includeSlackOnlyAccounts === true ? [] : ['slack']),
+    ];
+    if (hiddenKinds.length > 0) {
+      filter.kind = { $nin: hiddenKinds };
     }
 
     if (q.search !== undefined && q.search !== '') {
@@ -404,9 +408,13 @@ export class MongoUserRepository implements UserRepository {
         $match: {
           orgId: orgIdObj, // Only include users from the same org
           isDeleted: false, // Exclude deleted users
-          ...(opts.includeServiceAccounts === true
-            ? {}
-            : NOT_A_SERVICE_ACCOUNT),
+          // Slack-only accounts belong to no group, so they never appear here.
+          kind: {
+            $nin:
+              opts.includeServiceAccounts === true
+                ? ['slack']
+                : ['service', 'slack'],
+          },
         },
       },
       {
@@ -636,6 +644,14 @@ export class MongoUserRepository implements UserRepository {
     if (extra && 'deletedBy' in extra) user.deletedBy = extra.deletedBy;
     await user.save();
     return dto(user);
+  }
+
+  async upgradeSlackOnly(orgId: string, id: string): Promise<boolean> {
+    const result = await Users.updateOne(
+      { _id: id, orgId, kind: 'slack' },
+      { $set: { kind: 'human' } },
+    );
+    return result.modifiedCount === 1;
   }
 
   async restoreByEmails(orgId: string, emails: string[]): Promise<UserDto[]> {

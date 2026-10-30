@@ -1558,7 +1558,10 @@
         "demoteAdminBeforeRemove": "Ändern Sie zunächst die Rolle des Administrators zu „Mitglied“ und entfernen Sie ihn anschließend.",
         "resendInviteSuccess": "Einladung erneut gesendet",
         "resendInviteSuccessDescription": "Die Einladung wurde erneut an {{email}} gesendet",
-        "resendInviteError": "Einladung konnte nicht erneut gesendet werden"
+        "resendInviteError": "Einladung konnte nicht erneut gesendet werden",
+        "inviteSlackOnly": "Zu PipesHub einladen",
+        "inviteSlackOnlySuccess": "Einladung an {{email}} gesendet",
+        "inviteSlackOnlyError": "Einladung konnte nicht gesendet werden"
       },
       "profile": {
         "title": "Profil",
@@ -1658,7 +1661,10 @@
         "cancelPartialError_other": "{{count}} Einladungen konnten nicht zurückgezogen werden"
       },
       "inviteDisabledSmtp": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Benutzer einladen.",
-      "bulkLabel": "Benutzer"
+      "bulkLabel": "Benutzer",
+      "status": {
+        "slackOnly": "Nur Slack"
+      }
     },
     "groups": {
       "title": "Gruppen",
@@ -3635,7 +3641,9 @@
         "agentPlaceholder": "Agent auswählen",
         "typeNameToConfirm": "Geben Sie \"{{name}}\" ein, um zu bestätigen",
         "deleteBotBodyLine1": "Möchten Sie {{name}} wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
-        "deleteBotBodyLine2": "Alle Konfigurationen und Anmeldedaten dieses Bots werden dauerhaft entfernt."
+        "deleteBotBodyLine2": "Alle Konfigurationen und Anmeldedaten dieses Bots werden dauerhaft entfernt.",
+        "createAccountsForSlackUsers": "Konten für Slack-Nutzer erstellen",
+        "createAccountsForSlackUsersHelp": "Wenn der Agent ein Service-Agent ist, erhält ein Vollmitglied dieses Slack-Workspaces ohne PipesHub-Konto bei seiner ersten Nachricht an den Bot ein reines Slack-Konto. Damit kann es nur aus Slack mit diesem Agenten chatten, bis du es einlädst."
       },
       "errors": {
         "loadConfigs": "Bot-Konfigurationen konnten nicht geladen werden",

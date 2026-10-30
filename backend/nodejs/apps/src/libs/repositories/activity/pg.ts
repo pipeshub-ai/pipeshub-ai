@@ -121,9 +121,10 @@ export class PgActivityRepository implements ActivityRepository {
         });
         await k.query(
           `/* pipeshub:identity.activity_record */ INSERT INTO identity.user_activities
-            (org_id, id, user_id, email, activity_type, login_mode, ip_address, created_at, updated_at)
-            SELECT $1, u.id, u.user_id, u.email, u.activity_type, u.login_mode, u.ip_address, $8::timestamptz, $8::timestamptz
-              FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) AS u(id, user_id, email, activity_type, login_mode, ip_address)`,
+            (org_id, id, user_id, email, activity_type, login_mode, ip_address, details, created_at, updated_at)
+            SELECT $1, u.id, u.user_id, u.email, u.activity_type, u.login_mode, u.ip_address, u.details, $8::timestamptz, $8::timestamptz
+              FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $9::text[])
+                AS u(id, user_id, email, activity_type, login_mode, ip_address, details)`,
           [
             k.orgId,
             named.map(() => newObjectId()),
@@ -133,6 +134,7 @@ export class PgActivityRepository implements ActivityRepository {
             named.map((e) => e.loginMode ?? null),
             named.map((e) => e.ipAddress),
             now,
+            named.map((e) => e.details ?? null),
           ],
         );
       });

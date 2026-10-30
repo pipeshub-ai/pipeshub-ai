@@ -10,6 +10,8 @@ import { findActiveOrgById } from '../../user_management/utils/org.utils';
 import { normalizeUserRole } from '../../user_management/services/user-admin.service';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { isValidId } from '../../../libs/repositories/ids';
+import { isSlackOnlyAccount } from '../../user_management/constants/service-account.constants';
+import { SLACK_ONLY_SIGN_IN_MESSAGE } from '../../user_management/services/slack-only-accounts.service';
 
 export const SERVICE_ACCOUNT_SIGN_IN_MESSAGE =
   'Service accounts cannot sign in. Use a service token instead.';
@@ -61,6 +63,9 @@ export async function generateAuthToken(
   }
   if (account.kind === 'service') {
     throw new ForbiddenError(SERVICE_ACCOUNT_SIGN_IN_MESSAGE);
+  }
+  if (isSlackOnlyAccount(account)) {
+    throw new ForbiddenError(SLACK_ONLY_SIGN_IN_MESSAGE);
   }
   if (account.isDisabled) {
     throw new ForbiddenError(DISABLED_ACCOUNT_SIGN_IN_MESSAGE);

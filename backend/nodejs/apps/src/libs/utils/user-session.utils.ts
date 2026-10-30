@@ -75,6 +75,10 @@ function sessionRefusal(
   if (user.kind === 'service') {
     return 'Service accounts cannot sign in';
   }
+  // Same for a Slack-only account: it only ever holds service-agent tokens.
+  if (user.kind === 'slack') {
+    return 'This account can only be used from Slack';
+  }
 
   if (latestActivity && activityEndsSession(latestActivity, issuedAtSeconds)) {
     return SESSION_EXPIRED_MESSAGE;

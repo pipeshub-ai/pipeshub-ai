@@ -6,6 +6,7 @@ import {
   reservedEmailDomainPattern,
   SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
   SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
+  SLACK_ONLY_ADMIN_ROLE_MESSAGE,
 } from '../constants/service-account.constants';
 import type { UserRole } from './users.schema';
 
@@ -14,11 +15,19 @@ import type { UserRole } from './users.schema';
 /**
  * What sort of principal this record represents. `human` is someone who signs
  * in; `service` is a machine identity that automation authenticates as and
- * that can never sign in interactively. Everything that already existed is a
- * human, which is why that is the default and why no migration is needed.
+ * that can never sign in interactively. `slack` is a person a Slack bot
+ * created an account for: they can chat with that bot's service agent from
+ * Slack and do nothing else until an admin invites them. Everything that
+ * already existed is a human, which is why that is the default and why no
+ * migration is needed.
  */
-export const userKinds = ['human', 'service'] as const;
+export const userKinds = ['human', 'service', 'slack'] as const;
 export type UserKind = (typeof userKinds)[number];
+
+/** Kinds that never sign in to the web app and never hold the admin role. */
+export const NON_SIGN_IN_KINDS: readonly UserKind[] = ['service', 'slack'];
+
+export { isSlackOnlyAccount } from '../constants/service-account.constants';
 
 /** What the service-account rules read from a user record. */
 export interface ServiceAccountRuleFields {
@@ -36,6 +45,9 @@ export const serviceAccountFields = {
     index: true,
   },
   description: { type: String, trim: true },
+  /** The Slack user and workspace a Slack-only account was created for. */
+  slackUserId: { type: String },
+  slackTeamId: { type: String },
   isDisabled: { type: Boolean, default: false },
   restoreOpId: { type: String },
 };
@@ -67,6 +79,9 @@ async function refuseAdminRoleOnServiceAccount(
   if (kind === 'service') {
     throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
   }
+  if (kind === 'slack') {
+    throw new Error(SLACK_ONLY_ADMIN_ROLE_MESSAGE);
+  }
   if (kind !== undefined) return;
 
   // Ask whether the update reaches *any* service account, rather than
@@ -77,12 +92,16 @@ async function refuseAdminRoleOnServiceAccount(
   // batch through. Narrowing the query instead means one match is enough to
   // refuse, whichever documents the update covers.
   const offending = await this.model
-    .findOne({ ...this.getQuery(), kind: 'service' })
-    .select('_id')
+    .findOne({ ...this.getQuery(), kind: { $in: NON_SIGN_IN_KINDS } })
+    .select('kind')
     .lean()
     .exec();
   if (offending) {
-    throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+    throw new Error(
+      (offending as { kind?: string }).kind === 'slack'
+        ? SLACK_ONLY_ADMIN_ROLE_MESSAGE
+        : SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
+    );
   }
 }
 

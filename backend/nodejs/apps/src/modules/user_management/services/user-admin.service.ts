@@ -92,7 +92,7 @@ export const getActiveUserOrgRole = async (
   //
   // Clamped rather than refused: this answers "what is this caller", and the
   // caller may legitimately be a service account.
-  if (user.kind === 'service') {
+  if (user.kind === 'service' || user.kind === 'slack') {
     return 'member';
   }
   return user.role === 'admin' ? 'admin' : 'member';

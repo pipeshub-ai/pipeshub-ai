@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
+import { Flex, Text, TextField, Select, Button, IconButton, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -257,6 +257,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
   const [botToken, setBotToken] = useState('');
   const [signingSecret, setSigningSecret] = useState('');
   const [agentId, setAgentId] = useState<string>(DEFAULT_ASSISTANT_ID);
+  const [createAccountsForSlackUsers, setCreateAccountsForSlackUsers] = useState(false);
   const [showBotToken, setShowBotToken] = useState(false);
   const [showSigningSecret, setShowSigningSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -268,11 +269,13 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
       setBotToken(editingConfig.botToken);
       setSigningSecret(editingConfig.signingSecret);
       setAgentId(editingConfig.agentId || DEFAULT_ASSISTANT_ID);
+      setCreateAccountsForSlackUsers(editingConfig.createAccountsForSlackUsers === true);
     } else {
       setName('');
       setBotToken('');
       setSigningSecret('');
       setAgentId(DEFAULT_ASSISTANT_ID);
+      setCreateAccountsForSlackUsers(false);
     }
   }, [editingConfig]);
 
@@ -330,6 +333,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
         ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
+        createAccountsForSlackUsers,
       };
 
       if (isEditMode && editingConfig) {
@@ -352,7 +356,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
     } finally {
       setIsSaving(false);
     }
-  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, isEditMode, editingConfig, onSaved]);
+  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, createAccountsForSlackUsers, isEditMode, editingConfig, onSaved, t]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -461,6 +465,25 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             </Select.Content>
           </Select.Root>
         </FormField>
+
+        <Text as="label" size="2">
+          <Flex gap="3" align="start">
+            <Switch
+              color="jade"
+              checked={createAccountsForSlackUsers}
+              onCheckedChange={setCreateAccountsForSlackUsers}
+              style={{ marginTop: 2 }}
+            />
+            <Flex direction="column" gap="1">
+              <Text weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {t('workspace.bots.form.createAccountsForSlackUsers')}
+              </Text>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                {t('workspace.bots.form.createAccountsForSlackUsersHelp')}
+              </Text>
+            </Flex>
+          </Flex>
+        </Text>
 
         {/* ── Delete zone (edit mode only) ── */}
         {isEditMode && (

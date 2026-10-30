@@ -333,10 +333,11 @@ describe('es_controller listing and paging', () => {
       expect(token).to.include({ isServiceAccount: true, email: 'Guest@Example.com' })
     })
 
-    const refusals: Array<{ name: string; agents: string[]; reply?: [number, unknown] }> = [
+    const refusals: Array<{ name: string; agents: string[]; reply?: [number, unknown]; status?: number }> = [
       { name: 'the agent is not set up for Slack', agents: ['another-agent'] },
       { name: 'the agent is not a service account', agents: [AGENT_KEY], reply: [200, { isServiceAccount: false }] },
-      { name: 'the AI service cannot confirm it', agents: [AGENT_KEY], reply: [500, { detail: 'boom' }] },
+      { name: 'the AI service says it is not a service account', agents: [AGENT_KEY], reply: [403, { detail: 'no' }] },
+      { name: 'the AI service cannot confirm it', agents: [AGENT_KEY], reply: [500, { detail: 'boom' }], status: 500 },
     ]
     for (const r of refusals) {
       it(`refuses an email without an account when ${r.name}`, async () => {
@@ -351,8 +352,11 @@ describe('es_controller listing and paging', () => {
           error = e as Error & { statusCode?: number }
         }
 
-        expect(error?.statusCode).to.equal(404)
-        expect(error?.message).to.equal('User not found, create an account on the Pipeshub platform first.')
+        // A failed check is a server error, not a missing account.
+        expect(error?.statusCode).to.equal(r.status ?? 404)
+        if (!r.status) {
+          expect(error?.message).to.equal('User not found, create an account on the Pipeshub platform first.')
+        }
         expect(req.user).to.equal(undefined)
         expect(req.headers.authorization).to.equal('Bearer scoped')
       })

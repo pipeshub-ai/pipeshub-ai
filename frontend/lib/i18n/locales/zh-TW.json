@@ -1643,7 +1643,10 @@
         "edit": "編輯",
         "resendInviteSuccess": "已重新傳送邀請",
         "resendInviteSuccessDescription": "已將邀請重新傳送至 {{email}}",
-        "resendInviteError": "重新傳送邀請失敗"
+        "resendInviteError": "重新傳送邀請失敗",
+        "inviteSlackOnly": "邀請加入 PipesHub",
+        "inviteSlackOnlySuccess": "已向 {{email}} 傳送邀請",
+        "inviteSlackOnlyError": "無法傳送邀請"
       },
       "profile": {
         "title": "個人檔案",
@@ -1731,7 +1734,10 @@
         "cancelPartialError_other": "取消 {{count}} 個邀請失敗"
       },
       "inviteDisabledSmtp": "尚未設定 SMTP。邀請使用者前請先完成電子郵件設定。",
-      "bulkLabel": "使用者"
+      "bulkLabel": "使用者",
+      "status": {
+        "slackOnly": "僅限 Slack"
+      }
     },
     "groups": {
       "title": "群組",
@@ -3766,7 +3772,9 @@
         "agentPlaceholder": "選取代理程式",
         "typeNameToConfirm": "輸入「{{name}}」以確認",
         "deleteBotBodyLine1": "確定要刪除 {{name}} 嗎？此操作無法復原。",
-        "deleteBotBodyLine2": "與此機器人相關的所有設定與憑證都將被永久移除。"
+        "deleteBotBodyLine2": "與此機器人相關的所有設定與憑證都將被永久移除。",
+        "createAccountsForSlackUsers": "為 Slack 使用者建立帳戶",
+        "createAccountsForSlackUsersHelp": "當代理是服務代理時，此 Slack 工作區中沒有 PipesHub 帳戶的正式成員第一次傳訊給機器人時，會取得僅限 Slack 的帳戶。在你邀請之前，該帳戶只能在 Slack 中與此代理聊天。"
       },
       "errors": {
         "loadConfigs": "載入機器人設定失敗",

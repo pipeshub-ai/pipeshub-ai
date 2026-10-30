@@ -1643,7 +1643,10 @@
         "edit": "편집",
         "resendInviteSuccess": "초대 재발송됨",
         "resendInviteSuccessDescription": "{{email}}(으)로 초대를 다시 보냈습니다",
-        "resendInviteError": "초대를 다시 보내지 못했습니다"
+        "resendInviteError": "초대를 다시 보내지 못했습니다",
+        "inviteSlackOnly": "PipesHub에 초대",
+        "inviteSlackOnlySuccess": "{{email}}님에게 초대를 보냈습니다",
+        "inviteSlackOnlyError": "초대를 보내지 못했습니다"
       },
       "profile": {
         "title": "프로필",
@@ -1731,7 +1734,10 @@
         "cancelPartialError_other": "초대 {{count}}건을 취소하지 못했습니다"
       },
       "inviteDisabledSmtp": "SMTP가 구성되지 않았습니다. 사용자를 초대하기 전에 이메일 설정을 완료하세요.",
-      "bulkLabel": "사용자"
+      "bulkLabel": "사용자",
+      "status": {
+        "slackOnly": "Slack 전용"
+      }
     },
     "groups": {
       "title": "그룹",
@@ -3766,7 +3772,9 @@
         "agentPlaceholder": "에이전트 선택",
         "typeNameToConfirm": "확인하려면 \"{{name}}\"을(를) 입력하세요",
         "deleteBotBodyLine1": "{{name}}을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-        "deleteBotBodyLine2": "이 봇과 연결된 모든 구성과 자격 증명이 영구적으로 제거됩니다."
+        "deleteBotBodyLine2": "이 봇과 연결된 모든 구성과 자격 증명이 영구적으로 제거됩니다.",
+        "createAccountsForSlackUsers": "Slack 사용자 계정 만들기",
+        "createAccountsForSlackUsersHelp": "에이전트가 서비스 에이전트인 경우, PipesHub 계정이 없는 이 Slack 워크스페이스의 정식 멤버가 봇에 처음 메시지를 보내면 Slack 전용 계정이 만들어집니다. 초대하기 전까지는 Slack에서 이 에이전트와만 채팅할 수 있습니다."
       },
       "errors": {
         "loadConfigs": "봇 구성을 불러오지 못했습니다",

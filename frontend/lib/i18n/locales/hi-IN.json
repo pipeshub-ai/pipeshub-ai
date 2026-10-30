@@ -1558,7 +1558,10 @@
         "edit": "संपादित करें",
         "resendInviteSuccess": "आमंत्रण पुनः भेजा गया",
         "resendInviteSuccessDescription": "{{email}} को आमंत्रण पुनः भेज दिया गया है",
-        "resendInviteError": "आमंत्रण पुनः नहीं भेजा जा सका"
+        "resendInviteError": "आमंत्रण पुनः नहीं भेजा जा सका",
+        "inviteSlackOnly": "PipesHub में आमंत्रित करें",
+        "inviteSlackOnlySuccess": "{{email}} को आमंत्रण भेजा गया",
+        "inviteSlackOnlyError": "आमंत्रण भेजा नहीं जा सका"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -1658,7 +1661,10 @@
         "cancelPartialError_other": "{{count}} आमंत्रण रद्द नहीं किए जा सके"
       },
       "inviteDisabledSmtp": "SMTP कॉन्फ़िगर नहीं है। उपयोगकर्ताओं को आमंत्रित करने से पहले ईमेल सेटिंग्स सेट करें।",
-      "bulkLabel": "उपयोगकर्ता"
+      "bulkLabel": "उपयोगकर्ता",
+      "status": {
+        "slackOnly": "केवल Slack"
+      }
     },
     "groups": {
       "title": "समूह",
@@ -3630,7 +3636,9 @@
         "agentPlaceholder": "एक एजेंट चुनें",
         "typeNameToConfirm": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
         "deleteBotBodyLine1": "क्या आप वाकई {{name}} को हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
-        "deleteBotBodyLine2": "इस बॉट से जुड़ी सभी कॉन्फ़िगरेशन और क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।"
+        "deleteBotBodyLine2": "इस बॉट से जुड़ी सभी कॉन्फ़िगरेशन और क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।",
+        "createAccountsForSlackUsers": "Slack उपयोगकर्ताओं के लिए खाते बनाएं",
+        "createAccountsForSlackUsersHelp": "जब एजेंट एक सर्विस एजेंट हो, तो इस Slack वर्कस्पेस का कोई पूर्ण सदस्य जिसके पास PipesHub खाता नहीं है, बॉट को पहली बार संदेश भेजने पर केवल-Slack खाता पाता है। आपके आमंत्रित करने तक वह केवल Slack से इस एजेंट से चैट कर सकता है।"
       },
       "errors": {
         "loadConfigs": "बॉट कॉन्फ़िगरेशन लोड नहीं हो सके",

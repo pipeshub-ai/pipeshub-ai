@@ -23,6 +23,9 @@ import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-
 import * as XLSX from 'xlsx';
 import { UniqueConstraintError } from '../../../../src/libs/repositories/errors';
 import { getUserRepository, setUserRepository } from '../../../../src/libs/repositories/user';
+import { getGroupRepository } from '../../../../src/libs/repositories/group';
+import { getCredentialRepository } from '../../../../src/libs/repositories/credential';
+import { getOrgRepository } from '../../../../src/libs/repositories/org';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
@@ -236,7 +239,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('includes them for an administrator, for the group and team pickers', async () => {
@@ -250,7 +253,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.equal(undefined);
+      expect(filter.kind).to.deep.equal({ $nin: ['slack'] });
     });
 
     it('ignores the flag for someone who does not administer the org', async () => {
@@ -266,7 +269,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('only opens up for an explicit true, not any other value', async () => {
@@ -277,7 +280,7 @@ describe('UserController', () => {
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
-      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+      expect(filter.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('sends each returned record its kind, so a picker can mark a machine', async () => {
@@ -745,7 +748,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.deep.equal({ $ne: 'service' });
+      expect(match.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
 
     it('includes them for an administrator who asks for them', async () => {
@@ -756,7 +759,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.equal(undefined);
+      expect(match.kind).to.deep.equal({ $nin: ['slack'] });
     });
 
     it('ignores the flag for someone who does not administer the org', async () => {
@@ -767,7 +770,7 @@ describe('UserController', () => {
       await controller.getAllUsersWithGroups(req, res);
 
       const match = (aggregate.firstCall.args[0] as any[])[0].$match;
-      expect(match.kind).to.deep.equal({ $ne: 'service' });
+      expect(match.kind).to.deep.equal({ $nin: ['service', 'slack'] });
     });
   });
 
@@ -6520,6 +6523,195 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // Slack-only accounts (kind: 'slack')
+  // -----------------------------------------------------------------------
+  describe('Slack-only accounts', () => {
+    const orgId = '507f1f77bcf86cd799439012';
+    const slackRow = (fields: Record<string, unknown> = {}): any => ({
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      orgId,
+      email: 'sam@acme.test',
+      kind: 'slack',
+      role: 'member',
+      hasLoggedIn: false,
+      isDeleted: false,
+      ...fields,
+    });
+    let users: ReturnType<typeof getUserRepository>;
+    let groups: ReturnType<typeof getGroupRepository>;
+    beforeEach(() => {
+      users = getUserRepository();
+      groups = getGroupRepository();
+    });
+    const inviteStubs = (sam: any, blocked: string[] = []) => {
+      sinon.stub(users, 'listByEmails').resolves([sam]);
+      sinon.stub(getCredentialRepository(), 'blockedUserIds').resolves(blocked);
+      return {
+        upgrade: sinon.stub(users, 'upgradeSlackOnly').resolves(true),
+        restore: sinon.stub(users, 'updateProfile').resolves(null),
+        everyone: sinon.stub(groups, 'addToEveryone').resolves(),
+        leave: sinon.stub(groups, 'removeFromAll').resolves(),
+        create: sinon.stub(users, 'createMany').resolves([]),
+      };
+    };
+    const addUserStubs = (sam: any) => {
+      sinon.stub(users, 'existsLiveEmail').resolves(true);
+      sinon.stub(users, 'getLiveByEmail').resolves(sam);
+      return {
+        upgrade: sinon.stub(users, 'upgradeSlackOnly').resolves(true),
+        profile: sinon.stub(users, 'updateProfile'),
+        everyone: sinon.stub(groups, 'addToEveryone').resolves(),
+        leave: sinon.stub(groups, 'removeFromAll').resolves(),
+        create: sinon.stub(users, 'create'),
+      };
+    };
+
+    it('an invite upgrades the same record: kind becomes human, it joins everyone, and the graph hears of it', async () => {
+      const sam = slackRow();
+      const { upgrade, everyone, create } = inviteStubs(sam);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(create.called, 'no new record').to.be.false;
+      expect(upgrade.firstCall.args).to.deep.equal([orgId, sam._id]);
+      expect(everyone.calledWith(orgId, sam._id)).to.be.true;
+      const event = mockEventService.publishEvent.firstCall.args[0];
+      expect(event.eventType).to.equal('userAdded');
+      expect(event.payload.userId).to.equal(sam._id);
+      expect(mockEventService.publishEvent.calledOnce, 'announced once').to.be.true;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(result.reinvited).to.equal(1);
+    });
+
+    it('an invite leaves a blocked Slack-only account alone: no upgrade, no group', async () => {
+      const sam = slackRow();
+      const { upgrade, everyone } = inviteStubs(sam, [sam._id]);
+
+      await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called).to.be.false;
+      expect(everyone.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('add user upgrades the same record instead of refusing the duplicate', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test', designation: 'Engineer' };
+      const { upgrade, profile, everyone, create } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human', designation: 'Engineer' });
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+      expect(create.called, 'no second record').to.be.false;
+      expect(upgrade.firstCall.args).to.deep.equal([orgId, sam._id]);
+      expect(profile.firstCall.args[2]).to.include({ designation: 'Engineer', role: 'member' });
+      expect(everyone.calledOnceWith(orgId, sam._id)).to.be.true;
+      expect(mockEventService.publishEvent.firstCall.args[0].payload.userId).to.equal(sam._id);
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.json.firstCall.args[0]._id).to.equal(sam._id);
+    });
+
+    it('add user puts a Slack-only account back as it was when a later step fails', async () => {
+      const sam = slackRow({ fullName: 'Sam' });
+      req.body = { email: 'sam@acme.test', designation: 'Engineer' };
+      const { profile, leave } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human' });
+      mockEventService.publishEvent.rejects(new Error('broker down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('broker down');
+      expect(leave.calledWith(orgId, sam._id, { everyGroup: true })).to.be.true;
+      const restore = profile.getCalls().map((c) => c.args[2] as any).find((f) => f.kind === 'slack');
+      expect(restore).to.include({ kind: 'slack', fullName: 'Sam', role: 'member' });
+      expect(restore).to.have.property('designation', undefined);
+    });
+
+    it('add user still restores the record when leaving the groups fails too', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test' };
+      const { profile, everyone, leave } = addUserStubs(sam);
+      profile.resolves({ ...sam, kind: 'human' });
+      everyone.rejects(new Error('groups down'));
+      leave.rejects(new Error('groups down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('groups down');
+      expect(profile.getCalls().some((c) => (c.args[2] as any).kind === 'slack')).to.be.true;
+    });
+
+    it('an invite undoes a Slack-only upgrade whose event could not be published, so a retry finds it again', async () => {
+      const sam = slackRow();
+      const { restore, leave } = inviteStubs(sam);
+      mockEventService.publishEvent.rejects(new Error('broker down'));
+
+      let error: any;
+      try {
+        await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error?.message).to.equal('broker down');
+      expect(leave.calledWith(orgId, sam._id, { everyGroup: true })).to.be.true;
+      expect(restore.getCalls().some((c) => (c.args[2] as any).kind === 'slack')).to.be.true;
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('add user as admin respects the admin cap before upgrading', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@acme.test', role: 'admin' };
+      const { upgrade } = addUserStubs(sam);
+      const cap = sinon.stub(userAdminService, 'assertCanPromoteAdmin').rejects(new Error('admin limit reached'));
+
+      await controller.createUser(req, res, next);
+
+      expect(cap.calledOnceWith(orgId, 1)).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('admin limit reached');
+      expect(upgrade.called, 'not upgraded').to.be.false;
+    });
+
+    it('add user with a starting password still refuses the address', async () => {
+      const sam = slackRow();
+      req.body = { email: 'sam@demo.pipeshub.com', password: 'Str0ng!pass' };
+      const { upgrade } = addUserStubs(sam);
+
+      await controller.createUser(req, res, next);
+
+      expect(upgrade.called).to.be.false;
+    });
+
+    it('resend-invite refuses a Slack-only account: its mail would set a password on it', async () => {
+      req.params = { id: new mongoose.Types.ObjectId().toHexString() };
+      sinon.stub(getOrgRepository(), 'getLive').resolves({ _id: orgId, registeredName: 'Acme' } as any);
+      sinon.stub(users, 'getForEdit').resolves(slackRow());
+
+      await controller.resendInvite(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.match(/created from Slack/);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    for (const [label, query, admin, slackShown] of [
+      ['pickers (no flag)', {}, true, false],
+      ['a member asking for them', { includeSlackOnlyAccounts: 'true' }, false, false],
+      ['the admin users screen', { includeSlackOnlyAccounts: 'true' }, true, true],
+    ] as const) {
+      it(`the users list hides Slack-only accounts from ${label} unless an admin asks`, async () => {
+        req.query = query;
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(admin);
+        const list = sinon.stub(users, 'listDirectory').resolves({ rows: [], total: 0 });
+
+        await controller.getAllUsers(req, res);
+
+        expect(list.firstCall.args[1].includeSlackOnlyAccounts).to.equal(slackShown);
+      });
+    }
   });
 });
 

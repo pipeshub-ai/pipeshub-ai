@@ -1558,7 +1558,10 @@
         "edit": "Edit",
         "resendInviteSuccess": "Invite resent",
         "resendInviteSuccessDescription": "Invite has been resent to {{email}}",
-        "resendInviteError": "Failed to resend invite"
+        "resendInviteError": "Failed to resend invite",
+        "inviteSlackOnly": "Invite to PipesHub",
+        "inviteSlackOnlySuccess": "Invite sent to {{email}}",
+        "inviteSlackOnlyError": "Failed to send the invite"
       },
       "profile": {
         "title": "Profile",
@@ -1658,7 +1661,10 @@
         "cancelPartialError_other": "Failed to cancel {{count}} invites"
       },
       "inviteDisabledSmtp": "SMTP is not configured. Set up email settings before inviting users.",
-      "bulkLabel": "Users"
+      "bulkLabel": "Users",
+      "status": {
+        "slackOnly": "Slack only"
+      }
     },
     "groups": {
       "title": "Groups",
@@ -3626,7 +3632,9 @@
         "agentPlaceholder": "Select an agent",
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
-        "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."
+        "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed.",
+        "createAccountsForSlackUsers": "Create accounts for Slack users",
+        "createAccountsForSlackUsersHelp": "When the agent is a service agent, a full member of this Slack workspace who has no PipesHub account gets a Slack-only account the first time they message the bot. It can only chat with this agent from Slack, until you invite them."
       },
       "errors": {
         "loadConfigs": "Failed to load bot configurations",

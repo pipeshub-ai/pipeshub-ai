@@ -70,6 +70,8 @@ export const UsersApi = {
     groupIds?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
+    /** `'true'` (admins only) also returns Slack-only accounts. */
+    includeSlackOnlyAccounts?: string;
   }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
       BASE_URL,
@@ -122,6 +124,8 @@ export const UsersApi = {
     groupIds?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
+    /** `'true'` (admins only) also returns Slack-only accounts. */
+    includeSlackOnlyAccounts?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     return UsersApi.listUsers(params);
   },

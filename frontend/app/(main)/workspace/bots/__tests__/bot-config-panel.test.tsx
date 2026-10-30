@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
@@ -28,18 +28,27 @@ vi.mock('../api', () => ({
 
 import { BotConfigPanel } from '../components/bot-config-panel';
 import { useBotsStore } from '../store';
+import { BotsApi } from '../api';
 
-const config = (agentId: string | null) => ({
+const config = (agentId: string | null, createAccountsForSlackUsers?: boolean) => ({
   id: 'bot-1',
   name: 'testing BOT',
   botToken: 'xoxb-token',
   signingSecret: 'secret',
   agentId: agentId as string | undefined,
+  createAccountsForSlackUsers,
+  createdAt: '',
+  updatedAt: '',
 });
 
-function openEditing(agentId: string | null, agents: { id: string; name: string }[], complete = true) {
+function openEditing(
+  agentId: string | null,
+  agents: { id: string; name: string }[],
+  complete = true,
+  createAccountsForSlackUsers?: boolean,
+) {
   const store = useBotsStore.getState();
-  store.setConfigs([config(agentId)]);
+  store.setConfigs([config(agentId, createAccountsForSlackUsers)]);
   store.setAgents(agents, complete);
   store.openPanel();
   store.setPanelView('slack-form');
@@ -99,5 +108,27 @@ describe('BotConfigPanel — the agent a saved bot is linked to', () => {
     openEditing(null, [{ id: 'agent-1', name: 'Other agent' }]);
 
     expect(screen.getByRole('combobox').textContent).toContain('Default assistant');
+  });
+
+  it('shows the Slack account setting off by default and saves it when turned on', async () => {
+    vi.mocked(BotsApi.updateSlackBotConfig).mockResolvedValue(undefined as never);
+    vi.mocked(BotsApi.getSlackBotConfigs).mockResolvedValue([]);
+    openEditing('agent-7', [{ id: 'agent-7', name: 'Support agent' }]);
+
+    const toggle = screen.getByRole('switch');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(BotsApi.updateSlackBotConfig).toHaveBeenCalled());
+    expect(vi.mocked(BotsApi.updateSlackBotConfig).mock.calls[0][1]).toMatchObject({
+      createAccountsForSlackUsers: true,
+    });
+  });
+
+  it('shows the Slack account setting as stored', () => {
+    openEditing('agent-7', [{ id: 'agent-7', name: 'Support agent' }], true, true);
+
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true');
   });
 });

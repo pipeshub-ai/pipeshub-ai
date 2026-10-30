@@ -1580,7 +1580,10 @@
         "edit": "Editar",
         "resendInviteSuccess": "Invitación reenviada",
         "resendInviteSuccessDescription": "Se ha reenviado la invitación a {{email}}",
-        "resendInviteError": "No se ha podido reenviar la invitación"
+        "resendInviteError": "No se ha podido reenviar la invitación",
+        "inviteSlackOnly": "Invitar a PipesHub",
+        "inviteSlackOnlySuccess": "Invitación enviada a {{email}}",
+        "inviteSlackOnlyError": "No se pudo enviar la invitación"
       },
       "profile": {
         "title": "Perfil",
@@ -1692,7 +1695,10 @@
         "cancelPartialError_many": "No se han podido cancelar {{count}} invitaciones"
       },
       "inviteDisabledSmtp": "SMTP no está configurado. Configure el correo electrónico antes de invitar usuarios.",
-      "bulkLabel": "Usuarios"
+      "bulkLabel": "Usuarios",
+      "status": {
+        "slackOnly": "Solo Slack"
+      }
     },
     "groups": {
       "title": "Grupos",
@@ -3674,7 +3680,9 @@
         "agentPlaceholder": "Select an agent",
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
-        "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."
+        "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed.",
+        "createAccountsForSlackUsers": "Crear cuentas para usuarios de Slack",
+        "createAccountsForSlackUsersHelp": "Si el agente es un agente de servicio, un miembro completo de este espacio de trabajo de Slack sin cuenta de PipesHub recibe una cuenta solo de Slack la primera vez que escribe al bot. Solo puede chatear con este agente desde Slack hasta que lo invites."
       },
       "errors": {
         "loadConfigs": "No se han podido cargar las configuraciones de los bots",

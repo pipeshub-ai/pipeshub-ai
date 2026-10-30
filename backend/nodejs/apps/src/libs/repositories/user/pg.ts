@@ -5,7 +5,6 @@
  * The last-admin rule is serialised by locking the organisation row (`lockOrgAdminChanges`).
  */
 import {
-  SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
   assertReservedEmailDomainBelongsToServiceAccount,
   assertServiceAccountRole,
 } from '../../../modules/user_management/constants/service-account.constants';
@@ -33,6 +32,7 @@ import type {
   UserAuthSnapshot,
   UserDto,
   UserFields,
+  UserKind,
   UserRepository,
   UserRole,
   UserRoleSnapshot,
@@ -51,8 +51,10 @@ interface UserRow {
   mobile: string | null;
   has_logged_in: boolean;
   designation: string | null;
-  kind: 'human' | 'service';
+  kind: UserKind;
   description: string | null;
+  slack_user_id: string | null;
+  slack_team_id: string | null;
   is_disabled: boolean;
   restore_op_id: string | null;
   role: UserRole;
@@ -65,7 +67,7 @@ interface UserRow {
 }
 
 const COLS = `u.id, u.org_id, u.slug, u.full_name, u.first_name, u.last_name, u.middle_name, u.email, u.mobile, u.has_logged_in, u.designation, u.kind,
-  u.description, u.is_disabled, u.restore_op_id, u.role, u.address, u.is_deleted, u.deleted_by, u.version, u.created_at, u.updated_at`;
+  u.description, u.slack_user_id, u.slack_team_id, u.is_disabled, u.restore_op_id, u.role, u.address, u.is_deleted, u.deleted_by, u.version, u.created_at, u.updated_at`;
 
 function dto(r: UserRow): UserDto {
   const o: Record<string, unknown> = {
@@ -89,6 +91,8 @@ function dto(r: UserRow): UserDto {
   if (r.mobile !== null) o.mobile = r.mobile;
   if (r.designation !== null) o.designation = r.designation;
   if (r.description !== null) o.description = r.description;
+  if (r.slack_user_id !== null) o.slackUserId = r.slack_user_id;
+  if (r.slack_team_id !== null) o.slackTeamId = r.slack_team_id;
   if (r.restore_op_id !== null) o.restoreOpId = r.restore_op_id;
   if (r.address !== null) o.address = r.address;
   if (r.deleted_by !== null) o.deletedBy = r.deleted_by;
@@ -129,6 +133,8 @@ const COLUMNS: Record<string, string> = {
   address: 'address',
   kind: 'kind',
   description: 'description',
+  slackUserId: 'slack_user_id',
+  slackTeamId: 'slack_team_id',
   isDisabled: 'is_disabled',
   isDeleted: 'is_deleted',
 };
@@ -510,6 +516,7 @@ export class PgUserRepository implements UserRepository {
       const org = p.add(k.orgId);
       const conds = [`u.org_id = ${org}`, 'NOT u.is_deleted'];
       if (!q.includeServiceAccounts) conds.push("u.kind <> 'service'");
+      if (q.includeSlackOnlyAccounts !== true) conds.push("u.kind <> 'slack'");
       if (q.search !== undefined && q.search !== '')
         conds.push(search(p, q.search));
       const loggedIn =
@@ -564,7 +571,7 @@ export class PgUserRepository implements UserRepository {
             COALESCE((SELECT jsonb_agg(jsonb_build_object('name', g.name, 'type', g.type) ORDER BY g.id)
                         FROM identity.user_group_members m JOIN identity.user_groups g ON g.org_id = m.org_id AND g.id = m.group_id
                        WHERE m.org_id = $1 AND g.org_id = $1 AND m.user_id = u.id AND NOT g.is_deleted), '[]'::jsonb) AS groups
-           FROM identity.users u WHERE u.org_id = $1 AND NOT u.is_deleted AND ($2::boolean OR u.kind <> 'service') ORDER BY u.id`,
+           FROM identity.users u WHERE u.org_id = $1 AND NOT u.is_deleted AND u.kind <> 'slack' AND ($2::boolean OR u.kind <> 'service') ORDER BY u.id`,
         [k.orgId, opts.includeServiceAccounts === true],
       );
       return rows.map((r) => ({
@@ -878,6 +885,19 @@ export class PgUserRepository implements UserRepository {
     });
   }
 
+  async upgradeSlackOnly(orgId: string, id: string): Promise<boolean> {
+    const oid = oidOf(id);
+    if (oid === undefined) return false;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const { rowCount } = await k.query(
+        "/* pipeshub:identity.user_upgrade_slack_only */ UPDATE identity.users u SET kind = 'human', updated_at = $3 WHERE u.org_id = $1 AND u.id = $2::text AND u.kind = 'slack'",
+        [k.orgId, oid, new Date()],
+      );
+      return rowCount === 1;
+    });
+  }
+
   async restoreByEmails(orgId: string, emails: string[]): Promise<UserDto[]> {
     if (emails.length === 0) return [];
     const list = emails.map((e) => stripNul(e, 'user', 'email').toLowerCase());
@@ -900,12 +920,12 @@ export class PgUserRepository implements UserRepository {
     if (list.length === 0) return;
     await inUnit(undefined, { write: true }, async (k) => {
       assertOrg(k, orgId);
-      const service = await k.query(
-        "/* pipeshub:identity.user_promote_check */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind = 'service' LIMIT 1",
+      const barred = await k.query<{ kind: UserKind }>(
+        "/* pipeshub:identity.user_promote_check */ SELECT u.kind FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind IN ('service', 'slack') ORDER BY u.kind LIMIT 1",
         [k.orgId, list],
       );
-      if (service.rows.length > 0)
-        throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+      if (barred.rows[0])
+        assertServiceAccountRole(barred.rows[0].kind, 'admin');
       await k.query(
         "/* pipeshub:identity.user_promote */ UPDATE identity.users u SET role = 'admin', updated_at = $3 WHERE u.org_id = $1 AND u.id = ANY($2::text[])",
         [k.orgId, list, new Date()],
@@ -919,12 +939,12 @@ export class PgUserRepository implements UserRepository {
     await inUnit(undefined, { write: true }, async (k) => {
       assertOrg(k, orgId);
       if (role === 'admin') {
-        const service = await k.query(
-          "/* pipeshub:identity.user_role_check */ SELECT 1 FROM identity.users u WHERE u.org_id = $1 AND u.id = $2::text AND u.kind = 'service'",
+        const barred = await k.query<{ kind: UserKind }>(
+          "/* pipeshub:identity.user_role_check */ SELECT u.kind FROM identity.users u WHERE u.org_id = $1 AND u.id = $2::text AND u.kind IN ('service', 'slack')",
           [k.orgId, oid],
         );
-        if (service.rows.length > 0)
-          throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+        if (barred.rows[0])
+          assertServiceAccountRole(barred.rows[0].kind, 'admin');
       }
       await k.query(
         '/* pipeshub:identity.user_set_role */ UPDATE identity.users u SET role = $3, updated_at = $4 WHERE u.org_id = $1 AND u.id = $2::text AND NOT u.is_deleted',

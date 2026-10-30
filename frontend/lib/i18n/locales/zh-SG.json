@@ -1643,7 +1643,10 @@
         "edit": "编辑",
         "resendInviteSuccess": "邀请已重新发送",
         "resendInviteSuccessDescription": "已将邀请重新发送至 {{email}}",
-        "resendInviteError": "重新发送邀请失败"
+        "resendInviteError": "重新发送邀请失败",
+        "inviteSlackOnly": "邀请加入 PipesHub",
+        "inviteSlackOnlySuccess": "已向 {{email}} 发送邀请",
+        "inviteSlackOnlyError": "无法发送邀请"
       },
       "profile": {
         "title": "个人资料",
@@ -1731,7 +1734,10 @@
         "cancelPartialError_other": "取消 {{count}} 个邀请失败"
       },
       "inviteDisabledSmtp": "尚未配置 SMTP。邀请用户前请先设置邮件。",
-      "bulkLabel": "用户"
+      "bulkLabel": "用户",
+      "status": {
+        "slackOnly": "仅限 Slack"
+      }
     },
     "groups": {
       "title": "用户组",
@@ -3766,7 +3772,9 @@
         "agentPlaceholder": "选择一个智能体",
         "typeNameToConfirm": "输入“{{name}}”以确认",
         "deleteBotBodyLine1": "确定要删除 {{name}} 吗？此操作无法撤销。",
-        "deleteBotBodyLine2": "与此机器人关联的所有配置和凭据将被永久删除。"
+        "deleteBotBodyLine2": "与此机器人关联的所有配置和凭据将被永久删除。",
+        "createAccountsForSlackUsers": "为 Slack 用户创建账户",
+        "createAccountsForSlackUsersHelp": "当智能体是服务智能体时，此 Slack 工作区中没有 PipesHub 账户的正式成员首次向机器人发送消息时，会获得一个仅限 Slack 的账户。在你邀请之前，该账户只能在 Slack 中与此智能体聊天。"
       },
       "errors": {
         "loadConfigs": "加载机器人配置失败",

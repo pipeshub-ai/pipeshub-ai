@@ -223,6 +223,9 @@ const getAllUsersQueryParams = z.object({
   // Service accounts are left out of this list by default on purpose — see the
   // filter in `getAllUsers` — so a caller that wants them has to say so.
   includeServiceAccounts: z.enum(['true', 'false']).optional(),
+  // Opt-in for the admin users screen; Slack-only accounts are left out of
+  // every other list.
+  includeSlackOnlyAccounts: z.enum(['true', 'false']).optional(),
   groupIds: z
     .string()
     .optional()

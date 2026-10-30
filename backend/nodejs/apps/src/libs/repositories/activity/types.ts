@@ -15,7 +15,8 @@ export type ActivityType =
   | 'ROLE CHANGED'
   | 'ACCOUNT BLOCKED'
   | 'ACCOUNT DELETED'
-  | 'ACCOUNT RESTORED';
+  | 'ACCOUNT RESTORED'
+  | 'ACCOUNT CREATED FROM SLACK';
 
 export interface NewActivity {
   activityType: string;
@@ -25,6 +26,8 @@ export interface NewActivity {
   orgId?: string;
   ipAddress: string | undefined;
   loginMode?: string;
+  /** Free text, such as which Slack bot created the account. */
+  details?: string;
 }
 
 export interface ActivityDto {

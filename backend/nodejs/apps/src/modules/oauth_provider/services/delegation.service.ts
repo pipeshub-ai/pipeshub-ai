@@ -86,6 +86,7 @@ export type SubjectRefusalReason =
   | 'subject_missing'
   | 'subject_not_found'
   | 'subject_is_service_account'
+  | 'subject_is_slack_only'
   | 'subject_is_admin'
   | 'subject_disabled';
 
@@ -189,6 +190,11 @@ export class DelegationService {
         ok: false,
         refusedReason: 'subject_is_service_account',
       };
+    }
+
+    // A Slack-only account can only chat from Slack; nothing acts as it.
+    if (user.kind === 'slack') {
+      return { ...resolved, ok: false, refusedReason: 'subject_is_slack_only' };
     }
 
     // Version one refuses to delegate to an administrator, and this is the
@@ -295,6 +301,8 @@ export class DelegationService {
         );
       case 'subject_is_service_account':
         return 'A service account cannot act as another service account.';
+      case 'subject_is_slack_only':
+        return 'That account was created from Slack and can only be used there. Invite the person first.';
       case 'subject_disabled':
         return 'That account is disabled.';
       case 'subject_missing':

@@ -1,12 +1,11 @@
 import * as crypto from 'crypto';
-import {
-  AICommandOptions,
-  AIServiceCommand,
-} from '../../../libs/commands/ai_service/ai.service.command';
+import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { AIServiceResponse } from '../types/conversation.interfaces';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-import { handleBackendError } from '../../../libs/errors/backend-error';
 import {
+  ForbiddenError,
+  InternalServerError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
@@ -21,6 +20,14 @@ import { getSlackBotStore } from '../../configuration_manager/controller/cm_cont
 import { AppConfig } from '../../tokens_manager/config/config';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { getUserRepository } from '../../../libs/repositories/user';
+import type { UserDto } from '../../../libs/repositories/user';
+import { isSlackOnlyAccount } from '../../user_management/constants/service-account.constants';
+import {
+  assertSlackOnlyAccountActive,
+  findOrCreateSlackOnlyAccount,
+  SLACK_ONLY_INVITE_MESSAGE,
+  slackMemberClaims,
+} from '../../user_management/services/slack-only-accounts.service';
 
 /**
  * Turns a scoped service token (`/internal/...` routes: Slack bot, service
@@ -70,64 +77,36 @@ export const hydrateScopedRequestAsUser = async (
     return;
   }
 
-  const email = (req as AuthenticatedServiceRequest).tokenPayload?.email;
-  if (!email) {
+  const email: unknown = (req as AuthenticatedServiceRequest).tokenPayload
+    ?.email;
+  if (typeof email !== 'string' || email === '') {
     throw new UnauthorizedError('Email not found in scoped token');
   }
 
   const orgId = await resolveSoleOrgId();
 
-  const user = await getUserRepository().getLiveByEmail(orgId, email as string);
+  const user = await getUserRepository().getLiveByEmail(orgId, email);
 
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
     appConfig.scopedJwtSecret,
   );
 
-  if (!user) {
+  if (!user || isSlackOnlyAccount(user)) {
     const { agentKey } = req.params;
-    if (agentKey && keyValueStoreService) {
-      const store = await getSlackBotStore(keyValueStoreService);
-      const configs = store.configs;
-      for (const config of configs) {
-        if (config.agentId === agentKey) {
-          const isServiceAccount = await checkServiceAccountAccess(
-            req,
-            appConfig,
-          );
-          if (isServiceAccount) {
-            const org = await getOrgRepository().getLive(orgId);
-            if (!org?._id) {
-              throw new NotFoundError('Organization not found');
-            }
-            const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
-            const scopedJwtToken = authTokenService.generateScopedToken(
-              {
-                userId: stableUserIdHex,
-                orgId: org._id,
-                email: email,
-                scopes: [TokenScopes.CONVERSATION_CREATE],
-                isServiceAccount: true,
-              },
-              '1h',
-            );
-            (req as AuthenticatedServiceRequest).headers.authorization =
-              `Bearer ${scopedJwtToken}`;
-            (req as AuthenticatedUserRequest).user = {
-              userId: stableUserIdHex,
-              orgId: org._id,
-              email: email,
-              scopes: [TokenScopes.CONVERSATION_CREATE],
-              isServiceAccount: true,
-            };
-            return;
-          }
-        }
-      }
-    }
-    throw new NotFoundError(
-      'User not found, create an account on the Pipeshub platform first.',
-    );
+    const config =
+      agentKey && keyValueStoreService
+        ? (await getSlackBotStore(keyValueStoreService)).configs.find(
+            (entry) => entry.agentId === agentKey,
+          )
+        : undefined;
+    await hydrateAsServiceAgentCaller(req, appConfig, {
+      email,
+      orgId,
+      user,
+      config,
+    });
+    return;
   }
 
   // The Python services ask Node whether every session-style token is still
@@ -160,39 +139,144 @@ export const hydrateScopedRequestAsUser = async (
   };
 };
 
+/** The parts of a Slack bot configuration the service-agent path reads. */
+export interface ServiceAgentSlackConfig {
+  id: string;
+  agentId?: string;
+  createAccountsForSlackUsers?: boolean;
+}
+
+/**
+ * Hydrates a Slack caller who is not a full member: someone with no account,
+ * or with a Slack-only one. They may only chat with the bot's agent, and only
+ * if it is a service agent; the token they get is a service-agent caller's,
+ * never a session. When the bot's `createAccountsForSlackUsers` is on and the
+ * bot vouched that the person is a full member of its workspace, an account
+ * is found or created for them so their chats have a real owner.
+ */
+export const hydrateAsServiceAgentCaller = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  params: {
+    email: string;
+    orgId: string;
+    user: UserDto | null;
+    config: ServiceAgentSlackConfig | undefined;
+  },
+): Promise<void> => {
+  const { email, orgId, user, config } = params;
+  const refusal = (): Error =>
+    user
+      ? new ForbiddenError(SLACK_ONLY_INVITE_MESSAGE)
+      : new NotFoundError(
+          'User not found, create an account on the Pipeshub platform first.',
+        );
+  if (!config) throw refusal();
+  if (user) await assertSlackOnlyAccountActive(user);
+
+  const authTokenService = new AuthTokenService(
+    appConfig.jwtSecret,
+    appConfig.scopedJwtSecret,
+  );
+  const mint = (
+    userId: string,
+    ttl: number | '1h',
+    isServiceAccount: boolean,
+  ): string =>
+    authTokenService.generateScopedToken(
+      {
+        userId,
+        orgId,
+        email,
+        scopes: [TokenScopes.CONVERSATION_CREATE],
+        ...(isServiceAccount ? { isServiceAccount: true } : {}),
+      },
+      ttl,
+    );
+
+  let callerId = user ? user._id : stableObjectIdHexForExternalEmail(email);
+  // The incoming Slack token carries no userId, and the AI service needs one
+  // (and the org) to look the agent up in this org.
+  const isServiceAgent = await checkServiceAccountAccess(
+    req as AuthenticatedServiceRequest,
+    appConfig,
+    mint(callerId, STAND_IN_TOKEN_TTL_SECONDS, false),
+  );
+  if (!isServiceAgent) throw refusal();
+
+  const org = await getOrgRepository().getLive(orgId);
+  if (!org?._id) {
+    throw new NotFoundError('Organization not found');
+  }
+
+  if (!user && config.createAccountsForSlackUsers === true) {
+    const tokenPayload: Record<string, unknown> | undefined = (
+      req as AuthenticatedServiceRequest
+    ).tokenPayload;
+    const claims = slackMemberClaims(tokenPayload);
+    // Only the bot the setting belongs to may create accounts with it.
+    if (claims && tokenPayload?.configId === config.id) {
+      const account = await findOrCreateSlackOnlyAccount({
+        orgId,
+        email,
+        claims,
+        configId: config.id,
+      });
+      callerId = account._id;
+    }
+  }
+
+  (req as AuthenticatedServiceRequest).headers.authorization =
+    `Bearer ${mint(callerId, '1h', true)}`;
+  (req as AuthenticatedUserRequest).user = {
+    userId: callerId,
+    orgId: org._id,
+    email,
+    scopes: [TokenScopes.CONVERSATION_CREATE],
+    isServiceAccount: true,
+  };
+};
+
+/**
+ * Asks the AI service whether `agentKey` is a service agent in the org named
+ * by `token`. Only that token and the request id travel, never the caller's
+ * own headers. 403 (not a service agent) and 404 (no such agent here) are a
+ * plain "no"; any other failure is a server error, so a broken check is not
+ * reported to the user as a missing account.
+ */
 export const checkServiceAccountAccess = async (
   req: AuthenticatedServiceRequest,
   appConfig: AppConfig,
+  token: string,
 ): Promise<boolean> => {
   const requestId = req.context?.requestId;
+  const agentKey = req.params.agentKey as string;
+  const failure = new InternalServerError(
+    'Could not check whether this agent is a service agent',
+  );
+  let aiResponse: AIServiceResponse<{ isServiceAccount?: boolean }>;
   try {
-    const agentKey = req.params.agentKey as string;
-
-    const aiCommandOptions: AICommandOptions = {
+    aiResponse = await new AIServiceCommand<{ isServiceAccount?: boolean }>({
       uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}/internal/service-account`,
       method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
-    const aiResponse = await aiCommand.execute();
-    if (!aiResponse) {
-      return false;
-    }
-    if (aiResponse.statusCode !== 200) {
-      throw handleBackendError(aiResponse, 'Check Service Account Access');
-    }
-    const response = aiResponse.data as { isServiceAccount: boolean };
-    const serviceAccountResponse = response.isServiceAccount;
-    return serviceAccountResponse;
-  } catch (error: any) {
-    logger.error('Error checking service account access', {
+      headers: { Authorization: `Bearer ${token}` },
+    }).execute();
+  } catch (error) {
+    logger.error('Service agent check failed', {
       requestId,
-      message: 'Error checking service account access',
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
+    throw failure;
+  }
+  if (aiResponse.statusCode === 200) {
+    return aiResponse.data?.isServiceAccount === true;
+  }
+  if (aiResponse.statusCode === 403 || aiResponse.statusCode === 404) {
     return false;
   }
+  logger.error('Service agent check failed', {
+    requestId,
+    statusCode: aiResponse.statusCode,
+  });
+  throw failure;
 };

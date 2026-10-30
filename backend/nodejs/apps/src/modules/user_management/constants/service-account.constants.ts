@@ -40,12 +40,23 @@ export const SERVICE_ACCOUNT_ROLE = 'member' as const;
 export const SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE =
   'A service account cannot be an administrator';
 
+/** A Slack-only account (`kind: 'slack'`): created by a Slack bot, usable only from Slack until upgraded. */
+export const isSlackOnlyAccount = (
+  user: { kind?: string } | null | undefined,
+): boolean => user?.kind === 'slack';
+
+export const SLACK_ONLY_ADMIN_ROLE_MESSAGE =
+  'An account created from Slack cannot be an administrator';
+
 export function assertServiceAccountRole(
   kind: string | undefined,
   role: string | undefined,
 ): void {
   if (kind === 'service' && role === 'admin') {
     throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+  }
+  if (kind === 'slack' && role === 'admin') {
+    throw new Error(SLACK_ONLY_ADMIN_ROLE_MESSAGE);
   }
 }
 

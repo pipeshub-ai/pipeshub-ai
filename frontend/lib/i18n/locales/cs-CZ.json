@@ -1713,7 +1713,10 @@
         "edit": "Upravit",
         "resendInviteSuccess": "Pozvánka byla znovu odeslána",
         "resendInviteSuccessDescription": "Pozvánka byla znovu odeslána na {{email}}",
-        "resendInviteError": "Pozvánku se nepodařilo znovu odeslat"
+        "resendInviteError": "Pozvánku se nepodařilo znovu odeslat",
+        "inviteSlackOnly": "Pozvat do PipesHub",
+        "inviteSlackOnlySuccess": "Pozvánka odeslána na {{email}}",
+        "inviteSlackOnlyError": "Pozvánku se nepodařilo odeslat"
       },
       "profile": {
         "title": "Profil",
@@ -1837,7 +1840,10 @@
         "cancelPartialError_other": "Nepodařilo se zrušit {{count}} pozvánek"
       },
       "inviteDisabledSmtp": "SMTP není nakonfigurováno. Před pozváním uživatelů nastavte e-mail.",
-      "bulkLabel": "Uživatelé"
+      "bulkLabel": "Uživatelé",
+      "status": {
+        "slackOnly": "Jen Slack"
+      }
     },
     "groups": {
       "title": "Skupiny",
@@ -3897,7 +3903,9 @@
         "agentPlaceholder": "Vyberte agenta",
         "typeNameToConfirm": "Pro potvrzení napište \"{{name}}\"",
         "deleteBotBodyLine1": "Opravdu chcete smazat {{name}}? Tuto akci nelze vrátit zpět.",
-        "deleteBotBodyLine2": "Všechny konfigurace a přihlašovací údaje spojené s tímto botem budou trvale odstraněny."
+        "deleteBotBodyLine2": "Všechny konfigurace a přihlašovací údaje spojené s tímto botem budou trvale odstraněny.",
+        "createAccountsForSlackUsers": "Vytvářet účty pro uživatele Slacku",
+        "createAccountsForSlackUsersHelp": "Když je agent servisní agent, plnohodnotný člen tohoto pracovního prostoru Slack bez účtu PipesHub dostane při první zprávě botovi účet jen pro Slack. Dokud ho nepozvete, může s tímto agentem chatovat jen ze Slacku."
       },
       "errors": {
         "loadConfigs": "Nepodařilo se načíst konfigurace botů",
