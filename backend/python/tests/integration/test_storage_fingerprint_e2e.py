@@ -21,7 +21,7 @@ import pytest
 
 from app.config.constants.service import config_node_constants
 from app.modules.transformers.blob_storage import BlobStorage, close_shared_session
-from app.services.storage_documents import StorageDocuments, StorageDocumentInfo
+from app.services.storage_documents import StorageDocumentInfo, StorageDocuments
 from app.utils.jwt import generate_jwt
 
 if TYPE_CHECKING:
