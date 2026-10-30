@@ -23,6 +23,8 @@ export function streamErrorInfo(error: unknown): ChatStreamErrorInfo | undefined
 }
 
 export const MCP_SERVER_CONFIG_MISSING = 'mcp_server_config_missing';
+/** A reply that failed without a more specific code: the answer text is the error. */
+export const ANSWER_FAILED = 'answer_failed';
 
 export interface McpBlockedServer {
   instanceId: string;

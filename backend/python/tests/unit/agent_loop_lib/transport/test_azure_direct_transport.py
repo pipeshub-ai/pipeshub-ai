@@ -26,6 +26,7 @@ from app.agent_loop_lib.transport.azure_openai import (
     AzureOpenAITransport,
     RequestDefaults,
 )
+from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
 
 # Terminates an SSE body. Streaming Responses requests are served from raw bytes
 # now, so a mock has to produce a well-formed stream rather than a list of
@@ -81,6 +82,39 @@ class TestClientConstruction:
         t = _transport()
         assert type(t._client).__name__ == "AsyncAzureOpenAI"
         assert t.provider == "azure_direct"
+
+    @pytest.mark.asyncio
+    async def test_client_is_shared_across_transports_with_the_same_settings(self) -> None:
+        """A transport is built per answer; a client per answer meant a new
+        connection pool and TLS handshake to Azure every time."""
+        a, b = _transport(), _transport()
+        assert a is not b
+        assert a._client is b._client
+        other = AzureOpenAITransport(
+            api_key="k", azure_endpoint="https://example.openai.azure.com",
+            api_version="2024-10-01-preview", deployment="gpt-5.6-luna", timeout=12.0,
+        )
+        assert other._client is not a._client
+
+    def test_client_is_not_shared_across_event_loops(self) -> None:
+        """An httpx pool binds to the loop it first ran on."""
+        import asyncio
+
+        async def _client() -> object:
+            return _transport()._client
+
+        first, second = asyncio.run(_client()), asyncio.run(_client())
+        assert first is not second
+        assert _transport()._client is not _transport()._client, "no loop, no sharing"
+
+    @pytest.mark.asyncio
+    async def test_shared_client_cache_is_bounded(self) -> None:
+        from app.agent_loop_lib.transport import openai as openai_transport
+
+        first = openai_transport.shared_client(dict, n=-1)
+        for n in range(openai_transport._CLIENT_CACHE_MAX):
+            openai_transport.shared_client(dict, n=n)
+        assert openai_transport.shared_client(dict, n=-1) is not first, "oldest was evicted"
 
     def test_model_defaults_to_the_deployment(self) -> None:
         """Azure routes on deployment name, so a public model id would 404."""
@@ -651,6 +685,17 @@ class TestRawResponsesStream:
             [e async for e in t.stream(messages=[UserMessage(content="hi")])]
 
     @pytest.mark.asyncio
+    async def test_events_orjson_refuses_still_decode(self) -> None:
+        """orjson rejects NaN tokens, which stdlib json (the old decoder) takes."""
+        body = (
+            b'data: {"type": "response.output_text.delta", "delta": "Hi", "logprob": NaN}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        t = _responses_transport([body])
+        events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+        assert [e.delta for e in events if isinstance(e, TextDeltaEvent)] == ["Hi"]
+
+    @pytest.mark.asyncio
     async def test_done_sentinel_ends_the_stream(self) -> None:
         t = _responses_transport(_sse(_STREAM[:2]))
         events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
@@ -667,3 +712,99 @@ class TestRawResponsesStream:
         ]))
         events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
         assert "".join(e.delta for e in events if isinstance(e, TextDeltaEvent)) == "Hello"
+
+
+class TestPreEncodedBody:
+    """Responses bodies are encoded with orjson instead of the SDK's transform
+    and stdlib json. Against a real SDK client, the request on the wire must be
+    the one `responses.create` would have sent."""
+
+    @staticmethod
+    def _wired(handler) -> AzureOpenAITransport:
+        import httpx
+
+        t = AzureOpenAITransport(
+            api_key="k", azure_endpoint="https://example.openai.azure.com",
+            api_version="2024-10-01-preview", deployment="gpt-5.6-luna", max_retries=0,
+        )
+        t._defaults = RequestDefaults(reasoning={"effort": "high"}, use_responses_api=True,
+                                      model="gpt-5.6-luna")
+        t._cache_plan = OpenAICachePlan({"prompt_cache_key": "k1"})
+        t._client = t._client.with_options(
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        return t
+
+    @staticmethod
+    def _request_of(request) -> tuple:
+        headers = {k: v for k, v in request.headers.items() if k not in ("content-length",)}
+        return request.method, str(request.url), headers, json.loads(request.content)
+
+    async def _sent(self, *, sdk_path: bool, stream: bool, monkeypatch) -> tuple:
+        import httpx
+
+        sent: list = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if stream:
+                return httpx.Response(200, content=b"".join(_sse(_STREAM)),
+                                      headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, json=_STREAM[-1]["response"] | {
+                "id": "r1", "object": "response", "created_at": 0, "model": "m",
+                "parallel_tool_calls": True, "tool_choice": "auto", "tools": [],
+            })
+
+        t = self._wired(handler)
+        if sdk_path:
+            monkeypatch.setattr(t, "_encoded_body", lambda kwargs: None)
+        messages = [UserMessage(content="héllo ✓")]
+        if stream:
+            events = [e async for e in t.stream(messages=messages, system="S")]
+            response = events[-1].response
+        else:
+            response = await t.complete(messages=messages, system="S")
+        assert response.message.tool_calls[0].name == "search"
+        assert response.usage.input_tokens == 50
+        assert len(sent) == 1
+        return self._request_of(sent[0])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [True, False])
+    async def test_request_matches_the_sdk_path(self, stream: bool, monkeypatch) -> None:
+        sdk = await self._sent(sdk_path=True, stream=stream, monkeypatch=monkeypatch)
+        fast = await self._sent(sdk_path=False, stream=stream, monkeypatch=monkeypatch)
+        assert fast == sdk
+        method, url, headers, body = fast
+        assert (method, headers["api-key"]) == ("POST", "k")
+        assert url == "https://example.openai.azure.com/openai/deployments/gpt-5.6-luna/responses?api-version=2024-10-01-preview"
+        assert body["model"] == "gpt-5.6-luna" and body["prompt_cache_key"] == "k1"
+        assert body.get("stream") is (True if stream else None)
+
+    @pytest.mark.asyncio
+    async def test_http_errors_map_the_same(self) -> None:
+        import httpx
+
+        from app.agent_loop_lib.core.exceptions import TransportError
+
+        t = self._wired(lambda request: httpx.Response(429, json={"error": {"message": "slow down"}}))
+        with pytest.raises(TransportError) as info:
+            [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+        assert (info.value.status_code, info.value.retryable) == (429, True)
+
+    def test_falls_back_when_orjson_refuses(self) -> None:
+        t = self._wired(lambda request: None)
+        assert t._encoded_body({"input": [{"a": 1}]}) == b'{"input":[{"a":1}]}'
+        assert t._encoded_body({1: "non-str key"}) is None
+        assert t._encoded_body({"n": 2**70}) is None
+        t._client = MagicMock()
+        assert t._encoded_body({"input": []}) is None, "stubbed client keeps the SDK path"
+
+    def test_sdk_internals_used_for_the_raw_post_still_exist(self) -> None:
+        from openai import AsyncStream  # noqa: F401
+        from openai._base_client import make_request_options
+        from openai._constants import RAW_RESPONSE_HEADER  # noqa: F401
+        from openai._response import AsyncResponseContextManager  # noqa: F401
+        from openai.types.responses import Response, ResponseStreamEvent  # noqa: F401
+
+        assert make_request_options(security={"bearer_auth": True}) == {"security": {"bearer_auth": True}}

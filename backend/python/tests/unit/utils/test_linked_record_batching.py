@@ -74,6 +74,85 @@ class TestBaseDocBatching:
         assert doc_index["r1"]["recordName"] == "fallback"
 
 
+class TestVirtualRecordIdsFromDocs:
+    """The record docs already carry the virtual record id the lookup query
+    returns; the query runs only for docs without one."""
+
+    NODES = [
+        {"id": "r1", "recordName": "r1", "virtualRecordId": "v1"},
+        {"id": "r2", "recordName": "r2", "virtualRecordId": "v2"},
+        {"id": "r3", "recordName": "r3"},  # no vrid: the query has none either
+    ]
+
+    async def _run(self, monkeypatch, nodes: list[dict], in_context: set[str] = frozenset()) -> tuple:
+        by_id = {n["id"]: n for n in self.NODES}
+        provider = _graph_provider({RECORDS: nodes})
+        # Answers as the graph would: from the record's own virtualRecordId.
+        provider.get_virtual_record_ids_for_record_ids = AsyncMock(side_effect=lambda ids: {
+            rid: by_id[rid]["virtualRecordId"] for rid in ids if by_id[rid].get("virtualRecordId")
+        })
+        build = AsyncMock(return_value="ctx")
+        monkeypatch.setattr(ch, "_build_linked_record_context_metadata", build)
+        blob_store = MagicMock()
+        blob_store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value={})
+        context_map = await ch._resolve_target_metadata(
+            set(by_id), {}, provider, set(in_context), None, blob_store, "org",
+        )
+        args = {
+            c.args[0]: (c.kwargs["vrid"], c.kwargs["blob_store"] is not None)
+            for c in build.await_args_list
+        }
+        return provider, args, context_map
+
+    @pytest.mark.asyncio
+    async def test_same_vrids_as_the_query_without_asking_for_them(self, monkeypatch) -> None:
+        stripped = [{k: v for k, v in n.items() if k != "virtualRecordId"} for n in self.NODES]
+        old_provider, old_args, old_map = await self._run(monkeypatch, stripped)
+        new_provider, new_args, new_map = await self._run(monkeypatch, self.NODES)
+
+        assert old_provider.get_virtual_record_ids_for_record_ids.await_count == 1
+        assert new_args == old_args == {"r1": ("v1", True), "r2": ("v2", True), "r3": (None, False)}
+        assert new_map == old_map
+        # Only the doc without a vrid is looked up.
+        new_provider.get_virtual_record_ids_for_record_ids.assert_awaited_once_with(["r3"])
+
+    @pytest.mark.asyncio
+    async def test_no_query_when_every_doc_has_a_vrid(self, monkeypatch) -> None:
+        provider, args, _ = await self._run(monkeypatch, self.NODES[:2])
+
+        provider.get_virtual_record_ids_for_record_ids.assert_not_called()
+        assert args == {"r1": ("v1", True), "r2": ("v2", True)}
+
+    @pytest.mark.asyncio
+    async def test_in_context_ids_are_not_resolved(self, monkeypatch) -> None:
+        provider, args, _ = await self._run(monkeypatch, self.NODES, in_context={"r1", "r2", "r3"})
+
+        provider.get_virtual_record_ids_for_record_ids.assert_not_called()
+        assert args == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_input_issues_no_query(self) -> None:
+        provider = _graph_provider()
+
+        assert await ch._resolve_target_metadata(set(), {}, provider, set(), None, None, "org") == {}
+        provider.get_nodes_by_field_in.assert_not_called()
+        provider.get_virtual_record_ids_for_record_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_leaves_only_those_records_without_a_blob(self, monkeypatch) -> None:
+        build = AsyncMock(return_value="ctx")
+        monkeypatch.setattr(ch, "_build_linked_record_context_metadata", build)
+        provider = _graph_provider({RECORDS: self.NODES})
+        provider.get_virtual_record_ids_for_record_ids = AsyncMock(side_effect=RuntimeError("down"))
+
+        await ch._resolve_target_metadata(
+            {"r1", "r3"}, {}, provider, set(), None, None, "org",
+        )
+
+        vrids = {c.args[0]: c.kwargs["vrid"] for c in build.await_args_list}
+        assert vrids == {"r1": "v1", "r3": None}
+
+
 class TestTypeDocBatching:
     @pytest.mark.asyncio
     async def test_grouped_by_collection_not_per_record(self) -> None:

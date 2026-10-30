@@ -677,6 +677,9 @@ class TestRequestShapeRecoveryIsNotAzureOnly:
             resp_calls.append(kwargs)
             return _Empty()
 
+        # A whole stub: a real client sends Responses bodies pre-encoded,
+        # around `with_streaming_response.create`.
+        transport._client = MagicMock()
         transport._client.chat.completions.create = AsyncMock(side_effect=_chat)
         transport._client.responses.with_streaming_response.create = MagicMock(
             side_effect=_resp

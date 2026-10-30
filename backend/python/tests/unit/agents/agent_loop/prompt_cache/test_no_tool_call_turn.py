@@ -185,16 +185,19 @@ class TestDirectTransports:
             api_key="test", model="gpt-6.1-sol",
             defaults=RequestDefaults(model="gpt-6.1-sol", use_responses_api=responses),
         )
-        create = AsyncMock(side_effect=_Sent)
         if responses:
-            transport._client.responses.create = create
+            # The Responses stream is opened with the request kwargs (pre-encoded when it can be).
+            opened = MagicMock(side_effect=_Sent)
+            transport._open_responses_stream = opened
         else:
+            create = AsyncMock(side_effect=_Sent)
             transport._client.chat.completions.create = create
 
         with pytest.raises(TransportError):
             _ = [event async for event in transport.stream(_HISTORY, tools=_TOOLS, tool_choice="none")]
 
-        assert create.call_args.kwargs["tool_choice"] == "none"
+        sent = opened.call_args.args[0] if responses else create.call_args.kwargs
+        assert sent["tool_choice"] == "none"
 
     def test_gemini(self) -> None:
         transport = GeminiTransport(api_key="k", model="gemini-3-flash-preview")
