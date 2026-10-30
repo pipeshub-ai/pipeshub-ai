@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
@@ -28,6 +27,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.blocks import ChildRecord, ChildType, CommentAttachment
 from app.modules.parsers.code_parser.secret_scan import redact_secrets
@@ -172,7 +172,7 @@ class AttachmentsHelper:
                 c.connector_id, full_attachment_url
             )
             filerecord = FileRecord(
-                id=existing_record.id if existing_record else str(uuid.uuid4()),
+                id=existing_record.id if existing_record else new_record_id(c.connector_id, full_attachment_url),
                 org_id=c.data_entities_processor.org_id,
                 record_name=attach.filename,
                 record_type=RecordType.FILE.value,
