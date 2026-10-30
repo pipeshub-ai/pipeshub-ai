@@ -31,6 +31,7 @@ on:
             - sharepoint
             - sharepoint_sim
             - bookstack_sim
+            - dropbox_sim
             - confluence
             - jira
             - zendesk
@@ -322,7 +323,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6},{7}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '', (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'dropbox_sim')) && 'dropbox-sim' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
@@ -397,6 +398,13 @@ jobs:
       CONNSIM_BOOKSTACK_REF: d7369757c0272ca4bfc706ecfe039c404b5584f8
       BOOKSTACK_SIM_IMAGE: pipeshub/connectors-simulator:bookstack-it
       NEEDS_BOOKSTACK_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'bookstack_sim')) && 'true' || 'false' }}
+      # The dropbox_sim suite runs the Dropbox team and personal connectors against the Dropbox simulator
+      # (dropbox-sim profile) on shard 4. connectors/dropbox_sim.env points the connectors at it and holds every
+      # value they need: no secrets. CONNSIM_DROPBOX_REF is connectors-simulator's main with the Dropbox
+      # simulator (#11).
+      CONNSIM_DROPBOX_REF: 424e407852391137754a2bd1b9bf92a095d2791c
+      DROPBOX_SIM_IMAGE: pipeshub/connectors-simulator:dropbox-it
+      NEEDS_DROPBOX_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'dropbox_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -492,19 +500,22 @@ jobs:
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two, and the job
       # times out at 300 min): shard 1 ~194 min, shard 2 ~235 min (with servicenow's estimate), shard 3
-      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
+      # ~209 min, shard 4 ~280 min (with dropbox_sim's estimate). Shard 1 keeps nextcloud and bookstack, the
       # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
       # and shard 3 zammad (zammad-source). The two Google Drive suites have
       # shard 4: together they pushed shard 2 past the job timeout.
       # A new connector suite goes on the lightest shard (outlook and then
       # servicenow went on shard 2, which was lightest); check with scripts/shard_balance.py. The
       # Gmail suites are on shard 2 too: they need the simulator image Jira's
-      # shard already builds, and no Google secrets.
+      # shard already builds, and no Google secrets. dropbox_sim went on
+      # shard 4, the only one with room for it (~64 min: its Neo4j leg
+      # measured in a pull request run, its ArangoDB leg estimated); check
+      # shard 4 against the timeout once the first nightly measures it.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or dropbox_sim"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -693,6 +704,24 @@ jobs:
           docker build -q -t "$BOOKSTACK_SIM_IMAGE" connectors-simulator-bookstack
           echo "BOOKSTACK_SIM_COMPOSE=-f docker-compose.integration.bookstack-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/bookstack_sim.env >> "$GITHUB_ENV"
+
+      - name: Check out the Dropbox simulator
+        if: env.NEEDS_DROPBOX_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_DROPBOX_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-dropbox
+          persist-credentials: false
+
+      # No dataset: each test loads its own team or account. The settings set DROPBOX_API_BASE_URL, so the
+      # Dropbox suites fail rather than skip if the simulator is not up.
+      - name: Use the Dropbox simulator
+        if: env.NEEDS_DROPBOX_SIM == 'true'
+        run: |
+          docker build -q -t "$DROPBOX_SIM_IMAGE" connectors-simulator-dropbox
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/dropbox_sim.env >> "$GITHUB_ENV"
 
       - name: Pull pre-built base images
         run: |
