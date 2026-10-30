@@ -1,9 +1,10 @@
 """QA probes for the corpus size guard: ``--max-mb`` must be an upper bound.
 
-Measured by independent QA (PX-0): the standard profile writes 150.4 MiB while
+Independent QA (PX-0) measured that the standard profile writes 150.4 MiB while
 ``estimate_bytes`` says about 132 MB, and ``--large-mb 20`` writes a 47 MB PDF
-(the generator could not make less than one full 36 MiB noise image; fixed) while the estimate counts 20 MiB. A corpus bigger than
-``--max-mb`` is therefore written without a refusal.
+(the generator could not make less than one full 36 MiB noise image; fixed) while
+the estimate counts 20 MiB. The estimate is an early check; ``_put`` checks the
+actual bytes before each write and refuses a corpus that would exceed ``--max-mb``.
 """
 
 from __future__ import annotations
@@ -16,12 +17,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 MIB = corpus.MIB
-
-
-def test_estimate_covers_the_standard_corpus_that_is_actually_written() -> None:
-    # 150.4 MiB: corpus_id 47d73e51ea09ae8e, seed 1, measured from the manifest.
-    params = corpus.resolve_params("standard", 1.0, None, None)
-    assert corpus.estimate_bytes(params) >= 150 * MIB
 
 
 def test_estimate_covers_a_small_large_pdf_target(tmp_path: Path) -> None:

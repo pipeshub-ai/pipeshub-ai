@@ -86,7 +86,7 @@ class TreeSampler(threading.Thread):
 
         self._ps = psutil
         self._me = psutil.Process()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.mem_limit = mem_limit
         self.host_limit_pct = host_limit_pct
         self.latest_tree_rss = 0
@@ -101,18 +101,18 @@ class TreeSampler(threading.Thread):
         self._tick = 0
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def parent_rss_now(self) -> int:
         return self._me.memory_info().rss
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 self.sample()
             except Exception:  # a process exiting under us is normal
                 log.debug("sample failed", exc_info=True)
-            self._stop.wait(SAMPLE_SECONDS)
+            self._stop_event.wait(SAMPLE_SECONDS)
 
     def _role(self, proc: Any, parent_roles: dict[int, str]) -> str:  # noqa: ANN401
         if proc.pid == self._me.pid:
@@ -363,8 +363,9 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     stats = Counter()
 
     async def one(entry: Entry) -> None:
-        data = (corpus / entry.path).read_bytes()
         async with sem:
+            # Read once admitted, as a service holds only the files it is working on; the read is off the loop.
+            data = await asyncio.to_thread((corpus / entry.path).read_bytes)
             started = time.monotonic()
             tier = classify(entry.ext, entry.mime)
             pool = gate_pool(tier)
@@ -593,6 +594,12 @@ def main(argv: list[str] | None = None) -> int:
     raw = asyncio.run(run(args, files, args.corpus, sampler))
     sampler.stop()
     result = assemble(args, raw, sampler, load, manifest.corpus_id)
+    # Recorded in the result, so a rerun over this file cannot pass a golden diff by skipping it.
+    diffs = (
+        golden.compare(json.loads(args.golden_check.read_text()), result["golden"], subset=args.mix != "all")
+        if args.golden_check else None
+    )
+    result["golden_diffs"] = diffs
     text = json.dumps(result, indent=1, sort_keys=True)
     if args.out:
         args.out.write_text(text)
@@ -604,7 +611,6 @@ def main(argv: list[str] | None = None) -> int:
         args.golden_write.write_text(json.dumps(result["golden"], indent=1, sort_keys=True))
         print(f"golden written: {args.golden_write} ({len(result['golden'])} files)")
     if args.golden_check:
-        diffs = golden.compare(json.loads(args.golden_check.read_text()), result["golden"], subset=args.mix != "all")
         print("golden diff: " + ("empty" if not diffs else f"{len(diffs)} file(s) differ"))
         for line in diffs:
             print("  " + line)

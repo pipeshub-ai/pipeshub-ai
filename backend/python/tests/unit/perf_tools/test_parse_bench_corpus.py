@@ -136,6 +136,29 @@ class TestMaxMbIsAnUpperBound:
             corpus.generate(tmp_path / "c", profile="smoke", max_mb=0)
         assert not list((tmp_path / "c").iterdir())
 
+    def test_a_refused_run_leaves_the_files_it_would_have_overwritten_as_they_were(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        out = tmp_path / "c"
+        out.mkdir()
+        (out / "digital-00.pdf").write_bytes(b"an earlier corpus")  # a name this run writes first
+        (out / "keep.txt").write_bytes(b"not ours")
+        real_put = corpus._put
+        puts: list[str] = []
+
+        def refuse_the_third(out_dir: Path, name: str, *args: object) -> None:
+            puts.append(name)
+            if len(puts) == 3:  # the real guard, tripping after two files are written
+                raise corpus.CorpusTooLarge("past --max-mb")
+            return real_put(out_dir, name, *args)
+
+        monkeypatch.setattr(corpus, "_put", refuse_the_third)
+        with pytest.raises(corpus.CorpusTooLarge):
+            corpus.generate(out, profile="smoke")
+        assert len(puts) == 3
+        assert (out / "digital-00.pdf").read_bytes() == b"an earlier corpus"
+        assert sorted(p.name for p in out.iterdir()) == ["digital-00.pdf", "keep.txt"]
+
     def test_a_corpus_that_fits_is_written_whole(self, tmp_path: Path) -> None:
         manifest = corpus.generate(tmp_path / "c", profile="smoke", max_mb=5)
         assert manifest.total_bytes <= 5 * corpus.MIB

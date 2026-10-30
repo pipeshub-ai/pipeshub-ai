@@ -19,15 +19,27 @@ if TYPE_CHECKING:
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
+def _is_id_key(key: str) -> bool:
+    return key == "id" or key.endswith(("_id", "_ids", "children"))
+
+
+def _rename(value: Any, names: dict[str, str], *, is_id: bool = False) -> Any:  # noqa: ANN401
+    """Copy of *value* with a uuid renamed only where a structural id or reference sits; the same
+    uuid appearing in document text is content and stays."""
+    if isinstance(value, dict):
+        # Sorted, so "first appearance" does not depend on the order the dump listed the keys in.
+        return {k: _rename(value[k], names, is_id=_is_id_key(str(k))) for k in sorted(value, key=str)}
+    if isinstance(value, list):
+        return [_rename(v, names, is_id=is_id) for v in value]
+    if is_id and isinstance(value, str) and _UUID.fullmatch(value):
+        return names.setdefault(value.lower(), f"id{len(names)}")
+    return value
+
+
 def canonicalize(payload: Any) -> str:  # noqa: ANN401
-    """Stable JSON of a dumped container: uuids renamed by first appearance."""
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
-    names: dict[str, str] = {}
-
-    def rename(match: re.Match[str]) -> str:
-        return names.setdefault(match.group(0).lower(), f"id{len(names)}")
-
-    return _UUID.sub(rename, text)
+    """Stable JSON of a dumped container: structural uuids renamed by first appearance."""
+    renamed = _rename(payload, {})
+    return json.dumps(renamed, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def digest(payload: Any) -> str:  # noqa: ANN401

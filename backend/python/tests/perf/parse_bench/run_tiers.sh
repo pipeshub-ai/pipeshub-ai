@@ -100,7 +100,10 @@ for tier in $tiers; do
   for mix in $mixes; do
     for ((r = 1; r <= repeats; r++)); do
       result="$out/$label/$label-$mix-r$r.json"
-      [[ -s $result ]] && { echo "skip $result (exists)"; continue; }
+      # Only a finished run with unchanged output is skipped; an aborted one or a golden diff runs again.
+      if [[ -s $result ]] && PYTHONPATH="$python_root" python3 -m tests.perf.parse_bench.matrix done "$result"; then
+        echo "skip $result (exists)"; continue
+      fi
       echo "== $label $mix run $r: --cpus $cpus --memory ${mem}g"
       extra_mounts=("${golden_mount[@]}" -v "$corpus:/corpus:ro" -v "$out/$label:/out")
       check=()

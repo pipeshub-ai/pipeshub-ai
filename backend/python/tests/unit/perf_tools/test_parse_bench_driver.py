@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -107,6 +108,15 @@ class TestSamplerAbort:
         assert sampler.peak_tree_rss > 0
         assert sampler.peak_threads >= 1
 
+    def test_the_thread_can_be_started_stopped_and_joined(self) -> None:
+        # ``threading.Thread`` calls its own ``_stop()`` while joining; an attribute of that name
+        # broke join() with "'Event' object is not callable".
+        sampler = driver.TreeSampler(mem_limit=None, host_limit_pct=101.0)
+        sampler.start()
+        sampler.stop()
+        sampler.join(timeout=10)
+        assert not sampler.is_alive()
+
     def test_records_a_child_process(self) -> None:
         import subprocess
         import sys
@@ -121,7 +131,21 @@ class TestSamplerAbort:
         assert any(w["pid"] == child.pid and w["peak_rss"] > 0 for w in sampler.per_worker())
 
 
+_ENV_KEYS = ("ENABLE_PDFPLUMBER_PROCESSOR", "SECRET_KEY", "TELEMETRY_COLLECTION_FLAG")
+_ENV_AT_IMPORT = {k: os.environ.get(k) for k in _ENV_KEYS}
+
+
 class TestMain:
+    @pytest.fixture(autouse=True)
+    def _restore_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``driver.main`` sets these before its early returns; put each back as it was.
+        for key in _ENV_KEYS:
+            if key in os.environ:
+                monkeypatch.setenv(key, os.environ[key])
+            else:
+                monkeypatch.setenv(key, "")
+                monkeypatch.delenv(key)
+
     def test_refuses_to_start_on_a_busy_host(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr(driver, "host_load", lambda: {"loadavg_1m": 9.0, "cpu_pct": 91.0, "mem_pct": 40.0})
         assert driver.main(["--corpus", str(tmp_path)]) == 3
@@ -176,7 +200,7 @@ class _FakeRegistry:
         return _FakeParser()
 
 
-def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_window: bool) -> tuple[list[float], tuple[float, float]]:
+def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_window: bool, n_files: int = 3) -> tuple[list[float], tuple[float, float]]:
     """Run the real ``driver.run`` with fake parsers; return when hashing helpers were called and the window."""
     import argparse
     import asyncio
@@ -211,15 +235,15 @@ def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_wi
 
         monkeypatch.setattr(driver, "serialize", serialize_and_hash)
     files = []
-    for i in range(3):
+    for i in range(n_files):
         (tmp_path / f"n{i}.md").write_text("# t")
         files.append(Entry(f"n{i}.md", "md", "md", MIME["md"], 3, "0" * 64))
     args = argparse.Namespace(pdf_parser="pdfplumber", ocr_latency=0.0, mem_limit_gb=None, cpus=None,
                               concurrency=2, gate_timeout=30.0, cgroup="")
     sampler = driver.TreeSampler(mem_limit=None, host_limit_pct=101.0)
     raw = asyncio.run(driver.run(args, files, tmp_path, sampler))
-    assert raw["ok"] == 3
-    assert len(raw["golden"]) == 3
+    assert raw["ok"] == n_files
+    assert len(raw["golden"]) == n_files
     return calls, raw["window"]
 
 
@@ -235,6 +259,37 @@ def test_hashing_does_not_run_inside_the_timed_window(tmp_path: Path, monkeypatc
 def test_the_window_check_catches_hashing_put_back_inside(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls, (_, end) = _run_with_spy(tmp_path, monkeypatch, hash_in_window=True)
     assert any(t < end for t in calls)
+
+
+def test_main_tests_leave_the_environment_as_they_found_it() -> None:
+    """Placed after ``TestMain`` on purpose: a leak from it would show here."""
+    assert {k: os.environ.get(k) for k in _ENV_KEYS} == _ENV_AT_IMPORT
+
+
+def test_a_file_is_read_only_once_it_holds_a_concurrency_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading every file at t0 puts the whole corpus in memory and a blocking read inside the timed
+    window; reads must wait for the semaphore (concurrency is 2 in the helper)."""
+    import asyncio
+    from pathlib import Path as _Path
+
+    reads: list[str] = []
+    seen_at_first_parse: list[int] = []
+    real_read = _Path.read_bytes
+
+    def counting_read(self: _Path) -> bytes:
+        reads.append(self.name)
+        return real_read(self)
+
+    async def parse(self: object, content: bytes, name: str, config: dict) -> SimpleNamespace:
+        seen_at_first_parse.append(len(reads))
+        await asyncio.sleep(0.05)
+        return SimpleNamespace(block_container=_FakeContainer(), raw_document=None)
+
+    monkeypatch.setattr(_Path, "read_bytes", counting_read)
+    monkeypatch.setattr(_FakeParser, "parse", parse)
+    _run_with_spy(tmp_path, monkeypatch, hash_in_window=False, n_files=8)
+    assert seen_at_first_parse
+    assert seen_at_first_parse[0] <= 2, f"{seen_at_first_parse[0]} files were read before the first parse started"
 
 
 def test_stack_collector_keeps_only_the_watchdog_stacks() -> None:

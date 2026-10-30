@@ -27,7 +27,9 @@ import io
 import json
 import math
 import random
+import shutil
 import sys
+import tempfile
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -423,7 +425,9 @@ def generate(
             "lower --scale or --large-mb, or raise --max-mb"
         )
     out.mkdir(parents=True, exist_ok=True)
-    existing = set(out.iterdir())
+    # Written beside the target and moved in only when the whole corpus fit, so a refused run
+    # leaves the directory (including any file this run would have overwritten) as it was.
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=out))
     manifest = Manifest(seed=seed, profile=profile, params={**params, "scale": scale})
     manifest.budget = max_mb * MIB
     try:
@@ -432,31 +436,31 @@ def generate(
         for kind, make in makers.items():
             count, pages = params[kind]
             for i in range(count):
-                _put(out, f"{kind}-{i:02d}.pdf", kind, "pdf", make(words, pages), pages, manifest)
+                _put(staging, f"{kind}-{i:02d}.pdf", kind, "pdf", make(words, pages), pages, manifest)
         boundary = params["scanned_boundary_pages"]
         if boundary:
-            _put(out, "scanned-boundary.pdf", "scanned", "pdf", scanned_pdf(words, boundary), boundary, manifest)
+            _put(staging, "scanned-boundary.pdf", "scanned", "pdf", scanned_pdf(words, boundary), boundary, manifest)
         count, pages = params["damaged"]
         for i in range(count):
-            _put(out, f"damaged-{i:02d}.pdf", "damaged", "pdf", damaged_pdf(words, pages, i), pages, manifest)
+            _put(staging, f"damaged-{i:02d}.pdf", "damaged", "pdf", damaged_pdf(words, pages, i), pages, manifest)
         if params["large_mb"]:
             if manifest.total_bytes + params["large_mb"] * MIB > manifest.budget:  # before building it
                 raise CorpusTooLarge(f"the {params['large_mb']} MiB large PDF does not fit --max-mb {max_mb}")
-            _put(out, "large-00.pdf", "large", "pdf", large_pdf(seed, params["large_mb"]), 0, manifest)
+            _put(staging, "large-00.pdf", "large", "pdf", large_pdf(seed, params["large_mb"]), 0, manifest)
         count, pages = params["docx"]
         for i in range(count):
-            _put(out, f"docx-{i:02d}.docx", "docx", "docx", docx_file(words, pages), pages, manifest)
+            _put(staging, f"docx-{i:02d}.docx", "docx", "docx", docx_file(words, pages), pages, manifest)
         for i in range(params["md"]):
-            _put(out, f"doc-{i:02d}.md", "md", "md", markdown_file(words), 0, manifest)
+            _put(staging, f"doc-{i:02d}.md", "md", "md", markdown_file(words), 0, manifest)
         for i in range(params["json"]):
-            _put(out, f"data-{i:02d}.json", "json", "json", json_file(words, 200 * (i + 1)), 0, manifest)
+            _put(staging, f"data-{i:02d}.json", "json", "json", json_file(words, 200 * (i + 1)), 0, manifest)
         for i in range(params["txt"]):
-            _put(out, f"note-{i:02d}.txt", "txt", "txt", text_file(words), 0, manifest)
-        (out / MANIFEST).write_text(manifest.to_json())
-    except CorpusTooLarge:
-        for path in set(out.iterdir()) - existing:
-            path.unlink()
-        raise
+            _put(staging, f"note-{i:02d}.txt", "txt", "txt", text_file(words), 0, manifest)
+        (staging / MANIFEST).write_text(manifest.to_json())
+        for path in sorted(staging.iterdir()):
+            path.replace(out / path.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return manifest
 
 

@@ -68,7 +68,7 @@ def test_run_all_skips_existing_results(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(matrix.subprocess, "run", lambda cmd, check: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
     out = tmp_path / "out"
     out.mkdir()
-    (out / "L-cpu-heavy-r1.json").write_text("{}")
+    (out / "L-cpu-heavy-r1.json").write_text('{"status": "ok"}')
     ns = matrix.argparse.Namespace(
         corpus=tmp_path, out_dir=out, label="L", mixes=["cpu-heavy"], repeats=2, passes=1, cpus=0,
         mem_limit_gb=0.0, max_host_pct=85.0, golden_check=None, force=False, driver_args=[],
@@ -79,7 +79,73 @@ def test_run_all_skips_existing_results(tmp_path: Path, monkeypatch) -> None:
     assert calls[0][calls[0].index("--out") + 1].endswith("L-cpu-heavy-r2.json")
 
 
+def _rerun_ns(tmp_path: Path, out: Path) -> matrix.argparse.Namespace:
+    return matrix.argparse.Namespace(
+        corpus=tmp_path, out_dir=out, label="L", mixes=["cpu-heavy"], repeats=1, passes=1, cpus=0,
+        mem_limit_gb=0.0, max_host_pct=85.0, golden_check=None, force=False, driver_args=[],
+        busy_retries=0, busy_wait=0.0,
+    )
+
+
+class TestOnlyACompleteResultIsSkipped:
+    def test_ok_without_golden_differences_is_complete(self) -> None:
+        assert matrix.is_complete({"status": "ok", "golden_diffs": None})
+        assert matrix.is_complete({"status": "ok", "golden_diffs": []})
+
+    def test_aborted_golden_diff_and_unreadable_are_not(self) -> None:
+        assert not matrix.is_complete({"status": "aborted: memory"})
+        assert not matrix.is_complete({"status": "ok", "golden_diffs": ["a.pdf: hash differs"]})
+        assert not matrix.is_complete({})
+        assert not matrix.is_complete([])
+
+    def test_run_all_runs_again_over_an_aborted_result(self, tmp_path: Path, monkeypatch) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(matrix.subprocess, "run", lambda cmd, check: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+        (tmp_path / "L-cpu-heavy-r1.json").write_text(json.dumps({"status": "aborted: tree RSS"}))
+        matrix.run_all(_rerun_ns(tmp_path, tmp_path))
+        assert len(calls) == 1
+
+    def test_run_all_runs_again_over_a_golden_diff(self, tmp_path: Path, monkeypatch) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(matrix.subprocess, "run", lambda cmd, check: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+        (tmp_path / "L-cpu-heavy-r1.json").write_text(json.dumps({"status": "ok", "golden_diffs": ["x: hash differs"]}))
+        matrix.run_all(_rerun_ns(tmp_path, tmp_path))
+        assert len(calls) == 1
+
+    def test_the_done_command_is_the_shell_script_s_test(self, tmp_path: Path) -> None:
+        ok, bad = tmp_path / "ok.json", tmp_path / "bad.json"
+        ok.write_text(json.dumps({"status": "ok"}))
+        bad.write_text(json.dumps({"status": "ok", "golden_diffs": ["x"]}))
+        assert matrix.main(["done", str(ok)]) == 0
+        assert matrix.main(["done", str(bad)]) == 1
+        assert matrix.main(["done", str(tmp_path / "missing.json")]) == 1
+
+    def test_summary_lists_a_golden_difference_as_not_finished(self, tmp_path: Path) -> None:
+        _write(tmp_path / "a.json", "T-small", "cpu-heavy", 1.0)
+        data = json.loads((tmp_path / "a.json").read_text())
+        data["golden_diffs"] = ["a.pdf: hash differs", "b.pdf: hash differs"]
+        (tmp_path / "a.json").write_text(json.dumps(data))
+        assert "Not finished: T-small/cpu-heavy: golden diff (2 files)" in matrix.summarize([tmp_path], {})
+
+
 class TestRunTiersScript:
+    def _rerun(self, tmp_path: Path, result: dict) -> str:
+        out = tmp_path / "out" / "T-small"
+        out.mkdir(parents=True)
+        (out / "T-small-cpu-heavy-r1.json").write_text(json.dumps(result))
+        return self._dry(tmp_path, BENCH_TIERS="T-small:2:4", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy")
+
+    def test_a_finished_result_is_skipped(self, tmp_path: Path) -> None:
+        out = self._rerun(tmp_path, {"status": "ok", "golden_diffs": None})
+        assert "skip" in out and "(exists)" in out
+        assert "docker run" not in out
+
+    def test_an_aborted_result_is_run_again(self, tmp_path: Path) -> None:
+        assert "docker run" in self._rerun(tmp_path, {"status": "aborted: tree RSS"})
+
+    def test_a_result_with_a_golden_difference_is_run_again(self, tmp_path: Path) -> None:
+        assert "docker run" in self._rerun(tmp_path, {"status": "ok", "golden_diffs": ["x: hash differs"]})
+
     def _dry(self, tmp_path: Path, **env: str) -> str:
         (tmp_path / "corpus").mkdir(exist_ok=True)
         (tmp_path / "corpus" / "manifest.json").write_text("{}")

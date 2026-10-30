@@ -30,6 +30,18 @@ PRIMARY_MIX = "cpu-heavy"
 BUSY = 3  # the driver's exit code for "host over its limit, not started"
 
 
+def is_complete(result: Any) -> bool:  # noqa: ANN401
+    """A finished run that left output unchanged; anything else is run again, not skipped."""
+    return isinstance(result, dict) and result.get("status") == "ok" and not result.get("golden_diffs")
+
+
+def is_complete_file(path: Path) -> bool:
+    try:
+        return is_complete(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return False
+
+
 def driver_command(args: argparse.Namespace, mix: str, repeat: int, out: Path) -> list[str]:
     cmd = [
         sys.executable, "-m", "tests.perf.parse_bench.driver",
@@ -51,7 +63,7 @@ def run_all(args: argparse.Namespace) -> int:
     for mix in args.mixes:
         for repeat in range(1, args.repeats + 1):
             out = args.out_dir / f"{args.label}-{mix}-r{repeat}.json"
-            if out.exists() and not args.force:
+            if is_complete_file(out) and not args.force:
                 print(f"skip {out.name} (exists)")
                 continue
             for attempt in range(args.busy_retries + 1):
@@ -108,6 +120,8 @@ def summarize(out_dirs: list[Path], limits_gb: dict[str, float]) -> str:
     text.append("Runs per cell: " + ", ".join(f"{k[0]}/{k[1]}={v}" for k, v in sorted(counts.items())))
     unfinished = [r["config"]["label"] + "/" + r["config"]["mix"] + ": " + r["status"]
                   for r in results if r["status"] != "ok"]
+    unfinished += [f"{r['config']['label']}/{r['config']['mix']}: golden diff ({len(r['golden_diffs'])} files)"
+                   for r in results if r["status"] == "ok" and r.get("golden_diffs")]
     if unfinished:
         text += ["", "Not finished: " + "; ".join(unfinished)]
     primary = {label: run for (label, mix), run in chosen.items() if mix == PRIMARY_MIX}
@@ -138,7 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     summ = sub.add_parser("summarize")
     summ.add_argument("--out-dir", type=Path, action="append", required=True)
     summ.add_argument("--tier", action="append", default=[], metavar="LABEL=MEM_GB")
+    done = sub.add_parser("done", help="exit 0 if the result file is a finished run with unchanged output")
+    done.add_argument("result", type=Path)
     args = ap.parse_args(argv)
+    if args.cmd == "done":
+        return 0 if is_complete_file(args.result) else 1
     if args.cmd == "run":
         return run_all(args)
     limits = {t.split("=")[0]: float(t.split("=")[1]) for t in args.tier}

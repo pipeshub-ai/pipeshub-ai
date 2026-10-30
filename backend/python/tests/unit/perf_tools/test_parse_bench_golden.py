@@ -9,7 +9,7 @@ from tests.perf.parse_bench import golden
 
 def _payload(ids: list[str]) -> dict:
     return {
-        "blocks": [{"id": ids[0], "parent": ids[1], "data": "text"}],
+        "blocks": [{"id": ids[0], "parent_id": ids[1], "data": "text"}],
         "block_groups": [{"id": ids[1], "children": [ids[0]]}],
     }
 
@@ -32,6 +32,19 @@ def test_changed_reference_structure_changes_the_digest() -> None:
     swapped = _payload([one, two])
     swapped["block_groups"][0]["children"] = [two]
     assert golden.digest(_payload([one, two])) != golden.digest(swapped)
+
+
+def test_a_uuid_in_the_document_text_is_content_not_an_id() -> None:
+    a = _payload([str(uuid.uuid4()), str(uuid.uuid4())])
+    b = _payload([str(uuid.uuid4()), str(uuid.uuid4())])
+    a["blocks"][0]["data"] = "550e8400-e29b-41d4-a716-446655440000"
+    b["blocks"][0]["data"] = "123e4567-e89b-12d3-a456-426614174000"
+    assert golden.digest(a) != golden.digest(b)
+    c = _payload([str(uuid.uuid4()), str(uuid.uuid4())])
+    c["blocks"][0]["data"] = "see 550e8400-e29b-41d4-a716-446655440000 here"
+    d = _payload([str(uuid.uuid4()), str(uuid.uuid4())])
+    d["blocks"][0]["data"] = "see 123e4567-e89b-12d3-a456-426614174000 here"
+    assert golden.digest(c) != golden.digest(d)
 
 
 def test_key_order_is_irrelevant() -> None:
