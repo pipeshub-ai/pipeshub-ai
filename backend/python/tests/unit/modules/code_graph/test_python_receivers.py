@@ -202,3 +202,38 @@ def sync(client, log, book):
     })
     await _build(graph)
     assert _targets(graph, CALLS, "pkg/outlook.py") == {"pkg/billing/ledger.py::method:Ledger.post_entry"}
+
+
+@pytest.mark.asyncio
+async def test_a_name_shared_by_unrelated_classes_resolves_to_the_one_the_caller_imports(graph, index_file) -> None:
+    """Model fields and form fields are both `Field` with `to_python`; a serializer that
+    imports only the models package means the model one. Seeing both, it guesses neither."""
+    field = b"class Field:\n    def to_python(self, value):\n        return value\n"
+    files = {
+        "app/__init__.py": b"",
+        "app/db/__init__.py": b"",
+        "app/db/models/__init__.py": b"from app.db.models.fields import Field\n",
+        "app/db/models/fields/__init__.py": field,
+        "app/forms/__init__.py": b"from app.forms.fields import Field\n",
+        "app/forms/fields.py": field,
+        "app/core/serializers/python.py": b'''
+from app.db import models
+
+def deserialize(Model, name, value):
+    field = Model._meta.get_field(name)
+    return field.to_python(value)
+''',
+        "app/core/both.py": b'''
+from app.db import models
+from app import forms
+
+def convert(field, value):
+    return field.to_python(value)
+''',
+    }
+    for path, src in files.items():  # one record per file: several are `__init__.py`
+        await index_file(path.replace("/", "_"), path, src, "python")
+    await _build(graph)
+    assert _targets(graph, CALLS, "app/core/serializers/python.py") == {
+        "app/db/models/fields/__init__.py::method:Field.to_python"}
+    assert _targets(graph, CALLS, "app/core/both.py") == set()

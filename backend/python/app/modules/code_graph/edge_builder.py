@@ -941,8 +941,9 @@ class _Builder:
             if name in _PY_BUILTIN_METHODS:
                 return None, CONFIDENCE_INFERRED, _EXTERNAL
             last = (fact.get("qualifiedPrefix") or receiver or "").rsplit(".", 1)[-1]
-            named = self._py_named_like(last, name) if _SEGMENT.fullmatch(last) and last not in ("self", "cls") else None
             call_file = self.index.file_by_record.get(record_id) or ""
+            named = (self._py_named_like(last, name, call_file)
+                     if _SEGMENT.fullmatch(last) and last not in ("self", "cls") else None)
             if named and self._py_reachable(call_file, named):
                 return self._resolve_self_method(named, name), CONFIDENCE_INFERRED, RESOLUTION_NAME
             return self._py_unique_method(name, fact, record_id)
@@ -1047,7 +1048,8 @@ class _Builder:
                     owner, type_arg = (self._member_type(owner, name, depth),
                                        self._member_type(owner, name, depth, suffix="<>"))
                     if owner is None and py:
-                        owner = self._py_named_like(name)  # `self.model_admin` -> ModelAdmin
+                        # `self.model_admin` -> ModelAdmin
+                        owner = self._py_named_like(name, call_file=self.index.file_by_record.get(record_id))
         return owner
 
     def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
@@ -1061,7 +1063,8 @@ class _Builder:
             return candidates[0]
         if family != "py":
             return None
-        return self._py_imported_value(record_id, name, depth) or self._py_named_like(name)
+        return (self._py_imported_value(record_id, name, depth)
+                or self._py_named_like(name, call_file=self.index.file_by_record.get(record_id)))
 
     def _py_imported_value(self, record_id: str, name: str, depth: int) -> str | None:
         """The type of a module-level value a Python file imports, read from the
@@ -1078,7 +1081,7 @@ class _Builder:
                 return self._declared_type(declared, target_record, None, depth + 1)
         return None
 
-    def _py_named_like(self, name: str, method: str | None = None) -> str | None:
+    def _py_named_like(self, name: str, method: str | None = None, call_file: str | None = None) -> str | None:
         """The class an untyped Python name spells, or None: `queryset` is QuerySet,
         `schema_editor` the one base of every `*SchemaEditor`, `old_field` a `*Field`.
 
@@ -1086,7 +1089,9 @@ class _Builder:
         as a class-name suffix, then its last word as an exact class name. One word is
         never matched as a suffix: `cursor` is usually a driver's object, not the one
         repo class ending in Cursor. With *method*, only classes that have it count.
-        Subclasses fold into their base; a guess needs exactly one class left.
+        Subclasses fold into their base; a guess needs exactly one class left, or,
+        among unrelated classes of that name, exactly one that *call_file* can see
+        (a model `field` where only the models package is imported, not the forms one).
         """
         if self._py_classes is None:
             self._py_classes = {}
@@ -1095,26 +1100,26 @@ class _Builder:
                 if row is not None and row.name and self._family_of(cid) == "py":
                     self._py_classes.setdefault(row.name.replace("_", "").lower(), []).append(cid)
         memo_key = ("named", name, method)
-        if memo_key in self._expr_memo:
-            return self._expr_memo[memo_key]
-        words = [w for w in name.lower().split("_") if w]
-        tries = [("".join(words), True)] + ([("".join(words), False), (words[-1], True)] if len(words) > 1 else [])
-        found = None
-        for key, exact in tries:
-            if len(key) <= 3:
-                continue
-            hits = self._py_classes.get(key, []) if exact else [
-                cid for norm, cids in self._py_classes.items() if norm.endswith(key) for cid in cids]
-            if method:
-                hits = [cid for cid in hits if self._resolve_self_method(cid, method)]
-            roots = self._py_roots(hits)
-            if len(roots) == 1:
-                found = roots[0]
-                break
-            if roots:  # several unrelated classes: a guess would be a coin toss
-                break
-        self._expr_memo[memo_key] = found
-        return found
+        if memo_key not in self._expr_memo:
+            words = [w for w in name.lower().split("_") if w]
+            tries = [("".join(words), True)] + ([("".join(words), False), (words[-1], True)] if len(words) > 1 else [])
+            roots: list[str] = []
+            for key, exact in tries:
+                if len(key) <= 3:
+                    continue
+                hits = self._py_classes.get(key, []) if exact else [
+                    cid for norm, cids in self._py_classes.items() if norm.endswith(key) for cid in cids]
+                if method:
+                    hits = [cid for cid in hits if self._resolve_self_method(cid, method)]
+                roots = self._py_roots(hits)
+                if roots:
+                    break
+            self._expr_memo[memo_key] = roots
+        roots = self._expr_memo[memo_key]
+        if len(roots) > 1 and call_file:
+            roots = [cid for cid in roots if self._py_reachable(call_file, cid)]
+        # Several unrelated classes the caller can all see: a guess would be a coin toss.
+        return roots[0] if len(roots) == 1 else None
 
     def _py_reachable(self, call_file: str, target: str) -> bool:
         """Whether a guessed *target* is code *call_file* can see: its own file, a file it
