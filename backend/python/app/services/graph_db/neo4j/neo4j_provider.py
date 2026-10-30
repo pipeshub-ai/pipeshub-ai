@@ -377,16 +377,19 @@ def _cypher_kh_date(v: str, source: str, ingest: str) -> str:
             f"ELSE coalesce({v}.{source}, {v}.{ingest}, 0) END")
 
 
-def _cypher_kh_has_children(v: str) -> str:
-    """Whether a knowledge hub node has a live child: one below it in the
-    hierarchy, or a record filed in it. Collection items often belong to the
-    folder instead of hanging off it by NODE_RELATION."""
+def _cypher_kh_has_children(v: str, hop: str, opens: str) -> str:
+    """Whether a knowledge hub node has a child the viewer can list: one below it
+    that passes the listing's own hop (``hop``, child ``kh_ch``), or a record filed
+    in it where ``opens`` says everything is open or the group's own grants decide.
+    Collection items often belong to the folder instead of hanging off it by
+    NODE_RELATION. A bare "has a child" would tell a viewer about ones they cannot read."""
     return (
         f"(EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
-        "WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-        "AND NOT coalesce(kh_ch.isDeleted, false) } "
-        f"OR EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        "WHERE NOT coalesce(kh_bc.isDeleted, false) })"
+        f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND {hop} }} "
+        f"OR (({opens} OR ({v}:RecordGroup AND NOT coalesce({v}.hideChildren, false) "
+        f"AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL')) "
+        f"AND EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
+        "WHERE NOT coalesce(kh_bc.isDeleted, false) }))"
     )
 
 
@@ -20109,11 +20112,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _kh_v3_granted_hop(
         self, child: str, parent: str, *, navigation: bool = True, state: bool = False,
-        grant_once: bool = False,
+        grant_once: bool = False, opens: str = "appOpensEverything",
     ) -> str:
         """One hop of the v3 rule, over the user's granted ids.
 
-        ``appOpensEverything`` must already be in scope. A grant is ``id IN
+        ``appOpensEverything`` (or ``opens``, an expression) must be in scope. A grant is ``id IN
         $grantedIds``, not a fresh ``PERMISSION`` expansion. The stop at
         RECORD_GROUP_LEVEL groups is deliberately not here: only the global
         flatten has the declared arms that supply what is below one.
@@ -20138,12 +20141,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
-              AND (appOpensEverything
+              AND ({opens}
                 OR ({inherits} AND {rule} IN ['STRICT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
                     AND (({inherits} AND {rule} = 'RESTRICTED') OR {rule} IN ['STRICT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
-              AND (appOpensEverything
+              AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
                     AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                       OR (coalesce({child}.accessRule, 'OPEN') = 'RESTRICTED'
@@ -20490,6 +20493,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return "" if lists_placeholders else f"AND NOT {self._kh_placeholder(v, state=state)}"
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
+        # A row's hasChildren counts only children the viewer's hop lets through, so an
+        # arrow never says a hidden child exists. `app` is in scope where it is used.
+        app_opens = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB')"
+        child_hop = self._kh_v3_granted_hop(
+            "kh_ch", "node", state=state, grant_once=probe is not None and listing_by_probe, opens=app_opens)
+        if probe is not None and not listing_by_probe:
+            # $grantedIds holds only the App's direct children here: test deeper grants from the node.
+            child_hop = self._kh_grants_by_probe(child_hop)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
         depth = f"{{1,{max_depth}}}" if flatten else "{1}"
@@ -20799,7 +20810,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # that on this map, before the page is cut. Other listings never
             # filter on it, so they skip the expand.
             "hasChildren": (
-                _cypher_kh_has_children("node") if any("node.hasChildren" in c for c in conditions) else "false"
+                _cypher_kh_has_children("node", child_hop, app_opens)
+                if any("node.hasChildren" in c for c in conditions) else "false"
             ),
         }
         needed = {"id"}
@@ -20839,7 +20851,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": _cypher_kh_has_children("node"),
+                "hasChildren": _cypher_kh_has_children("node", child_hop, app_opens),
             },
             include_comparator=False,
         )
@@ -21102,9 +21114,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_placed": placed_ids,
             "kh_candidates": name_matches or [],
         })
+        if probe:
+            params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
         if probe and listing_by_probe:
             del params["grantedIds"]
-            params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
             query = self._kh_grants_by_probe(query)
         # The global listing from the App can be read from precomputed scopes (kh_scope) instead of walking the whole
         # tree, behind the ENABLE_KH_SCOPE_LISTING flag. Only where it gives exactly this query's answer: a sort
@@ -23090,7 +23103,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND (v.orgId = $org_id)
               AND (v.isDeleted IS NULL OR v.isDeleted = false)
 
-            WITH v, e, EXISTS { (v)-[:NODE_RELATION]->(:Record) } AS hasChildren
+            // Ids, not a flag: hasChildren is decided after the access check, on children the user may open.
+            // shortcut: the first 200 children, so a folder whose first 200 are all hidden shows no arrow; page the ids if that matters.
+            WITH v, e, [(v)-[kh_lr:NODE_RELATION]->(kh_lc:Record)
+                        WHERE kh_lr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                          AND NOT coalesce(kh_lc.isDeleted, false) | kh_lc.id][..200] AS childIds
 
             RETURN {
                 id: v.id,
@@ -23099,7 +23116,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 connectorName: v.connectorName,
                 webUrl: v.webUrl,
                 relationshipType: e.relationshipType,
-                hasChildren: hasChildren,
+                childIds: childIds,
                 indexingStatus: v.indexingStatus,
                 userRole: null
             } AS item
@@ -23120,7 +23137,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             allowed = (await self.check_access(
                 user_key, org_id, node_ids=[item["id"] for item in items], transaction=transaction,
             )).node_ids
-            return [item for item in items if item["id"] in allowed][:limit]
+            return await self._with_readable_children(
+                [item for item in items if item["id"] in allowed][:limit], user_key, org_id, transaction)
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:

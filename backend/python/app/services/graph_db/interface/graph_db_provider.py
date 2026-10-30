@@ -7237,6 +7237,20 @@ class IGraphDBProvider(ABC):
             ),
         )
 
+    async def _with_readable_children(
+        self, items: list[dict[str, Any]], user_key: str, org_id: str, transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Turn each item's ``childIds`` into ``hasChildren``, true only for a child
+        the user may open: a bare "has a child" tells a viewer about ones they cannot read."""
+        child_ids = {c for item in items for c in item.get("childIds") or ()}
+        readable = (
+            (await self.check_access(user_key, org_id, node_ids=child_ids, transaction=transaction)).node_ids
+            if child_ids else frozenset()
+        )
+        for item in items:
+            item["hasChildren"] = any(c in readable for c in item.pop("childIds", ()))
+        return items
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,

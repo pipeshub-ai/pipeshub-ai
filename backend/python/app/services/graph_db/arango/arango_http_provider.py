@@ -577,15 +577,21 @@ def _aql_kh_date(v: str, source: str, ingest: str) -> str:
 
 
 def _aql_kh_has_children(v: str) -> str:
-    """Whether a knowledge hub node has a live child: one below it in the
-    hierarchy, or a record filed in it. Collection items often belong to the
-    folder instead of hanging off it by a hierarchy edge."""
+    """Whether a knowledge hub node has a child the viewer can list: one below it
+    that passes the listing's own hop, or a record filed in it where the App opens
+    everything or the group's own grants decide. Collection items often belong to
+    the folder instead of hanging off it by a hierarchy edge. A bare "has a child"
+    would tell a viewer about ones they cannot read. ``kh_opens`` and ``@granted``
+    must be in scope."""
     return (
         f"(LENGTH(FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
-        f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL} AND kh_ch.isDeleted != true"
+        f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL}"
+        f" FILTER {_aql_granted_hop('kh_ch', v, 'hc', navigation=True)}"
         f" LIMIT 1 RETURN 1) > 0"
-        f" OR LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
-        f" FILTER kh_ch.isDeleted != true LIMIT 1 RETURN 1) > 0)"
+        f" OR ((kh_opens OR (IS_SAME_COLLECTION(\"{CollectionNames.RECORD_GROUPS.value}\", {v})"
+        f" AND {v}.hideChildren != true AND {v}.permissionModel == \"RECORD_GROUP_LEVEL\"))"
+        f" AND LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
+        f" FILTER kh_ch.isDeleted != true LIMIT 1 RETURN 1) > 0))"
     )
 
 
@@ -19571,7 +19577,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         payload.update(await self._kh_v3_page_rows(
             visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
             after=after, direction=direction, filters=filters or {},
-            lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters), transaction=transaction,
+            lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
+            granted=bind["granted"], transaction=transaction,
         ))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
@@ -19750,6 +19757,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         direction: str,
         filters: dict[str, Any],
         lists_placeholders: bool,
+        granted: dict[str, bool],
         transaction: str | None,
     ) -> dict[str, Any]:
         """Filter the visible nodes, order them in the merge comparator's order,
@@ -19783,6 +19791,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "kh_unplaced_only": visible.unplaced_members_only,
                     "kh_placed": visible.placed, "kh_placed_groups": visible.placed_groups,
                     "kh_placeholders": lists_placeholders,
+                    # Declared only when the sidebar filter reads hasChildren; an unused bind fails the statement.
+                    **({"granted": granted} if any("node.hasChildren" in c for c in conditions) else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
@@ -19807,7 +19817,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows: list[dict[str, Any]] = []
         if window:
             built = await self._kh_v3_run(
-                "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id}, transaction,
+                "enrich", {"kh_page": [r[1] for r in window], "app_id": app_id, "granted": granted}, transaction,
             )
             by_index = {b["i"]: b["row"] for b in built}
             for index, (_, _, _, sort_key) in enumerate(window):
@@ -19972,6 +19982,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                  CollectionNames.APPS.value)
         belongs = CollectionNames.BELONGS_TO.value
         key_expr = ArangoHTTPProvider._kh_v2_sort_key_aql(ArangoHTTPProvider, sort_field)
+        opens = '(kh_app.permissionModel == "APP_LEVEL" OR kh_app.type == "KB")'
         where = "".join(f"\n                    FILTER {c}" for c in conditions)
         # The sidebar keeps a record only when it has children, and decides that
         # here, before the page is cut. Other listings never filter on it, so
@@ -20032,12 +20043,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN kh_be._from)"""
             return f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
+            LET kh_opens = {opens}
             LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging}, {placed})
             FOR kh_row IN UNION({rows(records)}, {rows(groups)})
                 RETURN kh_row
         """
         return f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
+            LET kh_opens = {opens}
             LET kh_handles = UNION_DISTINCT(
                 @kh_nodes,
                 (FOR kh_g IN @kh_member_groups
@@ -20420,6 +20433,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ),
             "enrich": f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
+            LET kh_opens = kh_app.permissionModel == "APP_LEVEL" OR kh_app.type == "KB"
             FOR kh_i IN 0..LENGTH(@kh_page) - 1
                 LET node = DOCUMENT(@kh_page[kh_i])
                 FILTER node != null
@@ -22235,14 +22249,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND e.relationshipType NOT IN ["PARENT_CHILD", "ATTACHMENT"]
                 FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", v)
                     AND v.orgId == @org_id AND v.isDeleted != true
-                LET has_children = LENGTH(
+                // Ids, not a flag: hasChildren is decided after the access check, on children the user may open.
+                // shortcut: the first 200 children, so a folder whose first 200 are all hidden shows no arrow; page the ids if that matters.
+                LET child_ids = (
                     FOR ce IN {CollectionNames.NODE_RELATIONS.value}
                         FILTER ce._from == v._id
                             AND ce.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
                             AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", ce._to)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
+                        FILTER DOCUMENT(ce._to).isDeleted != true
+                        LIMIT 200
+                        RETURN PARSE_IDENTIFIER(ce._to).key
+                )
                 LIMIT 500
                 RETURN {{
                     id: v._key,
@@ -22251,7 +22268,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     connectorName: v.connectorName,
                     webUrl: v.webUrl,
                     relationshipType: e.relationshipType,
-                    hasChildren: has_children,
+                    childIds: child_ids,
                     indexingStatus: v.indexingStatus,
                     userRole: null
                 }}
@@ -22270,7 +22287,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             allowed = (await self.check_access(
                 user_key, org_id, node_ids=[item["id"] for item in items], transaction=transaction,
             )).node_ids
-            return [item for item in items if item["id"] in allowed][:limit]
+            return await self._with_readable_children(
+                [item for item in items if item["id"] in allowed][:limit], user_key, org_id, transaction)
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
