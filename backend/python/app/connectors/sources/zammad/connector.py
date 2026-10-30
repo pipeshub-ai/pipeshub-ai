@@ -70,6 +70,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.zammad.common.apps import ZammadApp
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
     Block,
@@ -2095,7 +2096,7 @@ class ZammadConnector(BaseConnector):
         )
 
         is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
+        record_id = existing_record.id if existing_record else new_record_id(self.connector_id, external_record_id)
         version = 0 if is_new else existing_record.version
 
         # Determine record_group_type from parent
