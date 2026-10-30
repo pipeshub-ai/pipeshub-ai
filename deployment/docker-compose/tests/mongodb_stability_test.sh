@@ -75,9 +75,10 @@ for var in "${LEGACY_SECRETS[@]}"; do unset_all+=(-u "$var"); done
 if err="$(env "${unset_all[@]}" docker compose -f "$legacy" --env-file /dev/null config -q 2>&1)"; then
   printf 'FAIL: legacy compose rendered with no secrets set\n' >&2; exit 1
 fi
+# Some Compose versions stop at the first missing variable, so only the single-secret cases check each name.
+grep -q "required variable .* is missing" <<<"$err" \
+  || { printf 'FAIL: legacy compose error does not name a missing secret:\n%s\n' "$err" >&2; exit 1; }
 for var in "${LEGACY_SECRETS[@]}"; do
-  grep -q "required variable $var is missing" <<<"$err" \
-    || { printf 'FAIL: legacy compose error does not name %s:\n%s\n' "$var" "$err" >&2; exit 1; }
   if err_one="$(env -u "$var" docker compose -f "$legacy" --env-file /dev/null config -q 2>&1)"; then
     printf 'FAIL: legacy compose rendered without %s\n' "$var" >&2; exit 1
   fi
