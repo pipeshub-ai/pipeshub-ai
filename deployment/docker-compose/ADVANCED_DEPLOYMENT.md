@@ -192,18 +192,24 @@ Your existing data was written with whatever values the stack ran with. Do not g
 
    Use the defaults from the previous release's `docker-compose.prod-legacy.yml` only if you know this stack ran with none of these variables set, neither in `.env` nor in the environment. If you can't recover a value, don't guess: a wrong `SECRET_KEY` leaves the stored credentials unreadable, and a wrong database password fails against the existing volume.
 2. **Start the stack** with those values in `.env` and check that it is healthy.
-3. **Rotate the database passwords and the Qdrant key.** The old built-in values are public, so replace them. Use new random values (for example `openssl rand -hex 32`), and change each one in the database first, then in `.env`:
+3. **Rotate the database passwords and the Qdrant key.** The old built-in values are public, so replace them. Change each password in the database first, then in `.env`. The commands below read the passwords from variables, so they don't end up in your shell history or in the process list:
 
    ```bash
+   read -rs CURRENT_MONGO_PW && read -rs CURRENT_ARANGO_PW   # type the current passwords
+   NEW_MONGO_PW=$(openssl rand -hex 32) NEW_ARANGO_PW=$(openssl rand -hex 32)
+   export MONGO_USERNAME CURRENT_MONGO_PW NEW_MONGO_PW NEW_ARANGO_PW   # MONGO_USERNAME from step 1, admin unless you set it
+
    # MongoDB
-   docker exec mongodb mongosh --quiet -u '<MONGO_USERNAME>' -p '<current>' --authenticationDatabase admin \
-     --eval "db.getSiblingDB('admin').changeUserPassword('<MONGO_USERNAME>', '<new>')"
-   # ArangoDB
-   docker exec arango arangosh --server.endpoint tcp://localhost:8529 --server.password '<current>' \
-     --javascript.execute-string "require('@arangodb/users').update('root', '<new>')"
+   docker exec -e MONGO_USERNAME -e CURRENT_MONGO_PW -e NEW_MONGO_PW mongodb mongosh --quiet --nodb \
+     --eval "const a = connect('mongodb://localhost:27017/admin'); a.auth(process.env.MONGO_USERNAME, process.env.CURRENT_MONGO_PW); a.changeUserPassword(process.env.MONGO_USERNAME, process.env.NEW_MONGO_PW)"
+
+   # ArangoDB (arangosh reads the current password from its prompt)
+   printf '%s\n' "$CURRENT_ARANGO_PW" | docker exec -i -e NEW_ARANGO_PW arango arangosh \
+     --server.endpoint tcp://localhost:8529 \
+     --javascript.execute-string "require('@arangodb/users').update('root', require('internal').env.NEW_ARANGO_PW)"
    ```
 
-   `<MONGO_USERNAME>` is the value from step 1 (`admin` unless you set it). Then set `MONGO_PASSWORD`, `ARANGO_PASSWORD` and a new `QDRANT_API_KEY` in `.env` and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
+   Then put `NEW_MONGO_PW` in `.env` as `MONGO_PASSWORD`, `NEW_ARANGO_PW` as `ARANGO_PASSWORD`, set a new `QDRANT_API_KEY` (`openssl rand -hex 32`), and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
 4. **Keep `SECRET_KEY`.** PipesHub cannot re-encrypt stored credentials with a new key, so changing it on an existing install makes the saved connector and model credentials unreadable. Treat it as a secret: keep `.env` readable only by the user that runs Compose.
 
 ---
