@@ -899,7 +899,15 @@ class DropboxIndividualConnector(BaseConnector):
             ))
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """Write one re-read record (a reindex that found it changed)."""
+        """Write one re-read record (a reindex that found it changed), or delete one."""
+        if record_update.is_deleted:
+            # The update carries Dropbox's id; records are deleted by their key.
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record_update.external_record_id
+            )
+            if existing:
+                await self.data_entities_processor.on_record_deleted(record_id=existing.id)
+            return
         if record_update.record is not None:
             await self.data_entities_processor.on_new_records([(record_update.record, [])])
 

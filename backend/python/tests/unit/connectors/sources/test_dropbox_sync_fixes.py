@@ -137,6 +137,23 @@ class TestParentResolver:
         assert ask.await_count == 1, "a parent asked for once is remembered"
 
 
+class TestHandleRecordUpdates:
+    """A deleted update deletes the stored record by its key; nothing is written for it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("which", ["team", "personal"])
+    async def test_a_deleted_update_deletes_the_record(self, which: str, request: pytest.FixtureRequest) -> None:
+        conn = request.getfixturevalue(which)
+        p = conn.data_entities_processor
+        p.get_record_by_external_id = AsyncMock(return_value=SimpleNamespace(id="rec-1"))
+        p.on_record_deleted = AsyncMock()
+        p.on_new_records = AsyncMock()
+        await conn._handle_record_updates(SimpleNamespace(is_deleted=True, external_record_id="id:a", record=None))
+        p.get_record_by_external_id.assert_awaited_once_with(conn.connector_id, "id:a")
+        p.on_record_deleted.assert_awaited_once_with(record_id="rec-1")
+        p.on_new_records.assert_not_awaited()
+
+
 class TestAskParent:
     """Only Dropbox's not_found means "no parent": a failed lookup raises, so the entry is held, not put at the root."""
 
