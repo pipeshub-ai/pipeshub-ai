@@ -332,6 +332,7 @@ export class Application {
       // Initialize API Documentation
       this.apiDocsContainer = await ApiDocsContainer.initialize();
 
+      this.configureSecurityHeaders(appConfig);
       // Slack events proxy must be mounted before body-parsing middleware
       // so the raw request body is forwarded intact for signature verification
       this.setupSlackEventsProxy();
@@ -476,67 +477,78 @@ export class Application {
     }
   }
 
+  // Before the raw-body routes too, so every response carries the headers.
+  private configureSecurityHeaders(appConfig: AppConfig): void {
+    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+    const connectSrc = [
+      ...new Set([
+        "'self'",
+        'blob:', // file previews read the downloaded file back from a blob URL
+        "https://static.cloudflareinsights.com",
+        'https://api.github.com', // GitHub stars counter
+        // The Lottie player fetches its WebAssembly from these CDNs.
+        'https://cdn.jsdelivr.net',
+        'https://unpkg.com',
+        // Login with google urls
+        'https://accounts.google.com',
+        'https://www.googleapis.com',
+        // Login with microsoft urls
+        'https://login.microsoftonline.com',
+        'https://graph.microsoft.com',
+        ...editionBoot.cspSources.connectSrc,
+        ...envConnectSrcs,
+        appConfig.connectorPublicUrl,
+      ]),
+    ].filter(Boolean);
+
+    this.app.use(
+      helmet({
+        crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
+        // The from-source UI runs on another port; same-site still covers it and keeps other sites out.
+        crossOriginResourcePolicy: { policy: 'same-site' },
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+              "'self'",
+              // shortcut: the Next.js export inlines its theme and RSC bootstrap scripts; per-page hashes or nonces would be stricter, upgrade when the UI stops needing inline scripts.
+              "'unsafe-inline'",
+              "'wasm-unsafe-eval'", // the Lottie player runs as WebAssembly
+              ...editionBoot.cspSources.scriptSrc,
+              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                'https://cdnjs.cloudflare.com',
+                'https://login.microsoftonline.com',
+                'https://graph.microsoft.com',
+                'https://accounts.google.com',
+                'https://challenges.cloudflare.com',
+                'https://api.iconify.design',
+                'https://api.simplesvg.com',
+              ]),
+            ],
+            connectSrc: connectSrc,
+            objectSrc: ["'self'", 'data:', 'blob:'], // PDF rendering
+            frameSrc: ["'self'", 'blob:', ...editionBoot.cspSources.frameSrc], // PDF rendering in frames
+            workerSrc: ["'self'", 'blob:'], // PDF.js workers
+            childSrc: ["'self'", 'blob:'], // PDF rendering
+            imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
+            fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
+            mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+            // Answers render model output; a form in one must not post off-origin.
+            formAction: ["'self'"],
+            // Plain-HTTP installs must still load /_next/static over http.
+            upgradeInsecureRequests: null,
+          },
+        },
+      }),
+    );
+  }
+
   private configureMiddleware(appConfig: AppConfig): void {
     // Unset means trust no proxy: req.ip is the socket address.
     if (appConfig.trustProxy.warning) {
       this.logger.warn(appConfig.trustProxy.warning);
     }
     this.app.set('trust proxy', appConfig.trustProxy.value);
-
-    const isStrictMode = process.env.STRICT_MODE === 'true';
-    if (isStrictMode) {
-      // Security middleware - configure helmet once with all options
-      const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
-      const connectSrc = [
-        ...new Set([
-          "'self'",
-          "https://static.cloudflareinsights.com",
-          // Login with google urls
-          'https://accounts.google.com',
-          'https://www.googleapis.com',
-          // Login with microsoft urls
-          'https://login.microsoftonline.com',
-          'https://graph.microsoft.com',
-          ...editionBoot.cspSources.connectSrc,
-          ...envConnectSrcs,
-          appConfig.connectorPublicUrl,
-        ]),
-      ].filter(Boolean);
-
-      this.app.use(
-        helmet({
-          crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
-          contentSecurityPolicy: {
-            directives: {
-              defaultSrc: ["'self'"],
-              scriptSrc: [
-                "'self'",
-                ...editionBoot.cspSources.scriptSrc,
-                ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-                  'https://cdnjs.cloudflare.com',
-                  'https://login.microsoftonline.com',
-                  'https://graph.microsoft.com',
-                  'https://accounts.google.com',
-                  'https://challenges.cloudflare.com',
-                  'https://api.iconify.design',
-                  'https://api.simplesvg.com',
-                ]),
-              ],
-              connectSrc: connectSrc,
-              objectSrc: ["'self'", 'data:', 'blob:'], // PDF rendering
-              frameSrc: ["'self'", 'blob:', ...editionBoot.cspSources.frameSrc], // PDF rendering in frames
-              workerSrc: ["'self'", 'blob:'], // PDF.js workers
-              childSrc: ["'self'", 'blob:'], // PDF rendering
-              imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
-              fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
-              mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
-              // Answers render model output; a form in one must not post off-origin.
-              formAction: ["'self'"],
-            },
-          },
-        }),
-      );
-    }
 
     // Request context middleware
     this.app.use(requestContextMiddleware);

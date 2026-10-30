@@ -128,3 +128,23 @@ describe('API docs page script', () => {
     );
   });
 });
+
+describe('API docs page CSP', () => {
+  it('lets the page run its inline script and handlers and call any base URL', () => {
+    const router = createApiDocsRouter({ get: () => ({}) } as any);
+    const cspLayer = (router as any).stack.find((l: any) => !l.route);
+    const headers: Record<string, string> = {};
+    cspLayer.handle(
+      { headers: {} },
+      { setHeader: (name: string, value: string) => { headers[name.toLowerCase()] = value; } },
+      () => undefined,
+    );
+
+    const csp = headers['content-security-policy'];
+    expect(csp).to.include("script-src 'self' 'unsafe-inline'");
+    expect(csp).to.include("script-src-attr 'unsafe-inline'");
+    expect(csp).to.include("connect-src 'self' http: https:");
+    expect(csp).to.include("frame-ancestors 'self'");
+    expect(csp).to.not.include('upgrade-insecure-requests');
+  });
+});

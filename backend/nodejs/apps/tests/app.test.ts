@@ -632,80 +632,48 @@ describe('Application', () => {
       expect(layerNames).to.include('corsMiddleware');
     });
 
-    it('should NOT include helmet when STRICT_MODE is not true', async () => {
-      const expressApp = (app as any).app as express.Express;
-      const layerNames = (expressApp as any)._router.stack
-        .map((layer: any) => layer.name)
-        .filter(Boolean);
-      // helmet adds multiple middleware layers with various names
-      expect(layerNames).to.not.include('helmet');
-    });
-
-    it('should include helmet when STRICT_MODE=true', async () => {
-      // Re-initialize with STRICT_MODE — route factories are already stubbed
-      // by the beforeEach's stubAllContainers call, so only stub containers here
-      const original = process.env.STRICT_MODE;
-      process.env.STRICT_MODE = 'true';
-      try {
-        const strictApp = new Application();
-        // Container stubs are already in place from the beforeEach, just re-use them
-        // (they resolve to the same mock containers on each call)
-        await strictApp.initialize();
-
-        const expressApp = (strictApp as any).app as express.Express;
-        const layerNames = (expressApp as any)._router.stack
-          .map((layer: any) => layer.name)
-          .filter(Boolean);
-        // helmet registers multiple middleware — at least one should be present
-        const hasHelmetMiddleware = layerNames.some(
-          (name: string) =>
-            name.includes('helmet') ||
-            name === 'crossOriginOpenerPolicy' ||
-            name === 'contentSecurityPolicy',
-        );
-        expect(hasHelmetMiddleware).to.be.true;
-      } finally {
-        restoreEnv('STRICT_MODE', original);
+    // Security headers ship on every install; there is no opt-in flag.
+    it('sends helmet security headers and a CSP the built UI can run under', async () => {
+      interface MiddlewareLayer {
+        name: string;
+        handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
       }
-    });
-
-    // Forms rendered from model output must not post off-origin.
-    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
-      const original = process.env.STRICT_MODE;
-      process.env.STRICT_MODE = 'true';
-      try {
-        const strictApp = new Application();
-        await strictApp.initialize();
-
-        interface MiddlewareLayer {
-          name: string;
-          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
-        }
-        interface HeaderSink {
-          setHeader: (name: string, value: string) => void;
-          removeHeader: (name: string) => void;
-          getHeader: (name: string) => string | undefined;
-        }
-        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
-        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
-        expect(helmetLayer, 'helmet middleware layer').to.exist;
-
-        const headers: Record<string, string> = {};
-        const res: HeaderSink = {
-          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
-          removeHeader: () => {},
-          getHeader: (name) => headers[name.toLowerCase()],
-        };
-        await new Promise<void>((resolve, reject) =>
-          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
-        );
-
-        const csp = headers['content-security-policy'];
-        expect(csp).to.be.a('string');
-        expect(csp).to.include("form-action 'self'");
-      } finally {
-        restoreEnv('STRICT_MODE', original);
+      interface HeaderSink {
+        setHeader: (name: string, value: string) => void;
+        removeHeader: (name: string) => void;
+        getHeader: (name: string) => string | undefined;
       }
+      const expressApp = (app as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+      const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+      expect(helmetLayer, 'helmet middleware layer').to.exist;
+      // First after Express's own layers, so raw-body routes and early refusals carry the headers too.
+      const layerNames = expressApp._router.stack.map((layer) => layer.name);
+      expect(layerNames.indexOf('helmetMiddleware')).to.equal(layerNames.indexOf('expressInit') + 1);
+
+      const headers: Record<string, string> = {};
+      const removed: string[] = [];
+      const res: HeaderSink = {
+        setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+        removeHeader: (name) => { removed.push(name.toLowerCase()); },
+        getHeader: (name) => headers[name.toLowerCase()],
+      };
+      await new Promise<void>((resolve, reject) =>
+        helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+      );
+
+      const csp = headers['content-security-policy'];
+      expect(csp).to.be.a('string');
+      // Forms rendered from model output must not post off-origin.
+      expect(csp).to.include("form-action 'self'");
+      expect(csp).to.match(/script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'/);
+      expect(csp).to.match(/connect-src 'self' blob: [^;]*https:\/\/api\.github\.com/);
+      expect(csp).to.not.include('upgrade-insecure-requests');
+      // A UI on another port of the same host can still load API-served media.
+      expect(headers['cross-origin-resource-policy']).to.equal('same-site');
+      expect(headers['x-frame-options']).to.equal('SAMEORIGIN');
+      expect(headers['x-content-type-options']).to.equal('nosniff');
+      expect(headers['strict-transport-security']).to.be.a('string');
+      expect(removed).to.include('x-powered-by');
     });
 
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
