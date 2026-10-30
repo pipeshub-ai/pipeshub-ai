@@ -176,29 +176,34 @@ The installer prints this when it detects the old pinned names.
 
 `docker-compose.prod-legacy.yml` no longer falls back to built-in values for `SECRET_KEY`, `MONGO_PASSWORD`, `ARANGO_PASSWORD` and `QDRANT_API_KEY`. It refuses to start until each one is set in `.env`.
 
-If your stack ran without these in `.env`, its data was written with the old built-in values. Do not generate new ones yet: a new `SECRET_KEY` cannot decrypt the credentials already stored, and a new database password does not change the one already in the existing database volume.
+Your existing data was written with whatever values the stack ran with. Do not generate new ones yet: a new `SECRET_KEY` cannot decrypt the credentials already stored, and a new database password does not change the one already in the existing database volume.
 
-1. **Recover the values your stack uses.** Before you pull the new compose file, read them from the running containers and copy them into `.env`:
+1. **Recover the values your stack uses** and put them in `.env`. Look, in this order, in:
+   - your current `.env` and any `.env.bak.*` the installer left next to it;
+   - wherever you keep this deployment's secrets (a secret manager, or the shell or CI environment you start Compose from);
+   - the running containers, before you pull the new compose file:
 
-   ```bash
-   docker inspect pipeshub-ai --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(SECRET_KEY|ARANGO_PASSWORD|QDRANT_API_KEY)='
-   docker inspect mongodb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^MONGO_INITDB_ROOT_PASSWORD='
-   ```
+     ```bash
+     docker inspect pipeshub-ai --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(SECRET_KEY|ARANGO_PASSWORD|QDRANT_API_KEY)='
+     docker inspect mongodb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^MONGO_INITDB_ROOT_(USERNAME|PASSWORD)='
+     ```
 
-   `MONGO_INITDB_ROOT_PASSWORD` goes into `.env` as `MONGO_PASSWORD`. If the containers are already gone, the values are the defaults in the previous release's `docker-compose.prod-legacy.yml`.
+     `MONGO_INITDB_ROOT_USERNAME` goes into `.env` as `MONGO_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` as `MONGO_PASSWORD`.
+
+   Use the defaults from the previous release's `docker-compose.prod-legacy.yml` only if you know this stack ran with none of these variables set, neither in `.env` nor in the environment. If you can't recover a value, don't guess: a wrong `SECRET_KEY` leaves the stored credentials unreadable, and a wrong database password fails against the existing volume.
 2. **Start the stack** with those values in `.env` and check that it is healthy.
 3. **Rotate the database passwords and the Qdrant key.** The old built-in values are public, so replace them. Use new random values (for example `openssl rand -hex 32`), and change each one in the database first, then in `.env`:
 
    ```bash
    # MongoDB
-   docker exec mongodb mongosh --quiet -u admin -p '<current>' --authenticationDatabase admin \
-     --eval "db.getSiblingDB('admin').changeUserPassword('admin', '<new>')"
+   docker exec mongodb mongosh --quiet -u '<MONGO_USERNAME>' -p '<current>' --authenticationDatabase admin \
+     --eval "db.getSiblingDB('admin').changeUserPassword('<MONGO_USERNAME>', '<new>')"
    # ArangoDB
    docker exec arango arangosh --server.endpoint tcp://localhost:8529 --server.password '<current>' \
      --javascript.execute-string "require('@arangodb/users').update('root', '<new>')"
    ```
 
-   Then set `MONGO_PASSWORD`, `ARANGO_PASSWORD` and a new `QDRANT_API_KEY` in `.env` and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
+   `<MONGO_USERNAME>` is the value from step 1 (`admin` unless you set it). Then set `MONGO_PASSWORD`, `ARANGO_PASSWORD` and a new `QDRANT_API_KEY` in `.env` and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
 4. **Keep `SECRET_KEY`.** PipesHub cannot re-encrypt stored credentials with a new key, so changing it on an existing install makes the saved connector and model credentials unreadable. Treat it as a secret: keep `.env` readable only by the user that runs Compose.
 
 ---
