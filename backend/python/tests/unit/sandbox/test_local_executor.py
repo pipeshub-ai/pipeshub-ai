@@ -165,7 +165,7 @@ class TestLocalExecutorPython:
             assert "reportlab" in err
 
     @pytest.mark.asyncio
-    async def test_release_without_a_wheel_is_not_reported_as_offline(self, executor):
+    async def test_release_without_a_wheel_is_not_reported_as_offline(self, executor) -> None:
         pip_result = ExecutionResult(
             success=False,
             stderr=(

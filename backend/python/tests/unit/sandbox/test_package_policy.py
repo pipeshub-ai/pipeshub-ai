@@ -69,7 +69,7 @@ class TestAllowlistSeeds:
                      "boto3", "selenium", "playwright"]:
             assert name not in PYTHON_PACKAGE_ALLOWLIST
 
-    def test_sdist_only_packages_excluded(self):
+    def test_sdist_only_packages_excluded(self) -> None:
         # pip installs wheels only, and pycairo publishes no Linux wheel.
         assert "pycairo" not in PYTHON_PACKAGE_ALLOWLIST
 
