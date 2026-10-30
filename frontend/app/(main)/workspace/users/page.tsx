@@ -11,7 +11,6 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 import {
   EntityPageHeader,
   EntityFilterBar,
@@ -35,6 +34,7 @@ import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
+import { dateFilterToRange } from './date-filter';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
@@ -61,49 +61,6 @@ const STATUS_OPTIONS = [
   { value: 'Pending', label: 'Pending', icon: 'schedule', iconColor: 'var(--amber-11)' },
   { value: 'Blocked', label: 'Blocked', icon: 'block', iconColor: 'var(--red-11)' },
 ];
-
-// ========================================
-// Helpers
-// ========================================
-
-/** Check if a timestamp (ms) falls within a date range */
-function isInDateRange(
-  timestampMs: number | undefined,
-  afterDate?: string,
-  beforeDate?: string,
-  dateType?: DateFilterType
-): boolean {
-  if (!timestampMs) return false;
-  if (!afterDate && !beforeDate) return true;
-
-  const itemDate = new Date(timestampMs);
-  itemDate.setHours(0, 0, 0, 0);
-
-  if (dateType === 'on' && afterDate) {
-    const target = new Date(afterDate);
-    target.setHours(0, 0, 0, 0);
-    return itemDate.getTime() === target.getTime();
-  }
-  if (dateType === 'before' && beforeDate) {
-    const before = new Date(beforeDate);
-    before.setHours(0, 0, 0, 0);
-    return itemDate < before;
-  }
-  if (dateType === 'after' && afterDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    return itemDate > after;
-  }
-  // between
-  if (afterDate && beforeDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    const before = new Date(beforeDate);
-    before.setHours(23, 59, 59, 999);
-    return itemDate >= after && itemDate <= before;
-  }
-  return true;
-}
 
 // ========================================
 // Page Component
@@ -219,6 +176,21 @@ function UsersPageContent() {
       if (filters.groups?.length) {
         params.groupIds = filters.groups.join(',');
       }
+      // Date filters are applied by the server so the total and the pages match
+      const lastActive = dateFilterToRange(
+        filters.lastActiveAfter,
+        filters.lastActiveBefore,
+        filters.lastActiveDateType
+      );
+      params.lastActiveFrom = lastActive.from;
+      params.lastActiveTo = lastActive.to;
+      const joined = dateFilterToRange(
+        filters.dateJoinedAfter,
+        filters.dateJoinedBefore,
+        filters.dateJoinedDateType
+      );
+      params.joinedFrom = joined.from;
+      params.joinedTo = joined.to;
 
       const result = await UsersApi.fetchMergedUsers(params);
       setUsers(result.users, result.totalCount);
@@ -414,39 +386,8 @@ function UsersPageContent() {
     [filters, setFilters]
   );
 
-  // ── Client-side date filters (role/group/status are server-side) ──
-  const filteredUsers = useMemo(() => {
-    let result = users;
-
-    // Last Active date filter (client-side)
-    if (filters.lastActiveAfter || filters.lastActiveBefore) {
-      result = result.filter((u) =>
-        isInDateRange(
-          u.updatedAtTimestamp,
-          filters.lastActiveAfter,
-          filters.lastActiveBefore,
-          filters.lastActiveDateType
-        )
-      );
-    }
-
-    // Date Joined filter (client-side)
-    if (filters.dateJoinedAfter || filters.dateJoinedBefore) {
-      result = result.filter((u) =>
-        isInDateRange(
-          u.createdAtTimestamp,
-          filters.dateJoinedAfter,
-          filters.dateJoinedBefore,
-          filters.dateJoinedDateType
-        )
-      );
-    }
-
-    return result;
-  }, [users, filters]);
-
-  // Server already returns the correct page; client-side filters may further narrow the set
-  const paginatedUsers = filteredUsers;
+  // All filters are applied by the server, which returns the requested page
+  const paginatedUsers = users;
   const effectiveTotalCount = totalCount;
 
   const hasActiveFilters = !!(

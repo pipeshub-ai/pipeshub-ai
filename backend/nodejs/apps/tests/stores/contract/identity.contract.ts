@@ -909,6 +909,27 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.listDirectory(org, { ...q, groupIds: [] })).total).to.equal(2);
     });
 
+    it('listDirectory: createdAt and updatedAt ranges are [from, to) and the total counts only the range', async () => {
+      const org = await fx.newOrg();
+      const a = await person(org);
+      const b = await person(org);
+      const q = { skip: 0, limit: 10, includeServiceAccounts: false };
+      const ids = async (x: object) => (await users.listDirectory(org, { ...q, ...x })).rows.map((r) => r._id).sort();
+      const at = (u: { createdAt?: Date }) => new Date(u.createdAt!);
+      const past = new Date(at(a).getTime() - 86400000);
+      const future = new Date(Date.now() + 86400000);
+      expect(await ids({ createdAt: { from: past, to: future } })).to.deep.equal([a._id, b._id].sort());
+      expect(await ids({ createdAt: { from: future } })).to.deep.equal([]);
+      expect(await ids({ createdAt: { to: past } })).to.deep.equal([]);
+      expect(await ids({ createdAt: { from: at(a), to: new Date(at(a).getTime() + 1) } })).to.include(a._id);
+      expect(await ids({ createdAt: { to: at(a) } })).to.not.include(a._id);
+      expect(await ids({ updatedAt: { from: future } })).to.deep.equal([]);
+      expect(await ids({ updatedAt: { from: past } })).to.deep.equal([a._id, b._id].sort());
+      const page = await users.listDirectory(org, { ...q, limit: 1, createdAt: { from: future } });
+      expect(page).to.deep.equal({ rows: [], total: 0 });
+      expect((await users.listDirectory(org, { ...q, limit: 1, createdAt: { from: past } })).total).to.equal(2);
+    });
+
     it('listLiveByIds, listAllLive, listSummariesByIds stay in the organisation', async () => {
       const [org, other] = [await fx.newOrg(), await fx.newOrg()];
       const a = await person(org);

@@ -58,7 +58,7 @@ export interface InviteUsersResult {
 export const UsersApi = {
   /**
    * List users with pagination and server-side filters.
-   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=
+   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=&joinedFrom=&joinedTo=&lastActiveFrom=&lastActiveTo=
    * Queries MongoDB directly with filters applied at the database level.
    */
   async listUsers(params?: {
@@ -68,6 +68,12 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** Epoch-ms bounds on the join date: `From` inclusive, `To` exclusive. */
+    joinedFrom?: string;
+    joinedTo?: string;
+    /** Epoch-ms bounds on last activity: `From` inclusive, `To` exclusive. */
+    lastActiveFrom?: string;
+    lastActiveTo?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
   }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
@@ -120,6 +126,12 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** Epoch-ms bounds on the join date: `From` inclusive, `To` exclusive. */
+    joinedFrom?: string;
+    joinedTo?: string;
+    /** Epoch-ms bounds on last activity: `From` inclusive, `To` exclusive. */
+    lastActiveFrom?: string;
+    lastActiveTo?: string;
     /** `'true'` also returns service accounts, which are left out by default. */
     includeServiceAccounts?: string;
   }): Promise<{ users: User[]; totalCount: number }> {

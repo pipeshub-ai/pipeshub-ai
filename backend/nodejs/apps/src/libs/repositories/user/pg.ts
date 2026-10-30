@@ -534,6 +534,15 @@ export class PgUserRepository implements UserRepository {
         conds.push(`u.id IN (SELECT m.user_id FROM identity.user_group_members m JOIN identity.user_groups g ON g.org_id = m.org_id AND g.id = m.group_id
           WHERE m.org_id = ${org} AND g.org_id = ${org} AND NOT g.is_deleted AND g.id = ANY(${p.add(oidsOf(q.groupIds))}::text[]))`);
       }
+      for (const [column, range] of [
+        ['u.created_at', q.createdAt],
+        ['u.updated_at', q.updatedAt],
+      ] as const) {
+        if (range?.from !== undefined)
+          conds.push(`${column} >= ${p.add(range.from)}`);
+        if (range?.to !== undefined)
+          conds.push(`${column} < ${p.add(range.to)}`);
+      }
       const where = conds.join(' AND ');
       const page = await k.query<UserRow>(
         `/* pipeshub:identity.user_directory */ SELECT ${COLS} FROM identity.users u WHERE ${where}
