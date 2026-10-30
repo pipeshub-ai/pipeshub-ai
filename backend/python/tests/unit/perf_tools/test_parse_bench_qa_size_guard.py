@@ -8,9 +8,12 @@ Measured by independent QA (PX-0): the standard profile writes 150.4 MiB while
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tests.perf.parse_bench import corpus
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 MIB = corpus.MIB
 

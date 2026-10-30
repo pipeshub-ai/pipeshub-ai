@@ -167,12 +167,12 @@ class _FakeContainer:
 
 
 class _FakeParser:
-    async def parse(self, content: bytes, name: str, config: dict) -> SimpleNamespace:  # noqa: ARG002
+    async def parse(self, content: bytes, name: str, config: dict) -> SimpleNamespace:
         return SimpleNamespace(block_container=_FakeContainer(), raw_document=None)
 
 
 class _FakeRegistry:
-    def resolve(self, mime: str, ext: str, provider: object) -> _FakeParser:  # noqa: ARG002
+    def resolve(self, mime: str, ext: str, provider: object) -> _FakeParser:
         return _FakeParser()
 
 
@@ -195,7 +195,7 @@ def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_wi
     for name in ("summarize", "digest", "canonicalize"):
         original = getattr(golden, name)
 
-        def spy(*args, _orig=original, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        def spy(*args, _orig=original, **kwargs):  # noqa: ANN202
             calls.append(time.monotonic())
             return _orig(*args, **kwargs)
 

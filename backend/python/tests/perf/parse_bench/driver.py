@@ -234,7 +234,9 @@ def _build_ocr(latency: float):  # noqa: ANN202
 
 def build_registry(pdf_parser: str, ocr_latency: float) -> Any:  # noqa: ANN401
     from app.modules.parsers.json.json_parser import JSONParser
-    from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
+    from app.modules.parsers.markdown.docling_markdown_parser import (
+        DoclingMarkdownParser,
+    )
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
     from app.modules.parsers.pdf.docling_processor import DoclingProcessor
     from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
