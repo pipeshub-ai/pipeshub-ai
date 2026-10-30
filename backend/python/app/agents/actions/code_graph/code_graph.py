@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -92,13 +91,8 @@ _CONNECTOR_ID_DESC = (
     "indexed repo and has to be told which one."
 )
 
-# A/B (CG_AB_SITES): name the call sites a caller list did not link, from a text search.
-_AB_SITES = os.environ.get("CG_AB_SITES") == "1"
+# Call sites a caller list did not link, named from a text search: at most this many.
 _SITES_SHOWN = 15
-# A/B (CG_AB_DISPATCH): an override's callers include the base method's: a call to
-# `Base.m` (`self.m()` inside Base, or on a value typed as Base) runs `Sub.m` when the object is a Sub.
-_AB_DISPATCH = os.environ.get("CG_AB_DISPATCH") == "1"
-_DISPATCH_BASES = 3
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
 _REPO_DESC = (
@@ -269,7 +263,7 @@ class CodeGraph:
     ) -> dict[str, Any]:
         """Add the lines that call a function or method of this name but are not in the
         graph's answer: a call on an untyped value, or another definition of the name."""
-        if not _AB_SITES or not isinstance(result, dict) or result.get("error") or not qualified_name:
+        if not isinstance(result, dict) or result.get("error") or not qualified_name:
             return result
         qualified = qualified_name.rsplit(":", 1)[-1]
         name = qualified.rsplit(".", 1)[-1]
@@ -295,56 +289,18 @@ class CodeGraph:
                  and (ext is None or (m.get("file_path") or "").endswith("." + ext))]
         if sites:
             result["unlinked_call_sites"] = {
+                # Without `known` (impact, path) the lines are not checked against the answer.
                 "note": (f"Lines that call something named {name} but are not linked here: the "
                          "receiver's type could not be resolved, or they call another definition of "
-                         "the name. Read the ones that may be this one before answering."),
+                         "the name. Read the ones that may be this one before answering."
+                         if known else
+                         f"Lines that call something named {name}, linked or not. The graph links a "
+                         "call only when it can tell the receiver's type, so one missing from the "
+                         "answer above may still reach this symbol; others call another definition "
+                         "of the name. Read the ones that may be this one before answering."),
                 "count": len(sites),
                 "sites": [{"file_path": m["file_path"], "line": m["line"], "text": (m.get("text") or "").strip()[:160]}
                           for m in sites[:_SITES_SHOWN]],
-            }
-        return result
-
-    async def _with_dispatch(
-        self, result: dict[str, Any], connector_id: str, path: str | None, repo: str | None,
-        qualified_name: str | None, impact_depth: int | None, *, include_tests: bool,
-        edge_types: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Add what reaches the methods this one overrides: their callers (``impact_depth``
-        None) or their impact. Each such call runs this override when the object is this
-        subclass, which the graph, linking the call to the base, cannot tell apart."""
-        if not _AB_DISPATCH or not isinstance(result, dict) or result.get("error") or not path or not qualified_name:
-            return result
-        common = {"graph_provider": self._graph_provider, "org_id": self._org_id,
-                  "user_id": self._user_id, "connector_id": connector_id, "repo": repo,
-                  "include_tests": include_tests}
-        try:
-            up = await get_neighbour_impl(**common, file_path=path, qualified_name=qualified_name,
-                                          direction="outbound", edge_types=["OVERRIDES"],
-                                          depth=_DISPATCH_BASES)
-            bases = [(n["file_path"], n["qualified_name"]) for n in up.get("neighbors") or []
-                     if n.get("relation") == "OVERRIDES" and n.get("file_path") and n.get("qualified_name")]
-            through: dict[str, Any] = {}
-            for base_path, base_name in bases:
-                if impact_depth is None:
-                    walk = await get_neighbour_impl(**common, file_path=base_path, qualified_name=base_name,
-                                                    direction="inbound", edge_types=["CALLS"], depth=1)
-                    rows = [{"file_path": n.get("file_path"), "qualified_name": n.get("qualified_name"),
-                             "line": n.get("line")} for n in walk.get("neighbors") or []]
-                else:
-                    walk = await impact_impl(**common, file_path=base_path, qualified_name=base_name,
-                                             depth=impact_depth, edge_types=edge_types)
-                    rows = walk.get("impacted_files") or []
-                if rows:
-                    through[f"{base_path}::{base_name}"] = rows
-        except Exception:
-            self._log.warning("codegraph: dispatch through overridden methods unavailable", exc_info=True)
-            return result
-        if through:
-            result["through_overridden_methods"] = {
-                "note": ("This method overrides the ones below. Code that calls them -- `self.m()` "
-                         "inside the base class, or on a value typed as the base -- runs this "
-                         "method when the object is this subclass, so it is reached too."),
-                "by_base": through,
             }
         return result
 
@@ -658,8 +614,6 @@ class CodeGraph:
             known = {(n.get("file_path"), n.get("line")) for n in result.get("neighbors") or []}
             result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, known,
                                                      include_tests=include_tests, target_path=path)
-            result = await self._with_dispatch(result, connector_id, path, repo, qualified_name, None,
-                                               include_tests=include_tests)
         return self._to_output(result)
 
     @tool(
@@ -1098,8 +1052,6 @@ class CodeGraph:
         )
         result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
                                                  include_tests=include_tests, target_path=path)
-        result = await self._with_dispatch(result, connector_id, path, repo, qualified_name, depth,
-                                           include_tests=include_tests, edge_types=edge_types)
         return self._to_output(result)
 
     @tool(

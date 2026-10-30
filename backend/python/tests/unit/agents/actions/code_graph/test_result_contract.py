@@ -88,3 +88,29 @@ async def test_a_read_cites_the_lines_at_the_commit_they_were_read_from(url, sta
     from app.agents.actions.code_graph.read import line_link
 
     assert line_link(url, start, end) == link
+
+
+async def test_a_caller_list_names_the_call_sites_the_graph_did_not_link(monkeypatch) -> None:
+    """An untyped receiver's call is not an edge; a list that leaves it out read as
+    complete. The lines a text search finds are named, minus the linked ones, the
+    definition itself, and calls in another language."""
+    async def search(**_kwargs) -> dict:
+        return {"matches": [
+            {"file_path": "src/a.py", "line": 3, "text": "    thing.run()"},       # linked
+            {"file_path": "src/b.py", "line": 2, "text": "    def run(self):"},   # the definition
+            {"file_path": "web/x.js", "line": 9, "text": "job.run();"},           # another language
+            {"file_path": "src/c.py", "line": 7, "text": "    worker.run()"},      # not linked
+        ]}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run",
+                                          {("src/a.py", 3)}, include_tests=False, target_path="src/b.py")
+    sites = out["unlinked_call_sites"]
+    assert sites["sites"] == [{"file_path": "src/c.py", "line": 7, "text": "worker.run()"}]
+    assert "not linked here" in sites["note"]
+    unchecked = await tool._with_unlinked_sites({}, CONN, None, "method:Thing.run", set(),
+                                                include_tests=False, target_path="src/b.py")
+    assert "linked or not" in unchecked["unlinked_call_sites"]["note"]
+    assert unchecked["unlinked_call_sites"]["count"] == 2
