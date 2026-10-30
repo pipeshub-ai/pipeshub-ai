@@ -982,6 +982,25 @@ class TestReindexRecords:
         dep.reindex_existing_records.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_folder_moved_since_is_repathed(self):
+        """The folder is stored at its new path by the reindex, so no later listing sees the move."""
+        c, _, _ = _make_connector()
+        c._get_current_user_info = AsyncMock(return_value=("uid", "u@test.com"))
+
+        async def check(*_args):
+            c._moved_folders.append(("id:f", "/old", "/new"))
+            return (MagicMock(), [])
+
+        c._check_and_fetch_updated_record = check
+        with patch("app.connectors.sources.dropbox_individual.connector.repath_descendants",
+                   AsyncMock(return_value=(2, True))) as repath:
+            await c.reindex_records([MagicMock(id="r1")])
+
+        repath.assert_awaited_once()
+        assert repath.await_args.args[2:5] == ("id:f", "/old", "/new")
+        assert c._moved_folders == []
+
+    @pytest.mark.asyncio
     async def test_per_record_error_continues(self):
         c, dep, _ = _make_connector()
         c._get_current_user_info = AsyncMock(return_value=("uid", "u@test.com"))

@@ -1139,6 +1139,15 @@ class DropboxIndividualConnector(BaseConnector):
             # Update DB only for records that changed at source
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
+                # A folder that moved is stored at its new path now, so no later listing sees the move: the
+                # paths below it are rewritten here.
+                moved, self._moved_folders = self._moved_folders, []
+                for external_id, old_path, new_path in moved:
+                    _, done = await repath_descendants(self.data_entities_processor, self.connector_id,
+                                                       external_id, old_path, new_path, self.logger)
+                    if not done:
+                        self.logger.warning(f"Paths below {new_path} could not all be rewritten; a full sync "
+                                            "writes them again")
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records

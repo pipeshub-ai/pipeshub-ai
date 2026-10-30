@@ -2098,7 +2098,8 @@ class DropboxDataSource:
                 client_to_use = client.with_path_root(
                     dropbox.common.PathRoot.namespace_id(team_folder_id)
                 )
-            response = client_to_use.files_get_metadata(path, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_property_groups=include_property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client_to_use.files_get_metadata(path, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_property_groups=include_property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2237,7 +2238,8 @@ class DropboxDataSource:
                     dropbox.common.PathRoot.namespace_id(team_folder_id)
                 )
 
-            response = client_to_use.files_get_temporary_link(path)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client_to_use.files_get_temporary_link(path))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             if raise_on_error:

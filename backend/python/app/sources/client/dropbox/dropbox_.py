@@ -9,6 +9,7 @@ from app.sources.client.http.http_request import HTTPRequest
 
 try:
     from dropbox import Dropbox, DropboxTeam  # type: ignore
+    from dropbox.stone_base import Union as StoneUnion  # type: ignore
 except ImportError:
     raise ImportError("dropbox is not installed. Please install it with `pip install dropbox`")
 
@@ -36,7 +37,7 @@ def to_plain(value: Any) -> Any:  # noqa: ANN401 - any SDK value
         return [to_plain(v) for v in value]
     if isinstance(value, dict):
         return {str(k): to_plain(v) for k, v in value.items()}
-    if hasattr(value, "_tag") and hasattr(value, "_value"):
+    if isinstance(value, StoneUnion):
         out: dict[str, Any] = {".tag": value._tag}
         if value._value is not None:
             out[value._tag] = to_plain(value._value)

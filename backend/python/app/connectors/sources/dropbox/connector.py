@@ -3155,6 +3155,9 @@ class DropboxConnector(BaseConnector):
             # Write records that changed at source; their content events re-index them.
             if updated:
                 await self._write_updates(updated, "reindex")
+                # A folder that moved is stored at its new path now, so no later listing sees the move: the
+                # paths below it are rewritten here.
+                await self._repath_moved_folders()
                 self.logger.info(f"Updated {len(updated)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records

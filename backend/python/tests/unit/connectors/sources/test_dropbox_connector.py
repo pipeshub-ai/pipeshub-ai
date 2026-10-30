@@ -3804,6 +3804,23 @@ class TestReindexRecords:
         assert len(connector.data_entities_processor.on_new_records.await_args.args[0]) == 2
         connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([shared])
 
+    async def test_a_folder_moved_since_is_repathed(self, connector):
+        """The folder is stored at its new path by the reindex, so no later listing sees the move."""
+        folder = MagicMock(id="r1")
+
+        async def check(_org, _record):
+            connector._moved_folders.append(("id:f", "/old", "/new"))
+            return MagicMock(record=MagicMock(), new_permissions=[], is_new=False, content_changed=False)
+
+        connector._check_and_fetch_updated_record = check
+        with patch("app.connectors.sources.dropbox.connector.repath_descendants",
+                   AsyncMock(return_value=(2, True))) as repath:
+            await connector.reindex_records([folder])
+
+        repath.assert_awaited_once()
+        assert repath.await_args.args[2:5] == ("id:f", "/old", "/new")
+        assert connector._moved_folders == []
+
     async def test_record_check_exception(self, connector):
         record = MagicMock(id="r1")
         connector._check_and_fetch_updated_record = AsyncMock(side_effect=Exception("error"))
