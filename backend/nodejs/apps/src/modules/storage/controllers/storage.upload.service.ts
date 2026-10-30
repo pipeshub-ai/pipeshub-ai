@@ -121,6 +121,7 @@ export class UploadDocumentService {
         size,
         extension,
         originalname,
+        this.storageVendor,
       );
       if (!placeholderDocument || !placeholderDocument.document) {
         throw new InternalServerError('Failed to create placeholder document');

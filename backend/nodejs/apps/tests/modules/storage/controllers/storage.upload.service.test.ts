@@ -558,6 +558,38 @@ describe('UploadDocumentService', () => {
     // 11 MB > 10 MB cutoff so the code routes through the presigned-URL path
     const LARGE_SIZE = 11 * 1024 * 1024
 
+    for (const vendor of [StorageVendor.S3, StorageVendor.AzureBlob]) {
+      it(`records the configured vendor on the placeholder of a ${vendor} direct upload`, async () => {
+        const placeholderDoc: any = {
+          _id: 'doc-43',
+          documentName: 'big',
+          documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+          isVersionedFile: false,
+          save: sinon.stub().resolves(),
+        }
+        stubDocumentStore(placeholderDoc)
+        mockAdapter.generatePresignedUrlForDirectUpload.resolves({ statusCode: 200, data: { url: 'https://store.example/presigned?x=1' } })
+        const service = new UploadDocumentService(
+          mockAdapter,
+          { buffer: Buffer.from('x'), originalname: 'big.pdf', size: LARGE_SIZE, mimetype: 'application/pdf' } as any,
+          vendor,
+          mockKeyValueStoreService,
+          mockDefaultConfig,
+        )
+        const req = {
+          user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+          body: { documentName: 'big', documentPath: 'Finance', extension: 'pdf', isVersionedFile: false },
+        } as any
+        const res = { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as any
+
+        await service.uploadDocument(req, res, sinon.stub())
+
+        const created = (DocumentModel.create as sinon.SinonStub).firstCall.args[0]
+        const row = Array.isArray(created) ? created[0] : created
+        expect(row.storageVendor).to.equal(vendor)
+      })
+    }
+
     it('should strip stored orgId/PipesHub prefix before generating presigned URL', async () => {
       // Placeholder comes back already carrying the persisted full path
       const placeholderDoc: any = {
