@@ -11,6 +11,7 @@ import socket
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -102,7 +103,7 @@ class TestUnknownAccount:
 
     @staticmethod
     async def list_with_resolver_error(monkeypatch, errno: int) -> str:
-        def getaddrinfo(host, *args, **kwargs):
+        def getaddrinfo(host: str, *args: object, **kwargs: object) -> NoReturn:
             raise socket.gaierror(errno, "resolver says no")
 
         monkeypatch.setattr("app.utils.url_fetcher.socket.getaddrinfo", getaddrinfo)
