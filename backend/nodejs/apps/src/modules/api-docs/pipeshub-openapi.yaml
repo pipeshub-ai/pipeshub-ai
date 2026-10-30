@@ -36658,6 +36658,8 @@ paths:
           description: No such document, or no such version.
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: Another write to this document was in progress, or the store's clock could not be read; nothing was written. Safe to retry.
   /document/internal/{documentId}/directUpload:
     post:
       tags:

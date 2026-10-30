@@ -119,6 +119,13 @@ STORAGE_NODE = (
     "backend/nodejs/apps/package-lock.json",
     "backend/nodejs/apps/tsconfig.json",
     "backend/nodejs/apps/tsconfig.test.json",
+    # The document write state the storage server keeps (its unit of work, errors and
+    # org context), and the model and itest that prove it.
+    "backend/nodejs/apps/src/libs/db/uow.ts",
+    "backend/nodejs/apps/src/libs/errors/storage.errors.ts",
+    "backend/nodejs/apps/src/libs/context/**",
+    "backend/nodejs/apps/tests/storage/fingerprint-model/**",
+    "backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts",
 )
 
 
