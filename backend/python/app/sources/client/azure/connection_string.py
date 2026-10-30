@@ -5,6 +5,20 @@ INVALID_ACCOUNT_KEY = (
     "string again from the storage account's Access keys page in the Azure portal."
 )
 
+# A key or SAS that is well formed but that Azure does not accept, told apart from one that is malformed.
+CREDENTIALS_REFUSED = (
+    "Azure refused the credentials: they are wrong, have expired or were revoked. For a connection "
+    "string, copy it again from the storage account's Access keys (or Shared access signature) page "
+    "in the Azure portal; for Entra ID, check the app registration's tenant, client ID and secret."
+)
+
+# Covers both sign-in methods: a connection string names the host through AccountName and
+# EndpointSuffix, Entra ID through the Blob Endpoint URL.
+ACCOUNT_NOT_FOUND = (
+    "The storage account's host name does not exist. Check the AccountName and EndpointSuffix "
+    "in the connection string, or the Blob Endpoint for Entra ID."
+)
+
 
 def account_key_problem(connection_string: str, client_cls: type) -> str | None:
     """INVALID_ACCOUNT_KEY when the SDK would sign requests with a key it cannot decode, else None.

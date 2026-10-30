@@ -719,6 +719,21 @@ export function InviteUsersSidebar({
               'Assign team member role'
             )}
           />
+          {isGrantingAdmin ? (
+            <Box mt="2">
+              <Callout.Root color="amber" variant="soft" size="1" role="alert">
+                <Callout.Icon>
+                  <MaterialIcon name="warning" size={16} />
+                </Callout.Icon>
+                <Callout.Text size="1" style={{ lineHeight: 1.45 }}>
+                  {t('workspace.users.invite.adminGroupWarning', {
+                    defaultValue:
+                      'Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.',
+                  })}
+                </Callout.Text>
+              </Callout.Root>
+            </Box>
+          ) : null}
         </FormField>
 
         {/* Groups dropdown — Enterprise Edition only */}
@@ -743,21 +758,6 @@ export function InviteUsersSidebar({
                 : 'No groups available'
             }
           />
-          {isGrantingAdmin ? (
-            <Box mt="2">
-              <Callout.Root color="amber" variant="soft" size="1">
-                <Callout.Icon>
-                  <MaterialIcon name="warning" size={16} />
-                </Callout.Icon>
-                <Callout.Text size="1" style={{ lineHeight: 1.45 }}>
-                  {t('workspace.users.invite.adminGroupWarning', {
-                    defaultValue:
-                      'Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.',
-                  })}
-                </Callout.Text>
-              </Callout.Root>
-            </Box>
-          ) : null}
         </FormField> */}
       </Box>
     </WorkspaceRightPanel>

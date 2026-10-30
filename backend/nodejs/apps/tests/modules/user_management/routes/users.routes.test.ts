@@ -633,6 +633,30 @@ describe('User Routes', () => {
       expect(mockUserController.getAllUsers.called).to.be.false;
     });
 
+    it('GET / accepts date filters as signed epoch milliseconds, before 1970 too', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = { joinedFrom: '-157766400000', joinedTo: '1759622400000', lastActiveTo: '0' };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.be.undefined;
+    });
+
+    it('GET / rejects a date filter that is not epoch milliseconds', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.query = { joinedFrom: '2026-10-01' };
+      const validationMiddleware = findValidationMiddleware(router, '/', 'get');
+
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      expect(mockNext.firstCall.args[0]).to.exist;
+    });
+
     it('GET / should accept valid query filters and reach controller', async () => {
       const router = createUserRouter(container);
       const { mockReq, mockRes, mockNext } = createMockReqRes();

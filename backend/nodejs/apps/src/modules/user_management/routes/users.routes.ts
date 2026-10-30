@@ -203,6 +203,14 @@ const emailIdValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const epochMsParam = z
+  .string()
+  .optional()
+  // Signed: a day before 1970, which the date picker allows, is a negative epoch.
+  .refine((val) => val === undefined || /^-?\d{1,15}$/.test(val), {
+    message: 'date filters must be epoch milliseconds',
+  });
+
 const getAllUsersQueryParams = z.object({
   page: z
     .string()
@@ -219,6 +227,11 @@ const getAllUsersQueryParams = z.object({
   search: z.string().optional(),
   hasLoggedIn: z.enum(['true', 'false']).optional(),
   isBlocked: z.enum(['true', 'false']).optional(),
+  // Date filters, as epoch milliseconds: `From` inclusive, `To` exclusive.
+  joinedFrom: epochMsParam,
+  joinedTo: epochMsParam,
+  lastActiveFrom: epochMsParam,
+  lastActiveTo: epochMsParam,
   // Opt-in, for the screens that pick who belongs to a group or a team.
   // Service accounts are left out of this list by default on purpose — see the
   // filter in `getAllUsers` — so a caller that wants them has to say so.

@@ -28557,6 +28557,34 @@ paths:
           schema:
             type: string
             pattern: '^,*([a-fA-F0-9]{24}(,+[a-fA-F0-9]{24})*)?,*$'
+        - name: joinedFrom
+          in: query
+          required: false
+          description: Only users who joined at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: joinedTo
+          in: query
+          required: false
+          description: Only users who joined before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveFrom
+          in: query
+          required: false
+          description: Only users last active (last updated) at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveTo
+          in: query
+          required: false
+          description: Only users last active (last updated) before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
         - name: includeServiceAccounts
           in: query
           required: false

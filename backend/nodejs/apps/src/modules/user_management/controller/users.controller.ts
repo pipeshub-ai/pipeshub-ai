@@ -6,7 +6,11 @@ import {
 import { isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { getUserRepository } from '../../../libs/repositories/user';
-import type { UserDto, DirectoryQuery } from '../../../libs/repositories/user';
+import type {
+  UserDto,
+  DirectoryQuery,
+  TimeRange,
+} from '../../../libs/repositories/user';
 import { getGroupRepository } from '../../../libs/repositories/group';
 import { getCredentialRepository } from '../../../libs/repositories/credential';
 import { getActivityRepository } from '../../../libs/repositories/activity';
@@ -143,6 +147,16 @@ function normalizedEmail(value: unknown): string {
   return typeof value === 'string' ? value.toLowerCase().trim() : '';
 }
 
+// `[from, to)` from two epoch-millisecond query values; undefined when neither is set.
+function timeRange(from: unknown, to: unknown): TimeRange | undefined {
+  const at = (value: unknown): Date | undefined =>
+    typeof value === 'string' && /^-?\d+$/.test(value)
+      ? new Date(Number(value))
+      : undefined;
+  const range: TimeRange = { from: at(from), to: at(to) };
+  return range.from || range.to ? range : undefined;
+}
+
 export const MAX_BULK_INVITE = 1000;
 export const USER_DELETE_NOT_RECORDED =
   "We couldn't delete this user just now. They are still a member; please try again in a moment.";
@@ -210,6 +224,10 @@ export class UserController {
       isBlocked,
       groupIds,
       includeServiceAccounts,
+      joinedFrom,
+      joinedTo,
+      lastActiveFrom,
+      lastActiveTo,
     } = req.query;
 
     const orgId = req.user?.orgId as string;
@@ -277,6 +295,12 @@ export class UserController {
         query.groupIds = gids;
       }
     }
+
+    // Date filters narrow the query itself, so the total and the pages agree.
+    const createdAt = timeRange(joinedFrom, joinedTo);
+    if (createdAt) query.createdAt = createdAt;
+    const updatedAt = timeRange(lastActiveFrom, lastActiveTo);
+    if (updatedAt) query.updatedAt = updatedAt;
 
     const { rows: mongoUsers, total: totalCount } =
       await getUserRepository().listDirectory(orgId, query);
