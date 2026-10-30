@@ -10,6 +10,7 @@ from the graph, so it is never among the updated ones). A step applies one to
 three edits at once, as a sync or a branch switch does. The result is compared
 with a fresh full build over the same files.
 """
+import asyncio
 import os
 import random
 
@@ -276,4 +277,94 @@ async def test_an_inherited_method_resolves_the_same_incrementally() -> None:
     expected = await full()
     want = code_edges(expected)
     assert any("a/base.py::method:Base.ping" in line for line in describe(expected, want)), "the full build links the call"
+    assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))
+
+
+async def test_a_dependency_whose_facts_are_unreadable_does_not_stall_the_build() -> None:
+    """The retry re-resolves files whose bindings a chain read; one whose stored facts
+    cannot be read is tried once, and the build still finishes."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/a/__init__.py": "",
+        "pkg/a/base.py": "class Base:\n    def ping(self):\n        pass\n",
+        "pkg/b/__init__.py": "",
+        "pkg/b/base.py": "class Base:\n    def ping(self):\n        pass\n",
+        "pkg/svc.py": "from pkg.a.base import Base\n\n\nclass Service(Base):\n    pass\n",
+        "pkg/use.py": "from pkg.svc import Service\n\n\ndef run():\n    return Service().ping()\n",
+    }
+    parser = CodeFileParser()
+
+    async def put(graph: Graph, path: str, source: str) -> None:
+        record = f"rec-{path}"
+        container = parser.parse_to_blocks(source.encode(), path.rsplit("/", 1)[-1], path, "python")
+        graph.code_files[record] = path
+        graph.blobs[record] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+        await write_code_file_blocks_to_graph(
+            graph_provider=graph,
+            context=BlockProjectionContext(org_id=ORG_ID, record_id=record, record_group_id=GROUP_ID,
+                                           connector_id="conn1", language="python", file_path=path),
+            block_containers=container,
+        )
+
+    async def full() -> Graph:
+        graph = Graph()
+        for path, source in files.items():
+            await put(graph, path, source)
+        await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                     facts_source=graph)
+        return graph
+
+    graph = await full()
+    del graph.blobs["rec-pkg/svc.py"]
+    files["pkg/use.py"] += "\n\ndef other():\n    return Service().ping()\n"
+    await put(graph, "pkg/use.py", files["pkg/use.py"])
+    result = await asyncio.wait_for(build_code_graph_edges(
+        graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+        touched_record_ids={"rec-pkg/use.py"}, facts_source=graph), timeout=20)
+    assert result.files_reresolved >= 1
+
+
+
+async def test_a_long_chain_of_imported_bases_resolves_the_same_incrementally() -> None:
+    """Each base class is in its own file and imports the next, and every name is
+    defined twice: a build has to follow five files of import bindings, one more per
+    round, before `L0().ping()` resolves."""
+    files = {"pkg/__init__.py": ""}
+    for i in range(6):
+        files[f"pkg/a{i}/__init__.py"] = files[f"pkg/b{i}/__init__.py"] = ""
+        files[f"pkg/b{i}/m.py"] = f"class L{i}:\n    def ping(self):\n        pass\n"
+        files[f"pkg/a{i}/m.py"] = (
+            f"from pkg.a{i + 1}.m import L{i + 1}\n\n\nclass L{i}(L{i + 1}):\n    pass\n" if i < 5
+            else "class L5:\n    def ping(self):\n        pass\n")
+    files["pkg/use.py"] = "from pkg.a0.m import L0\n\n\ndef run():\n    return L0().ping()\n"
+    parser = CodeFileParser()
+
+    async def put(graph: Graph, path: str, source: str) -> None:
+        record = f"rec-{path}"
+        container = parser.parse_to_blocks(source.encode(), path.rsplit("/", 1)[-1], path, "python")
+        graph.code_files[record] = path
+        graph.blobs[record] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+        await write_code_file_blocks_to_graph(
+            graph_provider=graph,
+            context=BlockProjectionContext(org_id=ORG_ID, record_id=record, record_group_id=GROUP_ID,
+                                           connector_id="conn1", language="python", file_path=path),
+            block_containers=container,
+        )
+
+    async def full() -> Graph:
+        graph = Graph()
+        for path, source in files.items():
+            await put(graph, path, source)
+        await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                     facts_source=graph)
+        return graph
+
+    graph = await full()
+    files["pkg/use.py"] += "\n\ndef other():\n    return L0().ping()\n"
+    await put(graph, "pkg/use.py", files["pkg/use.py"])
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-pkg/use.py"}, facts_source=graph)
+    expected = await full()
+    want = code_edges(expected)
+    assert any("a5/m.py::method:L5.ping" in line for line in describe(expected, want)), "the full build links the call"
     assert code_edges(graph) == want, "\n".join(describe(graph, code_edges(graph) ^ want))

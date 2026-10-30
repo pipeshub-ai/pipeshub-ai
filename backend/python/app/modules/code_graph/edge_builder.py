@@ -107,8 +107,6 @@ _MAX_REEXPORT_HOPS = 4
 # Languages where a bare call inside a method may be a call on `this`.
 _IMPLICIT_THIS_FAMILIES = frozenset({"jvm", "csharp"})
 _MIN_MISSING_FACTS_TO_ABORT = 5
-# Resolve again at most this often for type tables and bindings an incremental build lacked.
-_TYPE_TABLE_ROUNDS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -1760,17 +1758,20 @@ async def build_code_graph_edges(
     if incremental:
         builder.track_unloaded(reresolve, set(reresolve))
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
-    for _ in range(_TYPE_TABLE_ROUNDS if incremental else 0):
+    tried: set[str] = set()
+    while incremental:
         # A chain through another file read what this incremental build had not
         # loaded: its type table (`apps.get_model()` with `apps = Apps()` there), or
         # its import bindings (`Service().ping()` with Service inheriting an imported
         # Base). Load the tables, re-resolve the files whose bindings were read, and
-        # resolve again, so the result is the one a full build gets.
+        # resolve again until nothing is missing, so what is written is what a full
+        # build writes. Each round loads files no earlier round tried, so it ends.
         missing_types = builder.types_missing - builder.types_loaded
         unbound = {index.record_by_file.get(f) for f in builder.bindings_missing}
-        unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve
+        unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve - tried
         if not missing_types and not unbound:
             break
+        tried |= unbound
         if unbound:
             reresolve |= unbound - await _load_facts(facts_source, index, org_id, unbound,
                                                      builder.result, log)
