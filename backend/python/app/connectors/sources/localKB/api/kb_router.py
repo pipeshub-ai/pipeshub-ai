@@ -1,12 +1,18 @@
 # router.py fixes - Add return type annotations
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 
 from app.api.connection_limit import (
+    hide_record_parents_outside_connection,
+    hide_record_parents_unchecked,
+    hide_source_paths,
     ids_outside_connection,
     ids_outside_connection_on_restore,
     keep_path_inside_connection,
@@ -44,7 +50,15 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     ConnectionCheck,
     KnowledgeBaseService,
 )
+from app.connectors.sources.localKB.push import admission
+from app.connectors.sources.localKB.push import api as push_api
+from app.connectors.sources.localKB.push.contract import PushRefusal
+from app.connectors.sources.localKB.push.gate import GatedRoute, KbPushFlagMiddleware
+from app.connectors.sources.localKB.push.service import KbPushService
 from app.containers.connector import ConnectorAppContainer
+from app.core import org_context
+from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from app.services.storage_documents import StorageDocuments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -729,6 +743,23 @@ async def create_folder_in_kb_root(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        if (
+            "parentId" in body
+            or "parent_id" in body
+            or "folderId" in body
+            or any(
+                k in request.query_params
+                for k in ("parentId", "parent_id", "folderId")
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot nest folders via the root endpoint. Use the "
+                    "/{kb_id}/folder/{parent_id}/subfolder route instead."
+                )
+            )
+
         # Accept both "name" and "folderName" for compatibility
         folder_name = body.get("name") or body.get("folderName")
         if not folder_name:
@@ -774,6 +805,13 @@ async def create_nested_folder(
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder inside another folder"""
     try:
+        for param_name in ("parentId", "parent_id", "folderId"):
+            for val in request.query_params.getlist(param_name):
+                if val != parent_folder_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Conflicting {param_name} query parameter specified.",
+                    )
         try:
             body = await request.json()
         except Exception:
@@ -1005,6 +1043,7 @@ async def get_kb_children(
                 detail=error_reason
             )
 
+        hide_source_paths(request, result, kb_id)
         return result
 
     except HTTPException as he:
@@ -1015,6 +1054,28 @@ async def get_kb_children(
             status_code=500,
             detail=action_failed("open this knowledge base")
         )
+
+
+async def _keep_update_inside_connection(request: Request, response: dict[str, Any], kb_id: str) -> None:
+    """A connected app limited to part of a collection is told nothing of the
+    rest of it: not the collection, its other folders, the updated record's
+    parents outside the limit, or the file's source path."""
+    if connection_limit(request.state.user) is None:
+        return
+    user = request.state.user
+    graph_provider = request.app.state.graph_provider
+    kb = response.get("kb") if isinstance(response.get("kb"), dict) else {}
+    folders = [f for f in kb.get("folders") or [] if isinstance(f, dict)]
+    outside = await ids_outside_connection(
+        request, graph_provider, user.get("orgId"), user.get("userId"),
+        [kb_id, *(f.get("id") for f in folders if f.get("id"))],
+    )
+    if kb_id in outside:
+        response["kb"] = {}
+    elif kb:
+        kb["folders"] = [f for f in folders if f.get("id") not in outside]
+    await hide_record_parents_outside_connection(request, graph_provider, user.get("orgId"), user.get("userId"), response)
+    hide_source_paths(request, response, kb_id)
 
 
 @kb_router.get(
@@ -1067,6 +1128,7 @@ async def get_folder_children(
                 detail=error_reason
             )
 
+        hide_source_paths(request, result, kb_id)
         return result
 
     except HTTPException as he:
@@ -1355,7 +1417,7 @@ async def update_record(
             kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
                 logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
-                return {
+                fallback = {
                     **result,
                     "fileUpdated": body.get("fileMetadata") is not None,
                     "timestamp": get_epoch_timestamp_in_ms(),
@@ -1363,6 +1425,8 @@ async def update_record(
                     "kb": {},
                     "userPermission": "NONE",
                 }
+                hide_record_parents_unchecked(request, fallback)
+                return fallback
 
             # Get user permission
             user_key = user_id
@@ -1410,6 +1474,7 @@ async def update_record(
                 "kb": kb_info,
                 "userPermission": user_permission,
             }
+            await _keep_update_inside_connection(request, enriched_result, kb_id)
 
             return enriched_result
 
@@ -1417,8 +1482,10 @@ async def update_record(
             raise
         except Exception as e:
             logger.error(f"❌ Failed to enrich update record response: {str(e)}")
-            # Return with required fields even if enrichment fails
-            return {
+            # Return with required fields even if enrichment fails. For a
+            # connected app with a limit, the enrichment's own limit check may be
+            # what failed: nothing above the record is named then.
+            fallback = {
                 **result,
                 "fileUpdated": body.get("fileMetadata") is not None,
                 "timestamp": get_epoch_timestamp_in_ms(),
@@ -1426,6 +1493,8 @@ async def update_record(
                 "kb": {},
                 "userPermission": "NONE",
             }
+            hide_record_parents_unchecked(request, fallback)
+            return fallback
 
     except HTTPException as he:
         raise he
@@ -1739,3 +1808,164 @@ async def move_record(
             status_code=500,
             detail=action_failed("move this file")
         )
+
+
+# ---- push: application/blocks records and the KB's property schema --------------------------------
+
+# Its own router, included after ``kb_router``: its routes match only while ENABLE_KB_PUSH is on
+# (``push/gate.py``; the app needs ``KbPushFlagMiddleware``), so the flag is checked before the
+# connection check and any other dependency, and with it off the app answers as if they were absent.
+kb_push_router = APIRouter(
+    prefix="/api/v1/kb",
+    tags=["Knowledge Base"],
+    dependencies=[Depends(keep_path_inside_connection)],
+    route_class=GatedRoute,
+)
+
+
+def install_push_routes(app: FastAPI) -> None:
+    """Add the push routes and the middleware that reads ENABLE_KB_PUSH before routing, ahead of
+    authentication and any graph call. Without the flag the routes do not match."""
+    app.include_router(kb_push_router)
+    app.add_middleware(KbPushFlagMiddleware)
+
+
+def _refusal_response(r: PushRefusal) -> JSONResponse:
+    return JSONResponse(status_code=r.status, content=push_api.error_body(r), headers=push_api.error_headers(r))
+
+
+def _bound_org_id() -> str | None:
+    """The org the request is bound to, or None when it is not bound (the push routes then refuse)."""
+    try:
+        return org_context.current_org_id()
+    except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+        return None
+
+
+def _require_bound_org() -> str:
+    org_id = _bound_org_id()
+    if not org_id:
+        raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
+    return org_id
+
+
+def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_service: KafkaService) -> KbPushService:
+    container: ConnectorAppContainer = request.app.container
+    runtime = push_api.runtime_for(request.app)
+    config_service = container.config_service()
+
+    async def publish(event: dict[str, Any]) -> bool:
+        return await kafka_service.publish_event("record-events", event) is not False
+
+    return KbPushService(
+        graph_provider=request.app.state.graph_provider,
+        kb_service=kb_service,
+        processor_for_kb=kb_service.processor_for_kb,
+        schema_registry=MetadataSchemaRegistry(config_service),
+        storage=StorageDocuments(config_service, container.logger()),
+        worker=runtime.worker,
+        spool=runtime.spool,
+        publish_event=publish,
+    )
+
+
+@kb_push_router.post(
+    "/{kb_id}/records",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
+)
+async def push_record(
+    kb_id: str,
+    request: Request,
+    folderId: str | None = Query(None),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    """Create or update one ``application/blocks`` record by ``externalRecordId``.
+
+    The endpoint declares no body parameter, so nothing is read before the caller's role is
+    known; the body is then read by hand, bounded and timed (``push/admission.py``).
+    """
+    user = request.state.user
+    user_id, org_id = user.get("userId"), _bound_org_id()
+    try:
+        if not user_id or not org_id:
+            raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
+        service = _push_service(request, kb_service, kafka_service)
+        user_key = await service.authorize(kb_id, user_id)
+        admission = push_api.runtime_for(request.app).admission
+        admission.claim(user_key)  # one push at a time per caller per process: held until the push ends
+        task: asyncio.Future[Any] | None = None
+        try:
+            body = await admission.read_body(request.headers, request.stream())
+            # Once the body is in, the push finishes even if the client goes away; the caller's
+            # slot is then released when the push itself ends.
+            task = org_context.spawn_in_request(
+                service.push(kb_id=kb_id, user_id=user_id, org_id=org_id, body=body, folder_id=folderId)
+            )
+            task.add_done_callback(lambda _t: admission.release(user_key))
+            result = await asyncio.shield(task)
+        finally:
+            if task is None:
+                admission.release(user_key)
+        return JSONResponse(status_code=result.http_status, content=result.to_json())
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except ClientDisconnect:
+        # The caller went away mid-body: nothing was read to the end and nothing is written.
+        _log.info("push_record: the client disconnected before the body ended")
+        return _refusal_response(PushRefusal(400, "CLIENT_DISCONNECTED", "The client closed the connection before the body ended."))
+    except Exception as e:
+        _log.error("push_record failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("push this record")))
+
+
+@kb_push_router.put("/{kb_id}/schema", dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))])
+async def put_kb_schema(
+    kb_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    user = request.state.user
+    try:
+        org_id = _require_bound_org()
+        service = _push_service(request, kb_service, kafka_service)
+        await service.authorize(kb_id, user.get("userId"), ["OWNER"])
+        try:
+            body = push_api.SchemaIn.model_validate_json(
+                await admission.read_bounded(
+                    request.headers, request.stream(), admission.MAX_SCHEMA_BYTES, admission.SCHEMA_READ_TIMEOUT_S,
+                )
+            )
+        except ValidationError as e:
+            first = e.errors()[0]
+            raise PushRefusal(400, "ENVELOPE_INVALID", "The schema body is invalid.", ".".join(str(x) for x in first["loc"])) from None
+        out = await push_api.put_schema(service.schemas, org_id, kb_id, body)
+        return JSONResponse(status_code=200, content=out)
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except Exception as e:
+        _log.error("put_kb_schema failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("save this schema")))
+
+
+@kb_push_router.get("/{kb_id}/schema", dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))])
+async def get_kb_schema(
+    kb_id: str,
+    request: Request,
+    version: int | None = Query(None, ge=1),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> JSONResponse:
+    user = request.state.user
+    try:
+        org_id = _require_bound_org()
+        service = _push_service(request, kb_service, kafka_service)
+        await service.authorize(kb_id, user.get("userId"), None)
+        out = await push_api.get_schema(service.schemas, org_id, kb_id, version)
+        return JSONResponse(status_code=200, content=out)
+    except PushRefusal as r:
+        return _refusal_response(r)
+    except Exception as e:
+        _log.error("get_kb_schema failed: %s", e, exc_info=True)
+        return _refusal_response(PushRefusal(500, "INTERNAL_ERROR", action_failed("read this schema")))

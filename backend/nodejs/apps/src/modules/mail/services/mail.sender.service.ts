@@ -1,28 +1,36 @@
-import { inject, injectable } from 'inversify';
+import { inject, injectable, optional } from 'inversify';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
-import { MailModel } from '../schema/mailInfo.schema';
+import { getMailLogRepository } from '../../../libs/repositories/mail-log';
+import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getEmailContent } from '../utils/email-content';
+import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
   classifyMailError,
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
+  smtpProblemOf,
 } from '../types/mail-event.types';
 
-const SMTP_DNS_TIMEOUT_MS = 30_000;
-const SMTP_CONNECTION_TIMEOUT_MS = 30_000;
-const SMTP_GREETING_TIMEOUT_MS = 30_000;
-const SMTP_SOCKET_TIMEOUT_MS = 60_000;
 export const SMTP_SEND_DEADLINE_MS = 120_000;
 export const SMTP_SYNC_SEND_DEADLINE_MS = 25_000;
 const SMTP_POOL_MAX_CONNECTIONS = 5;
 const SMTP_POOL_MAX_MESSAGES = 100;
 export const SMTP_CIRCUIT_FAILURE_THRESHOLD = 5;
 export const SMTP_CIRCUIT_COOLDOWN_MS = 60_000;
+
+/** The stored SMTP settings could not be read; unlike missing settings, worth retrying. */
+export class SmtpSettingsUnreadableError extends Error {
+  constructor(readonly reason: unknown) {
+    super('Could not read the SMTP settings');
+    this.name = 'SmtpSettingsUnreadableError';
+  }
+}
 
 interface PooledTransport {
   key: string;
@@ -58,13 +66,30 @@ export class MailSenderService {
     @inject('AppConfigProvider')
     private readonly getAppConfig: () => AppConfig,
     @inject('Logger') private readonly logger: Logger,
+    // Another replica may have turned email off or deleted it; this process's
+    // AppConfig only changes when the reload request reaches it.
+    @inject('StoredSmtpConfig')
+    @optional()
+    private readonly readStoredSmtpConfig?: () => Promise<SmtpConfig | null>,
   ) {}
 
   /** Resolves the live SMTP config, or null when the org has not set one up. */
   getSmtpConfig(
     _orgId?: string,
   ): SmtpConfig | null | Promise<SmtpConfig | null> {
-    return (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
+    const cached = (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
+    if (!this.readStoredSmtpConfig) {
+      return cached;
+    }
+    // A replica that missed the reload must still see email turned back on.
+    // An unreadable store must not look like missing settings, which callers
+    // drop without retrying; with a loaded copy, send() re-reads and retries.
+    return this.readStoredSmtpConfig().catch((error: unknown) => {
+      if (cached) {
+        return cached;
+      }
+      throw new SmtpSettingsUnreadableError(error);
+    });
   }
 
   protected renderContent(
@@ -93,24 +118,10 @@ export class MailSenderService {
       this.retire(this.pooled);
     }
     const transporter = nodemailer.createTransport({
-      host: smtpConfig.host,
-      port: smtpConfig.port || 587,
-      secure: false,
+      ...smtpTransportOptions(smtpConfig),
       pool: true,
       maxConnections: SMTP_POOL_MAX_CONNECTIONS,
       maxMessages: SMTP_POOL_MAX_MESSAGES,
-      dnsTimeout: SMTP_DNS_TIMEOUT_MS,
-      connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
-      greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
-      socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
-      // Attachments come from the request body; never let one read a local file or fetch a URL.
-      disableFileAccess: true,
-      disableUrlAccess: true,
-      ...(!smtpConfig.username
-        ? {}
-        : smtpConfig.password
-          ? { auth: { user: smtpConfig.username, pass: smtpConfig.password } }
-          : { auth: { user: smtpConfig.username } }),
     });
     this.pooled = { key, transporter, inFlight: 0 };
     return this.pooled;
@@ -223,16 +234,22 @@ export class MailSenderService {
             : String(persistError),
       });
     try {
-      new MailModel({
-        orgId: bodyData.orgId,
-        subject: bodyData.subject,
-        from: smtpConfig.fromEmail,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
-        emailTemplateType: bodyData.emailTemplateType,
-      })
-        .save()
-        .catch(logFailure);
+      const write = (): Promise<void> =>
+        getMailLogRepository().record({
+          orgId: bodyData.orgId,
+          subject: bodyData.subject,
+          from: smtpConfig.fromEmail,
+          to: bodyData.sendEmailTo,
+          cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
+          emailTemplateType: bodyData.emailTemplateType,
+        });
+      // The route is called by a service with only a scoped token, so no org is bound: use the one named on the mail, else (a sign-in code
+      // before any user is known) the install's organisation.
+      const run =
+        getCurrentOrgId() === undefined && bodyData.orgId
+          ? forOrg(bodyData.orgId, 'mail.audit', write)
+          : inInstallOrg('mail.audit', write, undefined);
+      run.catch(logFailure);
     } catch (persistError) {
       logFailure(persistError);
     }
@@ -241,9 +258,36 @@ export class MailSenderService {
   /** Returns the outcome instead of throwing, so the caller decides on retry. */
   async send(
     bodyData: MailBody,
-    smtpConfig: SmtpConfig,
+    requestedConfig: SmtpConfig,
     deadlineMs: number = SMTP_SEND_DEADLINE_MS,
   ): Promise<MailSendResult> {
+    let smtpConfig = requestedConfig;
+    if (this.readStoredSmtpConfig) {
+      let stored: SmtpConfig | null;
+      try {
+        stored = await this.readStoredSmtpConfig();
+      } catch (error) {
+        this.logger.warn(
+          'Could not read the stored SMTP settings before sending',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return {
+          status: 'transient',
+          error: 'Could not read the SMTP settings',
+        };
+      }
+      if (!stored) {
+        return {
+          status: 'permanent',
+          error: 'Email is turned off or not configured',
+        };
+      }
+      // The caller's copy can predate a host or credential change saved on another replica.
+      smtpConfig = stored;
+    }
+
     let emailContent: string;
     try {
       emailContent = this.renderContent(
@@ -266,6 +310,7 @@ export class MailSenderService {
     if (openUntil !== null) {
       return {
         status: 'unavailable',
+        problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
       };
     }
@@ -314,8 +359,9 @@ export class MailSenderService {
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
-      this.logger.error('Mail send error', { error: message, kind });
-      return { status: kind, error: message };
+      const problem = smtpProblemOf(error);
+      this.logger.error('Mail send error', { error: message, kind, problem });
+      return { status: kind, error: message, ...(problem && { problem }) };
     }
   }
 }

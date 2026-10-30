@@ -10,6 +10,7 @@ from app.agents.mcp.oauth_client import (
     _parse_form_encoded,
     exchange_code_for_token,
     refresh_access_token,
+    request_client_credentials_token,
 )
 
 
@@ -383,6 +384,9 @@ class TestErrorsInTheResponseBody:
         _json_response(401, {"error": "invalid_client"}),
         _form_response(200, "error=incorrect_client_credentials"),
         _json_response(400, {"error": "unauthorized_client"}),
+        _json_response(400, {"error": "interaction_required", "error_description": "AADSTS50076: use MFA"}),
+        _json_response(400, {"error": "invalid_scope"}),
+        _json_response(400, {"error": "invalid_request"}),
     ])
     async def test_a_rejection_a_retry_cannot_fix_is_permanent(self, resp: MagicMock) -> None:
         with pytest.raises(MCPRefreshTokenInvalidError):
@@ -392,6 +396,9 @@ class TestErrorsInTheResponseBody:
     @pytest.mark.parametrize("resp", [
         _json_response(503, {"error": "temporarily_unavailable"}),
         _json_response(200, {"error": "server_error"}),
+        _json_response(503, {"error": "interaction_required"}),
+        _json_response(429, {"error": "invalid_grant"}),
+        _json_response(500, {"error": "login_required"}),
     ])
     async def test_a_provider_outage_can_be_retried(self, resp: MagicMock) -> None:
         with pytest.raises(MCPOAuthError) as exc_info:
@@ -569,3 +576,43 @@ class TestTheProvidersErrorCodeIsKept:
         error = MCPOAuthError("boom")
         assert str(error) == "boom"
         assert error.error_code is None
+
+
+class TestClientCredentialsToken:
+    """RFC 6749 §4.4: API Toolsets get tokens for the client itself, with no user."""
+
+    @staticmethod
+    async def _request(body: dict, **kwargs: object) -> tuple[object, dict]:
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=_json_response(200, body))
+        with _mock_async_client(inner):
+            tokens = await request_client_credentials_token(
+                "https://auth.example.com/token", "cid", "csec", allow_private=True, **kwargs,
+            )
+        return tokens, inner.post.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_asks_for_the_client_credentials_grant_with_the_scopes(self) -> None:
+        tokens, sent = await self._request({"access_token": "a", "expires_in": 60}, scopes=["read", "write"])
+
+        assert sent["data"] == {"grant_type": "client_credentials", "client_id": "cid", "client_secret": "csec", "scope": "read write"}
+        assert tokens.access_token == "a" and tokens.expires_in == 60
+        assert tokens.refresh_token is None
+        assert (tokens.client_id, tokens.token_url) == ("cid", "https://auth.example.com/token")
+
+    @pytest.mark.asyncio
+    async def test_without_scopes_none_are_sent(self) -> None:
+        _, sent = await self._request({"access_token": "a"})
+        assert "scope" not in sent["data"]
+
+    @pytest.mark.asyncio
+    async def test_client_secret_basic(self) -> None:
+        tokens, sent = await self._request({"access_token": "a"}, auth_method="client_secret_basic")
+        assert sent["headers"]["Authorization"].startswith("Basic ")
+        assert "client_secret" not in sent["data"]
+        assert tokens.token_endpoint_auth_method == "client_secret_basic"
+
+    @pytest.mark.asyncio
+    async def test_missing_access_token_raises(self) -> None:
+        with pytest.raises(MCPOAuthError, match="missing access_token"):
+            await self._request({"token_type": "Bearer"})

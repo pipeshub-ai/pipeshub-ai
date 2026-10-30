@@ -76,6 +76,29 @@ async def test_the_run_records_how_it_ended(run_sync, outcome: str) -> None:
     assert idle[Keys.LAST_SYNC_FINISHED_AT] >= start[Keys.LAST_SYNC_STARTED_AT]
 
 
+@pytest.mark.parametrize(
+    "start_status, cleared",
+    [(AppStatus.FULL_SYNCING.value, True), (AppStatus.SYNCING.value, False)],
+)
+async def test_a_full_sync_clears_the_full_sync_it_owed_in_its_start_write(
+    start_status: str, cleared: bool
+) -> None:
+    """One write to the app doc. A second writer clearing pendingFullSync at the
+    same moment failed one of the two in ArangoDB (write-write conflict)."""
+    gp = _graph_provider()
+
+    await run_sync_task(_connector(_ok), "c1", gp, _LOG, start_status=start_status)
+
+    start = _start_write(gp)
+    assert start["status"] == start_status
+    if cleared:
+        assert start[Keys.PENDING_FULL_SYNC] is False
+    else:
+        assert Keys.PENDING_FULL_SYNC not in start
+    assert not [c for c in gp.update_node.await_args_list if Keys.PENDING_FULL_SYNC in c.args[2]
+                and c.args[2][Keys.PENDING_FULL_SYNC] is False]
+
+
 async def test_a_stopped_run_is_recorded_as_stopped() -> None:
     gp = _graph_provider()
     started = asyncio.Event()
@@ -156,3 +179,48 @@ async def test_a_run_stopped_before_it_starts_stores_no_summary_of_the_last_run(
         await task
 
     assert _idle_write(gp)[Keys.LAST_SYNC_SUMMARY] is None
+
+
+async def test_what_the_admin_has_to_do_is_stored_with_the_outcome() -> None:
+    """The instance card's action-needed badge reads it; written in the IDLE update, not a second one."""
+    import json
+
+    from app.connectors.core.base.connector.connector_service import ActionItem
+
+    gp = _graph_provider()
+
+    async def reports_an_item() -> None:
+        connector.last_action_items = [
+            ActionItem(code="certificate_sign_in", title="Switch", message="Upload a certificate", action="authenticate",
+                       docs_url="https://docs.example.com/steps")
+        ]
+
+    connector = _connector(reports_an_item)
+
+    await run_sync_task(connector, "c1", gp, _LOG)
+
+    assert json.loads(_idle_write(gp)[Keys.ACTION_ITEMS]) == [{
+        "code": "certificate_sign_in", "severity": "warning", "title": "Switch",
+        "message": "Upload a certificate", "action": "authenticate", "docsUrl": "https://docs.example.com/steps",
+    }]
+
+
+async def test_nothing_left_to_do_clears_the_stored_items() -> None:
+    gp = _graph_provider()
+
+    async def nothing_to_do() -> None:
+        connector.last_action_items = []
+
+    connector = _connector(nothing_to_do)
+
+    await run_sync_task(connector, "c1", gp, _LOG)
+
+    assert Keys.ACTION_ITEMS in _idle_write(gp) and _idle_write(gp)[Keys.ACTION_ITEMS] is None
+
+
+async def test_a_connector_that_reports_no_items_leaves_the_stored_ones() -> None:
+    gp = _graph_provider()
+
+    await run_sync_task(_connector(_ok), "c1", gp, _LOG)
+
+    assert Keys.ACTION_ITEMS not in _idle_write(gp)

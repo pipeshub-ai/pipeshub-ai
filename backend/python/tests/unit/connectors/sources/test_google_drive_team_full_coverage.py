@@ -29,6 +29,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -183,6 +184,11 @@ def connector():
         c.drive_client = MagicMock()
         c.sync_filters = FilterCollection()
         c.indexing_filters = FilterCollection()
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        c._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
         yield c
 
 
@@ -390,7 +396,7 @@ class TestProcessGroup:
     async def test_process_group_member_lookup_in_synced_users(self, connector):
         connector.synced_users = [
             AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c1", source_user_id="m1",
-                    email="m1@t.com", full_name="Member One", source_created_at=1000)
+                    email="m1@t.com", full_name="Member One", source_created_at=1000, is_active=True)
         ]
         connector._fetch_group_members = AsyncMock(return_value=[
             {"type": "USER", "email": "m1@t.com", "id": "m1"},
@@ -546,15 +552,16 @@ class TestFetchPermissions:
         resp.status = 500
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is True, "a failed read keeps the stored grants"
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
-        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_anyone_adds_fallback_for_user(self, connector):
@@ -638,7 +645,7 @@ class TestSyncRecordGroups:
         connector._create_and_sync_shared_drive_record_group = AsyncMock()
         connector._create_personal_record_group = AsyncMock()
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector.synced_users = [user]
         result = await connector._sync_record_groups()
         assert len(result) == 1
@@ -690,7 +697,7 @@ class TestCreatePersonalRecordGroup:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 await connector._create_personal_record_group(user)
                 connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
                 args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
@@ -715,7 +722,7 @@ class TestCreatePersonalRecordGroup:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 with pytest.raises(Exception):
                     await connector._create_personal_record_group(user)
 
@@ -1157,9 +1164,9 @@ class TestProcessUsersInBatches:
     @pytest.mark.asyncio
     async def test_filters_active_users(self, connector):
         active = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                         email="u1@t.com", full_name="U1")
+                         email="u1@t.com", full_name="U1", is_active=True)
         inactive = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u2",
-                           email="u2@t.com", full_name="U2")
+                           email="u2@t.com", full_name="U2", is_active=True)
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active])
         connector._run_sync_with_yield = AsyncMock()
         await connector._process_users_in_batches([active, inactive])
@@ -1502,7 +1509,7 @@ class TestSyncPersonalDrive:
     @pytest.mark.asyncio
     async def test_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.about_get = AsyncMock(return_value={"user": {"permissionId": "p1", "emailAddress": "u@t.com"}})
         user_dds.files_get = AsyncMock(return_value={"id": "root-1"})
@@ -1522,7 +1529,7 @@ class TestSyncPersonalDrive:
     @pytest.mark.asyncio
     async def test_incremental_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
             "changes": [],
@@ -1546,7 +1553,7 @@ class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_no_shared_drives(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={"drives": []})
         await connector.sync_shared_drives(user, user_dds, "p1")
@@ -1554,7 +1561,7 @@ class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_with_shared_drives_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "Shared"}]
@@ -1575,7 +1582,7 @@ class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_team_drive_membership_required_skip(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "NoAccess"}]
@@ -1594,7 +1601,7 @@ class TestRunSyncWithYield:
     @pytest.mark.asyncio
     async def test_calls_personal_and_shared(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:

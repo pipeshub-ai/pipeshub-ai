@@ -90,6 +90,19 @@ class TestMove:
         assert records[path("z.txt")].id == original
         assert path("a.txt") not in records
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio", "gcs"])
+    async def test_a_move_is_saved_as_a_move(self, connector, store, db) -> None:
+        """Saved as a new record at the new key, the stored content stays at the old path.
+        Azure Blob still saves a move as a new record."""
+        store.put("a.txt", SAME)
+        await connector.run_sync()
+
+        store.rename("a.txt", "z.txt")
+        await connector.run_incremental_sync()
+
+        assert db.moved == [(path("a.txt"), path("z.txt"))]
+
 
 class TestCopyThenDeleteTheOriginal:
     @pytest.mark.asyncio

@@ -1,7 +1,8 @@
-import fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { StorageServiceInterface } from '../services/storage.service';
@@ -22,11 +23,48 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
 
+// Local filesystems cap one name at 255 bytes; object stores do not, so their
+// keys keep the full name. Names that fit are kept byte for byte.
+const MAX_FILE_NAME_BYTES = 255;
+const MAX_KEPT_EXTENSION_BYTES = 32;
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  let out = '';
+  let used = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char);
+    if (used + size > maxBytes) break;
+    out += char;
+    used += size;
+  }
+  return out;
+}
+
+/**
+ * One path segment as a local filesystem can hold it: unchanged when it fits in
+ * 255 bytes, else a cut of it plus `~<sha256[:16]>` of the full segment, keeping
+ * a short extension so the stored file still has its type.
+ */
+export function fitPathSegment(full: string): string {
+  if (Buffer.byteLength(full) <= MAX_FILE_NAME_BYTES) {
+    return full;
+  }
+  const ext = path.extname(full);
+  const documentName = full.slice(0, full.length - ext.length);
+  const suffix = `~${createHash('sha256').update(full).digest('hex').slice(0, 16)}`;
+  if (Buffer.byteLength(ext) <= MAX_KEPT_EXTENSION_BYTES) {
+    const room = MAX_FILE_NAME_BYTES - Buffer.byteLength(suffix + ext);
+    return `${truncateUtf8(documentName, room)}${suffix}${ext}`;
+  }
+  return `${truncateUtf8(full, MAX_FILE_NAME_BYTES - suffix.length)}${suffix}`;
+}
+
 @injectable()
 class LocalStorageAdapter implements StorageServiceInterface {
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
+  private mountReady?: Promise<void>;
   private readonly logger = Logger.getInstance({
     service: 'LocalStorageAdapter',
   });
@@ -55,8 +93,6 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // This mirrors how sync services like Dropbox typically work
       this.mountPath = this.createMountPath();
 
-      // Ensure mount directory exists
-      this.ensureMountExists();
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('Local storage adapter initialized', {
           mountPath: this.mountPath,
@@ -93,6 +129,20 @@ class LocalStorageAdapter implements StorageServiceInterface {
       default: // Linux and others
         return path.join(homeDir, '.local', this.mountName);
     }
+  }
+
+  /**
+   * Resolves once the mount folder exists (made once, mode 0700, before any
+   * operation touches it) and rejects with the reason when it cannot be made;
+   * a later call tries again. Not started by the constructor: a background
+   * mkdir there raced the first write and, on failure, was an unhandled rejection.
+   */
+  ensureReady(): Promise<void> {
+    this.mountReady ??= this.ensureMountExists().catch((error: unknown) => {
+      this.mountReady = undefined;
+      throw error;
+    });
+    return this.mountReady;
   }
 
   /**
@@ -187,6 +237,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async locateInsideRealMount(
     fullPath: string,
   ): Promise<{ target: string; mountRoot: string } | null> {
+    await this.ensureReady();
     let folder: string;
     try {
       folder = await fs.realpath(path.dirname(fullPath));
@@ -242,6 +293,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
 
       // Ensure directory exists
+      await this.ensureReady();
       await fs.mkdir(dirPath, { recursive: true });
 
       await this.writeFileAtomically(fullPath, documentInPayload.buffer);
@@ -285,6 +337,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         path.join(this.mountPath, localPath),
       );
 
+      await this.ensureReady();
       await this.writeFileAtomically(fullPath, bufferDataInPayLoad);
 
       const fileUrl = this.getFileUrl(localPath);
@@ -463,6 +516,85 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async writeObject(storageKey: string, data: Buffer): Promise<void> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      // A symlinked folder on the way must not carry the write out of the mount.
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) {
+        throw new StorageNotFoundError('Local folder not found');
+      }
+      await this.writeFileAtomically(located.target, data);
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Opens a storage key for reading, or null when it does not exist. The file
+   * is served from this handle, never reopened by path: a final symlink is not
+   * followed (O_NOFOLLOW), and the open file must be the one at the key's real
+   * place inside the mount once open, so a path swapped between the check and
+   * the read cannot reach a file outside it.
+   */
+  async openObject(
+    storageKey: string,
+  ): Promise<{ handle: FileHandle; size: number } | null> {
+    const located = await this.locateInsideRealMount(
+      this.objectPathInMount(storageKey),
+    );
+    if (located === null) {
+      return null;
+    }
+    let handle: FileHandle;
+    try {
+      handle = await fs.open(
+        located.target,
+        // Undefined on Windows, where it reads as 0 in the bitwise or.
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') {
+        return null;
+      }
+      if (code === 'ELOOP') {
+        throw new StorageValidationError('Invalid document path');
+      }
+      throw error;
+    }
+    try {
+      const [opened, atPath, relocated] = await Promise.all([
+        handle.stat(),
+        fs.lstat(located.target),
+        this.locateInsideRealMount(located.target),
+      ]);
+      if (
+        !opened.isFile() ||
+        relocated?.target !== located.target ||
+        opened.ino !== atPath.ino ||
+        opened.dev !== atPath.dev
+      ) {
+        throw new StorageValidationError('Invalid document path');
+      }
+      return { handle, size: opened.size };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
+  private objectPathInMount(storageKey: string): string {
+    return this.assertInsideMount(
+      path.join(this.mountPath, this.sanitizePath(storageKey)),
+    );
+  }
+
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       const relativePath = this.sanitizePath(storagePath);
@@ -489,6 +621,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.copyFile(srcFull, dstFull);
       const destUrl = this.getFileUrl(dstRelative);
@@ -511,6 +644,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
@@ -547,6 +681,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.cp(srcFull, dstFull, { recursive: true });
       this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
@@ -575,6 +710,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
@@ -608,6 +744,41 @@ class LocalStorageAdapter implements StorageServiceInterface {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  }
+
+  /**
+   * Where each listed document's folder (`<documentPath>/<documentId>`) now
+   * sits under *prefix*, as documentId -> documentPath. Symlinks are not
+   * followed and a document's own folder is not searched further.
+   */
+  async locateDocuments(
+    prefix: string,
+    documentIds: string[],
+  ): Promise<Map<string, string>> {
+    const wanted = new Set(documentIds);
+    const found = new Map<string, string>();
+    const walk = async (relative: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await fs.readdir(path.join(this.mountPath, relative), {
+          withFileTypes: true,
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (found.size === wanted.size) return;
+        if (!entry.isDirectory()) continue;
+        if (wanted.has(entry.name)) {
+          found.set(entry.name, relative.split(path.sep).join('/'));
+          continue;
+        }
+        await walk(path.join(relative, entry.name));
+      }
+    };
+    await walk(this.sanitizePath(prefix));
+    return found;
   }
 
   /**
@@ -743,7 +914,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageValidationError('Invalid document path');
     }
 
-    const normalized = path.normalize(unified);
+    const normalized = path.normalize(
+      unified.split('/').map(fitPathSegment).join('/'),
+    );
     const resolved = this.assertInsideMount(
       path.join(this.mountPath, normalized),
     );

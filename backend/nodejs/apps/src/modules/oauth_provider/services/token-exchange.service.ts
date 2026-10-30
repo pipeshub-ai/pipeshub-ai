@@ -1,9 +1,9 @@
 import { injectable, inject } from 'inversify';
-import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenExchangeError } from '../../../libs/errors/oauth.errors';
-import { Users } from '../../user_management/schema/users.schema';
-import { OAuthApp } from '../schema/oauth.app.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
+import { isValidId } from '../../../libs/repositories/ids';
 import { OAuthTokenService } from './oauth_token.service';
 import { DelegationService } from './delegation.service';
 import { SERVICE_TOKEN_DENIED_SCOPES } from './service-token.service';
@@ -165,9 +165,7 @@ export class TokenExchangeService {
 
     const scopes = this.resolveScopes(request.scope, actor.scopes);
 
-    const app = await OAuthApp.findOne({
-      clientId: { $eq: actor.clientId },
-    }).exec();
+    const app = await getOAuthAppRepository().findByClientId(actor.clientId);
     if (!app) {
       // The service token verified against a client that no longer exists.
       throw new TokenExchangeError(
@@ -285,22 +283,19 @@ export class TokenExchangeService {
     // No such token can exist for this client today (the service-token app
     // allows no grant types at all), which is exactly why this should fail
     // the same way as everything else rather than differently.
-    if (!Types.ObjectId.isValid(payload.userId)) {
+    if (!isValidId(payload.userId)) {
       throw new TokenExchangeError(
         'invalid_grant',
         'Only a service token can be exchanged.',
       );
     }
 
-    const account = await Users.findOne({
-      _id: { $eq: payload.userId },
-      orgId: { $eq: payload.orgId },
-      kind: 'service',
-      isDeleted: false,
-    })
-      .select('isDisabled')
-      .lean()
-      .exec();
+    const account = await getUserRepository().getLiveFields(
+      payload.orgId,
+      payload.userId,
+      ['isDisabled'],
+      { serviceOnly: true, strict: true },
+    );
 
     // These two are recorded, unlike the refusals above them.
     //

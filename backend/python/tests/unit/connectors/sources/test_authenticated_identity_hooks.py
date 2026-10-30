@@ -369,12 +369,23 @@ class TestGitLab:
 
 class TestGitHubTeams:
     def _conn(self, result: object = None, error: Exception | None = None) -> MagicMock:
-        conn = _connector(GitHubTeamsConnector, data_source=MagicMock(), runtime=MagicMock())
+        # users: the user sync's email binding, which the link prefers (none bound here).
+        conn = _connector(GitHubTeamsConnector, data_source=MagicMock(), runtime=MagicMock(),
+                          users=MagicMock(resolved_email=MagicMock(return_value=None)))
         conn.runtime.ds_call = AsyncMock(return_value=result, side_effect=error)
         return conn
 
     async def test_registers_the_authenticated_user_by_numeric_id(self) -> None:
         conn = self._conn(SimpleNamespace(success=True, data=SimpleNamespace(email=" dev@corp.com ", id=583231)))
+
+        await GitHubTeamsConnector._register_authenticated_identity(conn)
+
+        assert _registered(conn) == ("dev@corp.com", "583231")
+
+    async def test_prefers_the_email_the_user_sync_bound(self) -> None:
+        """The grants carry that email; GET /user gives only the public one, often none."""
+        conn = self._conn(SimpleNamespace(success=True, data=SimpleNamespace(email=None, id=583231)))
+        conn.users.resolved_email.return_value = "dev@corp.com"
 
         await GitHubTeamsConnector._register_authenticated_identity(conn)
 
@@ -534,9 +545,13 @@ class TestGoogleDriveIndividual:
             GoogleDriveIndividualConnector,
             config_service=MagicMock(),
             drive_data_source=MagicMock(),
+            drive_delta_sync_point=AsyncMock(),
             _get_fresh_datasource=AsyncMock(),
             _create_app_user=AsyncMock(side_effect=_StopAfterRegistering),
         )
+        # run_sync now delegates to this. On a spec mock that would be an auto mock, so bind the
+        # real steps: the registration still happens before the sync is stopped.
+        conn._run_sync_steps = partial(GoogleDriveIndividualConnector._run_sync_steps, conn)
         conn.drive_data_source.about_get = AsyncMock(
             return_value={"user": {"emailAddress": "me@gmail.com", "permissionId": "09120187146347425491"}}
         )

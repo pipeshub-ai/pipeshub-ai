@@ -1167,6 +1167,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = False
         update.is_new = True
         update.is_updated = False
+        update.content_changed = False
         update.record = MagicMock()
         update.record.record_name = "new.txt"
         await connector._handle_record_updates(update)
@@ -1240,7 +1241,9 @@ class TestHandleRecordUpdates:
             record_name="Folder A",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
+        existing.external_record_id = "folder-ext-1"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "folder-ext-1"
@@ -1249,6 +1252,40 @@ class TestHandleRecordUpdates:
             record_id="folder-rec-1"
         )
         connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleted_folder_removes_only_contents_the_account_can_no_longer_open(self, connector) -> None:
+        """Drive may report only the folder: its files go too, unless still open through their own share."""
+        from googleapiclient.errors import HttpError
+
+        folder = _make_existing_file_record(id="folder-rec", record_name="F",
+                                            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value)
+        folder.external_record_id = "folder-ext"
+        gone = _make_existing_file_record(id="gone-rec", record_name="gone.txt", mime_type="text/plain",
+                                          is_placeholder=False)
+        gone.external_record_id = "gone-ext"
+        shared = _make_existing_file_record(id="kept-rec", record_name="kept.txt", mime_type="text/plain",
+                                            is_placeholder=False)
+        shared.external_record_id = "kept-ext"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=folder)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(
+            side_effect=lambda _c, parent, *a, **k: [gone, shared] if parent == "folder-ext" else []
+        )
+        not_found = HttpError(MagicMock(status=404), b'{"error": {"errors": [{"reason": "notFound"}]}}')
+
+        async def files_get(fileId, **_) -> dict:
+            if fileId == "gone-ext":
+                raise not_found
+            return {"id": fileId, "trashed": False}
+
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.files_get = AsyncMock(side_effect=files_get)
+        update = MagicMock(is_deleted=True, external_record_id="folder-ext")
+
+        await connector._handle_record_updates(update)
+
+        deleted = [c.kwargs["record_id"] for c in connector.data_entities_processor.on_record_deleted.await_args_list]
+        assert deleted == ["gone-rec", "folder-rec"]
 
     @pytest.mark.asyncio
     async def test_deleted_file_uses_shallow_delete(self, connector):
@@ -1390,6 +1427,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1412,6 +1450,7 @@ class TestPerformFullSync:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -1466,6 +1505,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1614,6 +1654,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1663,6 +1704,7 @@ class TestPerformIncrementalSync:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -1692,6 +1734,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1743,6 +1786,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2399,6 +2443,8 @@ class TestRunSync:
         connector._create_personal_record_group = AsyncMock()
         connector._sync_user_personal_drive = AsyncMock()
 
+        # A listing that is not a drive list makes the run incomplete, so the mock lists none.
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
         await connector.run_sync()
         connector._create_app_user.assert_awaited_once()
         connector._create_personal_record_group.assert_awaited_once()
@@ -2679,6 +2725,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -2693,6 +2740,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None

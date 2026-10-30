@@ -17,7 +17,6 @@ from web_behaviour_fakes import (
 )
 
 from app.connectors.sources.web import address_guard
-from app.web.fetch.browser import BrowserRenderer
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +34,6 @@ async def fake_web(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 
 @pytest.fixture
 async def fake_browser(fake_web: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
-    """The headless browser renders from ``fake_web``; chat's reference to it starts empty."""
-    monkeypatch.setattr(BrowserRenderer, "_fetcher", None)
+    """The headless browser renders from ``fake_web``."""
     async with serve_fake_browser(fake_web, monkeypatch) as site:
         yield site

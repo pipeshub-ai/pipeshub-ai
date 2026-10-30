@@ -19,17 +19,29 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.modules.entity_resolution.normalizer import normalize_name
+from app.core.org_context import spawn_in_request
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.retrieval.selection_scope import (
+    SelectionScope,
+    limits_rows,
+    resolve_request_scopes,
+    row_limit_key,
+)
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
-from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.common.utils import (
+    PERSON_EDGES_FROM_USER,
+    PERSON_EDGES_TO_USER,
+    PERSON_ENTITY_TYPE,
+    PermittedEntityRows,
+)
 from app.services.graph_db.taxonomy import taxonomy_links
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterable, Mapping
+    from collections.abc import Awaitable, Coroutine, Iterable, Mapping
 
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -62,6 +74,7 @@ PROBE_MIN_SECONDS = 1.5
 # Probes may use the whole deadline; the spellings of the records they found
 # are still looked up, as one keyed query.
 NAME_LOOKUP_MIN_SECONDS = 1.0
+NAMED_ENTITY_TYPE = "named_entity"
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -106,6 +119,10 @@ class EntityAccessContext:
     record_level_app_ids: frozenset[str]
     record_group_ids: frozenset[str]
     app_names: Mapping[str, str]
+    # The turn's limit (a selection below app level, a saved agent's or a
+    # project's sources): a record is used only when every scope admits it.
+    # Empty when the turn reaches whole apps.
+    row_scopes: tuple[SelectionScope, ...] = ()
     # The user's grants as the access check resolves them, read once for the
     # request this context lives in and reused by every check of it.
     _resolved_access: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
@@ -113,6 +130,11 @@ class EntityAccessContext:
     @property
     def app_ids(self) -> frozenset[str]:
         return self.app_level_app_ids | self.record_level_app_ids
+
+    @property
+    def limited_group_ids(self) -> frozenset[str]:
+        """Record groups the turn's limit names (selection or bound), nested ones included."""
+        return frozenset(g for scope in self.row_scopes for g in scope.groups)
 
     def connector_scope(self, entity_type: str, entity_id: str) -> list[str]:
         """Connectors whose records may be listed for this entity. A record
@@ -177,6 +199,7 @@ async def get_entity_access_context(
     source_ids: Iterable[str] | None = None,
     strict: bool = False,
     exclude_app_ids: Iterable[str] | None = None,
+    filters: Mapping[str, Any] | None = None,
 ) -> EntityAccessContext:
     """Resolve (or reuse for this request) the apps and record groups the
     user can reach, narrowed to the agent's configured sources.
@@ -184,13 +207,25 @@ async def get_entity_access_context(
     ``strict`` with no sources reaches nothing, as in retrieval: without it an
     empty scope means every app the user can access, which would widen a
     project or agent whose sources were all removed.
+
+    ``source_ids`` are every app the turn touches, including one a selection
+    or a bound covers only in part; ``filters`` then carry that limit, and
+    the context holds it as ``row_scopes`` so no record outside it is used.
+
+    Raises:
+        EntityAccessError: the user's access or the turn's limit could not be read.
+        SelectionTooLargeError, SelectionNotReadyError: the limit cannot be searched.
     """
     if not org_id or not user_id or graph_provider is None:
         raise EntityAccessError("Entity access needs an org, a user and a graph provider")
 
     scope = tuple(sorted({s for s in (source_ids or ()) if s}))
     excluded = frozenset(a for a in (exclude_app_ids or ()) if a)
-    cache_key = (scope, bool(strict) and not scope, tuple(sorted(excluded)))
+    limited = limits_rows(filters)
+    cache_key = (
+        scope, bool(strict) and not scope, tuple(sorted(excluded)),
+        row_limit_key(filters) if limited else (),
+    )
     cache = state.get(_ACCESS_CONTEXT_CACHE_KEY) if state is not None else None
     if isinstance(cache, dict) and cache_key in cache:
         return cache[cache_key]
@@ -203,9 +238,14 @@ async def get_entity_access_context(
             record_level_app_ids=frozenset(),
             record_group_ids=frozenset(),
             app_names={},
+            # A selection the user can read none of leaves no source; it is
+            # still a limit, so an empty answer says it searched only that.
+            row_scopes=(SelectionScope(),) if limited else (),
         )
     else:
         context = await _load_access_context(graph_provider, org_id, user_id, scope, excluded)
+        if limited:
+            context = replace(context, row_scopes=await _row_scopes(graph_provider, context, filters))
 
     if state is not None:
         if not isinstance(cache, dict):
@@ -260,6 +300,24 @@ async def _load_access_context(
     )
 
 
+async def _row_scopes(
+    graph_provider: "IGraphDBProvider", context: EntityAccessContext, filters: Mapping[str, Any] | None,
+) -> tuple[SelectionScope, ...]:
+    try:
+        _, scopes = await resolve_request_scopes(graph_provider, context.user_key, context.org_id, filters)
+    except PermissionVerificationUnavailableError as exc:
+        raise EntityAccessError("Could not resolve the conversation's selected sources") from exc
+    if not scopes:
+        # A limit that resolves to no scope admits nothing; never read it as "no limit".
+        return (SelectionScope(),)
+    # A whole-app bound (a saved agent's whole sources) repeats what the
+    # sources already limit; only scopes that cut into an app narrow anything.
+    return tuple(
+        scope for scope in scopes
+        if scope.groups or scope.records or not context.app_ids <= scope.app_ids
+    )
+
+
 async def _fetch_permitted(
     graph_provider: "IGraphDBProvider",
     context: EntityAccessContext,
@@ -283,6 +341,7 @@ async def _fetch_permitted(
             context.user_key,
             app_level_connector_ids=sorted({c for ref in refs for c in ref.get("connectorIds") or ()}),
             record_types=record_types,
+            within=[scope.candidate_filter() for scope in context.row_scopes] or None,
             limit_per_entity=window,
             offset=offset,
             window=window,
@@ -297,7 +356,7 @@ async def _fetch_permitted(
                 f"Entity record lookup returned {len(rows)} of {rows.window_size} candidates "
                 f"for {entity_type}/{entity_id}"
             )
-    admitted = await _admitted_ids(
+    admitted = await admitted_node_ids(
         graph_provider, context, (str(row.get("_key") or "") for rows in found.values() for row in rows),
     )
     return {
@@ -311,10 +370,11 @@ async def _fetch_permitted(
     }
 
 
-async def _admitted_ids(
+async def admitted_node_ids(
     graph_provider: "IGraphDBProvider", context: EntityAccessContext, node_ids: Iterable[str],
 ) -> frozenset[str]:
-    """The ids among ``node_ids`` the batch access check admits."""
+    """The ids among ``node_ids`` the batch access check admits, inside the
+    turn's limit when it has one. Every record the entity tools use passes here."""
     ids = sorted({node_id for node_id in node_ids if node_id})
     if not ids:
         return frozenset()
@@ -326,8 +386,9 @@ async def _admitted_ids(
             )
         check = await graph_provider.check_access(
             context.user_key, context.org_id, node_ids=ids, access=resolved["access"],
+            scopes=context.row_scopes,
         )
-        return frozenset(check.node_ids)
+        return frozenset(check.node_ids_in_scope if context.row_scopes else check.node_ids)
     except Exception as exc:
         raise EntityAccessError("Entity access check failed") from exc
 
@@ -354,7 +415,7 @@ async def _run_probes(
     if reachable:
         try:
             admitted = await _within(
-                deadline, _admitted_ids(graph_provider, context, (p.entity_id for p in reachable)),
+                deadline, admitted_node_ids(graph_provider, context, (p.entity_id for p in reachable)),
             )
         except TimeoutError:
             return 0, True
@@ -402,6 +463,17 @@ async def _run_probes(
         if not probe.connector_ids:
             probe.exhausted = True
     return rounds, timed_out
+
+
+async def _all_or_none(*awaitables: Coroutine[Any, Any, object]) -> None:
+    """Await them together; when one fails, the others are cancelled, not left running."""
+    tasks = [spawn_in_request(awaitable) for awaitable in awaitables]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
 
 
 async def _within(deadline: float, awaitable: Awaitable[_T]) -> _T:
@@ -479,6 +551,11 @@ async def probe_permitted_entities(
 
 def _search_passes(context: EntityAccessContext) -> list[tuple[str, frozenset[str], frozenset[str], bool]]:
     passes: list[tuple[str, frozenset[str], frozenset[str], bool]] = []
+    selected = context.limited_group_ids
+    if selected and len(selected) <= MAX_RG_FILTER_IDS:
+        # Points of the groups the limit names first: the rest of their apps
+        # would otherwise fill the overfetch with hits the limit then refuses.
+        passes.append(("selection", selected, frozenset(), False))
     rg_ids = (
         context.record_group_ids
         if len(context.record_group_ids) <= MAX_RG_FILTER_IDS
@@ -548,7 +625,7 @@ async def search_entities_for_user(
             entity_type = hit.get("entityType")
             if not entity_id or entity_type not in SEARCHABLE_ENTITY_TYPES:
                 continue
-            if entity_type == "named_entity" and not include_named:
+            if entity_type == NAMED_ENTITY_TYPE and not include_named:
                 continue
             if (entity_type, entity_id) in seen or len(probes) >= MAX_EVALUATED_HITS:
                 continue
@@ -597,6 +674,29 @@ async def search_entities_for_user(
     return kept[:top_k]
 
 
+async def readable_spellings(
+    graph_provider: "IGraphDBProvider", org_id: str, entity_ids: list[str], record_ids: list[str],
+) -> dict[str, str]:
+    """Each named entity's most frequent spelling on its mention edges in
+    ``record_ids`` (records the caller can read); a tie goes to the fuller one
+    ("Miguel Gallagher" over "Miguel", written on the same edge), then
+    alphabetically. An entity none of them spells is left out, never given its
+    stored name."""
+    if not entity_ids or not record_ids:
+        return {}
+    rows = await graph_provider.get_named_entity_mentions_in_records(org_id, entity_ids, record_ids)
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows or []:
+        for spelling in row.get("extractedNames") or []:
+            if isinstance(spelling, str) and spelling.strip():
+                per_entity = counts.setdefault(str(row.get("entityId")), {})
+                per_entity[spelling.strip()] = per_entity.get(spelling.strip(), 0) + 1
+    return {
+        entity_id: min(spellings.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))[0]
+        for entity_id, spellings in counts.items()
+    }
+
+
 def _stored_name(probe: _Probe) -> str:
     return str(probe.hit.get("name") or probe.hit.get("canonicalName") or probe.entity_id)
 
@@ -610,10 +710,12 @@ async def _names_from_permitted_records(
     """``{(entity_type, entity_id): name to show}`` for the kept probes, and
     whether the deadline left any of them unnamed.
 
-    A category, subcategory, topic or language node is named by whichever
-    record created it, and keeps every record's spelling as an alias. It is
-    shown under a spelling of a record this user can read: its own name when
-    one of them spells it that way, otherwise the newest such record's.
+    A category, subcategory, topic, language or named-entity node is named by
+    whichever record created it, so it is shown only under a spelling of a
+    record this user can read. A taxonomy node keeps its own name when one of
+    them spells it exactly that way, otherwise the newest such record's; a
+    named entity takes its most frequent readable spelling, as
+    ``search_by_entities`` shows it.
 
     The readable records the probes found may all have edges that do not
     record a spelling (copies made by earlier releases), so the walk goes on
@@ -621,14 +723,18 @@ async def _names_from_permitted_records(
     probes' and then stay at the widest, until one spells the node, they run
     out, or the search deadline passes. A node no readable record spells is
     left out, and so is one the deadline stopped; the latter is logged.
-    Other entity types keep their name.
+    Named entities are spelled from the records their probe already found
+    (its newest few), with no further walk: every mention edge records its
+    spelling. Other entity types keep their name.
     """
     shown = {
         (p.entity_type, p.entity_id): _stored_name(p)
         for p in probes
-        if p.entity_type not in EXTRACTED_ENTITY_TYPES
+        if p.entity_type not in EXTRACTED_ENTITY_TYPES and p.entity_type != NAMED_ENTITY_TYPE
     }
     extracted = [p for p in probes if p.entity_type in EXTRACTED_ENTITY_TYPES]
+    named = [p for p in probes if p.entity_type == NAMED_ENTITY_TYPE]
+    named_spellings: dict[str, str] = {}
     spellings: dict[tuple[str, str], tuple[str, ...]] = {}
     looked_up: set[str] = set()
 
@@ -652,14 +758,23 @@ async def _names_from_permitted_records(
             for spelling in spellings.get((probe.entity_id, row.get("_key")), ())
         ]
 
-    timed_out = False
+    async def _spell_named() -> None:
+        record_ids = sorted({r["_key"] for p in named for r in p.permitted if r.get("_key")})
+        try:
+            named_spellings.update(await readable_spellings(
+                graph_provider, context.org_id, [p.entity_id for p in named], record_ids,
+            ))
+        except Exception as exc:
+            raise EntityAccessError("Entity name lookup failed") from exc
+
+    timed_out = named_timed_out = False
     try:
         await _within(
             max(deadline, time.monotonic() + NAME_LOOKUP_MIN_SECONDS),
-            _look_up(r for p in extracted for r in p.permitted),
+            _all_or_none(_look_up(r for p in extracted for r in p.permitted), _spell_named()),
         )
     except TimeoutError:
-        timed_out = True
+        timed_out = named_timed_out = True
     round_index = 0
     while not timed_out:
         pending = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
@@ -699,7 +814,11 @@ async def _names_from_permitted_records(
             timed_out = True
             break
 
-    unnamed = [p for p in extracted if not _own(p)] if timed_out else []
+    unnamed = [
+        *(p for p in extracted if not _own(p) and timed_out),
+        # Only a stopped lookup leaves a named entity unnamed; one that ran and found no spelling is just left out.
+        *(p for p in named if p.entity_id not in named_spellings and named_timed_out),
+    ]
     if unnamed:
         logger.info(
             "entity search org=%s left %d entities unnamed at the deadline after %d naming rounds",
@@ -711,8 +830,11 @@ async def _names_from_permitted_records(
         if not own:
             continue
         stored = _stored_name(probe)
-        key = (probe.entity_type, probe.entity_id)
-        shown[key] = stored if any(normalize_name(s) == normalize_name(stored) for s in own) else own[0]
+        # Equal only after folding case is not enough: the stored casing may be an unreadable record's.
+        shown[(probe.entity_type, probe.entity_id)] = stored if stored in own else own[0]
+    for probe in named:
+        if probe.entity_id in named_spellings:
+            shown[(probe.entity_type, probe.entity_id)] = named_spellings[probe.entity_id]
     return shown, bool(unnamed)
 
 
@@ -736,7 +858,7 @@ def _decode_cursor_json(raw: str) -> int | None:
     return None
 
 
-def _parse_cursor(cursor: str | None) -> int:
+def parse_cursor(cursor: str | None) -> int:
     """Offset from a cursor string.
 
     Accepts the plain integer this module emits, and also the base64/JSON
@@ -779,7 +901,53 @@ async def list_accessible_entity_records(
     provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
-    offset = _parse_cursor(cursor)
+    return await _list_ref_records(
+        graph_provider, context, {"id": entity_id, "type": entity_type},
+        record_types=record_types, limit=limit, cursor=cursor, max_scan=max_scan,
+    )
+
+
+async def list_accessible_person_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    *,
+    user_ids: list[str],
+    edge_types: Iterable[str],
+    record_types: list[str] | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> EntityRecordPage:
+    """Records linked to a person (one or more User nodes of one email) by
+    ``edge_types`` that the user can access, paged and decided exactly as
+    :func:`list_accessible_entity_records`. Edge types outside the
+    person allow-list are dropped."""
+    wanted = set(edge_types)
+    out_types = [t for t in PERSON_EDGES_TO_USER if t in wanted]
+    in_types = [t for t in PERSON_EDGES_FROM_USER if t in wanted]
+    ids = list(dict.fromkeys(i for i in user_ids if i))
+    if not ids or not (out_types or in_types):
+        raise ValueError("A person listing needs a user and at least one relation")
+    ref = {
+        "id": ids[0], "type": PERSON_ENTITY_TYPE, "userIds": ids,
+        "outTypes": out_types, "inTypes": in_types,
+    }
+    return await _list_ref_records(
+        graph_provider, context, ref, record_types=record_types, limit=limit, cursor=cursor,
+    )
+
+
+async def _list_ref_records(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    ref: dict[str, Any],
+    *,
+    record_types: list[str] | None,
+    limit: int,
+    cursor: str | None,
+    max_scan: int = MAX_SCAN_PER_CALL,
+) -> EntityRecordPage:
+    entity_id, entity_type = ref["id"], ref["type"]
+    offset = parse_cursor(cursor)
     limit = max(1, limit)
     connector_ids = context.connector_scope(entity_type, entity_id)
     if not connector_ids:
@@ -804,7 +972,7 @@ async def list_accessible_entity_records(
         fetch = _fetch_permitted(
             graph_provider,
             context,
-            [{"id": entity_id, "type": entity_type, "connectorIds": connector_ids}],
+            [{**ref, "connectorIds": connector_ids}],
             record_types=record_types,
             limit_per_entity=limit - len(records),
             offset=offset,
@@ -859,13 +1027,16 @@ __all__ = [
     "EntityRecordPage",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
+    "PERSON_ENTITY_TYPE",
     "RECORD_GROUP_ENTITY_TYPE",
     "SEARCHABLE_ENTITY_TYPES",
     "SEARCH_SCOPE_MAX_ENTITIES",
     "SEARCH_SCOPE_MAX_RECORDS",
     "SEARCH_SCOPE_MAX_SCAN",
     "TAXONOMY_ENTITY_TYPES",
+    "admitted_node_ids",
     "get_entity_access_context",
     "list_accessible_entity_records",
+    "list_accessible_person_records",
     "search_entities_for_user",
 ]

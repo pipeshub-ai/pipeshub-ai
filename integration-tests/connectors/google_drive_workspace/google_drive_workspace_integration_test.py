@@ -112,6 +112,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     drive_files_get_workspace,
     ensure_pipeshub_user_exists,
     ensure_pipeshub_user_inactive,
+    folder_filter_state,
     get_drive_directory_user,
     move_drive_item,
     record_absent,
@@ -1746,7 +1747,7 @@ class TestDriveWorkspaceFolderFilter:
     ) -> None:
         connector_id = drive_workspace_ff_connector["connector_id"]
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
-        leave_file_id = drive_workspace_ff_connector["leave_file_id"]
+        leave_file_id = folder_filter_state(drive_workspace_ff_connector, "leave_file_id")
         oos_folder_id = drive_workspace_ff_connector["oos_folder_id"]
 
         await move_drive_item(
@@ -1841,8 +1842,8 @@ class TestDriveWorkspaceFolderFilter:
         connector_id = drive_workspace_ff_connector["connector_id"]
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
         oos_folder_id = drive_workspace_ff_connector["oos_folder_id"]
-        movable_id = drive_workspace_ff_connector["movable_folder_id"]
-        inside_id = drive_workspace_ff_connector["movable_inside_file_id"]
+        movable_id = folder_filter_state(drive_workspace_ff_connector, "movable_folder_id")
+        inside_id = folder_filter_state(drive_workspace_ff_connector, "movable_inside_file_id")
 
         await move_drive_item(
             drive_workspace_datasource,
@@ -1942,7 +1943,7 @@ class TestDriveWorkspaceFolderFilter:
     ) -> None:
         connector_id = drive_workspace_ff_connector["connector_id"]
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
-        leave_file_id = drive_workspace_ff_connector["leave_file_id"]
+        leave_file_id = folder_filter_state(drive_workspace_ff_connector, "leave_file_id")
         new_name = "leave-renamed.txt"
 
         await rename_drive_item(drive_workspace_datasource, leave_file_id, new_name)
@@ -2014,7 +2015,7 @@ class TestDriveWorkspaceFolderFilter:
         connector_id = drive_workspace_ff_connector["connector_id"]
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
         nested_id = drive_workspace_ff_connector["nested_folder_id"]
-        new_file_id = drive_workspace_ff_connector["new_file_id"]
+        new_file_id = folder_filter_state(drive_workspace_ff_connector, "new_file_id")
 
         await move_drive_item(
             drive_workspace_datasource,
@@ -2133,7 +2134,7 @@ class TestDriveWorkspaceFolderFilter:
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
         nested_id = drive_workspace_ff_connector["nested_folder_id"]
         child_id = drive_workspace_ff_connector["child_file_id"]
-        new_file_id = drive_workspace_ff_connector["new_file_id"]
+        new_file_id = folder_filter_state(drive_workspace_ff_connector, "new_file_id")
 
         await _apply_folder_ids_filter(
             pipeshub_client,
@@ -2146,7 +2147,7 @@ class TestDriveWorkspaceFolderFilter:
             graph_provider, connector_id, seed_id,
             in_scope=[nested_id, child_id, new_file_id],
             out_of_scope=[
-                drive_workspace_ff_connector["leave_file_id"],
+                folder_filter_state(drive_workspace_ff_connector, "leave_file_id"),
                 drive_workspace_ff_connector["oos_folder_id"],
                 drive_workspace_ff_connector["oos_file_id"],
             ],
@@ -2200,8 +2201,8 @@ class TestDriveWorkspaceFolderFilter:
     ) -> None:
         connector_id = drive_workspace_ff_connector["connector_id"]
         seed_id = drive_workspace_ff_connector["seed_folder_id"]
-        leave_file_id = drive_workspace_ff_connector["leave_file_id"]
-        leave_file_name = drive_workspace_ff_connector["leave_file_name"]
+        leave_file_id = folder_filter_state(drive_workspace_ff_connector, "leave_file_id")
+        leave_file_name = folder_filter_state(drive_workspace_ff_connector, "leave_file_name")
 
         await _apply_folder_ids_filter(
             pipeshub_client,

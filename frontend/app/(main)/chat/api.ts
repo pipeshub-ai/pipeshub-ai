@@ -1,6 +1,8 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
+import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
   Conversation,
   ConversationMessage,
@@ -127,6 +129,10 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
+    // Dropping these made every row look project-less: Move to project
+    // pre-selected "No project" and "Remove from project" never showed.
+    ...(conv.projectId ? { projectId: conv.projectId } : {}),
+    ...(conv.projectVisibility ? { projectVisibility: conv.projectVisibility } : {}),
     sharedBy: conv.sharedBy,
     agentKey: conv.agentKey,
   };
@@ -139,6 +145,8 @@ export interface FetchConversationsOptions {
   source: ConversationSource;
   /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
   search?: string;
+  /** Leave out chats that belong to a project; they are listed under their project instead. */
+  excludeProjectChats?: boolean;
   signal?: AbortSignal;
 }
 
@@ -197,6 +205,26 @@ function buildAgentFiltersPayload(
 }
 
 // Chat API endpoints
+/**
+ * With no model resolved the store hands back empty strings. The API rejects
+ * an empty model field but picks the workspace default when it is missing, so
+ * only non-empty values are sent.
+ */
+function buildModelPayload(model: {
+  modelKey?: string;
+  modelName?: string;
+  modelFriendlyName?: string;
+}): Record<string, string> {
+  const modelKey = model.modelKey?.trim();
+  const modelName = model.modelName?.trim();
+  const modelFriendlyName = model.modelFriendlyName?.trim() || modelName;
+  return {
+    ...(modelKey ? { modelKey } : {}),
+    ...(modelName ? { modelName } : {}),
+    ...(modelFriendlyName ? { modelFriendlyName } : {}),
+  };
+}
+
 export const ChatApi = {
   // Fetch one page of conversations for a single source (owned or shared).
   // Call once per tab if you need both lists.
@@ -217,6 +245,9 @@ export const ChatApi = {
     };
     if (search) {
       params.search = search;
+    }
+    if (options.excludeProjectChats) {
+      params.projectId = PROJECT_ID_UNASSIGNED;
     }
 
     const { data } = await apiClient.get<ConversationsListResponse>(
@@ -248,6 +279,7 @@ export const ChatApi = {
       id: string;
       title: string;
       initiator: string;
+      createdAt?: string;
       messages: ConversationMessage[];
       status: string;
       modelInfo: ModelInfo;
@@ -320,9 +352,7 @@ export const ChatApi = {
       const f = request.filters;
       payload = {
         query: request.query,
-        modelKey: request.modelKey,
-        modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName || request.modelName,
+        ...buildModelPayload(request),
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
@@ -348,10 +378,18 @@ export const ChatApi = {
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
       // `rest` already carries `runId` — spread through as-is.
-      const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
+      const {
+        agentStreamTools,
+        filters: reqFilters,
+        attachments: reqAttachments,
+        modelKey: _modelKey,
+        modelName: _modelName,
+        modelFriendlyName: _modelFriendlyName,
+        ...rest
+      } = request;
       payload = {
         ...rest,
-        modelFriendlyName: request.modelFriendlyName || request.modelName,
+        ...buildModelPayload(request),
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
@@ -392,14 +430,14 @@ export const ChatApi = {
       query?: string;
       /** The edited question's files, replacing the stored ones; omitted keeps them. */
       attachments?: AttachmentRef[];
+      /** Changed answers to the question card the reply followed (`User selections: ...`). */
+      answers?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     const body: Record<string, unknown> = {
-      modelKey: request.modelKey,
-      modelName: request.modelName,
-      modelFriendlyName: request.modelFriendlyName || request.modelName,
+      ...buildModelPayload(request),
       chatMode: request.chatMode,
       ...buildFiltersPayload(request.filters),
       timezone: getClientTimezone(),
@@ -422,6 +460,9 @@ export const ChatApi = {
     }
     if (request.attachments !== undefined) {
       body.attachments = request.attachments;
+    }
+    if (request.answers) {
+      body.answers = request.answers;
     }
 
     await runChatStream(endpoint, body, callbacks);
@@ -451,14 +492,14 @@ export const ChatApi = {
       query?: string;
       /** The edited question's files, replacing the stored ones; omitted keeps them. */
       attachments?: AttachmentRef[];
+      /** Changed answers to the question card the reply followed (`User selections: ...`). */
+      answers?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     const agentRegenBody: Record<string, unknown> = {
-      modelKey: model.modelKey,
-      modelName: model.modelName,
-      modelFriendlyName: model.modelFriendlyName || model.modelName,
+      ...buildModelPayload(model),
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
@@ -481,6 +522,9 @@ export const ChatApi = {
     }
     if (model.attachments !== undefined) {
       agentRegenBody.attachments = model.attachments;
+    }
+    if (model.answers) {
+      agentRegenBody.answers = model.answers;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);
@@ -747,7 +791,11 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
+  async listCollectionsForChat(params?: {
+    cursor?: string | null;
+    limit?: number;
+    origins?: 'COLLECTION' | 'CONNECTOR';
+  }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
@@ -756,6 +804,8 @@ export const ChatApi = {
           // Only a cursor the server issued is ever sent back; one it did not
           // issue is a 400.
           ...(params?.cursor ? { cursor: params.cursor } : {}),
+          // Root apps of one origin only; flattened=false keeps it a root listing, not a tree search.
+          ...(params?.origins ? { nodeTypes: 'app', origins: params.origins, flattened: false } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
@@ -937,7 +987,7 @@ export async function fetchOrg(): Promise<OrgResponse> {
 }
 
 /**
- * Fetch the organisation logo and return a local blob URL.
+ * Fetch the organisation logo and return it as a data URL.
  * Returns null if no logo is set or the request fails.
  */
 export async function fetchOrgLogo(): Promise<string | null> {
@@ -945,7 +995,8 @@ export async function fetchOrgLogo(): Promise<string | null> {
     const response = await apiClient.get<Blob>('/api/v1/org/logo', {
       responseType: 'blob',
     });
-    return URL.createObjectURL(response.data);
+    if (response.status === 204) return null;
+    return await blobToDataUrl(response.data);
   } catch {
     return null;
   }

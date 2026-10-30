@@ -28,6 +28,24 @@ from app.exceptions.storage_exceptions import (
     StorageRequestRejectedError,
     StoredRecordTooLargeError,
 )
+from app.modules.transformers.stored_write import (
+    COW,
+    IN_PLACE,
+    IN_PLACE_PUT_ATTEMPTS,
+    IN_PLACE_PUT_BACKOFF_SECONDS,
+    RUN_SUPERSEDED,
+    STORED_WRITE,
+    WRITER_DEADLINE_SECONDS,
+    RunSuperseded,
+    SidecarWrite,
+    StoredWrite,
+    StoredWriteBusy,
+    boottime,
+    classification_sidecar_token_path,
+    in_place_write,
+    is_none_run,
+    with_retired,
+)
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -39,8 +57,14 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
+from app.telemetry.modules.record_storage_metrics import (
+    record_reader_relookup,
+    record_retire_mark,
+    record_store_switch,
+)
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_move import post_move_tree
 from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
@@ -182,16 +206,40 @@ def _plain_envelope_bytes(
     )
 
 
-def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) -> int:
-    """``len(json.dumps(envelope).encode())`` for the uncompressed cloud upload.
+def _compressed_envelope_bytes(payload: bytes, virtual_record_id: str | None) -> bytes:
+    """``_json_utf8_bytes`` of the compressed envelope, built around *payload*
+    (base64, so ASCII) instead of encoding it a second time."""
+    return b"".join((
+        b'{"isCompressed": true, "record": "',
+        payload,
+        b'", "virtualRecordId": ',
+        _json_utf8_bytes(virtual_record_id),
+        b"}",
+    ))
 
-    aiohttp's ``json=`` writes ASCII escapes, so this is the size it sends.
-    """
-    return (
-        len('{"record": , "isCompressed": false, "virtualRecordId": }')
-        + encoded.ascii_size
-        + len(json.dumps(virtual_record_id))
-    )
+
+def clean_top_level_empty_values(obj: dict[str, Any]) -> dict[str, Any]:
+    """``obj`` without top-level keys whose value is None, "", [] or {}."""
+    return {
+        k: v
+        for k, v in obj.items()
+        if v is not None and v != "" and v != [] and v != {}
+    }
+
+
+def clean_stored_record(data: dict[str, Any]) -> dict[str, Any]:
+    """A record dict as it is stored: empty values dropped at the top level of
+    the record, of each block and of each block group."""
+    cleaned = clean_top_level_empty_values(data)
+    block_containers = cleaned.get("block_containers")
+    if isinstance(block_containers, dict):
+        for key in ("blocks", "block_groups"):
+            if isinstance(block_containers.get(key), list):
+                block_containers[key] = [
+                    clean_top_level_empty_values(item) if isinstance(item, dict) else item
+                    for item in block_containers[key]
+                ]
+    return cleaned
 
 
 def compression_threshold_bytes() -> int:
@@ -267,6 +315,36 @@ class TransientStorageError(aiohttp.ClientError):
     """A storage response (502/503/504) that a retry can reasonably fix."""
 
 
+# What a stored record holds that is the same for every record sharing its vrid;
+# everything else (name, link, ids, connector, statuses) belongs to one record.
+SHARED_CONTENT_FIELDS = (
+    "block_containers", "semantic_metadata", "md5_hash", "virtual_record_id",
+    "is_vlm_ocr_processed",
+)
+#: ``TransformContext.settings`` key: the stored copy's fields outside
+#: ``SHARED_CONTENT_FIELDS``, as ``apply`` wrote them. They are the owner's when
+#: another record stored the shared content first.
+STORED_RECORD_FIELDS = "stored_record_fields"
+#: ``TransformContext.settings`` key: the ``contentRev`` the record being stored
+#: is of (None when it has none). ``apply`` records it on the vrid's mapping as
+#: ``storedRev`` in the same write, so the artifact reader serves a set only when
+#: it is the revision the stored record holds. Without the key the mapping's
+#: ``storedRev`` is left as it is.
+STORED_REV = "stored_rev"
+
+# Leaves the mapping's ``storedRev`` as it is: a rewrite of the same revision
+# (classification) does not know the revision, and must not clear it.
+_KEEP_STORED_REV: Any = object()
+
+
+class StoredRecordNotFound(LookupError):
+    """The virtual record has no stored record to rewrite."""
+
+
+class StorageLookupUnavailableError(Exception):
+    """Whether stored content exists could not be determined (not: it is absent)."""
+
+
 class StorageDocumentNotFoundError(aiohttp.ClientError):
     """The storage service has no live document with this id (404).
 
@@ -275,9 +353,38 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     """
 
 
+class DocumentRetiredError(StorageDocumentNotFoundError):
+    """404 ``DOCUMENT_RETIRED``: a newer stored write replaced this document and it takes no
+    in-place writes. Reads of it still work. A writer stores its content in a new document."""
+
+
+class SignedUrlReadError(Exception):
+    """A read from a signed URL failed in a way that a retired document explains.
+
+    ``http_status`` is the HTTP status of a single GET (403 or 404), or None for
+    a failed ranged download. It is deliberately not ``status``: the consumers'
+    error classifier reads an int ``status`` as the failure's verdict, and a 403
+    here can be an expired or skewed signature, which a redelivery fixes. Not every instance triggers a re-lookup: see
+    ``may_be_retired``. A plain ``Exception`` subclass, as the readers raised
+    before, so callers matching the message keep working.
+    """
+
+    def __init__(self, message: str, status: int | None = None, *, ranged: bool = False) -> None:
+        super().__init__(message)
+        self.http_status = status
+        self.ranged = ranged
+
+    @property
+    def may_be_retired(self) -> bool:
+        return self.ranged or self.http_status in (403, 404)
+
+
 # Statuses meaning the storage service refused the request's content (too large,
 # unsupported, malformed): every retry gets the same answer.
 _REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+#: How long a process stops calling a storage service's retire route after it answered "no such route".
+_RETIRE_ROUTE_RETRY_SECONDS = 600.0
+_RETIRE_ROUTE: dict[str, float] = {"down_until": 0.0}
 
 
 def _storage_status_error(
@@ -291,9 +398,20 @@ def _storage_status_error(
         reason = f"{message}: the storage service refused it (HTTP {status})"
         too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
         return StorageRequestRejectedError(
-            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large, detail=detail
         )
     return aiohttp.ClientError(message)
+
+
+def _error_code(body_text: str) -> str | None:
+    """The ``error.code`` of a storage error response body, when it has one."""
+    try:
+        body = json.loads(body_text)
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _storage_error_detail(body: object) -> str | None:
@@ -353,6 +471,29 @@ def _request_body_not_delivered(error: BaseException) -> bool:
     return error.errno == errno.EPIPE or (error.strerror or "").startswith(
         "Can not write request body"
     )
+
+def _is_azure_sas_url(signed_url: str) -> bool:
+    """An Azure Blob SAS URL: its query carries the service version and signature."""
+    try:
+        query = URL(signed_url, encoded=True).query
+    except (TypeError, ValueError):
+        return False
+    return "sv" in query and "sig" in query
+
+
+def _signed_upload_headers(signed_url: str) -> dict[str, str]:
+    """Headers a PUT to a signed URL from the direct-upload route needs.
+
+    Azure's Put Blob refuses a request that does not name the blob type, and
+    the route returns only the URL.
+    """
+    return {"x-ms-blob-type": "BlockBlob"} if _is_azure_sas_url(signed_url) else {}
+
+
+def _upload_succeeded(status: int) -> bool:
+    # S3 and local storage answer a PUT with 200, Azure with 201.
+    return 200 <= status < 300
+
 
 _shared_sessions: "dict[asyncio.AbstractEventLoop, aiohttp.ClientSession]" = {}
 
@@ -688,7 +829,9 @@ class BlobStorage(Transformer):
         async def _single() -> dict:
             async with session.get(URL(signed_url, encoded=True)) as res:
                 if res.status != HttpStatusCode.SUCCESS.value:
-                    raise Exception(f"Failed to retrieve record: status {res.status}")
+                    raise SignedUrlReadError(
+                        f"Failed to retrieve record: status {res.status}", res.status
+                    )
                 return await res.json(content_type=None, loads=_decode_json)
 
         try:
@@ -711,8 +854,10 @@ class BlobStorage(Transformer):
                 data = await _single()
             except Exception as fallback_error:
                 self.logger.error("❌ Fallback download also failed: %s", str(fallback_error))
-                raise Exception(
-                    f"Both parallel and fallback downloads failed: {str(e)}"
+                raise SignedUrlReadError(
+                    f"Both parallel and fallback downloads failed: {str(e)}",
+                    getattr(fallback_error, "http_status", None),
+                    ranged=True,
                 ) from fallback_error
 
         if not data.get("record"):
@@ -813,46 +958,45 @@ class BlobStorage(Transformer):
             or DefaultEndpoints.FRONTEND_ENDPOINT.value
         )
 
-    def _maybe_compress_record(
-        self, record: dict, *, label: str = "record", encoded: _RecordJson | None = None,
-    ) -> tuple[str | None, bool]:
-        """Decide whether a record is worth compressing, and compress it if so.
-
-        Returns ``(compressed_base64_or_None, is_compressed)``. Pass *encoded*
-        (from ``_encode_record_json``) to size the record without encoding it again.
+    def _upload_body(
+        self, record: dict, virtual_record_id: str | None, *, label: str = "record",
+    ) -> tuple[bytes, bool]:
+        """The stored-record envelope of *record* as the bytes to upload, and whether it is compressed.
 
         Compression is not free on the read side: the blob is base64'd into a
         JSON envelope, so every reader parses megabytes of base64 before it can
         even start the zstd+msgpack decode. Below the threshold that costs more
-        than the bytes it saves, so small records are stored as plain JSON —
+        than the bytes it saves, so small records are stored as plain JSON,
         a shape ``_process_downloaded_record`` already accepts.
+
+        Built so that besides the record no more than two copies of it exist at
+        once: the JSON, needed only for its size, is dropped before compressing,
+        and the base64 payload is spliced into the envelope instead of encoded
+        again with it. A record carrying a page of photos was held five times
+        over: JSON text and bytes, msgpack, zstd output, base64 bytes and text,
+        and the envelope's text and bytes.
         """
-        try:
-            serialized_size = (
-                encoded.ascii_size if encoded is not None
-                else len(json.dumps(record).encode("utf-8"))
-            )
-        except (TypeError, ValueError) as e:
-            # Not JSON-serializable, so the uncompressed envelope would fail to
-            # build. msgpack accepts more types — compress regardless of size.
-            self.logger.debug("%s is not JSON-serializable (%s); compressing", label, str(e))
-            serialized_size = None
-
-        if serialized_size is not None and (
-            not self.compression_enabled or serialized_size <= compression_threshold_bytes()
+        encoded = _encode_record_json(record)
+        if encoded is not None and (
+            not self.compression_enabled or encoded.ascii_size <= compression_threshold_bytes()
         ):
-            return None, False
-
+            return _plain_envelope_bytes(record, encoded, virtual_record_id), False
+        if encoded is None:
+            # Not JSON-serializable, so the uncompressed envelope would fail to
+            # build. msgpack accepts more types: compress regardless of size.
+            self.logger.debug("%s is not JSON-serializable; compressing", label)
+        del encoded
         try:
-            return self._compress_record(record), True
+            payload = self._compress_record(record)
         except Exception as e:
             self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-            return None, False
+            return _plain_envelope_bytes(record, None, virtual_record_id), False
+        return _compressed_envelope_bytes(payload, virtual_record_id), True
 
-    def _compress_record(self, record: dict) -> str:
+    def _compress_record(self, record: dict) -> bytes:
         """
         Compress record data using msgspec (C-based) + zstd.
-        Returns: base64_encoded_compressed_data
+        Returns: the base64 of the compressed data, as ASCII bytes
         """
         # Serialize directly to bytes using msgspec (high-performance msgpack encoder)
         msgpack_bytes = msgspec.msgpack.encode(record)
@@ -865,13 +1009,14 @@ class BlobStorage(Transformer):
         # One-shot compress() writes the content size the reader's decode guard needs.
         # A compressor per call: they are not thread-safe.
         compressed = zstd.ZstdCompressor(compression_params=params).compress(msgpack_bytes)
+        del msgpack_bytes
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
         self.logger.debug("📦 Compressed record (msgspec): %d -> %d bytes (%.1f%% reduction)",
                         original_size, compressed_size, ratio)
 
-        return base64.b64encode(compressed).decode('utf-8')
+        return base64.b64encode(compressed)
 
 
 
@@ -1140,43 +1285,10 @@ class BlobStorage(Transformer):
         return file_bytes
 
     def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Remove top-level keys with None, empty strings, empty lists, and empty dicts.
-        Only processes the first level of the given object.
-        """
-        return {
-            k: v
-            for k, v in obj.items()
-            if v is not None and v != "" and v != [] and v != {}
-        }
+        return clean_top_level_empty_values(obj)
 
     def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Clean empty values at the top level of:
-        1. The main record object
-        2. Each block in block_containers.blocks
-        3. Each block group in block_containers.block_groups
-        """
-        # Clean top-level record fields
-        cleaned = self._clean_top_level_empty_values(data)
-
-        # Clean each block's top-level fields
-        if "block_containers" in cleaned and isinstance(cleaned["block_containers"], dict):
-            block_containers = cleaned["block_containers"]
-
-            if "blocks" in block_containers and isinstance(block_containers["blocks"], list):
-                block_containers["blocks"] = [
-                    self._clean_top_level_empty_values(block) if isinstance(block, dict) else block
-                    for block in block_containers["blocks"]
-                ]
-
-            if "block_groups" in block_containers and isinstance(block_containers["block_groups"], list):
-                block_containers["block_groups"] = [
-                    self._clean_top_level_empty_values(bg) if isinstance(bg, dict) else bg
-                    for bg in block_containers["block_groups"]
-                ]
-
-        return cleaned
+        return clean_stored_record(data)
 
     async def _build_hierarchical_storage_path(
         self,
@@ -1219,19 +1331,7 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(record_dict)
-            compressed_record, use_compression = self._maybe_compress_record(
-                record_dict, encoded=encoded
-            )
-
-            if use_compression:
-                json_bytes = _json_utf8_bytes({
-                    "isCompressed": True,
-                    "record": compressed_record,
-                    "virtualRecordId": virtual_record_id,
-                })
-            else:
-                json_bytes = _plain_envelope_bytes(record_dict, encoded, virtual_record_id)
+            json_bytes, _ = self._upload_body(record_dict, virtual_record_id)
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
@@ -1248,6 +1348,8 @@ class BlobStorage(Transformer):
             async with session.put(buffer_url, data=form_data, headers=headers) as resp:
                 if resp.status != HttpStatusCode.SUCCESS.value:
                     error_text = await resp.text()
+                    if resp.status == HttpStatusCode.NOT_FOUND.value and _error_code(error_text) == "DOCUMENT_RETIRED":
+                        raise DocumentRetiredError(f"Failed to update buffer: document {document_id} is retired")
                     raise _storage_status_error(
                         resp.status, f"Failed to update buffer: {resp.status} {error_text[:200]}"
                     )
@@ -1271,9 +1373,15 @@ class BlobStorage(Transformer):
             return document_path[len(prefix):]
         return document_path
 
-    async def _get_current_document_path(self, org_id: str, document_id: str) -> str | None:
+    async def _get_current_document_path(
+        self, org_id: str, document_id: str, *, strict: bool = False,
+    ) -> str | None:
         """Fetch the ACTUAL currently-stored documentPath for a document via
-        Node's internal document-info endpoint -- not recomputed/guessed."""
+        Node's internal document-info endpoint -- not recomputed/guessed.
+
+        None means the document is gone (404). Any other failure is None too,
+        unless *strict*, which raises StorageLookupUnavailableError instead.
+        """
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
             get_url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
@@ -1282,6 +1390,10 @@ class BlobStorage(Transformer):
                 if response.status == 404:
                     return None
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    if strict:
+                        raise StorageLookupUnavailableError(
+                            f"Storage answered {response.status} for document {document_id}"
+                        )
                     self.logger.warning(
                         "Unexpected status fetching current document path for %s: %s",
                         document_id, response.status
@@ -1290,30 +1402,54 @@ class BlobStorage(Transformer):
                 doc = await response.json()
                 return doc.get("documentPath")
         except Exception as e:
+            if strict:
+                if isinstance(e, StorageLookupUnavailableError):
+                    raise
+                raise StorageLookupUnavailableError(
+                    f"Could not read stored document {document_id}: {e}"
+                ) from e
             self.logger.warning(
                 "Could not fetch current document path for %s: %s", document_id, str(e)
             )
             return None
 
     async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
-        """Return a record's content document's ACTUAL current stored path,
-        or None if no content document exists yet for this vrid (or it can't
-        be determined)."""
+        """Return a record's content document's ACTUAL current stored path, or
+        None when there is provably none (no mapping, or storage answers 404).
+
+        Raises StorageLookupUnavailableError when that cannot be told (graph or
+        storage error, a 503 during a move): callers decide what "unknown"
+        means instead of reading it as "content gone" and re-indexing.
+        """
         if not self.graph_provider:
             return None
         try:
             existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
         except Exception as e:
-            self.logger.warning(
-                "⚠️ Failed to look up existing doc for vrid %s in get_actual_content_path: %s",
-                virtual_record_id, str(e)
-            )
-            return None
+            raise StorageLookupUnavailableError(
+                f"Could not look up the stored document of vrid {virtual_record_id}: {e}"
+            ) from e
         if not existing_lookup or not existing_lookup.get("record_doc_id"):
             return None
-        raw_path = await self._get_current_document_path(
-            org_id, existing_lookup["record_doc_id"]
-        )
+        document_id = existing_lookup["record_doc_id"]
+        raw_path = await self._get_current_document_path(org_id, document_id, strict=True)
+        if raw_path is None:
+            # A 404 may be a document replaced since the lookup: one fresh lookup.
+            try:
+                fresh = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception as e:
+                record_reader_relookup("lookup_failed", "path_not_found")
+                raise StorageLookupUnavailableError(
+                    f"Could not look up the stored document of vrid {virtual_record_id}: {e}"
+                ) from e
+            fresh_id = (fresh or {}).get("record_doc_id")
+            if not fresh_id:
+                record_reader_relookup("no_mapping", "path_not_found")
+            elif fresh_id == document_id:
+                record_reader_relookup("unchanged", "path_not_found")
+            else:
+                record_reader_relookup("served", "path_not_found")
+                raw_path = await self._get_current_document_path(org_id, fresh_id, strict=True)
         return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
@@ -1333,14 +1469,39 @@ class BlobStorage(Transformer):
             virtual_record_id, storage_path
         )
 
-        actual_storage_path = await self._store_record_dict(
-            org_id, record_id, virtual_record_id, record_dict,
-            storage_path=storage_path,
-            connector_id=getattr(record, "connector_id", None),
-            record_group_id=getattr(record, "record_group_id", None),
-        )
+        written: dict[str, Any] = {}
+        stored_write = ctx.settings.get(STORED_WRITE)
+        if not isinstance(stored_write, StoredWrite):
+            # No settings read in front of this write: the layout that can never be served.
+            stored_write = in_place_write()
+        ctx.settings.pop(RUN_SUPERSEDED, None)
+        try:
+            actual_storage_path = await self._store_record_dict(
+                org_id, record_id, virtual_record_id, record_dict,
+                storage_path=storage_path,
+                connector_id=getattr(record, "connector_id", None),
+                record_group_id=getattr(record, "record_group_id", None),
+                written=written,
+                stored_rev=ctx.settings.get(STORED_REV) if STORED_REV in ctx.settings else _KEEP_STORED_REV,
+                stored_write=stored_write,
+            )
+        except RunSuperseded as superseded:
+            # Another write owns the mapping now (or the record is gone). Indexing goes
+            # on, but this run stored nothing a reader may be handed a set for.
+            self.logger.warning(
+                "Stored write of record %s (vrid %s) superseded: %s", record_id, virtual_record_id, superseded,
+            )
+            ctx.settings[RUN_SUPERSEDED] = True
+            actual_storage_path = storage_path
+            written.clear()
 
         ctx.settings["storage_path"] = actual_storage_path
+        if written:
+            ctx.settings[STORED_RECORD_FIELDS] = {
+                k: v for k, v in written.items() if k not in SHARED_CONTENT_FIELDS
+            }
+        else:
+            ctx.settings.pop(STORED_RECORD_FIELDS, None)
         ctx.record = record
         return ctx
 
@@ -1354,14 +1515,27 @@ class BlobStorage(Transformer):
         storage_path: str | None = None,
         connector_id: str | None = None,
         record_group_id: str | None = None,
+        written: dict[str, Any] | None = None,
+        stored_rev: str | None = _KEEP_STORED_REV,
+        stored_write: StoredWrite | None = None,
     ) -> str:
-        """Upload a record as the next version of its stored document, or as a new one.
+        """Store a record as the virtual record's stored document and name it on the mapping.
 
-        Returns the path the content is stored at. Without *storage_path* (a rewrite of a
+        Returns the path the content is stored at. *written*, when given, is filled
+        with the record dict actually stored: shared content keeps its owner's
+        identity, so it can differ from *record_dict*. Without *storage_path* (a rewrite of a
         record already stored, which has no Record entity to build a path from), a new
         upload goes where the current document is, else to ``records/<vrid>``; the
         connector and record group default to the ones in *record_dict*.
+        *stored_rev* is written on the mapping as ``storedRev`` unless left out.
+
+        *stored_write* carries the layout, generation and run chosen by one read of the
+        settings. ``cow`` writes a new document and switches the mapping to it; ``in_place``
+        invalidates, then overwrites the mapped document. Either way the mapping is changed
+        only by compare-and-set on ``{documentId, switchSeq}``, never by a blind upsert.
+        Raises ``RunSuperseded`` when the write lost that compare-and-set.
         """
+        stored_write = stored_write or in_place_write()
         if storage_path is None:
             storage_path = (
                 await self.get_actual_content_path(org_id, virtual_record_id)
@@ -1371,98 +1545,617 @@ class BlobStorage(Transformer):
             connector_id = record_dict.get("connector_id")
         if record_group_id is None:
             record_group_id = record_dict.get("record_group_id")
-        existing_lookup = None
-        if self.graph_provider:
-            try:
-                existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
-            except Exception as e:
-                self.logger.warning(
-                    "⚠️ Failed to look up existing doc for vrid %s, will create new: %s",
-                    virtual_record_id, str(e)
-                )
-                existing_lookup = None
 
-        actual_storage_path = storage_path
-
-        replaced_doc_id: str | None = None
-        if existing_lookup and existing_lookup.get("record_doc_id"):
-            existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.info(
-                "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
-                virtual_record_id, existing_doc_id
+        if not self.graph_provider:
+            document_id, _ = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                connector_id=connector_id, record_group_id=record_group_id,
             )
+            stored_dict, actual_storage_path = record_dict, storage_path
+        else:
+            store = self._store_copy_on_write if stored_write.layout == COW else self._store_in_place
+            document_id, stored_dict, actual_storage_path = await store(
+                org_id, record_id, virtual_record_id, record_dict,
+                storage_path=storage_path, connector_id=connector_id, record_group_id=record_group_id,
+                stored_rev=stored_rev, stored_write=stored_write,
+            )
+
+        if written is not None and document_id:
+            written.clear()
+            written.update(stored_dict)
+        return actual_storage_path
+
+    # ------------------------------------------------------------------
+    # Stored-write helpers
+    # ------------------------------------------------------------------
+
+    async def _mapping_node(self, virtual_record_id: str) -> dict[str, Any] | None:
+        """The vrid's own (keyed) mapping node. A failed read raises: it must not read as "none"."""
+        return await self.graph_provider.get_document(
+            virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+        )
+
+    @staticmethod
+    def _node_document(node: dict[str, Any] | None) -> str | None:
+        return BlobStorage._mapped_document_id(node) if node else None
+
+    async def _get_document_row(
+        self, org_id: str, document_id: str,
+    ) -> dict[str, Any] | None:
+        """The storage row of a document, or None when it is gone (404).
+
+        Raises ``StorageLookupUnavailableError`` for any other failure: a write must not
+        take "could not ask" for "gone" and file its copy under the wrong tags.
+        """
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+        try:
+            async with get_shared_session().get(url, headers=headers) as response:
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    return None
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    raise StorageLookupUnavailableError(
+                        f"Storage answered {response.status} for document {document_id}"
+                    )
+                row = await response.json()
+        except StorageLookupUnavailableError:
+            raise
+        except Exception as exc:
+            raise StorageLookupUnavailableError(f"Could not read stored document {document_id}: {exc}") from exc
+        return row if isinstance(row, dict) else None
+
+    def _lineage_of(self, org_id: str, row: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        """``(path, connector_id, record_group_id)`` a replacement of the row's document takes."""
+        raw_path = row.get("documentPath")
+        tags = {
+            entry.get("key"): entry.get("value")
+            for entry in row.get("customMetadata") or []
+            if isinstance(entry, dict)
+        }
+        return (
+            self._strip_org_prefix(org_id, raw_path) if raw_path else None,
+            tags.get("connectorId"),
+            tags.get("recordGroupId"),
+        )
+
+    async def _retire_document(self, org_id: str, document_id: str) -> str:
+        """Mark a replaced document so no in-place write lands in it any more.
+
+        Best effort and before the switch: a failed mark is counted and the switch goes on
+        (the sweep marks it before any purge). A storage service without the route is
+        remembered for ten minutes. Returns the outcome: ``marked``, ``gone`` (no such document),
+        ``failed`` or ``unavailable`` (no retire route: there is no write fence).
+        """
+        outcome = await self._retire_document_outcome(org_id, document_id)
+        record_retire_mark(outcome)
+        return outcome
+
+    async def _retire_document_outcome(self, org_id: str, document_id: str) -> str:
+        if time.monotonic() < _RETIRE_ROUTE["down_until"]:
+            return "unavailable"
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            url = f"{nodejs_endpoint}{Routes.STORAGE_RETIRE_DOCUMENT.value.format(documentId=document_id)}"
+            async with get_shared_session().post(url, headers=headers) as response:
+                if response.status == HttpStatusCode.SUCCESS.value:
+                    return "marked"
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    if await self._is_missing_document(response):
+                        return "gone"
+                    # The route itself is not there: an older storage service.
+                    _RETIRE_ROUTE["down_until"] = time.monotonic() + _RETIRE_ROUTE_RETRY_SECONDS
+                    self.logger.warning("The storage service has no retire route; replaced documents are not fenced")
+                    return "unavailable"
+                return "failed"
+        except Exception as exc:
+            self.logger.warning("Could not mark document %s retired: %s", document_id, type(exc).__name__)
+            return "failed"
+
+    async def list_record_documents(
+        self, org_id: str, virtual_record_id: str, *, older_than_seconds: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """The live ``record_<vrid>``/``metadata_<vrid>`` documents of a virtual record, newest first;
+        with *older_than_seconds*, only those created longer ago than that by the database's clock."""
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_VIRTUAL_RECORD_DOCUMENTS.value.format(virtualRecordId=virtual_record_id)}"
+        )
+        params = {"olderThanSeconds": str(int(older_than_seconds))} if older_than_seconds is not None else None
+        async with get_shared_session().get(url, headers=headers, params=params) as resp:
+            if resp.status != HttpStatusCode.SUCCESS.value:
+                raise _storage_status_error(resp.status, "Could not list stored documents")
+            body = await resp.json()
+        return [d for d in body.get("documents") or [] if isinstance(d, dict) and d.get("_id")]
+
+    @staticmethod
+    async def _is_missing_document(response: aiohttp.ClientResponse) -> bool:
+        """True for the route's own 404 (no such document), false for "no such route"."""
+        try:
+            body = await response.json()
+        except Exception:
+            return False
+        error = body.get("error") if isinstance(body, dict) else None
+        return isinstance(error, dict) and error.get("code") == "HTTP_NOT_FOUND"
+
+    async def _record_still_exists(self, record_id: str) -> bool:
+        return await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) is not None
+
+    def _switch_fields(
+        self,
+        node: dict[str, Any] | None,
+        *,
+        document_id: str,
+        file_size_bytes: int | None,
+        stored_rev: str | None,
+        run: str,
+        replaced: str | None,
+        now: int,
+    ) -> dict[str, Any]:
+        """What a switch of the mapping to *document_id* writes, as a compare-and-set's updates."""
+        retired, overflow = with_retired(node, replaced, document_id, now)
+        if overflow:
+            record_store_switch("switch", "retired_overflow", overflow)
+        fields: dict[str, Any] = {
+            "documentId": document_id,
+            "record_doc_id": document_id,
+            "storedRun": run,
+            "storedMeta": None,
+            "switchSeq": ((node or {}).get("switchSeq") or 0) + 1,
+            "switchDoc": document_id,
+            "updatedAt": now,
+            "switchUpdatedAt": now,
+            "lastSwitchAt": now,
+            "retired": retired,
+        }
+        if file_size_bytes is not None:
+            fields["fileSizeBytes"] = file_size_bytes
+        if stored_rev is not _KEEP_STORED_REV:
+            fields["storedRev"] = stored_rev
+        return fields
+
+    async def _switch_mapping(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        node: dict[str, Any] | None,
+        fields: dict[str, Any],
+        *,
+        expect_seq: Any = _KEEP_STORED_REV,  # noqa: ANN401
+        expect_also: dict[str, Any] | None = None,
+    ) -> bool:
+        """Apply *fields* to the mapping if it is still the node that was read. True iff applied.
+
+        A first write creates the node only if none exists. A node without a ``documentId``
+        (reconciliation wrote it first) is matched on that absence. *expect_seq* overrides the
+        ``switchSeq`` the node was read with, for a write that bumped it since; *expect_also* adds
+        fields that must still hold (a metadata writer's ``storedRun`` and ``storedMeta``).
+        """
+        collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        if node is None:
+            created = await self.graph_provider.create_node_if_absent(
+                virtual_record_id, collection,
+                {"id": virtual_record_id, "orgId": org_id, "virtualRecordId": virtual_record_id, **fields},
+            )
+            return bool(created)
+        seq = node.get("switchSeq") if expect_seq is _KEEP_STORED_REV else expect_seq
+        return bool(await self.graph_provider.update_node_fields_if_match(
+            virtual_record_id, collection, fields,
+            {"documentId": node.get("documentId"), "switchSeq": seq, **(expect_also or {})},
+        ))
+
+    async def _shared_content_inputs(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        node: dict[str, Any],
+    ) -> tuple[list[str] | None, dict[str, Any]]:
+        """``(holders, record to store)`` for a write over an existing document: shared content
+        keeps its owner's identity."""
+        holders = await self._live_holders(virtual_record_id)
+        record_dict = await self._keep_owner_identity(
+            org_id, record_id, virtual_record_id, record_dict, self._shape_document_lookup(node), holders,
+        )
+        return holders, record_dict
+
+    async def _store_copy_on_write(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str,
+        connector_id: str | None,
+        record_group_id: str | None,
+        stored_rev: str | None,
+        stored_write: StoredWrite,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Create a new document and switch the mapping to it; returns ``(document, stored dict, path)``.
+
+        Steps: look; read the mapped document's row for its path and tags (lineage); create
+        the new document (the deadline clock starts just before); mark the replaced document
+        retired; re-check the record still exists; switch by compare-and-set on
+        ``{documentId, switchSeq}``. A lost compare-and-set re-reads and tries once more with
+        a fresh document, then the write is superseded and its document is a stray.
+        """
+        for attempt in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            holders: list[str] | None = None
+            stored_dict = record_dict
+            path, tag_connector, tag_group = storage_path, connector_id, record_group_id
+            actual_storage_path = storage_path
+            if d:
+                holders, stored_dict = await self._shared_content_inputs(
+                    org_id, record_id, virtual_record_id, record_dict, node,
+                )
+                row = await self._get_document_row(org_id, d)
+                if row is not None:
+                    path, tag_connector, tag_group = self._lineage_of(org_id, row)
+                    path = path or storage_path
+                    actual_storage_path = path
+                else:
+                    fresh = await self._mapping_node(virtual_record_id)
+                    if self._node_document(fresh) != d:
+                        # A switch landed and its sweep purged this row; look again with the new document.
+                        if attempt == 2:
+                            record_store_switch(COW, "superseded")
+                            raise RunSuperseded("the mapped document changed under the write")
+                        continue
+                    # The mapped document is gone: no row to take tags from, so the writer's own, as on a first write.
+                    self.logger.warning(
+                        "Mapped document %s of vrid %s no longer exists; storing a replacement", d, virtual_record_id,
+                    )
+
+            started = boottime()
+            document_id, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, stored_dict, document_path=path,
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not document_id:
+                raise RuntimeError("the storage service returned no document id")
+            if (
+                holders is not None
+                and actual_storage_path
+                and storage_path != f"records/{virtual_record_id}"
+                and actual_storage_path != storage_path
+            ):
+                actual_storage_path = await self._relocate_stored_copy(
+                    org_id, record_id, virtual_record_id, actual_storage_path, storage_path,
+                    holders=holders, document_id=document_id,
+                )
+            if d:
+                await self._retire_document(org_id, d)
+            if boottime() - started > WRITER_DEADLINE_SECONDS:
+                record_store_switch(COW, "deadline")
+                raise RunSuperseded("the write took longer than its deadline")
+            if not await self._record_still_exists(record_id):
+                record_store_switch(COW, "record_gone")
+                raise RunSuperseded("the record was deleted before the switch")
+
+            fields = self._switch_fields(
+                node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+                run=stored_write.run, replaced=d, now=get_epoch_timestamp_in_ms(),
+            )
+            if await self._switch_mapping(org_id, virtual_record_id, node, fields):
+                record_store_switch(COW, "switched")
+                return document_id, stored_dict, actual_storage_path
+            record_store_switch(COW, "conflict")
+        record_store_switch(COW, "superseded")
+        raise RunSuperseded("the mapping moved under the write twice")
+
+    async def _put_buffer_with_retry(
+        self, org_id: str, document_id: str, record_dict: dict[str, Any], virtual_record_id: str,
+    ) -> int | None:
+        """PUT into the mapped document, retrying a transient failure (a move running at the
+        same time answers 503; a connection can drop). Re-sending the same bytes is safe: the
+        mapping was invalidated first and the final compare-and-set still decides. A document
+        that is gone or retired, or a refused body, is not retried."""
+        for number in range(IN_PLACE_PUT_ATTEMPTS):
             try:
-                document_id, file_size_bytes = await self.update_record_buffer(
-                    org_id, existing_doc_id, record_dict, virtual_record_id
+                _, size = await self.update_record_buffer(org_id, document_id, record_dict, virtual_record_id)
+                return size
+            except (StorageDocumentNotFoundError, StorageRequestRejectedError):
+                raise
+            except Exception as exc:
+                if number + 1 >= IN_PLACE_PUT_ATTEMPTS:
+                    raise
+                pause = IN_PLACE_PUT_BACKOFF_SECONDS[min(number, len(IN_PLACE_PUT_BACKOFF_SECONDS) - 1)]
+                self.logger.info(
+                    "⚠️ update_record_buffer failed for doc %s (attempt %d), retrying: %s",
+                    document_id, number + 1, type(exc).__name__,
                 )
-                raw_path = await self._get_current_document_path(org_id, existing_doc_id)
-                if raw_path:
-                    actual_storage_path = self._strip_org_prefix(org_id, raw_path)
-            except StorageDocumentNotFoundError:
-                # A concurrent move fails the write with 503, never 404; a 404
-                # means the document was deleted (e.g. with the connector that
-                # stored this shared VRID first), so a retry cannot succeed.
-                self.logger.warning(
-                    "Stored document %s for vrid %s no longer exists; uploading a replacement",
-                    existing_doc_id, virtual_record_id,
-                )
+                await asyncio.sleep(random.uniform(pause / 2, pause))
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _check_creation_deadline(created_at: float) -> None:
+        """A document this write created is named by the switch only within the writer deadline: past
+        it the stray pass may already have purged it (``stored_retention``)."""
+        if boottime() - created_at > WRITER_DEADLINE_SECONDS:
+            record_store_switch(IN_PLACE, "deadline")
+            raise RunSuperseded("the write took longer than its deadline")
+
+    async def _store_in_place(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str,
+        connector_id: str | None,
+        record_group_id: str | None,
+        stored_rev: str | None,
+        stored_write: StoredWrite,
+        keep_identity: bool = True,
+        recheck_record: bool = False,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Overwrite the mapped document; the mapping changes only by compare-and-set.
+
+        Steps: look; invalidate (``storedRun`` becomes this write's ``none`` run, so no artifact
+        set is served over the content that is about to change), skipped when the stored run is
+        already unservable; PUT the document; on 404 create a replacement; switch by
+        compare-and-set on ``{documentId, switchSeq}``. No artifact set is written for it.
+
+        A metadata writer passes ``keep_identity=False`` (the record it re-reads is written back
+        whole, so no owner identity is merged into it) and ``recheck_record=True`` (a record deleted
+        meanwhile is not switched).
+        """
+        run = stored_write.run
+        for _ in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            if d is None:
+                created_at = boottime()
                 document_id, file_size_bytes = await self.save_record_to_storage(
                     org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
                     connector_id=connector_id, record_group_id=record_group_id,
                 )
-            except Exception as e:
-                # A concurrent move_record_tree may have renamed the
-                # directory between the document's MongoDB read and the
-                # disk write (TOCTOU in moveTreeLocal). Retry once after
-                # a brief pause so the move's MongoDB update can land.
-                self.logger.info(
-                    "⚠️ update_record_buffer failed for doc %s, retrying: %s",
-                    existing_doc_id, str(e),
+                if not document_id:
+                    raise RuntimeError("the storage service returned no document id")
+                self._check_creation_deadline(created_at)
+                fields = self._switch_fields(
+                    node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+                    run=run, replaced=None, now=get_epoch_timestamp_in_ms(),
                 )
-                await asyncio.sleep(0.5)
-                try:
-                    document_id, file_size_bytes = await self.update_record_buffer(
-                        org_id, existing_doc_id, record_dict, virtual_record_id
-                    )
-                    raw_path = await self._get_current_document_path(org_id, existing_doc_id)
-                    if raw_path:
-                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
-                except Exception as retry_e:
-                    self.logger.warning(
-                        "⚠️ Retry also failed for doc %s, falling back to new upload: %s",
-                        existing_doc_id, str(retry_e),
-                    )
-                    document_id, file_size_bytes = await self.save_record_to_storage(
-                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
-                        connector_id=connector_id, record_group_id=record_group_id,
-                    )
-                    replaced_doc_id = existing_doc_id
+                if await self._switch_mapping(org_id, virtual_record_id, node, fields):
+                    record_store_switch(IN_PLACE, "switched")
+                    return document_id, record_dict, storage_path
+                record_store_switch(IN_PLACE, "conflict")
+                continue
+
+            seq = node.get("switchSeq")
+            if is_none_run(node.get("storedRun")) and not node.get("storedMeta"):
+                record_store_switch(IN_PLACE, "invalidation_skipped")
+            else:
+                now = get_epoch_timestamp_in_ms()
+                invalidation: dict[str, Any] = {
+                    "storedRun": run, "storedMeta": None, "switchSeq": (seq or 0) + 1,
+                    "switchDoc": d, "updatedAt": now, "switchUpdatedAt": now, "lastSwitchAt": now,
+                }
+                if stored_rev is not _KEEP_STORED_REV:
+                    invalidation["storedRev"] = stored_rev
+                if not await self._switch_mapping(org_id, virtual_record_id, node, invalidation):
+                    record_store_switch(IN_PLACE, "conflict")
+                    continue
+                record_store_switch(IN_PLACE, "invalidated")
+                seq = (seq or 0) + 1
+            break
         else:
-            self.logger.debug(
-                "📄 No existing storage doc for vrid %s, creating new document at path: %s",
-                virtual_record_id, storage_path
+            record_store_switch(IN_PLACE, "busy")
+            raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} kept moving")
+
+        if d is None:
+            # Only reachable through the first-write branch above, which returned.
+            raise AssertionError("unreachable")
+        if keep_identity:
+            holders, stored_dict = await self._shared_content_inputs(
+                org_id, record_id, virtual_record_id, record_dict, node,
             )
-            document_id, file_size_bytes = await self.save_record_to_storage(
-                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
-                connector_id=connector_id, record_group_id=record_group_id,
+        else:
+            holders, stored_dict = None, record_dict
+        self.logger.info("📄 Overriding buffer in place for vrid %s (doc_id=%s)", virtual_record_id, d)
+        target = d
+        actual_storage_path = storage_path
+        replacement_started: float | None = None
+        try:
+            file_size_bytes = await self._put_buffer_with_retry(org_id, d, stored_dict, virtual_record_id)
+            raw_path = await self._get_current_document_path(org_id, d)
+            if raw_path:
+                actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+        except StorageDocumentNotFoundError as gone:
+            path, tag_connector, tag_group = storage_path, connector_id, record_group_id
+            if isinstance(gone, DocumentRetiredError):
+                # Replaced by a copy-on-write switch after a flag went on; the row still exists.
+                row = await self._get_document_row(org_id, d)
+                if row is not None:
+                    row_path, tag_connector, tag_group = self._lineage_of(org_id, row)
+                    path = row_path or storage_path
+                    actual_storage_path = path
+            self.logger.warning(
+                "Stored document %s for vrid %s %s; uploading a replacement",
+                d, virtual_record_id, "is retired" if isinstance(gone, DocumentRetiredError) else "no longer exists",
+            )
+            replacement_started = boottime()
+            target, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, stored_dict, document_path=path,
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not target:
+                raise RuntimeError("the storage service returned no document id") from gone
+            if not actual_storage_path or actual_storage_path == storage_path:
+                actual_storage_path = path
+
+        if (
+            target
+            and holders is not None
+            and actual_storage_path
+            and storage_path != f"records/{virtual_record_id}"
+            and actual_storage_path != storage_path
+        ):
+            actual_storage_path = await self._relocate_stored_copy(
+                org_id, record_id, virtual_record_id, actual_storage_path, storage_path,
+                holders=holders, document_id=target,
             )
 
-        if document_id and self.graph_provider:
-            mapped = await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
-            if mapped and replaced_doc_id and replaced_doc_id != document_id:
-                await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
+        if replacement_started is not None:
+            self._check_creation_deadline(replacement_started)
+        if recheck_record and not await self._record_still_exists(record_id):
+            record_store_switch(IN_PLACE, "record_gone")
+            raise RunSuperseded("the record was deleted before the switch")
+        latest = dict(node)
+        latest["switchSeq"] = seq
+        fields = self._switch_fields(
+            latest, document_id=target, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+            run=run, replaced=d, now=get_epoch_timestamp_in_ms(),
+        )
+        if await self._switch_mapping(org_id, virtual_record_id, node, fields, expect_seq=seq):
+            record_store_switch(IN_PLACE, "switched")
+            return target, stored_dict, actual_storage_path
+        # A copy-on-write switch landed meanwhile (a flag went on during this write). When the
+        # content went into d it was d's content before d was marked; a replacement is a stray.
+        record_store_switch(IN_PLACE, "superseded")
+        raise RunSuperseded("the mapping moved during the in-place write")
 
-        return actual_storage_path
+    async def rewrite_semantic_metadata(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        *,
+        stored_write: StoredWrite,
+        sidecar: SidecarWrite | None = None,
+    ) -> dict[str, Any] | None:
+        """Replace the mapped stored record's ``semantic_metadata`` with what *transform* makes of it.
 
-    async def save_semantic_metadata(
-        self, org_id: str, record_id: str, virtual_record_id: str, semantic_metadata: dict[str, Any]
-    ) -> None:
-        """Write classification into the stored record as its next version."""
-        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+        The mapped document is read **once**; *transform* gets the stored record and returns the new
+        ``semantic_metadata``, or None to write nothing (then None is returned). Every other field is
+        written back as read: the owner's identity is not merged in (``_keep_owner_identity`` does not
+        run). Returns the stored record as written.
+
+        ``cow`` (a shadow or read flag is on) copies the document with only the metadata changed,
+        files the classification as a sidecar at a path named by this write, and switches the mapping
+        by compare-and-set on ``{documentId, storedRun, storedMeta, switchSeq}``: ``storedRun`` is
+        kept (the blocks are unchanged) and ``storedMeta`` names the sidecar, so a reader serves
+        exactly this metadata with the blocks it belongs to. ``in_place`` invalidates (unless nothing is
+        servable), overwrites the document and runs the final compare-and-set; no sidecar.
+
+        Raises ``StoredRecordNotFound`` when there is no stored record, ``StoredWriteBusy`` when the
+        mapping moved under a copy-on-write write (the caller's retry runs the job again) and
+        ``RunSuperseded`` when an in-place write lost its final compare-and-set or the record is gone.
+        """
+        if stored_write.layout == COW:
+            return await self._rewrite_copy_on_write(
+                org_id, record_id, virtual_record_id, transform, sidecar=sidecar,
+            )
+        return await self._rewrite_in_place(org_id, record_id, virtual_record_id, transform, stored_write)
+
+    async def _read_mapped_record(
+        self, org_id: str, virtual_record_id: str, node: dict[str, Any],
+    ) -> dict[str, Any]:
+        stored = await self.get_record_from_storage(
+            virtual_record_id, org_id, lookup_result=self._shape_document_lookup(node),
+        )
         if stored is None:
-            raise LookupError(f"no stored record for virtual record {virtual_record_id}")
-        stored["semantic_metadata"] = semantic_metadata
-        await self._store_record_dict(org_id, record_id, virtual_record_id, stored)
+            raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+        return stored
+
+    async def _rewrite_in_place(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        stored_write: StoredWrite,
+    ) -> dict[str, Any] | None:
+        node = await self._mapping_node(virtual_record_id)
+        if not self._node_document(node):
+            raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+        stored = await self._read_mapped_record(org_id, virtual_record_id, node)  # type: ignore[arg-type]
+        new = await transform(stored)
+        if new is None:
+            return None
+        written = {**stored, "semantic_metadata": new}
+        _, written, _ = await self._store_in_place(
+            org_id, record_id, virtual_record_id, written,
+            storage_path=f"records/{virtual_record_id}",
+            connector_id=written.get("connector_id"), record_group_id=written.get("record_group_id"),
+            stored_rev=_KEEP_STORED_REV, stored_write=stored_write,
+            keep_identity=False, recheck_record=True,
+        )
+        return written
+
+    async def _rewrite_copy_on_write(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        *,
+        sidecar: SidecarWrite | None,
+    ) -> dict[str, Any] | None:
+        for attempt in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            if not d or node is None:
+                raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+            run, stored_meta = node.get("storedRun"), node.get("storedMeta")
+            row = await self._get_document_row(org_id, d)
+            if row is None:
+                fresh = await self._mapping_node(virtual_record_id)
+                if self._node_document(fresh) != d:
+                    # A switch landed and its sweep purged this row: read the new document instead.
+                    if attempt == 2:
+                        raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} kept moving")
+                    continue
+                raise StoredRecordNotFound(f"the stored document {d} of virtual record {virtual_record_id} is gone")
+            stored = await self._read_mapped_record(org_id, virtual_record_id, node)
+            new = await transform(stored)
+            if new is None:
+                return None
+            written = {**stored, "semantic_metadata": new}
+            path, tag_connector, tag_group = self._lineage_of(org_id, row)
+
+            started = boottime()
+            document_id, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, written, document_path=path or f"records/{virtual_record_id}",
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not document_id:
+                raise RuntimeError("the storage service returned no document id")
+            # The classification a reader serves, at a path only this write knows. Written before the
+            # switch: the switch is what makes it visible, and a failure only makes the read stale_sidecar.
+            token_path = classification_sidecar_token_path(sidecar.stage_version if sidecar else 0)
+            if sidecar is not None:
+                _ = await sidecar.write(token_path, run, new)
+            await self._retire_document(org_id, d)
+            if boottime() - started > WRITER_DEADLINE_SECONDS:
+                record_store_switch(COW, "deadline")
+                raise StoredWriteBusy("the metadata write took longer than its deadline")
+            if not await self._record_still_exists(record_id):
+                record_store_switch(COW, "record_gone")
+                raise StoredWriteBusy("the record was deleted before the switch")
+
+            fields = self._switch_fields(
+                node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=_KEEP_STORED_REV,
+                run=run, replaced=d, now=get_epoch_timestamp_in_ms(),
+            )
+            fields["storedMeta"] = token_path
+            if await self._switch_mapping(
+                org_id, virtual_record_id, node, fields, expect_also={"storedRun": run, "storedMeta": stored_meta},
+            ):
+                record_store_switch(COW, "switched")
+                return written
+            # A sink or another metadata writer switched first. Its document and this sidecar are
+            # strays; the caller's retry runs the job again against the new mapping.
+            record_store_switch(COW, "conflict")
+            raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} moved during the metadata write")
+        raise AssertionError("unreachable")
 
     async def _with_storage_retry(
         self,
@@ -1616,16 +2309,17 @@ class BlobStorage(Transformer):
     #         self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
     #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
-        """PUT JSON to a signed URL; transient failures are retried (same
-        key, so a repeat is harmless)."""
+    async def _upload_to_signed_url(self, session, signed_url, body: bytes) -> int | None:
+        """PUT an encoded JSON envelope to a signed URL; transient failures are
+        retried (same key, so a repeat is harmless)."""
         async def _attempt() -> int:
             async with session.put(
                 URL(signed_url, encoded=True),
-                json=data,
+                data=body,
+                headers=_signed_upload_headers(signed_url),
                 skip_auto_headers={'Content-Type'}
             ) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
+                if not _upload_succeeded(response.status):
                     try:
                         error_response = await response.json()
                         self.logger.error("❌ Failed to upload to signed URL. Status: %d, Error: %s",
@@ -1661,9 +2355,10 @@ class BlobStorage(Transformer):
             async with session.put(
                 URL(signed_url, encoded=True),
                 data=content,
+                headers=_signed_upload_headers(signed_url),
                 skip_auto_headers={"Content-Type"},
             ) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
+                if not _upload_succeeded(response.status):
                     response_text = (await response.text())[:200]
                     self.logger.error(
                         "❌ Failed to upload raw content. Status: %d, Response: %s",
@@ -1725,21 +2420,10 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(record)
-            compressed_record, use_compression = self._maybe_compress_record(
-                record, encoded=encoded
-            )
+            json_data, use_compression = self._upload_body(record, virtual_record_id)
+            file_size_bytes = len(json_data)
 
             if storage_type == "local":
-                if use_compression:
-                    json_data = _json_utf8_bytes({
-                        "isCompressed": True,
-                        "record": compressed_record,
-                        "virtualRecordId": virtual_record_id,
-                    })
-                else:
-                    json_data = _plain_envelope_bytes(record, encoded, virtual_record_id)
-                file_size_bytes = len(json_data)
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
 
@@ -1827,29 +2511,7 @@ class BlobStorage(Transformer):
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Upload with isCompressed flag format
-                        if compressed_record:
-                            # Compressed format
-                            upload_data = {
-                                "isCompressed": True,
-                                "record": compressed_record,
-                                "virtualRecordId": virtual_record_id,
-                            }
-                        else:
-                            # Uncompressed fallback format
-                            upload_data = {
-                                "record": record,
-                                "isCompressed": False,
-                                "virtualRecordId": virtual_record_id,
-                            }
-
-                        file_size_bytes = (
-                            _cloud_envelope_size(encoded, virtual_record_id)
-                            if encoded is not None and not compressed_record
-                            else len(json.dumps(upload_data).encode('utf-8'))
-                        )
-
-                        await self._upload_to_signed_url(session, signed_url, upload_data)
+                        await self._upload_to_signed_url(session, signed_url, json_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
                         return document_id, file_size_bytes
@@ -1943,6 +2605,157 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Failed to save binary to storage for record %s: %s", record_id, str(e))
             return None, None
 
+    async def _relocate_stored_copy(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        current_path: str,
+        expected_path: str,
+        *,
+        holders: list[str] | None,
+        document_id: str,
+    ) -> str:
+        """Move this record's stored copy to where its graph path says it belongs.
+
+        A copy lands on a wrong path when its path could not be computed (a
+        graph error falls back to records/<vrid>), when it was indexed before its
+        parent existed, when a move was skipped, or when it predates
+        hierarchical storage. Grep searches only records/<connector>/, so such a
+        copy is invisible to it until moved. Shared content stays where its
+        first record filed it. Returns the path the copy is at afterwards.
+        """
+        # Only the content's sole live holder moves it. A record being deleted
+        # holds nothing any more: its path is computed without the links the
+        # delete already removed, and moving the copy there would take it away
+        # from where the delete is cleaning up.
+        if holders is None or set(holders) != {record_id}:
+            return current_path
+        if expected_path.startswith(current_path + "/"):
+            # A record whose name used to clean to nothing was filed at its
+            # parent's path; storage refuses to move a folder into itself, and
+            # moving the parent would carry its siblings along.
+            self.logger.debug(
+                "Not relocating vrid %s into its own folder: %s -> %s",
+                virtual_record_id, current_path, expected_path,
+            )
+            return current_path
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            result = await post_move_tree(
+                get_shared_session(), nodejs_endpoint, headers, current_path, expected_path,
+                virtual_record_ids=[virtual_record_id],
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not relocate vrid %s from %s to %s: %s",
+                virtual_record_id, current_path, expected_path, e,
+            )
+            return current_path
+        if result.get("failed"):
+            return current_path
+        if not result.get("moved"):
+            # Nothing at current_path: a concurrent move already carried it.
+            raw_path = await self._get_current_document_path(org_id, document_id)
+            return self._strip_org_prefix(org_id, raw_path) if raw_path else current_path
+        self.logger.info(
+            "📦 Relocated stored copy of vrid %s: %s -> %s", virtual_record_id, current_path, expected_path,
+        )
+        return expected_path
+
+    async def _live_holders(self, virtual_record_id: str) -> list[str] | None:
+        """The live records holding *virtual_record_id*, or None when the graph
+        cannot say (callers then leave shared content as it is)."""
+        try:
+            return remaining_record_keys(
+                await self.graph_provider.get_records_by_virtual_record_id(
+                    virtual_record_id, raise_on_error=True,
+                )
+            )
+        except Exception as e:
+            self.logger.warning("Could not list records sharing vrid %s: %s", virtual_record_id, e)
+            return None
+
+    async def _keep_owner_identity(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict,
+        lookup_result: dict,
+        holders: list[str] | None,
+    ) -> dict:
+        """The stored copy to write when *record_id* rewrites shared content.
+
+        Deduplicated content is stored once, filed under and named after the
+        record that stored it first. Another record re-indexing it must replace
+        only the content: writing its own name, link and ids into that file shows
+        them to the owner's connector (grep, linked-record context).
+
+        When the record named in the copy no longer holds the content (it was
+        deleted and the copy handed over), the owner is the one storage hands
+        over to: the smallest live holder key. Until that record writes, the
+        copy carries no record's identity.
+        """
+        if holders is not None and set(holders) <= {record_id}:
+            return record_dict
+        try:
+            stored = await self.get_record_from_storage(
+                virtual_record_id, org_id, lookup_result=lookup_result,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read the stored copy of shared vrid %s; writing it whole: %s",
+                virtual_record_id, e,
+            )
+            return record_dict
+        owner = stored.get("id") if isinstance(stored, dict) else None
+        if holders is not None and owner not in holders:
+            if min(holders, default=record_id) == record_id:
+                return record_dict
+            stored = {k: v for k, v in stored.items() if k in SHARED_CONTENT_FIELDS}
+            owner = "a record that no longer holds it"
+        elif not owner or owner == record_id:
+            return record_dict
+        merged = dict(stored)
+        for key in SHARED_CONTENT_FIELDS:
+            if key in record_dict:
+                merged[key] = record_dict[key]
+            else:
+                merged.pop(key, None)
+        self.logger.info(
+            "Shared vrid %s: record %s replaces the content of %s's stored copy only",
+            virtual_record_id, record_id, owner,
+        )
+        return merged
+
+    async def _find_unmapped_record_document(
+        self, org_id: str, virtual_record_id: str, kind: str = "record",
+    ) -> str | None:
+        """The newest live ``<kind>_<vrid>`` document (kind: record / metadata),
+        for a vrid whose mapping does not name one.
+
+        Raises when storage cannot be asked: guessing "none" would store a
+        second copy beside the one an interrupted attempt left behind.
+        """
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_VIRTUAL_RECORD_DOCUMENTS.value.format(virtualRecordId=virtual_record_id)}"
+        )
+        async with get_shared_session().get(url, headers=headers) as resp:
+            if resp.status == HttpStatusCode.NOT_FOUND.value:
+                # A storage service older than this route; nothing to reuse.
+                return None
+            if resp.status != HttpStatusCode.SUCCESS.value:
+                raise _storage_status_error(resp.status, "Could not list stored documents")
+            body = await resp.json()
+        name = f"{kind}_{virtual_record_id}"
+        for doc in body.get("documents") or []:
+            if doc.get("documentName") == name and doc.get("_id"):
+                return str(doc["_id"])
+        return None
+
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> dict | None:
         """
         Get the document ID(s) and file size by virtual record ID from ArangoDB.
@@ -2003,6 +2816,14 @@ class BlobStorage(Transformer):
         record_metadata_doc_id = doc.get("record_metadata_doc_id")
         if record_metadata_doc_id:
             result["record_metadata_doc_id"] = record_metadata_doc_id
+        # The artifact set of the current content revision, for the artifact reader.
+        # The stored write each field belongs to: a set is served only when they agree.
+        for key in (
+            "currentRev", "manifestDocId", "storedRev", "storedRun", "storedMeta", "currentRun",
+            "switchSeq", "switchDoc", "switchUpdatedAt", "lastSwitchAt", "retired",
+        ):
+            if doc.get(key):
+                result[key] = doc[key]
         return result
 
     async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
@@ -2051,8 +2872,9 @@ class BlobStorage(Transformer):
             )
 
     async def delete_storage_docs_for_vrid(self, org_id: str, virtual_record_id: str) -> None:
-        """Delete the blob storage documents (record + metadata) and the graph
-        mapping node for an abandoned virtualRecordId.
+        """Delete every storage document of an abandoned virtualRecordId (its
+        record and metadata documents, wherever filed, and its content
+        revisions) and then its graph mapping node.
 
         Called when VRID reconciliation isolates a record with a new VRID and
         the old one is no longer needed.  Safe to call when the mapping or the
@@ -2094,58 +2916,23 @@ class BlobStorage(Transformer):
             )
             raise
 
+        # By virtual record id, not by the ids on the mapping: that also finds
+        # documents the mapping never pointed at, such as content revisions.
+        # A failure keeps the mapping node so a retry can find them.
+        try:
+            purged = await self.purge_virtual_record_documents(org_id, virtual_record_id)
+        except Exception as exc:
+            self.logger.error(
+                "Failed to delete storage docs for abandoned VRID %s: %s",
+                virtual_record_id, exc,
+            )
+            raise
+        self.logger.info(
+            "Deleted %d storage doc(s) for abandoned VRID %s", purged, virtual_record_id,
+        )
+
         if not mapping:
-            self.logger.info(
-                "No VRID mapping found for abandoned VRID %s — nothing to clean up",
-                virtual_record_id,
-            )
             return
-
-        doc_ids: list[str] = []
-        record_doc_id = mapping.get("record_doc_id") or mapping.get("documentId")
-        metadata_doc_id = mapping.get("record_metadata_doc_id")
-        if record_doc_id:
-            doc_ids.append(record_doc_id)
-        if metadata_doc_id:
-            doc_ids.append(metadata_doc_id)
-
-        all_deleted = True
-        if doc_ids:
-            try:
-                headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
-                session = get_shared_session()
-                for doc_id in doc_ids:
-                    delete_url = (
-                        f"{nodejs_endpoint}"
-                        f"{Routes.STORAGE_DOCUMENT.value.format(documentId=doc_id)}"
-                        "?hard=true"
-                    )
-                    async with session.delete(delete_url, headers=headers) as resp:
-                        if resp.status in (200, 204, 404):
-                            self.logger.info(
-                                "Deleted storage doc %s for abandoned VRID %s",
-                                doc_id, virtual_record_id,
-                            )
-                        else:
-                            all_deleted = False
-                            text = await resp.text()
-                            self.logger.warning(
-                                "Storage doc delete returned %d for %s (vrid %s): %s",
-                                resp.status, doc_id, virtual_record_id, text[:200],
-                            )
-            except Exception as exc:
-                self.logger.error(
-                    "Failed to delete storage docs for abandoned VRID %s: %s",
-                    virtual_record_id, exc,
-                )
-                raise
-
-        if not all_deleted:
-            raise Exception(
-                f"Some storage docs for VRID {virtual_record_id} could not be deleted; "
-                "keeping mapping node so a retry can find them"
-            )
-
         try:
             await self.graph_provider.remove_nodes_by_field(
                 collection_name, "_key", field_value=virtual_record_id,
@@ -2296,57 +3083,34 @@ class BlobStorage(Transformer):
                 self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None
 
-            download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-            session = get_shared_session()
-
-            lease = (
-                _DecodeSlotLease(await _acquire_decode_slot())
-                if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
-                else None
-            )
             try:
-                # A cached signed URL skips the gateway hop entirely. On any failure
-                # reading it back, fall through to the gateway and re-sign.
-                cached_url = await self._cached_signed_url(org_id, document_id)
-                if cached_url:
-                    try:
-                        record = await self._record_from_signed_url(
-                            session, cached_url, file_size_bytes, virtual_record_id, lease
-                        )
-                        if record is not None:
-                            return record
-                    except StoredRecordTooLargeError:
-                        # Refused after the download, not because of the URL: re-signing
-                        # would only download the same record again.
-                        raise
-                    except Exception as e:
-                        self.logger.debug(
-                            "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
-                        )
-
-                data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-                if data.get("signedUrl"):
-                    await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-                if data.get("record"):
-                    record = await self._decode_record(data, lease)
-                    record_name = record.get("record_name")
-                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                    return record
-                elif data.get("signedUrl"):
-                    record = await self._record_from_signed_url(
-                        session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
+                return await self._read_stored_document(
+                    org_id, virtual_record_id, document_id, file_size_bytes, headers, nodejs_endpoint
+                )
+            except (StorageDocumentNotFoundError, SignedUrlReadError) as first_error:
+                if isinstance(first_error, SignedUrlReadError) and not first_error.may_be_retired:
+                    raise
+                # The document may have been replaced since the lookup was taken
+                # (a lookup reused across a re-index, a URL signed for a document
+                # purged before it was fetched). One fresh lookup; a document that
+                # is still the mapped one means the error is real.
+                trigger = (
+                    "not_found" if isinstance(first_error, StorageDocumentNotFoundError)
+                    else "ranged" if first_error.ranged else "signed_url"
+                )
+                fresh = await self._relookup_after_failed_read(virtual_record_id, document_id, trigger)
+                if fresh is None:
+                    raise
+                try:
+                    record = await self._read_stored_document(
+                        org_id, virtual_record_id, fresh["record_doc_id"],
+                        fresh.get("fileSizeBytes"), headers, nodejs_endpoint,
                     )
-                    if record is not None:
-                        return record
-                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                    raise Exception("No record found for virtual_record_id")
-                else:
-                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                    raise Exception("No record found for virtual_record_id")
-            finally:
-                if lease is not None:
-                    lease.release()
+                except Exception:
+                    record_reader_relookup("failed", trigger)
+                    raise
+                record_reader_relookup("served", trigger)
+                return record
         except StorageDocumentNotFoundError:
             self.logger.warning(
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
@@ -2363,6 +3127,93 @@ class BlobStorage(Transformer):
             )
             raise e
 
+    async def _relookup_after_failed_read(
+        self, virtual_record_id: str, failed_document_id: str, trigger: str
+    ) -> dict[str, Any] | None:
+        """The mapping's current document when it is not *failed_document_id*, else None.
+
+        None means the caller re-raises the original error: an S3 403 can also be
+        an expired or skewed signature, and a 404 on the mapped document is real.
+        """
+        try:
+            fresh = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "Re-lookup of virtual_record_id %s after a failed read failed: %s",
+                virtual_record_id, str(e),
+            )
+            record_reader_relookup("lookup_failed", trigger)
+            return None
+        fresh_id = (fresh or {}).get("record_doc_id")
+        if not fresh_id:
+            record_reader_relookup("no_mapping", trigger)
+            return None
+        if fresh_id == failed_document_id:
+            record_reader_relookup("unchanged", trigger)
+            return None
+        return fresh
+
+    async def _read_stored_document(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        document_id: str,
+        file_size_bytes: int | None,
+        headers: dict,
+        nodejs_endpoint: str,
+    ) -> dict[str, Any]:
+        """Read one stored document: the cached signed URL, else the gateway."""
+        download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+        session = get_shared_session()
+
+        lease = (
+            _DecodeSlotLease(await _acquire_decode_slot())
+            if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
+            else None
+        )
+        try:
+            # A cached signed URL skips the gateway hop entirely. On any failure
+            # reading it back, fall through to the gateway and re-sign.
+            cached_url = await self._cached_signed_url(org_id, document_id)
+            if cached_url:
+                try:
+                    record = await self._record_from_signed_url(
+                        session, cached_url, file_size_bytes, virtual_record_id, lease
+                    )
+                    if record is not None:
+                        return record
+                except StoredRecordTooLargeError:
+                    # Refused after the download, not because of the URL: re-signing
+                    # would only download the same record again.
+                    raise
+                except Exception as e:
+                    self.logger.debug(
+                        "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
+                    )
+
+            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+            if data.get("signedUrl"):
+                await self._store_signed_url(org_id, document_id, data["signedUrl"])
+
+            if data.get("record"):
+                record = await self._decode_record(data, lease)
+                self.logger.debug(
+                    "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
+                    record.get("record_name"), virtual_record_id,
+                )
+                return record
+            if data.get("signedUrl"):
+                record = await self._record_from_signed_url(
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
+                )
+                if record is not None:
+                    return record
+            self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+            raise Exception("No record found for virtual_record_id")
+        finally:
+            if lease is not None:
+                lease.release()
+
     async def _fetch_record_envelope(
         self, session: aiohttp.ClientSession, download_url: str, headers: dict, virtual_record_id: str
     ) -> dict:
@@ -2376,55 +3227,6 @@ class BlobStorage(Transformer):
                 return await resp.json(loads=_decode_json)
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
-
-    async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
-        """
-        Stores the mapping between virtual_record_id and document_id in graph database.
-        Args:
-            org_id: The organization ID
-            virtual_record_id: The virtual record ID
-            document_id: The document ID
-            file_size_bytes: Optional file size in bytes
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-
-        try:
-            collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-
-            mapping_key = virtual_record_id
-
-            mapping_document = {
-                "id": mapping_key,
-                "orgId": org_id,
-                "virtualRecordId": virtual_record_id,
-                "documentId": document_id,
-                "record_doc_id": document_id,
-                "updatedAt": get_epoch_timestamp_in_ms()
-            }
-
-            if file_size_bytes is not None:
-                mapping_document["fileSizeBytes"] = file_size_bytes
-
-            success = await self.graph_provider.batch_upsert_nodes(
-                [mapping_document],
-                collection_name
-            )
-
-            if success:
-                size_info = f", file_size={file_size_bytes} bytes" if file_size_bytes is not None else ""
-                self.logger.debug("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s%s", virtual_record_id, document_id, size_info)
-                return True
-            else:
-                self.logger.error("❌ Failed to store virtual record mapping")
-                raise Exception("Failed to store virtual record mapping")
-
-        except Exception as e:
-            self.logger.exception(
-                "❌ Failed to store virtual record mapping: %s",
-                virtual_record_id,
-            )
-            raise e
 
     async def upload_next_version(
         self,
@@ -2448,19 +3250,7 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_record, use_compression = self._maybe_compress_record(record)
-
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_record if use_compression else record,
-                "virtualRecordId": virtual_record_id
-            }
-            # Cloud uploads send `json=upload_data`, which ASCII-escapes; size what is sent.
-            json_data = (
-                _json_utf8_bytes(upload_data)
-                if storage_type == "local"
-                else json.dumps(upload_data).encode("utf-8")
-            )
+            json_data, _ = self._upload_body(record, virtual_record_id)
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
@@ -2509,7 +3299,7 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for next version upload")
 
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, json_data)
 
                     self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
@@ -2522,6 +3312,7 @@ class BlobStorage(Transformer):
         self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict,
         document_path: str | None = None,
         *, connector_id: str | None = None, record_group_id: str | None = None,
+        create_if_missing: bool = True,
     ) -> str | None:
         """
         On first call, creates a new document. On subsequent calls, overrides in place.
@@ -2536,6 +3327,11 @@ class BlobStorage(Transformer):
             metadata_dict: Reconciliation metadata dictionary
             document_path: Storage path (same as record content path) so metadata
                 lives alongside the record. Falls back to records/<vrid> if None.
+            create_if_missing: False when *document_path* is not known: an
+                existing metadata document is updated in place, none is created
+                at a guessed path (no document means no stale state to reset).
+                Raises StorageLookupUnavailableError when the existing one could
+                not be updated, so the caller retries.
 
         Returns:
             str | None: metadata document_id if successful
@@ -2546,15 +3342,17 @@ class BlobStorage(Transformer):
 
             existing_metadata_doc_id = None
             if self.graph_provider:
-                try:
-                    collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                    doc = await self.graph_provider.get_document(
-                        virtual_record_id, collection_name
+                # As for the record document: a failed lookup must not create a
+                # second metadata document beside the unreferenced first one.
+                doc = await self.graph_provider.get_document(
+                    virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                )
+                if doc and doc.get("record_metadata_doc_id"):
+                    existing_metadata_doc_id = doc["record_metadata_doc_id"]
+                else:
+                    existing_metadata_doc_id = await self._find_unmapped_record_document(
+                        org_id, virtual_record_id, kind="metadata",
                     )
-                    if doc and doc.get("record_metadata_doc_id"):
-                        existing_metadata_doc_id = doc["record_metadata_doc_id"]
-                except Exception as e:
-                    self.logger.warning("Could not check existing metadata mapping: %s", str(e))
 
             metadata_document_id = None
             replaced_metadata_doc_id: str | None = None
@@ -2565,6 +3363,8 @@ class BlobStorage(Transformer):
                     )
                     metadata_document_id = doc_id
                 except StorageDocumentNotFoundError:
+                    if not create_if_missing:
+                        return None
                     self.logger.warning(
                         "Stored metadata document %s for vrid %s no longer exists; creating a replacement",
                         existing_metadata_doc_id, virtual_record_id,
@@ -2585,6 +3385,10 @@ class BlobStorage(Transformer):
                         )
                         metadata_document_id = doc_id
                     except Exception as retry_e:
+                        if not create_if_missing:
+                            raise StorageLookupUnavailableError(
+                                f"Could not update metadata document {existing_metadata_doc_id}: {retry_e}"
+                            ) from retry_e
                         self.logger.warning(
                             "⚠️ Retry also failed for metadata doc %s; creating replacement: %s",
                             existing_metadata_doc_id, str(retry_e),
@@ -2594,6 +3398,8 @@ class BlobStorage(Transformer):
                             connector_id=connector_id, record_group_id=record_group_id,
                         )
                         replaced_metadata_doc_id = existing_metadata_doc_id
+            elif not create_if_missing:
+                return None
             else:
                 metadata_document_id = await self._create_metadata_document(
                     org_id, record_id, virtual_record_id, metadata_dict, effective_path,
@@ -2601,15 +3407,7 @@ class BlobStorage(Transformer):
                 )
 
             if metadata_document_id and self.graph_provider:
-                mapping_document = {
-                    "_key": virtual_record_id,
-                    "record_metadata_doc_id": metadata_document_id,
-                    "updatedAt": get_epoch_timestamp_in_ms()
-                }
-                await self.graph_provider.batch_upsert_nodes(
-                    [mapping_document],
-                    CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                )
+                await self._map_reconciliation_document(virtual_record_id, metadata_document_id)
                 self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
@@ -2624,6 +3422,43 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
+
+    async def _map_reconciliation_document(self, virtual_record_id: str, metadata_document_id: str) -> None:
+        """Name the metadata document on the mapping.
+
+        When the mapping already names a stored document, this is a compare-and-set on
+        ``{documentId, switchSeq}`` that also records ``switchDoc = documentId`` and
+        ``switchUpdatedAt = updatedAt``, with no ``switchSeq`` bump: the mapping stays
+        consistent with its last switch, so it is not mistaken for an older writer's
+        fingerprint. After a conflict it re-reads once; then it falls back to writing just
+        the metadata id, which leaves a false fingerprint at worst (safe).
+        """
+        collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        for _ in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            document_id = (node or {}).get("documentId")
+            if not document_id:
+                break
+            now = get_epoch_timestamp_in_ms()
+            if await self.graph_provider.update_node_fields_if_match(
+                virtual_record_id, collection,
+                {
+                    "record_metadata_doc_id": metadata_document_id,
+                    "updatedAt": now,
+                    "switchDoc": document_id,
+                    "switchUpdatedAt": now,
+                },
+                {"documentId": document_id, "switchSeq": node.get("switchSeq")},
+            ):
+                return
+        await self.graph_provider.batch_upsert_nodes(
+            [{
+                "_key": virtual_record_id,
+                "record_metadata_doc_id": metadata_document_id,
+                "updatedAt": get_epoch_timestamp_in_ms(),
+            }],
+            collection,
+        )
 
     async def _update_metadata_buffer(
         self,
@@ -2675,24 +3510,12 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(metadata_dict)
-            compressed_metadata, use_compression = self._maybe_compress_record(
-                metadata_dict, label="metadata", encoded=encoded
+            json_data, use_compression = self._upload_body(
+                metadata_dict, virtual_record_id, label="metadata"
             )
-
             effective_path = document_path or f"records/{virtual_record_id}"
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_metadata if use_compression else metadata_dict,
-                "virtualRecordId": virtual_record_id,
-            }
 
             if storage_type == "local":
-                json_data = (
-                    _json_utf8_bytes(upload_data)
-                    if use_compression
-                    else _plain_envelope_bytes(metadata_dict, encoded, virtual_record_id)
-                )
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
 
@@ -2761,7 +3584,7 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for metadata document")
 
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, json_data)
 
                     self.logger.debug("✅ Created metadata document: %s", document_id)
                     return document_id

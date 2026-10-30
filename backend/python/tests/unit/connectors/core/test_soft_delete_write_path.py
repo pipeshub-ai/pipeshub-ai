@@ -85,6 +85,9 @@ class _AutoCommitGraph:
         self.parent_edge = True
         self.writes = 0
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit = explicit

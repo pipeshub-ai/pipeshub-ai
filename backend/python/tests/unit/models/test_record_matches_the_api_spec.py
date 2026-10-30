@@ -19,6 +19,7 @@ import yaml
 
 from app.models.entities import Record
 from app.schema.arango.documents import record_schema
+from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS
 from tests.unit.models.test_entities import _record_kwargs
 
 _REPO = Path(__file__).resolve().parents[5]
@@ -72,31 +73,19 @@ def test_the_rename_this_test_allows_is_still_real() -> None:
     )
 
 
-# Fields the stored record can carry that the spec does not describe yet. Each
-# one fails the response-validation tests on any record that has it, so this
-# list should only shrink; it exists so that a new field fails here instead.
+# Fields the records collection declares that the spec does not describe.
+# Each one fails the response-validation tests on any record that has it, so
+# this list should only shrink; it exists so that a new field fails here instead.
+#
+# These three are left on purpose: the SQL connectors write a table's row count
+# and a view's definition and source tables to the table's or view's own
+# document (`sqlTables`, `sqlViews`), never to the record, so no record carries
+# them. If something starts writing them to the record, describe them in the
+# spec then.
 _UNDOCUMENTED_STORED_FIELDS = frozenset({
     "definition",
-    "deleteBatchId",
-    "deleteSource",
-    "deletedAtTimestamp",
-    "duplicateReconcileAttempts",
-    "duplicateReconcileDueAt",
-    "duplicateReconcilePending",
-    "entityExtractionStatus",
-    "entityExtractionStrategy",
-    "entityExtractorVersion",
-    "lastEntityExtractionTimestamp",
-    "lastRepublishedAt",
-    "purgeAttempts",
-    "purgeLastError",
-    "rateLimitedSince",
-    "republishCount",
-    "restoredAtTimestamp",
-    "retryNotBefore",
     "rowCount",
     "sourceTables",
-    "trashedExternalRecordId",
 })
 
 
@@ -112,7 +101,13 @@ def _stored_record_fields() -> set[str]:
 
 
 def test_the_spec_knows_every_field_the_records_collection_stores() -> None:
-    missing = sorted(_stored_record_fields() - _STORED_ONLY - _UNDOCUMENTED_STORED_FIELDS - _spec_record_properties())
+    missing = sorted(
+        _stored_record_fields()
+        - _STORED_ONLY
+        - _UNDOCUMENTED_STORED_FIELDS
+        - INTERNAL_RECORD_FIELDS
+        - _spec_record_properties()
+    )
     assert missing == [], (
         "the records collection stores these but GetRecordByIdResponseSchema does "
         "not describe them, so the response-validation tests will reject any "
@@ -121,5 +116,17 @@ def test_the_spec_knows_every_field_the_records_collection_stores() -> None:
 
 
 def test_the_undocumented_list_holds_only_real_gaps() -> None:
-    stale = sorted((_UNDOCUMENTED_STORED_FIELDS & _spec_record_properties()) | (_UNDOCUMENTED_STORED_FIELDS - _stored_record_fields()))
+    stale = sorted(
+        (_UNDOCUMENTED_STORED_FIELDS & (_spec_record_properties() | INTERNAL_RECORD_FIELDS))
+        | (_UNDOCUMENTED_STORED_FIELDS - _stored_record_fields())
+    )
     assert stale == [], "remove from _UNDOCUMENTED_STORED_FIELDS: " + ", ".join(stale)
+
+
+def test_the_fields_the_record_endpoint_leaves_out_are_stored_and_undocumented() -> None:
+    """A field the endpoint strips but the spec describes would be documented
+    and never returned; one the collection does not store is a stale entry."""
+    documented = sorted(INTERNAL_RECORD_FIELDS & _spec_record_properties())
+    assert documented == [], "documented but left out of the response: " + ", ".join(documented)
+    unknown = sorted(INTERNAL_RECORD_FIELDS - _stored_record_fields())
+    assert unknown == [], "not a records collection field: " + ", ".join(unknown)

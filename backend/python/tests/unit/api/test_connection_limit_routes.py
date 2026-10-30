@@ -6,6 +6,7 @@ whose ``check_access`` applies the scopes it is given, so what is checked is
 the real ``outside_connection`` path, not a stub of it.
 """
 
+import json
 from collections.abc import Iterable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,6 +38,7 @@ from app.connectors.api.router import (
     stream_record,
 )
 from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_nodes
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     CONNECTION_OUTSIDE_MESSAGE,
@@ -222,7 +224,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
         fetch.assert_not_awaited()
 
@@ -232,7 +234,7 @@ class TestRecordsById:
         with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -248,7 +250,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
              patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", self._reader_request(graph), mode="thread", query=None,
-                                      start_block=None, start_record=0, max_chars=40_000)
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
         state = fetch.call_args.kwargs["scope_state"]
         assert await ids_within_scope(state, graph, "ukey-1", "org-1", ["rec-in", "rec-out"]) == {"rec-in"}
 
@@ -371,7 +373,8 @@ class TestBrowsing:
         service = AsyncMock()
         service.get_nodes = AsyncMock(return_value=SimpleNamespace(
             success=True, error=None, errorCode=None, typed_records={"rec-out": {}, "rec-in": {}},
-            items=[SimpleNamespace(id="rec-in"), SimpleNamespace(id="rec-out")],
+            items=[SimpleNamespace(id=i, parentId=None, parent=None) for i in ("rec-in", "rec-out")],
+            breadcrumbs=None, parentNode=None,
         ))
         kwargs = {
             "parent_type": None, "only_containers": False, "page": 1, "limit": 50, "sort_by": "updatedAt",
@@ -578,3 +581,536 @@ class TestChatTurns:
             )
         assert filters == {"prepared": True}
         assert prepare.call_args.kwargs["connection_sources"]["records"] == ["rec-in"]
+
+
+#: A file in a folder of app-in; a limit naming only the file leaves the folder out.
+FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["rec-in"]}
+FOLDER_LIMIT = {"apps": [], "recordGroups": [], "records": ["folder-in"]}
+
+
+def _graph_under(limit: dict) -> AsyncMock:
+    graph = _graph()
+    ROWS.setdefault("folder-in", {"id": "folder-in", "connectorId": "app-in", "groupIds": []})
+    below = {"rec-in": ["rec-in"], "folder-in": ["folder-in", "rec-in"]}
+    graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": [
+        {"id": i, "vrid": "", "connectorId": "app-in"} for named in limit["records"] for i in below.get(named, [])
+    ]})
+    return graph
+
+
+def _file_doc() -> dict:
+    return {
+        "_key": "rec-in", "recordName": "budget.xlsx", "connectorId": "app-in",
+        "recordGroupId": "app-in", "externalGroupId": "ext-collection",
+        "parentNodeId": "folder-in", "externalParentId": "ext-folder", "rootRecordGroupId": None,
+    }
+
+
+class TestParentsOutsideTheLimit:
+    """A file the limit names can sit in a folder the limit leaves out: the
+    file is returned and that folder is not named."""
+
+    @staticmethod
+    async def _search(limit: dict | None) -> tuple[dict, AsyncMock]:
+        graph = _graph_under(limit or FILE_LIMIT)
+        doc = _file_doc()
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body), graph
+
+    @pytest.mark.asyncio
+    async def test_a_search_hit_named_alone_does_not_name_its_folder(self) -> None:
+        body, _ = await self._search(FILE_LIMIT)
+
+        (record,) = body["records"]
+        assert record["parentNodeId"] is None and record["externalParentId"] is None
+        assert record["recordGroupId"] is None and record["externalGroupId"] is None
+        assert body["virtual_to_record_map"]["v-in"]["parentNodeId"] is None
+        assert "folder-in" not in json.dumps(body) and "ext-folder" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    async def test_a_search_hit_in_a_named_folder_keeps_its_folder(self) -> None:
+        body, _ = await self._search(FOLDER_LIMIT)
+
+        (record,) = body["records"]
+        assert record["parentNodeId"] == "folder-in" and record["externalParentId"] == "ext-folder"
+        assert record["recordGroupId"] is None  # the collection is only partly shared
+
+    @staticmethod
+    async def _search_with_paths(limit: dict | None) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        doc = {**_file_doc(), "filePath": "src/billing/secret/a.py",
+               "fileRecord": {"path": "/Finance/Board/budget.xlsx", "webUrl": "https://files.example/b"}}
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body)
+
+    @pytest.mark.asyncio
+    async def test_a_narrow_limits_search_names_no_source_path(self) -> None:
+        body = await self._search_with_paths(FILE_LIMIT)
+
+        (record,) = body["records"]
+        assert record["filePath"] is None and record["fileRecord"]["path"] is None
+        assert record["fileRecord"]["webUrl"] == "https://files.example/b"
+        assert "secret" not in json.dumps(body) and "Board" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, LIMIT])
+    async def test_a_search_keeps_source_paths_without_a_limit_or_under_a_whole_app_one(self, limit) -> None:
+        body = await self._search_with_paths(limit)
+
+        (record,) = body["records"]
+        assert record["filePath"] == "src/billing/secret/a.py"
+        assert record["fileRecord"]["path"] == "/Finance/Board/budget.xlsx"
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_search_is_unchanged(self) -> None:
+        body, graph = await self._search(None)
+
+        assert body["records"] == [_file_doc()]
+        graph.check_access.assert_not_awaited()
+
+    @staticmethod
+    async def _details(limit: dict | None) -> dict:
+        graph = _graph_under(limit or FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={
+            "record": _file_doc(),
+            "knowledgeBase": {"id": "app-in", "name": "Finance", "orgId": "org-1"},
+            "folder": {"id": "folder-in", "name": "Q3"},
+        })
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
+            return await get_record_by_id("rec-in", request, graph_provider=graph)
+
+    @pytest.mark.asyncio
+    async def test_record_details_of_a_file_named_alone_name_no_folder(self) -> None:
+        details = await self._details(FILE_LIMIT)
+
+        assert details["folder"] is None and details["knowledgeBase"] is None
+        assert details["record"]["parentNodeId"] is None and details["record"]["recordName"] == "budget.xlsx"
+
+    @pytest.mark.asyncio
+    async def test_record_details_in_a_named_folder_keep_the_folder(self) -> None:
+        details = await self._details(FOLDER_LIMIT)
+
+        assert details["folder"] == {"id": "folder-in", "name": "Q3"}
+        assert details["record"]["parentNodeId"] == "folder-in"
+
+    @pytest.mark.asyncio
+    async def test_unlimited_record_details_are_unchanged(self) -> None:
+        details = await self._details(None)
+
+        assert details["folder"]["id"] == "folder-in" and details["knowledgeBase"]["id"] == "app-in"
+        assert details["record"] == _file_doc()
+
+    @pytest.mark.asyncio
+    async def test_a_restore_refusal_does_not_name_a_trashed_folder_outside_the_limit(self) -> None:
+        members = [{"record": {"_key": "rec-in"}, "parentId": "trashed-dir", "parentIsDeleted": True,
+                    "parentName": "Secret plans"}]
+
+        async def refusal(limit: dict | None) -> dict:
+            request = _request(limit, graph=_graph_under(limit or FILE_LIMIT))
+            outside = None if limit is None else (
+                lambda kb_id, live, trashed: ids_outside_connection_on_restore(
+                    request, request.app.state.graph_provider, "org-1", "user-1", kb_id, live, trashed,
+                )
+            )
+            return await KnowledgeBaseService._trashed_parent_refusal(
+                "budget.xlsx", members, {"rec-in"}, "app-in", outside,
+            )
+
+        hidden = await refusal(FILE_LIMIT)
+        assert "Secret plans" not in hidden["reason"] and "parentId" not in hidden
+        assert hidden["code"] == 409
+        shown = await refusal(None)
+        assert "Secret plans" in shown["reason"] and shown["parentId"] == "trashed-dir"
+        whole = await refusal(LIMIT)
+        assert "Secret plans" in whole["reason"]
+
+
+SOURCE_PATH = "/Finance/Q3/budget.xlsx"
+
+
+class TestSourcePathsUnderALimit:
+    """A file's path in its source names every folder above it. A limit that
+    covers the file's whole app keeps it; any narrower limit does not."""
+
+    @staticmethod
+    async def _details(limit: dict | None, record: dict | None = None) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={
+            "record": record or {**_file_doc(), "fileRecord": {
+                "path": SOURCE_PATH, "webUrl": "https://files.example/budget.xlsx", "extension": "xlsx",
+            }},
+            "knowledgeBase": None, "folder": None,
+        })
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
+            return await get_record_by_id("rec-in", request, graph_provider=graph)
+
+    @pytest.mark.asyncio
+    async def test_record_details_under_a_file_limit_hide_the_path_and_keep_the_web_url(self) -> None:
+        details = await self._details(FILE_LIMIT)
+
+        file_record = details["record"]["fileRecord"]
+        assert file_record["path"] is None
+        assert file_record["webUrl"] == "https://files.example/budget.xlsx" and file_record["extension"] == "xlsx"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, LIMIT])
+    async def test_record_details_keep_the_path_without_a_limit_or_under_a_whole_app_limit(self, limit) -> None:
+        details = await self._details(limit)
+
+        assert details["record"]["fileRecord"]["path"] == SOURCE_PATH
+
+    @pytest.mark.asyncio
+    async def test_a_source_parent_with_no_parent_node_is_hidden_unless_the_whole_app_is_shared(self) -> None:
+        record = {"_key": "rec-in", "connectorId": "app-in", "externalParentId": "ext-folder", "parentNodeId": None}
+
+        named_alone = await self._details(FILE_LIMIT, dict(record))
+        whole_app = await self._details(LIMIT, dict(record))
+        unlimited = await self._details(None, dict(record))
+
+        assert named_alone["record"]["externalParentId"] is None
+        assert whole_app["record"]["externalParentId"] == unlimited["record"]["externalParentId"] == "ext-folder"
+
+    @staticmethod
+    async def _folder_children(limit: dict | None) -> dict:
+        from app.connectors.sources.localKB.api.kb_router import get_folder_children
+
+        service = MagicMock()
+        service.get_folder_children = AsyncMock(return_value={
+            "success": True,
+            "container": {"id": "folder-in", "name": "Q3", "path": "/Finance/Q3", "type": "folder"},
+            "folders": [{"id": "sub", "name": "Drafts", "path": "/Finance/Q3/Drafts"}],
+            "records": [{"id": "rec-in", "fileRecord": {"path": SOURCE_PATH, "webUrl": "https://f/b"}}],
+        })
+        return await get_folder_children("app-in", "folder-in", _request(limit), kb_service=service)
+
+    @pytest.mark.asyncio
+    async def test_a_folder_listing_under_a_folder_limit_names_no_path(self) -> None:
+        listed = await self._folder_children(FOLDER_LIMIT)
+
+        assert listed["container"]["path"] is None and listed["folders"][0]["path"] is None
+        assert listed["records"][0]["fileRecord"] == {"path": None, "webUrl": "https://f/b"}
+        assert listed["container"]["name"] == "Q3"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, LIMIT])
+    async def test_a_folder_listing_keeps_paths_without_a_limit_or_under_a_whole_app_limit(self, limit) -> None:
+        listed = await self._folder_children(limit)
+
+        assert listed["container"]["path"] == "/Finance/Q3"
+        assert listed["records"][0]["fileRecord"]["path"] == SOURCE_PATH
+
+
+def _collection_file(store: str) -> dict:
+    """A collection file in a folder, as each store returns it. Its folder is
+    named by the source parent, the folder's own id, with no parent node set:
+    Arango returns the empty parent keys as null, and Neo4j, which stores no
+    null property, leaves them out."""
+    doc = {"_key": "rec-in", "recordName": "budget.xlsx", "connectorId": "app-in",
+           "externalGroupId": "app-in", "externalParentId": "folder-in"}
+    if store == "arango":
+        doc.update(recordGroupId=None, rootRecordGroupId=None, parentNodeId=None)
+    return doc
+
+
+STORES = ["neo4j", "arango"]
+
+
+class TestCollectionFilesWithNoParentNode:
+    @staticmethod
+    async def _search(limit: dict | None, store: str) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        doc = _collection_file(store)
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body)
+
+    @staticmethod
+    async def _details(limit: dict | None, store: str) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={
+            "record": _collection_file(store), "knowledgeBase": None, "folder": None,
+        })
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
+            return await get_record_by_id("rec-in", request, graph_provider=graph)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    async def test_a_search_hit_named_alone_does_not_name_its_folder(self, store) -> None:
+        body = await self._search(FILE_LIMIT, store)
+
+        assert body["records"][0]["externalParentId"] is None
+        assert body["virtual_to_record_map"]["v-in"]["externalParentId"] is None
+        assert "folder-in" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    async def test_record_details_of_a_file_named_alone_name_no_folder(self, store) -> None:
+        details = await self._details(FILE_LIMIT, store)
+
+        assert details["record"]["externalParentId"] is None
+        assert "folder-in" not in json.dumps(details)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", STORES)
+    @pytest.mark.parametrize("limit", [FOLDER_LIMIT, LIMIT, None])
+    async def test_a_folder_the_limit_shares_stays_named(self, limit, store) -> None:
+        body = await self._search(limit, store)
+        details = await self._details(limit, store)
+
+        assert body["records"][0]["externalParentId"] == "folder-in"
+        assert details["record"]["externalParentId"] == "folder-in"
+
+
+class TestWhatAReadNamesBesideTheRecord:
+    """Every read by id hands the connection's limit to what it names beside
+    the record (links, related tables, source parent, live ticket fields)."""
+
+    @staticmethod
+    def _graph_with_access() -> AsyncMock:
+        graph = _graph()
+        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        return graph
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, FILE_LIMIT])
+    async def test_the_record_content_route(self, limit) -> None:
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._fetch_multiple_records_impl", fetch), \
+             patch(f"{ROUTER}.record_to_text", return_value="text"):
+            await get_record_content("rec-in", request, graph_provider=_graph_under(FILE_LIMIT) if limit else _graph())
+        assert fetch.await_args.kwargs["connection_sources"] == limit
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, FILE_LIMIT])
+    async def test_the_budgeted_read_route(self, limit) -> None:
+        graph = _graph_under(FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit, graph=graph)
+        request.app.container.graph_provider = AsyncMock(return_value=graph)
+        request.app.container.blob_store = AsyncMock(return_value=MagicMock())
+        fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
+        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch("app.api.routes.records._fetch_multiple_records_impl", fetch), \
+             patch("app.api.routes.records.read_record", AsyncMock(return_value={"content": ""})):
+            await read_record_content("rec-in", request, mode="record", query=None,
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
+        assert fetch.await_args.kwargs["connection_sources"] == limit
+
+    @staticmethod
+    def _block() -> str:
+        return "Record ID: rec-in\nName: budget.xlsx\nExternal Parent ID: ext-folder\n* Linked Record ID: rec-out"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("limit", "shown"), [(FILE_LIMIT, False), (FOLDER_LIMIT, True), (None, True)])
+    async def test_navigate_names_a_source_parent_only_inside_the_limit(self, limit, shown) -> None:
+        graph = _graph_under(limit or FILE_LIMIT)
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "parentNodeId": "folder-in"}])
+        view = NavigationView(
+            current=NodeRef(id="rec-in", name="budget.xlsx", node_type="record", sub_type=None, is_record=True),
+            breadcrumbs=[], rows=[], related=[], pagination=None, web_url=None, indexing_status=None,
+            connector=None, context_block=self._block(),
+        )
+        result = await TestBrowsing._navigate(_request(limit), graph, node_id="rec-in", view=view)
+
+        assert ("ext-folder" in result["context_block"]) is shown
+        assert ("ext-folder" in result["text"]) is shown
+        assert ("rec-out" in result["context_block"]) is (limit is None)
+        if limit is None:
+            graph.get_records_by_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_lookup_names_no_source_parent_outside_the_limit(self) -> None:
+        graph = _graph_under(FILE_LIMIT)
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "parentNodeId": "folder-in"}])
+        catalog = MagicMock(connector_ids=MagicMock(return_value=["app-in"]),
+                            is_empty=MagicMock(return_value=False), connectors=[])
+        match = LookupMatch(id="rec-in", name="budget.xlsx", record_type="FILE", connector_name="KB", web_url=None,
+                            indexing_status="COMPLETED", identifier_used="ref", context_block=self._block())
+        with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
+             patch(f"{ROUTER}.RecordResolver") as resolver:
+            resolver.return_value.resolve_many = AsyncMock(return_value=LookupResult(
+                matches=[match], ambiguous=False, not_found_identifiers=[],
+            ))
+            result = await knowledge_graph_lookup(
+                request=_request(FILE_LIMIT), graph_provider=graph, identifiers=["ref"], connector_name=None,
+            )
+        assert "ext-folder" not in result["matches"][0]["context_block"] and "ext-folder" not in result["text"]
+        assert "rec-out" not in result["text"]
+
+
+class TestACollectionUpdateResponse:
+    """The answer to an update names nothing of the collection the limit leaves out."""
+
+    @staticmethod
+    async def _response(limit: dict | None) -> dict:
+        from app.connectors.sources.localKB.api.kb_router import (
+            _keep_update_inside_connection,
+        )
+
+        response = {
+            "updatedRecord": {**_file_doc(), "fileRecord": {"path": SOURCE_PATH}},
+            "kb": {"id": "app-in", "name": "Finance", "folders": [
+                {"id": "folder-in", "name": "Q3"}, {"id": "rec-out", "name": "Board"},
+            ]},
+        }
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        await _keep_update_inside_connection(_request(limit, graph=graph), response, "app-in")
+        return response
+
+    @pytest.mark.asyncio
+    async def test_a_file_limit_hides_the_collection_its_folder_and_path(self) -> None:
+        response = await self._response(FILE_LIMIT)
+
+        assert response["kb"] == {}
+        assert response["updatedRecord"]["parentNodeId"] is None
+        assert response["updatedRecord"]["fileRecord"]["path"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_folder_limit_keeps_only_its_folder(self) -> None:
+        response = await self._response(FOLDER_LIMIT)
+
+        assert response["kb"] == {}  # the collection itself is only partly shared
+
+    @pytest.mark.asyncio
+    async def test_a_whole_collection_limit_keeps_folders_inside_it(self) -> None:
+        response = await self._response(LIMIT)
+
+        assert [f["id"] for f in response["kb"]["folders"]] == ["folder-in"]
+        assert response["updatedRecord"]["fileRecord"]["path"] == SOURCE_PATH
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_update_is_unchanged(self) -> None:
+        response = await self._response(None)
+
+        assert len(response["kb"]["folders"]) == 2 and response["updatedRecord"] == {
+            **_file_doc(), "fileRecord": {"path": SOURCE_PATH},
+        }
+
+
+class TestReviewFindingsOnTheRelatedStack:
+    """Rows under an opened node, a whole-app limit's blocks, and an update
+    whose limit check fails."""
+
+    @staticmethod
+    def _row(summary: str) -> NodeRow:
+        return NodeRow(id="rec-in", name="link", node_type="record", sub_type="LINK", is_record=True,
+                       has_children=False, detail=None, context_summary=summary)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("limit", "shown"), [(FOLDER_LIMIT, False), (None, True)])
+    async def test_a_row_summary_names_no_linked_record_outside_the_limit(self, limit, shown) -> None:
+        graph = _graph_under(FOLDER_LIMIT)
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "connectorId": "app-in"}])
+        view = NavigationView(
+            current=NodeRef(id="folder-in", name="Q3", node_type="folder", sub_type=None, is_record=True),
+            breadcrumbs=[], related=[], pagination=None, web_url=None, indexing_status=None, connector=None,
+            rows=[self._row("URL: https://x, Linked Record ID: rec-out")],
+        )
+        result = await TestBrowsing._navigate(_request(limit), graph, node_id="folder-in", view=view)
+
+        (row,) = result["rows"]
+        assert ("rec-out" in row["context_summary"]) is shown and ("rec-out" in result["text"]) is shown
+        assert "URL: https://x" in row["context_summary"]
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_limit_keeps_a_blocks_path_and_source_parent(self) -> None:
+        graph = _graph()
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "connectorId": "app-in"}])
+        block = "Record ID: rec-in\nName: a.py\nExternal Parent ID: ext-dir\nPath: src/billing/a.py"
+        view = NavigationView(
+            current=NodeRef(id="rec-in", name="a.py", node_type="record", sub_type=None, is_record=True),
+            breadcrumbs=[], rows=[], related=[], pagination=None, web_url=None, indexing_status=None,
+            connector=None, context_block=block,
+        )
+        result = await TestBrowsing._navigate(_request(LIMIT), graph, node_id="rec-in", view=view)
+
+        assert result["context_block"] == block
+
+    @staticmethod
+    async def _update(limit: dict | None, graph: AsyncMock) -> dict:
+        from app.connectors.sources.localKB.api.kb_router import update_record
+
+        request = _request(limit, graph=graph)
+        request.json = AsyncMock(return_value={"updates": {"recordName": "budget.xlsx"}})
+        request.app.container.logger.return_value = MagicMock()
+        service = MagicMock()
+        service.update_record = AsyncMock(return_value={"success": True, "updatedRecord": _file_doc()})
+        return await update_record("rec-in", request, kb_service=service, kafka_service=MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_an_update_whose_limit_check_fails_names_nothing_above_the_record(self) -> None:
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
+
+        graph = _graph_under(FILE_LIMIT)
+        graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "app-in", "kb_name": "Finance"})
+        graph.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        graph.get_knowledge_base = AsyncMock(return_value={"id": "app-in", "name": "Finance", "folders": []})
+        graph.get_knowledge_hub_parent_node = AsyncMock(return_value=None)
+        graph.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("graph down"))
+
+        response = await self._update(FILE_LIMIT, graph)
+
+        record = response["updatedRecord"]
+        assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
+        for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
+            assert record[field] is None, field
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:
+        graph = _graph()
+        graph._get_kb_context_for_record = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        response = await self._update(None, graph)
+
+        assert response["updatedRecord"] == _file_doc()

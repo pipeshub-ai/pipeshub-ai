@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
@@ -35,10 +35,11 @@ import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
+import { FilePreviewMobile } from '@/app/components/file-preview/file-preview-mobile';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter } from './share-adapter';
@@ -53,9 +54,16 @@ import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
-import { chatContentColumnStyle } from './constants';
+import { chatContentColumnStyle, clampSplitWidth } from './constants';
+import { useSplitWidth } from '@/chat/hooks/use-split-width';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
-import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectProjectsEnabled,
+  selectApiToolsetsEnabled,
+} from '@/lib/store/feature-flags-store';
+import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
+import { buildApiActionGroups } from '@/chat/tool-groups';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
@@ -92,6 +100,7 @@ function ChatFooterLinks() {
         href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -132,6 +141,7 @@ function ChatFooterLinks() {
         href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -168,11 +178,6 @@ const CHAT_PANEL_LS_KEY = 'chat-split-panel-width-px';
 const CHAT_PANEL_MIN_PX = 280;
 const CHAT_PANEL_DEFAULT_PX = 420;
 
-/** Clamp n between min and max (inclusive). */
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-
 function ChatContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -181,13 +186,14 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   // When the feature flag is off, projectId is always null so the UI degrades
   // to a normal chat without project context.
   const rawProjectParam = searchParams.get('projectId');
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -371,14 +377,20 @@ function ChatContent() {
             kb: kbIds,
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
-          const toolGroups = buildAgentChatToolGroups(agent);
+          const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
+          // Without the list there is nothing to name the operations by: treat it as no API actions.
+          const apiActionGroups = attachedApiTools.length
+            ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
+            : [];
+          if (cancelled) return;
+          const toolGroups = [...buildAgentChatToolGroups(agent), ...apiActionGroups];
           const mcpGroups = buildAgentChatMcpGroups(agent);
           const deprecatedToolNames = (agent?.toolsets ?? [])
             .flatMap((ts) => ts.tools ?? [])
             .filter((tool) => tool.deprecated === true)
             .map((tool) => tool.name);
           store.hydrateAgentChatResources({
-            toolCatalogFullNames: toolFullNames,
+            toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
             toolGroups,
             mcpGroups,
             connectors,
@@ -467,7 +479,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, router, t]);
+  }, [agentId, apiActionsEnabled, router, t]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
   // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
@@ -818,7 +830,7 @@ function ChatContent() {
       }
     }
 
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: suggestion.text }],
       startRun: true,
@@ -841,14 +853,22 @@ function ChatContent() {
   useEffect(() => {
     if (!projectId) { setProjectDetail(null); return; }
     let cancelled = false;
-    ProjectApi.get(projectId).then((p) => {
+    // The page shows the one error; the client's own toast made it two.
+    ProjectApi.get(projectId, { suppressErrorToast: true }).then((p) => {
       if (!cancelled) setProjectDetail(p);
-    }).catch(() => {
-      if (!cancelled) setProjectDetail(null);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setProjectDetail(null);
       toast.error(t('chat.projects.workspace.failedToLoad'));
+      // A project the user can't open left them a working composer inside a
+      // nameless project. Fall back to a plain chat (keeping an open thread).
+      const status = isProcessedError(error) ? error.statusCode : undefined;
+      if (status === 403 || status === 404) {
+        router.replace(buildChatHref({ conversationId }));
+      }
     });
     return () => { cancelled = true; };
-  }, [projectId, projectsVersion, t]);
+  }, [projectId, projectsVersion, t, router, conversationId]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;
@@ -926,7 +946,7 @@ function ChatContent() {
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
     // main composer.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
@@ -940,9 +960,10 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
+  }, [conversationId, aui, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
   const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
@@ -1089,15 +1110,16 @@ function ChatContent() {
     activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
-  // Search mode: show results view when in search mode with results/in-progress search
+  // Search mode: show the results view once a query is submitted, so empty and failed
+  // searches show their state instead of falling back to the welcome screen.
   const mode = useChatStore((s) => s.settings.mode);
-  const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
+  const hasSearchQuery = useChatStore((s) => s.searchQuery !== '');
   const isSearching = useChatStore((s) => s.isSearching);
-  const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
+  const showSearchView = mode === 'search' && (hasSearchQuery || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
-  // Active on desktop when a file preview is open in 'sidebar' mode.
-  const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isMobile;
+  // Desktop only: on phones and tablets the two columns leave the document too narrow.
+  const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isBelowDesktop;
 
   // ── Auto-close preview when the active conversation changes ──────────────
   // Tracks the previous conversationId so we only clear on actual changes,
@@ -1150,7 +1172,8 @@ function ChatContent() {
   }, [isNavCollapsed, showSplitPane]);
   // ─────────────────────────────────────────────────────────────────────────
 
-  const [chatPanelWidthPx, setChatPanelWidthPx] = useState<number>(() => {
+  // A smaller window (or a width saved on a bigger screen) must still leave the preview room.
+  const [chatPanelWidthPx, setChatPanelWidthPx] = useSplitWidth(() => {
     if (typeof window === 'undefined') return CHAT_PANEL_DEFAULT_PX;
     const saved = parseInt(localStorage.getItem(CHAT_PANEL_LS_KEY) ?? '', 10);
     return Number.isFinite(saved) && saved >= CHAT_PANEL_MIN_PX ? saved : CHAT_PANEL_DEFAULT_PX;
@@ -1172,7 +1195,7 @@ function ChatContent() {
     document.body.style.userSelect = 'none';
     let finalW = startW;
     const move = (ev: PointerEvent) => {
-      finalW = clamp(startW + (ev.clientX - startX), CHAT_PANEL_MIN_PX, window.innerWidth * 0.7);
+      finalW = clampSplitWidth(Math.max(CHAT_PANEL_MIN_PX, startW + (ev.clientX - startX)), window.innerWidth);
       setChatPanelWidthPx(finalW);
     };
     const cleanup = () => {
@@ -1200,15 +1223,16 @@ function ChatContent() {
   const composerColumn = (
     <Box
       style={{
-        ...chatContentColumnStyle(isMobile),
+        ...chatContentColumnStyle(),
         paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
-        paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+        paddingBottom: 'var(--space-4)',
         // MessageList's composer dock passes clicks through its gutters.
         pointerEvents: 'auto',
       }}
     >
       {!isInputCentered && showChatInput && <ChatInputWrapper />}
-      <ChatFooterLinks />
+      {/* On a phone the links only take room from an open conversation. */}
+      {!(isMobile && conversationId) && <ChatFooterLinks />}
     </Box>
   );
 
@@ -1226,6 +1250,8 @@ function ChatContent() {
           isMobile={isMobile}
           hasExpandButton={!isMobile && isNavCollapsed}
           readOnly={activeSlotIsOwner === false}
+          creatorName={agentCreatorName}
+          hasShareGroup={!!showConversationShare}
         />
       )}
 
@@ -1313,7 +1339,7 @@ function ChatContent() {
             align="center"
             style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden' }}
           >
-            <Box style={{ ...chatContentColumnStyle(isMobile), flex: 1, minHeight: 0, display: 'flex' }}>
+            <Box style={{ ...chatContentColumnStyle(), flex: 1, minHeight: 0, display: 'flex' }}>
               <SearchResultsView />
             </Box>
           </Flex>
@@ -1328,7 +1354,7 @@ function ChatContent() {
               marginTop: isMobile ? '0' : '-40px',
             }}
           >
-            <Box style={{ ...chatContentColumnStyle(isMobile) }}>
+            <Box style={{ ...chatContentColumnStyle() }}>
               <Flex direction="column" align="center" style={{ width: '100%' }}>
                 {projectId ? (
                   <>
@@ -1409,7 +1435,7 @@ function ChatContent() {
             style={{
               width: '100%',
               flexShrink: 0,
-              paddingBottom: isMobile ? 'var(--space-2)' : 0,
+              paddingBottom: isMobile ? 'max(var(--space-2), env(safe-area-inset-bottom, 0px))' : 0,
             }}
           >
             {composerColumn}
@@ -1419,6 +1445,35 @@ function ChatContent() {
     </>
   );
   // ─────────────────────────────────────────────────────────────────────────
+
+  // Props for the full-screen / phone preview overlay.
+  const previewProps = previewFile ? {
+    source: 'chat' as const,
+    file: {
+      id: previewFile.id,
+      name: previewFile.name,
+      url: previewFile.url,
+      blob: previewFile.blob,
+      type: previewFile.type,
+      size: previewFile.size,
+      webUrl: previewFile.webUrl,
+      previewRenderable: previewFile.previewRenderable,
+      version: previewFile.version,
+    },
+    isLoading: previewFile.isLoading,
+    error: previewFile.error,
+    recordDetails: previewFile.recordDetails,
+    initialPage: previewFile.initialPage,
+    highlightBox: previewFile.highlightBox,
+    citations: previewFile.citations,
+    initialCitationId: previewFile.initialCitationId,
+    hideFileDetails: previewFile.hideFileDetails,
+    showDownload: previewFile.showDownload,
+    latestVersion: previewFile.latestVersion,
+    onVersionChange: previewFile.onVersionChange,
+    isSwitchingVersion: previewFile.isSwitchingVersion,
+    defaultTab: 'preview' as const,
+  } : null;
 
   return (
     <Flex
@@ -1456,14 +1511,18 @@ function ChatContent() {
         {/* Drag handle + preview panel — appear when split-pane is active */}
         {showSplitPane && (
           <>
-            {/* Drag handle — 8 px hit-area */}
+            {/* Drag handle — 8px visible bar inside a 16px hit area */}
             <Box
               role="separator"
               aria-orientation="vertical"
               aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
-                width: '8px',
+                width: '16px',
+                margin: '0 -4px',
+                padding: '0 4px',
+                boxSizing: 'border-box',
+                backgroundClip: 'content-box',
                 flexShrink: 0,
                 alignSelf: 'stretch',
                 cursor: 'col-resize',
@@ -1529,41 +1588,25 @@ function ChatContent() {
         )}
       </Flex>
 
-      {/* File Preview - Fullscreen overlay.
-          Shown in two cases:
-          1. Desktop: user explicitly entered fullscreen mode.
-          2. Mobile: the split-pane is unavailable, so the sidebar-mode preview
-             falls back to this full-screen overlay automatically. */}
-      {previewFile && (previewMode === 'fullscreen' || (isMobile && previewMode === 'sidebar')) && (
-        <FilePreviewFullscreen
-          source="chat"
-          file={{
-            id: previewFile.id,
-            name: previewFile.name,
-            url: previewFile.url,
-            blob: previewFile.blob,
-            type: previewFile.type,
-            size: previewFile.size,
-            webUrl: previewFile.webUrl,
-            previewRenderable: previewFile.previewRenderable,
-            version: previewFile.version,
-          }}
-          isLoading={previewFile.isLoading}
-          error={previewFile.error}
-          recordDetails={previewFile.recordDetails}
-          initialPage={previewFile.initialPage}
-          highlightBox={previewFile.highlightBox}
-          citations={previewFile.citations}
-          initialCitationId={previewFile.initialCitationId}
-          hideFileDetails={previewFile.hideFileDetails}
-          showDownload={previewFile.showDownload}
-          latestVersion={previewFile.latestVersion}
-          onVersionChange={previewFile.onVersionChange}
-          isSwitchingVersion={previewFile.isSwitchingVersion}
-          defaultTab="preview"
-          onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
-          onClose={() => clearPreview()}
-        />
+      {/* File Preview - full-screen overlay.
+          Shown when the user entered fullscreen, and below desktop in place of
+          the split pane. Phones get the mobile layout (citations in a sheet). */}
+      {previewProps && (previewMode === 'fullscreen' || (isBelowDesktop && previewMode === 'sidebar')) && (
+        isMobile ? (
+          <FilePreviewMobile
+            {...previewProps}
+            open
+            onOpenChange={(open) => {
+              if (!open) clearPreview();
+            }}
+          />
+        ) : (
+          <FilePreviewFullscreen
+            {...previewProps}
+            onExitFullscreen={isBelowDesktop ? undefined : () => setPreviewMode('sidebar')}
+            onClose={() => clearPreview()}
+          />
+        )
       )}
 
       {/* Share Sidebar */}

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } from 'react';
+import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -28,13 +29,14 @@ import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { isProcessedError } from '@/lib/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage, userRoleLabel } from '../constants';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Constants
@@ -592,7 +594,7 @@ function UsersPageContent() {
       const actions: BulkAction[] = [
         {
           key: 'resend-invite',
-          label: t('workspace.users.bulk.resendInvite', 'Resend Invite'),
+          label: t('workspace.users.bulk.resendInvite'),
           icon: 'send',
           variant: 'default',
           onClick: handleBulkResendInvite,
@@ -606,7 +608,7 @@ function UsersPageContent() {
                 'workspace.users.bulk.adminInviteCantBeCancelled',
                 'Admin invites cannot be cancelled'
               )
-            : t('workspace.users.bulk.cancelInvite', 'Cancel Invite'),
+            : t('workspace.users.bulk.cancelInvite'),
           icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
           variant: 'danger',
           disabled: hasAdminSelected,
@@ -658,7 +660,7 @@ function UsersPageContent() {
         width: '112px',
         render: (user) => (
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
-            {user.role || 'Member'}
+            {userRoleLabel(user.role, t)}
           </Text>
         ),
       },
@@ -676,6 +678,7 @@ function UsersPageContent() {
       },
       {
         key: 'lastActive',
+        hideOnMobile: true,
         label: t('workspace.users.columns.lastActive'),
         width: '130px',
         render: (user) => (
@@ -686,6 +689,7 @@ function UsersPageContent() {
       },
       {
         key: 'dateJoined',
+        hideOnMobile: true,
         label: t('workspace.users.columns.dateJoined'),
         width: '130px',
         render: (user) => (
@@ -794,16 +798,6 @@ function UsersPageContent() {
 
   const unblockConfirmKeyword =
     unblockTarget?.name?.trim() || unblockTarget?.email || '';
-
-  // Shared "coming soon" toast helper
-  const showComingSoon = useCallback(() => {
-    addToast({
-      variant: 'info',
-      title: t('workspace.users.actions.comingSoonTitle'),
-      description: t('workspace.users.actions.comingSoonDescription'),
-      duration: 3000,
-    });
-  }, [addToast, t]);
 
   // ── Change Role handler ──
   const handleChangeRole = useCallback(
@@ -1079,11 +1073,6 @@ function UsersPageContent() {
             },
           },
           isAdmin && {
-            icon: 'person_off',
-            label: t('workspace.users.actions.deactivate'),
-            onClick: showComingSoon,
-          },
-          isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
             variant: 'danger' as const,
@@ -1102,7 +1091,6 @@ function UsersPageContent() {
       isAdmin,
       addToast,
       navigateToProfilePanel,
-      showComingSoon,
       requestChangeRole,
       handleResendInvite,
       handleEditInvite,
@@ -1123,8 +1111,10 @@ function UsersPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: '40px',
-        paddingRight: '40px',
+        paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
+        boxSizing: 'border-box',
       }}
     >
       {/* Header */}
@@ -1155,8 +1145,9 @@ function UsersPageContent() {
         style={{
           flex: 1,
           overflow: 'hidden',
-          border: '1px solid var(--slate-6)',
-          borderRadius: 'var(--radius-3)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-1)',
         }}
       >
         {/* Filter bar */}
@@ -1241,7 +1232,7 @@ function UsersPageContent() {
           defaultValue:
             'Are you sure you want to change {{name}} from {{currentRole}} to {{newRole}}?',
         })}
-        confirmLabel={t('workspace.users.actions.changeRoleConfirmButton', 'Change Role')}
+        confirmLabel={t('workspace.users.actions.changeRoleConfirmButton')}
         cancelLabel={t('workspace.users.actions.cancelButton')}
         confirmVariant="primary"
         isLoading={isChangingRole}

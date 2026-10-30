@@ -42,6 +42,10 @@ class SmbAdapter(StorageScenarioAdapter):
         # connector matches to keep the same record.
         self.storage.rename_object(self.resource, key, new_key)
 
+    def _rename_folder(self, prefix: str, new_prefix: str, keys: list[str]) -> None:
+        # A share has real folders: rename the directory, not each file.
+        self.storage.rename_directory(self.resource, prefix.rstrip("/"), new_prefix.rstrip("/"))
+
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def scenario_adapter(
@@ -65,6 +69,7 @@ async def scenario_adapter(
 @pytest.mark.smb
 class TestSmbScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "SMB"
+    TREE_MOVES = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (
             f"{APP_LEVEL_PERMISSIONS} (network_share/permissions.py app_level_permissions); "

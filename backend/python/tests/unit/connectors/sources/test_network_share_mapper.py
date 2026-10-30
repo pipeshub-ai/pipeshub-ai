@@ -129,6 +129,10 @@ class TestNoiseAndSystemEntries:
     def test_well_known_noise_is_skipped(self, name):
         assert MAPPER.skip_reason(_entry(name, is_directory=True)) == "excluded-name"
 
+    @pytest.mark.parametrize("name", ["Thumbs.db", "Desktop.INI", ".DS_Store"])
+    def test_shared_system_file_names_are_skipped_as_files(self, name: str) -> None:
+        assert MAPPER.skip_reason(_entry(name)) == "excluded-name"
+
     @pytest.mark.parametrize("name", [".env", ".profile", "git", "my_node_modules", ".gitignore"])
     def test_names_that_only_look_alike_are_kept(self, name):
         assert MAPPER.skip_reason(_entry(name)) is None

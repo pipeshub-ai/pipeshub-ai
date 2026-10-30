@@ -582,7 +582,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["src/a.py"] == "Existing file\n\nDiff content\n\n@@ -1 +1 @@\n-a\n+b"
+        assert groups["src/a.py"] == "Existing file\n\nDiff content\n\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
         assert [name for name, _ in calls] == ["notes", "changes"]
 
     async def test_new_file_with_a_diff_is_not_fetched(self) -> None:
@@ -590,7 +590,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["src/new.py"] == "[New file]\n\nDiff content\n\n@@ -0,0 +1 @@\n+x"
+        assert groups["src/new.py"] == "[New file]\n\nDiff content\n\n```diff\n@@ -0,0 +1 @@\n+x\n```"
         assert "file" not in [name for name, _ in calls]
 
     async def test_one_content_call_per_file_without_a_diff(self) -> None:
@@ -605,7 +605,7 @@ class TestMrFileChangeContent:
         ]
         assert next(kw for name, kw in calls if name == "file")["ref"] == "abc"
         assert groups["package-lock.json"] == (
-            'Existing file\n\nFull file content:\n\n{"lockfileVersion": 3}\n\nDiff content\n\n\n\n[TRUNCATED] Diff'
+            'Existing file\n\nFull file content:\n\n```\n{"lockfileVersion": 3}\n```\n\nDiff content\n\n\n\n[TRUNCATED] Diff'
         )
         assert all("Full file content" not in groups[p] for p in ("a.py", "b.py", "c.py"))
 
@@ -634,8 +634,8 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert "Full file content:\n\nc = 1" in groups["collapsed.py"]
-        assert "Full file content:\n\ne = 1" in groups["empty.py"]
+        assert "Full file content:\n\n```python\nc = 1\n```" in groups["collapsed.py"]
+        assert "Full file content:\n\n```python\ne = 1\n```" in groups["empty.py"]
 
     async def test_deleted_file_without_a_diff_is_not_fetched(self) -> None:
         _, helper, calls = self._run([_change("gone.py", diff="", deleted_file=True, too_large=True, b_mode="0")])
@@ -658,7 +658,7 @@ class TestMrFileChangeContent:
 
         groups = await self._groups(helper)
 
-        assert groups["b.py"] == "Existing file\n\nRenamed from a.py.\n\nDiff content\n\n@@ -1 +1 @@\n-a\n+b"
+        assert groups["b.py"] == "Existing file\n\nRenamed from a.py.\n\nDiff content\n\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
 
     async def test_too_large_rename_is_still_fetched(self) -> None:
         _, helper, calls = self._run(

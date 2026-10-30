@@ -1,10 +1,14 @@
 from abc import ABC, abstractmethod
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+import copy
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+import weakref
 
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
@@ -65,6 +69,22 @@ class ConnectionCheckResult(BaseModel):
     message: str
 
 
+class ActionItem(BaseModel):
+    """Something the connector's admin has to do, shown on the instance card until it is done.
+
+    ``code`` identifies it for the connector; ``title`` and ``message`` are shown as written.
+    ``action`` names where in the panel it is done: ``authenticate`` opens the Authenticate tab.
+    ``docs_url`` links to the steps; stored as ``docsUrl``, so dump with ``by_alias=True``.
+    """
+
+    code: str
+    severity: Literal["warning", "error"] = "warning"
+    title: str
+    message: str
+    action: Literal["authenticate"] | None = None
+    docs_url: str | None = Field(default=None, serialization_alias="docsUrl")
+
+
 class ConnectorSyncSkippedError(Exception):
     """Sync could not run now. Callers log ``code`` and treat the task as
     skipped, not crashed; nothing is persisted."""
@@ -72,6 +92,35 @@ class ConnectorSyncSkippedError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+# Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
+# connector. Keyed by id, not instance: a connector can be rebuilt between the two.
+_SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def connector_sync_lock(connector_id: str) -> asyncio.Lock:
+    lock = _SYNC_LOCKS.get(connector_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SYNC_LOCKS[connector_id] = lock
+    return lock
+
+
+async def dispose_connector(connector: object) -> None:
+    """Tear down a connector that is being dropped: cleanup(), then close the
+    processor's messaging producer if the instance owns it.
+
+    cleanup() alone leaves that producer's broker connection open, one per
+    dropped instance, until the process runs out of file descriptors.
+    """
+    try:
+        cleanup = getattr(connector, "cleanup", None)
+        if cleanup is not None:
+            await cleanup()
+    finally:
+        if isinstance(connector, BaseConnector):
+            await connector.release_entities_processor()
 
 
 class BaseConnector(ABC):
@@ -96,6 +145,10 @@ class BaseConnector(ABC):
     # (and so one messaging producer), instead of building one per instance. Only
     # safe for connectors whose processor carries no per-instance state.
     shares_org_processor: bool = False
+    # Set by ConnectorFactory when it built this instance's processor for it
+    # alone, so dispose_connector() closes that processor's broker connection.
+    # Left False for a shared org processor, which other instances still use.
+    _owns_entities_processor: bool = False
 
     def __init__(
         self,
@@ -124,6 +177,9 @@ class BaseConnector(ABC):
         # What the last run did, in the connector's own terms (counts, why it stopped); stored on
         # the app doc with the run's outcome so the UI can show it. Flat JSON values only.
         self.last_sync_summary: dict[str, object] | None = None
+        # What needs the admin's attention after the last run; stored on the app doc with the
+        # run's outcome, in the same write. None leaves what is stored as it is.
+        self.last_action_items: list[ActionItem] | None = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -227,9 +283,25 @@ class BaseConnector(ABC):
     async def init(self) -> bool:
         pass
 
+    async def release_entities_processor(self) -> None:
+        """Close the processor's producer if this instance owns it. Never raises."""
+        if not self._owns_entities_processor:
+            return
+        self._owns_entities_processor = False
+        try:
+            await self.data_entities_processor.cleanup()
+        except Exception as e:
+            self.logger.warning(f"Failed to close the entities processor of {self.connector_id}: {e}")
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """Called when ``init`` failed while starting a sync in the background, where no
+        one sees the error (the API shows its own). ``error`` is what ``init`` raised, or
+        None when it returned False. Does nothing by default; must not raise."""
+        return
+
     @abstractmethod
     def test_connection_and_access(self) -> bool:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod
     async def check_connection(
@@ -248,24 +320,43 @@ class BaseConnector(ABC):
         return []
 
     @classmethod
+    def auth_save_problem(
+        cls, auth_config: dict[str, Any], stored_auth_config: dict[str, Any] | None
+    ) -> str | None:
+        """Why these auth settings may not be saved, in words for the user; None when they may.
+
+        Unlike ``auth_config_problems``, it also sees what is saved now: ``auth_config`` is
+        what the save would store, laid over ``stored_auth_config``, which is None while
+        the instance is being created. Checked on the server for every save, so a rule
+        holds for API callers as well as the setup form."""
+        return None
+
+    @classmethod
+    def config_action_items(cls, auth_config: dict[str, Any]) -> list[ActionItem] | None:
+        """What needs the admin's attention in these saved auth settings, written when they are saved.
+
+        None (connectors that report none) leaves what is stored as it is."""
+        return None
+
+    @classmethod
     def supports_connection_check(cls) -> bool:
         return cls.check_connection.__func__ is not BaseConnector.check_connection.__func__
 
     @abstractmethod
     def get_signed_url(self, record: Record) -> Optional[str]:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     @abstractmethod
     def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
-        NotImplementedError("This method is not supported by the subclass")
+        raise NotImplementedError("This method is not supported by the subclass")
 
     @abstractmethod
     def run_sync(self) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     @abstractmethod
     def run_incremental_sync(self) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """How much of the source the full sync that just returned read.
@@ -280,20 +371,45 @@ class BaseConnector(ABC):
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
+
+    # Names of the zero-argument steps of this connector's own sync that create the user,
+    # group and app edges. Empty: the connector is not linked after a user is added (see
+    # EntityEventService._link_user_to_connectors).
+    user_link_steps: tuple[str, ...] = ()
+
+    async def link_new_users(self) -> None:
+        """Run the user and group steps of the sync, without touching content.
+
+        Called after a user is added, holding connector_sync_lock, so never while this
+        connector syncs. The steps are the sync's own, so the source alone decides what the
+        new user may reach; they must be idempotent.
+        """
+        for step in self.user_link_steps:
+            await getattr(self, step)()
+
+    @contextmanager
+    def _keep_sync_state(self, *names: str) -> Iterator[None]:
+        """Leave the named sync bookkeeping fields as they were once the block ends."""
+        saved = {name: copy.copy(getattr(self, name)) for name in names}
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
 
     @abstractmethod
     async def cleanup(self) -> None:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
     async def reindex_records(self, record_results: List[Record]) -> None:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod
     @abstractmethod
     async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str, data_entities_processor: "DataSourceEntitiesProcessor", **kwargs) -> "BaseConnector":
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
     async def get_filter_options(
@@ -647,16 +763,20 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None = None,
         recipient_user_ids: list[str] | None = None,
         recipient_roles: list[NotificationRecipientRole] | None = None,
+        *,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome:
         """Like ``notify``, but waits for the broker and says what happened.
 
         For a caller that records a notice as delivered: only SENT means it was.
         A notice that failed to publish does not hold back the next attempt.
+        ``suppress_repeats=False`` sends it even when the same notice went out recently.
         """
         key = self._notification_key(title, message)
         reservation_before = self._notification_cache.get(key)
         prepared = self._prepare_notification(
-            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles,
+            suppress_repeats=suppress_repeats,
         )
         if isinstance(prepared, NotificationOutcome):
             return prepared
@@ -684,6 +804,8 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None,
         recipient_user_ids: list[str] | None,
         recipient_roles: list[NotificationRecipientRole] | None,
+        *,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service
         if not svc or not self.created_by:
@@ -699,7 +821,7 @@ class BaseConnector(ABC):
             return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
-        if self._suppress_notification(title, message, severity):
+        if suppress_repeats and self._suppress_notification(title, message, severity):
             return NotificationOutcome.SUPPRESSED
 
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name

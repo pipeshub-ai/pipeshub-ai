@@ -1,4 +1,4 @@
-"""What indexing needs to know about a PDF before parsing it, read in a parse worker.
+"""What indexing and chat attachments need to know about a PDF before parsing it, read in a parse worker.
 
 These functions run in a ``parse_pool`` worker process (see ``untrusted_pdf``),
 which imports this module by name: keep its imports to the PDF libraries and
@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING
 import pdfplumber
 import pypdfium2
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers.encryption import (
+    PASSWORD_PROTECTED_MESSAGE,
+    pdfium_password_error,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 if TYPE_CHECKING:
@@ -49,6 +54,56 @@ def detect_ocr(content: bytes, sample_pages: int) -> bool:
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         pages = pdf.pages
         return pages_need_ocr([pages[i] for i in sample_page_indices(len(pages), sample_pages)])
+
+
+def text_layer_char_counts(content: bytes) -> list[int] | None:
+    """pdfium's count of text-layer characters on each page; None when pdfium cannot read it."""
+    try:
+        document = pypdfium2.PdfDocument(content)
+        try:
+            counts: list[int] = []
+            for page in document:
+                textpage = page.get_textpage()
+                try:
+                    counts.append(textpage.count_chars())
+                finally:
+                    textpage.close()
+                    page.close()
+            return counts
+        finally:
+            document.close()
+    except Exception:
+        _logger.warning(
+            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
+            exc_info=True,
+        )
+        return None
+
+
+def needs_ocr_and_page_count(content: bytes) -> tuple[bool, int]:
+    """Whether at least half of *content*'s pages need OCR, and its page count.
+
+    A page with no text layer always needs OCR (``needs_ocr`` sees zero text
+    density), so pdfium's character counts settle those without pdfplumber,
+    which can spend minutes walking a page whose glyphs are drawn as vector paths.
+    """
+    chars_per_page = text_layer_char_counts(content)
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        total = len(pdf.pages)
+        if total == 0:
+            return False, 0
+        counts: Sequence[int | None] = chars_per_page or ()
+        if len(counts) != total:
+            counts = [None] * total
+        textless = sum(1 for chars in counts if chars == 0)
+        if textless / total >= OCR_PAGE_SHARE:
+            return True, total
+        ocr_count = textless + sum(
+            1
+            for page, chars in zip(pdf.pages, counts)
+            if chars != 0 and OCRStrategy.needs_ocr(page, _logger)
+        )
+    return ocr_count / total >= OCR_PAGE_SHARE, total
 
 
 def sample_page_indices(page_count: int, limit: int) -> list[int]:
@@ -88,9 +143,17 @@ def repair_pdf(content: bytes) -> bytes:
 
     pdfium reconstructs a damaged table from the objects themselves and drops
     trailing garbage, which pdfminer otherwise reads one byte at a time.
-    Raises ``pypdfium2.PdfiumError`` when pdfium cannot open the file either.
+    Raises ``PasswordProtectedError`` when the file needs a password, and
+    ``pypdfium2.PdfiumError`` when pdfium cannot open it for another reason.
     """
-    document = pypdfium2.PdfDocument(content)
+    try:
+        document = pypdfium2.PdfDocument(content)
+    except pypdfium2.PdfiumError as exc:
+        if pdfium_password_error(exc):
+            raise PasswordProtectedError(
+                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
+            ) from exc
+        raise
     try:
         rewritten = io.BytesIO()
         document.save(rewritten)

@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui/empty-icon';
 import { Spinner } from '@/app/components/ui/spinner';
+import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { TableSkeleton, type TableSkeletonColumnShape } from '@/app/components/data-display';
 
 // ========================================
@@ -21,6 +22,8 @@ export interface ColumnConfig<T> {
   width?: string;
   /** Minimum width */
   minWidth?: string;
+  /** Hide this column on phones (the table also scrolls horizontally). */
+  hideOnMobile?: boolean;
   /** Render function for cell content */
   render: (item: T) => React.ReactNode;
 }
@@ -50,6 +53,10 @@ export interface EntityDataTableProps<T> {
 // Component
 // ========================================
 
+/** Matches the people-table spec: 44px select column, 12px cell inset */
+const CHECKBOX_COL_WIDTH = 44;
+const CELL_PADDING = '0 var(--space-3)';
+
 /**
  * EntityDataTable — reusable data table for Users, Groups, Teams.
  *
@@ -60,7 +67,7 @@ export interface EntityDataTableProps<T> {
  * - Optional action menu column
  */
 export function EntityDataTable<T>({
-  columns,
+  columns: allColumns,
   data,
   getItemId,
   selectedIds,
@@ -70,7 +77,18 @@ export function EntityDataTable<T>({
   onRowClick,
 }: EntityDataTableProps<T>) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
+  const columns = isMobile ? allColumns.filter((c) => !c.hideOnMobile) : allColumns;
+  // checkbox (38) + columns + actions (80); percentage or missing widths fall back to minWidth, then 160
+  const px = (v?: string) => (v && !v.endsWith('%') ? parseInt(v, 10) : NaN);
+  const tableMinWidth =
+    38 + columns.reduce((sum, c) => sum + (px(c.width) || px(c.minWidth) || 160), 0) + 80;
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  // Below desktop the table scrolls sideways; pin the ⋯ menu to the right edge so it stays in view.
+  const stickyActions: React.CSSProperties = isBelowDesktop
+    ? { position: 'sticky', right: 0, zIndex: 1, backgroundColor: 'inherit', boxShadow: '-1px 0 0 var(--olive-3)' }
+    : {};
 
   const allSelected = data.length > 0 && data.every((item) => selectedIds.has(getItemId(item)));
   const someSelected = data.some((item) => selectedIds.has(getItemId(item))) && !allSelected;
@@ -93,27 +111,146 @@ export function EntityDataTable<T>({
     onSelectionChange(next);
   };
 
+  // Refetch status while rows are shown: sticks below the header, announced to screen readers.
+  const refreshingStatus = (top: string) =>
+    isLoading && data.length > 0 ? (
+      <Box
+        style={{
+          position: 'sticky',
+          top,
+          float: 'right',
+          marginRight: 12,
+          zIndex: 2,
+          padding: '6px 10px',
+          borderRadius: 'var(--radius-3)',
+          backgroundColor: 'var(--olive-2)',
+          border: '1px solid var(--olive-4)',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
+          color: 'var(--slate-11)',
+        }}
+        aria-live="polite"
+        aria-label={t('common.refreshing')}
+      >
+        <Spinner size={14} />
+      </Box>
+    ) : null;
+
+  // Phones get a list: a row of desktop columns does not fit 390px, and scrolling it sideways
+  // under a pinned actions cell hid most of each row. The first column leads; the rest follow
+  // as labelled values on one wrapping line.
+  if (isMobile) {
+    const [primary, ...rest] = columns;
+    return (
+      <Flex direction="column" data-testid="entity-data-table" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <Flex
+          align="center"
+          gap="2"
+          style={{
+            minHeight: 44,
+            padding: '0 var(--space-3)',
+            borderBottom: '1px solid var(--olive-6)',
+            backgroundColor: 'var(--olive-2)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            flexShrink: 0,
+          }}
+        >
+          <Checkbox
+            size="2"
+            checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+            onCheckedChange={handleSelectAll}
+            aria-label={t('table.selectAll')}
+            style={{ cursor: 'pointer' }}
+          />
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('table.selectAll')}
+          </Text>
+        </Flex>
+        <Box style={{ position: 'relative', flex: '1 0 auto', opacity: isLoading && data.length > 0 ? 0.55 : 1 }}>
+          {isLoading && data.length === 0 ? (
+            <TableSkeleton rows={6} columns={[{ barWidth: 0.6 }]} hasRowActions={Boolean(renderRowActions)} />
+          ) : null}
+          {refreshingStatus('52px')}
+          {data.map((item) => {
+            const id = getItemId(item);
+            const isSelected = selectedIds.has(id);
+            return (
+              <Flex
+                key={id}
+                align="start"
+                gap="3"
+                tabIndex={0}
+                role="row"
+                aria-selected={isSelected}
+                onClick={() => onRowClick?.(item)}
+                style={{
+                  padding: 'var(--space-3)',
+                  borderBottom: '1px solid var(--olive-3)',
+                  backgroundColor: isSelected ? 'var(--accent-3)' : 'var(--olive-1)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                <Flex align="center" justify="center" className="touch-hit" style={{ paddingTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                  <Checkbox size="2" checked={isSelected} onCheckedChange={() => handleSelectItem(id)} style={{ cursor: 'pointer' }} />
+                </Flex>
+                <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                  {primary && <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{primary.render(item)}</Flex>}
+                  {rest.length > 0 && (
+                    <Flex align="center" wrap="wrap" gap="3" style={{ rowGap: 'var(--space-1)' }}>
+                      {rest.map((col) => (
+                        <Flex key={col.key} align="center" gap="1" style={{ minWidth: 0, maxWidth: '100%' }}>
+                          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>{col.label}</Text>
+                          <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{col.render(item)}</Flex>
+                        </Flex>
+                      ))}
+                    </Flex>
+                  )}
+                </Flex>
+                {renderRowActions && (
+                  <Flex align="center" gap="1" style={{ flexShrink: 0, paddingTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                    {renderRowActions(item)}
+                  </Flex>
+                )}
+              </Flex>
+            );
+          })}
+        </Box>
+      </Flex>
+    );
+  }
+
   return (
-    <Flex direction="column" style={{ flex: 1, overflow: 'hidden' }}>
+    // One element scrolls both ways, so the header (top) and the actions cell (right) can be sticky.
+    <Flex
+      direction="column"
+      data-testid="entity-data-table"
+      className={isBelowDesktop ? undefined : 'no-scrollbar'}
+      style={{ flex: 1, minHeight: 0, overflowX: 'auto', overflowY: 'auto' }}
+    >
+    <Flex direction="column" style={{ flex: '1 0 auto', minWidth: isBelowDesktop ? tableMinWidth : undefined }}>
       {/* Table Header */}
       <Flex
         align="center"
         style={{
-          height: 'var(--space-9)',
-          borderBottom: '1px solid var(--olive-6)',
+          height: 40,
+          borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--olive-2)',
           flexShrink: 0,
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
         }}
       >
         {/* Checkbox column */}
         <Flex
           align="center"
-          justify="center"
-          style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
+          style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
-            size="1"
+            size="2"
             checked={allSelected ? true : someSelected ? 'indeterminate' : false}
             onCheckedChange={handleSelectAll}
             style={{ cursor: 'pointer' }}
@@ -129,10 +266,10 @@ export function EntityDataTable<T>({
               width: col.width,
               minWidth: col.minWidth,
               flex: col.width ? undefined : 1,
-              padding: '0 8px',
+              padding: CELL_PADDING,
             }}
           >
-            <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--olive-9)' }}>
               {col.label}
             </Text>
           </Flex>
@@ -140,17 +277,15 @@ export function EntityDataTable<T>({
 
         {/* Actions column header (empty) */}
         {renderRowActions && (
-          <Box style={{ width: '80px', flexShrink: 0 }} />
+          <Box style={{ width: '80px', flexShrink: 0, alignSelf: 'stretch', ...stickyActions }} />
         )}
       </Flex>
 
       {/* Table Body */}
       <Box
-        className="no-scrollbar"
         style={{
           position: 'relative',
-          flex: 1,
-          overflowY: 'auto',
+          flex: '1 0 auto',
           opacity: isLoading && data.length > 0 ? 0.55 : 1,
           transition: 'opacity 150ms ease',
         }}
@@ -159,6 +294,8 @@ export function EntityDataTable<T>({
         {isLoading && data.length === 0 ? (
           <TableSkeleton
             rows={6}
+            checkboxWidth={CHECKBOX_COL_WIDTH}
+            cellPadding={CELL_PADDING}
             columns={columns.map<TableSkeletonColumnShape>((col, i) => ({
               width: col.width,
               minWidth: col.minWidth,
@@ -169,27 +306,7 @@ export function EntityDataTable<T>({
         ) : null}
 
         {/* Refetch overlay spinner (data present, refreshing) */}
-        {isLoading && data.length > 0 ? (
-          <Box
-            style={{
-              position: 'sticky',
-              top: 8,
-              float: 'right',
-              marginRight: 12,
-              zIndex: 2,
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-3)',
-              backgroundColor: 'var(--olive-2)',
-              border: '1px solid var(--olive-4)',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
-              color: 'var(--slate-11)',
-            }}
-            aria-live="polite"
-            aria-label={t('common.refreshing')}
-          >
-            <Spinner size={14} />
-          </Box>
-        ) : null}
+        {refreshingStatus('calc(var(--space-9) + 8px)')}
 
         {data.map((item) => {
           const id = getItemId(item);
@@ -206,28 +323,29 @@ export function EntityDataTable<T>({
               onMouseEnter={() => setHoveredRowId(id)}
               onMouseLeave={() => setHoveredRowId(null)}
               onClick={() => onRowClick?.(item)}
+              className="entity-table-row"
               style={{
                 height: '60px',
-                borderBottom: '1px solid var(--olive-3)',
+                borderBottom: '1px solid var(--gray-a5)',
+                // Opaque so the sticky actions cell (backgroundColor: inherit) still covers what scrolls under it
                 backgroundColor: isSelected
                   ? 'var(--accent-3)'
                   : isHovered
-                    ? 'var(--olive-2)'
+                    ? 'var(--olive-3)'
                     : 'var(--olive-1)',
+                transition: 'background-color 120ms ease',
                 cursor: 'pointer',
                 userSelect: 'none',
-                outline: 'none',
               }}
             >
               {/* Checkbox cell */}
               <Flex
                 align="center"
-                justify="center"
-                style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
+                style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Checkbox
-                  size="1"
+                  size="2"
                   checked={isSelected}
                   onCheckedChange={() => handleSelectItem(id)}
                   style={{ cursor: 'pointer' }}
@@ -243,7 +361,7 @@ export function EntityDataTable<T>({
                     width: col.width,
                     minWidth: col.minWidth,
                     flex: col.width ? undefined : 1,
-                    padding: '0 8px',
+                    padding: CELL_PADDING,
                     overflow: 'hidden',
                   }}
                 >
@@ -256,7 +374,7 @@ export function EntityDataTable<T>({
                 <Flex
                   align="center"
                   gap="1"
-                  style={{ width: '80px', flexShrink: 0, padding: '0 var(--space-2)' }}
+                  style={{ width: '80px', flexShrink: 0, alignSelf: 'stretch', padding: '0 var(--space-2)', ...stickyActions }}
                 >
                   {renderRowActions(item)}
                 </Flex>
@@ -265,6 +383,7 @@ export function EntityDataTable<T>({
           );
         })}
       </Box>
+    </Flex>
     </Flex>
   );
 }

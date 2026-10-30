@@ -31,6 +31,11 @@ from connectors.bookstack.bookstack_seed import (
     RUNBOOK,
     WELCOME,
 )
+from connectors.bookstack.sim_world import (  # noqa: F401 - fixtures of the bookstack_sim suite
+    bookstack_sim,
+    bookstack_sim_people,
+    bookstack_world,
+)
 from connectors.bookstack.bookstack_source_helper import (
     TOKEN_ID,
     TOKEN_SECRET,

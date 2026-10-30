@@ -139,6 +139,7 @@ if ! helm install "$RELEASE" "$CHART" \
   --set 'mongodb.auth.databases[0]=pipeshub' \
   --set redis.auth.password="$(openssl rand -hex 12)" \
   --set neo4j.auth.password="$(openssl rand -hex 12)" \
+  --set qdrant.apiKey="$(openssl rand -hex 32)" \
   --set neo4j.resources.requests.cpu=250m \
   --set qdrant.resources.requests.cpu=250m \
   --set arango.resources.requests.cpu=250m \

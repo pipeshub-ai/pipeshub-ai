@@ -5,24 +5,20 @@ import {
   createAIModelsConfig,
   createGoogleWorkspaceCredentials,
   createSmtpConfig,
+  deleteSmtpConfig,
+  setSmtpConfigEnabled,
   createStorageConfig,
   getAIModelsConfig,
   getInternalAIModelsConfig,
-  getAzureAdAuthConfig,
   getGoogleAuthConfig,
   getGoogleWorkspaceOauthConfig,
   getGoogleWorkspaceCredentials,
   getMicrosoftAuthConfig,
-  getOAuthConfig,
   getSmtpConfig,
   getSmtpConfigStatus,
-  getSsoAuthConfig,
   getStorageConfig,
-  setAzureAdAuthConfig,
   setGoogleAuthConfig,
   setMicrosoftAuthConfig,
-  setOAuthConfig,
-  setSsoAuthConfig,
   setGoogleWorkspaceOauthConfig,
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
@@ -90,12 +86,11 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   smtpConfigSchema,
+  smtpEnabledSchema,
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
   googleAuthConfigSchema,
-  oauthConfigSchema,
-  ssoConfigSchema,
   googleWorkspaceConfigSchema,
   platformSettingsSchema,
   urlSchema,
@@ -143,7 +138,6 @@ import {
   AiConfigEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
-import { SamlController } from '../../auth/controller/saml.controller';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
@@ -164,7 +158,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   const aiConfigEventService = container.get<AiConfigEventProducer>(
     'AiConfigEventProducer',
   );
-  const samlController = container.get<SamlController>('SamlController');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   // storage config routes
@@ -380,6 +373,41 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  /**
+   * DELETE /smtpConfig
+   * Removes the SMTP configuration. Admin only.
+   */
+  router.delete(
+    '/smtpConfig',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    deleteSmtpConfig(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
+  );
+
+  /**
+   * PUT /smtpConfig/enabled
+   * Turns email sending off or back on, keeping the settings. Admin only.
+   */
+  router.put(
+    '/smtpConfig/enabled',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(smtpEnabledSchema),
+    setSmtpConfigEnabled(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
+  );
+
   router.get(
     '/internal/smtpConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
@@ -400,28 +428,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   // auth config routes
-  router.get(
-    '/authConfig/azureAd',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getAzureAdAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/internal/authConfig/azureAd',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAzureAdAuthConfig(keyValueStoreService, false),
-  );
-
-  router.post(
-    '/authConfig/azureAd',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(azureAdConfigSchema),
-    setAzureAdAuthConfig(keyValueStoreService),
-  );
 
   router.get(
     '/authConfig/microsoft',
@@ -465,51 +471,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(googleAuthConfigSchema),
     setGoogleAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/authConfig/sso',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getSsoAuthConfig(keyValueStoreService),
-  );
-  router.get(
-    '/internal/authConfig/sso',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSsoAuthConfig(keyValueStoreService),
-  );
-  router.post(
-    '/authConfig/sso',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(ssoConfigSchema),
-    setSsoAuthConfig(keyValueStoreService, samlController),
-  );
-
-  // OAuth config routes
-  router.get(
-    '/authConfig/oauth',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_READ),
-    userAdminCheck,
-    getOAuthConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/internal/authConfig/oauth',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getOAuthConfig(keyValueStoreService, false),
-  );
-
-  router.post(
-    '/authConfig/oauth',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    ValidationMiddleware.validate(oauthConfigSchema),
-    setOAuthConfig(keyValueStoreService),
   );
 
   // Platform settings
@@ -607,7 +568,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     setCustomSystemPrompt(keyValueStoreService),
   );
-
 
   // Google Workspace Config Routes
   /**

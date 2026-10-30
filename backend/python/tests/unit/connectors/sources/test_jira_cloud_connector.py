@@ -40,6 +40,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -114,7 +115,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    # No issue security scheme: unsecured issues are unchanged
+    connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return connector
 
 
 def _make_mock_response(status=200, data=None):
@@ -280,6 +284,45 @@ class TestInitCoverage:
                 await connector.init()
             # Setup path: FE gets the error via ConnectorInitError; no inbox notify.
             connector.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("base_url", ["http://169.254.169.254", "https://jira.corp.internal", "https://acme.atlassian.net.evil.com"])
+    async def test_init_refuses_an_api_token_site_that_is_not_atlassian_cloud(self, base_url: str) -> None:
+        """PP-205: the email + API token goes to the configured URL itself, so it must be the Atlassian site."""
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey(base_url, "sync@acme.com", "token"))
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()  # nothing was sent to that host
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("base_url", [
+        "https://acme.atlassian.net",
+        "https://acme.atlassian.net/jira",                              # Jira answers there too: synced before
+        "https://acme.atlassian.net/jira/software/projects/ENG/boards/1",
+        "http://acme.atlassian.net",
+    ])
+    async def test_init_talks_to_the_site_root_of_an_atlassian_url(self, base_url: str) -> None:
+        """A URL that synced before the PP-205 check keeps syncing, at the site root, over https."""
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey(base_url, "sync@acme.com", "token"))
+        client.site_url = base_url
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+        assert client.get_client().get_base_url() == "https://acme.atlassian.net"
+        assert connector.site_url == "https://acme.atlassian.net"  # web links: /browse/KEY at the root
 
     @pytest.mark.asyncio
     async def test_init_multi_site_raises_connector_init_error(self):
@@ -2013,27 +2056,35 @@ class TestBuildIssueRecordsCoverage:
         result, _soft = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].weburl is None
 
-    @pytest.mark.asyncio
-    async def test_task_with_epic_parent(self):
-        """Story/Task with Epic parent - not a subtask."""
+    @staticmethod
+    async def _story_under_epic(epic_security: dict | None) -> Record:
         connector = _make_connector()
         connector.site_url = "https://company.atlassian.net"
         connector.indexing_filters = None
-
-        issue = _make_issue(
-            issue_type="Story",
-            hierarchy_level=0,
-            parent_id="epic-100",
-            parent_key="PROJ-100",
-        )
+        epic = _make_issue(issue_id="epic-100", key="PROJ-100", issue_type="Epic", hierarchy_level=1,
+                           security=epic_security)
+        story = _make_issue(issue_type="Story", hierarchy_level=0, parent_id="epic-100", parent_key="PROJ-100")
 
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock(return_value=[])
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result, _soft = await connector._build_issue_records([issue], "proj-1", [])
-        assert result[0][0].parent_external_record_id == "epic-100"
-        assert result[0][0].parent_record_type == RecordType.TICKET
+        result, _soft = await connector._build_issue_records([epic, story], "proj-1", [])
+        return next(r for r, _, _ in result if r.external_record_id == story["id"])
+
+    @pytest.mark.asyncio
+    async def test_task_with_epic_parent(self):
+        """A story is filed under an epic with no level: everyone who reads the story reads it."""
+        story = await self._story_under_epic(None)
+        assert story.parent_external_record_id == "epic-100"
+        assert story.parent_record_type == RecordType.TICKET
+
+    @pytest.mark.asyncio
+    async def test_task_with_leveled_epic_parent(self) -> None:
+        """A story under an epic with a level hangs off its project: Jira does not give it the epic's level."""
+        story = await self._story_under_epic({"id": "10102", "name": "Leadership"})
+        assert story.parent_external_record_id is None
+        assert story.parent_record_type is None
 
 
 # ===========================================================================
@@ -3174,6 +3225,22 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
 class TestFetchProjectPermissionSchemeCoverage:
 
     @pytest.mark.asyncio
+    async def test_the_default_scheme_with_id_zero_is_read(self) -> None:
+        """Jira's built-in "Default Permission Scheme" has id 0; it was taken for a missing
+        id, so a project using it got no access."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(
+            return_value=_make_mock_response(200, {"id": 0, "name": "Default Permission Scheme"}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {"permissions": []}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        permissions = await connector._fetch_project_permission_scheme("PPC")
+
+        assert permissions is not None
+        assert mock_ds.get_permission_scheme_grants.await_args.kwargs["schemeId"] == 0
+
+    @pytest.mark.asyncio
     async def test_user_without_email(self):
         connector = _make_connector()
         mock_ds = MagicMock()
@@ -3285,10 +3352,37 @@ class TestFetchProjectPermissionSchemeCoverage:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        permissions = await connector._fetch_project_permission_scheme("PROJ", {})
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
-        assert permissions[0].external_id == "all_licensed_users"
+        mapping = {
+            "jira-software": [{"groupId": "g-sw"}, {"groupId": "g-shared"}],
+            "jira-servicedesk": [{"groupId": "g-sd"}, {"groupId": "g-shared"}],
+        }
+        permissions = await connector._fetch_project_permission_scheme("PROJ", mapping)
+        # "Any logged in user" = the union of the product-access groups, never an ORG grant
+        assert {(p.entity_type, p.external_id) for p in permissions} == {
+            (EntityType.GROUP, "g-sw"), (EntityType.GROUP, "g-shared"), (EntityType.GROUP, "g-sd")}
+        assert len(permissions) == 3
+
+        # No application roles known: nothing is granted (an unlicensed account must not get in)
+        assert await connector._fetch_project_permission_scheme("PROJ", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_application_role_no_param_with_a_role_unread_keeps_the_stored_access(self) -> None:
+        """The union needs every role: with one unread it is partial, so the project is held back."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {
+            "permissions": [{
+                "permission": "BROWSE_PROJECTS",
+                "holder": {"type": "applicationRole", "parameter": None},
+            }],
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._app_roles_unread = True
+
+        await connector._fetch_project_permission_scheme("PROJ", {"jira-software": [{"groupId": "g-sw"}]})
+        assert "PROJ" in connector._projects_naming_unread_roles
+        assert connector._project_access_may_be_partial("PROJ")
 
 
 # ===========================================================================

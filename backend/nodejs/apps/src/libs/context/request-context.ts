@@ -8,10 +8,17 @@ import { randomUUID } from 'crypto';
 
 export interface RequestContextStore {
   rootId: string;
+  /**
+   * Set by the auth layer once the JWT is decoded (context middleware runs
+   * before auth, so org is unknown at store-creation time). Never written to a
+   * log record raw: the logging provider decides how, or whether, to show it.
+   */
+  orgId?: string;
 }
 
 export const HEADER_REQUEST_ID = 'x-request-id';
 export const ENVELOPE_REQUEST_ID = 'requestId';
+export const ENVELOPE_ORG_ID = 'orgId';
 export const NO_CONTEXT = '-';
 
 // `<objectId:24>-<nanoid:21>`
@@ -41,6 +48,22 @@ export function getRequestContext(): RequestContextStore | undefined {
 
 export function getRootId(): string | undefined {
   return storage.getStore()?.rootId;
+}
+
+/**
+ * Attach the org to the in-flight context (no-op without a context). Called by
+ * the auth layer after JWT decode; mutates the current store in place so the
+ * ambient context the logging layer reads picks it up without re-binding.
+ */
+export function setContextOrgId(orgId: unknown): void {
+  const ctx = storage.getStore();
+  if (ctx && typeof orgId === 'string' && orgId) {
+    ctx.orgId = sanitizeRootId(orgId);
+  }
+}
+
+export function getOrgId(): string | undefined {
+  return storage.getStore()?.orgId;
 }
 
 /**
@@ -74,13 +97,45 @@ export function injectRequestHeaders(
   return out;
 }
 
-/** Stamp the root id onto an outbound broker envelope (returns a copy). */
+/** Stamp root id and org onto an outbound broker envelope (returns a copy). */
 export function injectEnvelope<T extends Record<string, unknown>>(message: T): T {
   const ctx = storage.getStore();
-  if (ctx && message[ENVELOPE_REQUEST_ID] === undefined) {
-    return { ...message, [ENVELOPE_REQUEST_ID]: ctx.rootId };
+  if (!ctx) return message;
+  const out: Record<string, unknown> = { ...message };
+  if (out[ENVELOPE_REQUEST_ID] === undefined) {
+    out[ENVELOPE_REQUEST_ID] = ctx.rootId;
   }
-  return message;
+  if (ctx.orgId && out[ENVELOPE_ORG_ID] === undefined) {
+    out[ENVELOPE_ORG_ID] = ctx.orgId;
+  }
+  return out as T;
+}
+
+/**
+ * Build a consumer-side context from a broker envelope (mirrors Python
+ * `context_from_envelope`). A message with no id gets a root from `newRoot`,
+ * by default an `anon-` one — a propagation gap, not self-initiated machine work.
+ */
+export function contextFromEnvelope(
+  value: unknown,
+  newRoot: () => string = newAnonRoot,
+): RequestContextStore {
+  const env = (value ?? {}) as Record<string, unknown>;
+  const orgId = sanitizeRootId(envelopeString(env, ENVELOPE_ORG_ID));
+  return {
+    rootId:
+      sanitizeRootId(envelopeString(env, ENVELOPE_REQUEST_ID)) ?? newRoot(),
+    ...(orgId ? { orgId } : {}),
+  };
+}
+
+/** An envelope field is producer-supplied: anything but a string is ignored. */
+function envelopeString(
+  env: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const raw = env[key];
+  return typeof raw === 'string' ? raw : undefined;
 }
 
 function hasHeader(headers: Record<string, string>, name: string): boolean {

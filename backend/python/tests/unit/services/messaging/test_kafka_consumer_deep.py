@@ -158,7 +158,7 @@ class TestKafkaConfigToDict:
         assert result["group_id"] == "indexing-group"
         assert result["auto_offset_reset"] == "earliest"
         assert result["enable_auto_commit"] is False
-        assert result["client_id"] == "indexing-consumer"
+        assert result["client_id"] == "indexing-consumer/sp3"
         assert result["topics"] == ["indexing-topic"]
         assert "ssl_context" not in result
 

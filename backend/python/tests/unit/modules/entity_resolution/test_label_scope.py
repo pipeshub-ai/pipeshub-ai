@@ -102,7 +102,7 @@ class ScopedGraph(FakeGraph):
 
     async def get_permitted_entity_records(
         self, refs, org_id, user_key, *, app_level_connector_ids, record_types=None,
-        limit_per_entity=20, offset=0, window=200, timeout_seconds=None,
+        limit_per_entity=20, offset=0, window=200, timeout_seconds=None, within=None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         assert user_key == USER_KEY
         out: dict[tuple[str, str], PermittedEntityRows] = {}

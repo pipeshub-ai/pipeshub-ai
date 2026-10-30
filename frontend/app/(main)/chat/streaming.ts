@@ -15,10 +15,11 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort, projectAgentCapabilities } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
+import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import {
   loadHistoricalMessages,
@@ -53,10 +54,12 @@ import {
   type MessagePart,
   type ChatKnowledgeFilters,
   type AttachmentRef,
+  type ConversationMessage,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
+import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
@@ -232,14 +235,19 @@ function followRemoteRun(slotId: string, convId: string): void {
  * - New message: replaces the trailing placeholder assistant row, or drops
  *   it entirely if the stream was stopped before any tokens arrived (e.g.
  *   during "Thinking") — an empty "stopped" bubble is just noise.
+ *
+ * The committed text is model output, not a backend-saved answer, so its
+ * markers are stripped: once committed it renders as `persisted` and any
+ * marker left in it would become a card.
  */
 function buildStoppedMessages(
   messages: ThreadMessageLike[],
   regenerateMessageId: string | null,
-  streamingContent: string,
+  rawStreamingContent: string,
   pendingAskUserQuestion?: PendingAskUserQuestion | null,
   streamingAssistantId?: string | null,
 ): ThreadMessageLike[] {
+  const streamingContent = stripAnswerMarkers(rawStreamingContent);
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
@@ -279,9 +287,86 @@ function buildStoppedMessages(
   return messages;
 }
 
+/**
+ * `_id` of the stopped reply that ends the latest turn of a raw history page,
+ * which `loadHistoricalMessages` drops when it was saved empty.
+ */
+export function trailingStoppedReplyId(raw: ConversationMessage[] | null | undefined): string | null {
+  for (let i = (raw?.length ?? 0) - 1; i >= 0; i--) {
+    const msg = raw![i];
+    if (msg.messageType === 'user_query') return null;
+    if (msg.messageType === 'bot_response') return msg.status === 'stopped' ? String(msg._id) : null;
+  }
+  return null;
+}
+
+/**
+ * A stopped run can come back from the server with an empty answer even
+ * though text was on screen (older query services saved "" on cancel). Fills
+ * the stopped row from what streamed so Stop never blanks the answer.
+ * `appendMessageId` is the persisted reply's `_id`; feedback, fork and
+ * regenerate need it on an appended row.
+ */
+export function keepStreamedTextOnStoppedAnswer(
+  messages: ThreadMessageLike[],
+  targetId: string | null | undefined,
+  rawStreamedText: string,
+  citationMaps: CitationMaps | null | undefined,
+  appendId?: string | null,
+  appendMessageId?: string | null,
+): ThreadMessageLike[] {
+  const text = stripAnswerMarkers(rawStreamedText ?? '').trim();
+  if (!text) return messages;
+  const last = messages[messages.length - 1];
+  // History drops an empty stopped reply with no activity, so the turn ends on
+  // the question; the partial then needs a row of its own.
+  if (!targetId && appendId && last?.role === 'user') {
+    return [
+      ...messages,
+      {
+        id: appendId,
+        role: 'assistant' as const,
+        content: [{ type: 'text' as const, text }],
+        metadata: {
+          custom: {
+            status: 'stopped' as const,
+            ...(appendMessageId ? { messageId: appendMessageId } : {}),
+            ...(citationMaps ? { citationMaps } : {}),
+          },
+        },
+      },
+    ];
+  }
+  const target = targetId
+    ? messages.find((m) => m.role === 'assistant' && m.id === targetId)
+    : (last?.role === 'assistant' ? last : undefined);
+  if (!target) return messages;
+  const custom = (target.metadata?.custom ?? {}) as Record<string, unknown>;
+  if (custom.status !== 'stopped' || getThreadMessagePlainText(target).trim()) return messages;
+  const savedMaps = custom.citationMaps as CitationMaps | undefined;
+  const hasSavedCitations = Boolean(savedMaps && Object.keys(savedMaps.citations ?? {}).length);
+  return messages.map((m) =>
+    m === target
+      ? {
+          ...m,
+          content: [{ type: 'text' as const, text }],
+          metadata: {
+            ...m.metadata,
+            custom: {
+              ...custom,
+              ...(!hasSavedCitations && citationMaps ? { citationMaps } : {}),
+            },
+          },
+        }
+      : m,
+  );
+}
+
+/** `repliedInChat`: the message being sent answers this open card, so it shows as closed. */
 function stampPendingCardOnMessages(
   messages: ThreadMessageLike[],
   pending: PendingAskUserQuestion | null | undefined,
+  repliedInChat = false,
 ): ThreadMessageLike[] {
   if (!pending?.payload || !pending.assistantMessageId) return messages;
   const idx = messages.findIndex(
@@ -290,29 +375,42 @@ function stampPendingCardOnMessages(
   if (idx < 0) return messages;
   const row = messages[idx];
   const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
-  if (prevCustom.persistedAskUserQuestion) return messages;
+  const stamped = prevCustom.persistedAskUserQuestion as PendingAskUserQuestion['payload'] | undefined;
+  if (stamped && !repliedInChat) return messages;
+  const payload = stamped ?? pending.payload;
   const next = messages.slice();
   next[idx] = {
     ...row,
     metadata: {
       ...row.metadata,
-      custom: { ...prevCustom, persistedAskUserQuestion: pending.payload },
+      custom: {
+        ...prevCustom,
+        persistedAskUserQuestion: repliedInChat ? { ...payload, repliedInChat: true } : payload,
+      },
     },
   };
   return next;
 }
 
-function assistantRowIdForBackendMessage(
+function exactAssistantRowIdForBackendMessage(
   messages: ThreadMessageLike[],
   backendMessageId: string,
-): string {
+): string | null {
   const row = messages.find((m) => {
     if (m.role !== 'assistant') return false;
     if (m.id === backendMessageId) return true;
     const custom = m.metadata?.custom as { messageId?: string } | undefined;
     return custom?.messageId === backendMessageId;
   });
-  if (row && typeof row.id === 'string') return row.id;
+  return row && typeof row.id === 'string' ? row.id : null;
+}
+
+function assistantRowIdForBackendMessage(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+): string {
+  const exact = exactAssistantRowIdForBackendMessage(messages, backendMessageId);
+  if (exact) return exact;
   const last = [...messages].reverse().find((m) => m.role === 'assistant');
   return last && typeof last.id === 'string' ? last.id : backendMessageId;
 }
@@ -363,6 +461,30 @@ export function editWasNotTaken(error: unknown): boolean {
   );
 }
 
+/**
+ * Whether the answer row shows a question card the server asks again on a regenerate: one stored on
+ * it, or one waiting on the slot. A card closed by a typed reply is not one: that regenerate only
+ * redoes the reply to the typed message.
+ */
+function rowHasQuestionCard(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+  pending: PendingAskUserQuestion | null | undefined,
+): boolean {
+  const row = messages.find((m) => {
+    if (m.role !== 'assistant') return false;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    return m.id === backendMessageId || custom?.messageId === backendMessageId;
+  });
+  if (!row) return false;
+  const custom = row.metadata?.custom as
+    | { persistedAskUserQuestion?: { repliedInChat?: boolean } }
+    | undefined;
+  const stored = custom?.persistedAskUserQuestion;
+  if (stored) return !stored.repliedInChat;
+  return pending?.assistantMessageId === row.id;
+}
+
 /** The answer row without the question card it asked, for a turn that is being asked again. */
 export function withoutQuestionCard(
   messages: ThreadMessageLike[],
@@ -409,20 +531,25 @@ function sentAnswersAfterAsk(
   return sent && Object.keys(sent).length > 0 ? { sentAnswers: sent } : {};
 }
 
+/** A card event that has questions to show. Anything else (e.g. a refused call's error text) must not
+ * cost the user the answer that is streaming in. */
+export function isShowableAskUserQuestion(data: SSEAskUserQuestionEvent | undefined): boolean {
+  const toolData = data?.toolData;
+  return Boolean(
+    toolData &&
+      toolData.name === 'ask_user_question' &&
+      Array.isArray(toolData.questions) &&
+      toolData.questions.length > 0
+  );
+}
+
 function applyAskUserQuestionSse(
   slotId: string,
   data: SSEAskUserQuestionEvent,
   assistantRowId: string
 ): void {
-  const toolData = data?.toolData;
-  if (
-    !toolData ||
-    toolData.name !== 'ask_user_question' ||
-    !Array.isArray(toolData.questions) ||
-    toolData.questions.length === 0
-  ) {
-    return;
-  }
+  if (!isShowableAskUserQuestion(data)) return;
+  const toolData = data.toolData;
   const slot = useChatStore.getState().slots[slotId];
   const previous = slot?.pendingAskUserQuestion;
   const messages =
@@ -802,9 +929,12 @@ export async function streamMessageForSlot(
     }
   }
   const reuseExistingAssistant = (resumeAskUserQuestion || Boolean(reuseRowId)) && Boolean(lastAssistantId);
+  // Typing while a card is open answers it, as the server reads it: the card closes.
+  const repliedToOpenCard =
+    !resumeAskUserQuestion && !reuseRowId && slot.pendingAskUserQuestion?.status === 'pending';
   const messagesWithPreviousCard = reuseExistingAssistant
     ? baseMessages
-    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion);
+    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion, repliedToOpenCard);
   const pendingAssistantId = reuseExistingAssistant
     ? lastAssistantId!
     : createPendingAssistantId();
@@ -879,6 +1009,7 @@ export async function streamMessageForSlot(
     ...(request.agentId
       ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
+    ...(repliedToOpenCard ? { pendingAskUserQuestion: null } : {}),
     messages: resumeMessages,
   });
 
@@ -1067,6 +1198,9 @@ export async function streamMessageForSlot(
       onChunk: (data) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         if (ignoreChunks) return;
+        // A stopped run's final frame can carry an empty `accumulated`; taking
+        // it would wipe the partial answer the user chose to keep.
+        if (!data.accumulated && useChatStore.getState().slots[slotId]?.stopping) return;
         debugLog.chunk();
         accumulatedContent = data.accumulated;
         // Any answer text flowing right now supersedes a stale "Using X…"
@@ -1091,7 +1225,7 @@ export async function streamMessageForSlot(
       },
 
       onArtifact: (data: SSEArtifactEvent) => {
-        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (!data || !slotIsOnRun(slotId, streamRunId)) return;
         // Defensive guard: Python already suppresses STAGING artifacts before
         // emitting SSE events, so this branch should never fire in production.
         // It guards against accidental backend bypasses or future protocol changes.
@@ -1123,7 +1257,7 @@ export async function streamMessageForSlot(
       },
 
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
         // above the question card.
         ignoreChunks = true;
@@ -1153,16 +1287,99 @@ export async function streamMessageForSlot(
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         latestParts = [];
         cancelPendingStatus();
+        if (!data?.conversation) {
+          // Finished without the saved conversation: settle the turn, then reload it by id if known.
+          const known = useChatStore.getState().slots[slotId];
+          const reloadId = known?.convId;
+          // Keep the streamed text on its row so a failed reload does not blank the answer.
+          const streamedAnswer = !reuseExistingAssistant && accumulatedContent.trim() && known
+            ? known.messages.map((m) => (m.id === pendingAssistantId
+              ? { ...m, content: [{ type: 'text' as const, text: accumulatedContent }] }
+              : m))
+            : null;
+          useChatStore.getState().updateSlot(slotId, {
+            ...(streamedAnswer ? { messages: streamedAnswer } : {}),
+            isStreaming: false,
+            streamingAssistantId: null,
+            streamingContent: '',
+            currentStatusMessage: null,
+            streamingCitationMaps: null,
+            streamingParts: [],
+            abortController: null,
+            runId: null,
+            stopping: false,
+          });
+          if (reloadId) {
+            const agent = known?.threadAgentId;
+            // The id is known from `connected`, so the next send must continue this chat.
+            if (isNewConversation) useChatStore.getState().resolveSlotConvId(slotId, reloadId);
+            // A newer turn adds rows to `messages`; this older snapshot must not replace them.
+            const settledMessages = useChatStore.getState().slots[slotId]?.messages;
+            void (agent ? AgentsApi.fetchAgentConversation(agent, reloadId) : ChatApi.fetchConversation(reloadId))
+              .then((detail) => {
+                const store = useChatStore.getState();
+                if (isNewConversation && store.pendingConversations[slotId]) {
+                  const createdAt = detail.conversation.createdAt ?? new Date().toISOString();
+                  store.resolvePendingConversation(
+                    slotId,
+                    {
+                      id: reloadId,
+                      title: detail.conversation.title,
+                      createdAt,
+                      updatedAt: createdAt,
+                      isShared: detail.conversation.isShared,
+                      status: detail.conversation.status,
+                      modelInfo: detail.conversation.modelInfo,
+                      isOwner: true,
+                      sharedWith: [],
+                      projectId: slot.projectId ?? undefined,
+                    },
+                    { isAgentStream: Boolean(request.agentId) },
+                  );
+                }
+                const current = useChatStore.getState().slots[slotId];
+                if (current?.convId !== reloadId || current.messages !== settledMessages) return;
+                // History returns its latest page only, so pagination restarts from it.
+                useChatStore.getState().updateSlot(slotId, {
+                  messages: loadHistoricalMessages(detail.messages).messages,
+                  rawMessages: detail.messages,
+                  messagePagination: {
+                    currentPage: detail.pagination.page,
+                    hasOlderMessages: detail.pagination.hasNextPage,
+                    isLoadingOlder: false,
+                  },
+                });
+              })
+              .catch((err) => {
+                console.error('[streaming] Failed to reload after finish:', err);
+                if (isNewConversation) useChatStore.getState().clearPendingConversation(slotId);
+              });
+          } else if (isNewConversation) {
+            useChatStore.getState().clearPendingConversation(slotId);
+          }
+          return;
+        }
         const conv = data.conversation as { _id?: string; id?: string };
         const newConvId = conv._id || conv.id || '';
 
         // Build finalized messages from API response
-        const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
+        const historical = loadHistoricalMessages(data.conversation.messages);
+        const { unansweredAskUserQuestion } = historical;
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
         // Settling clears `stopping`, so a user-stopped run is only knowable here.
         const wasStopped = Boolean(slotBeforeComplete?.stopping);
+        const finalMessages = wasStopped && !resumeAskUserQuestion
+          ? keepStreamedTextOnStoppedAnswer(
+              historical.messages,
+              null,
+              accumulatedContent,
+              pendingCitationMaps ?? slotBeforeComplete?.streamingCitationMaps,
+              pendingAssistantId,
+              trailingStoppedReplyId(data.conversation.messages),
+            )
+          : historical.messages;
         const liveParts = slotBeforeComplete?.streamingParts ?? [];
         const liveFollowUp = resumeAskUserQuestion
           ? [
@@ -1493,7 +1710,9 @@ export async function streamRegenerateForSlot(
    * Set when the user edited the question: its text, and its files when they changed, replace
    * the stored ones and the answer is rebuilt for them.
    */
-  edit?: { query: string; attachments?: AttachmentRef[] }
+  edit?: { query: string; attachments?: AttachmentRef[] },
+  /** Changed answers to the question card the reply followed: the turn is re-run with them. */
+  answers?: string,
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -1503,21 +1722,25 @@ export async function streamRegenerateForSlot(
   const editConvId = slot.convId;
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
-  const editedMessages = edit
+  // The server asks a card turn again from its first question (edited or not), so its old card
+  // and answers go: the new run asks afresh, and a kept card would swallow the new questions.
+  // Changed answers keep the card: the reply is re-run for them, and the card shows them meanwhile.
+  const turnIsAskedAgain =
+    !answers && (Boolean(edit) || rowHasQuestionCard(slot.messages, messageId, slot.pendingAskUserQuestion));
+  const editedMessages = turnIsAskedAgain
     ? withoutQuestionCard(
-        withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments),
+        edit ? withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments) : slot.messages,
         messageId,
       )
     : slot.messages;
-  const questionWasEdited = Boolean(edit);
   /** A run that fails keeps the stored question and its card, so the screen must too. */
   const undoEditedQuestion = (): Partial<{
     messages: ThreadMessageLike[];
     pendingAskUserQuestion: PendingAskUserQuestion | null;
   }> =>
-    questionWasEdited
+    turnIsAskedAgain
       ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
-      : {};
+      : { pendingAskUserQuestion: preEditPending };
 
   slot.abortController?.abort();
 
@@ -1551,6 +1774,11 @@ export async function streamRegenerateForSlot(
   const streamRunId = runId ?? null;
 
   store.updateSlot(slotId, {
+    // An answered card is not this run's: left in the slot it would be opened again when the run ends,
+    // and the next click on it would add an answer message after the reply.
+    ...(slot.pendingAskUserQuestion && slot.pendingAskUserQuestion.status !== 'pending'
+      ? { pendingAskUserQuestion: null }
+      : {}),
     isStreaming: true,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
@@ -1562,7 +1790,7 @@ export async function streamRegenerateForSlot(
     runId: streamRunId,
     stopping: false,
     // The old card belongs to the old question; keeping it would stamp it on the new answer.
-    ...(questionWasEdited ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
+    ...(turnIsAskedAgain ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -1676,6 +1904,7 @@ export async function streamRegenerateForSlot(
     onChunk: (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       if (ignoreChunks) return;
+      if (!data.accumulated && useChatStore.getState().slots[slotId]?.stopping) return;
       debugLog.chunk();
       accumulatedContent = data.accumulated;
       // See streamMessageForSlot's onChunk — clear on every chunk, not just
@@ -1696,7 +1925,7 @@ export async function streamRegenerateForSlot(
     },
 
     onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-      if (!slotIsOnRun(slotId, streamRunId)) return;
+      if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
       ignoreChunks = true;
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       accumulatedContent = '';
@@ -1737,8 +1966,33 @@ export async function streamRegenerateForSlot(
           : await ChatApi.fetchConversation(slot.convId!);
         if (!slotIsOnRun(slotId, streamRunId)) return;
         const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
-        const { messages: loadedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(detail.messages);
-        const regenRowId = assistantRowIdForBackendMessage(loadedMessages, messageId);
+        const historical = loadHistoricalMessages(detail.messages);
+        const { unansweredAskUserQuestion } = historical;
+        const exactRegenRowId = exactAssistantRowIdForBackendMessage(historical.messages, messageId);
+        const stoppedMaps = pendingCitationMaps ?? useChatStore.getState().slots[slotId]?.streamingCitationMaps;
+        // History drops a regenerated reply that was stopped before any text was saved. The
+        // nearest-row fallback would then point at an earlier answer, so the partial gets a row
+        // of its own under the regenerated message's id instead.
+        const stoppedRegenRowMissing = wasStopped && !exactRegenRowId;
+        const regenRowId = exactRegenRowId
+          ?? (stoppedRegenRowMissing
+            ? messageId
+            : assistantRowIdForBackendMessage(historical.messages, messageId));
+        let loadedMessages = historical.messages;
+        if (wasStopped && exactRegenRowId) {
+          loadedMessages = keepStreamedTextOnStoppedAnswer(
+            historical.messages, exactRegenRowId, accumulatedContent, stoppedMaps,
+          );
+        } else if (stoppedRegenRowMissing && historical.messages[historical.messages.length - 1]?.role === 'user') {
+          loadedMessages = keepStreamedTextOnStoppedAnswer(
+            historical.messages,
+            null,
+            accumulatedContent,
+            stoppedMaps,
+            messageId,
+            trailingStoppedReplyId(detail.messages) ?? messageId,
+          );
+        }
         const finalMessages = pendingBefore?.payload
           ? stampPendingCardOnMessages(loadedMessages, {
               ...pendingBefore,
@@ -1823,7 +2077,7 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
-      const dropped = questionWasEdited && !editWasNotTaken(error);
+      const dropped = turnIsAskedAgain && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
         ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
@@ -1892,6 +2146,7 @@ export async function streamRegenerateForSlot(
           runId,
           ...(edit ? { query: edit.query } : {}),
           ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+          ...(answers ? { answers } : {}),
         }
       );
     } else {
@@ -1899,14 +2154,17 @@ export async function streamRegenerateForSlot(
       // Universal agent mode: read current tool selection at regen time
       const isUniversalAgent = store.settings.queryMode === 'agent';
       const universalToolsSel = useChatStore.getState().universalAgentStreamTools;
-      const universalToolCatalog = useChatStore.getState().universalAgentToolCatalogFullNames;
-      // null → "all tools" (send full catalog), array → explicit subset, undefined → not an agent turn
+      // null → "all tools": left out, as a normal send does. A list without a web_search entry turns
+      // web search off, and the catalog has none. Array → explicit subset.
       // Strip instanceId prefix from internal keys before putting on the wire.
-      const regenStreamTools = isUniversalAgent
-        ? [...new Set(
-            (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
-          )]
-        : undefined;
+      const regenStreamTools =
+        isUniversalAgent && universalToolsSel !== null
+          ? [...new Set([...universalToolsSel].map(stripInstancePrefix))]
+          : undefined;
+      const regenProjectId = slot.projectId ?? useChatStore.getState().projectScope?.projectId ?? null;
+      const regenCaps = regenProjectId
+        ? projectAgentCapabilities(useChatStore.getState().scopedAgentCapabilities, regenProjectId)
+        : store.settings.agentCapabilities;
       // Left unset when the user chose nothing, so the backend applies the model's default.
       const assistantRegenReasoningEffort =
         useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
@@ -1917,11 +2175,12 @@ export async function streamRegenerateForSlot(
         chatMode,
         filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
-        ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
+        ...(isUniversalAgent ? { agentCapabilities: regenCaps } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
         runId,
         ...(edit ? { query: edit.query } : {}),
         ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+        ...(answers ? { answers } : {}),
       });
     }
   } catch (error) {
@@ -1934,7 +2193,7 @@ export async function streamRegenerateForSlot(
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
-    const dropped = questionWasEdited && !aborted && !editWasNotTaken(error);
+    const dropped = turnIsAskedAgain && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {
       ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,

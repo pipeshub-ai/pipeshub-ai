@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from helper import suite_extensions
+
 # A well-formed Mongo ObjectId that no document has.
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
@@ -77,6 +79,7 @@ _CM = "/api/v1/configurationManager"
 NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     # orgAuthConfig.routes.ts (adminValidator)
     AdminRoute("GET", "/api/v1/orgAuthConfig/authMethods"),
+    AdminRoute("GET", "/api/v1/orgAuthConfig/signInRemoval"),
     _no_admin("POST", "/api/v1/orgAuthConfig",
               "sets the org's sign-in methods; nothing after the check stops a write"),
     AdminRoute("POST", "/api/v1/orgAuthConfig/updateAuthMethod", admin="invalid"),
@@ -91,16 +94,13 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", f"{_CM}/connectors/sharepoint/config", admin="invalid"),
     AdminRoute("POST", f"{_CM}/connectors/onedrive/config", admin="invalid"),
     AdminRoute("GET", f"{_CM}/smtpConfig"),
-    AdminRoute("GET", f"{_CM}/authConfig/azureAd"),
-    AdminRoute("POST", f"{_CM}/authConfig/azureAd", admin="invalid"),
+    _no_admin("DELETE", f"{_CM}/smtpConfig",
+              "deletes the org's SMTP settings; nothing after the check stops it"),
+    AdminRoute("PUT", f"{_CM}/smtpConfig/enabled", member_body={"enabled": True}, admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/microsoft"),
     AdminRoute("POST", f"{_CM}/authConfig/microsoft", admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/google"),
     AdminRoute("POST", f"{_CM}/authConfig/google", admin="invalid"),
-    AdminRoute("GET", f"{_CM}/authConfig/sso"),
-    AdminRoute("POST", f"{_CM}/authConfig/sso", admin="invalid"),
-    AdminRoute("GET", f"{_CM}/authConfig/oauth"),
-    AdminRoute("POST", f"{_CM}/authConfig/oauth", admin="invalid"),
     AdminRoute("POST", f"{_CM}/platform/settings", admin="invalid"),
     AdminRoute("GET", f"{_CM}/platform/settings"),
     AdminRoute("GET", f"{_CM}/platform/feature-flags/available"),
@@ -221,6 +221,8 @@ def _py(method: str, path: str, handler: str, **kw: Any) -> AdminRoute:
 
 
 _MCP = "/api/v1/mcp-servers"
+_API_TOOLSETS = "/api/v1/api-toolsets"
+_API_TOOLSET_BODY = {"name": "it-admin-probe", "baseUrl": "https://it-admin-probe.invalid", "operations": []}
 _TOOLSETS = "/api/v1/toolsets"
 _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"},
                "baseUrl": "http://localhost"}
@@ -242,6 +244,21 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"enabled": False}, refusal_words="Only admins",
         admin=None, why_no_admin="turns the sample workspace on or off for the whole org"),
     _py("GET", f"{_MCP}/instances", "api/routes/mcp_servers.py::list_instances"),
+    # An admin's request carries no usable spec, so the compiler stops it and nothing is saved.
+    _py("POST", f"{_API_TOOLSETS}/validate", "api/routes/api_toolsets.py::validate_api_toolset_spec",
+        member_body={"spec": "not a spec"}, admin="admin_body"),
+    _py("POST", f"{_API_TOOLSETS}/instances", "api/routes/api_toolsets.py::create_api_toolset",
+        member_body=_API_TOOLSET_BODY, admin="admin_body"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/config", "api/routes/api_toolsets.py::get_api_toolset_config"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::update_api_toolset",
+        member_body=_API_TOOLSET_BODY),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::delete_api_toolset"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::save_api_toolset_shared_credentials", member_body={"apiKey": "it-admin-probe"}),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::delete_api_toolset_shared_credentials"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials/oauth/authorize",
+        "api/routes/api_toolsets.py::start_api_toolset_shared_oauth"),
     _py("PUT", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::update_toolset_oauth_config",
         member_body={"clientId": "x"}),
@@ -255,6 +272,8 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
     ("POST", "/api/v1/oauth/:connectorType"): {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
+    ("POST", f"{_API_TOOLSETS}/validate"): {"spec": "not a spec"},
+    ("POST", f"{_API_TOOLSETS}/instances"): _API_TOOLSET_BODY,
 }
 
 # Python handlers that reach an admin check but sit behind Node's
@@ -341,6 +360,25 @@ PYTHON_CONDITIONAL_ADMIN = {
     # Everyone gets the listing; only admins see how an org server is reached.
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
+    # Members make and edit their own agents, and nothing here refuses them.
+    # One field needs an admin: the service account the agent searches as,
+    # because binding spends the access an administrator granted that account.
+    "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
+    "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # The directory of people. Everyone gets it; an administrator asking for
+    # service accounts gets those too, and nobody else does.
+    "api/routes/entity.py::get_users": "admin widens the directory",
+    # Every account joins the All team when it is created, service accounts
+    # included, so these answer a member a shorter member list than an
+    # administrator. An administrator also sees every team in the org; a member
+    # sees, and can read, only the teams they belong to.
+    "api/routes/entity.py::get_team": "admin widens the member list",
+    "api/routes/entity.py::get_user_teams": "admin widens the member list",
+    "api/routes/entity.py::get_team_users": "admin widens the member list",
+    # A team's OWNER may change or delete it, admin or not; an administrator may
+    # also change or delete any team in their org.
+    "api/routes/entity.py::update_team": "owner or admin",
+    "api/routes/entity.py::delete_team": "owner or admin",
 }
 
 
@@ -351,3 +389,38 @@ TOOL_RULES_HANDLERS = frozenset({
     "api/routes/toolsets.py::get_toolset_tool_rules",
     "api/routes/toolsets.py::update_toolset_tool_rules",
 })
+
+
+@dataclass(frozen=True)
+class SwitchedOff:
+    """A part of the product a stack may run without. While it is off, its
+    routes give this answer before any admin check, so the live suite skips
+    them on that stack instead of failing."""
+
+    path_prefix: str
+    status: int
+    words: str
+    why: str
+
+    def applies(self, route: AdminRoute, status: int, text: str) -> bool:
+        return (
+            route.path.startswith(self.path_prefix)
+            and status == self.status
+            and self.words.lower() in text.lower()
+        )
+
+
+SWITCHED_OFF: tuple[SwitchedOff, ...] = ()
+
+# Rows a downstream build adds (helper/suite_extensions.py). Last, so the
+# extension can build its rows with everything above.
+_extensions = suite_extensions.modules("admin_route_table")
+NODE_ADMIN_ROUTES = suite_extensions.add_rows(
+    NODE_ADMIN_ROUTES, "NODE_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+PYTHON_ADMIN_ROUTES = suite_extensions.add_rows(
+    PYTHON_ADMIN_ROUTES, "PYTHON_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+ADMIN_BODIES = suite_extensions.add_items(ADMIN_BODIES, "ADMIN_BODIES", _extensions)
+PYTHON_CONDITIONAL_ADMIN = suite_extensions.add_items(
+    PYTHON_CONDITIONAL_ADMIN, "PYTHON_CONDITIONAL_ADMIN", _extensions)
+SWITCHED_OFF = suite_extensions.add_rows(
+    SWITCHED_OFF, "SWITCHED_OFF", _extensions, key=lambda rule: rule.path_prefix)

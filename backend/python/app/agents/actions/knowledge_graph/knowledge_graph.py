@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.entity_search_tool import (
+    entity_search_offered_in,
+    named_entities_enabled_in,
+)
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
@@ -33,18 +36,27 @@ from app.modules.agents.qna.chat_state import (
     remember_record_ids,
 )
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.utils.chat_helpers import resolve_frontend_url
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.chat_helpers import (
+    keep_context_blocks_inside_connection,
+    keep_row_summaries_inside_connection,
+    resolve_frontend_url,
+)
 
 from .catalog import ConnectorCatalog
+from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
     _has_selection,
+    browsable_app_ids,
     ids_within_scope,
     navigation_nameable_ids,
     resolve_scope,
     selection_browse_refusal,
+    turn_picked_sources,
 )
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
@@ -175,6 +187,14 @@ def _record_ids_in_view(view: NavigationView) -> list[str]:
     return ids
 
 
+def _listed_facts(view: NavigationView, fetchable: set[str]) -> dict[str, str]:
+    """What the listing states about each record in it the user may open."""
+    facts = {row.id: row_facts(row) for row in (*view.rows, *view.related) if row.id in fetchable}
+    if view.current and view.current.id in fetchable:
+        facts[view.current.id] = context_facts(view.context_block)
+    return facts
+
+
 def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
     """Return (connector_ids, kb_ids) — shim kept for the contract tests."""
     from .ops.scope import derive_scope
@@ -192,6 +212,13 @@ def _time_range_error_message(error_json: str) -> str:
         return parsed.get("message", error_json) if isinstance(parsed, dict) else error_json
     except (json.JSONDecodeError, AttributeError):
         return error_json
+
+
+def _no_readable_match(identifier: str) -> str:
+    return (
+        f"No record matching {identifier} can be opened in this conversation. Search for it "
+        "with knowledgegraph__search, or find it by name with knowledgegraph__list_files(query=...)."
+    )
 
 
 def _copies_outside_selection(identifier: str, matches: list) -> str:
@@ -259,12 +286,13 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, with a created: date "
-            "when known\n"
+            "when known (uploaded: for a knowledge-base file — an upload time, not a document date)\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
             "to filter children by source timestamp (see parameter descriptions for date format) — "
             "use this instead of fetching all children when the question specifies a date range. "
+            "Inside a knowledge base these filter by when each file was uploaded. "
             "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
             "from the user's timezone. If time-filtered results are empty or too few, widen the "
             "range or retry without time filters and filter manually from the listing."
@@ -451,21 +479,19 @@ class KnowledgeGraph:
 
         # Resolve connector/kb scope from agent config / filters
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
-        kb_ids = list(scope.kb_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
-        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
-            # Chat-mode fallback: use all user-visible connectors. A selection
-            # below app level is already the scope; substituting the connector
-            # catalog would hide a collection folder's children, because a
-            # collection is not one of those connectors.
+        # A selection below app level is already the scope; a connector
+        # filter would hide a collection folder's children.
+        if not connector_ids and not _has_selection(state.get("filters") or {}):
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.debug(
-                "navigate: empty agent scope — using catalog-wide scope (%d connectors)",
-                len(catalog),
-            )
-            connector_ids = catalog.connector_ids()
+            # Nothing picked: no connector filter, so the listing gates by the
+            # user's own access. The catalog would leave out knowledge bases.
+            # A picked turn with nothing browsable (only attachments) keeps the
+            # catalog; its rows are re-checked against the turn's limit below.
+            if turn_picked_sources(state):
+                connector_ids = catalog.connector_ids()
 
         # If node_id looks like a URL or issue key, try to resolve it first
         if node_id:
@@ -483,18 +509,23 @@ class KnowledgeGraph:
                     excluded_app_ids=excluded_app_ids(state),
                 )
                 result = await resolver.resolve_many([node_id])
-                if result.matches:
-                    # The same issue key can exist on more than one connector.
-                    # The copy inside this conversation wins; another connector's
-                    # copy is named so the miss is not a broken tool.
-                    inside = await ids_within_scope(
-                        state, graph_provider, user_key, org_id,
-                        [match.id for match in result.matches],
-                    )
-                    chosen = next((match for match in result.matches if match.id in inside), None)
-                    if chosen is None:
-                        return True, _copies_outside_selection(node_id, result.matches)
-                    node_id = chosen.id
+                if not result.matches:
+                    return False, _no_readable_match(node_id)
+                # The same issue key can exist on more than one connector.
+                # The copy inside this conversation wins; another connector's
+                # copy is named so the miss is not a broken tool.
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id,
+                    [match.id for match in result.matches],
+                )
+                chosen = next((match for match in result.matches if match.id in inside), None)
+                if chosen is None:
+                    # A connected app's limit is the most it may learn about: a copy
+                    # beyond it reads exactly like no copy at all.
+                    if connection_sources_of(state.get("filters")) is not None:
+                        return False, _no_readable_match(node_id)
+                    return True, _copies_outside_selection(node_id, result.matches)
+                node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
         if refusal:
@@ -518,13 +549,14 @@ class KnowledgeGraph:
                 page=page,
                 limit=limit,
                 connector_ids=connector_ids or None,
-                record_group_ids=list(kb_ids) if kb_ids else None,
                 depth=depth,
                 created_at=created_at,
                 updated_at=updated_at,
                 node_types=node_types,
                 app_names=app_names,
             )
+            if node_id and view.current is None:
+                return False, NODE_NOT_FOUND_MESSAGE
             # The listing names every ancestor the user can open, and every
             # child under the opened node. Neither is the conversation's
             # limit: a parent above a selected group would be named and
@@ -540,12 +572,21 @@ class KnowledgeGraph:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            limit_sources = connection_sources_of(state.get("filters"))
+            await keep_context_blocks_inside_connection(
+                [(view.current.id if view.current else None, view)], graph_provider,
+                state.get("user_id", ""), org_id, limit_sources,
+            )
+            await keep_row_summaries_inside_connection(
+                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+            )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
         fetchable = set(_record_ids_in_view(view))
+        cite_refs = await cite_listed_records(state, graph_provider, org_id, _listed_facts(view, fetchable))
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
@@ -653,7 +694,7 @@ class KnowledgeGraph:
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
         resolver = RecordResolver(
             graph_provider=graph_provider,
@@ -680,6 +721,10 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
+        await keep_context_blocks_inside_connection(
+            [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
+            connection_sources_of(state.get("filters")),
+        )
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -689,7 +734,10 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
+        cite_refs = await cite_listed_records(
+            state, graph_provider, org_id, {m.id: context_facts(m.context_block) for m in result.matches},
+        )
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             emitted,
@@ -737,8 +785,13 @@ class KnowledgeGraph:
             "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
-            "All dates use the source system's timestamp (when the file was created in Drive, "
-            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "For connected apps these are the source system's timestamps (when the file was "
+            "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
+            "A knowledge-base upload is dated as its record header shows: by a date the "
+            "document states when one was found in it, otherwise only by the upload (the "
+            "file's last-modified time or the upload time), which is not when it was written. "
+            "A date filter can keep an upload dated only by its upload although it was written "
+            "outside the range, so check its header before treating it as in range.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -779,8 +832,9 @@ class KnowledgeGraph:
                     "Only include records created at the source on or after this date. "
                     "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
-                    "This filters by the document's original creation date at the source "
-                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "For connected apps this is the creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
+                    "knowledge-base upload, the date its record header shows. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -1076,8 +1130,11 @@ class KnowledgeGraph:
         description=(
             "Find records the user can access that mention a typed value: a date range, "
             "an amount in a currency, a quantity, or a percentage. Requires named-entity "
-            "extraction to be enabled. A match set that is too large is rejected rather "
-            "than truncated."
+            "extraction to be enabled. Lists readable records most recently modified first, "
+            "each with the values that matched, in pages: continue with the call it prints. "
+            "To look in one knowledge base or app (the Invoices knowledge base for \"invoices over "
+            "$50k\"), pass its id in source_ids. record_types is the storage type (FILE, MAIL, "
+            "TICKET, ...), not a document kind."
         ),
         parameters=[
             ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
@@ -1092,6 +1149,10 @@ class KnowledgeGraph:
             ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
             ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
             ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
+            ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Optional record types to keep, e.g. FILE, MAIL, TICKET.", required=False, items={"type": "string"}),
+            ToolParameter(name="source_ids", type=ParameterType.ARRAY, description="Optional app or knowledge base ids to look in.", required=False, items={"type": "string"}),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Records per page (default 20, max 50).", required=False),
+            ToolParameter(name="cursor", type=ParameterType.STRING, description="Cursor from the previous page's continue call.", required=False),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         display_name="Found records by typed value",
@@ -1110,6 +1171,10 @@ class KnowledgeGraph:
         dimension: str | None = None,
         percent_min: float | None = None,
         percent_max: float | None = None,
+        record_types: list[str] | None = None,
+        source_ids: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         from .ops.values import execute_find_records_by_value
         return await execute_find_records_by_value(
@@ -1126,6 +1191,84 @@ class KnowledgeGraph:
             dimension=dimension,
             percent_min=percent_min,
             percent_max=percent_max,
+            record_types=record_types,
+            source_ids=source_ids,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_person",
+        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        description=(
+            "List the records the connectors link to a person by role (assignee, reporter, "
+            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
+            "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
+            "the links the connectors write (mentioned/involved come from indexing): for any "
+            "other record whose text mentions a name, search instead.\n\n"
+            "Pass a full name or an email; several people with that name are listed for you to "
+            "pick by email. Pages with cursor, the next call printed in the output; \"That is "
+            "all N\" means the list is complete."
+        ),
+        parameters=[
+            ToolParameter(
+                name="person",
+                type=ParameterType.STRING,
+                description="The person's full name or email, or \"me\" for the user asking.",
+                required=True,
+            ),
+            ToolParameter(
+                name="roles",
+                type=ParameterType.ARRAY,
+                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                required=False,
+                items={
+                    "type": "string",
+                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                },
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'TICKET', 'PROJECT').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description="Cursor from the previous page's output, copied exactly. Omit for the first page.",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records linked to {args.get("person", "")}' if args.get("person") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records linked to a person",
+    )
+    async def find_records_by_person(
+        self,
+        person: str | None = None,
+        roles: list[str] | None = None,
+        record_types: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.people import execute_find_records_by_person
+        return await execute_find_records_by_person(
+            self.state, person=person, roles=roles, record_types=record_types, limit=limit, cursor=cursor,
         )
 
     # -----------------------------------------------------------------------
@@ -1152,10 +1295,11 @@ class KnowledgeGraph:
             "Do not use it for topics, ideas or document titles (use search or search_entities), or "
             "for dates and amounts (use find_records_by_value). A name on most records (the company's "
             "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
-            "People are found by their name as written, or by a first name that starts a full one; a "
-            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
-            "are linked to names, so confirm a name that is not found with search before saying it "
-            "is absent."
+            "People are found by their name as written (a near spelling of the surname too), or by a "
+            "first name that starts a full one; a surname alone is not looked up. For what a person is "
+            "assigned, reported, created or leads, use knowledgegraph__find_records_by_person. Only "
+            "records indexed while named-entity extraction was on are linked to names, so confirm a "
+            "name that is not found with search before saying it is absent."
         ),
         parameters=[
             ToolParameter(
@@ -1209,13 +1353,18 @@ class KnowledgeGraph:
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
-        that go with it only where the deployment offers it
+        that go with it only where the deployment offers it, and the
+        named-entity tools only where extraction is on
         (``entity_search_surface``); ``search_timeline`` unless
         ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
         from .ops.timeline import without_timeline_unless_enabled
         tools = without_timeline_unless_enabled(tools)
-        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
+        return tools_for_request(
+            self, tools,
+            offered=entity_search_offered_in(self.state),
+            named_entities=named_entities_enabled_in(self.state),
+        )
 
     # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)
@@ -1284,7 +1433,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
-                description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
+                description=(
+                    "Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'. For "
+                    "knowledge-base files createdAt and updatedAt are upload times, not "
+                    "document dates."
+                ),
                 required=False,
                 default="updatedAt",
             ),
@@ -1400,7 +1553,11 @@ class KnowledgeGraph:
                 description=(
                     "'created' (default) places each record by when it was created at its source: "
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
-                    "places it by its last update, for tickets or pages that changed over the span."
+                    "places it by its last update, for tickets or pages that changed over the span. "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found, otherwise by its file's last-modified time or its upload time; the "
+                    "result's header says when an upload dated only by its upload time is instead "
+                    "listed with no source date."
                 ),
                 required=False,
                 default="created",

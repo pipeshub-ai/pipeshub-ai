@@ -1,5 +1,7 @@
 'use client';
 
+import { overlayWidth } from '@/app/components/ui/responsive';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Box, Flex, Text, TextField, Theme } from '@radix-ui/themes';
@@ -37,6 +39,7 @@ export function ArchivedChatSearch({
   isLoading,
   onSelect,
 }: ArchivedChatSearchProps) {
+  const isMobile = useIsMobile();
   const { appearance } = useThemeAppearance();
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -184,14 +187,14 @@ export function ArchivedChatSearch({
         style={{
           position: 'fixed',
           top: 0,
-          left: contentLeft,
+          left: isMobile ? 0 : contentLeft,
           right: 0,
           bottom: 0,
           zIndex: 50,
           display: 'flex',
           alignItems: 'flex-start',
           justifyContent: 'center',
-          paddingTop: '15vh',
+          paddingTop: isMobile ? 0 : '15vh',
         }}
       >
         <Flex
@@ -199,11 +202,11 @@ export function ArchivedChatSearch({
           direction="column"
           onClick={(e: React.MouseEvent) => e.stopPropagation()}
           style={{
-            width: '37.5rem',
-            maxHeight: '512px',
-            backdropFilter: 'blur(25px)',
-            WebkitBackdropFilter: 'blur(25px)',
-            backgroundColor: 'var(--effects-translucent)',
+            width: isMobile ? '100%' : overlayWidth(600),
+            maxHeight: isMobile ? '100dvh' : '512px',
+            backdropFilter: 'var(--frost-filter)',
+            WebkitBackdropFilter: 'var(--frost-filter)',
+            backgroundColor: 'var(--frost-bg-strong)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             boxShadow: '0px 20px 48px 0px var(--black-a6)',

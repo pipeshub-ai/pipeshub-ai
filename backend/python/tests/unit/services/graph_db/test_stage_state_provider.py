@@ -234,6 +234,80 @@ class TestDeletingTheStageStatesOfVirtualRecords:
             await provider.stage_states_delete_for_virtual_records(["vr-1"])
 
 
+
+class TestStageStatesWithRecords:
+    """A stage with no record field (entities) is retried by its own state, one bounded page at a time."""
+
+    @pytest.mark.asyncio
+    async def test_arango_pages_the_states_by_key_off_the_page_index(self) -> None:
+        provider = _arango([{"key": "vr1:rev:entities", "records": ["r1", "r2"]}, {"key": "vr2:rev:entities", "records": []}])
+        got = await provider.get_stage_states_with_records(
+            "org-1", "conn-1", "entities", "FAILED", limit=100, after_key="vr0:rev:entities",
+            exclude_indexing_statuses=["IN_PROGRESS"],
+        )
+        assert got == [("vr1:rev:entities", ["r1", "r2"]), ("vr2:rev:entities", [])]
+        query = _query(provider.http_client.execute_aql)
+        assert 'OPTIONS {indexHint: "stage_state_connector_stage_status_key"}' in query
+        assert "forceIndexHint" not in query
+        assert "state.status == @status AND state._key > @after_key SORT state._key LIMIT @limit" in query
+        assert "record.contentRev == state.rev" in query and "record.indexingStatus NOT IN @exclude" in query
+        assert "record.isPlaceholder != true" in query and "isDeleted" in query
+        bind = provider.http_client.execute_aql.await_args.args[1]
+        assert bind == {
+            "@collection": "stageStates", "connector_id": "conn-1", "org_id": "org-1", "stage": "entities",
+            "status": "FAILED", "exclude": ["IN_PROGRESS"], "limit": 100, "after_key": "vr0:rev:entities",
+        }
+
+    @pytest.mark.asyncio
+    async def test_arango_first_page_has_no_cursor(self) -> None:
+        provider = _arango([])
+        assert await provider.get_stage_states_with_records("o", "c", "entities", "FAILED", limit=10) == []
+        query = _query(provider.http_client.execute_aql)
+        assert "after_key" not in query
+        assert "after_key" not in provider.http_client.execute_aql.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_neo4j_pages_the_states_in_index_order(self) -> None:
+        provider = _neo4j([{"key": "vr1:rev:entities", "records": ["r1"]}])
+        got = await provider.get_stage_states_with_records(
+            "org-1", "conn-1", "entities", "FAILED", limit=100, after_key="vr0:rev:entities",
+            exclude_indexing_statuses=["IN_PROGRESS"],
+        )
+        assert got == [("vr1:rev:entities", ["r1"])]
+        query = _query(provider.client.execute_query)
+        assert "state.status = $status AND state.id > $after_key" in query
+        assert "ORDER BY state.connectorId, state.stage, state.status, state.id LIMIT $limit" in query
+        assert "OPTIONAL MATCH (r:Record {virtualRecordId: state.virtualRecordId})" in query
+        assert "r.contentRev = state.rev" in query and "NOT coalesce(r.indexingStatus, '') IN $exclude" in query
+        params = provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["exclude"] == ["IN_PROGRESS"] and params["status"] == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_neo4j_first_page_seeks_from_the_start(self) -> None:
+        provider = _neo4j([])
+        await provider.get_stage_states_with_records("o", "c", "entities", "FAILED", limit=10)
+        assert "state.id IS NOT NULL" in _query(provider.client.execute_query)
+
+    @pytest.mark.asyncio
+    async def test_no_room_is_no_query(self) -> None:
+        arango, neo4j = _arango(), _neo4j()
+        assert await arango.get_stage_states_with_records("o", "c", "entities", "FAILED", limit=0) == []
+        assert await neo4j.get_stage_states_with_records("o", "c", "entities", "FAILED", limit=0) == []
+        arango.http_client.execute_aql.assert_not_awaited()
+        neo4j.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_outage_raises(self) -> None:
+        provider = _arango(side_effect=ArangoQueryError("Query failed", 503, "unavailable"))
+        with pytest.raises(ArangoQueryError):
+            await provider.get_stage_states_with_records("o", "c", "entities", "FAILED", limit=10)
+
+    def test_neo4j_has_the_page_index(self) -> None:
+        from app.services.graph_db.neo4j.neo4j_provider import _STAGE_STATE_INDEXES
+
+        assert any("(n.connectorId, n.stage, n.status, n.id)" in index for index in _STAGE_STATE_INDEXES)
+
+
 def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, stages_ok: bool = True) -> None:
     """Stub every step of a connector delete but the stage states, which are what is checked."""
     provider.get_document = AsyncMock(return_value={"_key": "c1", "type": "Drive"})
@@ -253,6 +327,10 @@ def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, sta
     provider.begin_transaction = AsyncMock(return_value="txn1")
     provider.commit_transaction = AsyncMock()
     provider.rollback_transaction = AsyncMock()
+    if isinstance(provider, Neo4jProvider):
+        # Auto-committed batches stash the ids the cleanup needs and drop the stash with the app.
+        provider._stash_connector_delete_handles = AsyncMock(side_effect=lambda _c, groups, vrids: (list(groups), vrids))
+        provider._delete_connector_with_its_delete_handles = AsyncMock(return_value=1)
 
 
 def _providers() -> list[ArangoHTTPProvider | Neo4jProvider]:
@@ -319,3 +397,47 @@ class TestAConnectorsStageStatesGoInBoundedBatches:
         setattr(client, method, AsyncMock(side_effect=RuntimeError("down")))
 
         assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (0, False)
+
+
+class TestRecordContentRevs:
+    """A classify retry re-checks its selection while it reads each record's revision."""
+
+    _SELECTION = {"status_field": "extractionStatus", "statuses": ["FAILED"], "exclude_indexing_statuses": ["IN_PROGRESS"]}
+
+    @pytest.mark.asyncio
+    async def test_arango_reads_revisions_of_records_still_selected(self) -> None:
+        provider = _arango([{"key": "r1", "rev": "rev-a"}, {"key": "r2", "rev": None}])
+        assert await provider.get_record_content_revs(["r1", "r2", "r1", ""], **self._SELECTION) == {"r1": "rev-a", "r2": None}
+        query = _query(provider.http_client.execute_aql)
+        assert "FILTER doc._key IN @keys AND doc[@field] IN @statuses AND doc.indexingStatus NOT IN @exclude" in query
+        assert "isDeleted" in query
+        assert provider.http_client.execute_aql.await_args.args[1] == {
+            "@collection": "records", "keys": ["r1", "r2"], "field": "extractionStatus",
+            "statuses": ["FAILED"], "exclude": ["IN_PROGRESS"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_neo4j_reads_revisions_of_records_still_selected(self) -> None:
+        provider = _neo4j([{"key": "r1", "rev": "rev-a"}, {"key": "r2", "rev": None}])
+        assert await provider.get_record_content_revs(["r1", "r2"], **self._SELECTION) == {"r1": "rev-a", "r2": None}
+        query = _query(provider.client.execute_query)
+        assert "WHERE r.id IN $keys AND r[$field] IN $statuses AND NOT coalesce(r.indexingStatus, '') IN $exclude" in query
+        assert "isDeleted" in query
+        assert provider.client.execute_query.await_args.kwargs["parameters"] == {
+            "keys": ["r1", "r2"], "field": "extractionStatus", "statuses": ["FAILED"], "exclude": ["IN_PROGRESS"],
+        }
+
+    @pytest.mark.parametrize(("ids", "statuses"), [([], ["FAILED"]), (["r1"], [])])
+    @pytest.mark.asyncio
+    async def test_nothing_to_select_is_no_query(self, ids: list[str], statuses: list[str]) -> None:
+        arango, neo4j = _arango(), _neo4j()
+        for provider in (arango, neo4j):
+            assert await provider.get_record_content_revs(ids, status_field="extractionStatus", statuses=statuses) == {}
+        arango.http_client.execute_aql.assert_not_awaited()
+        neo4j.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_raises(self) -> None:
+        provider = _arango(side_effect=ConnectionError("graph down"))
+        with pytest.raises(ConnectionError):
+            await provider.get_record_content_revs(["r1"], **self._SELECTION)

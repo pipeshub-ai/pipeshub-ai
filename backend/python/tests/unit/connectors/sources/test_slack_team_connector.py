@@ -69,6 +69,12 @@ def _make_connector():
     c.data_source = None
     c.rate_limiter = MagicMock()
     c.config_service = config_svc
+    c._slack_executor = None
+    c._thread_pool_lease = MagicMock(shutdown_and_drain=AsyncMock())
+    c._unreadable_channels = []
+    c._channel_list_failed = False
+    c._resilience_loaded = True
+    c._resilience = None
 
     return c
 
@@ -1196,7 +1202,7 @@ class TestSlackConnectorInitAndFreshDatasource:
 
         team_resp = MagicMock(success=True, data={"team": {"domain": "acme", "id": "T123"}})
 
-        async def _fresh():
+        async def _fresh(**_kwargs):
             ds = MagicMock()
             ds.team_info = AsyncMock(return_value=team_resp)
             return ds
@@ -1437,22 +1443,63 @@ class TestSlackConnectorFilterOptionsAndLifecycle:
 
         c = _make_connector()
         ds = MagicMock()
-        ds.check_token_scopes = AsyncMock(return_value=MagicMock(success=True))
+        ds.check_token_scopes = AsyncMock(return_value=MagicMock(
+            success=True, data={"scopes": ["channels:read", "channels:history", "groups:read",
+                                           "groups:history", "users:read", "users:read.email",
+                                           "files:read", "channels:join", "usergroups:read"]},
+        ))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             assert await c.test_connection_and_access() is True
 
     @pytest.mark.asyncio
-    async def test_test_connection_failure_returns_false(self):
+    async def test_test_connection_names_the_missing_scopes(self) -> None:
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _make_connector()
-        with patch.object(
-            SlackConnector,
-            "_fresh_datasource",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("x"),
+        ds = MagicMock()
+        ds.check_token_scopes = AsyncMock(return_value=MagicMock(
+            success=True, data={"scopes": ["channels:read", "channels:history", "users:read"]},
+        ))
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            pytest.raises(ConnectorInitError) as err,
         ):
-            assert await c.test_connection_and_access() is False
+            await c.test_connection_and_access()
+        message = str(err.value)
+        assert "groups:read, groups:history, users:read.email, files:read" in message
+        assert "channels:read" not in message
+
+    @pytest.mark.asyncio
+    async def test_test_connection_without_a_scopes_header_passes(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        ds = MagicMock()
+        ds.check_token_scopes = AsyncMock(return_value=MagicMock(success=True, data={"ok": True}))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            assert await c.test_connection_and_access() is True
+
+    @pytest.mark.asyncio
+    async def test_test_connection_failure_raises_init_error(self) -> None:
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        with (
+            patch.object(
+                SlackConnector,
+                "_fresh_datasource",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("x"),
+            ),
+            pytest.raises(ConnectorInitError, match="Could not reach Slack: x"),
+        ):
+            await c.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_run_incremental_sync_delegates(self):
@@ -1472,11 +1519,11 @@ class TestSlackConnectorFilterOptionsAndLifecycle:
         c.logger.info.assert_called()
 
     @pytest.mark.asyncio
-    async def test_get_signed_url_empty(self):
+    async def test_get_signed_url_is_none(self) -> None:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _make_connector()
-        assert await c.get_signed_url(MagicMock()) == ""
+        assert await c.get_signed_url(MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_handle_webhook_notification_logs(self):
@@ -3739,7 +3786,7 @@ class TestBuildMessageBlocksForStreaming:
         tx.__aexit__ = AsyncMock(return_value=None)
         c.data_store_provider.transaction = MagicMock(return_value=tx)
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
@@ -4395,7 +4442,7 @@ class TestSlackConnectorCoverageExtended:
         with patch.object(
             SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=RuntimeError("x"),
         ):
-            assert await c._fetch_usergroup_members("G1") == []
+            assert await c._fetch_usergroup_members("G1") is None
 
     @pytest.mark.asyncio
     async def test_process_file_raw_httpx_success(self):
@@ -4715,7 +4762,7 @@ class TestSlackConnectorCoverageExtended:
             return_value=MagicMock(success=True, data={"messages": []}),
         )
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
@@ -7740,7 +7787,7 @@ class TestStreamingBranches:
             data={"messages": []},
         ))
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with (
@@ -8165,7 +8212,7 @@ class TestCheckUpdatedBranches:
             data={"messages": [{"ts": "9.0", "user": "U1", "text": "t", "edited": {}}]},
         ))
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with (
@@ -8981,7 +9028,7 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             data={"messages": []},
         ))
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with (
@@ -9022,7 +9069,7 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             return_value=MagicMock(success=False, error="invalid_auth")
         )
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with (
@@ -9058,7 +9105,7 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             return_value=MagicMock(success=False, error="not_in_channel")
         )
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with (
@@ -9254,7 +9301,7 @@ class TestCheckUpdatedMessageFallbackBranches:
         ))
         ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False))
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
@@ -9293,7 +9340,7 @@ class TestCheckUpdatedMessageFallbackBranches:
             data={"messages": []},
         ))
 
-        async def fresh():
+        async def fresh(**_kwargs):
             return ds
 
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):

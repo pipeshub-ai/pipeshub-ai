@@ -77,6 +77,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     OptionSourceType,
     SyncFilterKey,
+    extension_passes_filter,
     load_connector_filters,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
@@ -134,6 +135,16 @@ def page_external_id(page_id: int | str) -> str:
 
 def attachment_external_id(attachment_id: int | str) -> str:
     return f"{ATTACHMENT_ID_PREFIX}{attachment_id}"
+
+
+def _attachment_extension(attachment: dict[str, Any]) -> str | None:
+    """Lower-cased extension of an attachment's file name, or None when it has none."""
+    file_name = (
+        attachment.get("fileName")
+        or attachment.get("name")
+        or f"attachment-{attachment.get('id')}"
+    )
+    return file_name.rsplit(".", 1)[-1].lower() if "." in file_name else None
 
 
 def source_id_from_external(external_id: str, prefix: str) -> int | None:
@@ -256,6 +267,14 @@ def _as_int(value: object) -> int | None:
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC,
         ))
+        .add_filter_field(CommonFields.file_extension_filter(
+            display_name="Attachment types",
+            description=(
+                "Sync only these attachment types (Include), or every type except them "
+                "(Exclude). Applies to attachments only; pages are always synced. "
+                "Leave empty to sync every attachment."
+            ),
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.PAGES.value,
@@ -314,8 +333,8 @@ class DrupalWikiConnector(BaseConnector):
         # Partial failures collected across one run: a space or group that failed is
         # reported at the end, and its checkpoint is held back, but the run continues.
         self._failures: list[str] = []
-        # Emails the user directory marks DISABLED, or None when it could not be read
-        # this run (then nobody is dropped from a private space on its account).
+        # Emails the user directory marks DISABLED, or None when it could not be
+        # read this run. Private spaces are then left as they were.
         self._disabled_emails: set[str] | None = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -674,7 +693,11 @@ class DrupalWikiConnector(BaseConnector):
     # ------------------------------------------------------------------
 
     async def _sync_spaces(self) -> dict[int, dict[str, Any]]:
-        """Spaces become record groups; their permissions are replaced every run."""
+        """Spaces become record groups; their permissions are replaced every run.
+
+        A private space is skipped when the user directory or its member list
+        could not be read, so stored grants stay put.
+        """
         allowed_ids, exclude_ids = self._get_space_id_filters()
         spaces: dict[int, dict[str, Any]] = {}
         unreadable_spaces: list[str] = []
@@ -701,6 +724,15 @@ class DrupalWikiConnector(BaseConnector):
 
                 members = None
                 if (space.get("accessStatus") or "").upper() == SPACE_ACCESS_PRIVATE:
+                    if self._disabled_emails is None:
+                        # Same as an unreadable member list: writing grants without
+                        # a directory would guess. A space first seen this run waits
+                        # for a run that loaded users.
+                        self._fail(
+                            f"Could not read the list of people from Drupal Wiki, so "
+                            f"the space '{space_name}' was left as it is this time."
+                        )
+                        continue
                     try:
                         members = await self.graphql.get_space_members(space_id)
                     except DrupalWikiGraphQLError as e:
@@ -1021,6 +1053,7 @@ class DrupalWikiConnector(BaseConnector):
                 [],
             )
             for attachment in source_attachments
+            if extension_passes_filter(self.sync_filters, _attachment_extension(attachment))
         )
         return records
 
@@ -1083,7 +1116,7 @@ class DrupalWikiConnector(BaseConnector):
             or f"attachment-{attachment_id}"
         )
         last_modified = attachment.get("lastModified")
-        extension = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else None
+        extension = _attachment_extension(attachment)
         mime_type, _ = mimetypes.guess_type(file_name)
         record = FileRecord(
             org_id=self.data_entities_processor.org_id,

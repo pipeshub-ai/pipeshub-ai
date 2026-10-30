@@ -1,5 +1,7 @@
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
+import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
+import { deletesByName } from '@/app/(main)/workspace/mcp-servers/tool-rules';
 import type { ScopedToolGroupRow } from './store';
 
 /** Toolset / MCP group row built from the caller's own catalog (my-toolsets, my-mcp-servers). */
@@ -40,11 +42,14 @@ export function buildCatalogToolGroups(toolsets: BuilderSidebarToolset[]): Catal
     const fullNames = rawFullNames.map((fn) => `${groupDiscriminator}:${fn}`);
 
     const toolDescriptions: Record<string, string> = {};
-    rawFullNames.forEach((_rawFn, j) => {
+    const toolKinds: Record<string, 'destructive'> = {};
+    rawFullNames.forEach((rawFn, j) => {
       const key = fullNames[j]!;
       const t = (ts.tools || [])[j];
       const d = t && typeof t.description === 'string' ? t.description.trim() : '';
       if (d) toolDescriptions[key] = d;
+      // Toolsets carry no read/write metadata; only a deleting name is known to be destructive.
+      if (deletesByName(t?.name || rawFn.slice(rawFn.indexOf('.') + 1))) toolKinds[key] = 'destructive';
     });
 
     const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
@@ -57,6 +62,7 @@ export function buildCatalogToolGroups(toolsets: BuilderSidebarToolset[]): Catal
       iconPath: ts.iconPath?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      ...(Object.keys(toolKinds).length ? { toolKinds } : {}),
       isAuthenticated: Boolean(ts.isAuthenticated),
     });
   }
@@ -79,9 +85,12 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
     const fullNames: string[] = [];
     const toolDescriptions: Record<string, string> = {};
     const toolLabels: Record<string, string> = {};
+    const toolKinds: Record<string, 'read' | 'write' | 'destructive'> = {};
     for (const tool of tools) {
       const key = `${entry._id}:${tool.namespacedName.trim()}`;
       fullNames.push(key);
+      const kind = tool.kind ?? (deletesByName(tool.name || '') ? 'destructive' : undefined);
+      if (kind) toolKinds[key] = kind;
       const description = typeof tool.description === 'string' ? tool.description.trim() : '';
       if (description) toolDescriptions[key] = description;
       // The server's own name; `namespacedName` carries an `mcp_{server}_` prefix.
@@ -92,10 +101,58 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
       label: (entry.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       instanceId: entry._id,
+      typeId: entry.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
       toolLabels,
+      ...(Object.keys(toolKinds).length ? { toolKinds } : {}),
       isAuthenticated: Boolean(entry.isAuthenticated),
+    });
+  }
+  return groups;
+}
+
+/**
+ * Selection key of an API action operation. Its wire name `<instanceId>:<toolName>` already holds a
+ * colon, so the instance id goes in front once more for `bareToolFullName` to strip.
+ */
+export function apiActionToolKey(instanceId: string, toolName: string): string {
+  return `${instanceId}:${instanceId}:${toolName}`;
+}
+
+/**
+ * One group per API action, its operations labelled by their summary. `attached` (an agent's
+ * `apiToolsetTools`, wire names) limits the operations listed; without it every operation is.
+ */
+export function buildApiActionGroups(
+  instances: ApiToolset[],
+  attached?: readonly string[]
+): CatalogToolGroupRow[] {
+  const keep = attached ? new Set(attached) : null;
+  const groups: CatalogToolGroupRow[] = [];
+  for (const instance of instances) {
+    const operations = (instance.operations || []).filter(
+      (op) => !keep || keep.has(`${instance.id}:${op.toolName}`)
+    );
+    if (operations.length === 0) continue;
+
+    const toolDescriptions: Record<string, string> = {};
+    const toolLabels: Record<string, string> = {};
+    for (const op of operations) {
+      const key = apiActionToolKey(instance.id, op.toolName);
+      toolDescriptions[key] = `${op.method.toUpperCase()} ${op.path}`;
+      toolLabels[key] = op.summary?.trim() || op.toolName;
+    }
+
+    groups.push({
+      label: instance.name,
+      // One slug per action: the composer refuses two selected instances sharing a slug.
+      toolsetSlug: `api_action:${instance.id}`,
+      instanceId: instance.id,
+      fullNames: Object.keys(toolLabels),
+      toolDescriptions,
+      toolLabels,
+      isAuthenticated: Boolean(instance.isConnected),
     });
   }
   return groups;

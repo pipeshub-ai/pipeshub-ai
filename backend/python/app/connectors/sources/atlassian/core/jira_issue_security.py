@@ -1,8 +1,13 @@
 """Jira issue security levels for the team connectors.
 
 Issue security is not the project permission scheme. A project browse grant
-does not show an issue that has a security level. Sub-tasks inherit their
-parent issue's level; a story under an epic does not.
+does not show an issue that has a security level. Jira judges every issue by its
+own level: it copies a parent's level onto its sub-tasks, so a sub-task's own
+``security`` field carries it, but an epic's level does not reach the epic's
+children, which keep their own. A record inherits the record it is filed under,
+so the connector files a sub-task under its parent, and a story under its epic only
+when everyone who can read the story can read the epic (``level_reads_alike``);
+any other issue inherits its project.
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -32,6 +37,7 @@ Center ``/rest/api/2`` where the server exposes them):
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -59,6 +65,12 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
+# Holders that name the same people on every issue of a project. Reporter, assignee and
+# the field holders name people on each issue, so two issues in one level can differ.
+_SAME_ON_EVERY_ISSUE = frozenset({
+    HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
+    HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
+})
 
 
 class SchemeKnowledge(str, Enum):
@@ -82,32 +94,72 @@ class IssueSecurityContext:
     # Set only for a transient scheme read (429, 5xx, network). A 403 or a
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
+    # The HTTP status of the scheme or members read that failed, so the warning can tell
+    # a token without the scope (401) from an account without the permission (403).
+    read_status: int | None = None
+    # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
+    scope_refused: bool = False
 
-    def fingerprint(self) -> str:
+    def level_fingerprints(
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, str]:
+        """Level id -> a digest of its holders, so a change names the levels it touched.
+
+        An application-role holder is granted as that role's groups, so the groups are part
+        of its digest: a group leaving the role re-reads the level's issues.
+        """
+        return {
+            level_id: hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
+            )).encode()).hexdigest()[:16]
+            for level_id, holders in self.members_by_level.items()
+        }
+
+    def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
             return "none"
         if self.knowledge != SchemeKnowledge.PRESENT:
             return "unknown"
-        parts = [self.scheme_id or "", "1" if self.members_readable else "0"]
-        for level_id in sorted(self.members_by_level):
-            bits = sorted(
-                _holder_fingerprint(holder)
-                for holder in self.members_by_level[level_id]
-                if isinstance(holder, dict)
-            )
-            parts.append(f"{level_id}={','.join(bits)}")
-        return "|".join(parts)
+        levels = self.level_fingerprints(app_roles_mapping)
+        return "|".join([self.scheme_id or "", "1" if self.members_readable else "0",
+                         *(f"{lid}={levels[lid]}" for lid in sorted(levels))])
 
 
-def _holder_fingerprint(holder: dict[str, Any]) -> str:
+def _holder_fingerprint(
+    holder: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
     """Include the user. value alone misses an account change."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     account = user.get("accountId") or user.get("key") or user.get("name") or ""
     email = str(user.get("emailAddress") or "").lower()
-    return (
-        f"{holder.get('type')}:{holder.get('value') or holder.get('parameter')}:"
-        f"{account}:{email}"
-    )
+    role_key = holder.get("parameter") or holder.get("value")
+    # A deactivated user is not granted, so deactivation must change the digest too.
+    active = "inactive" if user.get("active") is False else ""
+    digest = f"{holder.get('type')}:{role_key}:{account}:{email}:{active}"
+    if holder.get("type") == HOLDER_APPLICATION_ROLE:
+        groups = application_role_groups(role_key, app_roles_mapping)
+        digest += ":" + "+".join(sorted(str(_group_ref(g)) for g in groups))
+    return digest
+
+
+def application_role_groups(
+    role_key: str | None, app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """The groups an application-role holder stands for.
+
+    A bare holder (no role key) is "Any logged in user": an account with access to any
+    Jira product, which is the union of every role's groups, not the whole org.
+    """
+    mapping = app_roles_mapping or {}
+    if role_key:
+        groups = mapping.get(role_key) or []
+    else:
+        groups = [g for role_groups in mapping.values() for g in role_groups or []]
+    return [g for g in groups if isinstance(g, dict) and _group_ref(g)]
+
+
+def _group_ref(group_info: dict[str, Any]) -> str | None:
+    return group_info.get("groupId") or group_info.get("name")
 
 
 def http_status_is_transient(status: int | None) -> bool:
@@ -156,6 +208,59 @@ async def collect_paged_values(
             return status, None
         if start > 100_000:
             return status, None
+
+
+def refuses_a_scope(body: object) -> bool:
+    """Whether a Jira 401 body says the token lacks a scope ("Unauthorized; scope does not match")."""
+    return isinstance(body, dict) and "scope does not match" in str(body.get("message") or "").lower()
+
+
+def scheme_has_no_levels(body: object) -> bool:
+    """A scheme body that lists no level. No issue can carry one, so its members need not
+    be read. The "Simplified" schemes of team-managed projects are like this."""
+    return isinstance(body, dict) and isinstance(body.get("levels"), list) and not body["levels"]
+
+
+UNREADABLE_SCOPE = "scope"
+UNREADABLE_AUTH = "auth"
+UNREADABLE_PERMISSION = "permission"
+UNREADABLE_ROLES = "roles"
+UNREADABLE_TRANSIENT = "transient"
+UNREADABLE_OTHER = "other"
+
+UNREADABLE_REASONS = {
+    UNREADABLE_SCOPE: (
+        "Jira refused the connector's authorisation (HTTP 401). Add read:issue-security-level:jira "
+        "and read:issue-security-scheme:jira to the Atlassian app, then reconnect the connector"
+    ),
+    UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
+    UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
+    UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_OTHER: "the read failed",
+}
+
+# Reasons after which issues keep the grants they were stored with, until a sync reads the
+# levels; after any other reason an issue that carries a level is closed to everyone.
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
+
+
+def unreadable_reason(context: IssueSecurityContext) -> str | None:
+    """Why a project's issue security levels cannot be applied, or None when they can (or
+    the project has no scheme). One of the ``UNREADABLE_*`` keys."""
+    if context.knowledge == SchemeKnowledge.NONE:
+        return None
+    if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
+        return None
+    if context.read_status == 401:
+        return UNREADABLE_SCOPE if context.scope_refused else UNREADABLE_AUTH
+    if context.read_status == 403 or context.scheme_forbidden:
+        return UNREADABLE_PERMISSION
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
+        return UNREADABLE_ROLES
+    if context.defer_checkpoint:
+        return UNREADABLE_TRANSIENT
+    return UNREADABLE_OTHER
 
 
 def classify_scheme_response(
@@ -266,6 +371,18 @@ def read_security_level(fields: dict[str, Any] | None) -> tuple[bool, str | None
         if level_id not in (None, ""):
             return True, str(level_id)
     return True, None
+
+
+def level_reads_alike(context: IssueSecurityContext, level_id: str) -> bool:
+    """Whether two issues of one project in this level are read by the same people.
+
+    True only when the level's members were read in full and none of them depends on
+    the issue. False for a level with no members listed.
+    """
+    if not context.enforce or not context.members_readable:
+        return False
+    holders = context.members_by_level.get(level_id)
+    return bool(holders) and all(holder.get("type") in _SAME_ON_EVERY_ISSUE for holder in holders)
 
 
 def _normalize_field_key(raw: str) -> str:
@@ -384,13 +501,11 @@ def _permissions_for_holder(
     if holder_type == HOLDER_APPLICATION_ROLE:
         # A security level must not become an org-wide grant. Resolve the role
         # to its groups, or skip it when those groups cannot be read.
-        role_key = parameter or value
-        groups = (app_roles_mapping or {}).get(role_key) if role_key else None
+        groups = application_role_groups(parameter or value, app_roles_mapping)
         if not groups:
             return grants, False, HOLDER_APPLICATION_ROLE
         for group_info in groups:
-            if isinstance(group_info, dict):
-                add_group(group_info.get("groupId") or group_info.get("name"))
+            add_group(_group_ref(group_info))
         return grants, False, None
 
     if holder_type == HOLDER_ANYONE:
@@ -472,7 +587,7 @@ def level_grants(
     return grants, False, skipped
 
 
-def apply_issue_access(
+def apply_issue_access_settled(
     record: Record,
     fields: dict[str, Any] | None,
     *,
@@ -483,13 +598,17 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
-) -> tuple[list[Permission], list[str]]:
-    """Set the issue's access rule and return the grants to write.
+) -> tuple[list[Permission], list[str], bool]:
+    """Set the issue's access rule and return the grants to write, the holder types
+    skipped, and whether the result is settled. Settled means the level (or its
+    absence) was read in full; a closed issue whose level could not be read is not,
+    though both write no grants.
 
-    A story under an epic in the same project inherits that epic. The epic's
-    level then hides the story from people who cannot open the epic. A parent
-    in another project is handled by the processor, which keeps the story on
-    its own project. Attachments are handled separately and stay empty.
+    An issue inherits the record it is filed under. A sub-task is filed under its parent
+    issue, whose level Jira copies onto it; a story under its epic only when everyone who
+    reads the story reads the epic; any other issue under its project. A parent in another
+    project is handled by the processor, which keeps the child on its own project.
+    Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
@@ -497,24 +616,28 @@ def apply_issue_access(
         record.inherit_permissions = True
         record.rewrite_permissions = True
         record.inherit_permissions_from_group = False
-        return [], []
+        return [], [], True
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 
-    def close() -> tuple[list[Permission], list[str]]:
+    def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
-        return [], []
+        return [], [], False
 
-    def project_open() -> tuple[list[Permission], list[str]]:
+    def project_open() -> tuple[list[Permission], list[str], bool]:
         record.access_rule = AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], []
+        return [], [], True
+
+    if present and security is None:
+        # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
+        return project_open()
 
     if context.knowledge == SchemeKnowledge.UNKNOWN:
         return close()
@@ -549,6 +672,28 @@ def apply_issue_access(
         return close()
     record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    return grants, skipped, True
+
+
+def apply_issue_access(
+    record: Record,
+    fields: dict[str, Any] | None,
+    *,
+    is_subtask: bool,
+    project_key: str,
+    context: IssueSecurityContext,
+    user_by_account_id: dict[str, Any] | None = None,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    reporter_email: str | None = None,
+    assignee_email: str | None = None,
+) -> tuple[list[Permission], list[str]]:
+    """``apply_issue_access_settled`` without the settled flag: the grants to write
+    and the holder types skipped."""
+    grants, skipped, _settled = apply_issue_access_settled(
+        record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
+        user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=reporter_email, assignee_email=assignee_email,
+    )
     return grants, skipped
 
 

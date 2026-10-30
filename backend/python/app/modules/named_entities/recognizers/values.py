@@ -35,16 +35,21 @@ _CODES = "|".join(sorted(ISO_4217 - _WORD_CODES))
 # run of "123 456 ..." costs O(n^2), hours for a numeric CSV.
 # A plain space groups thousands only where the currency follows ("1 250 €");
 # "$5 100 times" is five dollars.
-_NUMBER = r"(?>\d{1,3}(?:[,.\u00a0\u202f]\d{3})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
-_SPACED_NUMBER = r"(?>\d{1,3}(?:[,.\u00a0\u202f ]\d{3})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+# Indian grouping ("2,50,000", "12,34,56,789"), tried first: the thousands
+# alternative stops at ",50," and the plain one then reads "2,50" as 2.50. Each
+# repeat ends in its comma so it cannot eat the last group.
+_INDIAN_NUMBER = r"\d{1,2},(?:\d{2},)++\d{3}(?!,\d)(?:\.\d{1,2})?+"
+_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
+_SPACED_NUMBER = rf"(?>{_INDIAN_NUMBER}|\d{{1,3}}(?:[,.\u00a0\u202f ]\d{{3}})++(?:[.,]\d+)?+|\d++(?:[.,]\d++)?+)"
 _SCALE = rf"(?:\s?(?i:{SCALE_WORDS})\b)?"
-# "CAD 3D" and "$5MM" are not an amount followed by more letters.
-_END = r"(?![A-Za-z\d])"
+# "CAD 3D" and "$5MM" are not an amount followed by more letters, and a number
+# cut short of its next group ("₹2,50" of "₹2,50,000,000") is no amount at all.
+_END = r"(?![A-Za-z\d]|[.,]\d)"
 _MONEY = re.compile(
     rf"(?<![A-Za-z0-9.])(?:"
     rf"(?:US\$|R\$|C\$|A\$|HK\$|NZ\$|S\$|CN¥|RMB|Rs\.?|[$€£¥₹₩₽₺₪₫₱])\s?{_NUMBER}{_SCALE}{_END}"
     rf"|(?:{_CODES})\s?{_NUMBER}{_SCALE}{_END}"
-    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\s?(?:(?:{_CODES})\b|[€£₹]|(?i:dollar|euro|yen|rupee)s?\b))",
+    rf"|(?<![\d,][\s\u00a0])(?<!,){_SPACED_NUMBER}{_SCALE}\s?(?:(?:{_CODES})\b|[€£₹](?!\d)|(?i:dollar|euro|yen|rupee)s?\b))",
 )
 # A grouped number is read whole, so "1,000%" is never "000%".
 _GROUPED = r"(?>\d{1,3}(?:,\d{3})++|\d++)(?:\.\d++)?+"
@@ -82,8 +87,8 @@ class ValueCandidateRecognizer:
         if kind not in self._enabled:
             return
         start, end = match.span()
-        if kind in _SIGNED:
-            start, end = _with_sign(unit.text, start, end)
+        if kind in _SIGNED or (kind is EntityKind.DIMENSION and _TEMPERATURE.search(match.group(0))):
+            start, end = _with_sign(unit.text, start, end, kind)
         out.append(
             RawMention(
                 kind=kind,
@@ -121,16 +126,41 @@ class ValueCandidateRecognizer:
 
 
 _SIGNED = frozenset({EntityKind.CURRENCY, EntityKind.PERCENTAGE})
+# Only temperatures go below zero; a minus before "5 kg" is a dash.
+_TEMPERATURE = re.compile(r"°[CF]|celsius|fahrenheit", re.IGNORECASE)
 
 
-def _with_sign(text: str, start: int, end: int) -> tuple[int, int]:
+def _with_sign(text: str, start: int, end: int, kind: EntityKind) -> tuple[int, int]:
     """Take in a minus sign or accounting parentheses: a refund of "-$500" or a
-    "($1,200)" loss is not the same amount as a $500 fee."""
-    if start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")":
+    "($1,200)" loss is not the same amount as a $500 fee. A percentage in
+    parentheses is negative only standing alone on its line or in a table cell
+    ("(3.2%)"); next to text it is an aside ("Sales tax (CA) (8.25%)", "(8.25%) sales
+    tax"). A temperature takes a minus sign only, and a doubled one ("--25 °C") is no sign."""
+    if (
+        kind is not EntityKind.DIMENSION
+        and start > 0 and end < len(text) and text[start - 1] == "(" and text[end] == ")"
+        and (kind is not EntityKind.PERCENTAGE or _stands_alone(text, start - 1, end + 1))
+    ):
         return start - 1, end + 1
-    if start > 0 and text[start - 1] in "-−\u2012\u2013" and (start == 1 or not text[start - 2].isalnum()):
+    if start > 0 and text[start - 1] in _MINUS and (
+        # "--25" is no sign; "-10–-40" is a range dash before a minus.
+        start == 1 or not (text[start - 2].isalnum() or text[start - 2] == text[start - 1])
+    ):
         return start - 1, end
     return start, end
+
+
+_MINUS = "-−\u2012\u2013"
+# Cell padding: plain and nonbreaking spaces (tables pasted from documents carry both).
+_PADDING = " \u00a0"
+
+
+def _stands_alone(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is alone on its line or in its table cell:
+    nothing but padding between it and the line's ends or a cell separator."""
+    before = text[:start].rpartition("\n")[2].rstrip(_PADDING)
+    after = text[end:].partition("\n")[0].lstrip(_PADDING)
+    return (before == "" or before.endswith(("|", "\t"))) and (after == "" or after.startswith(("|", "\t")))
 
 
 def _date_kind(surface: str) -> EntityKind:

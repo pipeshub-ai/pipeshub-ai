@@ -85,7 +85,7 @@ class Neo4jClient:
         liveness_check_timeout: float = DEFAULT_LIVENESS_CHECK_TIMEOUT,
         stale_session_max_age: float = DEFAULT_STALE_SESSION_MAX_AGE,
         rebuild_cooldown: float = DEFAULT_REBUILD_COOLDOWN,
-        explicit_transactions: bool = False,
+        explicit_transactions: bool = True,
         honour_explicit_requests: bool = True,
         transaction_timeout: float = DEFAULT_TRANSACTION_TIMEOUT,
     ) -> None:
@@ -112,10 +112,11 @@ class Neo4jClient:
                 loop's driver
             explicit_transactions: open a real Neo4j transaction per
                 ``begin_transaction`` so ``abort_transaction`` rolls back.
-                Off by default: each query in a "transaction" is then its own
-                auto-commit, as it has always been, and an abort only closes
-                the session. Explicit transactions hold node locks until
-                commit, which changes contention on shared nodes.
+                On by default. Off, each query in a "transaction" is its own
+                auto-commit and an abort only closes the session. Explicit
+                transactions hold node locks until commit, so concurrent
+                writers on shared nodes can deadlock (the transaction helpers
+                re-run the block).
             honour_explicit_requests: let a caller ask for a real transaction
                 with ``begin_transaction(explicit=True)`` while
                 ``explicit_transactions`` is off. False is the kill switch:

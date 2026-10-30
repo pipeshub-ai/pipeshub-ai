@@ -136,7 +136,7 @@ async def test_dense_runs_only_for_embedded_kinds_and_never_repeats_an_exact_can
         return [_hit(acme["id"], "Acme"), _hit("other", "Acme Labs")]
 
     _, found = await _find([acme], {acme["id"]}, [{"name": "Acme", "kind": "organization"}, {"name": "Sam Lee", "kind": "person"}], dense=dense)
-    assert calls == [("Acme", ["organization"])]
+    assert calls == [("Acme", ["product", "organization"])]
     assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [
         ("Acme", CandidateSource.EXACT), ("Acme Labs", CandidateSource.DENSE),
     ]
@@ -203,3 +203,106 @@ async def test_an_exact_node_does_not_push_a_longer_name_out_of_the_cap() -> Non
     assert entry.candidates[0].source is CandidateSource.EXACT
     assert [c.name for c in entry.candidates[1:]] == [f"Sam {c}" for c in "abcde"]
     assert entry.ambiguous is False
+
+
+def _people(*names: str) -> list[dict[str, Any]]:
+    return [_node("person", f"name:person:{n.lower()}", n) for n in names]
+
+
+@pytest.mark.asyncio
+async def test_a_misspelled_surname_finds_the_person_by_a_near_spelling() -> None:
+    target, other, longer = _people("Maya Castellanos", "Maya Chen", "Maya Castellanos Ruiz")
+    graph, found = await _find(
+        [target, other, longer], {target["id"], other["id"], longer["id"]},
+        [{"name": "Maya Castelanos", "kind": "person"}],
+    )
+    (entry,) = found.per_mention
+    assert [(c.name, c.source) for c in entry.candidates] == [("Maya Castellanos", CandidateSource.FUZZY)]
+    # The first word's rows are read in the same call as the prefixes.
+    assert graph.prefix_calls == [[("person", "name:person:maya"), ("person", "name:person:maya castelanos")]]
+
+
+@pytest.mark.asyncio
+async def test_only_near_spellings_are_access_checked() -> None:
+    target, *others = _people("Maya Castellanos", "Maya Chen", "Maya Lopez")
+    graph = _Graph([target, *others])
+    probe = _probe({n["id"] for n in [target, *others]})
+    await CandidateFinder(graph, CONTEXT, dense=None, probe=probe).find(
+        parse_mentions([{"name": "Maya Castelanos", "kind": "person"}]).mentions,
+    )
+    assert [entity_id for entity_id, _ in probe.seen[0]] == [target["id"]]
+
+
+@pytest.mark.asyncio
+async def test_many_people_sharing_the_first_word_do_not_make_a_misspelling_ambiguous() -> None:
+    crowd = _people(*(f"Maya Person{i}" for i in range(MAX_CANDIDATES + 2)), "Maya Castellanos")
+    _, found = await _find(crowd, {n["id"] for n in crowd}, [{"name": "Maya Castelanos", "kind": "person"}])
+    (entry,) = found.per_mention
+    assert not entry.ambiguous and [c.name for c in entry.candidates] == ["Maya Castellanos"]
+
+
+@pytest.mark.asyncio
+async def test_a_one_word_name_shares_the_first_word_rows_as_plain_prefixes() -> None:
+    target, other = _people("Maya Castellanos", "Maya Chen")
+    graph, found = await _find(
+        [target, other], {target["id"], other["id"]},
+        [{"name": "Maya", "kind": "person"}, {"name": "Maya Castelanos", "kind": "person"}],
+    )
+    assert [c.name for c in found.per_mention[0].candidates] == ["Maya Castellanos", "Maya Chen"]
+    assert all(c.source is CandidateSource.PREFIX for c in found.per_mention[0].candidates)
+    assert [c.name for c in found.per_mention[1].candidates] == ["Maya Castellanos"]
+    assert len(graph.prefix_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("asked", "stored", "found"), [
+    ("Anna Berg", "Anna Borg", False),
+    ("John Smith", "John Smyth", False),
+    ("Maya Castelanos", "Maya Castellanos", True),
+])
+async def test_a_near_spelling_compares_the_surname_only(asked: str, stored: str, found: bool) -> None:
+    (node,) = _people(stored)
+    _, result = await _find([node], {node["id"]}, [{"name": asked, "kind": "person"}])
+    assert bool(result.per_mention[0].candidates) is found
+
+
+@pytest.mark.asyncio
+async def test_a_correct_full_name_is_exact_and_organizations_get_no_fuzzy_lookup() -> None:
+    (maya,) = _people("Maya Castellanos")
+    graph, found = await _find([maya], {maya["id"]}, [
+        {"name": "Maya Castellanos", "kind": "person"}, {"name": "Acme Robotics", "kind": "organization"},
+    ])
+    assert [(c.name, c.source) for c in found.per_mention[0].candidates] == [("Maya Castellanos", CandidateSource.EXACT)]
+    assert ("organization", "name:organization:acme") not in graph.prefix_calls[0]
+
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_fill_the_cap_but_never_make_a_name_ambiguous() -> None:
+    products = [_node("product", f"name:product:halcyon {w}", f"Halcyon {w}") for w in ("ledger", "pay", "books")]
+    companies = [_node("organization", f"name:organization:halcyon {w}", f"Halcyon {w}") for w in ("foods", "labs", "group", "capital")]
+    nodes = [*products, *companies]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert not entry.ambiguous
+    names = [c.name for c in entry.candidates]
+    assert names[:3] == ["Halcyon books", "Halcyon ledger", "Halcyon pay"] and len(names) == MAX_CANDIDATES
+    assert entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_related_kind_prefixes_that_fit_the_cap_report_nothing_cut() -> None:
+    nodes = [
+        _node("product", "name:product:halcyon ledger", "Halcyon ledger"),
+        _node("organization", "name:organization:halcyon foods", "Halcyon foods"),
+    ]
+    _, found = await _find(nodes, {n["id"] for n in nodes}, [{"name": "Halcyon", "kind": "product"}])
+    (entry,) = found.per_mention
+    assert len(entry.candidates) == 2 and not entry.more_related
+
+
+@pytest.mark.asyncio
+async def test_a_product_hint_reaches_a_name_filed_as_an_organization() -> None:
+    company = _node("organization", "name:organization:halcyon ledger", "Halcyon Ledger")
+    _, found = await _find([company], {company["id"]}, [{"name": "Halcyon Ledger", "kind": "product"}])
+    assert [(c.name, c.kind) for c in found.per_mention[0].candidates] == [("Halcyon Ledger", "organization")]

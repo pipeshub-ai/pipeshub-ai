@@ -29,6 +29,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.models.entities import CodeFileRecord, RecordType
+from app.modules.code_graph import deleted_files
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
     block_key_for,
@@ -373,6 +374,38 @@ async def test_deleting_a_files_blocks(repo: _Repo) -> None:
     rid = repo.record_ids["src/shop/a.py"]
     assert await repo.graph.delete_blocks_for_records([rid]) >= 1
     assert not await repo.graph.has_nodes_by_filters(BLOCKS, filters={"recordId": rid})
+
+
+async def test_a_deleted_files_names_are_kept_and_served_once(repo: _Repo) -> None:
+    """The sync point a delete leaves for the incremental build: found by the
+    delete event's record, listed by the build's repo, removed when served."""
+    rid = repo.record_ids["src/shop/b.py"]
+    doc = await repo.graph.get_document(rid, RECORDS)
+    assert doc is not None
+    await deleted_files.remember(repo.graph, [{**doc, "_key": rid}], logger)
+    try:
+        assert await deleted_files.was_remembered(repo.graph, repo.org_id, rid)
+        assert not (await deleted_files.pending(repo.graph, repo.org_id, repo.group_id)).keys, \
+            "not served while the record is there"
+
+        await repo.graph.delete_blocks_for_records([rid])
+        await repo.graph.delete_nodes_and_edges([rid], CollectionNames.CODE_FILES.value)
+        await repo.graph.delete_nodes_and_edges([rid], RECORDS)
+        pending = await deleted_files.pending(repo.graph, repo.org_id, repo.group_id)
+        assert len(pending.keys) == 1
+        assert {"target", "helper", "module:shop/b"} <= pending.names
+        result = await build_code_graph_edges(
+            graph_provider=repo.graph, org_id=repo.org_id, record_group_id=repo.group_id,
+            touched_record_ids=set(), deleted_names=pending.names, facts_source=repo.blobs,
+        )
+        assert result.files_reresolved >= 1, "the file that called into it"
+
+        await deleted_files.forget(repo.graph, pending.keys, logging.getLogger("it"))
+        assert not await deleted_files.was_remembered(repo.graph, repo.org_id, rid)
+    finally:
+        for key in (await deleted_files.pending(repo.graph, repo.org_id, repo.group_id)).keys:
+            with contextlib.suppress(Exception):
+                await repo.graph.remove_sync_point(key, CollectionNames.SYNC_POINTS.value)
 
 
 # -- end to end: parse -> project -> build -> an agent tool's answer ---------

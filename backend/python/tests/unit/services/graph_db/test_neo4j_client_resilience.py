@@ -314,7 +314,7 @@ class TestExplicitTransactions:
     async def test_flag_off_keeps_autocommit_sessions(self, ensure_db) -> None:
         driver = _driver([])
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
-            client = _client()
+            client = _client(explicit_transactions=False)
             await client.connect()
             txn = await client.begin_transaction([], [])
             await client.execute_query("MATCH (n) RETURN n", txn_id=txn)
@@ -330,7 +330,7 @@ class TestExplicitTransactions:
     async def test_one_call_can_ask_for_a_real_transaction_with_the_flag_off(self, ensure_db) -> None:
         driver = _driver([])
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
-            client = _client(transaction_timeout=42.0)
+            client = _client(explicit_transactions=False, transaction_timeout=42.0)
             await client.connect()
             txn = await client.begin_transaction([], [], explicit=True)
             await client.execute_query("CREATE (n)", txn_id=txn)
@@ -343,6 +343,9 @@ class TestExplicitTransactions:
         assert asked.ran == []  # the statement ran inside the transaction, not on the session
         default.begin_transaction.assert_not_awaited()
         assert not client.explicit_transactions
+
+    def test_the_client_opens_real_transactions_by_default(self) -> None:
+        assert _client().explicit_transactions
 
     @pytest.mark.asyncio
     async def test_one_call_can_decline_the_transaction_with_the_flag_on(self, ensure_db) -> None:
@@ -484,7 +487,7 @@ class TestServerTimeoutInASession:
 
         driver = _driver([])
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
-            client = _client()
+            client = _client(explicit_transactions=False)
             await client.connect()
             txn = await client.begin_transaction([], [])
             await client.execute_query("RETURN 1", txn_id=txn, timeout=2.5)

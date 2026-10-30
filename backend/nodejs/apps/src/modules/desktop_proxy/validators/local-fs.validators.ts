@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 /**
  Zod validator for the server-driven Local FS sync.
@@ -8,11 +9,11 @@ export const LocalFsPullEventsSchema = z.object({
     connectorId: z.string().min(1),
     deviceId: z.string().min(1),
     runId: z.string().min(1),
-    batchIndex: z.number().int().min(0),
+    batchIndex: z.number().check(integerCheck()).min(0),
     mode: z.enum(['FULL', 'INCREMENTAL']),
     cursor: z.string().nullable().optional(),
-    maxEvents: z.number().int().min(1).max(1000),
-    timeoutMs: z.number().int().min(1000).max(300_000),
+    maxEvents: z.number().check(integerCheck()).min(1).max(1000),
+    timeoutMs: z.number().check(integerCheck()).min(1000).max(300_000),
   }),
 });
 
@@ -23,6 +24,6 @@ export const LocalFsFetchContentSchema = z.object({
     relPath: z.string().min(1),
     externalRecordId: z.string().min(1),
     sha256: z.string().nullable().optional(),
-    timeoutMs: z.number().int().min(1000).max(300_000),
+    timeoutMs: z.number().check(integerCheck()).min(1000).max(300_000),
   }),
 });

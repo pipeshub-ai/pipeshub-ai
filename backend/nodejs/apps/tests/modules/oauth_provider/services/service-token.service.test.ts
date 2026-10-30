@@ -196,6 +196,23 @@ describe('ServiceTokenService', () => {
         expect((error as Error).message).to.contain('cannot exceed');
       }
     });
+
+    it('takes any whole number of days in between, not only the presets', async () => {
+      // The token screen offers a custom lifetime; the token must live exactly
+      // that long, since its signed expiry is what ends it.
+      const { service, tokens } = makeService();
+      for (const days of [1, 7, 45, SERVICE_TOKEN_MAX_EXPIRY_DAYS]) {
+        await service.createToken(orgId, adminId, {
+          serviceAccountId: accountId,
+          name: 'nightly',
+          scopes: ['kb:read'],
+          expiryDays: days,
+        });
+        expect(
+          tokens.generateTokens.lastCall.args[7].accessTokenLifetimeOverrideSeconds,
+        ).to.equal(days * 86400);
+      }
+    });
   });
 
   describe('the number of live tokens is bounded', () => {

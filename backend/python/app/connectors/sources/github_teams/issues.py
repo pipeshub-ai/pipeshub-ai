@@ -115,6 +115,18 @@ def _priority_from_issue_field_values(field_values: Any) -> str | None:
     return None
 
 
+def _second(value: datetime | None) -> int | None:
+    if not isinstance(value, datetime):
+        return None
+    aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return int(aware.timestamp())
+
+
+def _before(a: datetime | None, b: datetime | None) -> bool:
+    sa, sb = _second(a), _second(b)
+    return sa is not None and sb is not None and sa < sb
+
+
 def _status_from_issue(issue: Any) -> str:
     """GitHub state (+ ``state_reason``) -> ``Status``.
 
@@ -177,8 +189,8 @@ class IssuesSync:
     # Sync entry point
     # ------------------------------------------------------------------
 
-    async def fetch_issues_batched(self, repo: GhObject) -> None:
-        """Sync a repo's issues, one page at a time.
+    async def fetch_issues_batched(self, repo: GhObject) -> bool:
+        """Sync a repo's issues, one page at a time; return False if it did not complete.
 
         Each page of 100 is fetched, mapped and persisted before the next is
         requested, so records start landing after the first page instead of
@@ -197,12 +209,24 @@ class IssuesSync:
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
+        group_id = f"{repo.id}-work-items"
         self._app_user_emails = None  # refresh per repo; user sync may have bound new users
+
+        if getattr(repo, "has_issues", True) is False:
+            # GitHub answers 410 for the listing and hides every issue. Mirror that, and
+            # drop the watermark so turning issues back on reads them all again. The
+            # total (0, as GitHub shows) marks the pull requests' files as settled.
+            await c.issue_reconciler.remove_all(repo, group_id)
+            if (await self._read_checkpoint(group_id)).get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+                await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
+            await self._write_checkpoint(group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0})
+            return True
 
         # Only the issues watermark: PRs page their own listing against their
         # own checkpoint, so taking the min of both would re-fetch issues from
         # further back than necessary whenever the PR side lagged.
-        last_sync_time = await self._get_sync_checkpoint(f"{repo.id}-work-items")
+        checkpoint = await self._read_checkpoint(group_id)
+        last_sync_time = checkpoint.get(GitHubLiterals.LAST_SYNC_TIME.value)
         checkpoint_dt = (
             datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
             if last_sync_time is not None else None
@@ -220,20 +244,22 @@ class IssuesSync:
         request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
 
         page = 1
+        cursor: str | None = None
+        created: set[int] = set()  # issues created since the last sync
         processed = 0
         watermarks: dict[str, int] = {}
         while True:
             issues_res = await c.runtime.ds_call(
                 c.data_source.list_issues, owner, repo_name,
                 state="all", since=request_since, sort="updated", direction="desc",
-                per_page=ISSUE_PAGE_SIZE, page=page,
+                per_page=ISSUE_PAGE_SIZE, page=page, after=cursor,
             )
             if not issues_res.success:
                 self.logger.error(
                     "Error fetching issues for %s (page %s): %s; not advancing the checkpoint "
                     "so this page is retried next sync.", repo.full_name, page, issues_res.error,
                 )
-                return
+                return False
             listed = issues_res.data or []
             if not listed:
                 break
@@ -251,21 +277,90 @@ class IssuesSync:
                     "stays behind the failure instead of skipping past it.",
                     repo.full_name, page,
                 )
-                return
+                return False
             processed += len(items)
+            created.update(
+                i.number for i in items
+                if "/pull/" not in (getattr(i, "html_url", "") or "")
+                # The checkpoint's own second counts: overcounting only costs a sweep.
+                and (since_dt is None or not _before(i.created_at, since_dt))
+            )
 
             if len(items) < len(listed) or len(listed) < ISSUE_PAGE_SIZE:
                 break
+            # GitHub refuses page numbers past 10,000 items on this listing, and
+            # pull requests count towards them, so a busy repository could never
+            # be read further back. Follow the cursor GitHub hands out instead;
+            # the page number is the fallback where it offers none.
+            next_cursor = issues_res.next_cursor
+            if cursor is not None and next_cursor is None:
+                # A cursor page that holds the rest of the listing is full and
+                # has no next link. Asking for a page number now would be refused.
+                break
+            if next_cursor is not None and next_cursor == cursor:
+                self.logger.error(
+                    "GitHub returned the same issues cursor twice for %s (page %s); stopping "
+                    "without advancing the checkpoint.", repo.full_name, page,
+                )
+                return False
+            cursor = next_cursor
             page += 1
 
-        if not processed:
-            self.logger.debug("No issues found for %s", repo.full_name)
-            return
-        self.logger.info(
-            "Synced %s issue(s) for %s across %s page(s)", processed, repo.full_name, page,
+        if processed:
+            self.logger.info(
+                "Synced %s issue(s) for %s across %s page(s)", processed, repo.full_name, page,
+            )
+        if checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+            # A full sync (its sync points are gone) or the first sync of this version.
+            await c.comments.settle_stored_attachments(group_id)
+            await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
+        new_checkpoint = dict(checkpoint)
+        # The count shortcut needs every issue created since the last total listed, so
+        # it holds only when the listing started at the checkpoint. A window start past
+        # it (a relative window moves on its own) hides some: check by number instead.
+        previous_total = checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value) if since_dt == checkpoint_dt else None
+        ok, total = await self._reconcile_removed_issues(
+            repo, group_id, previous_total, len(created), datetime_to_epoch_ms(window_dt),
         )
-        for group_id, last_sync_time in watermarks.items():
-            await self._update_sync_checkpoint(group_id, last_sync_time)
+        # The watermark moves only with the total: the next count check adds the issues
+        # created since the watermark to the stored total, so the two must stay paired.
+        if ok and watermarks.get(group_id):
+            new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]
+        if total is not None:
+            new_checkpoint[GitHubLiterals.ISSUE_TOTAL.value] = total
+        if new_checkpoint != checkpoint:
+            await self._write_checkpoint(group_id, new_checkpoint)
+        return ok
+
+    async def _reconcile_removed_issues(
+        self, repo: GhObject, group_id: str, previous_total: int | None, created: int,
+        window_ms: int | None,
+    ) -> tuple[bool, int | None]:
+        """Remove issues deleted from or transferred out of the repository, and
+        re-read any the listing missed.
+
+        Returns ``(ok, total to remember)``. GitHub's issue total equal to the last
+        one plus the issues created since means nothing left, and costs one query.
+        """
+        reconciler = self.c.issue_reconciler
+        total = await reconciler.source_total(repo.owner.login, repo.name)
+        if total is None:
+            self.logger.warning("Could not read the issue total of %s; removed issues are not checked "
+                                "this sync.", repo.full_name)
+            return False, None
+        if previous_total is not None and total == previous_total + created:
+            return True, total
+        swept = await reconciler.reconcile(
+            repo, group_id, lambda issues: self._store_missed_issues(repo, issues), window_ms,
+        )
+        if swept is None:
+            return False, None
+        return True, swept
+
+    async def _store_missed_issues(self, repo: GhObject, issues: list[Any]) -> bool:
+        """Store issues the listing skipped. The checkpoint is not moved: these are
+        older than what the listing already committed."""
+        return await self.process_new_records(await self._build_issue_records(repo, issues), {})
 
     # ------------------------------------------------------------------
     # Record building (split issues vs PRs)
@@ -451,11 +546,21 @@ class IssuesSync:
         for item in res.data or []:
             if not isinstance(item, dict) or not item.get("number"):
                 continue
-            target_repo_id = (item.get("repository") or {}).get("id") or repo.id
+            explicit_repo_id = (item.get("repository") or {}).get("id")
+            target_repo_id = explicit_repo_id or repo.id
+            # Another repository's title is not ours to copy: its stub can end up
+            # in this repository's group. Cross-repo links fall back to the id.
+            # An unknown target repository counts as foreign.
+            if explicit_repo_id:
+                same_repo = str(explicit_repo_id) == str(repo.id)
+            else:
+                same_repo = str(item.get("repository_url") or "").lower().endswith(
+                    f"/repos/{repo.full_name}".lower()
+                )
             related.append(RelatedExternalRecord(
                 external_record_id=f"{target_repo_id}/issues/{item['number']}",
                 record_type=RecordType.TICKET,
-                record_name=item.get("title"),
+                record_name=item.get("title") if same_repo else None,
                 relation_type=RecordRelations.BLOCKS,
             ))
         return related
@@ -582,7 +687,8 @@ class IssuesSync:
 
         markdown_raw: str = getattr(issue, "body", "") or ""
         body_with_images = await c.comments.embed_images_as_base64(markdown_raw)
-        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record)
+        linked: set[str] = set()
+        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record, linked)
 
         bg_0 = BlockGroup(
             index=0,
@@ -598,13 +704,18 @@ class IssuesSync:
         )
         block_groups: list[BlockGroup] = [bg_0]
 
-        comment_bgs, comment_remaining = await c.comments.build_issue_comment_blocks(
-            owner, repo_name, issue_number, parent_index=0, record=record,
-        )
-        block_groups.extend(comment_bgs)
-        remaining.extend(comment_remaining)
+        # The issue carries its comment count. About a fifth of issues have none,
+        # and asking for their comments spends a GitHub call to learn that. A
+        # count that is missing or not a number still asks.
+        if getattr(issue, "comments", None) != 0:
+            comment_bgs, comment_remaining = await c.comments.build_issue_comment_blocks(
+                owner, repo_name, issue_number, parent_index=0, record=record, seen_keys=linked,
+            )
+            block_groups.extend(comment_bgs)
+            remaining.extend(comment_remaining)
 
         await self.process_new_records(remaining)
+        await c.comments.remove_unlinked_attachments(record, linked)
         wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=[], block_groups=block_groups)
         return blocks_container.model_dump_json(indent=2).encode(GitHubLiterals.UTF_8.value)
@@ -654,6 +765,19 @@ class IssuesSync:
     # ------------------------------------------------------------------
     # Checkpoints
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _checkpoint_key(external_record_group_id: str) -> str:
+        return generate_record_sync_point_key(Connectors.GITHUB_TEAMS.value, external_record_group_id, "")
+
+    async def _read_checkpoint(self, external_record_group_id: str) -> dict[str, Any]:
+        try:
+            return dict(await self.c.record_sync_point.read_sync_point(self._checkpoint_key(external_record_group_id)) or {})
+        except Exception:
+            return {}
+
+    async def _write_checkpoint(self, external_record_group_id: str, data: dict[str, Any]) -> None:
+        await self.c.record_sync_point.update_sync_point(self._checkpoint_key(external_record_group_id), data)
 
     async def _get_sync_checkpoint(self, external_record_group_id: str) -> int | None:
         try:

@@ -78,6 +78,34 @@ async def test_regex_search_and_its_guards() -> None:
                                              mode="text"))["error"]
 
 
+async def test_text_search_drops_a_checkout_prefix_the_index_lacks() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/**")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+    assert out["path"] == "src/**"
+
+
+async def test_text_search_on_a_missing_path_is_an_error_naming_what_exists() -> None:
+    out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                 pattern="x", mode="text", path="src/nope/")
+    assert "nothing was searched" in out["error"]
+    assert "src/ holds: " in out["error"] and "b.py" in out["error"]
+    for wide in ("repo/nope/**", "nope/**"):  # never widened to `**`, the whole repo
+        out = await search_code_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(),
+                                     pattern="x", mode="text", path=wide)
+        assert "nothing was searched" in out["error"], wide
+
+
+async def test_text_search_skips_a_suffix_only_another_connector_holds() -> None:
+    graph = QueryGraphProvider()
+    graph.code_files["rec-x"] = "repo/src/b.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": "conn-2",
+                              "virtualRecordId": "v-x"}
+    out = await search_code_impl(**_ctx(graph), blob_store=_blobs(),
+                                 pattern='"payments"', mode="text", path="repo/src/b.py")
+    assert [m["file_path"] for m in out["matches"]] == ["src/b.py"]
+
+
 async def test_impact_groups_what_reaches_a_symbol_by_file() -> None:
     out = without_marker(await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/b.py",
                                            qualified_name="function:target"))
@@ -115,3 +143,48 @@ async def test_impact_lists_the_tests_a_change_reaches_apart() -> None:
     assert out["impacted_tests"] == [
         {"file_path": "src/a.py", "symbols": ["function:caller"], "nearest_hop": 1}]
     assert "hidden_tests" not in out
+
+
+async def test_impact_marks_what_builds_on_a_symbol_and_can_follow_calls_only() -> None:
+    """`target` inherits Thing and `caller` calls target: one builds on Thing, one reaches it by a call."""
+    ctx = _ctx(QueryGraphProvider())
+    out = without_marker(await impact_impl(**ctx, file_path="src/b.py", qualified_name="class:Thing"))
+    assert out["impacted_files"] == [
+        {"file_path": "src/b.py", "symbols": ["function:target"], "built_on": ["function:target"],
+         "nearest_hop": 1},
+        {"file_path": "src/a.py", "symbols": ["function:caller"], "nearest_hop": 2}]
+    calls = without_marker(await impact_impl(**ctx, file_path="src/b.py", qualified_name="class:Thing",
+                                             edge_types=["CALLS"]))
+    assert calls["impacted_files"] == []
+    assert "unknown edge_types" in (await impact_impl(**ctx, file_path="src/b.py",
+                                                      qualified_name="class:Thing",
+                                                      edge_types=["CONTAINS"]))["error"]
+
+
+async def test_impact_of_an_unresolved_symbol_is_an_error_not_an_empty_blast_radius() -> None:
+    out = await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/vs/b.py",
+                            qualified_name="function:target")
+    assert "No readable symbol" in out["error"]
+
+
+async def test_hidden_test_neighbours_say_how_to_list_them() -> None:
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    out = await get_neighbour_impl(**_ctx(QueryGraphProvider(file_roles={"rec-a": "test"})),
+                                   file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", edge_types=["CALLS"])
+    assert out["hidden_tests"] == 1 and "include_tests=true" in out["hint"]
+
+
+async def test_a_capped_depth_is_reported_and_impact_walks_five_levels() -> None:
+    """A walk cut short silently reads as "nothing further up"."""
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    ctx = _ctx(QueryGraphProvider())
+    out = await get_neighbour_impl(**ctx, file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", depth=5)
+    assert "depth 5 asked, 3 walked" in out["depth_capped"]
+    five = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=5)
+    assert "depth_capped" not in five
+    seven = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=7)
+    assert "7 asked, 5 walked" in seven["depth_capped"]

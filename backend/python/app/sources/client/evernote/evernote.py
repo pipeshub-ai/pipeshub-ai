@@ -81,7 +81,9 @@ except ImportError:
 class EvernoteResponse(BaseModel):
     """Standardized Evernote API response wrapper"""
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    # Thrift calls return a struct (converted to a dict), a list, or a scalar
+    # such as the update sequence number deleteNote/updateNotebook return.
+    data: Any = None
     error: Optional[str] = None
     message: Optional[str] = None
 

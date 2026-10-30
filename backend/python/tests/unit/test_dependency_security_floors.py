@@ -2,8 +2,7 @@
 
 The image installs the manifest on top of a published base image, and uv keeps a
 package that still satisfies the manifest, so a transitive dependency only moves
-when the manifest names it. These checks also keep the integration-test manifest
-on the same pins as the backend one.
+when the manifest names it.
 """
 
 import importlib.metadata
@@ -17,7 +16,6 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 BACKEND_MANIFEST = Path(__file__).resolve().parents[2] / "pyproject.toml"
-INTEGRATION_MANIFEST = Path(__file__).resolve().parents[4] / "integration-tests" / "pyproject.toml"
 
 # package -> lowest release that carries the fixes for the advisories listed.
 SECURITY_FLOORS = {
@@ -29,6 +27,8 @@ SECURITY_FLOORS = {
     "redshift-connector": Version("2.1.14"),
     # GHSA-vfmq-68hx-4jfw
     "lxml": Version("6.1.0"),
+    # GHSA-h35f-9h28-mq5c, GHSA-xmj3-9gf7-h52w
+    "setuptools": Version("84.1.0"),
 }
 
 # package -> malicious releases that must never resolve, whatever the floor.
@@ -62,29 +62,16 @@ def test_backend_manifest_does_not_admit_a_vulnerable_release(package: str) -> N
     assert min(lower_bounds) >= SECURITY_FLOORS[package]
 
 
-@pytest.mark.parametrize("package", sorted(SECURITY_FLOORS))
-def test_integration_tests_manifest_carries_the_same_pin(package: str) -> None:
-    if not INTEGRATION_MANIFEST.exists():
-        pytest.skip("integration-tests/ is not part of this checkout")
-    integration = _specifiers(INTEGRATION_MANIFEST)
-    if package not in integration:
-        pytest.skip(f"integration-tests/ does not name {package}")
-    assert integration[package] == _specifiers(BACKEND_MANIFEST)[package]
-
-
 @pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
 def test_installed_release_is_not_a_compromised_one(package: str) -> None:
     assert Version(importlib.metadata.version(package)) not in COMPROMISED_RELEASES[package]
 
 
-@pytest.mark.parametrize("manifest", [BACKEND_MANIFEST, INTEGRATION_MANIFEST], ids=["backend", "integration-tests"])
 @pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
-def test_manifest_excludes_compromised_releases(package: str, manifest: Path) -> None:
-    if not manifest.exists():
-        pytest.skip(f"{manifest.parent.name}/ is not part of this checkout")
-    specifier = Requirement(f"{package}{_specifiers(manifest)[package]}").specifier
+def test_manifest_excludes_compromised_releases(package: str) -> None:
+    specifier = Requirement(f"{package}{_specifiers(BACKEND_MANIFEST)[package]}").specifier
     for release in COMPROMISED_RELEASES[package]:
-        assert not specifier.contains(release, prereleases=True), f"{manifest} admits {package} {release}"
+        assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
 
 
 def test_no_compromised_file_in_site_packages() -> None:

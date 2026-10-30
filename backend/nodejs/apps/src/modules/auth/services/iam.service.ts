@@ -57,8 +57,6 @@ export class IamService {
   }
 
   //Create a new user via IAM backend
-  //Note: Currently not used for SAML JIT provisioning as it requires admin authentication and doesn't handle group assignment.
-  //SAML JIT uses direct DB access via userController.provisionSamlUser()
   async createUser(userData: any, authServiceToken: string) {
     try {
       const config = {
@@ -151,6 +149,12 @@ export class IamService {
       }
       return { statusCode: 200, data: user };
     } catch (error) {
+      // A deleted or unknown account: answered the way getUserByEmail answers
+      // one, so callers' statusCode checks decide, instead of a raw axios error
+      // the error middleware can only turn into a 500.
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        return { statusCode: 404, data: { message: 'Account not found' } };
+      }
       if (axios.isAxiosError(error)) {
         throw new AxiosError(
           error.response?.data?.message || 'Error getting user',

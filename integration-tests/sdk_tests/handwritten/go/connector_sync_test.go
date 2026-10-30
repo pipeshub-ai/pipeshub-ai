@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	pipeshub "github.com/pipeshub-ai/pipeshub-sdk-go"
-	"github.com/pipeshub-ai/pipeshub-sdk-go/models/components"
-	"github.com/pipeshub-ai/pipeshub-sdk-go/models/operations"
+	pipeshub "github.com/pipeshub-ai/pipeshub-sdk-go/v2"
+	"github.com/pipeshub-ai/pipeshub-sdk-go/v2/models/components"
+	"github.com/pipeshub-ai/pipeshub-sdk-go/v2/models/operations"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +46,7 @@ func waitForIdle(t *testing.T, s *pipeshub.Pipeshub, connectorID string) {
 
 func TestHandwritten_ConnectorSync(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	s := newAdminClient()
 
 	created, err := s.ConnectorInstances.CreateConnectorInstance(ctx, components.CreateConnectorRequest{
 		ConnectorType: "RSS",
@@ -72,9 +72,12 @@ func TestHandwritten_ConnectorSync(t *testing.T) {
 		}
 	}()
 
-	// RSS has no auth, so it has no filter options, and it cannot resync before it is enabled.
-	_, err = s.ConnectorFilters.GetConnectorFilters(ctx, connectorID)
-	requireStatus(t, 400, err)
+	// RSS has no auth, so its saved settings are enough for filter options, but none of them
+	// come from the service. It cannot resync before it is enabled.
+	filters, err := s.ConnectorFilters.GetConnectorFilters(ctx, connectorID)
+	require.NoError(t, err)
+	assert.True(t, filters.Object.Success)
+	assert.Empty(t, filters.Object.FilterOptions)
 	_, err = s.ConnectorFilters.GetFilterFieldOptions(ctx, operations.GetFilterFieldOptionsRequest{
 		ConnectorID: connectorID,
 		FilterKey:   "sdk_test_no_such_filter",

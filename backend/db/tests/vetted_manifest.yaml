@@ -1,0 +1,78 @@
+# Vetted functions of the test schemas kt and ku (two schemas, two vetted owners). Rendered and installed by test_vetted.py.
+functions:
+  # a plain org-scoped lookup with an index to check (the generated V-suite checks the index with auto_explain and with EXPLAIN)
+  - name: kt.notes_by_title
+    class: read
+    scope: org
+    args:
+      - {name: p_title, type: text, length: [1, 64]}
+      - {name: p_limit, type: int, default: "20", range: [1, 100]}
+    returns: "TABLE (id text, title text)"
+    reads: [kt.notes]
+    body: |
+      RETURN QUERY SELECT n.id, n.title FROM kt.notes n WHERE n.org_id = v_org AND n.title = p_title ORDER BY n.id LIMIT p_limit;
+    test:
+      needle: "INSERT INTO kt.notes (org_id, id, title) VALUES ('{org}', 'needle-1', 'findme') ON CONFLICT (org_id, id) DO UPDATE SET title = 'findme'"
+      volume: "INSERT INTO kt.notes (org_id, id, title) SELECT '{org}', 'v' || g, 't' || (g % 500) FROM generate_series(1, 20000) g ON CONFLICT DO NOTHING"
+      args: ["findme", 5]
+      own_result: [["needle-1", "findme"]]
+      bad_args: [["", 5], ["findme", 0], ["findme", 101], [null, 5], ["findme", null]]
+      index: notes_title_idx
+      max_ms: 250
+
+  # a write function on a table the application cannot write directly: the org predicate is in the WHERE, a foreign id answers false
+  - name: kt.set_note_title
+    class: write
+    scope: org
+    writer: pipeshub_node
+    args:
+      - {name: p_id, type: text, length: [1, 64]}
+      - {name: p_title, type: text, length: [1, 64]}
+    returns: boolean
+    no_org: "false"
+    reads: [kt.notes]
+    body: |
+      UPDATE kt.notes SET title = p_title WHERE org_id = v_org AND id = p_id;
+      RETURN FOUND;
+    test:
+      needle: "INSERT INTO kt.notes (org_id, id, title) VALUES ('{org}', 'needle-1', 'findme') ON CONFLICT (org_id, id) DO UPDATE SET title = 'findme'"
+      state: "SELECT title FROM kt.notes WHERE org_id = '{org}' AND id = 'needle-1'"
+      args: ["needle-1", "changed"]
+      own_result: [[true]]
+      other_result: [[false]]
+      no_org_result: [[false]]
+      bad_args: [["", "x"], ["a", ""], [null, "x"]]
+
+  # a lookup before the org is known: exact key only, nothing about the caller's org
+  - name: kt.token_owner
+    class: read
+    scope: global
+    args:
+      - {name: p_hash, type: text, length: [8, 64]}
+    returns: "TABLE (org_id text, user_id text)"
+    reads: [kt.tokens]
+    body: |
+      RETURN QUERY SELECT t.org_id, t.user_id FROM kt.tokens t WHERE t.token_hash = p_hash LIMIT 1;
+    test:
+      needle: "INSERT INTO kt.tokens VALUES ('hash-0001', '{org}', 'u1') ON CONFLICT DO NOTHING"
+      args: ["hash-0001"]
+      own_result: [["{org}", "u1"]]
+      other_result: [["{org}", "u1"]]
+      no_org_result: [["{org}", "u1"]]
+      bad_args: [["short"], [null]]
+
+  # the second schema: its own vetted owner, which cannot read schema kt
+  - name: ku.item_labels
+    class: read
+    scope: org
+    args:
+      - {name: p_limit, type: int, default: "10", range: [1, 100]}
+    returns: "TABLE (id text, label text)"
+    reads: [ku.items]
+    body: |
+      RETURN QUERY SELECT i.id, i.label FROM ku.items i WHERE i.org_id = v_org ORDER BY i.id LIMIT p_limit;
+    test:
+      needle: "INSERT INTO ku.items (org_id, id, label) VALUES ('{org}', 'i1', 'needle-label') ON CONFLICT DO NOTHING"
+      args: [10]
+      own_result: [["i1", "needle-label"]]
+      bad_args: [[0], [101], [null]]

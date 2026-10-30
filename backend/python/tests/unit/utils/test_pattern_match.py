@@ -15,7 +15,6 @@ from app.utils.pattern_match import (
     DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
     GrepCommandResult,
     _LLM_GREP_TIMEOUT,
-    _MAX_GREP_OUTPUT_LINES,
     _MAX_LLM_GREP_COMMANDS,
     _MAX_SCOPED_SEARCH_PATHS,
     _PATTERN_MATCH_TIMEOUT,
@@ -40,6 +39,7 @@ from app.utils.pattern_match import (
     resolve_connector_ids_for_search,
     run_pattern_match,
     run_pattern_match_with_llm_grep,
+    split_hint_entries,
     validate_grep_command,
     validate_pattern_match_command,
 )
@@ -827,18 +827,23 @@ class TestMergePatternMatchResults:
             {"virtual_record_id": "vr-1", "matched_terms": 3},
         ]
         graph_provider = AsyncMock()
-        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
-        graph_provider.get_records_by_record_ids = AsyncMock(
-            return_value=[{"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"}],
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+            return_value={"vr-1": "rec-1", "vr-2": "rec-2"},
         )
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[
+            {"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"},
+            {"_key": "rec-2", "indexingStatus": "COMPLETED", "recordName": "b.pdf"},
+        ])
 
-        await merge_pattern_match_results(
+        results = await merge_pattern_match_results(
             raw_records=raw, virtual_record_id_to_result={}, user_id="user-1", org_id="org-1",
             blob_store=AsyncMock(), graph_provider=graph_provider,
             is_multimodal_llm=False, logger_instance=MagicMock(), max_records=1,
         )
 
-        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1"]
+        # The cap comes after the access check, over readable records.
+        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1", "vr-2"]
+        assert [r["virtual_record_id"] for r in results] == ["vr-1"]
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
@@ -1577,7 +1582,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith('grep -rli "deployment checklist" .')
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
     async def test_grep_command_overrides_stop_word_query(self):
@@ -1610,7 +1615,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith('grep -rli "config" .')
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
     async def test_grep_command_none_falls_back_to_auto(self):
@@ -1773,11 +1778,11 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith(and_cmd)
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
-    async def test_auto_appends_head_when_absent(self):
-        """Commands without head/tail get | head -N appended for scale safety."""
+    async def test_no_head_is_appended(self):
+        """find_records refuses a head cut and bounds the output itself."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1804,15 +1809,13 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
             )
 
         command_used = mock_run.call_args.kwargs["command"]
-        # Zero-count lines are dropped before the cap so real matches are not crowded out.
-        assert command_used == (
-            f'grep -rli "budget" . | grep -v \':0$\' | head -{_MAX_GREP_OUTPUT_LINES}'
-        )
+        # Zero-count lines are dropped so real matches are not crowded out of the output cap.
+        assert command_used == 'grep -rli "budget" . | grep -v \':0$\''
+
 
     @pytest.mark.asyncio
-    async def test_head_in_pipe_rejected_falls_back_to_auto(self):
-        """Commands with non-grep pipe binaries fall back to auto-derived.
-        Full binary validation for pipe stages is in _validate_command."""
+    async def test_a_head_cut_is_dropped(self):
+        """A head the model added is dropped, like the one that used to be appended."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1840,11 +1843,11 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
 
         command_used = mock_run.call_args.kwargs["command"]
         assert "budget" in command_used
-        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+        assert "head" not in command_used
 
     @pytest.mark.asyncio
-    async def test_auto_derived_command_gets_head_appended(self):
-        """Auto-derived grep commands also get | head -N appended."""
+    async def test_auto_derived_command_gets_no_head(self):
+        """Auto-derived grep commands get no head either."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1871,7 +1874,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
 
         command_used = mock_run.call_args.kwargs["command"]
         assert "revenue" in command_used
-        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+        assert "head" not in command_used
 
 
 # ===========================================================================
@@ -1985,9 +1988,6 @@ class TestScaleConstants:
     def test_timeout_sufficient_for_large_datasets(self):
         assert _PATTERN_MATCH_TIMEOUT >= 30
 
-    def test_output_line_limit_set(self):
-        assert _MAX_GREP_OUTPUT_LINES >= 100
-
     def test_llm_grep_timeout_set(self):
         assert _LLM_GREP_TIMEOUT == 15.0
 
@@ -2012,6 +2012,12 @@ class TestValidatePatternMatchCommand:
         'egrep -rci "term" .',
         'fgrep -rci "term" .',
         'grep -rci -e "-rf" .',
+        "grep -rciF -e 'List<String>' .",
+        "grep -rciF -e 'x -> y' .",
+        "grep -rciF -e 'a => b' .",
+        "grep -rciF -e 'a && b || c' .",
+        'grep -rciF -e "a&b" .',
+        "grep -rciF -e '$(MAKE)' .",
     ])
     def test_accepts_prompt_shaped_commands(self, cmd):
         assert validate_pattern_match_command(cmd) == (True, "")
@@ -2022,6 +2028,7 @@ class TestValidatePatternMatchCommand:
         "grep " + "a" * 1000,
         "grep `whoami` .",
         'grep "$(id)" .',
+        'grep "a`id`" .',
         'grep "x" .; rm -rf /',
         'grep "x" . && echo',
         'grep "x" . || echo',
@@ -2689,6 +2696,44 @@ class TestRenderPatternMatchHint:
 
         assert result == ""
 
+    def test_past_the_room_records_are_counted_not_named(self) -> None:
+        entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(10)]
+        vr_map = {f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}"} for i in range(10)}
+        room = len(render_pattern_match_hint([], vr_map, brief_records=entries[:4], unlisted=6)) + 1
+
+        full, brief, unlisted = split_hint_entries(entries, vr_map, room, max_full=0)
+        result = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
+
+        assert (len(full), len(brief), unlisted) == (0, 4, 6)
+        assert "- Doc 3 (Record ID: rec-3)" in result
+        assert "rec-4" not in result
+        assert "6 more keyword-matched records not listed." in result
+
+    @pytest.mark.parametrize("max_full", [0, 3, 10])
+    def test_the_hint_is_never_longer_than_the_room_it_was_split_for(self, max_full: int) -> None:
+        entries = [{"virtual_record_id": f"vrid-{i}", "_match_count": 3} for i in range(30)]
+        vr_map = {
+            f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}", "webUrl": "https://x.example/" + "u" * 200}
+            for i in range(30)
+        }
+
+        for room in range(150, 8_000, 61):
+            full, brief, unlisted = split_hint_entries(entries, vr_map, room, max_full=max_full)
+            hint = render_pattern_match_hint(
+                full, vr_map, max_records=max(len(full), 1), brief_records=brief, unlisted=unlisted,
+            )
+            assert len(hint) <= room, (room, len(full), len(brief), unlisted)
+
+    def test_when_no_record_fits_the_hint_still_counts_them(self) -> None:
+        entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(3)]
+        vr_map = {f"vrid-{i}": {"id": f"rec-{i}", "recordName": "N" * 2_000} for i in range(3)}
+
+        full, brief, unlisted = split_hint_entries(entries, vr_map, 2_000, max_full=10)
+        result = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
+
+        assert (full, brief, unlisted) == ([], [], 3)
+        assert result.strip() == "3 more keyword-matched records not listed."
+
 
 # ===========================================================================
 # _scope_grep_to_paths
@@ -2732,6 +2777,38 @@ class TestScopeGrepToPaths:
         assert '"./Logs"' in result
         assert "error|warning" in result
         assert "xargs grep" in result
+
+    # L17: group names reach the command, but only after sanitize_path_segment,
+    # which already turns every character that could end a double-quoted
+    # argument (", \\, |, <, >, newlines) into "_". What remains can only make
+    # the validator refuse the scoped command; pattern match then greps the
+    # whole connector, every hit still permission-checked.
+    def test_sanitized_group_names_keep_each_path_one_argument(self) -> None:
+        import shlex
+
+        from app.agents.actions.storage_search.storage_search import _validate_command
+        from app.utils.storage_path import build_record_group_prefix_from_chain
+
+        hostile = ['Q1 "plan" | rm', 'a\\b', "x<y>z", "tab\there", "$(id)", "`id`"]
+        paths = []
+        for name in hostile:
+            prefix = build_record_group_prefix_from_chain("c", [name])
+            paths.append("./" + prefix.split("/", 2)[2])
+        cmd = _scope_grep_to_paths('grep -rci "term" .', paths)
+        first_stage = cmd.split(" | ")[0]
+        assert shlex.split(first_stage)[-len(paths):] == paths
+        ok, _ = _validate_command(cmd)
+        # "$(" and backticks survive sanitizing; the validator refuses them.
+        assert ok is False
+
+    def test_names_with_ampersand_stay_scoped(self) -> None:
+        """A quoted ``&`` is a plain character, so the scoped command still validates."""
+        from app.agents.actions.storage_search.storage_search import _validate_command
+
+        cmd = _scope_grep_to_paths('grep -rci "term" .', ["./R&D", "./Sales"])
+        ok, err = _validate_command(cmd)
+        assert ok is True, err
+        assert '"./R&D"' in cmd
 
 
 # ===========================================================================

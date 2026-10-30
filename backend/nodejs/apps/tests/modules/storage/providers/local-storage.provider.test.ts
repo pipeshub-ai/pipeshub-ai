@@ -11,7 +11,7 @@ import {
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
-import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
+import LocalStorageAdapter, { fitPathSegment } from '../../../../src/modules/storage/providers/local-storage.provider'
 import { FilePayload } from '../../../../src/modules/storage/types/storage.service.types'
 import os from 'os'
 import path from 'path'
@@ -90,6 +90,19 @@ describe('LocalStorageAdapter', () => {
       mimeType: 'text/plain',
       documentPath,
       isVersioned: false,
+    })
+
+    it('stores and reads back a file whose name is over 255 bytes', async () => {
+      const adapter = adapterOn(mount)
+      const key = `org/doc/current/${'報告書'.repeat(40)}.txt` // 360-byte name
+      const result = await adapter.uploadDocumentToStorageService(payload(key, 'long name'))
+
+      expect(result.statusCode).to.equal(200)
+      const [file] = await fs.readdir(path.join(mount, 'org/doc/current'))
+      expect(Buffer.byteLength(file)).to.be.at.most(255)
+      expect(file.endsWith('.txt')).to.equal(true)
+      const read = await adapter.getBufferFromStorageService({ local: { localPath: result.data } } as any)
+      expect(read.data?.toString()).to.equal('long name')
     })
 
     it('stores the bytes and leaves no temporary file behind', async () => {
@@ -242,6 +255,52 @@ describe('LocalStorageAdapter', () => {
   // -------------------------------------------------------------------------
   // sanitizePath (private)
   // -------------------------------------------------------------------------
+  describe('fitPathSegment', () => {
+    const bytes = (s: string) => Buffer.byteLength(s)
+
+    it('keeps a segment of up to 255 bytes byte for byte', () => {
+      const name = 'a'.repeat(251) + '.pdf'
+      expect(fitPathSegment(name)).to.equal(name)
+    })
+
+    it('caps a 256-byte segment at 255 bytes and keeps the extension', () => {
+      const file = fitPathSegment('a'.repeat(252) + '.pdf')
+      expect(bytes(file)).to.equal(255)
+      expect(file).to.match(/^a+~[0-9a-f]{16}\.pdf$/)
+    })
+
+    it('cuts multi-byte names at a character boundary', () => {
+      const file = fitPathSegment('報告書'.repeat(40) + '.txt')
+      expect(bytes(file)).to.be.at.most(255)
+      expect(file).to.not.include('\uFFFD')
+      expect(file.endsWith('.txt')).to.equal(true)
+      const emoji = fitPathSegment('😀'.repeat(80))
+      expect(bytes(emoji)).to.be.at.most(255)
+      expect(Array.from(emoji.split('~')[0]).every((c) => c === '😀')).to.equal(true)
+    })
+
+    it('gives long names that share a prefix different stored names, and the same one each time', () => {
+      const a = fitPathSegment('x'.repeat(300) + 'one.txt')
+      const b = fitPathSegment('x'.repeat(300) + 'two.txt')
+      const c = fitPathSegment('x'.repeat(300) + 'one.md')
+      expect(new Set([a, b, c]).size).to.equal(3)
+      expect(fitPathSegment('é'.repeat(200) + '.pdf')).to.equal(fitPathSegment('é'.repeat(200) + '.pdf'))
+    })
+
+    it('folds an overlong extension into the capped name', () => {
+      const file = fitPathSegment('report.' + 'z'.repeat(300))
+      expect(bytes(file)).to.equal(255)
+      expect(file).to.match(/^report\.z+~[0-9a-f]{16}$/)
+    })
+
+    it('is applied to every segment of a local path', () => {
+      const long = 'd'.repeat(300)
+      const result = (createAdapter() as any).sanitizePath(`org/${long}/${long}.txt`).replace(/\\/g, '/')
+      expect(result.split('/').every((s: string) => bytes(s) <= 255)).to.equal(true)
+      expect(result.startsWith('org/')).to.equal(true)
+    })
+  })
+
   describe('sanitizePath (private)', () => {
     it('should reject leading parent-directory segments', () => {
       const adapter = createAdapter()
@@ -374,6 +433,7 @@ describe('LocalStorageAdapter', () => {
 
     it('should create directory before writing file', async () => {
       const adapter = createAdapter()
+      // The mount folder is made first, then the destination folder.
       const mkdirStub = sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
       sinon.stub(fs, 'rename').resolves(undefined)
@@ -385,8 +445,8 @@ describe('LocalStorageAdapter', () => {
         isVersioned: false,
       })
 
-      expect(mkdirStub.calledOnce).to.be.true
-      expect(mkdirStub.firstCall.args[1]).to.deep.include({ recursive: true })
+      expect(mkdirStub.calledTwice).to.be.true
+      expect(mkdirStub.lastCall.args[1]).to.deep.include({ recursive: true })
     })
 
     it('should throw StorageUploadError on fs write failure', async () => {
@@ -659,8 +719,8 @@ describe('LocalStorageAdapter', () => {
 
       await adapter.copyObject('records/src/file.txt', 'records/dst/dir/file.txt')
 
-      expect(mkdirStub.calledOnce).to.be.true
-      const opts = mkdirStub.firstCall.args[1] as any
+      expect(mkdirStub.calledTwice).to.be.true
+      const opts = mkdirStub.lastCall.args[1] as any
       expect(opts.recursive).to.be.true
     })
 
@@ -689,7 +749,7 @@ describe('LocalStorageAdapter', () => {
 
       const result = await adapter.copyTree('org1/src/dir', 'org1/dst/dir')
       expect(result.statusCode).to.equal(200)
-      expect(mkdirStub.calledOnce).to.be.true
+      expect(mkdirStub.calledTwice).to.be.true
       expect(cpStub.calledOnce).to.be.true
 
       const cpArgs = cpStub.firstCall.args
@@ -851,6 +911,80 @@ describe('LocalStorageAdapter - branch coverage', () => {
       process.env.NODE_ENV = 'development'
 
       await (adapter as any).ensureMountExists()
+    })
+  })
+
+  // =========================================================================
+  // the mount folder is made before the first operation, and a failure is handled
+  // =========================================================================
+  describe('mount folder', () => {
+    let home: string
+
+    beforeEach(async () => {
+      home = await fs.mkdtemp(path.join(os.tmpdir(), 'local-mount-'))
+      sinon.stub(os, 'homedir').returns(home)
+    })
+
+    afterEach(async () => {
+      sinon.restore()
+      await fs.rm(home, { recursive: true, force: true })
+    })
+
+    const payload = (): FilePayload => ({
+      buffer: Buffer.from('x'),
+      mimeType: 'text/plain',
+      documentPath: 'org/doc/current/a.txt',
+      isVersioned: false,
+    })
+
+    it('makes the mount (mode 0700) before the first write creates it with the default mode', async () => {
+      const realMkdir = fs.mkdir.bind(fs)
+      // The mount's own mkdir is slow; a write that does not wait for it would create the folder first.
+      sinon.stub(fs, 'mkdir').callsFake(async (p: any, o?: any) => {
+        if (o?.mode === 0o700) await new Promise((r) => setTimeout(r, 50))
+        return realMkdir(p, o)
+      })
+      const adapter = createAdapter()
+
+      await adapter.uploadDocumentToStorageService(payload())
+
+      const mount = (adapter as any).mountPath as string // the folder differs by platform
+      expect((await fs.stat(mount)).isDirectory()).to.equal(true)
+      // Windows has no Unix permission bits.
+      if (process.platform !== 'win32') expect((await fs.stat(mount)).mode & 0o777).to.equal(0o700)
+    })
+
+    it('does not touch the disk in the constructor', async () => {
+      const mkdir = sinon.spy(fs, 'mkdir')
+      createAdapter()
+      expect(mkdir.called).to.equal(false)
+    })
+
+    it('reports a mkdir failure as a handled error, not an unhandled rejection, and retries later', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const mkdir = sinon.stub(fs, 'mkdir').rejects(new Error('EACCES'))
+        const adapter = createAdapter()
+        await new Promise((r) => setImmediate(r))
+        await new Promise((r) => setImmediate(r))
+        expect(unhandled).to.deep.equal([])
+
+        try {
+          await adapter.uploadDocumentToStorageService(payload())
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(StorageConfigurationError)
+        }
+        expect(unhandled).to.deep.equal([])
+
+        mkdir.restore()
+        const result = await adapter.uploadDocumentToStorageService(payload())
+        expect(result.statusCode).to.equal(200)
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled)
+      }
     })
   })
 

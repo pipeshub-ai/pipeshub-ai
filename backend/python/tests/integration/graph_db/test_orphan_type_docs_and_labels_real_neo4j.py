@@ -241,3 +241,47 @@ async def test_a_link_committed_while_the_label_delete_waits_keeps_the_label(neo
     assert waited == [True], "the label delete did not wait for the open link"
     assert await provider.get_document(topic, TOPICS) is not None
     assert await _edge_count(provider, rec_b, topic) == 1
+
+
+async def test_a_retried_delete_still_reports_what_the_failed_attempt_deleted(neo4j, monkeypatch) -> None:
+    """The first attempt commits its record and record-group batches, then fails; the retry
+    collects nothing, yet reports every id, so the vector cleanup still reaches them."""
+    provider, org_id = neo4j
+    connector_id = f"{org_id}-conn"
+    group = f"{org_id}-group"
+    record = f"{org_id}-rec"
+    vrid = f"{org_id}-vrid"
+    now = get_epoch_timestamp_in_ms()
+    await provider.batch_upsert_nodes([{
+        "id": connector_id, "name": "Notion", "type": "NOTION", "appGroup": "Notion", "scope": "team",
+        "isActive": True, "orgId": org_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], APPS)
+    await provider.client.execute_query(
+        f"""
+        CREATE (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $group, connectorId: $c, orgId: $org}})
+        CREATE (:{collection_to_label(RECORDS)} {{id: $record, connectorId: $c, orgId: $org, virtualRecordId: $vrid}})
+        """,
+        parameters={"group": group, "record": record, "vrid": vrid, "c": connector_id, "org": org_id},
+    )
+
+    real = provider._delete_stage_states_by_connector_id
+
+    async def fail(*_args: object, **_kwargs: object) -> tuple[int, bool]:
+        return 0, False
+
+    monkeypatch.setattr(provider, "_delete_stage_states_by_connector_id", fail)
+    first = await provider.delete_connector_instance(connector_id, org_id)
+    assert first.get("success") is False, first
+    assert await provider.get_document(group, CollectionNames.RECORD_GROUPS.value) is None
+    assert await provider.get_document(connector_id, APPS) is not None
+
+    monkeypatch.setattr(provider, "_delete_stage_states_by_connector_id", real)
+    second = await provider.delete_connector_instance(connector_id, org_id)
+    assert second.get("success") is True, second
+    assert second["record_group_ids"] == [group]
+    assert second["virtual_record_ids"] == [vrid]
+    assert await provider.get_document(connector_id, APPS) is None
+    rows = await provider.client.execute_query(
+        "MATCH (h:ConnectorDeleteHandle {connectorId: $c}) RETURN count(h) AS n", parameters={"c": connector_id},
+    )
+    assert rows[0]["n"] == 0

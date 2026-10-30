@@ -1,7 +1,7 @@
 /**
  * web-search.spec.ts
  *
- * Workspace → Web Search: adding self-hosted providers and what a page reader
+ * Workspace → Web search: adding self-hosted providers and what a page reader
  * may and may not do. The settings API is mocked with page.route(), so no
  * provider server is needed; the signed-in user must be an admin, as for every
  * workspace settings spec.

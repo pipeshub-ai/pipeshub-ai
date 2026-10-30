@@ -244,7 +244,7 @@ async def test_a_rate_limited_robots_txt_is_asked_twice_more_then_the_site_skipp
     await connector.run_sync()
 
     assert site.gets(ROBOTS) - read_by_init == 3
-    assert clock.sleeps[waits_by_init:] == [2.0, 6.0], "short waits, not the site's two minutes"
+    assert clock.sleeps[waits_by_init:] == pytest.approx([2.0, 6.0]), "short waits, not the site's two minutes"
     assert db.pages() == {}
 
 
@@ -329,7 +329,7 @@ async def test_robust_mode_never_downloads_a_file_a_redirect_lands_on_when_robot
 
     assert browser.gets("http://site.test/private/report.pdf") == 0
     assert set(db.pages()) == {START_URL}
-    assert 240.0 not in clock.sleeps
+    assert not clock.slept(240.0)
 
 
 async def test_a_single_page_that_redirects_onto_a_disallowed_page_is_not_stored(

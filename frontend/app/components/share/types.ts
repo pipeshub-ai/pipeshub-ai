@@ -86,11 +86,21 @@ export interface ShareAdapter {
 
   supportsRoles: boolean;
   supportsTeams: boolean;
+  /** Teams carry a role like users do (default: teams have no role). */
+  teamsHaveRoles?: boolean;
+  /** Ask before removing someone's access (default: remove straight away). */
+  confirmBeforeRemove?: boolean;
+  /** Narrow the role picker to some roles and/or reword them (default: all three, house labels). */
+  roleOptions?: {
+    roles: ShareRole[];
+    labels?: Record<ShareRole, { label: string; description: string }>;
+  };
 
   getSharedMembers: () => Promise<SharedMember[]>;
   share: (submission: ShareSubmission) => Promise<void>;
   updateRole?: (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => Promise<void>;
-  removeMember: (memberId: string, memberType: 'user' | 'team') => Promise<void>;
+  /** Resolve `{ removed: false }` when the member had already lost access, so the sidebar doesn't claim it removed them. */
+  removeMember: (memberId: string, memberType: 'user' | 'team') => Promise<void | { removed: boolean }>;
 
   /**
    * Override the user list shown in the share sidebar search/suggestions.

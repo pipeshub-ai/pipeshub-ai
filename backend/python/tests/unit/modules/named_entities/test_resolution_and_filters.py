@@ -395,8 +395,14 @@ def test_selector_failure_ladder():
 async def test_an_unusable_filter_is_refused_before_any_lookup(raw, error):
     graph = _Records({"hits": [], "truncated": False})
     match = await EntityFilterResolver(graph).match("org", raw)
-    assert match.error == error
+    assert match.error is not None and match.error.startswith(error)
     assert graph.calls == 0
+
+
+async def test_an_unknown_kind_lists_the_kinds_and_says_they_are_not_document_types() -> None:
+    match = await EntityFilterResolver(_Records({"hits": [], "truncated": False})).match("org", {"kinds": ["invoice"]})
+    assert match.error.startswith("Unknown entity kind: invoice.")
+    assert "not document types" in match.error and "currency" in match.error and "organization" in match.error
 
 
 async def test_kinds_and_currency_are_read_case_insensitively_and_dates_as_iso():
@@ -513,3 +519,13 @@ async def test_a_caller_may_list_more_matches_than_the_default_page_up_to_the_sc
     assert listed["truncated"] is False and len(listed["hits"]) == 6000
     capped = await graph.records_for("org", None, query, limit=10**9)
     assert capped["truncated"] is False
+
+
+async def test_a_named_filter_reaches_related_kinds_but_kinds_alone_stay_exact() -> None:
+    graph = _Records({"hits": [], "truncated": False})
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"], "name": "halcyon"})
+    named = graph.args[1]
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"]})
+    alone = graph.args[1]
+    assert set(named.kinds) == {"product", "organization"} and named.name_prefix == "halcyon"
+    assert alone.kinds == ["product"]

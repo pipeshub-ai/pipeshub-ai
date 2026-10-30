@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 /**
  * Enum representing different storage vendors.
  */
@@ -37,6 +35,16 @@ export interface StorageServiceResponse<T> {
  */
 export interface Document {
   /**
+   * The row id. Absent on a document that has not been created yet.
+   */
+  _id: string;
+
+  /**
+   * Row revision, as stored.
+   */
+  __v?: number;
+
+  /**
    * The name of the document.
    */
   documentName: string;
@@ -59,7 +67,7 @@ export interface Document {
   /**
    * Organization Id
    */
-  orgId: mongoose.Types.ObjectId;
+  orgId: string;
   /**
    * Mutation count
    */
@@ -72,6 +80,10 @@ export interface Document {
    * Digest of the request the key was first used for.
    */
   idempotencyFingerprint?: string;
+  /**
+   * Set once a newer stored write replaced this document; in-place buffer writes are refused.
+   */
+  retiredAt?: number | null;
   /**
    * The keyed upload attempt that owns this unfinished document, and until when.
    */
@@ -89,7 +101,7 @@ export interface Document {
   /**
    * The ID of the user who created or initiated the document.
    */
-  initiatorUserId: mongoose.Types.ObjectId | null;
+  initiatorUserId: string | null;
 
   /**
    * The size of the document in bytes.
@@ -139,7 +151,7 @@ export interface Document {
   /**
    * ID of the user who deleted the document.
    */
-  deletedByUserId?: mongoose.Schema.Types.ObjectId;
+  deletedByUserId?: string;
 
   /**
    * Indicates whether the document is deleted.
@@ -165,6 +177,46 @@ export interface Document {
    * Storage vendor
    */
   storageVendor: StorageVendor;
+
+  /**
+   * Set on a document that stands for one content revision of a virtual
+   * record: a directory of files under `root`, not a single stored file.
+   */
+  artifactSet?: ArtifactSet;
+}
+
+/**
+ * The write state kept beside a document: a counter that only grows and the writers that may be mid-write
+ * (`t` a random token, `until` the server time in ms its claim lapses). Stored, never part of `Document`:
+ * no read returns it, so it is read only by a method that asks for it by name.
+ */
+export interface FingerprintState {
+  writeSeq: number;
+  writers: { t: string; until: number }[];
+}
+
+export interface ArtifactSet {
+  virtualRecordId: string;
+  rev: string;
+  /** Storage key prefix holding the revision's files. */
+  root: string;
+  /** Epoch ms a delete claimed the revision; absent while it is writable. */
+  retiringAt?: number;
+}
+
+/**
+ * A URL a caller can use without storage credentials, and the headers it must
+ * send with it (Azure refuses a PUT that does not name the blob type).
+ */
+export interface SignedObjectUrl {
+  url: string;
+  headers: Record<string, string>;
+}
+
+export interface SignObjectUrlOptions {
+  method: 'GET' | 'PUT';
+  contentType?: string;
+  expiresInSeconds: number;
 }
 
 /**
@@ -190,7 +242,7 @@ export interface DocumentVersion {
   currentVersion?: number;
   createdAt?: number;
   mutationCount?: number;
-  initiatedByUserId?: mongoose.Schema.Types.ObjectId;
+  initiatedByUserId?: string;
   size?: number;
 }
 
@@ -199,7 +251,7 @@ export interface DocumentVersion {
  */
 export interface CustomMetadata {
   key: string;
-  value: mongoose.Schema.Types.Mixed;
+  value: unknown;
 }
 
 /**

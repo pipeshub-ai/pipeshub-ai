@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
@@ -15,12 +16,20 @@ import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import { resolveWebUrl } from './resolve-web-url';
 import { useOrgHref } from '@/lib/navigation';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
 } from './types';
 import type { FilePreviewProps, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
+import {
+  PREVIEW_TOOLBAR_BAR,
+  PREVIEW_TOOLBAR_BUTTON,
+  PREVIEW_TOOLBAR_DIVIDER,
+  PREVIEW_TOOLBAR_PAGE,
+  PREVIEW_TOOLBAR_VALUE,
+} from './preview-toolbar-styles';
 
 export function FilePreviewFullscreen({
   source: _source,
@@ -50,6 +59,13 @@ export function FilePreviewFullscreen({
   const externalWebUrl = resolveWebUrl(_recordDetails?.record, file.webUrl);
   const linkedWebUrl = useOrgHref(externalWebUrl ?? undefined);
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
+  // Below desktop a citations column leaves the document too narrow; show one at a time.
+  const belowDesktop = useIsBelowDesktop();
+  const stackCitations = belowDesktop && !!hasCitations;
+  // The 24px header buttons keep their look but get a 44px tap area on touch screens.
+  const headerButtonClass = belowDesktop ? 'touch-hit' : undefined;
+  const [stackedView, setStackedView] = useState<'document' | 'citations'>('document');
+  const showDocument = !stackCitations || stackedView === 'document';
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
   const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
@@ -142,7 +158,7 @@ export function FilePreviewFullscreen({
         style={{
           padding: 'var(--space-2) var(--space-3)',
           borderBottom: '1px solid var(--slate-6)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           backgroundColor: 'var(--color-panel-translucent)',
           height: '40px',
         }}
@@ -215,6 +231,7 @@ export function FilePreviewFullscreen({
                   onDownload,
                 })
               }
+              className={headerButtonClass}
               title={t('action.download')}
             >
               <MaterialIcon name="download" size={ICON_SIZES.HEADER} />
@@ -226,6 +243,7 @@ export function FilePreviewFullscreen({
               color="gray"
               size="1"
               onClick={onExitFullscreen}
+              className={headerButtonClass}
               title={t('recordView.exitFullscreen')}
             >
               <MaterialIcon name="close_fullscreen" size={ICON_SIZES.HEADER} />
@@ -236,12 +254,27 @@ export function FilePreviewFullscreen({
             color="gray"
             size="1"
             onClick={onClose}
+            className={headerButtonClass}
             title={t('common.close')}
           >
             <MaterialIcon name="close" size={ICON_SIZES.HEADER} />
           </IconButton>
         </Flex>
       </Flex>
+
+      {stackCitations && (
+        <Box style={{ padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--slate-6)' }}>
+          <SegmentedTabs<'document' | 'citations'>
+            fill
+            value={stackedView}
+            onValueChange={setStackedView}
+            items={[
+              { value: 'document', label: t('filePreview.preview') },
+              { value: 'citations', label: t('chat.citations') },
+            ]}
+          />
+        </Box>
+      )}
 
       {/* Main Content Area */}
       <Flex style={{ flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0, alignItems: 'stretch' }}>
@@ -252,7 +285,7 @@ export function FilePreviewFullscreen({
             minWidth: 0,
             minHeight: 0,
             position: 'relative',
-            display: 'flex',
+            display: showDocument ? 'flex' : 'none',
             flexDirection: 'column',
             alignItems: 'stretch',
             justifyContent: 'flex-start',
@@ -313,13 +346,13 @@ export function FilePreviewFullscreen({
             <Flex
               align="center"
               justify="center"
-              gap="2"
+              gap="1"
               style={{
                 position: 'absolute',
                 bottom: 'var(--space-6)',
                 left: '50%',
                 transform: 'translateX(-50%)',
-                padding: 'var(--space-2)',
+                ...PREVIEW_TOOLBAR_BAR,
                 backgroundColor: 'var(--color-panel-solid)',
                 border: '1px solid var(--slate-3)',
                 borderRadius: 'var(--radius-1)',
@@ -336,21 +369,12 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePdfZoomOut}
                 disabled={pdfScale <= PDF_ZOOM_MIN}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 aria-label={t('chat.zoomOut')}
               >
                 <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
               </IconButton>
-              <Box
-                style={{
-                  minWidth: '40px',
-                  textAlign: 'center',
-                }}
-              >
+              <Box style={PREVIEW_TOOLBAR_VALUE}>
                 <Text
                   as="span"
                   size="2"
@@ -366,11 +390,7 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePdfZoomIn}
                 disabled={pdfScale >= PDF_ZOOM_MAX}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 aria-label={t('chat.zoomIn')}
               >
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
@@ -381,11 +401,7 @@ export function FilePreviewFullscreen({
                 color="gray"
                 size="1"
                 onClick={toggleZoomLock}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                 aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                 aria-pressed={isZoomLocked}
@@ -397,15 +413,7 @@ export function FilePreviewFullscreen({
                 />
               </IconButton>
 
-              <Box
-                style={{
-                  width: '1px',
-                  height: '16px',
-                  backgroundColor: 'var(--slate-4)',
-                  flexShrink: 0,
-                }}
-                aria-hidden
-              />
+              <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
               <IconButton
                 variant="ghost"
@@ -413,23 +421,12 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePrevPage}
                 disabled={currentPage === 1}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
               >
                 <MaterialIcon name="chevron_left" size={ICON_SIZES.SECONDARY} />
               </IconButton>
 
-              <Box
-                style={{
-                  backgroundColor: 'var(--slate-2)',
-                  border: '1px solid var(--slate-3)',
-                  borderRadius: 'var(--radius-1)',
-                  padding: '4px 12px',
-                }}
-              >
+              <Box style={PREVIEW_TOOLBAR_PAGE}>
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {totalPages === null ? `${currentPage}/?` : `${currentPage}/${totalPages}`}
                 </Text>
@@ -441,11 +438,7 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handleNextPage}
                 disabled={totalPages === null || currentPage === totalPages}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
               >
                 <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
               </IconButton>
@@ -453,8 +446,30 @@ export function FilePreviewFullscreen({
           )}
         </Box>
 
+        {/* Citations — full-width view below desktop */}
+        {stackCitations && (
+          <Box
+            style={{
+              flex: 1,
+              minWidth: 0,
+              minHeight: 0,
+              display: showDocument ? 'none' : 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <CitationsPanel
+              citations={citations}
+              activeCitationId={activeCitationId}
+              onCitationClick={(citation) => {
+                handleCitationClick(citation);
+                setStackedView('document');
+              }}
+            />
+          </Box>
+        )}
+
         {/* Citations — resizable column */}
-        {hasCitations && (
+        {hasCitations && !stackCitations && (
           <>
             <Box
               role="separator"

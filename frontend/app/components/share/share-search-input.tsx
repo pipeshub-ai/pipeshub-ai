@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole, ShareSelection } from './types';
@@ -15,6 +16,11 @@ interface ShareSearchInputProps {
   selectedRole: ShareRole;
   /** Whether to show the role picker on chips */
   supportsRoles: boolean;
+  /** Whether teams can be picked; the placeholder only mentions teams when they can. */
+  supportsTeams?: boolean;
+  /** Teams carry a role too, so a team-only selection still shows the role picker. */
+  teamsHaveRoles?: boolean;
+  roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
   /** Callback when search query changes */
   onSearchChange: (query: string) => void;
   /** Callback when a selection is removed */
@@ -32,15 +38,18 @@ export function ShareSearchInput({
   searchQuery,
   selectedRole,
   supportsRoles,
+  supportsTeams = true,
+  teamsHaveRoles = false,
+  roleOptions,
   onSearchChange,
   onRemoveSelection,
   onRoleChange,
   onRemoveLastSelection,
   onEmailSubmit,
 }: ShareSearchInputProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const roleAnchorRef = useRef<HTMLDivElement>(null);
-  const hasUserSelection = selections.some((s) => s.type === 'user');
+  const hasRoleSelection = selections.some((s) => s.type === 'user' || (teamsHaveRoles && s.type === 'team'));
 
   return (
     <Flex
@@ -82,9 +91,22 @@ export function ShareSearchInput({
               borderRadius: 'var(--radius-2)',
               padding: '4px 8px',
               flexShrink: 0,
+              // A long address must not push the chip wider than the box (it clipped at 375px).
+              maxWidth: 'calc(100% - 8px)',
+              minWidth: 0,
             }}
           >
-            <Text size="2" style={{ color: selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)', whiteSpace: 'nowrap' }}>
+            <Text
+              size="2"
+              title={selection.email || selection.name}
+              style={{
+                color: selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
               {selection.email || selection.name}
             </Text>
             <Box
@@ -117,7 +139,7 @@ export function ShareSearchInput({
           }}
           placeholder={
             selections.length === 0
-              ? 'Emails, teams or names (separated by commas)'
+              ? t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers')
               : ''
           }
           style={{
@@ -134,13 +156,14 @@ export function ShareSearchInput({
         />
       </Flex>
 
-      {/* Role picker — users only; teams do not have share roles */}
-      {hasUserSelection && supportsRoles && (
-        <Box ref={roleAnchorRef} style={{ flexShrink: 0, paddingRight: 4 }}>
+      {/* Role picker — users, plus teams where the entity gives teams a role */}
+      {hasRoleSelection && supportsRoles && (
+        <Box style={{ flexShrink: 0, paddingRight: 4 }}>
           <RoleDropdownMenu
             role={selectedRole}
             onRoleChange={onRoleChange}
-            anchorRef={roleAnchorRef}
+            roles={roleOptions?.roles}
+            labels={roleOptions?.labels}
           />
         </Box>
       )}

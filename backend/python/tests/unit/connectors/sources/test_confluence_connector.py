@@ -9,6 +9,8 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     AccessRule,
     Connectors,
@@ -17,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     BooleanOperator,
     Filter,
@@ -26,15 +29,18 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     CONTENT_EXPAND_PARAMS,
     FOLDER_EXPAND_PARAMS,
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
+    CommentsUnreadable,
     ConfluenceConnector,
+    GoneAtSource,
     extract_media_from_adf,
 )
+from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
+from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -47,9 +53,7 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
-from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.models.permission import EntityType, Permission, PermissionType
-from fastapi import HTTPException
 
 # ===========================================================================
 # Helpers
@@ -507,7 +511,8 @@ class TestSyncFolders:
             with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
                 await c._sync_folders("TEST")
 
-        c.pages_sync_point.update_sync_point.assert_called_once()
+        # Once after the batch, once when the listing ends.
+        assert c.pages_sync_point.update_sync_point.await_count >= 1
         args = c.pages_sync_point.update_sync_point.call_args[0]
         assert "confluence_folders" in args[0]
         assert "last_sync_time" in args[1]
@@ -2062,11 +2067,12 @@ class TestCreatePermissionFromPrincipal:
         assert perm is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_a_failed_lookup_raises(self) -> None:
+        """Not "not found": a caller keeps what is stored instead of dropping the grant."""
         c = _conn()
-        c.data_store_provider.transaction.side_effect = Exception("DB error")
-        perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
-        assert perm is None
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
+        with pytest.raises(Exception, match="DB error"):
+            await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
 
 
 # ===========================================================================
@@ -2163,15 +2169,14 @@ class TestTransformAccessClassSpacePermission:
         assert result.type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_licensed_users_read_space_org_fallback(self):
+    async def test_licensed_users_with_no_synced_group_grant_nothing(self) -> None:
+        """Never the whole org: an unmatched class grants no one."""
         c = _conn()
         self._mock_groups(c, [])
         result = await c._transform_space_permission(
             self._access_class_perm("ALL_LICENSED_USERS")
         )
-        assert result is not None
-        assert result.entity_type == EntityType.ORG
-        assert result.type == PermissionType.READ
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_product_admins_administer_space_maps_to_group(self):
@@ -2186,15 +2191,36 @@ class TestTransformAccessClassSpacePermission:
         assert result.type == PermissionType.OWNER
 
     @pytest.mark.asyncio
-    async def test_product_admins_administer_space_org_fallback(self):
+    async def test_product_admins_with_no_synced_group_grant_nothing(self) -> None:
         c = _conn()
         self._mock_groups(c, [])
         result = await c._transform_space_permission(
             self._access_class_perm("ALL_PRODUCT_ADMINS", "administer", "space")
         )
-        assert result is not None
-        assert result.entity_type == EntityType.ORG
-        assert result.type == PermissionType.OWNER
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_site_named_groups_and_the_new_spelling_are_matched(self) -> None:
+        c = _conn()
+        self._mock_groups(c, [
+            self._group("confluence-users-acme", "grp-1"),
+            self._group("confluence-users-acme-team-x1", "grp-2"),
+            self._group("jira-users-acme", "grp-3"),
+        ])
+        row = {"principal": {"type": "ACCESS_CLASS", "id": "all-licensed-users"},
+               "operation": {"key": "read", "targetType": "space"}}
+        granted = await c._access_class_permissions(row, "Engineering")
+        assert sorted(p.external_id for p in granted) == ["grp-1", "grp-2"]
+        assert {p.entity_type for p in granted} == {EntityType.GROUP}
+
+    @pytest.mark.asyncio
+    async def test_anonymous_access_opens_a_public_space_to_the_org(self) -> None:
+        c = _conn()
+        self._mock_groups(c, [])
+        row = {"principal": {"type": "ACCESS_CLASS", "id": "anonymous-users"},
+               "operation": {"key": "read", "targetType": "space"}}
+        granted = await c._access_class_permissions(row, "Public")
+        assert [(p.entity_type, p.type) for p in granted] == [(EntityType.ORG, PermissionType.READ)]
 
     @pytest.mark.asyncio
     async def test_licensed_users_non_read_operation_skipped(self):
@@ -2223,8 +2249,7 @@ class TestTransformAccessClassSpacePermission:
         stale = await c._transform_space_permission(
             self._access_class_perm("ALL_LICENSED_USERS")
         )
-        assert stale is not None
-        assert stale.entity_type == EntityType.ORG
+        assert stale is None
 
         c._group_name_to_external_id = None
         fresh = await c._transform_space_permission(
@@ -2269,12 +2294,15 @@ class TestFetchSpacePermissionsAccessClassDedupe:
             )
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[AppUserGroup(
+            app_name=Connectors.CONFLUENCE, connector_id="c", source_user_group_id="grp-users",
+            name="confluence-users", org_id="o",
+        )])
         connector._group_name_to_external_id = None
 
         permissions = await connector._fetch_space_permissions("space-1", "IT")
         assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions[0].entity_type == EntityType.GROUP
         assert permissions[0].type == PermissionType.READ
 
 
@@ -3021,8 +3049,9 @@ class TestCheckAndFetchUpdatedPage:
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
         record.external_record_id = "p1"
-        result = await c._check_and_fetch_updated_page("org1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_page("org1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_change(self):
@@ -3083,8 +3112,9 @@ class TestCheckAndFetchUpdatedAttachmentNoUpdate:
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
-        result = await c._check_and_fetch_updated_attachment("org1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org1", record)
 
     @pytest.mark.asyncio
     async def test_version_unchanged(self):
@@ -3239,6 +3269,8 @@ class TestRunSyncCoverage:
         c._remove_content_gone_from_source = AsyncMock(return_value=True)
         c._remove_spaces_out_of_scope = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
+        c._remove_folders_gone = AsyncMock()
+        c._reindex_pages_with_changed_comments = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
@@ -3757,6 +3789,7 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_not_found_no_pseudo(self):
         c = _c()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ)
         assert perm is None
 
@@ -3781,6 +3814,7 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _c()
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is None
 
@@ -4359,9 +4393,8 @@ class TestInit:
             new_callable=AsyncMock,
             side_effect=RuntimeError("build failed"),
         ):
-            result = await c.init()
-
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
+                await c.init()
 
 
 # ===========================================================================
@@ -4482,16 +4515,16 @@ class TestConnectionAndAccess:
         mock_ds = MagicMock()
         mock_ds.get_spaces = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        result = await c.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="HTTP 500"):
+            await c.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_exception(self):
         c = _mk_connector()
         c.external_client = MagicMock()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("connection error"))
-        result = await c.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="Couldn't reach Confluence"):
+            await c.test_connection_and_access()
 
 
 # ===========================================================================
@@ -4600,7 +4633,7 @@ class TestSyncUsersHappyPath:
 
     @pytest.mark.asyncio
     async def test_multi_page_pagination(self):
-        """Stops when results < batch_size."""
+        """Stops at an empty page, not at the first short one."""
         c = _mk_connector()
         users_full = [
             {"user": {"accountId": f"acc-{i}", "email": f"u{i}@x.com", "displayName": f"U{i}"}}
@@ -4614,11 +4647,12 @@ class TestSyncUsersHappyPath:
             side_effect=[
                 _mk_resp(200, {"results": users_full}),
                 _mk_resp(200, {"results": users_partial}),
+                _mk_resp(200, {"results": []}),
             ]
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
-        # Two pages fetched, two on_new_app_users calls
+        # Two pages saved; the empty third one ends the list
         assert c.data_entities_processor.on_new_app_users.call_count == 2
 
 
@@ -5391,9 +5425,8 @@ class TestFetchPageCommentsRecursiveAdditional:
         c._fetch_comment_children_recursive = AsyncMock(return_value=[])
         c._extract_cursor_from_next_link = MagicMock(return_value=None)
 
-        await c._fetch_page_comments_recursive(
-            "100", RecordType.CONFLUENCE_PAGE, "footer"
-        )
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_page_comments_recursive("100", RecordType.CONFLUENCE_PAGE, "footer")
         assert ds.get_page_footer_comments.call_count == 1
 
 
@@ -5450,10 +5483,8 @@ class TestFetchCommentChildrenRecursiveAdditional:
         ds.get_footer_comment_children = AsyncMock(side_effect=RuntimeError("fail"))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await c._fetch_comment_children_recursive(
-            "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
-        assert result == []
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_comment_children_recursive("100", "footer", RecordType.CONFLUENCE_PAGE)
 
 
 # ===========================================================================
@@ -5556,8 +5587,9 @@ class TestCheckAndFetchUpdatedBlogpost:
         ds.get_blog_post_by_id = AsyncMock(return_value=_mk_resp(404))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(external_record_id="3001")
-        result = await c._check_and_fetch_updated_blogpost("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_blogpost("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -5644,8 +5676,9 @@ class TestCheckAndFetchUpdatedAttachment:
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         record = MagicMock(external_record_id="att-1", parent_external_record_id="p1")
-        result = await c._check_and_fetch_updated_attachment("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -6293,10 +6326,9 @@ class TestFetchPageCommentsRecursiveResponseFail:
         ds = MagicMock()
         ds.get_page_footer_comments = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await c._fetch_page_comments_recursive(
-            "100", RecordType.CONFLUENCE_PAGE, "footer"
-        )
-        assert result == []
+        # Indexed without its comments the page would stay that way: the stream fails instead.
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_page_comments_recursive("100", RecordType.CONFLUENCE_PAGE, "footer")
 
     @pytest.mark.asyncio
     async def test_empty_results_returns_empty(self):
@@ -6321,10 +6353,8 @@ class TestFetchCommentChildrenResponseFail:
         ds = MagicMock()
         ds.get_footer_comment_children = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await c._fetch_comment_children_recursive(
-            "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
-        assert result == []
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_comment_children_recursive("100", "footer", RecordType.CONFLUENCE_PAGE)
 
     @pytest.mark.asyncio
     async def test_empty_results_returns_empty(self):
@@ -6375,9 +6405,10 @@ class TestFetchCommentChildrenResponseFail:
         from app.connectors.sources.atlassian.confluence_cloud.connector import (
             ConfluenceConnector,
         )
-        await ConfluenceConnector._fetch_comment_children_recursive(
-            c, "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
+        with pytest.raises(CommentsUnreadable):
+            await ConfluenceConnector._fetch_comment_children_recursive(
+                c, "100", "footer", RecordType.CONFLUENCE_PAGE
+            )
         assert ds.get_footer_comment_children.call_count == 1
 
 
@@ -7272,8 +7303,9 @@ class TestCheckAndFetchUpdatedAttachmentAdditional:
             external_record_id="att-6",
             parent_external_record_id="p-6",
         )
-        result = await c._check_and_fetch_updated_attachment("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -7348,8 +7380,8 @@ class TestInitAdditional:
             "app.connectors.sources.atlassian.confluence_cloud.connector.ExternalConfluenceClient.build_from_services",
             side_effect=RuntimeError("build fail"),
         ):
-            result = await c.init()
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
+                await c.init()
 
     @pytest.mark.asyncio
     async def test_init_success_returns_true(self):
@@ -7897,18 +7929,36 @@ class TestFetchConfluenceMediaAsBase64:
             "page-1", "media-id", "alt.png", "page", attachments=attachments
         )
 
-    @pytest.mark.asyncio
-    async def test_comment_media_fetcher_delegates(self):
-        c = _mk_connector()
-        attachments = [{"id": "att-b", "title": "file.png"}]
-        c._fetch_page_attachments_list = AsyncMock(return_value=attachments)
-        c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,xyz")
-        fetcher = c._create_comment_media_fetcher("page-2", "blogpost")
-        result = await fetcher("mid", "file.png")
-        assert result == "data:image/png;base64,xyz"
-        c._fetch_confluence_media_as_base64.assert_awaited_once_with(
-            "page-2", "mid", "file.png", "blogpost", attachments=attachments
+    def test_images_left_out_of_the_body_are_decided_from_the_list(self) -> None:
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            MAX_INLINE_IMAGE_BYTES,
+            images_not_inlined,
         )
+
+        mib = 1024 * 1024
+        attachments = [
+            {"id": "big", "mediaType": "image/png", "fileSize": MAX_INLINE_IMAGE_BYTES + 1},
+            {"id": "pdf", "mediaType": "application/pdf", "fileSize": 50 * mib},
+            *({"id": f"i{n}", "mediaType": "image/png", "fileSize": 9 * mib} for n in range(5)),
+            {"id": "v1", "extensions": {"mediaType": "image/png", "fileSize": 1 * mib}},
+        ]
+        # 4 x 9 MiB + 1 MiB fit in 40 MiB; the fifth 9 MiB image does not.
+        assert images_not_inlined(attachments) == {"big", "i4"}
+
+    @pytest.mark.asyncio
+    async def test_an_image_left_out_of_the_body_is_not_downloaded(self) -> None:
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            MAX_INLINE_IMAGE_BYTES,
+        )
+
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.download_attachment = MagicMock()
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        attachments = [{"id": "att-1", "title": "a.png", "mediaType": "image/png", "fileSize": MAX_INLINE_IMAGE_BYTES + 1}]
+
+        assert await c._fetch_confluence_media_as_base64("p1", "m1", "a.png", attachments=attachments) is None
+        ds.download_attachment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_page_image_resolves_by_file_id(self):
@@ -8136,7 +8186,7 @@ class TestProcessPageAttachmentsForChildren:
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_creates_new_file_record(self):
+    async def test_a_new_attachment_is_left_to_the_sync(self) -> None:
         c = _mk_connector()
         mock_tx = c.data_store_provider.transaction.return_value
         mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
@@ -8151,10 +8201,9 @@ class TestProcessPageAttachmentsForChildren:
         result = await c._process_page_attachments_for_children(
             attachments, "page-1", "node-1", "space-1", None,
         )
-        assert "att-new" in result
-        c.data_entities_processor.on_new_records.assert_awaited_once()
-        ((saved, _),) = c.data_entities_processor.on_new_records.call_args[0][0]
-        assert saved.inherit_permissions is True
+        # Streaming creates no records: the sync applies the attachment filters.
+        assert "att-new" not in result
+        c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_attachment_without_id(self):
@@ -8581,12 +8630,12 @@ class TestCheckAndFetchUpdatedComment:
 
 
 class TestFixLegacyMimeTypes:
-    """Tests for deprecated _fix_legacy_mime_types method (no longer called in production)."""
+    """Pages stored as HTML by older versions are moved to blocks on the next sync."""
     
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
     async def test_updates_html_page_to_blocks(self):
         c = _mk_connector()
+        c.data_entities_processor.batch_upsert_records = AsyncMock()
         page = MagicMock()
         page.record_type = RecordType.CONFLUENCE_PAGE
         page.mime_type = MimeTypes.HTML.value
@@ -8600,14 +8649,14 @@ class TestFixLegacyMimeTypes:
         to_fix, ok = await c._fix_legacy_mime_types([page, other])
         assert page in to_fix
         assert page.mime_type == MimeTypes.BLOCKS.value
+        assert page.preview_renderable is False
         assert other in ok
-        mock_tx = c.data_entities_processor.data_store_provider.transaction.return_value
-        mock_tx.batch_upsert_records.assert_awaited_once_with(to_fix)
+        c.data_entities_processor.batch_upsert_records.assert_awaited_once_with(to_fix)
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
     async def test_no_fix_needed(self):
         c = _mk_connector()
+        c.data_entities_processor.batch_upsert_records = AsyncMock()
         page = MagicMock()
         page.record_type = RecordType.CONFLUENCE_PAGE
         page.mime_type = MimeTypes.BLOCKS.value
@@ -8615,20 +8664,20 @@ class TestFixLegacyMimeTypes:
         to_fix, ok = await c._fix_legacy_mime_types([page])
         assert to_fix == []
         assert ok == [page]
-        mock_tx = c.data_entities_processor.data_store_provider.transaction.return_value
-        mock_tx.batch_upsert_records.assert_not_awaited()
+        c.data_entities_processor.batch_upsert_records.assert_not_awaited()
 
 
 class TestTransformSpacePermissionException:
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_is_raised_so_the_space_keeps_its_stored_access(self) -> None:
         c = _mk_connector()
         c._create_permission_from_principal = AsyncMock(side_effect=RuntimeError("boom"))
         perm_data = {
             "principal": {"type": "user", "id": "u1"},
             "operation": {"key": "read", "targetType": "space"},
         }
-        assert await c._transform_space_permission(perm_data) is None
+        with pytest.raises(RuntimeError):
+            await c._transform_space_permission(perm_data)
 
 
 class TestParseConfluencePageToBlocks:
@@ -9391,9 +9440,9 @@ class TestSweepPlaceholderRecords:
         assert submitted["F"].is_placeholder is False  # folder synced as a real record
 
     @pytest.mark.asyncio
-    async def test_fetch_failure_still_restores_structural_edges(self):
-        """When the source fetch fails, the persisted stub is still re-submitted so a full
-        sync's deleted structural edges (record group + parent) get restored."""
+    async def test_fetch_failure_keeps_the_stub_and_walks_up(self) -> None:
+        """When the source fetch fails (or the stub did not change), the stored stub is kept as
+        it is, noted as seen so a full sync keeps its edges, and its parent is still walked."""
         c = _make_connector()
         c.data_entities_processor.get_placeholder_records = AsyncMock(
             return_value=[_wp_stub("B", parent="A", is_placeholder=True)]
@@ -9407,14 +9456,10 @@ class TestSweepPlaceholderRecords:
 
         await c._sweep_placeholder_records("org-conf-1")
 
-        # Despite fetch failure, B (and its walked parent A) are re-submitted to restore edges.
-        submitted = {
-            r.external_record_id
-            for call in c.data_entities_processor.on_new_records.call_args_list
-            for (r, _p) in call.args[0]
-        }
-        assert "B" in submitted
-        assert "A" in submitted
+        # Neither is written again (that replaced their grants with none); both are kept as stored.
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+        kept = [rid for call in c.data_entities_processor.note_kept_records.call_args_list for rid in call.args[1]]
+        assert len(kept) == 2, "B and its walked parent A are kept"
 
 
 class TestIncludeJiraScopeSetting:
@@ -9491,3 +9536,13 @@ class TestFindUserAccountIdByEmail:
         client.get_client.return_value = http
         ds = ConfluenceDataSource(client)
         assert await ds.find_user_account_id_by_email("a@t.com") == expected
+
+
+def test_a_jira_match_that_could_be_by_display_name_or_another_email_is_not_trusted() -> None:
+    from app.sources.external.confluence.confluence import _matched_by_something_else
+
+    assert _matched_by_something_else({"displayName": "bob@acme.com (not Bob)"}, "bob@acme.com")
+    assert _matched_by_something_else({"displayName": "Name<bob@acme.com>"}, "bob@acme.com")
+    assert _matched_by_something_else({"displayName": "Bob", "emailAddress": "other@acme.com"}, "bob@acme.com")
+    assert not _matched_by_something_else({"displayName": "Bob Jones"}, "bob@acme.com")
+    assert not _matched_by_something_else({"displayName": "Bob", "emailAddress": "BOB@acme.com"}, "bob@acme.com")

@@ -252,7 +252,9 @@ class NamedEntityGraphWriter:
 def _embeddable(org_id: str, resolved: list[ResolvedEntity]) -> list[EntityRecord]:
     records = []
     for item in resolved:
-        if item.entity.kind not in VECTOR_KINDS:
+        # A merged mention links to a node that already has its vector; embedding
+        # it here would rename that node's point to the alias.
+        if item.entity.kind not in VECTOR_KINDS or item.merged_into:
             continue
         records.append(
             EntityRecord(

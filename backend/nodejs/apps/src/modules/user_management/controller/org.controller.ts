@@ -1,12 +1,10 @@
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-import { Org } from '../schema/org.schema';
-import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { asAccount } from '../../../libs/context/orgContext';
+import { createUnitOfWork } from '../../../libs/repositories/doc-store';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { OrgLogos } from '../schema/orgLogo.schema';
 import {
   detectRasterImageFormat,
   readImageUpload,
@@ -15,11 +13,6 @@ import {
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import { getBrandConfig } from '../../../libs/branding';
-import {
-  AuthMethodType,
-  OrgAuthConfig,
-} from '../../auth/schema/orgAuthConfiguration.schema';
-import { UserCredentials } from '../../auth/schema/userCredentials.schema';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
 import {
@@ -45,8 +38,19 @@ import {
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  signupSource,
+} from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+
+const ADDRESS_FIELDS = [
+  'addressLine1',
+  'city',
+  'state',
+  'country',
+  'postCode',
+] as const;
 
 @injectable()
 export class OrgController {
@@ -87,20 +91,24 @@ export class OrgController {
       }
 
       const svgString = svgBuffer.toString('utf-8');
-      
+
       // Limit string length to prevent ReDoS - only check first portion if too long
       const maxCheckLength = 1000000; // 1MB in characters for validation
-      const checkString = svgString.length > maxCheckLength 
-        ? svgString.substring(0, maxCheckLength) 
-        : svgString;
-      
+      const checkString =
+        svgString.length > maxCheckLength
+          ? svgString.substring(0, maxCheckLength)
+          : svgString;
+
       // Use limited quantifiers [^>]{0,10000} to prevent ReDoS attacks
       // Check for dangerous patterns - throw error if found
-      
+
       // Check for script tags (opening, closing, or incomplete)
       const scriptTagPattern = /<[\s]*script[^>]{0,10000}>/gi;
       const scriptClosingPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
-      if (scriptTagPattern.test(checkString) || scriptClosingPattern.test(checkString)) {
+      if (
+        scriptTagPattern.test(checkString) ||
+        scriptClosingPattern.test(checkString)
+      ) {
         throw new BadRequestError(
           'SVG file contains script tags which are not allowed for security reasons',
         );
@@ -155,7 +163,7 @@ export class OrgController {
   }
 
   async checkOrgExistence(res: Response): Promise<void> {
-    const count = await Org.countDocuments();
+    const count = await getOrgRepository().count();
 
     res.status(200).json({ exists: count != 0 });
   }
@@ -166,7 +174,6 @@ export class OrgController {
       throw new NotFoundError('Container not found');
     }
 
-    let session: mongoose.ClientSession | null = null;
     try {
       const { contactEmail, adminFullName, password, sendEmail } = req.body as {
         contactEmail: string;
@@ -181,7 +188,7 @@ export class OrgController {
         );
       }
 
-      const count = await Org.countDocuments();
+      const count = await getOrgRepository().count();
       if (count > 0) {
         throw new BadRequestError('There is already an organization');
       }
@@ -192,121 +199,78 @@ export class OrgController {
         );
       }
 
-      const org = new Org({
-        ...req.body,
-        domain,
-        onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
-      });
-
-      const adminUser = new Users({
-        fullName: adminFullName,
-        email: contactEmail,
-        orgId: org._id,
-        role: 'admin',
-      });
-
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-      const adminUserCredentials = new UserCredentials({
-        userId: adminUser._id,
-        orgId: org._id,
-        isDeleted: false,
-        hashedPassword,
-        ipAddress: req.ip,
-      });
-
-      const allUsersGroup = new UserGroups({
-        type: 'everyone',
-        name: 'everyone',
-        orgId: org._id,
-        users: [adminUser._id],
-      });
-
-      const standardUsersGroup = new UserGroups({
-        type: 'standard',
-        name: 'standard',
-        orgId: org._id,
-        users: [],
-      });
-
-      if (!org._id) {
-        throw new NotFoundError('Org Id not found');
-      }
-      if (!adminUser._id) {
-        throw new NotFoundError('Admin User Id not found');
-      }
-
-      const orgAuthConfig = new OrgAuthConfig({
-        orgId: org._id,
-        authSteps: [
-          {
-            order: 1,
-            allowedMethods: [{ type: AuthMethodType.PASSWORD }],
-          },
-        ],
-      });
-
-      // Built before the save so the transactional branch can store them with
-      // the same commit. An organisation that exists without the events that
-      // announce it is invisible to the permission graph, which is the pair
-      // this transaction is here to keep together.
-      const orgCreatedEvent: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id.toString(),
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      const adminUserEvent: Event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id.toString(),
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-
-      const rsAvailable = this.config.rsAvailable === 'true';
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-
-        session.startTransaction();
-        await orgAuthConfig.save({ session });
-        await allUsersGroup.save({ session });
-        await standardUsersGroup.save({ session });
-        await adminUser.save({ session });
-        await adminUserCredentials.save({ session });
-        await org.save({ session });
-        // Inside the transaction: either the organisation and the events that
-        // describe it both land, or neither does.
-        await this.eventService.publishEvent(orgCreatedEvent, session);
-        await this.eventService.publishEvent(adminUserEvent, session);
-        await session.commitTransaction();
-      } else {
-        await orgAuthConfig.save();
-        await allUsersGroup.save();
-        await standardUsersGroup.save();
-        await adminUser.save();
-        await adminUserCredentials.save();
-        await org.save();
-        // No replica set, so no transaction to join. The events are still
-        // recorded durably and delivered with retries; only the atomicity is
-        // unavailable here.
-        await this.eventService.publishEvent(orgCreatedEvent);
-        await this.eventService.publishEvent(adminUserEvent);
-      }
-
+      // Either the organisation and the events that announce it both land, or
+      // neither does (on a replica set). An organisation that exists without
+      // those events is invisible to the permission graph. Without a replica
+      // set the events are still recorded durably and delivered with retries;
+      // only the atomicity is unavailable.
+      const source = signupSource(
+        req.body as { ref?: unknown; referrerDomain?: unknown },
+      );
+      const ids = getOrgRepository().allocateIds();
+      // The unit runs as the new organisation and its first administrator: the ids are chosen first and the
+      // context is bound from them (nothing here comes from the request's own identity).
+      const { org, adminUserId } = await asAccount(
+        ids.orgId,
+        ids.adminUserId,
+        'org-create',
+        () =>
+          createUnitOfWork(this.config.rsAvailable === 'true').run(
+            async (tx) => {
+              const created = await getOrgRepository().createWithAdmin(
+                {
+                  ids,
+                  org: {
+                    ...req.body,
+                    domain,
+                    onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+                    signupChannel: source.channel,
+                    signupReferrerDomain: source.referrerDomain,
+                  },
+                  admin: { fullName: adminFullName, email: contactEmail },
+                  passwordHash: hashedPassword,
+                  ipAddress: req.ip,
+                },
+                tx,
+              );
+              const orgCreatedEvent: Event = {
+                eventType: EventType.OrgCreatedEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  accountType: created.org.accountType,
+                  registeredName: created.org.registeredName,
+                } as OrgAddedEvent,
+              };
+              const adminUserEvent: Event = {
+                eventType: EventType.NewUserEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  userId: created.adminUserId,
+                  fullName: adminFullName,
+                  email: created.adminEmail,
+                  syncAction: 'none',
+                } as UserAddedEvent,
+              };
+              await this.eventService.publishEvent(orgCreatedEvent, tx);
+              await this.eventService.publishEvent(adminUserEvent, tx);
+              return created;
+            },
+          ),
+      );
       recordEvent(ORG_CREATED_EVENT, {
-        orgId: (org._id as mongoose.Types.ObjectId).toString(),
-        userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
+        orgId: org._id,
+        userId: adminUserId,
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
+        channel: source.channel,
+        ...(source.referrerDomain !== undefined
+          ? { referrer_domain: source.referrerDomain }
+          : {}),
       });
 
       if (sendEmail) {
@@ -317,7 +281,7 @@ export class OrgController {
               contactEmail,
               this.config.scopedJwtSecret,
             ),
-            orgId: org._id.toString(),
+            orgId: org._id,
           },
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
@@ -337,12 +301,10 @@ export class OrgController {
       }
       this.logger.error('Creating the organisation failed', { error });
       throw markClientSafe(
-        new InternalServerError(serverFailureMessage('create the organisation')),
+        new InternalServerError(
+          serverFailureMessage('create the organisation'),
+        ),
       );
-    } finally {
-      if (session) {
-        session.endSession();
-      }
     }
   }
 
@@ -354,7 +316,7 @@ export class OrgController {
     const orgId = req.user?.orgId;
     this.logger.debug(orgId);
     try {
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -366,52 +328,100 @@ export class OrgController {
     }
   }
 
+  /** A request-body field that, when present, must be a string. */
+  private optionalString(field: string, value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') {
+      throw new BadRequestError(`${field} must be a string`);
+    }
+    return value;
+  }
+
+  /**
+   * The address fields of a request body, each a string. Anything else (an
+   * operator object, an array, a number) is refused rather than stored.
+   */
+  private pickAddress(value: unknown): Record<string, string> | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestError('permanentAddress must be an object');
+    }
+    const address: Record<string, string> = {};
+    for (const field of ADDRESS_FIELDS) {
+      const part = (value as Record<string, unknown>)[field];
+      if (part === undefined) continue;
+      if (typeof part !== 'string') {
+        throw new BadRequestError(`permanentAddress.${field} must be a string`);
+      }
+      address[field] = part;
+    }
+    return address;
+  }
+
+  private savedAddress(org: unknown): Record<string, string> {
+    const doc = org as { toObject?: () => Record<string, unknown> };
+    const plain = doc.toObject?.() ?? (org as Record<string, unknown>);
+    const stored = plain.permanentAddress;
+    const saved: Record<string, string> = {};
+    if (stored === null || typeof stored !== 'object') return saved;
+    for (const field of ADDRESS_FIELDS) {
+      const part = (stored as Record<string, unknown>)[field];
+      if (typeof part === 'string') saved[field] = part;
+    }
+    return saved;
+  }
+
   async updateOrganizationDetails(
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     const { contactEmail, registeredName, shortName, permanentAddress } =
-      req.body as {
-        contactEmail?: string;
-        registeredName?: string;
-        shortName?: string;
-        permanentAddress?: string;
-      };
+      req.body as Record<string, unknown>;
 
     try {
+      // The route schema already forces these shapes. Checked again here so a
+      // query operator ({ "$ne": null }, { "$where": ... }) can never be spread
+      // into the update, whatever route reaches this method.
+      const email = this.optionalString('contactEmail', contactEmail);
+      const regName = this.optionalString('registeredName', registeredName);
+      const short = this.optionalString('shortName', shortName);
+      const address = this.pickAddress(permanentAddress);
+
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
 
       // Update only the fields that are provided in the request body
-      const updateData: Partial<{
-        contactEmail: string;
-        registeredName: string;
-        shortName: string;
-        permanentAddress: string;
-      }> = {};
+      const updateData: Record<string, string | Record<string, string>> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (email) updateData.contactEmail = email;
+      if (regName) updateData.registeredName = regName;
+      if (short) updateData.shortName = short;
+      // Merge the supplied fields into the saved address so a partial address
+      // keeps the fields it omits. A whole-object $set also works when the
+      // stored value is null, where a dotted path would fail.
+      if (address && Object.keys(address).length > 0) {
+        const saved = this.savedAddress(org);
+        updateData.permanentAddress = { ...saved, ...address };
+      }
 
       // Perform the update
-      const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        new: true,
-      });
+      const updatedOrg = await getOrgRepository().update(
+        orgId as string,
+        updateData,
+      );
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -436,22 +446,24 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
 
       // Soft delete: set isDeleted to true
-      org.isDeleted = true;
-      await org.save();
+      const deleted = await getOrgRepository().softDelete(orgId as string);
+      if (!deleted) {
+        throw new NotFoundError('Organisation not found');
+      }
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -460,7 +472,7 @@ export class OrgController {
 
       res.status(200).json({
         message: 'Organization marked as deleted successfully',
-        data: org,
+        data: deleted,
       });
       return;
     } catch (error) {
@@ -518,13 +530,7 @@ export class OrgController {
       }
 
       const base64Logo = processedBuffer.toString('base64');
-      await OrgLogos.findOneAndUpdate(
-        {
-          orgId,
-        },
-        { orgId, logo: base64Logo, mimeType },
-        { new: true, upsert: true },
-      );
+      await getOrgRepository().setLogo(orgId as string, base64Logo, mimeType);
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
@@ -546,7 +552,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const orgLogo = await OrgLogos.findOne({ orgId }).lean().exec();
+      const orgLogo = await getOrgRepository().getLogo(orgId as string);
 
       if (!orgLogo || !orgLogo.logo) {
         res.status(204).end();
@@ -557,6 +563,12 @@ export class OrgController {
       if (orgLogo.mimeType) {
         res.setHeader('Content-Type', orgLogo.mimeType);
       }
+      // An SVG logo opened as a page must not run script on this origin.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      );
 
       res.status(200).send(logoBuffer);
       return;
@@ -572,15 +584,10 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const orgLogo = await OrgLogos.findOne({ orgId }).exec();
+      const orgLogo = await getOrgRepository().removeLogo(orgId as string);
       if (!orgLogo) {
         throw new NotFoundError('Organisation logo not found');
       }
-
-      orgLogo.logo = null;
-      orgLogo.mimeType = null;
-
-      await orgLogo.save();
 
       res.status(200).send(orgLogo);
       return;
@@ -597,9 +604,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false })
-        .select('onBoardingStatus')
-        .lean();
+      const org = await getOrgRepository().getOnboardingStatus(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -630,15 +635,14 @@ export class OrgController {
         );
       }
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false });
+      const org = await getOrgRepository().setOnboardingStatus(
+        orgId as string,
+        status,
+      );
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
-
-      // Update the onboarding status
-      org.onBoardingStatus = status;
-      await org.save();
 
       res.status(200).json({
         message: 'Onboarding status updated successfully',

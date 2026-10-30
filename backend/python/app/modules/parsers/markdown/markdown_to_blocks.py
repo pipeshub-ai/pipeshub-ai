@@ -25,16 +25,16 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.link_text import link_destination_end
+from app.modules.parsers.markdown.linear_image_search import (
+    HTML_IMG_ALT,
+    MD_IMAGE_NESTED,
+    LinearImageSearch,
+)
 from app.modules.parsers.text_splitting import split_long_text
+from app.modules.transformers.block_container_validator import strip_base64_images
 
-_MD_IMAGE_RE = re.compile(
-    r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
-    r'(data:(?:[^"\s)]|\s+(?!"[^"]*"\s*\))|"[^")]*)*|[^\s)]+)'
-    r'(?:\s+"[^"]*")?\)'
-)
-_HTML_IMG_ALT_RE = re.compile(
-    r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
-)
+_MD_IMAGE_RE = MD_IMAGE_NESTED
+_HTML_IMG_ALT_RE = HTML_IMG_ALT
 _LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 
 
@@ -66,9 +66,32 @@ class _TableCell:
     images: list[Token] = field(default_factory=list)
 
 
-def _next_image_match(text: str, start: int) -> re.Match[str] | None:
-    md_match = _MD_IMAGE_RE.search(text, start)
-    html_match = _HTML_IMG_ALT_RE.search(text, start)
+_NOT_SEARCHED = object()
+
+
+def _next_image_match(
+    text: str, start: int, cache: dict[str, object] | None = None
+) -> re.Match[str] | None:
+    """Earliest image match at or after *start*.
+
+    *cache* holds each pattern's last result for one text, so a loop with a
+    growing *start* does not search again for a match it already found (or
+    proved absent).
+    """
+    cache = {} if cache is None else cache
+
+    def find(key: str, pattern: LinearImageSearch) -> re.Match[str] | None:
+        found = cache.get(key, _NOT_SEARCHED)
+        if found is _NOT_SEARCHED or (found is not None and found.start() < start):  # type: ignore[union-attr]
+            scan = cache.get(key + ":scan")
+            if scan is None:
+                scan = cache[key + ":scan"] = pattern.scan(text)
+            found = pattern.search(text, start, scan)  # type: ignore[arg-type]
+            cache[key] = found
+        return found  # type: ignore[return-value]
+
+    md_match = find("md", _MD_IMAGE_RE)
+    html_match = find("html", _HTML_IMG_ALT_RE)
     if md_match is None:
         return html_match
     if html_match is None:
@@ -87,8 +110,9 @@ def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
 
     segments: list[_Segment] = []
     pos = 0
+    cache: dict[str, object] = {}
     while pos < len(raw):
-        match = _next_image_match(raw, pos)
+        match = _next_image_match(raw, pos, cache)
         if match is None:
             tail = raw[pos:]
             if tail.strip():
@@ -591,7 +615,7 @@ class _TokenWalker:
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.CODE,
                 format=DataFormat.CODE,
-                data=content,
+                data=strip_base64_images(content),
                 parent_index=self._current_parent_index(),
                 code_metadata=CodeMetadata(language=language),
             )
@@ -728,11 +752,16 @@ class _TokenWalker:
         format: DataFormat,
         parent_block_index: int | None = None,
     ) -> Block | None:
-        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        """Emit one or more TEXT blocks, splitting oversized content at parse time.
+
+        An image payload that reached text (it sits in code, a table cell or an
+        unclosed fence, so it never became an IMAGE block) is replaced first:
+        before the split, so no chunk keeps the tail of one.
+        """
         if not text or not text.strip():
             return None
 
-        chunks = split_long_text(text)
+        chunks = split_long_text(strip_base64_images(text))
         if parent_block_index is not None:
             last: Block | None = None
             for chunk in chunks:

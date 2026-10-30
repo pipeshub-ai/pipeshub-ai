@@ -93,9 +93,6 @@ describe('ConfigurationManager Routes', () => {
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
   })
 
   afterEach(() => {
@@ -160,11 +157,13 @@ describe('ConfigurationManager Routes', () => {
       }))
 
     const paths = routes.map((r: any) => r.path)
-    expect(paths).to.include('/authConfig/azureAd')
     expect(paths).to.include('/authConfig/google')
     expect(paths).to.include('/authConfig/microsoft')
-    expect(paths).to.include('/authConfig/sso')
-    expect(paths).to.include('/authConfig/oauth')
+    // SAML, generic OAuth and Azure AD sign-in were removed in 1.0.
+    for (const removed of ['azureAd', 'sso', 'oauth']) {
+      expect(paths).to.not.include(`/authConfig/${removed}`)
+      expect(paths).to.not.include(`/internal/authConfig/${removed}`)
+    }
   })
 
   it('should register AI models config routes', () => {
@@ -710,9 +709,6 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
 
     router = createConfigurationManagerRouter(container)
   })
@@ -822,21 +818,12 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
       { path: '/internal/storageConfig', method: 'get' },
       { path: '/smtpConfig', method: 'post' },
       { path: '/smtpConfig', method: 'get' },
-      { path: '/authConfig/azureAd', method: 'get' },
-      { path: '/internal/authConfig/azureAd', method: 'get' },
-      { path: '/authConfig/azureAd', method: 'post' },
       { path: '/authConfig/microsoft', method: 'get' },
       { path: '/internal/authConfig/microsoft', method: 'get' },
       { path: '/authConfig/microsoft', method: 'post' },
       { path: '/authConfig/google', method: 'get' },
       { path: '/internal/authConfig/google', method: 'get' },
       { path: '/authConfig/google', method: 'post' },
-      { path: '/authConfig/sso', method: 'get' },
-      { path: '/internal/authConfig/sso', method: 'get' },
-      { path: '/authConfig/sso', method: 'post' },
-      { path: '/authConfig/oauth', method: 'get' },
-      { path: '/internal/authConfig/oauth', method: 'get' },
-      { path: '/authConfig/oauth', method: 'post' },
       { path: '/platform/settings', method: 'post' },
       { path: '/platform/settings', method: 'get' },
       { path: '/platform/feature-flags/available', method: 'get' },
@@ -926,9 +913,6 @@ describe('Configuration Manager Routes - handler coverage', () => {
     container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
 
     router = createConfigurationManagerRouter(container)
   })
@@ -988,16 +972,10 @@ describe('Configuration Manager Routes - handler coverage', () => {
         .filter((l: any) => l.route)
         .map((l: any) => l.route.path)
 
-      expect(paths).to.include('/authConfig/azureAd')
-      expect(paths).to.include('/internal/authConfig/azureAd')
       expect(paths).to.include('/authConfig/microsoft')
       expect(paths).to.include('/internal/authConfig/microsoft')
       expect(paths).to.include('/authConfig/google')
       expect(paths).to.include('/internal/authConfig/google')
-      expect(paths).to.include('/authConfig/sso')
-      expect(paths).to.include('/internal/authConfig/sso')
-      expect(paths).to.include('/authConfig/oauth')
-      expect(paths).to.include('/internal/authConfig/oauth')
     })
 
     it('should register AI models config routes', () => {
@@ -1169,9 +1147,6 @@ describe('AI Model Registry Proxy Routes', () => {
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
   })
 
   afterEach(() => {

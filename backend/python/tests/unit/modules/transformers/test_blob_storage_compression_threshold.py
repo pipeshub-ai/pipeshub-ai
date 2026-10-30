@@ -55,29 +55,33 @@ class TestThresholdConfig:
         assert compression_threshold_bytes() == 0
 
 
-class TestMaybeCompress:
+def _body(blob: BlobStorage, record: dict) -> tuple[dict, bool]:
+    """The envelope ``_upload_body`` writes, as a reader receives it."""
+    body, is_compressed = blob._upload_body(record, "vr-1")
+    return json.loads(body), is_compressed
+
+
+class TestUploadBody:
     def test_small_record_is_not_compressed(self) -> None:
-        payload, is_compressed = _make_blob_storage()._maybe_compress_record({"key": "value"})
+        envelope, is_compressed = _body(_make_blob_storage(), {"key": "value"})
         assert is_compressed is False
-        assert payload is None
+        assert envelope == {"isCompressed": False, "record": {"key": "value"}, "virtualRecordId": "vr-1"}
 
     def test_record_above_threshold_is_compressed(self, monkeypatch) -> None:
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, "1024")
-        payload, is_compressed = _make_blob_storage()._maybe_compress_record(
-            _record_of_json_size(4096)
-        )
+        envelope, is_compressed = _body(_make_blob_storage(), _record_of_json_size(4096))
         assert is_compressed is True
-        assert isinstance(payload, str) and payload
+        assert envelope["isCompressed"] is True
+        assert isinstance(envelope["record"], str) and envelope["record"]
 
     def test_compression_disabled_stores_large_record_as_json(self, monkeypatch) -> None:
         # Plain JSON stays greppable by storage pattern match.
         monkeypatch.setenv("BLOB_STORAGE_COMPRESSION", "false")
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, "1024")
-        payload, is_compressed = _make_blob_storage()._maybe_compress_record(
-            _record_of_json_size(4096)
-        )
+        record = _record_of_json_size(4096)
+        envelope, is_compressed = _body(_make_blob_storage(), record)
         assert is_compressed is False
-        assert payload is None
+        assert envelope["record"] == record
 
     def test_boundary_is_exclusive(self, monkeypatch) -> None:
         """Exactly at the threshold stays uncompressed; one byte over compresses."""
@@ -86,29 +90,30 @@ class TestMaybeCompress:
         exact_size = len(json.dumps(record).encode("utf-8"))
 
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, str(exact_size))
-        assert blob._maybe_compress_record(record)[1] is False
+        assert blob._upload_body(record, "vr-1")[1] is False
 
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, str(exact_size - 1))
-        assert blob._maybe_compress_record(record)[1] is True
+        assert blob._upload_body(record, "vr-1")[1] is True
 
     def test_non_json_serializable_record_is_compressed(self, monkeypatch) -> None:
         """The uncompressed envelope is json.dumps'd, so it could not carry this."""
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, str(10 * 1024 * 1024))
-        payload, is_compressed = _make_blob_storage()._maybe_compress_record(
-            {"when": {1, 2, 3}}  # a set: msgpack encodes it, json.dumps does not
+        envelope, is_compressed = _body(
+            _make_blob_storage(), {"when": {1, 2, 3}}  # a set: msgpack encodes it, json.dumps does not
         )
         assert is_compressed is True
-        assert isinstance(payload, str)
+        assert isinstance(envelope["record"], str)
 
     def test_compression_failure_falls_back_to_uncompressed(self, monkeypatch) -> None:
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, "10")
         blob = _make_blob_storage()
         blob._compress_record = MagicMock(side_effect=RuntimeError("zstd exploded"))
+        record = _record_of_json_size(1024)
 
-        payload, is_compressed = blob._maybe_compress_record(_record_of_json_size(1024))
+        envelope, is_compressed = _body(blob, record)
 
         assert is_compressed is False
-        assert payload is None
+        assert envelope["record"] == record
         blob.logger.warning.assert_called()
 
 
@@ -119,14 +124,7 @@ class TestRoundTripBothShapes:
         blob = _make_blob_storage()
         record = {"id": "rec-1", "record_name": "small.txt", "blocks": [1, 2, 3]}
 
-        payload, is_compressed = blob._maybe_compress_record(record)
-        envelope = {
-            "isCompressed": is_compressed,
-            "record": payload if is_compressed else record,
-            "virtualRecordId": "vr-1",
-        }
-        # The envelope must survive the JSON hop it takes through storage.
-        envelope = json.loads(json.dumps(envelope))
+        envelope, _ = _body(blob, record)
 
         assert blob._process_downloaded_record(envelope) == record
 
@@ -135,12 +133,8 @@ class TestRoundTripBothShapes:
         blob = _make_blob_storage()
         record = {"id": "rec-1", "record_name": "big.txt", "body": "y" * 4096}
 
-        payload, is_compressed = blob._maybe_compress_record(record)
+        envelope, is_compressed = _body(blob, record)
         assert is_compressed is True
-
-        envelope = json.loads(
-            json.dumps({"isCompressed": True, "record": payload, "virtualRecordId": "vr-1"})
-        )
 
         assert blob._process_downloaded_record(envelope) == record
 
@@ -150,15 +144,6 @@ class TestRoundTripBothShapes:
         blob = _make_blob_storage()
         record = {"id": "rec-1", "text": "hello world", "n": 42, "nested": {"a": [1, 2]}}
 
-        payload, is_compressed = blob._maybe_compress_record(record)
-        envelope = json.loads(
-            json.dumps(
-                {
-                    "isCompressed": is_compressed,
-                    "record": payload if is_compressed else record,
-                    "virtualRecordId": "vr-1",
-                }
-            )
-        )
+        envelope, _ = _body(blob, record)
 
         assert blob._process_downloaded_record(envelope) == record

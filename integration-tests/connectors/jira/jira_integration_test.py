@@ -23,7 +23,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED; then manual indexing on
   order 8  TC-INCR-001        — dedicated connector: create + incremental (by id) + delete
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
-  order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
+  order 10 TC-JIRA-HIER-001   — a sub-task under its task (PARENT_CHILD); an epic's child off its project
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
   order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
@@ -111,6 +111,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     wait_until_jira_condition,
 )
 from helper.indexing_wait import (  # noqa: E402
+    RECORD_INDEXING_TERMINAL,
     wait_until_record_indexing_completed,
 )
 
@@ -281,6 +282,21 @@ def _pk(operator: str, values: list[str]) -> dict[str, Any]:
     return {"operator": operator, "type": "list", "value": values}
 
 
+# No issue on the simulator pack or the IT site was created before 2000-01-01.
+_BEFORE_ANY_ISSUE_MS = 946_684_800_000
+
+
+def _no_issues() -> dict[str, Any]:
+    """A ``created`` filter no issue passes, for tests that assert on projects only.
+
+    ``not_in [primary]`` and an empty key list scope every visible project. On the
+    simulator that is about 25,000 issues: a full sync of over four minutes on Neo4j and
+    longer on ArangoDB, so both tests ran past the 300s wait. A project becomes a
+    RecordGroup before any of its issues is read, so those assertions never needed them.
+    """
+    return {"type": "datetime", "operator": "is_before", "value": {"start": None, "end": _BEFORE_ANY_ISSUE_MS}}
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.jira,
@@ -433,13 +449,14 @@ class TestJiraConnector:
                 # Assert the delta by external id (parallel-safe), not a global count delta.
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
                 assert actual is not None, f"typed TICKET record missing for external id {new_id}"
-                expected = await JiraExpected.ticket_record(
+                expected, unsettled = await JiraExpected.ticket_record_and_unsettled(
                     new_key, connector_id=connector_id, datasource=jira_datasource,
                     site_base_url=base_url or None,
                 )
                 await assert_graph_entity_with_edges(
                     expected, actual, entity="ticket_record",
                     connector_id=connector_id, graph_provider=graph_provider,
+                    skip_compare=unsettled,
                 )
                 await graph_provider.assert_record_paths_or_names_contain(connector_id, [title])
                 logger.info("TC-INCR-001 passed: %s synced", new_key)
@@ -743,8 +760,11 @@ class TestJiraValidation:
         target_id = jira_connector["reference_issue_id"]
         base_url = connector_base_url()
 
+        unsettled: frozenset[str] = frozenset()
+
         async def _live_and_graph() -> tuple[Any, Any]:
-            live = await JiraExpected.ticket_record(
+            nonlocal unsettled
+            live, unsettled = await JiraExpected.ticket_record_and_unsettled(
                 target_key, connector_id=connector_id, datasource=jira_datasource,
                 site_base_url=base_url or None,
             )
@@ -770,6 +790,7 @@ class TestJiraValidation:
         await assert_graph_entity_with_edges(
             expected, actual, entity="ticket_record",
             connector_id=connector_id, graph_provider=graph_provider,
+            skip_compare=unsettled,
         )
         logger.info("TC-JIRA-004 passed: %s", target_key)
 
@@ -901,10 +922,18 @@ class TestJiraIndexing:
             pytest.skip("No reference issue discovered on primary — skipping")
         external_id = jira_connector["reference_issue_id"]
 
+        # The reference issue is queued behind the whole first sync of the primary project
+        # (about 400 issues on the simulator), so the wait follows the queue: it fails when
+        # indexing stops moving, not when a slower message broker takes longer to reach it.
+        async def indexed_so_far() -> int:
+            records = await graph_provider.fetch_records_by_type(connector_id, "")
+            return sum(1 for r in records if r.get("indexingStatus") in RECORD_INDEXING_TERMINAL)
+
         rec = await wait_until_record_indexing_completed(
             graph_provider, connector_id, external_id,
             timeout=JIRA_INDEXING_WAIT_SEC,
             description=f"TC-JIRA-IDX-001 {key}", pipeshub_client=pipeshub_client,
+            queue_progress=indexed_so_far,
         )
         assert rec.indexing_status == ProgressStatus.COMPLETED.value
         assert rec.record_type == RecordType.TICKET
@@ -934,18 +963,25 @@ class TestJiraHierarchy:
         jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-HIER-001: Epic↔child and Task↔sub-task hierarchy built as PARENT_CHILD (read-only)."""
+        """TC-JIRA-HIER-001: a sub-task hangs under its task as PARENT_CHILD; an epic's child hangs off its project."""
         connector_id = jira_connector["connector_id"]
         checked = 0
 
-        # Epic ↔ child
+        # Epic ↔ child: the child hangs off its project, not its epic. Jira copies a parent's security
+        # level onto its sub-tasks but not onto an epic's children, so filing a story under its epic would
+        # hide it from people who may open it.
         epic_id = jira_connector.get("epic_id")
         child_id = jira_connector.get("epic_child_id")
         if epic_id and child_id:
             child = await graph_provider.get_record_by_external_id(connector_id, child_id)
-            assert child is not None and str(child.parent_external_record_id) == str(epic_id)
+            assert child is not None and not child.parent_external_record_id, (
+                f"{child_id} must not be filed under an issue (parent={child.parent_external_record_id!r})"
+            )
+            # The project's record group holds it through the same edge; it has no record id, so only a
+            # record parent shows up here.
             incoming = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
-            assert str(epic_id) in incoming, f"PARENT_CHILD epic {epic_id} → child {child_id} missing ({incoming!r})"
+            record_parents = [parent for parent in incoming if parent]
+            assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r} (epic {epic_id})"
             checked += 1
 
         # Task ↔ sub-task
@@ -1042,8 +1078,8 @@ class TestJiraBlocks:
             pytest.skip("JIRA_BLOCKS_ISSUE_KEY unset / not in primary / not synced — skipping")
 
         live_updated_ms = await get_jira_issue_updated_ms(jira_datasource, blocks_key)
-        expected, meta = load_expected()
-        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":
+        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":  # a bootstrap may have no snapshot yet: it writes one below
+            expected, meta = load_expected()
             assert_snapshot_source_unchanged(meta, issue_key=blocks_key, live_updated_ms=live_updated_ms)
 
         # External Jira issue id → internal graph record id (what stream_record expects).
@@ -1146,7 +1182,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("not_in", [primary_key])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("not_in", [primary_key]), created=_no_issues()),
         )
         primary_rg = await graph_provider.get_record_group_by_external_id(
             connector_id, project_id_by_key[primary_key],
@@ -1294,7 +1331,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("in", []), created=_no_issues()),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs >= len(keys), f"empty=all should sync ≥ {len(keys)} RecordGroups, got {rgs}"
@@ -1328,7 +1366,11 @@ def _jira_ph_env() -> tuple[str, str, str, str]:
 async def _jira_ph_out_of_window_ancestors(
     datasource: JiraDataSource, child_key: str, cut: int,
 ) -> tuple[str, list[str]]:
-    """Resolve child id + ancestor ids with ``created <= cut``. Requires depth >= 2."""
+    """Resolve the sub-task's id and the ids of the ancestors the connector files it under, with ``created <= cut``.
+
+    Only a sub-task is filed under its parent, so that parent is the one ancestor; the parent's own parent
+    (an epic) is not in the chain.
+    """
     child_resp = await jira_api_call_with_retry(
         datasource.get_issue, issueIdOrKey=child_key, fields="created",
         context=f"ph child {child_key}",
@@ -1350,11 +1392,9 @@ async def _jira_ph_out_of_window_ancestors(
             break
         ancestors.append(ancestor_id)
 
-    if len(ancestors) < 2:
-        pytest.fail(
-            f"TC-JIRA-PH-001: {child_key} has {len(ancestors)} ancestor(s) with "
-            f"created <= cut={cut}; >= 2 required (BFS proof)"
-        )
+    ancestors = ancestors[:1]
+    if not ancestors:
+        pytest.fail(f"TC-JIRA-PH-001: the parent of {child_key} must have created <= cut={cut}")
     return child_id, ancestors
 
 
@@ -1371,8 +1411,8 @@ class TestJiraPlaceholders:
         """TC-JIRA-PH-001: dedicated connector — stubs swept, then promoted on widen.
 
         Dedicated connector required: narrowing the shared fixture after a full sync
-        finds ancestors already as real records, so no stubs are minted. Depth >= 2
-        proves BFS (grandparent only appears after the parent stub is swept).
+        finds ancestors already as real records, so no stubs are minted. The sub-task's
+        parent is the only ancestor the connector files it under.
         """
         cut = JIRA_PH_CREATED_CUT_MS
         _base_url, _email, _api_token, primary_key = _jira_ph_env()

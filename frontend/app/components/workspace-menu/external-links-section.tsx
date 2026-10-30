@@ -71,9 +71,12 @@ export function ExternalLinksSection() {
             </span>
             {stars && (
               <>
-                <Text style={{ color: 'var(--slate-6)' }}>•</Text>
+                <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
                 <span
                   style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 2,
                     fontSize: 14,
                     fontWeight: 500,
                     lineHeight: '20px',
@@ -86,7 +89,6 @@ export function ExternalLinksSection() {
                     name="star"
                     size={12}
                     color="var(--slate-10)"
-                    style={{ marginLeft: 2, verticalAlign: 'middle' }}
                   />
                 </span>
               </>

@@ -415,6 +415,20 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
 # Backstops against a server that keeps pointing to more pages.
 _MAX_SEARCH_PAGES = 50
 _MAX_CREATE_FIELD_PAGES = 100
+# Options listed per field in get_create_issue_fields; the rest are counted, not shown.
+_MAX_LISTED_ALLOWED_VALUES = 20
+
+
+def _unlisted_option_hint(field: dict[str, Any], pass_via: str) -> str:
+    """How to pass an option get_create_issue_fields left out, in the shape the field takes."""
+    if pass_via == "named_parameter":
+        return "To use one, pass its name to the named parameter as Jira shows it."
+    is_list = field.get("schema_type") == "array"
+    kind = field.get("schema_items") if is_list else field.get("schema_type")
+    # Cloud user entries carry no name, so they are never listed or counted here.
+    key = "name" if kind in ("version", "priority", "component", "group") else "value"
+    shape = "{'" + key + "': '<label>'}"
+    return f"To use one, pass its label in custom_fields as {f'[{shape}]' if is_list else shape}."
 
 
 def _next_page_token(page: dict) -> str | None:
@@ -945,7 +959,7 @@ class Jira:
     def _parse_allowed_values(self, raw: list[Any]) -> list[dict[str, Any]]:
         """Normalise the allowedValues list from a createmeta field response."""
         result: list[dict[str, Any]] = []
-        for av in raw[:20]:
+        for av in raw:
             if not isinstance(av, dict):
                 continue
             entry: dict[str, Any] = {}
@@ -1083,12 +1097,15 @@ class Jira:
                 if not field_id:
                     continue
                 meta_schema = f.get("schema") or {}
+                values = self._parse_allowed_values(f.get("allowedValues") or [])
                 fields_by_id[field_id] = {
                     "field_id": field_id,
                     "name": f.get("name", field_id),
                     "required": bool(f.get("required", False)),
                     "schema_type": meta_schema.get("type", "string"),
-                    "allowed_values": self._parse_allowed_values(f.get("allowedValues") or []),
+                    "schema_items": meta_schema.get("items"),
+                    "allowed_values": values[:_MAX_LISTED_ALLOWED_VALUES],
+                    "allowed_values_omitted": max(0, len(values) - _MAX_LISTED_ALLOWED_VALUES),
                     "has_default_value": bool(f.get("hasDefaultValue", False)),
                     "operations": f.get("operations") or [],
                 }
@@ -1270,9 +1287,11 @@ class Jira:
         response_data: dict[str, Any],
         field_schema: dict[str, dict[str, str]]
     ) -> dict[str, Any]:
-        """Normalize custom fields in a response containing issues.
+        """Rename custom fields in a response containing issues to their readable names.
 
-        Only normalizes fields that have values (not None) to avoid adding back removed fields.
+        Each custom field appears once, under its normalized name (the customfield_ id is
+        dropped). Only fields with values (not None) are touched. If the name is empty,
+        already taken, or a system field's key or alias, the id is kept so no value is lost.
 
         Args:
             response_data: Response data (may contain "issues" list or single issue)
@@ -1286,24 +1305,32 @@ class Jira:
 
         normalized = dict(response_data)
 
-        # Handle list of issues (from search_issues, get_issues)
+        # Handle list of issues (from search_issues, get_issues) or a single issue
         if "issues" in normalized and isinstance(normalized["issues"], list):
-            for issue in normalized["issues"]:
-                if "fields" in issue and isinstance(issue["fields"], dict):
-                    fields = issue["fields"]
-                    # Only normalize customfield_* fields that exist and are not None
-                    for field_id, field_info in field_schema.items():
-                        if field_id in fields and fields[field_id] is not None:
-                            normalized_name = field_info["normalized"]
-                            fields[normalized_name] = fields[field_id]
+            issues = normalized["issues"]
+        else:
+            issues = [normalized]
 
-        # Handle single issue (from get_issue)
-        elif "fields" in normalized and isinstance(normalized["fields"], dict):
-            fields = normalized["fields"]
+        # A custom field may not take a system field's key or alias (Jira allows a custom
+        # field named "Issue Type" or "Description"); get_issue also writes "description" back.
+        reserved = {"description"}
+        for field_id, field_info in field_schema.items():
+            if not field_id.startswith("customfield_"):
+                reserved.update((field_id, field_info["normalized"]))
+
+        for issue in issues:
+            fields = issue.get("fields") if isinstance(issue, dict) else None
+            if not isinstance(fields, dict):
+                continue
             for field_id, field_info in field_schema.items():
                 if field_id in fields and fields[field_id] is not None:
-                    normalized_name = field_info["normalized"]
-                    fields[normalized_name] = fields[field_id]
+                    name = field_info["normalized"]
+                    if not field_id.startswith("customfield_"):
+                        fields[name] = fields[field_id]
+                    elif name and name not in reserved and name not in fields:
+                        # Rename, don't copy: one key per custom field saves LLM tokens.
+                        # Writers get ids from get_create_issue_fields, not from this output.
+                        fields[name] = fields.pop(field_id)
 
         return normalized
 
@@ -1726,6 +1753,11 @@ class Jira:
                 avs = f.get("allowed_values") or []
                 if avs:
                     out["allowed_values"] = avs
+                omitted = f.get("allowed_values_omitted")
+                if omitted:
+                    out["more_values"] = (
+                        f"{omitted} more options are not listed. {_unlisted_option_hint(f, out['pass_via'])}"
+                    )
                 if f.get("has_default_value"):
                     out["has_default_value"] = True
                     out["note"] = "Jira will auto-fill this field if not provided"

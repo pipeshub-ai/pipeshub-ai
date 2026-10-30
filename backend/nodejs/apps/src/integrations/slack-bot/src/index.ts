@@ -1,8 +1,12 @@
 import { config } from "dotenv";
-config(); // Load environment variables first
+import { applyStoreUmbrella } from "../../../libs/config/storeUmbrella";
+config({ quiet: true }); // Load environment variables first
+applyStoreUmbrella(); // PIPESHUB_STORE=postgres fills in the per-store settings
 
 import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
+import { initDocStore } from '../../../libs/repositories/doc-store';
+import { usesMongo } from '../../../libs/repositories/store-select';
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
 import { marked } from "marked";
@@ -89,6 +93,8 @@ import {
   fetchPriorThreadMessages,
   resolveThreadUserLabels,
   inferThreadMessageSpeaker,
+  threadHasOtherParticipants,
+  formatUntrustedThreadContextQuery,
   removeContinuousDuplicateMarkdownLinks,
   addSpaceBetweenMarkdownLinks,
   resolveSlackArtifactLink,
@@ -114,6 +120,8 @@ async function buildThreadContextualQuery(
   priorMessages: SlackMessagePayload[],
   userLabelsById: Map<string, string>,
   typedClient: TypedSlackClient,
+  currentUserId?: string,
+  botUserId?: string,
 ): Promise<string> {
   const contextLines = await Promise.all(
     priorMessages.map(async (message) => {
@@ -125,7 +133,11 @@ async function buildThreadContextualQuery(
       if (!normalizedText) {
         return null;
       }
-      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      const speaker = inferThreadMessageSpeaker(
+        message,
+        userLabelsById,
+        botUserId,
+      );
       return `${speaker}: ${normalizedText}`;
     })
   ).then(lines => lines.filter((line): line is string => Boolean(line)));
@@ -134,13 +146,18 @@ async function buildThreadContextualQuery(
     return query;
   }
 
-  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  // Alone with the bot, the thread is the user's own words: keep the plain format.
+  if (!threadHasOtherParticipants(priorMessages, currentUserId, botUserId)) {
+    return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+  }
+  return formatUntrustedThreadContextQuery(query, contextLines);
 }
 
 async function buildQueryWithThreadContext(
   typedClient: TypedSlackClient,
   typedMessage: SlackMessagePayload,
   query: string,
+  botUserId?: string,
 ): Promise<string> {
   if (!isThreadFollowUpMessage(typedMessage)) {
     return query;
@@ -149,7 +166,14 @@ async function buildQueryWithThreadContext(
   try {
     const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
     const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
-    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
+    return await buildThreadContextualQuery(
+      query,
+      priorMessages,
+      userLabelsById,
+      typedClient,
+      typedMessage.user,
+      botUserId,
+    );
   } catch (error) {
     console.error("Failed to fetch Slack thread context:", error);
     return query;
@@ -317,7 +341,6 @@ async function processSlackMessage(
   const configService = ConfigService.getInstance();
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
-  console.log("currentAgentId", currentAgentId);
   const currentBotId = resolvedSlackBot?.botId;
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
@@ -1502,6 +1525,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedClient,
       typedMessage,
       query,
+      typedContext.botUserId,
     );
     await processSlackMessage(
       typedMessage,
@@ -1523,10 +1547,14 @@ app.event("app_mention", async ({ event, client, context }) => {
   await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
   await getPreparedRedisProvider();
 
-  await connect();
+  // No MongoDB connection (or legacy-index cleanup) when the document store is PostgreSQL.
+  if (usesMongo()) await connect();
+  // Same document-store wiring as the API: a no-op on Mongo, the PostgreSQL runtime under DOC_STORE=postgres.
+  // the bot runs no dispatcher or sweeper, so it needs no jobs login
+  await initDocStore(process.env.APP_VERSION ?? 'dev', { jobs: false });
 
   // Drop legacy threadId + botId index if it exists
-  await dropLegacyThreadBotIndex();
+  if (usesMongo()) await dropLegacyThreadBotIndex();
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");

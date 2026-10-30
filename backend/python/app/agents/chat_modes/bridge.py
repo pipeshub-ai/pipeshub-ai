@@ -36,6 +36,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agents.actions.knowledge_graph.ops.scope import ATTACHMENT_RECORD_IDS_KEY
 from app.agents.agent_loop.answer_rules import (
     READ_RECORDS_IN_FULL_STATE_KEY,
     answer_composition_rules_enabled,
@@ -435,8 +436,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ),
                 resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
-                    query_info.get("attachments"), blob_store=blob_store,
-                    org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    query_info.get("attachments"),
+                    org_id=user_info.get("orgId", ""), logger=log,
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
@@ -504,6 +505,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
+        chat_state[ATTACHMENT_RECORD_IDS_KEY] = resolved_attachments.virtual_record_ids
         # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
         # when this key is present.
         if available_connectors is not None:
@@ -709,9 +711,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             await emit_prefetch_retrieval_context(
                 context, scheduled=prefetch_task is not None, result=prefetch_result,
             )
-            if resolved_attachments.context_text:
-                goal.constraints.append(resolved_attachments.context_text)
-
             if clarifying_questions:
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,

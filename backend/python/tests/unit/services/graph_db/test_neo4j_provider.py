@@ -7,6 +7,7 @@ from app.config.constants.arangodb import Connectors, OriginTypes
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     MoveDestinationMissing,
@@ -168,6 +169,21 @@ class TestConnectionManagement:
 
         assert kwargs["max_connection_lifetime"] == DEFAULT_MAX_CONNECTION_LIFETIME
         assert kwargs["liveness_check_timeout"] == DEFAULT_LIVENESS_CHECK_TIMEOUT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("env", "expected"), [({}, 120.0), ({"NEO4J_TRANSACTION_TIMEOUT": "600"}, 600.0), ({"NEO4J_TRANSACTION_TIMEOUT": "bad"}, 120.0)])
+    async def test_connect_reads_the_transaction_timeout_from_the_environment(self, env, expected) -> None:
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+
+        with patch.dict("os.environ", {"NEO4J_PASSWORD": "secret", **env}, clear=True), patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Neo4jClient"
+        ) as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.connect = AsyncMock(return_value=True)
+            mock_client_cls.return_value = mock_client
+            await provider.connect()
+
+        assert mock_client_cls.call_args.kwargs["transaction_timeout"] == expected
 
     @pytest.mark.asyncio
     async def test_connect_returns_false_when_password_missing(self):
@@ -361,6 +377,28 @@ class TestCheckMcpInstanceInUse:
 
         with pytest.raises(RuntimeError, match="neo4j down"):
             await neo4j_provider.check_mcp_instance_in_use("inst-1")
+
+
+class TestCheckApiToolsetInUse:
+    @pytest.mark.asyncio
+    async def test_returns_agent_names_deduped_by_id(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"agentId": "a1", "agentName": "Support bot"}, {"agentId": "a1", "agentName": "Support bot"}]
+        )
+        assert await neo4j_provider.check_api_toolset_in_use("t1") == ["Support bot"]
+
+    @pytest.mark.asyncio
+    async def test_matches_the_toolsets_entries_and_skips_deleted_agents(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.check_api_toolset_in_use("t9", transaction="txn-1")
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert "apiToolsetTools" in query and "STARTS WITH $prefix" in query and "isDeleted" in query
+        # The trailing ":" keeps toolset "t9" from matching "t90".
+        assert kwargs["parameters"] == {"prefix": "t9:"}
+        assert kwargs["txn_id"] == "txn-1"
 
 
 class TestCheckConnectorInUse:
@@ -3756,7 +3794,7 @@ class TestRecordRelationOperations:
             {"record_id": "c2", "childTable": "", "sourceColumn": "", "targetColumn": ""},
         ]
         child_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert child_kwargs["parameters"] == {"record_id": "p1", "relation_type": "FOREIGN_KEY"}
+        assert child_kwargs["parameters"] == {"record_id": "p1", "relation_type": "FOREIGN_KEY", "limit": 2**31 - 1}
         assert child_kwargs["txn_id"] == "txn-child"
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("child fail"))
@@ -3809,7 +3847,7 @@ class TestRecordRelationOperations:
             {"record_id": "p2", "parentTable": "", "sourceColumn": "", "targetColumn": ""},
         ]
         parent_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert parent_kwargs["parameters"] == {"record_id": "c1", "relation_type": "FOREIGN_KEY"}
+        assert parent_kwargs["parameters"] == {"record_id": "c1", "relation_type": "FOREIGN_KEY", "limit": 2**31 - 1}
         assert parent_kwargs["txn_id"] == "txn-parent"
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("parent fail"))
@@ -4715,7 +4753,7 @@ class TestGetAppPermissionRoleCypher:
         assert "PERMISSION {type: 'USER'}" in cypher
         assert "PERMISSION {type: 'TEAM'}" in cypher
         assert 'team:Teams' in cypher
-        assert 'ut.role' in cypher or 'ut:PERMISSION' in cypher
+        assert cypher_team_grant_role("team_grant", "team_member") in cypher
         
         # Check for team KB role variable
         assert 'team_kb_role' in cypher
@@ -5110,6 +5148,49 @@ class TestTeamQueriesExcludeInactiveUsers:
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
 
+
+class TestTeamsForAnOrgAdministrator:
+    @pytest.mark.asyncio
+    async def test_one_team_grants_every_flag_to_an_admin(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_team_with_users("t1", "org1", "uk1", is_org_admin=True)
+        call = neo4j_provider.client.execute_query.call_args
+        assert call.kwargs["parameters"]["is_org_admin"] is True
+        assert "canEdit: CASE WHEN $is_org_admin OR" in call.args[0]
+        assert "team.id <> ('all_' + team.orgId)" in call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_an_admin_lists_every_team_in_the_org(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total_count": 1}], []])
+        await neo4j_provider.get_user_teams("uk1", search="dev", org_id="org1", is_org_admin=True)
+        count_call, list_call = neo4j_provider.client.execute_query.call_args_list
+        for call in (count_call, list_call):
+            assert "{orgId: $org_id}" in call.args[0]
+            assert call.kwargs["parameters"]["org_id"] == "org1"
+        assert list_call.kwargs["parameters"]["is_org_admin"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_member_lists_their_own_teams(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total_count": 0}], []])
+        await neo4j_provider.get_user_teams("uk1", org_id="org1")
+        count_call, list_call = neo4j_provider.client.execute_query.call_args_list
+        assert "$org_id" not in list_call.args[0]
+        assert list_call.kwargs["parameters"]["is_org_admin"] is False
+
+    @pytest.mark.asyncio
+    async def test_find_team_by_name_is_trimmed_and_case_blind(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"result": {"id": "t2", "name": "QA"}}])
+        found = await neo4j_provider.find_team_by_name("org1", "  qA ", exclude_team_id="t1")
+        assert found == {"id": "t2", "name": "QA"}
+        call = neo4j_provider.client.execute_query.call_args
+        assert call.kwargs["parameters"] == {"org_id": "org1", "name": "qa", "exclude_team_id": "t1"}
+        assert "toLower(trim(toString(team.name))) = $name" in call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_find_team_by_name_no_match(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        assert await neo4j_provider.find_team_by_name("org1", "x") is None
+
 class TestExternalCollaboratorBrowse:
     """What an external collaborator is shown in a connector: the records shared with
     them directly, whose container they cannot see. The listing places such a node
@@ -5159,6 +5240,56 @@ class TestExternalCollaboratorBrowse:
         call = provider.client.execute_query.await_args
         assert "WITH app, allNodes + kh_placed AS allNodes" in call.args[0]
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("max_depth", "bounded"), [(2, True), (50, False)])
+    async def test_a_bounded_flatten_from_the_app_keeps_every_arm_within_the_depth(
+        self, provider, max_depth, bounded,
+    ) -> None:
+        """The declared, seed and collection arms do not begin at the App; a bound
+        on the walk alone would let them return nodes deeper than the request."""
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=max_depth,
+        )
+        query = provider.client.execute_query.await_args.args[0]
+        assert ("{1,2}" in query and "{1,1}" in query and "NOT EXISTS" in query) is bounded
+        assert ("[kh_x IN allNodes WHERE kh_x IN within] AS allNodes" in query) is bounded
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("max_depth", "precomputed"), [(2, False), (50, True)])
+    async def test_a_bounded_flatten_never_reads_the_precomputed_listing(
+        self, provider, max_depth, precomputed,
+    ) -> None:
+        """The precomputed listing holds the whole connector, so it cannot honour a depth."""
+        from app.services.graph_db.neo4j import kh_scope
+
+        provider._kh_scope_mode = AsyncMock(return_value="on")
+        provider._kh_listing_state_ready = AsyncMock(return_value=True)
+        with patch.object(kh_scope, "page_payload", AsyncMock(side_effect=kh_scope.Fallback("test"))) as payload:
+            await provider.get_knowledge_hub_connector_page_v3(
+                "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=max_depth,
+            )
+        assert payload.await_count == int(precomputed)
+
+    @pytest.mark.asyncio
+    async def test_a_flatten_from_the_app_at_depth_one_has_no_zero_length_quantifier(self, provider) -> None:
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=1,
+        )
+        query = provider.client.execute_query.await_args.args[0]
+        assert "{0,0}" not in query and "WITH byHierarchy, [app] AS shorter" in query
+
+    @pytest.mark.asyncio
+    async def test_a_flatten_from_a_folder_bounds_its_one_walk(self, provider) -> None:
+        provider._kh_v3_scoped_start_access = AsyncMock(return_value=(True, [], []))
+        provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=2,
+            start_id="f1", start_type="record",
+        )
+        queries = [c.args[0] for c in provider.client.execute_query.await_args_list]
+        assert any("){1,2} (na)" in q for q in queries)
 
 
 class TestPersonMigrationAndReaper:

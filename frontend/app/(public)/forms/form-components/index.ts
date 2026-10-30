@@ -7,7 +7,7 @@ export type { PasswordFieldProps } from './password-field';
 export { default as OtpField, OTP_LENGTH } from './otp-field';
 export type { OtpFieldProps } from './otp-field';
 
-export { default as ProviderButton, getSamlProviderNameFromAuthProviders } from './provider-button';
+export { default as ProviderButton } from './provider-button';
 export type { ProviderButtonProps, AuthProviderType } from './provider-button';
 
 export { default as Divider } from './divider';
@@ -21,6 +21,3 @@ export type { GoogleSignInButtonProps } from './google-sign-in-button';
 
 export { default as MicrosoftSignInButton } from './microsoft-sign-in-button';
 export type { MicrosoftSignInButtonProps } from './microsoft-sign-in-button';
-
-export { default as OAuthSignInButton } from './oauth-sign-in-button';
-export type { OAuthSignInButtonProps } from './oauth-sign-in-button';

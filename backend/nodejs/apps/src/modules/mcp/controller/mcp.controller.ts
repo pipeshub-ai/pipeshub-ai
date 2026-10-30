@@ -11,11 +11,18 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  clientTags,
+  domainFromEmail,
+} from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import {
+  PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
+} from '../../oauth_provider/constants/constants';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
+  CODE_GRAPH_INSTRUCTIONS,
   CODE_GRAPH_TOOL_NAMES,
   callerHasCodeRepos,
   registerCodeGraphTools,
@@ -53,6 +60,16 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     userId: typeof user.userId === 'string' ? user.userId : undefined,
     domain: domainFromEmail(email),
     auth_type: authType,
+    // Which client and which of our channels: for a stateless transport,
+    // every request has to say it, not only initialize.
+    // Service tokens are OAuth too, but their client id is an internal
+    // per-org placeholder like the PAT one, not an app.
+    ...(authType === 'oauth' &&
+    clientId &&
+    !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
+      ? { oauth_client_id: clientId }
+      : {}),
+    ...clientTags(req.headers),
   };
 }
 
@@ -63,8 +80,7 @@ function mcpConnectedProps(
   req: AuthenticatedUserRequest,
 ): Record<string, unknown> | undefined {
   const body = req.body as
-    | { method?: unknown; params?: Record<string, unknown> }
-    | undefined;
+    { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'initialize') return undefined;
   const clientInfo = (body.params?.clientInfo ?? {}) as Record<string, unknown>;
   return {
@@ -83,8 +99,7 @@ function mcpToolCallProps(
   req: AuthenticatedUserRequest,
 ): Record<string, unknown> | undefined {
   const body = req.body as
-    | { method?: unknown; params?: Record<string, unknown> }
-    | undefined;
+    { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'tools/call') return undefined;
   return {
     ...mcpEventBase(req),
@@ -92,18 +107,26 @@ function mcpToolCallProps(
   };
 }
 
-/** Whether this request can reach a code tool: a listing or a call to one.
- *  Anything else skips the repo check the code tools would cost. */
+/** Whether this request can reach a code tool: initialize (whose instructions
+ *  name the code tools), a listing, or a call to one. Anything else skips the
+ *  repo check the code tools would cost. */
 function reachesCodeTools(body: unknown): boolean {
   if (Array.isArray(body)) return body.some(reachesCodeTools);
   const message = body as
-    | { method?: unknown; params?: { name?: unknown } }
-    | undefined;
-  if (message?.method === 'tools/list') return true;
+    { method?: unknown; params?: { name?: unknown } } | undefined;
+  if (message?.method === 'tools/list' || message?.method === 'initialize') {
+    return true;
+  }
   return (
     message?.method === 'tools/call' &&
     (CODE_GRAPH_TOOL_NAMES as readonly unknown[]).includes(message.params?.name)
   );
+}
+
+/** Whether a JSON-RPC message or batch calls a tool. */
+function callsATool(body: unknown): boolean {
+  if (Array.isArray(body)) return body.some(callsATool);
+  return (body as { method?: unknown } | undefined)?.method === 'tools/call';
 }
 
 /** Session users pass, as in requireScopes; an OAuth token or PAT needs code:read. */
@@ -111,6 +134,24 @@ function mayReadCode(user: Record<string, unknown> | undefined): boolean {
   if (!user?.isOAuth) return true;
   const scopes: unknown = user.oauthScopes;
   return Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CODE_READ);
+}
+
+/**
+ * The MCP tool scopes to mount for this caller. A token without both
+ * kb:write and kb:upload is offered the read tools only, so an agent is not
+ * shown tools that would answer 403. Session users get every tool, as in
+ * requireScopes; undefined mounts everything.
+ */
+export function mcpToolScopes(
+  user: Record<string, unknown> | undefined,
+): Array<'read'> | undefined {
+  if (!user?.isOAuth) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  const held = Array.isArray(scopes) ? scopes : [];
+  return held.includes(OAuthScopeNames.KB_WRITE) &&
+    held.includes(OAuthScopeNames.KB_UPLOAD)
+    ? undefined
+    : ['read'];
 }
 
 /** The Grafana counter for the same step: org and domain only. */
@@ -157,6 +198,7 @@ export const handleMCPRequest =
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        scopes: mcpToolScopes(req.user),
         serverURL,
         getSDK: () =>
           new PipeshubCore({
@@ -177,9 +219,31 @@ export const handleMCPRequest =
           `${req.user?.orgId}:${req.user?.userId}`,
         ))
       ) {
+        // A client asking for code only (`/mcp?tools=code`) is not sent the
+        // document tools or their instructions, which it would re-read every turn.
+        const codeOnly = req.query.tools === 'code';
+        // Only listings are narrowed: a batch that also calls a document tool keeps it.
+        if (codeOnly && !callsATool(req.body)) {
+          const tools = (
+            mcpServer as unknown as {
+              _registeredTools?: Record<string, { remove(): void }>;
+            }
+          )._registeredTools;
+          Object.values(tools ?? {}).forEach((tool) => {
+            tool.remove();
+          });
+        }
         // The package's McpServer is typed against its own zod 4; comparing that
         // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
         registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
+        // shortcut: the SDK has no setter for instructions and @pipeshub-ai/mcp
+        // builds them; move this there once it takes extra sections.
+        const server = mcpServer.server as unknown as {
+          _instructions?: string;
+        };
+        server._instructions = codeOnly
+          ? CODE_GRAPH_INSTRUCTIONS.trimStart()
+          : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 
       await mcpServer.connect(transport);

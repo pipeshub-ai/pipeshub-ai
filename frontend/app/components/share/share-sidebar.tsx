@@ -1,9 +1,11 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { AlertDialog, Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/config';
@@ -49,6 +51,7 @@ export function ShareSidebar({
   onShareSuccess,
   headerContent,
 }: ShareSidebarProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
@@ -63,6 +66,7 @@ export function ShareSidebar({
   // Tracks whether any portaled role dropdown is open — used to suppress the
   // dialog's outside-click handler while the dropdown is active.
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState<SharedMember | null>(null);
 
   // Fetched data
   const [suggestedTeams, setSuggestedTeams] = useState<ShareTeam[]>([]);
@@ -259,6 +263,8 @@ export function ShareSidebar({
 
       setSelectedItems([]);
       updateSearchQuery('');
+      // Least privilege: the next person starts at the default level, not the last pick.
+      setSelectedRole('READER');
 
       onShareSuccess?.();
     } catch (error) {
@@ -290,7 +296,7 @@ export function ShareSidebar({
         toast.success(t('shareSidebar.roleUpdated'), {
           description: t('shareSidebar.roleUpdatedDescription', {
             name: member?.name ?? t('shareSidebar.member'),
-            role: t(`recordView.permission${newRole.charAt(0)}${newRole.slice(1).toLowerCase()}`),
+            role: (adapter.roleOptions?.labels ?? getShareRoleLabels(t))[newRole].label,
           }),
         });
       } catch (error) {
@@ -305,17 +311,24 @@ export function ShareSidebar({
 
   // Remove member.
   // Note: the "at least one owner must remain" invariant is enforced server-side.
-  const handleRemoveMember = useCallback(
+  const removeMemberNow = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
       // Users cannot remove themselves (use the leave/revoke own access flow instead)
       if (member?.isCurrentUser) return;
+      const name = member?.name ?? t('shareSidebar.member');
       try {
-        await adapter.removeMember(memberId, memberType);
+        const result = await adapter.removeMember(memberId, memberType);
         setExistingMembers((prev) => prev.filter((m) => m.id !== memberId));
-        toast.success(t('shareSidebar.accessRevoked'), {
-          description: t('shareSidebar.accessRevokedDescription', { name: member?.name ?? t('shareSidebar.member') }),
-        });
+        if (result && result.removed === false) {
+          toast.info(t('shareSidebar.alreadyRemoved'), {
+            description: t('shareSidebar.alreadyRemovedDescription', { name }),
+          });
+        } else {
+          toast.success(t('shareSidebar.accessRevoked'), {
+            description: t('shareSidebar.accessRevokedDescription', { name }),
+          });
+        }
         onShareSuccess?.();
       } catch (error) {
         // Error is already processed by apiClient interceptor
@@ -325,6 +338,18 @@ export function ShareSidebar({
       }
     },
     [adapter, existingMembers, onShareSuccess, t]
+  );
+
+  const handleRemoveMember = useCallback(
+    (memberId: string, memberType: 'user' | 'team') => {
+      if (!adapter.confirmBeforeRemove) {
+        void removeMemberNow(memberId, memberType);
+        return;
+      }
+      const member = existingMembers.find((m) => m.id === memberId && m.type === memberType);
+      if (member && !member.isCurrentUser) setPendingRemoval(member);
+    },
+    [adapter.confirmBeforeRemove, existingMembers, removeMemberNow]
   );
 
   // Team created callback
@@ -358,19 +383,13 @@ export function ShareSidebar({
           }
         }}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
+          backdropFilter: 'var(--frost-filter)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -391,8 +410,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -424,6 +441,8 @@ export function ShareSidebar({
               </Flex>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
@@ -451,8 +470,6 @@ export function ShareSidebar({
               style={{
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
                 flexShrink: 0,
               }}
             >
@@ -486,8 +503,6 @@ export function ShareSidebar({
               style={{
                 padding: '8px 16px',
                 borderBottom: '1px solid var(--olive-3)',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -495,6 +510,8 @@ export function ShareSidebar({
               </Text>
               <IconButton
                 variant="ghost"
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ margin: 0 }}
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
@@ -504,12 +521,15 @@ export function ShareSidebar({
             </Flex>
 
             {/* Search input */}
-            <Box style={{ padding: '16px 16px 8px', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
+            <Box style={{ padding: '16px 16px 8px' }}>
               <ShareSearchInput
                 selections={selectedItems}
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                supportsTeams={adapter.supportsTeams}
+                teamsHaveRoles={adapter.teamsHaveRoles}
+                roleOptions={adapter.roleOptions}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
@@ -528,8 +548,6 @@ export function ShareSidebar({
                 flex: 1,
                 overflow: 'auto',
                 padding: '0 16px 16px',
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               {headerContent}
@@ -646,7 +664,7 @@ export function ShareSidebar({
                         })
                         .map((member) => (
                         <ShareableRow
-                          key={member.id}
+                          key={`${member.type}:${member.id}`}
                           type={member.type === 'user' ? 'member' : 'team'}
                           name={member.name}
                           subtitle={member.email}
@@ -655,6 +673,8 @@ export function ShareSidebar({
                           isOwner={member.isOwner}
                           role={member.role}
                           showRoleDropdown={!member.isCurrentUser}
+                          roleOptions={adapter.roleOptions}
+                          teamHasRoles={adapter.teamsHaveRoles}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }
@@ -706,8 +726,6 @@ export function ShareSidebar({
                 padding: '12px 16px',
                 borderTop: '1px solid var(--olive-3)',
                 flexShrink: 0,
-                background: 'var(--effects-translucent)',
-                backdropFilter: 'blur(8px)',
               }}
             >
               <Button
@@ -744,6 +762,32 @@ export function ShareSidebar({
             </Flex>
           </Flex>
         )}
+        <AlertDialog.Root open={pendingRemoval !== null} onOpenChange={(next) => !next && setPendingRemoval(null)}>
+          <AlertDialog.Content style={{ maxWidth: '24rem' }}>
+            <AlertDialog.Title size="3">{t('shareSidebar.removeConfirmTitle')}</AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              {t('shareSidebar.removeConfirmDescription', { name: pendingRemoval?.name ?? t('shareSidebar.member') })}
+            </AlertDialog.Description>
+            <Flex gap="2" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action>
+                <Button
+                  color="red"
+                  onClick={() => {
+                    if (pendingRemoval) void removeMemberNow(pendingRemoval.id, pendingRemoval.type);
+                    setPendingRemoval(null);
+                  }}
+                >
+                  {t('action.remove')}
+                </Button>
+              </AlertDialog.Action>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
       </Dialog.Content>
     </Dialog.Root>
   );

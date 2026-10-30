@@ -133,6 +133,15 @@ async def test_someone_elses_answer_gets_no_turn() -> None:
     assert not any(isinstance(m, ToolMessage) and m.content == _PAGE for m in await history.messages())
 
 
+async def test_an_answer_from_another_workspace_gets_no_turn() -> None:
+    store = _Store()
+    await _keep_question(store)
+    history = await _history(*_as_the_history_has_it())
+
+    assert await parked_turn.restore(_context(store, org_id="org-2"), history, call_id="q1") is None
+    assert not any(isinstance(m, ToolMessage) and m.content == _PAGE for m in await history.messages())
+
+
 async def test_a_later_question_does_not_get_an_earlier_turn() -> None:
     store = _Store()
     await _keep_question(store)

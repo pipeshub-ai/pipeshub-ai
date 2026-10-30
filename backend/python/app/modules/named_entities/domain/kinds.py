@@ -143,12 +143,66 @@ VECTOR_KINDS: frozenset[EntityKind] = frozenset(
 )
 
 
+# What each semantic kind means, for the extractor. Proper-name kinds take one
+# specific named thing; a generic noun, a role, a team or a document type is not
+# one, which is most of what over-extraction produced.
+KIND_GUIDE: dict[EntityKind, str] = {
+    EntityKind.PERSON: "a named individual (\"Priya Shah\"). Not a role or a team.",
+    EntityKind.PERSON_TYPE: "a role or job title (\"account lead\", \"CFO\"). Not a named person, team or department.",
+    EntityKind.ORGANIZATION: (
+        "a named company, institution or agency (\"Acme Corp\", \"WHO\"). "
+        "Not \"the company\", a team, a department or a channel."
+    ),
+    EntityKind.PRODUCT: (
+        "a named product, service, model or software (\"Edge Pro 2\", \"Kubernetes\"). "
+        "Not a generic thing (\"invoice\", \"dashboard\", \"sandbox\") or a document type."
+    ),
+    EntityKind.EVENT: (
+        "a named occurrence (\"Lumora Summit 2025\", \"Q3 board meeting\"). "
+        "Not a generic activity (\"renewal\", \"site review\", \"incident report\")."
+    ),
+    EntityKind.SKILL: "a named competency or technology a person has (\"Python\", \"contract negotiation\").",
+    EntityKind.LOCATION: "a named place that is not a city, state, country or address (\"Lake Tahoe\"). Not a room or \"the site\".",
+    EntityKind.CITY: "a city or town (\"Portland\").",
+    EntityKind.STATE: "a state, province or region inside a country (\"Oregon\").",
+    EntityKind.COUNTRY_REGION: "a country or multi-country region (\"Japan\", \"EMEA\").",
+    EntityKind.ADDRESS: "a postal or street address.",
+}
+# Never a name of any semantic kind; the extraction guard rejects these too.
+KIND_GUIDE_EXCLUDES = (
+    "identifiers (ticket keys, PO or contract numbers, UUIDs), file paths, URLs and email addresses"
+)
+
+
 def spec_for(kind: EntityKind | str) -> EntityTypeSpec | None:
     try:
         parsed = kind if isinstance(kind, EntityKind) else EntityKind(str(kind).casefold())
     except ValueError:
         return None
     return ENTITY_TYPE_REGISTRY.get(parsed)
+
+
+# The extractor files one place under any of these, so a hint of one means all.
+INTERCHANGEABLE_KINDS: tuple[EntityKind, ...] = (
+    EntityKind.LOCATION, EntityKind.CITY, EntityKind.STATE, EntityKind.COUNTRY_REGION,
+)
+# One name is often both a company and its product, and the extractor files it
+# under either; a lookup by one kind must also reach the other.
+RELATED_KINDS: tuple[EntityKind, ...] = (EntityKind.PRODUCT, EntityKind.ORGANIZATION)
+
+
+def kind_family(kind: EntityKind) -> tuple[EntityKind, ...]:
+    """The kinds a lookup of ``kind`` reaches: itself and the kinds the
+    extractor files the same thing under."""
+    for family in (INTERCHANGEABLE_KINDS, RELATED_KINDS):
+        if kind in family:
+            return family
+    return (kind,)
+
+
+def interchangeable_kinds(kind: EntityKind) -> tuple[EntityKind, ...]:
+    """The kinds an exact name match under ``kind`` may be taken from without a check."""
+    return INTERCHANGEABLE_KINDS if kind in INTERCHANGEABLE_KINDS else (kind,)
 
 
 def default_enabled_kinds() -> frozenset[EntityKind]:

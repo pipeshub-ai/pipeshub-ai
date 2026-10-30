@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 
 export interface FilterChipConfig {
   /** Unique key for the filter */
@@ -28,18 +29,24 @@ export interface EntityFilterBarProps {
  * via the `renderFilter` prop. If not provided, a plain chip is rendered.
  */
 export function EntityFilterBar({ filters, renderFilter }: EntityFilterBarProps) {
+  const compact = useIsBelowDesktop();
   return (
     <Flex
       align="center"
       gap="2"
+      className={compact ? 'entity-filter-bar-mobile no-scrollbar' : undefined}
       style={{
-        height: '40px',
-        padding: '0 var(--space-4)',
-        borderBottom: '1px solid var(--olive-6)',
-        backgroundColor: 'var(--olive-2)',
+        // Below desktop: one row that scrolls sideways instead of clipping chips.
+        flexWrap: compact ? 'nowrap' : undefined,
+        overflowX: compact ? 'auto' : undefined,
+        // 12px around the 28px chips
+        minHeight: 52,
+        flexShrink: 0,
+        padding: '0 var(--space-3)',
+        borderBottom: '1px solid var(--olive-3)',
       }}
     >
-      <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />
+      <MaterialIcon name="filter_list" size={16} color="var(--olive-9)" />
 
       {filters.map((filter) =>
         renderFilter ? (

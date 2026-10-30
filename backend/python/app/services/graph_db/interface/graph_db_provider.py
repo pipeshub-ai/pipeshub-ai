@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import (
@@ -26,7 +27,9 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -237,6 +240,8 @@ def promoted_duplicate_extraction_status(
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
+    if new_indexing_status == ProgressStatus.PASSWORD_PROTECTED.value:
+        return ProgressStatus.SKIPPED.value
     return ProgressStatus.FAILED.value
 
 
@@ -391,6 +396,7 @@ if TYPE_CHECKING:
         RecordGroup,
         User,
     )
+    from app.modules.named_entities.graph_ops import NamedEntityQuery
     from app.services.graph_db.common.utils import (
         EntityCandidateRows,
         PermittedEntityRows,
@@ -494,6 +500,11 @@ class IGraphDBProvider(ABC):
        and new generic format to ensure smooth migration.
     """
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
+
+
     # ==================== Connection Management ====================
 
     @abstractmethod
@@ -550,7 +561,7 @@ class IGraphDBProvider(ABC):
             write (List[str]): Collections/tables to write to
             explicit (bool | None): True asks for a real, all-or-nothing
                 transaction where the backend can run statements outside one
-                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off). None leaves it to
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS false). None leaves it to
                 the backend's own setting. Backends that are always
                 transactional ignore it.
 
@@ -568,6 +579,12 @@ class IGraphDBProvider(ABC):
     async def rollback_transaction(self, transaction: str) -> None:
         """Roll back a database transaction."""
         pass
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:  # noqa: FBT001
+        """Whether ``begin_transaction(explicit=...)`` yields a real,
+        all-or-nothing transaction. True unless the caller asked for False;
+        Neo4j also consults its own setting."""
+        return explicit is not False
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply
@@ -632,12 +649,15 @@ class IGraphDBProvider(ABC):
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, "Record"]:
         """Batch-fetch typed Record instances for the given record IDs.
 
         Returns a dict mapping record ID to typed Record (FileRecord,
         TicketRecord, etc.). IDs not found or failing typed construction
-        are silently omitted from the result.
+        are silently omitted from the result. A query that fails returns an
+        empty dict, or raises with ``raise_on_error``.
         """
         pass
 
@@ -1777,7 +1797,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
@@ -1787,6 +1808,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
@@ -1798,7 +1820,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
@@ -1808,6 +1831,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
@@ -1819,8 +1843,13 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
         """Edges for many records and relation types at once.
+
+        ``limit_per_direction`` caps the parents and the children kept per record,
+        so a hit with thousands of attachments costs a bounded read. Which edges
+        survive the cap is unspecified.
 
         Returns {record_id: {"parents": [...], "children": [...]}} where the two
         lists hold what `get_parent_record_ids_by_relation_type` and
@@ -1835,7 +1864,8 @@ class IGraphDBProvider(ABC):
         Those queries are issued concurrently. Awaiting them in place would make
         an unspecialised provider slower than the per-record code this replaced,
         which gathered the same calls; a caller must not lose latency by moving
-        to the batch API.
+        to the batch API. At most ``GRAPH_FANOUT_CONCURRENCY`` run at once, so a
+        page of hits does not open a burst of new database connections.
         """
         jobs = [
             (record_id, relation_type, outgoing)
@@ -1850,9 +1880,10 @@ class IGraphDBProvider(ABC):
                 if outgoing
                 else self.get_child_record_ids_by_relation_type
             )
-            return await call(record_id, relation_type, transaction)
+            return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
-        results = await asyncio.gather(
+        results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
             return_exceptions=True,
         )
@@ -1868,6 +1899,8 @@ class IGraphDBProvider(ABC):
             for edge in edges or []:
                 if not isinstance(edge, Mapping):
                     continue
+                if limit_per_direction is not None and len(bucket) >= limit_per_direction:
+                    break
                 bucket.append({**edge, "relationType": relation_type})
         return out
 
@@ -1942,6 +1975,8 @@ class IGraphDBProvider(ABC):
         external_id: str,
         transaction: str | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['Record']:
         """
         Get a record by its external ID from the source system.
@@ -1955,16 +1990,19 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            raise_on_error (bool): Let the lookup's own error out instead of
+                wrapping it in GraphQueryError
 
         Returns:
             Optional['Record']: Record data if found, None otherwise. None means
                 there is no such record - never that the lookup failed.
 
         Raises:
-            GraphQueryError: The lookup could not be read. Callers act on None
-                by creating the record or concluding it was deleted, so a
-                failure reported as None becomes a duplicate record or a
-                deletion that never happened.
+            GraphQueryError: The lookup could not be read; with
+                ``raise_on_error=True``, the error the lookup raised instead.
+                Callers act on None by creating the record or concluding it
+                was deleted, so a failure reported as None would become a
+                duplicate record or a deletion that never happened.
         """
         pass
 
@@ -2166,6 +2204,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """Create the node under ``key`` only when no node holds that key, in one
+        statement, and leave an existing node untouched.
+
+        Returns:
+            True iff this call created the node; False when one already existed
+            (including one a racing writer created first).
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_index_candidate(
         self,
         collection: str,
@@ -2319,6 +2377,49 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        """Claim a push of record ``key`` in knowledge base ``kb_id``, first in its transaction.
+
+        ``expected=None`` is a create: it succeeds only while no record has the key. Otherwise it
+        is an update: it succeeds only while the record is live, in this KB and org, and still
+        holds ``expected`` (document id, revision, version), and it then writes ``new`` (document
+        id and version; the revision follows with the record upsert). A create takes the KB node's
+        lock on Neo4j so two creates of one key serialise; on ArangoDB the record upsert's write
+        conflict is the arbiter.
+
+        A KB that is missing or being deleted refuses the claim. The caller rolls its transaction
+        back on any result but ``CLAIMED``; a provider error (a write conflict) is raised.
+        """
+        pass
+
+    @abstractmethod
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Set only ``externalRevisionId`` on a live pushed record, while it still holds ``expected_revision``.
+
+        Used when the normaliser tag of a stored revision is upgraded: no content, status or
+        event changes. Returns whether the write applied.
+        """
+        pass
+
+    @abstractmethod
     async def compare_and_set_indexing_status(
         self,
         record_ids: list[str],
@@ -2400,6 +2501,81 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def get_stage_states_with_records(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status: str,
+        *,
+        limit: int,
+        after_key: str | None = None,
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> list[tuple[str, list[str]]]:
+        """A page of the connector's ``stage`` states in ``status``: up to ``limit`` of them,
+        by state key after ``after_key``, each with the keys of the connector's live,
+        non-placeholder records on that state's revision whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``. A state none of whose records qualifies has an empty
+        list and still advances the page.
+
+        For stages with no status field on the record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows by key, with what the retirement sweep and the
+        stray pass need of the stored-write protocol: ``{"virtualRecordId", "orgId", "documentId",
+        "switchSeq", "lastSwitchAt", "retired"}``, ``retired`` always a list (decoded on Neo4j, where
+        it is stored as a JSON string). Raises on infrastructure errors."""
+
+    @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
+        """Record id -> its ``contentRev`` (None when it has none), for the given live records whose
+        ``status_field`` is still in ``statuses`` and whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``.
+
+        Re-checks a selection and reads the revision in one statement, so a revision returned
+        is one the record holds while still selected. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:
@@ -2407,6 +2583,19 @@ class IGraphDBProvider(ABC):
 
         Returns the ids updated; a record that moved to another revision is left alone.
         Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``; raises when the read fails.
+
+        A delete is complete when none of the keys it collected remain, so unlike
+        ``get_existing_record_keys`` a failed read must not look like "nothing remains".
         """
 
     @abstractmethod
@@ -2869,6 +3058,21 @@ class IGraphDBProvider(ABC):
         i.e. the content stored under this record's storage path.
 
         Raises on a query failure: an empty list means "owns no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record in *record_group_id*
+        or in a record group nested beneath it -- the content stored under the
+        group's storage prefix.
+
+        Raises on a query failure: an empty list means "holds no content", which
         a storage move acts on.
         """
         pass
@@ -4261,8 +4465,8 @@ class IGraphDBProvider(ABC):
         over to one of these holders. A trashed holder counts: a restore needs
         the content, and the trash purge releases it later. VRIDs nobody holds
         are absent from the result. Each holder carries ``id``, ``connectorId``,
-        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
-        ``isDeleted`` (a bool).
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.
@@ -4329,6 +4533,26 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than answering an empty set, which would read
         as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
         """
         raise NotImplementedError
 
@@ -5155,6 +5379,17 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
+        teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,
@@ -5962,6 +6197,21 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_api_toolset_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that may call an operation of the API toolset
+        (an `apiToolsetTools` entry starting with `"<instance_id>:"`).
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the toolset.
+        """
+        pass
+
+    @abstractmethod
     async def check_mcp_instance_in_use(
         self,
         instance_id: str,
@@ -6405,7 +6655,10 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
+        is_org_admin: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -6416,6 +6669,14 @@ class IGraphDBProvider(ABC):
                 when it belongs to this org
             user_key (str): Current user's key (for permission checking)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
+            is_org_admin (bool): The caller administers the organisation, so
+                canEdit/canManageMembers/canDelete are true whatever their own
+                role on the team (canDelete stays false for the All team).
 
         Returns:
             Optional[Dict]: Team data with members and permissions, None if not found
@@ -6432,10 +6693,15 @@ class IGraphDBProvider(ABC):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
+        org_id: str | None = None,
+        is_org_admin: bool = False,
     ) -> tuple[list[dict], int]:
         """
-        Get all teams that a user is a member of.
+        Get all teams that a user is a member of, or every team in the
+        organisation when the caller administers it.
 
         Args:
             user_key (str): User's key
@@ -6446,9 +6712,43 @@ class IGraphDBProvider(ABC):
             created_after (Optional[int]): Filter teams created after this timestamp (ms)
             created_before (Optional[int]): Filter teams created before this timestamp (ms)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
+            org_id (Optional[str]): Caller's organization ID. Used only with
+                is_org_admin.
+            is_org_admin (bool): With org_id, list every team in that
+                organisation (not only the caller's), each with
+                canEdit/canManageMembers/canDelete as for get_team_with_users.
 
         Returns:
             Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def find_team_by_name(
+        self,
+        org_id: str,
+        name: str,
+        exclude_team_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find a team in an organisation whose name matches, ignoring case and
+        surrounding whitespace.
+
+        Args:
+            org_id (str): Organization ID
+            name (str): Name to look for
+            exclude_team_id (Optional[str]): A team to skip, so renaming a team
+                to its own name is not a clash
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: {"id", "name"} of the first match, None if none
         """
         pass
 
@@ -6461,7 +6761,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -6474,6 +6776,11 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found
@@ -6594,7 +6901,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -6605,6 +6914,10 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                in the answer. Off by default, because this is the directory of
+                people and a service account's id is what binds an agent to it.
+                Only an organisation administrator may turn it on.
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)
@@ -7197,6 +7510,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         name_parents: bool = True,
         user_key: str | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what the user may see under one start node: the App's
         direct children, a folder or group's (``include_scope`` adds the browse
@@ -7204,7 +7518,8 @@ class IGraphDBProvider(ABC):
         Returns ``{rows, hasMore, total, counts, scope}``; rows carry their own
         ``sortKey``/``nullRank`` for the partition merge. With neither
         ``granted_ids`` nor ``grants_by_connector``, ``user_key`` has the page read
-        the grants of its own connector alone (``get_knowledge_hub_connector_grants``)."""
+        the grants of its own connector alone (``get_knowledge_hub_connector_grants``).
+        ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
@@ -7708,13 +8023,15 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
         """One window of each entity's candidate records, filtered inside the
         query by connector or permission role. Not the access decision: the
         role test reads neither ``accessRule`` nor the connector gate.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
-        (same refs, scoping, scan cap and newest-first order). Of these, the
+        (same refs, scoping, scan cap and newest-first order), narrowed by
+        ``within`` before the scan cap when it is given. Of these, the
         window ``[offset, offset + window)`` is walked in order and a row is
         returned when:
           - its ``connectorId`` is in ``app_level_connector_ids``, or
@@ -7740,6 +8057,12 @@ class IGraphDBProvider(ABC):
             offset: Candidates to skip per entity.
             window: Candidates to walk per entity.
             timeout_seconds: Optional server-side query limit.
+            within: Scopes every candidate must lie in, each
+                ``{"apps", "groups", "records"}``: a record lies in one when its
+                ``connectorId`` is in ``apps``, its id is in ``records``, or it
+                belongs directly to a record group in ``groups``. Narrowing
+                before the cap keeps a small selection inside a large app from
+                being crowded out by records outside it. None narrows nothing.
 
         Returns:
             ``{(entity_type, entity_id): PermittedEntityRows}`` for every ref
@@ -7749,6 +8072,27 @@ class IGraphDBProvider(ABC):
 
         Raises:
             Exception: on any query failure, including the timeout.
+        """
+        pass
+
+    @abstractmethod
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Users of ``org_id`` a person query names, active or not (stubs and
+        guests included). ``query`` is matched case-insensitively, spaces
+        collapsed: users whose email, full name or first + last name equals it;
+        when none does, users whose full name, a word of it, or email local
+        part starts with it (only for 3+ characters). Every user sharing the
+        email of a match is returned too, so one person's several nodes come
+        back together. No permission check: org members' names and emails are
+        visible to members.
+
+        Returns:
+            ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``
+            matching people by name (a person is an email, or a node without
+            one), each with all their nodes. An email query returns all its nodes.
+
+        Raises:
+            Exception: on any query failure.
         """
         pass
 
@@ -8016,6 +8360,15 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Mention edges between ``record_ids`` (records the caller already resolved)
         and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_values_in_records(
+        self, org_id: str, query: "NamedEntityQuery | None", record_ids: list[str], per_record: int = 10,
+    ) -> dict[str, list[str]]:
+        """For ``record_ids`` (records the caller already resolved), the names of
+        their values that satisfy ``query``'s value constraints, up to
+        ``per_record`` each, largest first. Entity-node constraints are ignored."""
         raise NotImplementedError
 
     @abstractmethod

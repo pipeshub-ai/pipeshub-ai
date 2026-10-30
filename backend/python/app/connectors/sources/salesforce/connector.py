@@ -9,7 +9,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -93,6 +93,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.http.address_guard import AddressNotAllowedError, guarded_async_client
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
     SalesforceConfig,
@@ -1036,7 +1037,7 @@ class SalesforceConnector(BaseConnector):
             self.data_source = SalesforceDataSource(client)
             self.salesforce_instance_url = instance_url
 
-            self._http_client = httpx.AsyncClient()
+            self._http_client = guarded_async_client()
 
             self.logger.info("Salesforce client initialized successfully.")
             return True
@@ -1195,7 +1196,7 @@ class SalesforceConnector(BaseConnector):
         path = f"/services/data/v{api_version}/sobjects/ContentVersion/{record.external_revision_id}/VersionData"
         url = f"{base}{path}"
         timeout = httpx.Timeout(FILE_STREAM_TIMEOUT_TOTAL_S, connect=FILE_STREAM_CONNECT_TIMEOUT_S)
-        http_client = self._http_client or httpx.AsyncClient()
+        http_client = self._http_client or guarded_async_client()
         owns_client = http_client is not self._http_client
         try:
             async with http_client.stream(
@@ -1217,7 +1218,7 @@ class SalesforceConnector(BaseConnector):
                     )
                 async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                     yield chunk
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, AddressNotAllowedError) as e:
             self.logger.error(f"Error streaming Salesforce file {record.id}: {e}")
             raise to_stream_error(e, connector=self.display_name) from e
         finally:
@@ -1299,7 +1300,7 @@ class SalesforceConnector(BaseConnector):
                     return None
                 headers["Authorization"] = f"Bearer {access_token}"
 
-            http_client = self._http_client or httpx.AsyncClient()
+            http_client = self._http_client or guarded_async_client()
             response = await http_client.get(full_url, headers=headers, follow_redirects=True)
 
             # If public fetch 404s, retry once with an auth token
@@ -1502,13 +1503,13 @@ class SalesforceConnector(BaseConnector):
             if segments and is_rich:
                 # Build HTML from segments (images become base64 data URIs)
                 html = await self._message_segments_to_html(segments)
-                return html_to_markdown(html) if html else ""
+                return await html_to_markdown_async(html) if html else ""
             else:
                 # Plain text fallback
                 plain = (body.text or "").strip()
                 if plain:
                     converted = await self._process_html_images(plain)
-                    return html_to_markdown(converted) if converted else ""
+                    return await html_to_markdown_async(converted) if converted else ""
                 return ""
 
         def _prepend_ts(data: str, ts: Optional[str]) -> str:
@@ -1839,13 +1840,15 @@ class SalesforceConnector(BaseConnector):
     
     async def _process_html_images(self, html_content: str) -> str:
         """Embed Salesforce public-asset images as inline base64 data URIs."""
-        return await embed_html_images_as_base64(
-            html_content,
-            self._http_client,
-            self.logger,
-            # Only inline images hosted on Salesforce public file-asset URLs.
-            url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
-        )
+        # Whoever writes the record chooses these URLs, so they may only reach public addresses.
+        async with guarded_async_client(allow_private=False) as http_client:
+            return await embed_html_images_as_base64(
+                html_content,
+                http_client,
+                self.logger,
+                # Only inline images hosted on Salesforce public file-asset URLs.
+                url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
+            )
 
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """
@@ -2212,7 +2215,7 @@ class SalesforceConnector(BaseConnector):
             if html_body:
                 # Convert images to base64 and then to Markdown
                 processed_html = await self._process_html_images(html_body)
-                body_md = html_to_markdown(processed_html)
+                body_md = await html_to_markdown_async(processed_html)
             else:
                 # Fallback to TextBody if HtmlBody is missing
                 body_md = email_data.get("TextBody") or "No body content available."
@@ -2262,10 +2265,13 @@ class SalesforceConnector(BaseConnector):
         user_email: str,
         record_ids: List[str],
         api_version: str,
-    ) -> AsyncGenerator[Tuple[str, str, str], None]:
+        incomplete: set | None = None,
+    ) -> AsyncGenerator[tuple[str, str, str], None]:
         """
         Yields (record_id, user_email, access_level) tuples for a given user,
-        streaming results as each composite batch resolves.
+        streaming results as each composite batch resolves. A batch that failed
+        adds the user's email to ``incomplete``: what was yielded is then not the
+        user's full access.
         """
         unique_ids = list(set(rid for rid in record_ids if rid))
         if not unique_ids or not user_id:
@@ -2275,6 +2281,8 @@ class SalesforceConnector(BaseConnector):
             safe_user_id = _sanitize_soql_id(user_id)
         except ValueError:
             self.logger.warning("Invalid Salesforce user ID in access check: %r", user_id)
+            if incomplete is not None:
+                incomplete.add(user_email)
             return
 
         SOQL_BATCH_SIZE = 200
@@ -2309,10 +2317,14 @@ class SalesforceConnector(BaseConnector):
                 )
                 if not response.success or not response.data:
                     self.logger.error(f"Composite access check failed: {response.error}")
+                    if incomplete is not None:
+                        incomplete.add(user_email)
                     continue
 
                 for item in response.data.get("compositeResponse") or []:
                     if item.get("httpStatusCode") != 200:
+                        if incomplete is not None:
+                            incomplete.add(user_email)
                         continue
 
                     for row in (item.get("body") or {}).get("records") or []:
@@ -2335,6 +2347,8 @@ class SalesforceConnector(BaseConnector):
                     f"Error processing access batch {i} for user {user_email}: {e}",
                     exc_info=True
                 )
+                if incomplete is not None:
+                    incomplete.add(user_email)
 
     async def _authenticated_user_id(self) -> Optional[str]:
         """The user id that ends the identity URL Salesforce returns with every token."""
@@ -5917,6 +5931,8 @@ class SalesforceConnector(BaseConnector):
            (API calls only — no DB writes during collection).
         3. Replace all stale permission edges with fresh ones in a single batch
            transaction: O(records + groups) deletes + 2 batch_create_edges calls.
+           Only when every user's access was read in full: if any read failed, the
+           stored edges are kept and the fresh ones are added (unknown is not empty).
         """
         # 1. Fetch all active Salesforce users (streamed; bounded by user count
         #    which is the natural cardinality of this query — capping pages here
@@ -5986,6 +6002,8 @@ class SalesforceConnector(BaseConnector):
         # 4. Collect all permission tuples from Salesforce API concurrently (no DB writes)
         MAX_CONCURRENT_USERS = 5
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
+
+        incomplete_users: set = set()
         tasks = [
             self._sync_permissions_for_user(
                 user=user,
@@ -5993,10 +6011,10 @@ class SalesforceConnector(BaseConnector):
                 salesforce_record_group_external_ids=salesforce_rg_external_ids,
                 api_version=api_version,
                 semaphore=semaphore,
+                incomplete=incomplete_users,
             )
             for user in sf_users
         ]
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
         for i, result in enumerate(results):
@@ -6005,6 +6023,7 @@ class SalesforceConnector(BaseConnector):
                     "Failed to collect permissions for user %s: %s",
                     sf_users[i].get("Email"), result,
                 )
+                incomplete_users.add(sf_users[i].get("Email"))
             else:
                 all_permission_tuples.extend(result)  # type: ignore[arg-type]
 
@@ -6019,6 +6038,16 @@ class SalesforceConnector(BaseConnector):
         ] + [
             (rgid, CollectionNames.RECORD_GROUPS.value) for rgid in ext_id_to_rg_id.values()
         ]
+        if incomplete_users:
+            # The edges are rebuilt from scratch, so a user whose read failed would lose
+            # all access. Add-only this run; access that was revoked stays until a pass
+            # in which every user is read in full.
+            self.logger.warning(
+                "Access of %d user(s) could not be read in full; keeping stored permission "
+                "edges and only adding (revocations wait for a complete pass).",
+                len(incomplete_users),
+            )
+            delete_targets = []
         org_by_node_id: dict[str, str | None] = {
             (n.get("id") or n.get("_key")): n.get("orgId")
             for n in salesforce_records + salesforce_record_groups
@@ -6092,7 +6121,8 @@ class SalesforceConnector(BaseConnector):
         salesforce_record_group_external_ids: List[str],
         api_version: str,
         semaphore: asyncio.Semaphore,
-    ) -> List[Tuple[str, str, str, bool]]:
+        incomplete: set | None = None,
+    ) -> list[tuple[str, str, str, bool]]:
         """
         Collect all permission tuples for one user via the Salesforce UserRecordAccess
         API.  Returns a list of (email, external_id, access_level, is_record_group)
@@ -6111,6 +6141,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rec_id, access_level, False))
 
@@ -6119,6 +6150,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_record_group_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rg_id, access_level, True))
 

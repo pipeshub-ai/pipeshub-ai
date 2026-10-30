@@ -37,8 +37,10 @@ import {
   ctxKeyFromAgent,
   isModelReasoningCapable,
   getModelDefaultReasoningEffort,
+  projectCapabilitiesKey,
 } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
@@ -221,6 +223,7 @@ function SpeechInputButton({
   return (
     <Tooltip content={tooltip} side="top">
       <IconButton
+        className="touch-size"
         variant={isListening ? 'soft' : 'ghost'}
         color={isListening ? 'red' : 'gray'}
         size="2"
@@ -420,7 +423,6 @@ export function ChatInput({
   const agentHasInternalSearch = hasAnyFilter(agentKnowledgeDefaults);
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
-  const scopedDeepResearch = scopedAgentCapabilities?.deepSearch ?? false;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
   // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
   // `useProjectScopeHydration`; null everywhere else.
@@ -429,6 +431,10 @@ export function ChatInput({
   const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
+  const projectCapsKey = isProjectChat && projectScope ? projectCapabilitiesKey(projectScope.projectId) : null;
+  const projectCaps = useChatStore((s) =>
+    projectCapsKey ? s.scopedAgentCapabilities[projectCapsKey] : undefined
+  );
   // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
   // Editing or regenerating re-asks with the filters the question was first sent with.
   const mentionsOff = isAgentChat || isProjectChat || isActionMode;
@@ -446,23 +452,21 @@ export function ChatInput({
   // resolved `agentId` disables the toggles instead of silently no-op'ing.
   const plusMenuCapabilities = useMemo(() => {
     const canPersistScoped = isAgentChat && Boolean(agentId);
+    // A project chat keeps its own choice (on by default) instead of the global one.
+    const ownCaps = projectCapsKey
+      ? { internalSearch: projectCaps?.internalSearch ?? true, webSearch: projectCaps?.webSearch ?? true }
+      : settings.agentCapabilities;
     return {
-      internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
-      webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
-      deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
-      // Capabilities reach the backend only in agent mode, so the toggle is offered only there.
-      onToggleDeepResearch: isAgentChat || settings.queryMode === 'agent'
-        ? (enabled: boolean) => {
-            if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
-            else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
-          }
-        : undefined,
+      internalSearch: isAgentChat ? scopedInternalSearch : ownCaps.internalSearch,
+      webSearch: isAgentChat ? scopedWebSearch : ownCaps.webSearch,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
+        else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
       },
       onToggleWebSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { webSearch: enabled });
+        else if (projectCapsKey) setScopedAgentCapabilities(projectCapsKey, { webSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ webSearch: enabled });
       },
       agentHasInternalSearch: isAgentChat
@@ -477,9 +481,9 @@ export function ChatInput({
     agentId,
     scopedInternalSearch,
     scopedWebSearch,
-    scopedDeepResearch,
+    projectCapsKey,
+    projectCaps,
     settings.agentCapabilities,
-    settings.queryMode,
     setScopedAgentCapabilities,
     setAgentCapabilities,
     agentHasInternalSearch,
@@ -488,7 +492,6 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
-    plusMenuCapabilities.onToggleDeepResearch ? plusMenuCapabilities.deepResearch : false,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All
@@ -882,6 +885,7 @@ export function ChatInput({
     dismissExpansionPanels();
     setRegenModelOverride(null);
     leaveEditFiles(false);
+    useChatStore.getState().setRegenAnswers(null);
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
@@ -903,6 +907,7 @@ export function ChatInput({
     };
     dismissExpansionPanels();
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     // Populate the textarea with the original question so the user can edit it
@@ -915,8 +920,16 @@ export function ChatInput({
     leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     setMessage('');
   }, [leaveEditFiles]);
+
+  // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
+  const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
+  useEffect(() => {
+    useChatStore.getState().setRegenTargetMessageId(regenTargetMessageId);
+    return () => useChatStore.getState().setRegenTargetMessageId(null);
+  }, [regenTargetMessageId]);
 
   // Register showRegenBar / showEditQuery commands
   useEffect(() => {
@@ -972,10 +985,22 @@ export function ChatInput({
     setMessage('');
     if (activeSlotId) {
       const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+      // Kept until the re-run ends, so the card shows the answers it is running with.
+      const regenAnswers = useChatStore.getState().regenAnswers;
+      const answers =
+        !isEdit && regenAnswers?.messageId === activeMessageAction.messageId ? regenAnswers.message : undefined;
       if (edit) streamRegenerateForSlot(...target, edit);
+      else if (answers) streamRegenerateForSlot(...target, undefined, answers);
       else streamRegenerateForSlot(...target);
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles]);
+
+  // Submitting the reopened question card regenerates as the bar's button does, with the bar's model.
+  useEffect(() => {
+    const { register, unregister } = useCommandStore.getState();
+    register('runRegenerate', () => executeMessageAction());
+    return () => unregister('runRegenerate');
+  }, [executeMessageAction]);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -1337,6 +1362,12 @@ export function ChatInput({
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
+      // Whatever menu led to the picker sits over the chips row; a pick that
+      // processFiles turns away early must still close it.
+      setIsPlusMenuOpen(false);
+      setIsMobilePlusMenuOpen(false);
+      setIsCompactMenuOpen(false);
+      setShowUploadArea(false);
       processFiles(e.target.files);
     }
     if (fileInputRef.current) {
@@ -1744,8 +1775,8 @@ export function ChatInput({
           pointerEvents: 'auto',
           background: 'color-mix(in srgb, var(--olive-1) 42%, transparent)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRadius: 'var(--radius-1)',
           padding: '7px 8px',
           boxSizing: 'border-box',
@@ -1753,7 +1784,14 @@ export function ChatInput({
         }}
       >
         {/* Single row: plus button + input + send */}
-        <Flex align="center" justify="between" gap="1" style={{ height: 26 }}>
+        {/* On phones the row is 44px but the field is 20px; a tap above or below it should still open the composer. */}
+        <Flex
+          align="center"
+          justify="between"
+          gap="1"
+          onClick={isMobile ? (event) => { if (event.target === event.currentTarget) handleExpand(); } : undefined}
+          style={{ height: isMobile ? TOUCH_TARGET_PX : 26 }}
+        >
           {!isAgentChat && (
             <IconButton
               variant="ghost"
@@ -1761,7 +1799,7 @@ export function ChatInput({
               size="2"
               onClick={handleExpand}
               aria-label={t('chat.expandComposer', { defaultValue: 'Expand composer' })}
-              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0 }}
+              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0, ...touchTarget(isMobile) }}
             >
               <MaterialIcon name="add" size={16} color="var(--neutral-11)" />
             </IconButton>
@@ -1807,6 +1845,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
@@ -1835,6 +1874,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'transparent',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
@@ -1900,9 +1940,9 @@ export function ChatInput({
         pointerEvents: 'auto',
         fontFamily: 'Manrope, sans-serif',
         backdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         WebkitBackdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'blur(25px)' : 'none',
+          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
         background: dockGlass
           ? 'color-mix(in srgb, var(--olive-1) 42%, transparent)'
           : composerActive || message.trim() || isListening
@@ -2287,6 +2327,8 @@ export function ChatInput({
         <ChatInputExpansionPanel
           open={isModelPanelOpen}
           onClose={() => setIsModelPanelOpen(false)}
+          height="auto"
+          maxHeight="380px"
         >
           <ModelSelectorPanel
             selectedModel={contextSelectedModel ?? contextDefaultModel}
@@ -2393,6 +2435,7 @@ export function ChatInput({
               side="top"
             >
               <IconButton
+                className="touch-size"
                 variant={isSearchMode ? 'soft' : 'ghost'}
                 color="gray"
                 size="2"
@@ -2413,7 +2456,7 @@ export function ChatInput({
                         setMode('search');
                       }
                 }
-                style={{ ...composerIconButtonStyle, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ ...composerIconButtonStyle, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <MaterialIcon
                   name={isSearchMode ? 'chat' : 'search'}
@@ -2435,6 +2478,7 @@ export function ChatInput({
                 size="2"
                 disabled={isRegenerateMode}
                 onClick={() => setIsMobilePlusMenuOpen(true)}
+                className="touch-size"
                 aria-label={
                   showPlusMenuFilterBadge
                     ? t('chat.plusMenu.ariaLabelFiltersApplied', {
@@ -2442,7 +2486,7 @@ export function ChatInput({
                       })
                     : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
                 }
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <PlusMenuTriggerIcon
                   color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor}
@@ -2480,8 +2524,9 @@ export function ChatInput({
                 variant="ghost"
                 color="gray"
                 size="2"
+                aria-label={t('common.moreOptions')}
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, cursor: 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: 'pointer' }}
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
@@ -2494,6 +2539,7 @@ export function ChatInput({
                 isRegenerateMode={isRegenerateMode}
                 activeIconColor={activeIconColor}
                 onToggle={toggleSpeech}
+                style={touchTarget(isMobile)}
               />
             </Flex>
           ) : isCompactToolbar ? (
@@ -2674,10 +2720,16 @@ export function ChatInput({
                   side="top"
                 >
                     <IconButton
+                      className="touch-size"
                       variant="ghost"
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsCollectionsPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');
@@ -2690,6 +2742,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isCollectionsPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2725,10 +2778,16 @@ export function ChatInput({
                     side="top"
                   >
                     <IconButton
+                      className="touch-size"
                       variant="ghost"
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        isAgentChat || settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip')
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsAgentResourcesPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');
@@ -2742,6 +2801,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isAgentResourcesPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2771,8 +2831,14 @@ export function ChatInput({
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
+                    asChild
                     align="center"
                     gap="1"
+                  >
+                  <button
+                    type="button"
+                    className="touch-size"
+                    aria-label={t('chat.aiModelsTooltip')}
                     data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
@@ -2790,6 +2856,8 @@ export function ChatInput({
                           ? 'var(--olive-3)'
                           : 'transparent',
                       transition: 'background-color 0.12s ease',
+                      border: 'none',
+                      font: 'inherit',
                       maxWidth: isMobile ? '32px' : (reasoningEffortLabel ? '220px' : '180px'),
                       flexShrink: 0,
                     }}
@@ -2828,6 +2896,7 @@ export function ChatInput({
                         )}
                       </Flex>
                     )}
+                  </button>
                   </Flex>
                 </Tooltip>
                 <SpeechInputButton
@@ -2848,6 +2917,7 @@ export function ChatInput({
           {/* Send / Stop button */}
           {isStreaming ? (
             <IconButton
+              className="touch-size"
               variant="solid"
               size="2"
               onClick={handleStopStream}
@@ -2856,6 +2926,7 @@ export function ChatInput({
               data-testid="chat-stop-button"
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
                 opacity: isStopping ? 0.6 : 1,
@@ -2866,6 +2937,7 @@ export function ChatInput({
             </IconButton>
           ) : (
             <IconButton
+              className="touch-size"
               variant="solid"
               size="2"
               onClick={(event) => {
@@ -2879,6 +2951,7 @@ export function ChatInput({
               aria-label={t('chat.sendMessage')}
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'var(--neutral-a3)',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
                 opacity: 1,

@@ -27,6 +27,7 @@ import os
 import pickle
 import queue
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -108,9 +109,9 @@ class _State:
 def set_resource_governor(governor: ResourceGovernor | None) -> None:
     """Turn the pool on for this process, sized from *governor*.
 
-    Called from the lifespan of the services that parse under admission
-    control (indexing, parsing). A process that never calls it keeps parsing
-    in threads, which is what the query service and the tests want.
+    Called from the lifespan of the services that parse (indexing, parsing,
+    and query for chat attachments). A process that never calls it keeps
+    parsing in threads, which is what the tests want.
     """
     _State.governor = governor
 
@@ -165,6 +166,9 @@ class _Worker:
                 pass_fds=(request_r, reply_w),
                 stdin=subprocess.DEVNULL,
                 env=env,
+                # Its own process group, so stop() can kill it together with
+                # the processes a parse starts (the PDF rasteriser's pool).
+                start_new_session=True,
             )
         except OSError as exc:
             for fd in (request_r, request_w, reply_r, reply_w):
@@ -195,6 +199,11 @@ class _Worker:
         return self.process.poll() is None
 
     def stop(self) -> None:
+        # SIGKILL skips the worker's atexit, so a process pool it started would
+        # live on orphaned, holding its memory. The group outlives a worker that
+        # already died, so this also reaches the children of a crashed one.
+        with suppress(OSError):
+            os.killpg(self.process.pid, signal.SIGKILL)
         with suppress(OSError):
             self.process.kill()
         for stream in (self._requests, self._replies):

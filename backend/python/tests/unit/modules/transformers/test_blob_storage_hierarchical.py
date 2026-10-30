@@ -23,11 +23,14 @@ from app.utils.storage_path import build_hierarchical_storage_path
 
 
 def _make_bs(*, config_service=None, graph_provider=None):
-    return BlobStorage(
+    bs = BlobStorage(
         logger=MagicMock(),
         config_service=config_service or AsyncMock(),
         graph_provider=graph_provider,
     )
+    # No document left unmapped by an earlier attempt, unless a test says so.
+    bs._find_unmapped_record_document = AsyncMock(return_value=None)
+    return bs
 
 
 def _configure_auth(bs, storage_type="local"):
@@ -80,79 +83,6 @@ class TestHierarchicalPathWithoutGraphProvider:
             record, gp, virtual_record_id="vrid-1"
         )
         assert result == "records/vrid-1"
-
-
-# ---------------------------------------------------------------------------
-# store_virtual_record_mapping
-# ---------------------------------------------------------------------------
-
-
-class TestStoreVirtualRecordMapping:
-    @pytest.mark.asyncio
-    async def test_upserts_mapping_to_graph_db(self):
-        gp = AsyncMock()
-        gp.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_bs(graph_provider=gp)
-
-        result = await bs.store_virtual_record_mapping(
-            org_id="org-1",
-            virtual_record_id="vrid-1",
-            document_id="doc-1",
-        )
-
-        assert result is True
-        gp.batch_upsert_nodes.assert_called_once()
-        call_args = gp.batch_upsert_nodes.call_args[0]
-        doc = call_args[0][0]
-        assert doc["virtualRecordId"] == "vrid-1"
-        assert doc["documentId"] == "doc-1"
-        assert doc["record_doc_id"] == "doc-1"
-        assert doc["orgId"] == "org-1"
-
-    @pytest.mark.asyncio
-    async def test_includes_file_size_when_provided(self):
-        gp = AsyncMock()
-        gp.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_bs(graph_provider=gp)
-
-        await bs.store_virtual_record_mapping(
-            org_id="org-1",
-            virtual_record_id="vrid-1",
-            document_id="doc-1",
-            file_size_bytes=42000,
-        )
-
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
-        assert doc["fileSizeBytes"] == 42000
-
-    @pytest.mark.asyncio
-    async def test_omits_file_size_when_none(self):
-        gp = AsyncMock()
-        gp.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_bs(graph_provider=gp)
-
-        await bs.store_virtual_record_mapping(
-            org_id="org-1",
-            virtual_record_id="vrid-1",
-            document_id="doc-1",
-            file_size_bytes=None,
-        )
-
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
-        assert "fileSizeBytes" not in doc
-
-    @pytest.mark.asyncio
-    async def test_raises_when_upsert_returns_false(self):
-        gp = AsyncMock()
-        gp.batch_upsert_nodes = AsyncMock(return_value=False)
-        bs = _make_bs(graph_provider=gp)
-
-        with pytest.raises(Exception, match="Failed to store virtual record mapping"):
-            await bs.store_virtual_record_mapping(
-                org_id="org-1",
-                virtual_record_id="vrid-1",
-                document_id="doc-1",
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -297,17 +227,17 @@ class TestGetActualContentPath:
         assert result == "records/conn-1/file.txt"
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_path_lookup_fails(self):
+    async def test_a_failed_lookup_raises_instead_of_reading_as_absent(self):
+        from app.modules.transformers.blob_storage import StorageLookupUnavailableError
+
         bs = _make_bs(graph_provider=AsyncMock())
 
         with patch.object(
             bs, "get_document_id_by_virtual_record_id",
             new_callable=AsyncMock,
             side_effect=RuntimeError("lookup failed"),
-        ):
-            result = await bs.get_actual_content_path("org-1", "vrid-1")
-
-        assert result is None
+        ), pytest.raises(StorageLookupUnavailableError):
+            await bs.get_actual_content_path("org-1", "vrid-1")
 
 
 # ---------------------------------------------------------------------------

@@ -83,12 +83,16 @@ class TestKnowledgeGraphFindRecordsByValueDelegation:
             new_callable=AsyncMock,
         ) as mock_exec:
             mock_exec.return_value = (True, '{"status": "success", "records": []}')
-            await tool.find_records_by_value(amount_min=5000, currency="USD", quantity_max=2.5, percent_min=0.2)
+            await tool.find_records_by_value(
+                amount_min=5000, currency="USD", quantity_max=2.5, percent_min=0.2,
+                record_types=["FILE"], source_ids=["kb-1"], limit=30, cursor="40",
+            )
         assert mock_exec.await_args.kwargs == {
             "kinds": None, "name": None, "date_from": None, "date_to": None,
             "amount_min": 5000, "amount_max": None, "currency": "USD",
             "quantity_min": None, "quantity_max": 2.5, "dimension": None,
             "percent_min": 0.2, "percent_max": None,
+            "record_types": ["FILE"], "source_ids": ["kb-1"], "limit": 30, "cursor": "40",
         }
 
 

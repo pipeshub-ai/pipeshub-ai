@@ -389,6 +389,16 @@ def _sandbox_result(args: dict[str, Any], result: "ToolResult") -> str | None:
     if result.is_error:
         text = _as_text(result.content) or "Unknown error"
         return f"Failed: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}"
+    # A failed run comes back as data, not as an error, so the model can read it and retry.
+    parsed = _parse_json_maybe(result.content)
+    if isinstance(parsed, dict):
+        exit_code = parsed.get("exit_code", 0)
+        if exit_code != 0 or parsed.get("success") is False:
+            analysis = parsed.get("error_analysis")
+            message = analysis.get("message") if isinstance(analysis, dict) else None
+            text = message or _as_text(parsed.get("stderr")) or ""
+            head = f"Failed with exit code {exit_code}" if exit_code != 0 else "Failed"
+            return f"{head}: {_first_line(text)[:_MAX_ERROR_PREVIEW_CHARS]}" if text.strip() else head
     return "Executed successfully"
 
 

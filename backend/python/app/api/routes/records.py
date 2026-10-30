@@ -23,6 +23,10 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.retrieval.selection_scope import within_connection
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
+from app.utils.chat_helpers import accessible_node_ids
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
     _fetch_thread_records_impl,
@@ -30,6 +34,7 @@ from app.utils.fetch_slack_thread import (
     _resolve_thread_record_group,
 )
 from app.utils.not_indexed import not_indexed_note
+from app.utils.record_extract import extract_record
 from app.utils.record_reader import (
     DEFAULT_READ_CHARS,
     MAX_READ_CHARS,
@@ -47,17 +52,17 @@ router = APIRouter()
 _MAX_QUERY_CHARS = 2_000
 
 
-async def _check_access(request: Request, graph_provider: Any, record_id: str) -> None:  # noqa: ANN401
+async def _check_access(request: Request, graph_provider: Any, record_id: str) -> set[str]:  # noqa: ANN401
     """The same gate as the connector service's content route: no access is a
-    403, a switched-off demo record a 404."""
+    403, a switched-off demo record a 404. Returns the accessible ids, for the
+    fetch to reuse."""
     container: QueryAppContainer = request.app.container
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
-        if not await graph_provider.check_record_access_with_details(
-            user_id=user_id, org_id=org_id, record_id=record_id,
-        ):
+        accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
+        if record_id not in accessible:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
@@ -74,6 +79,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
         if hidden:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+        return accessible
     except HTTPException:
         raise
     except Exception as exc:
@@ -91,6 +97,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
 async def read_record_content(
     record_id: str,
     request: Request,
+    *,
     mode: Literal["record", "thread"] = Query(
         "record",
         description=(
@@ -120,6 +127,15 @@ async def read_record_content(
         DEFAULT_READ_CHARS, ge=MIN_READ_CHARS, le=MAX_READ_CHARS,
         description="Most characters of content to return.",
     ),
+    extract: bool = Query(
+        False,
+        description=(
+            "Record mode, with `query`: return only the passages that answer `query`, copied "
+            "word for word by the model assigned to the `reader` role (else the default "
+            "model), and the tokens that call used. Falls back to the plain read when the "
+            "model cannot be reached."
+        ),
+    ),
 ) -> dict[str, Any]:
     container: QueryAppContainer = request.app.container
     logger = container.logger()
@@ -127,7 +143,13 @@ async def read_record_content(
     org_id = request.state.user.get("orgId")
     graph_provider = await container.graph_provider()
 
-    await _check_access(request, graph_provider, record_id)
+    if extract and (mode != "record" or not (query and query.strip()) or start_block is not None):
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="`extract` reads one record for a `query`: send it with `query`, without `start_block` or thread mode.",
+        )
+
+    accessible = await _check_access(request, graph_provider, record_id)
     blob_store = await container.blob_store()
 
     if mode == "thread":
@@ -221,6 +243,8 @@ async def read_record_content(
             blob_store=blob_store,
             org_id=org_id,
             user_id=user_id,
+            connection_sources=connection_limit(request.state.user),
+            accessible=accessible,
         )
     except Exception as exc:
         logger.error("Error fetching record content for %s: %s", record_id, exc, exc_info=True)
@@ -243,6 +267,33 @@ async def read_record_content(
     retrieval_service = None
     if query and query.strip() and start_block is None:
         retrieval_service = await container.retrieval_service()
+    if extract and query:
+        try:
+            # The reader model runs for this user, on their identity and budget, as a search does.
+            async with call_scope(
+                principal_from_request_user(request.state.user),
+                Workload.SEARCH,
+                config_service=container.config_service(),
+                container=container,
+            ):
+                return await extract_record(
+                    result["records"][0],
+                    query=query.strip(),
+                    config_service=container.config_service(),
+                    retrieval_service=retrieval_service,
+                    user_id=user_id,
+                    org_id=org_id,
+                    logger=logger,
+                    fallback_chars=max_chars,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Error extracting from record %s: %s", record_id, exc, exc_info=True)
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to format record content",
+            ) from exc
     try:
         return await read_record(
             result["records"][0],

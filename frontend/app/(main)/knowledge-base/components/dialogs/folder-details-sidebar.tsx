@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
@@ -27,7 +29,8 @@ function DetailRow({ label, value }: DetailRowProps) {
   return (
     <Box
       style={{
-        background: 'var(--olive-2)',
+        // Translucent so the panel's frost shows through the cards
+        background: 'var(--olive-a2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
@@ -64,6 +67,7 @@ function formatTimestamp(timestamp: number | undefined): string | undefined {
 }
 
 export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDetailsSidebarProps) {
+  const isMobile = useIsMobile();
   const currentNode = tableData?.currentNode;
   const breadcrumbs = tableData?.breadcrumbs;
   const permissions = tableData?.permissions;
@@ -76,19 +80,13 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          backgroundColor: 'var(--effects-translucent)',
+          backgroundColor: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
           display: 'flex',
@@ -108,8 +106,6 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
           style={{
             padding: '8px 8px 8px 16px',
             borderBottom: '1px solid var(--olive-3)',
-            backgroundColor: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
@@ -131,6 +127,8 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
           <Flex align="center" gap="1">
             <IconButton
               variant="ghost"
+              // Radix ghost buttons pull out by their padding; keep the header's own inset
+              style={{ margin: 0 }}
               color="gray"
               size="2"
               onClick={() => onOpenChange(false)}

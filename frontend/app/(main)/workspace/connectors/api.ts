@@ -132,10 +132,13 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  /**
+   * Try auth settings before saving them; `connectorId` when editing an instance.
+   * `authType` names the chosen form when a connector offers several: `auth` holds only its fields.
+   */
   async testConnection(
     connectorType: string,
-    payload: { auth: Record<string, unknown>; connectorId?: string }
+    payload: { auth: Record<string, unknown>; authType?: string; connectorId?: string }
   ): Promise<ConnectionCheckResponse> {
     const { data } = await apiClient.post<ConnectionCheckResponse>(
       `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
@@ -425,7 +428,8 @@ export const ConnectorsApi = {
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
    * With `stages`, only those pipeline stages re-run and statusFilters match
-   * the stage's own status (classify -> extractionStatus).
+   * the stage's own status (classify -> extractionStatus,
+   * entities -> entitiesStatus).
    */
   async reindexConnector(
     connectorId: string,

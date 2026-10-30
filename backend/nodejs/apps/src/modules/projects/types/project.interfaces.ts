@@ -1,4 +1,3 @@
-import { Document, Types } from 'mongoose';
 import { IAppliedFilterNode } from '../../enterprise_search/types/conversation.interfaces';
 
 export type ProjectMemberRole = 'viewer' | 'editor';
@@ -9,12 +8,18 @@ export type ProjectChatSharing = 'private' | 'members';
 /** Effective access role computed for the requesting user, or 'none' for an unauthorized caller. */
 export type ProjectRole = 'owner' | 'editor' | 'viewer' | 'none';
 
+/** A user member row with the name and email read from the users collection, when the user still exists. */
+export type ProjectMemberView = IProjectMember & {
+  name?: string;
+  email?: string;
+};
+
 export interface IProjectMember {
   principalType: ProjectPrincipalType;
-  /** userId (principalType 'user') or teamId (principalType 'team'). */
-  principalId: Types.ObjectId;
+  /** userId (principalType 'user') or the team's graph id string (principalType 'team'). */
+  principalId: string;
   role: ProjectMemberRole;
-  addedBy: Types.ObjectId;
+  addedBy: string;
   addedAt: Date;
 }
 
@@ -37,9 +42,9 @@ export interface IProjectAppliedFilters {
 }
 
 export interface IProject {
-  orgId: Types.ObjectId;
+  orgId: string;
   /** Owner. Ownership never transfers in V1. */
-  userId: Types.ObjectId;
+  userId: string;
   name: string;
   description?: string;
   icon?: string;
@@ -55,23 +60,27 @@ export interface IProject {
   visibility: ProjectVisibility;
   chatSharing: ProjectChatSharing;
   members: IProjectMember[];
+  /** Legacy project-wide pin; counts only as the owner's pin. See `ProjectService.isPinnedFor`. */
   isPinned: boolean;
+  /** Users who pinned this project in their own list. */
+  pinnedBy?: string[];
   isArchived: boolean;
-  archivedBy?: Types.ObjectId;
+  archivedBy?: string;
   isDeleted: boolean;
-  deletedBy?: Types.ObjectId;
+  deletedBy?: string;
   lastActivityAt: number;
   metadata?: Map<string, unknown>;
   createdAt?: Date;
   updatedAt?: Date;
 }
 
-export interface IProjectDocument extends Document, IProject {}
+/** A project row as the repository returns it: plain, with string ids. */
+export type ProjectDto = IProject & { _id: string; __v?: number };
 
 /** Result of an access check against a project — role drives what the caller may do. */
 export interface ProjectAccess {
   role: ProjectRole;
-  project: IProjectDocument;
+  project: ProjectDto;
 }
 
 /** Assembled once per AI call site and merged into the outgoing `aiPayload` by `applyProjectScope`. */

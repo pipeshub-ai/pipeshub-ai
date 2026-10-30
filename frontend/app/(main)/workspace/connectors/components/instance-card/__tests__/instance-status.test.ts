@@ -35,3 +35,33 @@ describe('deriveInstanceSetupStatus – desktop presence', () => {
     expect(view.key).toBe('not_configured');
   });
 });
+
+describe('deriveInstanceSetupStatus – action items', () => {
+  const item = (severity: 'warning' | 'error') => ({
+    code: `item-${severity}`,
+    severity,
+    title: 'Switch to certificate sign-in',
+    message: 'Upload a certificate',
+    action: 'authenticate' as const,
+  });
+
+  it('asks for action while the connector reports something to do', () => {
+    const view = deriveInstanceSetupStatus({ ...base, actionItems: [item('warning')] });
+    expect(view.key).toBe('action_needed');
+    expect(view.badgeColor).toBe('amber');
+  });
+
+  it('is red when any item is an error', () => {
+    const view = deriveInstanceSetupStatus({ ...base, actionItems: [item('warning'), item('error')] });
+    expect(view.badgeColor).toBe('red');
+  });
+
+  it('is ready once nothing is left to do', () => {
+    expect(deriveInstanceSetupStatus({ ...base, actionItems: [] }).key).toBe('ready');
+  });
+
+  it('lets an incomplete configuration win over action items', () => {
+    const view = deriveInstanceSetupStatus({ ...base, isConfigured: false, actionItems: [item('error')] });
+    expect(view.key).toBe('not_configured');
+  });
+});

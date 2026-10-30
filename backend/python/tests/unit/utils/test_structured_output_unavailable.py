@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
+from app.agents.agent_loop.prompt_cache import AnthropicCacheStrategy
 from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils import streaming
 from app.utils.llm import LLMUnavailableError
@@ -45,11 +46,8 @@ async def test_throttled_calls_go_through_the_gateway(monkeypatch: pytest.Monkey
     assert seen == ["openai:gpt"]
 
 
-class _Cache:
-    sent_params = frozenset({"cache_control"})
-
-    def finalize(self, messages: list) -> tuple[list, dict[str, object]]:
-        return messages, {"cache_control": {"type": "ephemeral"}}
+class _BadRequest(Exception):
+    status_code = 400
 
 
 @pytest.mark.asyncio
@@ -59,19 +57,18 @@ async def test_a_refused_cache_falls_back_and_a_later_outage_still_raises(monkey
     async def _cache_refused_then_down(*_args: object, call_kwargs: dict[str, object] | None = None, **_kw: object) -> None:
         calls.append(dict(call_kwargs or {}))
         if len(calls) == 1:
-            raise ValueError("unsupported parameter: cache_control")
+            raise _BadRequest("Error code: 400 - cache_control: Extra inputs are not permitted")
         raise ProviderUnavailableError("provider refused the connection", provider="p")
 
-    rejected: list[bool] = []
+    rejected: list[frozenset[str]] = []
     monkeypatch.setattr(streaming, "_ainvoke_throttled", _cache_refused_then_down)
-    monkeypatch.setattr(streaming, "is_prompt_cache_param_conflict", lambda exc, _params: isinstance(exc, ValueError))
     with pytest.raises(LLMUnavailableError):
         await streaming.invoke_with_structured_output_and_reflection(
             MagicMock(), [], _Answer,
-            prompt_cache=_Cache(),  # type: ignore[arg-type]
-            on_cache_rejected=lambda: rejected.append(True),
+            prompt_cache=AnthropicCacheStrategy({"type": "ephemeral"}, top_level=True),
+            on_cache_rejected=rejected.append,
             raise_unavailable=True,
         )
-    assert rejected == [True]
+    assert rejected == [frozenset({"cache_control"})]
     # The retry after the refusal goes out without the cache parameters.
     assert calls == [{"cache_control": {"type": "ephemeral"}}, {}]

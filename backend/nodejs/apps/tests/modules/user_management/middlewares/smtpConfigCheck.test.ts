@@ -150,6 +150,26 @@ describe('smtpConfigCheck Middleware', () => {
     expect(error.message).to.equal('Smtp not configured: From Email is missing');
   });
 
+  it('should refuse with a 400 when an admin turned email off', async () => {
+    executeStub = sinon.stub(ConfigurationManagerServiceCommand.prototype, 'execute').resolves({
+      statusCode: 200,
+      data: {
+        host: 'smtp.example.com',
+        port: 587,
+        fromEmail: 'noreply@example.com',
+        enabled: false,
+      },
+    });
+
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
+    await middleware(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    const error = next.firstCall.args[0];
+    expect(error).to.have.property('statusCode', 400);
+    expect(error.message).to.contain('Email is turned off');
+  });
+
   it('should call next with NotFoundError when userId is missing', async () => {
     req.user.userId = undefined;
 

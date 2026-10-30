@@ -40,7 +40,7 @@ test.describe('Build an agent and chat with it', () => {
     expect(agentKey, 'the builder URL should carry the new agent key').toBeTruthy();
 
     await page.getByRole('button', { name: 'Edit prompts' }).click();
-    const prompts = page.getByRole('dialog', { name: 'Configure Agent Prompts' });
+    const prompts = page.getByRole('dialog', { name: 'Configure agent prompts' });
     // The first box is the system prompt; the labels are not tied to the inputs.
     await prompts
       .getByRole('textbox')

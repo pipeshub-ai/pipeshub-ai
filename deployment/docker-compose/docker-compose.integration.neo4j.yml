@@ -58,6 +58,12 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
       - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
+      # The Jira Cloud API-token connector only talks to Atlassian sites; jira-sim stands in for one.
+      - PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS=jira-sim.internal
+      # Unset: the Notion connector calls api.notion.com. The Notion suite sets it to the notion-sim service.
+      - NOTION_API_BASE_URL=${NOTION_CONNECTOR_BASE_URL:-}
+      # The test Nextcloud (nextcloud-source) has no TLS.
+      - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=true
       - STRICT_MODE=${STRICT_MODE:-false}
       # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
       - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
@@ -71,6 +77,12 @@ services:
       # Signs service tokens. Fixed so the storage suite can mint tokens this
       # stack accepts; the app only reads it on the first boot of a fresh volume.
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
+      # Signs user sessions. Fixed for the same reason, so the security suite
+      # can sign an already-expired session token and check it is refused.
+      - JWT_SECRET=${JWT_SECRET:-pipeshub-integration-jwt-secret-test-only}
+      # Empty unless the Gmail suites run (gmail-sim profile): then the Gmail connectors, and only they,
+      # call the Gmail simulator instead of Google (integration-tests/connectors/gmail/DESIGN.md).
+      - GMAIL_GOOGLE_API_BASE_URL=${GMAIL_GOOGLE_API_BASE_URL:-}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -106,6 +118,7 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -152,7 +165,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read,project:read,project:write,project:delete}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -160,6 +173,14 @@ services:
       # One minute rather than twenty, so the expired-link test waits a minute, not
       # twenty. Only forgot-password links use it; invites have their own lifetime.
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
+      # The trash purge, shortened from every 14 days on records 14 days old, so
+      # resilience/test_soft_delete_trash.py can watch it run. The minimum age
+      # stays above the few minutes the other trash tests keep a record in the
+      # trash, or the purge would take it out from under them.
+      - SOFT_DELETE_PURGE_INTERVAL_SECONDS=${SOFT_DELETE_PURGE_INTERVAL_SECONDS:-0}
+      - SOFT_DELETE_PURGE_MIN_AGE_SECONDS=${SOFT_DELETE_PURGE_MIN_AGE_SECONDS:-240}
+      - SOFT_DELETE_PURGE_TICK_SECONDS=${SOFT_DELETE_PURGE_TICK_SECONDS:-15}
+      - SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS=${SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS:-30}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -175,6 +196,9 @@ services:
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
       - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
@@ -208,6 +232,7 @@ services:
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
       - ENABLE_PDFPLUMBER_PROCESSOR=true
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
 
     depends_on:
       # Blocks until the bucket exists. Without it pytest can start while
@@ -300,7 +325,7 @@ services:
 
   # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
   # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
-  # site with the same people and groups, served from the lumenfold@1 content pack
+  # site with the same people and groups, served from the lumenfold@2 content pack
   # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
   # pinned, so every run gets the same world and the suites can name fixture issues
   # (integration-tests/connectors/atlassian_sim.env). The test process uses the
@@ -347,9 +372,55 @@ services:
           - jira-sim.internal
     mem_limit: 1g
 
+  # The Notion simulator for the Notion suite, behind the notion-sim profile: the Notion part of the
+  # same content pack, with the suite's fixture tree in it (integration-tests/connectors/notion_sim.env).
+  # A site of its own (CONNSIM_SOURCES=notion), seed and build time pinned so the tree's ids stay put. The
+  # connector reaches it through NOTION_API_BASE_URL, so no real host is aliased.
+  notion-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["notion-sim"]
+    restart: always
+    command: ["notion"]
+    environment:
+      CONNSIM_SOURCES: notion
+      # Only the listed tokens are accepted, as on Notion: by default any unknown token acts as
+      # the default integration, so the suite's invalid-token case could never fail to connect.
+      CONNSIM_NOTION_AUTH: strict
+      CONNSIM_PACK: /pack
+      CONNSIM_SEED: "42"
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8103:80"
+    networks:
+      default:
+        aliases:
+          - notion-sim.internal
+    mem_limit: 1g
+
   # An external MCP server that agent tests register and call, so "an agent
   # calls an MCP tool" is checked without a third-party service. Its call log
   # is read through the published port (integration-tests/helper/mcp_fixture.py).
+  # The Gmail simulator for the Gmail suites (gmail-sim profile). The connectors reach it by alias through
+  # GMAIL_GOOGLE_API_BASE_URL, the test process on the published port. It holds no data until a test loads a
+  # scenario, so it needs no content pack.
+  gmail-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["gmail-sim"]
+    restart: always
+    command: ["gmail"]
+    environment:
+      CONNSIM_SOURCES: gmail
+    ports:
+      - "127.0.0.1:8106:80"
+    networks:
+      default:
+        aliases:
+          - gmail-sim.internal
+    mem_limit: 512m
+
   mcp-fixture:
     image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
     restart: always
@@ -358,6 +429,24 @@ services:
       - ../../integration-tests/mcp_fixture:/srv:ro
     ports:
       - "127.0.0.1:8097:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A REST API (Acme Helpdesk) that agent tests add as an API Toolset from its
+  # OpenAPI spec, so "an agent calls an internal API" is checked without a
+  # third-party service. Its call log is read through the published port
+  # (integration-tests/helper/openapi_fixture.py).
+  openapi-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/openapi_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8098:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
       interval: 5s

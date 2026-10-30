@@ -17,34 +17,9 @@ export const knowledgeLimitField = {
   default: undefined,
 };
 
-/** The stored limit as the plain object a token claim carries. */
-export const toKnowledgeLimit = (
-  stored: KnowledgeLimit | null | undefined,
-): KnowledgeLimit | undefined =>
-  stored
-    ? {
-        apps: [...stored.apps],
-        recordGroups: [...stored.recordGroups],
-        records: [...stored.records],
-      }
-    : undefined;
-
-/** Two limits name the same items, in any order; absent equals only absent. */
-export const sameKnowledgeLimit = (
-  a: KnowledgeLimit | null | undefined,
-  b: KnowledgeLimit | null | undefined,
-): boolean => {
-  const sorted = (
-    limit: KnowledgeLimit | null | undefined,
-  ): KnowledgeLimit | undefined => {
-    const plain = toKnowledgeLimit(limit);
-    return (
-      plain && {
-        apps: plain.apps.sort(),
-        recordGroups: plain.recordGroups.sort(),
-        records: plain.records.sort(),
-      }
-    );
-  };
-  return JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
-};
+export {
+  toKnowledgeLimit,
+  sameKnowledgeLimit,
+  storedKnowledgeLimitFilter,
+  isKnowledgeLimitWithin,
+} from '../types/knowledge_limit';

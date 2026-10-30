@@ -10,7 +10,8 @@ import { AuthTokenService } from '../../../../src/libs/services/authtoken.servic
 import { Logger } from '../../../../src/libs/services/logger.service';
 import { fetchConfigJwtGenerator } from '../../../../src/libs/utils/createJwt';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
-import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
+import { createUserAccountRouter } from '../../../../src/modules/auth/routes/userAccount.routes';
+import { AUTH_APP_CONFIG_RELOADER } from '../../../../src/modules/auth/container/authService.container';
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes';
 import { createMailServiceRouter } from '../../../../src/modules/mail/routes/mail.routes';
 import { MailSenderService } from '../../../../src/modules/mail/services/mail.sender.service';
@@ -80,13 +81,11 @@ function buildContainer(): Container {
   );
   for (const id of [
     'SessionService',
-    'SamlDesktopHandoffService',
     'IamService',
     'MailService',
     'AuthService',
     'ConfigurationManagerService',
     'JitProvisioningService',
-    'SamlController',
     'UserAccountController',
     'MailController',
     'StorageConfig',
@@ -96,6 +95,7 @@ function buildContainer(): Container {
   ]) {
     bind(id, {});
   }
+  bind(AUTH_APP_CONFIG_RELOADER, sinon.stub());
   bind('EntitiesEventProducer', events);
   bind('SyncEventProducer', events);
   bind('KeyValueStoreService', { get: sinon.stub().resolves(null) });
@@ -107,7 +107,7 @@ function buildContainer(): Container {
 }
 
 const reloadEndpoints: Array<{ name: string; path: string; router: (c: Container) => Router }> = [
-  { name: 'auth (SAML)', path: '/updateAppConfig', router: createSamlRouter },
+  { name: 'auth', path: '/updateAppConfig', router: createUserAccountRouter },
   {
     name: 'connectors',
     path: '/updateAppConfig',

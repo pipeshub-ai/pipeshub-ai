@@ -151,7 +151,7 @@ describe('McpPersonalLayout', () => {
     expect(screen.queryByText('Local Files')).toBeNull();
     expect(screen.queryByText('Old Slack')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Setup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set up' }));
     expect(onSetUp).toHaveBeenCalledWith(notion);
   });
 
@@ -508,6 +508,30 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       expect(handlers.onReauthenticate).toHaveBeenCalled();
     });
 
+    const asksForSignIn = () => apiError(409, "This server asks for a sign-in, but it's set to No authentication.");
+
+    it('a server set to No authentication that asks for a sign-in says so, and Edit server opens its settings', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      const handlers = renderEditing(entry({ createdBy: '', isAuthenticated: true }));
+      openTools();
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(screen.getByTestId('mcp-panel-status')).getByText('Sign-in needed')).toBeTruthy();
+      expect(screen.queryByText("Couldn't load the tool list")).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit server' }));
+      expect(screen.getByRole('tab', { name: /^Configuration/ }).getAttribute('aria-selected')).toBe('true');
+      expect(handlers.onReauthenticate).not.toHaveBeenCalled();
+    });
+
+    it('the sign-in answer wins over an older listing that only timed out', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      renderEditing(entry({ createdBy: '', isAuthenticated: true, toolsErrorCode: 'timeout', toolsTimedOut: true }));
+      openTools();
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(screen.getByTestId('mcp-panel-status')).getByText('Sign-in needed')).toBeTruthy();
+    });
+
     it('lists the tools again once someone signs in again', async () => {
       mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
       const editing = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });
@@ -570,9 +594,9 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       expect(screen.getByRole('tab', { name: /^Tools & approvals/ })).toBeTruthy();
       openTools();
 
-      const search = within(await screen.findByRole('group', { name: 'search' }));
+      const search = within(await screen.findByRole('radiogroup', { name: 'search' }));
       expect(search.getByRole('radio', { name: 'Pre-approved', checked: true })).toBeTruthy();
-      expect(within(screen.getByRole('group', { name: 'delete_issue' })).getByRole('radio', { name: 'Deny', checked: true })).toBeTruthy();
+      expect(within(screen.getByRole('radiogroup', { name: 'delete_issue' })).getByRole('radio', { name: 'Deny', checked: true })).toBeTruthy();
       expect(mcpApi.getMyToolRules).toHaveBeenCalledWith('inst-1');
       expect(screen.queryByTestId('enterprise-feature-notice')).toBeNull();
       expect(screen.getByText('All rules saved')).toBeTruthy();
@@ -582,14 +606,14 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       renderEditing(entry({ createdBy: '', ...PERSONAL }));
       openTools();
 
-      const create = within(await screen.findByRole('group', { name: 'create_issue' }));
+      const create = within(await screen.findByRole('radiogroup', { name: 'create_issue' }));
       fireEvent.click(create.getByRole('radio', { name: 'Pre-approved' }));
       expect(screen.getByText('1 unsaved change')).toBeTruthy();
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
       expect(screen.getByText('All rules saved')).toBeTruthy();
 
       fireEvent.click(create.getByRole('radio', { name: 'Pre-approved' }));
-      fireEvent.click(within(screen.getByRole('group', { name: 'delete_issue' })).getByRole('radio', { name: 'Allow on approval' }));
+      fireEvent.click(within(screen.getByRole('radiogroup', { name: 'delete_issue' })).getByRole('radio', { name: 'Allow on approval' }));
       expect(screen.getByText('2 unsaved changes')).toBeTruthy();
       fireEvent.click(screen.getByRole('button', { name: 'Save rules' }));
 
@@ -602,7 +626,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     it('asks before closing with unsaved rule changes, and keeps them across tabs', async () => {
       const handlers = renderEditing(entry({ createdBy: '', ...PERSONAL }));
       openTools();
-      fireEvent.click(within(await screen.findByRole('group', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
+      fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
 
       fireEvent.mouseDown(screen.getByRole('tab', { name: /^Configuration/ }));
       openTools();
@@ -620,7 +644,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       mcpApi.updateInstance.mockResolvedValue({ ...editing });
       const handlers = renderEditing(editing);
       openTools();
-      fireEvent.click(within(await screen.findByRole('group', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
+      fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
 
       fireEvent.mouseDown(screen.getByRole('tab', { name: /^Configuration/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -633,7 +657,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     it('Escape closes the discard prompt, not the panel behind it', async () => {
       const handlers = renderEditing(entry({ createdBy: '', ...PERSONAL }));
       openTools();
-      fireEvent.click(within(await screen.findByRole('group', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
+      fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
       fireEvent.keyDown(document.body, { key: 'Escape' });
       expect(await screen.findByText('Discard unsaved rule changes?')).toBeTruthy();
 
@@ -650,7 +674,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       openTools();
 
       expect(await screen.findByText("Sign in to see this server's tools.")).toBeTruthy();
-      const row = within(await screen.findByRole('group', { name: 'delete_repo' }));
+      const row = within(await screen.findByRole('radiogroup', { name: 'delete_repo' }));
       expect(screen.getByText(/Rules set by name/)).toBeTruthy();
       fireEvent.click(row.getByRole('radio', { name: 'Deny' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save rules' }));
@@ -703,7 +727,7 @@ describe('McpInstanceConfigPanel — More actions', () => {
     const handlers = renderEditing(editing);
     openMenu();
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Remove server/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete server/ }));
     expect(handlers.onRequestDelete).toHaveBeenCalledWith(editing);
   });
 

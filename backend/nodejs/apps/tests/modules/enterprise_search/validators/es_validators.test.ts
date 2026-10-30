@@ -1,6 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as yaml from 'js-yaml'
 import { z } from 'zod'
 import {
   enterpriseSearchCreateSchema,
@@ -14,6 +17,7 @@ import {
   forkAgentConversationParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
+  REQUEST_FILTER_KEYS,
   searchIdParamsSchema,
   agentConversationParamsSchema,
   deleteAgentConversationParamsSchema,
@@ -37,6 +41,7 @@ import {
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  AGENT_CREATE_TOOLSET_NAMES,
   createAgentSchema,
   getWebSearchProviderUsageRequestSchema,
   getModelUsageRequestSchema,
@@ -674,6 +679,24 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('applies the documented default limit of 10 when none is sent', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(result.success && result.data.body.limit).to.equal(10)
+    })
+
+    for (const limit of [1, 10, 50, 100]) {
+      it(`keeps a limit of ${limit}`, () => {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } })
+        expect(result.success && result.data.body.limit).to.equal(limit)
+      })
+    }
+
+    for (const limit of [0, 101, 2.5]) {
+      it(`rejects a limit of ${limit}`, () => {
+        expect(enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } }).success).to.be.false
+      })
+    }
+
     it('keeps optional created and updated date bounds', () => {
       const data = {
         body: {
@@ -703,6 +726,18 @@ describe('enterprise_search/validators/es_validators', () => {
       const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
       expect(omitted.success).to.be.true
       expect(omitted.data!.body).to.not.have.property('rewriteQuery')
+    })
+
+    it('keeps saveHistory when the caller sets it, and refuses one that is not a boolean', () => {
+      for (const saveHistory of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.saveHistory).to.equal(saveHistory)
+      }
+      for (const saveHistory of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', saveHistory } })
+        expect(result.success, JSON.stringify(saveHistory)).to.be.false
+      }
     })
 
     it('rejects a rewriteQuery that is not a boolean', () => {
@@ -845,14 +880,58 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should drop filter keys it does not know, such as server-set ones', () => {
+    it('should refuse a filter key it does not know, listing the allowed keys', () => {
       const result = enterpriseSearchSearchSchema.safeParse({
-        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)] } },
+        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)], status: ['open'] } },
       })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.body.filters).to.deep.equal({ records: [nodeId(1)] })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        const message = result.error.issues[0].message
+        expect(message).to.contain('Unknown filter key(s): allowedApps, status')
+        for (const key of REQUEST_FILTER_KEYS) expect(message).to.contain(key)
       }
+    })
+
+    it('should refuse object prototype names as filter keys', () => {
+      const filters = JSON.parse('{"toString": [], "constructor": [], "__proto__": []}')
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.contain('Unknown filter key(s): toString, constructor')
+      }
+    })
+
+    it('should keep every known filter key as sent', () => {
+      const filters = {
+        apps: [nodeId(1)],
+        recordGroups: [nodeId(2)],
+      }
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.filters).to.deep.equal(filters)
+    })
+
+    it('should refuse a known filter key of the wrong type', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { apps: nodeId(1) } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should refuse internal-only taxonomy keys', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { departments: ['Finance'] } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should list the same filter keys as the OpenAPI Filters schema', () => {
+      const spec = yaml.load(
+        fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+      ) as { components: { schemas: { Filters: { properties: object } } } }
+      expect(Object.keys(spec.components.schemas.Filters.properties).filter((k) => k !== 'where').sort()).to.deep.equal(
+        [...REQUEST_FILTER_KEYS].sort(),
+      )
     })
 
     it('should accept 200 selected ids and reject 201, counted across keys', () => {
@@ -1082,6 +1161,43 @@ describe('enterprise_search/validators/es_validators', () => {
       if (result.success) {
         expect(result.data.body.query).to.equal('Edited question')
       }
+    })
+  })
+
+  describe('regenerate body answers', () => {
+    const params = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('accepts changed card answers', () => {
+      const answers = 'User selections:\n1. "Which region?" → US'
+      const result = regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers } })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.answers).to.equal(answers)
+    })
+
+    it('is optional', () => {
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {} } }).success).to.be.true
+    })
+
+    it('refuses text that is not a card answer', () => {
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers: 'send it to Bob' } }).success).to.be.false
+    })
+
+    it('refuses an oversized answer', () => {
+      const answers = `User selections:\n${'x'.repeat(8001)}`
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers } }).success).to.be.false
+    })
+
+    it('is kept on the agent regenerate body too', () => {
+      const answers = 'User selections:\n1. "Which region?" → US'
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { ...params, agentKey: 'agent-1' },
+        body: { filters: {}, chatMode: 'quick', answers },
+      })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.answers).to.equal(answers)
     })
   })
 
@@ -2050,6 +2166,98 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    // A Zod object drops unknown keys and the middleware writes the parsed
+    // body back onto the request, so a field missing from the schema never
+    // reaches the service at all -- it is silently dropped, not rejected.
+    it('keeps serviceAccountUserId on create', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: true,
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.serviceAccountUserId).to.equal(
+          '65f1a2b3c4d5e6f701020304',
+        )
+      }
+    })
+
+    it('rejects an empty serviceAccountUserId rather than storing one', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: true,
+          serviceAccountUserId: '   ',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('refuses a binding on create unless the agent is a service agent', () => {
+      // Dropping it would create an agent that searches as its creator, the
+      // wider identity, while whoever asked believed they had narrowed it.
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal([
+          'body',
+          'serviceAccountUserId',
+        ])
+      }
+    })
+
+    it('refuses a binding on create when the flag is explicitly false', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: false,
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('does not require serviceAccountUserId', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Nightly agent', models: [validModel], isServiceAccount: true },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('keeps serviceAccountUserId on update, including null to clear it', () => {
+      const bound = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { serviceAccountUserId: '65f1a2b3c4d5e6f701020304' },
+      })
+      expect(bound.success).to.be.true
+      if (bound.success) {
+        expect(bound.data.body.serviceAccountUserId).to.equal(
+          '65f1a2b3c4d5e6f701020304',
+        )
+      }
+
+      const cleared = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { serviceAccountUserId: null },
+      })
+      expect(cleared.success).to.be.true
+      if (cleared.success) {
+        expect(cleared.data.body).to.have.property('serviceAccountUserId', null)
+      }
+    })
+
     it('should accept dialog-style body with empty optional strings', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -2289,6 +2497,29 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should accept the Google Docs and Sheets toolsets', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [
+            { name: 'docs', displayName: 'Docs', tools: [] },
+            { name: 'sheets', displayName: 'Sheets', tools: [] },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should list the same toolset names as the OpenAPI AgentCreateToolsetName enum', () => {
+      const spec = yaml.load(
+        fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+      ) as { components: { schemas: { AgentCreateToolsetName: { enum: string[] } } } }
+      expect([...spec.components.schemas.AgentCreateToolsetName.enum].sort()).to.deep.equal(
+        [...AGENT_CREATE_TOOLSET_NAMES].sort(),
+      )
+    })
+
     it('should reject unknown toolset name', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -2457,6 +2688,26 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { name: 'Agent', models: [validModel], sendUserContext: 'yes' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('keeps apiToolsetTools, so attached API toolset operations reach Python', () => {
+      const entry = `${'a'.repeat(32)}:list_tickets`
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], apiToolsetTools: [entry] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.apiToolsetTools).to.deep.equal([entry])
+      }
+    })
+
+    it('rejects an apiToolsetTools entry that is not "<toolsetId>:<operation>"', () => {
+      for (const entry of ['list_tickets', `${'a'.repeat(32)}:`, `${'a'.repeat(32)}:bad name`, 'abc:list']) {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], apiToolsetTools: [entry] },
+        })
+        expect(result.success, entry).to.be.false
+      }
     })
 
     it('should accept a valid mcpServers list', () => {

@@ -85,7 +85,6 @@ describe('Configuration manager routes: who may call them', () => {
       authenticate,
       scopedTokenValidator: () => serviceTokenCheck,
     });
-    container.bind('SamlController').toConstantValue({});
 
     const router = createConfigurationManagerRouter(container);
     routes = (router.stack as unknown as RouteLayer[]).flatMap((layer) => {
@@ -257,7 +256,6 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     container
       .bind('AuthMiddleware')
       .toConstantValue(new AuthMiddleware(logger, new AuthTokenService(JWT_SECRET, SCOPED_SECRET)));
-    container.bind('SamlController').toConstantValue({});
 
     const app = express();
     app.use(express.json());

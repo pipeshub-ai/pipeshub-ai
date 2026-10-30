@@ -38,6 +38,8 @@ from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCat
 from .neighbours import (
     DEFAULT_IMPACT_DEPTH,
     DEFAULT_NEIGHBOR_LIMIT,
+    IMPACT_RELATIONS,
+    MAX_IMPACT_DEPTH,
     MAX_NEIGHBOUR_DEPTH,
     get_neighbour_impl,
     impact_impl,
@@ -60,6 +62,7 @@ from .query import (
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
 from .results import as_untrusted, attach_graph_status, without_marker
 from .search import DEFAULT_SEARCH_LIMIT, search_code_impl
+from .semantic import DEFAULT_SEMANTIC_LIMIT, search_semantic_impl
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -831,6 +834,52 @@ class CodeGraph:
         return self._to_output(result)
 
     @tool(
+        path="/tools/codegraph/search_semantic",
+        short_description="Find code by what it does, described in plain words",
+        description=(
+            "Find the code behind a feature, a behaviour or something on screen when you "
+            "do not know its names: 'where a failed job is retried', "
+            "'what decides which config value wins'. Ranks symbols by meaning, "
+            "so near-synonyms match.\n\n"
+            "Results are addresses, best first: read_code reads one, get_neighbour and "
+            "impact walk from one. For a name you already know, search_code is exact."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="query", type=ParameterType.STRING,
+                          description="What the code does, in plain words."),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_SEMANTIC_LIMIT, description="Maximum symbols."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_SEARCH_TAGS,
+    )
+    async def search_semantic(
+        self,
+        connector_id: str,
+        query: str,
+        limit: int = DEFAULT_SEMANTIC_LIMIT,
+        *,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        result = await self._run(
+            "search_semantic",
+            connector_id,
+            lambda: search_semantic_impl(
+                graph_provider=self._graph_provider, retrieval_service=self._state.get("retrieval_service"),
+                org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
+                query=query, limit=limit, include_tests=include_tests, repo=repo,
+            ),
+            "Failed to search the code",
+        )
+        return self._to_output(result)
+
+    @tool(
         path="/tools/codegraph/outline",
         short_description="A file's definitions with their signatures and line ranges",
         description=(
@@ -884,8 +933,10 @@ class CodeGraph:
             "The blast radius of changing a symbol: everything that calls it, imports "
             "it, or builds on it (inherits, implements, overrides), followed backwards "
             f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
-            "the nearest hop. Test files it reaches are listed apart in `impacted_tests` "
-            "(the tests to run). Only edges the parser could prove; `coverage` says when a "
+            "the nearest hop. Symbols that build on it rather than call it are also named "
+            "in each file's `built_on`; `edge_types=['CALLS']` follows calls only (callers, "
+            "their callers, ...). Test code it reaches is affected too and is listed apart "
+            "in `impacted_tests`. Only edges the parser could prove; `coverage` says when a "
             "language has none."
         ),
         parameters=[
@@ -901,11 +952,17 @@ class CodeGraph:
                           description=f"The symbol, e.g. `function:parse_config`. {_ADDRESS_RULE}"),
             ToolParameter(name="depth", type=ParameterType.INTEGER, required=False,
                           default=DEFAULT_IMPACT_DEPTH,
-                          description=f"Hops to follow backwards, up to {MAX_NEIGHBOUR_DEPTH}."),
+                          description=f"Hops to follow backwards, up to {MAX_IMPACT_DEPTH}."),
             ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
                           default=False, description=_INCLUDE_TESTS_DESC),
             ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
                           description=_REPO_DESC),
+            ToolParameter(
+                name="edge_types", type=ParameterType.ARRAY, required=False, default=None,
+                description=("Relationships to follow backwards; omit for all of them "
+                             f"({', '.join(IMPACT_RELATIONS)}). ['CALLS'] for callers only."),
+                items={"type": "string"},
+            ),
         ],
         tags=_IMPACT_TAGS,
     )
@@ -919,6 +976,7 @@ class CodeGraph:
         *,
         include_tests: bool = False,
         repo: str | None = None,
+        edge_types: list[str] | None = None,
     ) -> tuple[bool, str]:
         path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
         if error is not None:
@@ -930,7 +988,7 @@ class CodeGraph:
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id, file_path=path,
                 qualified_name=qualified_name, depth=depth,
-                include_tests=include_tests, repo=repo,
+                include_tests=include_tests, repo=repo, edge_types=edge_types,
             ),
             "Failed to compute the impact",
         )

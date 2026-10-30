@@ -251,3 +251,22 @@ class TestLegitimateSendsStillWork:
         parts = [p for p in _mime(sent[0]).walk() if p.get_filename()]
         assert [p.get_filename() for p in parts] == ["q3.csv"]
         assert parts[0].get_payload(decode=True) == b"a,b\n1,2\n"
+
+
+class TestPartialAttachmentsSendNothing:
+    @pytest.mark.parametrize("tool", TOOLS)
+    async def test_one_unresolved_attachment_stops_the_send(self, tool: str) -> None:
+        gm = _gmail(state={"org_id": "o1", "user_id": "u1"})
+        bundle = SimpleNamespace(
+            failures=[SimpleNamespace(ref="rec-gone", error="Unexpected error: internal detail",
+                                      to_dict=lambda: {"ref": "rec-gone"})],
+            resolved=[SimpleNamespace(
+                record_id="rec-1", filename="q3.csv", content=b"a,b\n", mime_type="text/csv", size_bytes=4,
+            )],
+        )
+        with patch.object(gmail_module, "resolve_attachments", AsyncMock(return_value=bundle)):
+            ok, payload = await getattr(gm, tool)(**_args(tool, attachment_record_ids=["rec-1", "rec-gone"]))
+
+        assert ok is False
+        assert _outbound(gm) == []
+        assert "rec-gone" in payload and "internal detail" not in payload

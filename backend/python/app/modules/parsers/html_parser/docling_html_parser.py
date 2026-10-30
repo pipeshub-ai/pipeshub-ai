@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 from docling.datamodel.base_models import InputFormat
@@ -134,7 +135,10 @@ class DoclingHtmlParser:
                         src = first_part[0].strip()
             if not src:
                 continue
-            if src.startswith("data:"):
+            # A raster data: image already is the image; the converter stores it
+            # as it is. Anything else, an SVG or another data: URI, is reported
+            # for the caller to rasterise or refuse.
+            if is_inline_raster_image(src):
                 continue
 
             original_alt = img_tag.get("alt", "").strip()
@@ -210,10 +214,10 @@ class DoclingHtmlParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        from html_to_markdown import convert  # noqa: PLC0415
+        from app.utils.html_markdown import html_to_markdown_async  # noqa: PLC0415
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor  # noqa: PLC0415
 
-        markdown = convert(modified_html)
+        markdown = await html_to_markdown_async(modified_html)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
@@ -245,10 +249,10 @@ class DoclingHtmlParser:
         Returns:
             Populated ``BlocksContainer``.
         """
-        from html_to_markdown import convert
+        from app.utils.html_markdown import html_to_markdown_async
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
-        markdown = convert(html_content)
+        markdown = await html_to_markdown_async(html_content)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)

@@ -174,6 +174,7 @@ class TestBookStackClient:
     @pytest.mark.asyncio
     async def test_build_and_validate_success(self):
         mock_response = MagicMock()
+        mock_response.status = 200
         mock_response.json.return_value = {"data": []}
 
         mock_http_client = MagicMock()
@@ -188,7 +189,7 @@ class TestBookStackClient:
             # Patch the build_with_config to return our mock
             original = BookStackClient.build_with_config
 
-            def mock_build(c):
+            def mock_build(c, resilience=None):
                 result = original(c)
                 # Override the inner client's execute
                 inner = result.get_client()
@@ -203,13 +204,14 @@ class TestBookStackClient:
     @pytest.mark.asyncio
     async def test_build_and_validate_error_response(self):
         mock_response = MagicMock()
+        mock_response.status = 401
         mock_response.json.return_value = {"error": {"message": "Unauthorized"}}
 
         cfg = BookStackTokenConfig(base_url=BASE_URL, token_id="tid", token_secret="tsec")
 
         original = BookStackClient.build_with_config
 
-        def mock_build(c):
+        def mock_build(c, resilience=None):
             result = original(c)
             inner = result.get_client()
             inner.execute = AsyncMock(return_value=mock_response)
@@ -226,7 +228,7 @@ class TestBookStackClient:
 
         original = BookStackClient.build_with_config
 
-        def mock_build(c):
+        def mock_build(c, resilience=None):
             result = original(c)
             inner = result.get_client()
             inner.execute = AsyncMock(side_effect=ConnectionError("no connection"))

@@ -419,7 +419,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -433,7 +433,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_width=300)
+            ImageParser._svg_to_png_in_process(svg_b64, output_width=300)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 300
             assert call_kwargs["output_height"] == 200
@@ -447,7 +447,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_height=400)
+            ImageParser._svg_to_png_in_process(svg_b64, output_height=400)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 100
             assert call_kwargs["output_height"] == 400
@@ -461,7 +461,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -475,7 +475,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 500
             assert call_kwargs["output_height"] == 600
@@ -489,7 +489,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 400
@@ -503,7 +503,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, output_width=1000, output_height=2000
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -523,7 +523,7 @@ class TestSvgBase64ToPngBase64Errors:
         b64_str = base64.b64encode(raw_bytes).decode("ascii")
 
         with pytest.raises(DocumentProcessingError, match="Cannot decode SVG content"):
-            ImageParser.svg_base64_to_png_base64(b64_str)
+            ImageParser._svg_to_png_in_process(b64_str)
 
     def test_svg2png_conversion_error(self):
         """When svg2png itself raises, the exception is wrapped."""
@@ -535,7 +535,7 @@ class TestSvgBase64ToPngBase64Errors:
             side_effect=RuntimeError("cairo error"),
         ):
             with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
-                ImageParser.svg_base64_to_png_base64(svg_b64)
+                ImageParser._svg_to_png_in_process(svg_b64)
 
     def test_xml_only_content_recognized(self):
         """Content starting with <?xml is recognized as SVG."""
@@ -546,7 +546,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ):
-            result = ImageParser.svg_base64_to_png_base64(svg_b64)
+            result = ImageParser._svg_to_png_in_process(svg_b64)
         assert result == base64.b64encode(b"fake-png").decode()
 
     def test_with_scale_and_background(self):
@@ -558,7 +558,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"png-data",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, scale=2.0, background_color="#FFFFFF"
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -578,8 +578,8 @@ class TestFetchSingleUrlAdditional:
 
         with patch.object(
             ImageParser,
-            "svg_base64_to_png_base64",
-            side_effect=Exception("conversion failed"),
+            "svg_base64_to_png_base64_async",
+            AsyncMock(side_effect=Exception("conversion failed")),
         ):
             result = await parser._fetch_single_url(fetcher, svg_data_url)
         # Falls through to generic exception handler
@@ -597,7 +597,7 @@ class TestFetchSingleUrlAdditional:
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="svg",
-        ), patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
+        ), patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)):
             result = await parser._fetch_single_url(fetcher, "https://example.com/icon")
 
         assert result == f"data:image/png;base64,{fake_png_b64}"

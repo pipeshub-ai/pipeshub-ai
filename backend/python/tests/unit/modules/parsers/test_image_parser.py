@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.modules.parsers.image_parser import image_parser as image_parser_module
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.public_http import PublicFetchError, PublicFetchResponse, PublicUrlFetcher
 
@@ -185,7 +186,7 @@ class TestFetchSingleUrl:
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
         svg_data_url = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
 
-        with patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64) as mock_convert:
+        with patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)) as mock_convert:
             result = await parser._fetch_single_url(_fetcher(), svg_data_url)
             mock_convert.assert_called_once_with(svg_data_url)
             assert result == f"data:image/png;base64,{fake_png_b64}"
@@ -234,7 +235,7 @@ class TestFetchSingleUrl:
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="svg"), \
-             patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
+             patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)):
             result = await parser._fetch_single_url(fetcher, "https://example.com/icon.svg")
 
         assert result == f"data:image/png;base64,{fake_png_b64}"
@@ -392,7 +393,7 @@ class TestSvgBase64ToPngBase64:
         svg_b64 = base64.b64encode(svg_content.encode()).decode()
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", return_value=b"fake-png"):
-            result = ImageParser.svg_base64_to_png_base64(svg_b64)
+            result = ImageParser._svg_to_png_in_process(svg_b64)
         expected = base64.b64encode(b"fake-png").decode()
         assert result == expected
 
@@ -403,19 +404,19 @@ class TestSvgBase64ToPngBase64:
         data_uri = f"data:image/svg+xml;base64,{svg_b64}"
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", return_value=b"fake-png"):
-            result = ImageParser.svg_base64_to_png_base64(data_uri)
+            result = ImageParser._svg_to_png_in_process(data_uri)
         assert result == base64.b64encode(b"fake-png").decode()
 
     def test_invalid_base64_raises(self, parser):
         """Invalid base64 raises DocumentProcessingError."""
         with pytest.raises(DocumentProcessingError, match="Invalid base64"):
-            ImageParser.svg_base64_to_png_base64("not-valid-base64!!!")
+            ImageParser._svg_to_png_in_process("not-valid-base64!!!")
 
     def test_non_svg_content_raises(self, parser):
         """Non-SVG content raises DocumentProcessingError."""
         non_svg = base64.b64encode(b"this is not SVG content").decode()
         with pytest.raises(DocumentProcessingError, match="not appear to be valid SVG"):
-            ImageParser.svg_base64_to_png_base64(non_svg)
+            ImageParser._svg_to_png_in_process(non_svg)
 
     def test_svg2png_none_raises(self, parser):
         """When cairosvg is not available, raises DocumentProcessingError with dependency message."""
@@ -424,7 +425,7 @@ class TestSvgBase64ToPngBase64:
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", None):
             with pytest.raises(DocumentProcessingError) as exc_info:
-                ImageParser.svg_base64_to_png_base64(svg_b64)
+                ImageParser._svg_to_png_in_process(svg_b64)
             # Verify the message mentions cairosvg dependency
             assert "cairosvg" in str(exc_info.value).lower()
             assert "dependency" in str(exc_info.value).lower()
@@ -437,7 +438,7 @@ class TestSvgBase64ToPngBase64:
         # Mock svg2png to raise an error
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", side_effect=RuntimeError("SVG rendering failed")):
             with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
-                ImageParser.svg_base64_to_png_base64(svg_b64)
+                ImageParser._svg_to_png_in_process(svg_b64)
 
     def test_custom_dimensions(self, parser):
         """Custom output_width and output_height are passed to svg2png."""
@@ -445,7 +446,7 @@ class TestSvgBase64ToPngBase64:
         svg_b64 = base64.b64encode(svg_content.encode()).decode()
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", return_value=b"png") as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_width=200, output_height=300)
+            ImageParser._svg_to_png_in_process(svg_b64, output_width=200, output_height=300)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 200
             assert call_kwargs["output_height"] == 300
@@ -456,7 +457,7 @@ class TestSvgBase64ToPngBase64:
         svg_b64 = base64.b64encode(svg_content.encode()).decode()
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", return_value=b"png") as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, background_color="white")
+            ImageParser._svg_to_png_in_process(svg_b64, background_color="white")
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["background_color"] == "white"
 
@@ -554,3 +555,65 @@ class TestSanitizeSvgContent:
         svg = '<svg xmlns:custom="http://custom.com"><rect/></svg>'
         result = ImageParser._sanitize_svg_content(svg)
         assert b'xmlns="http://www.w3.org/2000/svg"' in result
+
+    def test_resolves_css_var_fallbacks(self) -> None:
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="var(--fill-0, #B4B4B4)"/></svg>'
+        result = ImageParser._sanitize_svg_content(svg)
+        assert b'fill="#B4B4B4"' in result
+        assert b'var(' not in result
+
+
+# ---------------------------------------------------------------------------
+# _resolve_css_var_fallbacks
+# ---------------------------------------------------------------------------
+class TestResolveCssVarFallbacks:
+    def test_attribute_fallback(self) -> None:
+        assert ImageParser._resolve_css_var_fallbacks('fill="var(--fill-0, #B4B4B4)"') == 'fill="#B4B4B4"'
+
+    def test_style_fallback(self) -> None:
+        result = ImageParser._resolve_css_var_fallbacks('style="fill: var(--a,#fff); stroke: var(--b, red)"')
+        assert result == 'style="fill: #fff; stroke: red"'
+
+    def test_fallback_with_parentheses(self) -> None:
+        result = ImageParser._resolve_css_var_fallbacks('fill="var(--c, rgb(1, 2, 3))"')
+        assert result == 'fill="rgb(1, 2, 3)"'
+
+    def test_nested_var_fallback(self) -> None:
+        result = ImageParser._resolve_css_var_fallbacks('fill="var(--a, var(--b, #123456))"')
+        assert result == 'fill="#123456"'
+
+    def test_var_without_fallback_left_as_is(self) -> None:
+        svg = 'fill="var(--a)" stroke="var(--b, #000)"'
+        assert ImageParser._resolve_css_var_fallbacks(svg) == 'fill="var(--a)" stroke="#000"'
+
+    def test_unbalanced_var_left_as_is(self) -> None:
+        svg = 'fill="var(--a, #fff"'
+        assert ImageParser._resolve_css_var_fallbacks(svg) == svg
+
+    def test_unbalanced_inner_var_keeps_resolved_prefix(self) -> None:
+        svg = 'stroke="var(--a, red)" fill="var(--b, var(--c, #fff)"'
+        result = ImageParser._resolve_css_var_fallbacks(svg)
+        assert result == 'stroke="red" fill="var(--b, var(--c, #fff)"'
+
+    def test_deep_nesting_does_not_recurse(self) -> None:
+        depth = 50_000
+        svg = 'fill="' + 'var(--a, ' * depth + '#123456' + ')' * depth + '"'
+        assert ImageParser._resolve_css_var_fallbacks(svg) == 'fill="#123456"'
+
+    def test_no_var_unchanged(self) -> None:
+        svg = '<svg><rect fill="#B4B4B4"/></svg>'
+        assert ImageParser._resolve_css_var_fallbacks(svg) is svg
+
+    def test_svg_with_css_var_colors_converts(self) -> None:
+        """The file-icon SVGs that failed to index with "invalid literal for int() with base 16: 'ar'"."""
+        # cairosvg imports but cannot load without the native cairo library.
+        if image_parser_module.svg2png is None:
+            pytest.skip("cairosvg is not available")
+        svg = (
+            '<svg width="100%" height="100%" viewBox="0 0 13 9" fill="none" xmlns="http://www.w3.org/2000/svg">'
+            '<rect width="13" height="9" rx="1.45455" fill="var(--fill-0, #B4B4B4)"/>'
+            '<path d="M4 3H5V6H4Z" fill="var(--fill-0, #212225)"/>'
+            '</svg>'
+        )
+        png_b64 = ImageParser._svg_to_png_in_process(base64.b64encode(svg.encode()).decode())
+        assert base64.b64decode(png_b64).startswith(b"\x89PNG")

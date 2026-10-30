@@ -347,3 +347,18 @@ async def test_a_rate_limit_wait_left_on_a_parked_record_does_not_bypass_the_tur
     assert await _sweep_at(graph, producer, turned_on_at + 6 * 60_000) == 0
     assert await _sweep_at(graph, producer, turned_on_at + HOUR_MS + 60_000) == 1
     assert producer.sent == ["r9"]
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_never_resends_the_records_of_a_connector_being_deleted() -> None:
+    """A re-sent event would index content the delete is about to remove."""
+    graph, producer = FakeGraph(), Producer()
+    graph.records["r0"] = _parked("r0")
+    graph.apps[ON] = {"isActive": True, "status": "DELETING"}
+    before = {key: dict(doc) for key, doc in graph.records.items()}
+
+    assert await _sweep(graph, producer) == 0
+
+    assert producer.sent == [] and graph.records == before
+    graph.apps[ON] = {"isActive": True}
+    assert await _sweep(graph, producer) == 1, "the control: the same record is sent once the connector is not DELETING"

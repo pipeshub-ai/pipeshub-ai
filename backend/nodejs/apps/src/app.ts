@@ -1,3 +1,6 @@
+// The edition seam loads first: an edition's schemas register their model names
+// (org, users) before any shared module imports a schema with the same name.
+import './config';
 import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
@@ -10,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -20,12 +24,15 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { TtlSweeper } from './libs/services/ttl-sweeper.service';
+import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { isApiPath } from './libs/utils/api-path.utils';
+import { accessLogLevel } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -48,14 +55,13 @@ import {
   UserManagerContainer,
   AuthServiceContainer,
   createUserAccountRouter,
-  createSamlRouter,
   createOrgAuthConfigRouter,
-  SamlController,
   MailServiceContainer,
   createMailServiceRouter,
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -120,6 +126,8 @@ import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes'
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { ApiToolsetsContainer } from './modules/api_toolsets/container/api_toolsets.container';
+import { createApiToolsetsRouter } from './modules/api_toolsets/routes/api_toolsets.routes';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import {
   createMcpClientMetadataHandler,
@@ -166,6 +174,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private ttlSweeper: TtlSweeper | null = null;
   private scheduleRepairTimer: NodeJS.Timeout | null = null;
   private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
@@ -175,6 +184,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private apiToolsetsContainer!: Container;
   private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -216,6 +226,9 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
+      );
 
       // Ensure message broker topics/streams exist
       try {
@@ -301,6 +314,9 @@ export class Application {
       this.mcpServersContainer = await McpServersContainer.initialize(
         configurationManagerConfig,
       );
+      this.apiToolsetsContainer = await ApiToolsetsContainer.initialize(
+        configurationManagerConfig,
+      );
       this.projectsContainer = await ProjectsContainer.initialize(
         configurationManagerConfig,
         appConfig,
@@ -347,6 +363,12 @@ export class Application {
         this.logger,
       );
       this.outboxDispatcher.start();
+
+      // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
+        this.ttlSweeper = new TtlSweeper(this.logger);
+        this.ttlSweeper.start();
+      }
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -431,6 +453,16 @@ export class Application {
           return;
         }
 
+        // Every workspace page is pre-rendered, so an unmatched /workspace/
+        // URL is a page this build does not have. The root shell would
+        // hydrate as `/` and redirect to /chat; serve the not-found page.
+        if (/^\/workspace\//.test(_req.path)) {
+          res.status(404).sendFile(path.join(publicDir, '404.html'), {
+            headers: { 'Cache-Control': 'no-cache' },
+          });
+          return;
+        }
+
         sendShell(res);
       });
 
@@ -498,6 +530,8 @@ export class Application {
               imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
               fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
               mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+              // Answers render model output; a form in one must not post off-origin.
+              formAction: ["'self'"],
             },
           },
         }),
@@ -545,12 +579,31 @@ export class Application {
       ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
       'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
       '":user-agent"';
+    // Evaluated after the response: a mounted router has rewritten req.path
+    // to its own mount-relative path by then, originalUrl keeps the full one.
+    const levelOf = (
+      req: { originalUrl: string },
+      res: { statusCode: number },
+    ): ReturnType<typeof accessLogLevel> =>
+      accessLogLevel(req.originalUrl.split('?')[0] ?? '', res.statusCode);
     this.app.use(
       morgan(combinedRedacted, {
         stream: {
-          write: (message: string) => this.logger.info(message.trim()),
+          write: (message: string) => {
+            this.logger.info(message.trim());
+          },
         },
-        skip: (req) => !isApiPath(req.path),
+        skip: (req, res) => levelOf(req, res) !== 'info',
+      }),
+    );
+    this.app.use(
+      morgan(combinedRedacted, {
+        stream: {
+          write: (message: string) => {
+            this.logger.debug(message.trim());
+          },
+        },
+        skip: (req, res) => levelOf(req, res) !== 'debug',
       }),
     );
 
@@ -610,8 +663,6 @@ export class Application {
       createFeatureFlagRouter(this.entityManagerContainer),
     );
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
-
     this.app.use(
       '/api/v1/userAccount',
       createUserAccountRouter(this.authServiceContainer),
@@ -660,6 +711,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
     );
 
     // code-graph status for the dashboard (repos and their graph status)
@@ -742,6 +799,12 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
+    this.app.use(
+      '/api/v1/api-toolsets',
+      createApiToolsetsRouter(this.apiToolsetsContainer),
     );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.
@@ -891,11 +954,7 @@ export class Application {
           resolve();
         });
       });
-      if (this.authServiceContainer) {
-        await this.updateSamlStrategies();
-      }
       await editionBoot.afterListen(this.logger, this.editionContainers());
-
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1029,6 +1088,8 @@ export class Application {
       // containers below are about to disconnect.
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
+      await this.ttlSweeper?.stop();
+      this.ttlSweeper = null;
 
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
@@ -1206,16 +1267,6 @@ export class Application {
       this.logger.info('OAuth token service registered for AuthMiddleware factory');
     } catch (error) {
       this.logger.warn('Failed to register OAuth token service', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-  async updateSamlStrategies(): Promise<void> {
-    try {
-      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      await samlController.updateSamlStrategiesWithCallback();
-    } catch (error) {
-      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

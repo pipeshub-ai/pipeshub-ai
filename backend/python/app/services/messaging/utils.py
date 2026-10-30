@@ -58,7 +58,9 @@ class MessagingUtils:
 
     @staticmethod
     async def _get_redis_config(app_container: AppContainer) -> RedisConfig:
-        """Get Redis config from the configuration service."""
+        """Get Redis config from the configuration service (the defaults when the broker is PostgreSQL: no Redis server is read)."""
+        if get_message_broker_type() == MessageBrokerType.POSTGRES:
+            return RedisConfig()
         config_service = app_container.config_service()
         return await config_service.get_redis_config()
 
@@ -86,6 +88,7 @@ class MessagingUtils:
             "port": redis_config.port,
             "password": redis_config.password,
             "db": redis_config.db,
+            "retention_mode": messaging_env.redis_streams_retention_mode,
             "max_len": messaging_env.redis_streams_maxlen,
             "client_id": client_id,
             "group_id": group_id,

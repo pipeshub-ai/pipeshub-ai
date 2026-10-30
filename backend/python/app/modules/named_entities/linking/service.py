@@ -12,11 +12,11 @@ whichever record first created the node.
 
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.linking.candidates import (
     Candidate,
     CandidateFinder,
@@ -28,6 +28,7 @@ from app.modules.named_entities.linking.verifier import (
     VerifyItem,
     offerable,
 )
+from app.modules.retrieval.entity_permissions import readable_spellings
 
 if TYPE_CHECKING:
     from app.modules.named_entities.linking.mentions import Mention
@@ -43,7 +44,8 @@ class LinkStatus(str, Enum):
     """Candidates exist but could not be checked; none was used."""
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
-    """Too many readable entities start with the name to tell apart."""
+    """Too many readable entities start with the name to tell apart, or it is a
+    first name several readable people share (``namesakes``)."""
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,15 @@ class LinkResult:
     more_longer_names: bool = False
     """Beside an exact match, more readable names start with it than one check
     can tell apart, so none of them was considered."""
+    left_out: list[Candidate] = field(default_factory=list)
+    """Longer names beside an exact match that the check did not include; not
+    known to be someone else, unlike ``rejected``."""
+    namesakes: list[Candidate] = field(default_factory=list)
+    """Readable people whose full name starts with a first name asked on its own:
+    each may be the one meant, so none is chosen and none is "not the same"."""
+    more_related_names: bool = False
+    """More names under a kind related to the asked one start with it than one
+    check takes, so some were not considered (see ``MentionCandidates.more_related``)."""
 
 
 @dataclass(frozen=True)
@@ -72,20 +83,14 @@ class Linking:
 
 async def readable_names(graph: IGraphDBProvider, org_id: str, candidates: list[Candidate]) -> dict[str, str]:
     """Each candidate's most frequent spelling on the mention edges of readable
-    records it was found through; its stored name when none records one."""
+    records it was found through, else its stored name.
+
+    shortcut: the stored-name fallback is reached only when none of those edges
+    records a spelling (every writer sets one), so ``search_by_entities`` keeps it
+    rather than dropping the candidate; drop it if such edges ever appear."""
     names = {candidate.entity_id: candidate.name for candidate in candidates}
     record_ids = sorted({str(row["_key"]) for c in candidates for row in c.records if row.get("_key")})
-    if not record_ids:
-        return names
-    rows = await graph.get_named_entity_mentions_in_records(org_id, sorted(names), record_ids)
-    spellings: dict[str, Counter[str]] = {}
-    for row in rows:
-        for spelling in row.get("extractedNames") or []:
-            if isinstance(spelling, str) and spelling.strip():
-                spellings.setdefault(str(row.get("entityId")), Counter())[spelling.strip()] += 1
-    for entity_id, counter in spellings.items():
-        if entity_id in names:
-            names[entity_id] = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    names.update(await readable_spellings(graph, org_id, sorted(names), record_ids))
     return names
 
 
@@ -111,17 +116,24 @@ class EntityLinker:
         # (position, mention, offered, refused, settled): ``settled`` is an exact
         # match kept whatever the check says; the check only adds to it.
         to_check: list[tuple[int, Mention, list[Candidate], list[Candidate], list[Candidate]]] = []
+        namesakes: dict[int, list[Candidate]] = {}
         for entry in found.per_mention:
             mention = entry.mention
+            shared = _namesakes(mention, entry.candidates, names)
+            if shared:
+                namesakes[len(results)] = shared
+            pool = [c for c in entry.candidates if c not in shared]
+            # The same name under a related kind (a product filed as its company) is
+            # taken too: the extractor files one thing under either, so it is not a look-alike.
             exact = [
-                c for c in entry.candidates
+                c for c in pool
                 if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
             ]
             if exact:
                 # A first name stored on its own ("Sam") must not hide the full
                 # names it starts ("Sam Lee"): those go to the check.
                 longer = [
-                    c for c in entry.candidates
+                    c for c in pool
                     if c.source is CandidateSource.PREFIX and mention.hinted(c.kind) and c not in exact
                 ]
                 offered = [c for c in longer if offerable(mention.name, names.get(c.entity_id, c.name))]
@@ -134,11 +146,11 @@ class EntityLinker:
                     ))
             elif entry.ambiguous:
                 results.append(LinkResult(mention, LinkStatus.AMBIGUOUS))
-            elif not entry.candidates:
+            elif not pool:
                 results.append(LinkResult(mention, LinkStatus.NOT_FOUND))
             else:
-                offered = [c for c in entry.candidates if offerable(mention.name, names.get(c.entity_id, c.name))]
-                refused = [c for c in entry.candidates if c not in offered]
+                offered = [c for c in pool if offerable(mention.name, names.get(c.entity_id, c.name))]
+                refused = [c for c in pool if c not in offered]
                 if not offered:
                     results.append(LinkResult(mention, LinkStatus.NOT_FOUND, rejected=refused))
                 else:
@@ -152,7 +164,7 @@ class EntityLinker:
                     mention=mention.name,
                     kind_hint=mention.kind_hint.value if mention.kind_hint else None,
                     candidates=[
-                        OfferedCandidate(names.get(c.entity_id, c.name), c.kind or "entity", _records(c))
+                        OfferedCandidate(names.get(c.entity_id, c.name), c.kind or "entity", record_count_label(c))
                         for c in offered
                     ],
                 )
@@ -169,13 +181,27 @@ class EntityLinker:
                 )
                 continue
             picked = [offered[index] for index in chosen]
-            rejected = [*(c for c in offered if c not in picked), *refused]
+            passed_over = [c for c in offered if c not in picked]
+            # Beside an exact match the check only adds; a longer name it left out may still be the same.
+            left_out = [c for c in passed_over if settled and c.source is CandidateSource.PREFIX]
+            rejected = [*(c for c in passed_over if c not in left_out), *refused]
             if settled:
                 status = LinkStatus.CHECKED if picked else LinkStatus.MATCHED
             else:
                 status = LinkStatus.CHECKED if picked else LinkStatus.NOT_FOUND
-            results[position] = LinkResult(mention, status, accepted=[*settled, *picked], rejected=rejected)
+            results[position] = LinkResult(
+                mention, status, accepted=[*settled, *picked], rejected=rejected, left_out=left_out,
+            )
 
+        for position, entry in enumerate(found.per_mention):
+            result = results[position]
+            if entry.more_related and result is not None:
+                results[position] = replace(result, more_related_names=True)
+        for position, shared in namesakes.items():
+            result = results[position]
+            if result is not None:
+                status = LinkStatus.AMBIGUOUS if result.status is LinkStatus.NOT_FOUND else result.status
+                results[position] = replace(result, status=status, namesakes=shared)
         return Linking(
             results=[result for result in results if result is not None],
             timed_out=found.timed_out,
@@ -184,7 +210,21 @@ class EntityLinker:
         )
 
 
-def _records(candidate: Candidate) -> str:
+def _namesakes(mention: Mention, candidates: list[Candidate], names: dict[str, str]) -> list[Candidate]:
+    """The readable people whose full name starts with a first name asked on its
+    own, when there are two or more: the name alone cannot tell them apart."""
+    if not any(kind is EntityKind.PERSON and len(key.rpartition(":")[2].split()) == 1 for kind, key in mention.keys):
+        return []
+    people = [
+        c for c in candidates
+        if c.source is CandidateSource.PREFIX and c.kind == EntityKind.PERSON.value and mention.hinted(c.kind)
+        and offerable(mention.name, names.get(c.entity_id, c.name))
+    ]
+    return people if len(people) >= 2 else []
+
+
+def record_count_label(candidate: Candidate) -> str:
+    """How many readable records mention it, as shown ("1 record", "3+ records")."""
     count = len(candidate.records)
     if candidate.more_records:
         return f"{count}+ records"

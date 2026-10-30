@@ -9,12 +9,15 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import {
   stripMarkdownAndCitations,
   formatChatMode,
+  answerSearchSource,
 } from '@/lib/utils/formatters';
-import type { ModelInfo, AppliedFilters } from '@/chat/types';
+import type { ModelInfo, AppliedFilters, MessagePart } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { ChatMessageExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
@@ -71,6 +74,8 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** The answer's tool activity: the footer names the search it actually used. */
+  parts?: MessagePart[];
 }
 
 /**
@@ -124,7 +129,9 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  parts,
 }: MessageActionsProps) {
+  const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [copiedTooltipOpen, setCopiedTooltipOpen] = useState(false);
@@ -355,7 +362,17 @@ export function MessageActions({
 
   if (isStreaming) return null;
 
-  const chatModeLabel = formatChatMode(modelInfo?.chatMode);
+  // Plain assistant turns all run as `agent`; the Internal/Web search toggles
+  // only gate tools, so the tools it called say what this answer used.
+  const searchSource = modelInfo?.chatMode === 'agent' ? answerSearchSource(parts) : null;
+  const chatModeLabel =
+    searchSource === 'internal'
+      ? t('chat.answerMode.internalSearch', 'Internal search')
+      : searchSource === 'web'
+        ? t('chat.answerMode.webSearch', 'Web search')
+        : searchSource === 'internal_and_web'
+          ? t('chat.answerMode.internalAndWebSearch', 'Internal + web search')
+          : formatChatMode(modelInfo?.chatMode);
   const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
 
   return (
@@ -386,6 +403,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleLikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -525,6 +543,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleDislikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -672,6 +691,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   style={{
+                    ...touchTarget(isMobile),
                     margin: 0,
                     cursor: 'pointer',
                     color: 'var(--slate-9)',
@@ -719,7 +739,7 @@ export function MessageActions({
                   borderRadius: 'var(--radius-1)',
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   gap: 'var(--space-1)',
                 }}
               >
@@ -748,6 +768,7 @@ export function MessageActions({
               onClick={handleFork}
               aria-label={forkLabel}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: isForking ? 'default' : 'pointer',
                 color: 'var(--slate-9)',
@@ -774,6 +795,7 @@ export function MessageActions({
               aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: messageId ? 'pointer' : 'default',
                 color: 'var(--slate-9)',
@@ -796,6 +818,7 @@ export function MessageActions({
               onMouseEnter={() => setReadAloudHovered(true)}
               onMouseLeave={() => setReadAloudHovered(false)}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-1)',

@@ -14,6 +14,10 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _time_range_error_message,
 )
+from app.agents.actions.knowledge_graph.ops.scope import (
+    NODE_NOT_FOUND_MESSAGE,
+    SELECTION_BROWSE_HINT,
+)
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
@@ -285,6 +289,22 @@ class TestNavigateIssueKeyUnderASelection:
         get_nodes.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_issue_key_that_matches_nothing_points_to_a_search(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        resolver = MagicMock()
+        resolver.resolve_many = AsyncMock(return_value=MagicMock(matches=[]))
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver", return_value=resolver,
+        ), patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="PP-404")
+
+        assert not success
+        assert "PP-404" in text and "knowledgegraph__search" in text and "lookup_record" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_folder_selection_does_not_narrow_children_to_other_connectors(self) -> None:
         state = _make_state(
             has_knowledge=True,
@@ -318,6 +338,23 @@ class TestNavigateIssueKeyUnderASelection:
         assert success
         assert get_nodes.await_args.kwargs["connector_ids"] in (None, [])
         assert "alpha-north-revenue" in text
+
+    @pytest.mark.asyncio
+    async def test_without_a_node_a_selection_points_at_its_listing_and_a_search_in_it(self) -> None:
+        state = _make_state(
+            has_knowledge=True,
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "selectionApps": ["conn-jira"]},
+        )
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        get_nodes = AsyncMock()
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes,
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert not success and text == SELECTION_BROWSE_HINT
+        assert "source_ids=[<id>]" in text
+        get_nodes.assert_not_called()
 
 
 class TestNavigateStaysInsideTheLimit:
@@ -527,9 +564,8 @@ class TestNavigateDeniedNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="denied-node")
 
-        # Denied and missing must produce identical-looking output
-        assert success  # the tool itself succeeds, the result is empty
-        assert "Record ID:" not in text
+        # Denied and missing must produce identical output
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
 
 
 class TestNavigateMissingNode:
@@ -549,8 +585,48 @@ class TestNavigateMissingNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="does-not-exist")
 
-        assert success
-        assert "Record ID:" not in text
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_a_name_passed_as_node_id_is_told_what_node_id_takes(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        get_nodes = AsyncMock()
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=get_nodes):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="Launch SaaS")
+
+        assert not success
+        assert "not a name" in text and "knowledgegraph__list_files(query=...)" in text
+        assert "outside" not in text and "no items at root" not in text
+        get_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_node_in_a_switched_off_demo_app_reads_as_missing(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        state["graph_provider"].get_knowledge_hub_node_access = AsyncMock(
+            return_value={"nodeType": "record", "name": "Demo"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService._belongs_to",
+            new=AsyncMock(return_value=True),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="demo-node")
+
+        assert (success, text) == (False, NODE_NOT_FOUND_MESSAGE)
+
+    @pytest.mark.asyncio
+    async def test_the_root_listing_is_unchanged_without_a_node_id(self) -> None:
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0)),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert success and "no items at root" in text
 
 
 class TestNavigateRecordWithChildren:
@@ -988,8 +1064,170 @@ class TestNavigateAgentScoping:
             tool = KnowledgeGraph(state=state)
             await tool.navigate()
 
-        # Scoping connector IDs should be passed (for root browse)
-        assert "connector_ids" in captured or "record_group_ids" in captured
+        assert captured["connector_ids"] == ["conn-jira", "conn-confluence"]
+        assert captured["record_group_ids"] is None
+
+    @staticmethod
+    async def _navigate_filters(state: dict, node_id: str | None = None, node_info: dict | None = None) -> dict:
+        """The filters navigate hands the listing service for ``node_id``."""
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=node_info)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(items=[], total=0)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id=node_id)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_knowledge_base_is_a_connector_filter(self) -> None:
+        """A KB is an app: its records carry its id as connectorId. Sent as a
+        record group, the connector filter of the other apps hid every child."""
+        state = _make_state(
+            agent_knowledge=[
+                {"connectorId": "conn-jira", "type": "JIRA"},
+                {"connectorId": "kb-a", "type": "KB"},
+            ],
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] == ["conn-jira", "kb-a"]
+        assert captured["record_group_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_kb_only_agent_stays_inside_its_kb(self) -> None:
+        """Opening another app filters by the agent's KB, so the service
+        returns none of that app's children; no catalog-wide fallback."""
+        state = _make_state(
+            agent_knowledge=[{"connectorId": "kb-a", "type": "KB"}],
+            available_connectors=[{"id": "conn-other", "name": "Other", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="conn-other", node_info={"nodeType": "app", "name": "Other"},
+        )
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_kb_is_not_a_connector_filter(self) -> None:
+        """A chat-mode turn puts its attachments' virtual record ids in kb;
+        they are not apps, so they never become a connector filter."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["kb-a", "vrid-1"],
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state, node_id="kb-a")
+        assert captured["connector_ids"] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_picked_opens_a_kb_by_the_users_access(self) -> None:
+        """The connector catalog leaves knowledge bases out: used as the filter
+        of a default chat, it hid every child of the KB opened."""
+        state = _make_state(
+            agent_knowledge=[],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(
+            state, node_id="kb-a", node_info={"nodeType": "app", "name": "Contracts"},
+        )
+        assert captured["parent_id"] == "kb-a"
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_default_chat_with_only_an_attachment_browses_the_users_access(self) -> None:
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"]},
+            attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        captured = await self._navigate_filters(state)
+        assert captured["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_strict_attachment_only_turn_names_nothing_outside_it(self) -> None:
+        """A project turn with only attachments has no source to browse: what
+        the listing returns is re-checked against the turn and dropped."""
+        state = _make_state(
+            agent_knowledge=[],
+            kb=["vrid-1"],
+            filters={"kb": ["vrid-1"], "strictScope": True},
+            attachment_record_ids=["vrid-1"],
+            available_connectors=[{"id": "conn-jira", "name": "Jira", "type": "JIRA"}],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.check_access = AsyncMock(
+            side_effect=lambda *_a, node_ids=(), **_k: AccessCheck(
+                node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(),
+            ),
+        )
+        captured = {}
+
+        async def capture_get_nodes(self_inner: object, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return _make_knowledge_hub_response(
+                items=[_make_node_item("jira-1", "Outside ticket")], total=1,
+            )
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            output = await KnowledgeGraph(state=state).navigate()
+
+        assert captured["connector_ids"] == ["conn-jira"]
+        assert "jira-1" not in str(output) and "Outside ticket" not in str(output)
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_alone_does_not_limit_what_navigate_may_name(self) -> None:
+        """Chat mode puts an attachment's id in kb; read as a picked app, it
+        refused every knowledge base the user opened."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            turn_picked_sources,
+        )
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["vrid-1"]}, attachment_record_ids=["vrid-1"], has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock()
+        assert await ids_within_scope(state, gp, "user-key-1", "org-1", ["kb-a", "rec-1"]) == {"kb-a", "rec-1"}
+        gp.check_access.assert_not_awaited()
+        assert turn_picked_sources(state) is False
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_next_to_a_picked_kb_limits_to_the_kb(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        state = _make_state(
+            agent_knowledge=[], filters={"kb": ["kb-a", "vrid-1"]}, attachment_record_ids=["vrid-1"],
+            has_knowledge=True,
+        )
+        gp = state["graph_provider"]
+        gp.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset(), node_ids_in_scope=frozenset()))
+        with patch(
+            "app.modules.retrieval.selection_scope.resolve_request_scopes", AsyncMock(return_value=(None, [])),
+        ):
+            await ids_within_scope(state, gp, "user-key-1", "org-1", ["rec-1"])
+        scopes = gp.check_access.await_args.kwargs["scopes"]
+        assert [scope.app_ids for scope in scopes] == [frozenset({"kb-a"})]
 
 
 class TestNavigateDepthSingleQuery:
@@ -1039,6 +1277,24 @@ class TestNavigateDepthSingleQuery:
         assert "Level 2" in text
         assert f"record_id={_short_id_for(state, 'story1')}" in text
         assert f"record_id={_short_id_for(state, 'sub1')}" in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("depth", "flattened"), [(1, False), (2, True)])
+    async def test_depth1_browses_children_and_deeper_flattens_to_that_depth(self, depth, flattened) -> None:
+        """depth 1 is a cursor-paged browse of the direct children, never a flatten of
+        every descendant; depth d asks the flatten to stop at d."""
+        state = self._state_on_epic()
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        get_nodes = AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0))
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id="epic1", depth=depth)
+
+        assert get_nodes.await_args.kwargs["flattened"] is flattened
+        assert get_nodes.await_args.kwargs["depth"] == depth
 
     @pytest.mark.asyncio
     async def test_navigate_depth2_app_parent_clamps_to_depth1(self):

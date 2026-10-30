@@ -201,6 +201,14 @@ class TestChatStreamInput:
         assert response.status_code == 400
         assert "Traceback" not in response.text
 
+    def test_unknown_filter_key_is_rejected_with_the_allowed_keys(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        response = _stream(c, "private", "alice", {"query": "hi", "filters": {"connectors": ["x"]}})
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "Unknown filter key(s): connectors" in detail
+        assert "Allowed keys: apps" in detail
+
     def test_missing_query_is_rejected(self, graph, loop) -> None:
         c, _ = make_client(graph)
         response = _stream(c, "private", "alice", {"limit": 3})

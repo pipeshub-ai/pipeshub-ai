@@ -54,8 +54,7 @@ test.describe('All Records reindex', () => {
 
     const row = page.getByRole('row', { name: recordName, exact: true });
     await expect(row, 'the failed record should be listed in All Records').toBeVisible({ timeout: 30_000 });
-    // The trigger's only text is its icon ligature.
-    await row.getByRole('button', { name: 'more_horiz' }).click();
+    await row.getByRole('button', { name: `More options for ${recordName}`, exact: true }).click();
 
     const reindex = page.waitForRequest(
       (r) => r.method() === 'POST' && r.url().includes(`/api/v1/knowledgeBase/reindex/record/${recordId}`),

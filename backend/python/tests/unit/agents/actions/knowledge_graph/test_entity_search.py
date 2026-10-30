@@ -94,7 +94,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     stage return, and what execute_search receives."""
     calls: dict[str, Any] = {"linking": None, "scope": None, "search": []}
     monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
-    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org")))
+    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
 
     class _Linker:
         def __init__(self, *args: object) -> None:
@@ -194,7 +194,7 @@ async def test_all_with_a_name_that_did_not_link_searches_nothing(
     monkeypatch.setattr(records_module, "list_accessible_entity_records", _list)
     searches: list[Any] = []
     monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
-    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org")))
+    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
     monkeypatch.setattr(entity_search, "execute_search", AsyncMock(side_effect=lambda *a, **k: searches.append(k)))
     linking = _linking(
         _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e1", "Acme")]),
@@ -224,13 +224,28 @@ async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: di
     sam = _candidate("e-sam", "Sam", kind="person")
     (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
     wired["linking"] = _linking(
-        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[_candidate("e-lee", "Sam Lee", kind="person")]),
+        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[
+            Candidate("e-lee", "person", "Sam Lee", CandidateSource.PREFIX, ({"_key": "r1"},), False),
+        ]),
         LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], more_longer_names=True),
     )
     wired["scope"] = RecordScope(per_name=[NameRecords("Sam", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
     text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Sam", "kind": "person"}, "Sam Q"])
     assert "Longer names that may be the same could not be checked and were not used: Sam Lee (person)" in text
     assert "Many more readable names start with it" in text
+
+
+
+@pytest.mark.asyncio
+async def test_related_names_cut_by_the_cap_say_which_kind_to_ask_for(wired: dict[str, Any]) -> None:
+    (mention,) = parse_mentions([{"name": "Halcyon", "kind": "product"}]).mentions
+    wired["linking"] = _linking(LinkResult(mention, LinkStatus.NOT_FOUND, more_related_names=True))
+    wired["scope"] = RecordScope(per_name=[NameRecords("Halcyon", [], True)], record_ids=[], virtual_record_ids=[])
+    _, text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Halcyon", "kind": "product"}])
+    assert (
+        '"Halcyon" (product): no readable entity by this name. More readable names filed as organization '
+        "start with it and were not checked; call again with that kind or the full name to include them."
+    ) in text
 
 
 @pytest.mark.asyncio
@@ -500,3 +515,65 @@ class TestPermissions:
         assert searches == []
         assert "rec-msa" not in (state.get("known_record_ids") or set())
         assert not state.get(RETRIEVED_BY_KEY)
+
+
+def _person(entity_id: str, name: str, source: CandidateSource = CandidateSource.PREFIX, records: int = 2) -> Candidate:
+    return Candidate(entity_id, "person", name, source, tuple({"_key": f"r{i}"} for i in range(records)), False)
+
+
+def _render(*results: LinkResult, scope: RecordScope | None = None) -> str:
+    names = {c.entity_id: c.name for r in results for c in [*r.accepted, *r.rejected, *r.unchecked, *r.namesakes, *r.left_out]}
+    linking = Linking(results=list(results), timed_out=False, verifier_called=False, names=names)
+    scope = scope or RecordScope(per_name=[NameRecords("Lucas", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
+    return entity_search.render_preamble(linking, scope, match_all=False, notes=[])
+
+
+def test_a_first_name_lists_the_people_who_share_it_and_never_says_not_the_same() -> None:
+    (mention,) = parse_mentions([{"name": "Lucas", "kind": "person"}]).mentions
+    people = [_person("e1", "Lucas Adeyemi", records=12), _person("e2", "Lucas Bergstrom", records=1)]
+    text = _render(LinkResult(mention, LinkStatus.MATCHED, accepted=[_person("e0", "Lucas", CandidateSource.EXACT)], namesakes=people))
+    assert 'Several people are named "Lucas": Lucas Adeyemi (person, 12 records), Lucas Bergstrom (person, 1 record).' in text
+    assert "say which one is meant" in text and "Not the same" not in text
+
+
+def test_namesakes_without_an_exact_node_ask_for_the_full_name_without_the_coverage_note() -> None:
+    (mention,) = parse_mentions([{"name": "Lucas", "kind": "person"}]).mentions
+    people = [_person("e1", "Lucas Adeyemi"), _person("e2", "Lucas Nakamura")]
+    text = _render(LinkResult(mention, LinkStatus.AMBIGUOUS, namesakes=people))
+    assert '- "Lucas" (person): several readable people have this first name: Lucas Adeyemi (person, 2 records)' in text
+    assert entity_search.COVERAGE_NOTE not in text and entity_search.COUNT_NOTE in text
+
+
+def test_a_longer_name_the_check_left_out_beside_an_exact_match_is_not_called_someone_else() -> None:
+    (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
+    text = _render(LinkResult(
+        mention, LinkStatus.MATCHED, accepted=[_person("e0", "Sam", CandidateSource.EXACT)],
+        left_out=[_person("e1", "Sam Lee")], rejected=[_person("e2", "Sam Lee Partners", CandidateSource.DENSE)],
+    ))
+    assert "Other names that start with it, not included: Sam Lee (person); call again with the full name" in text
+    assert "Not the same: Sam Lee Partners (person)." in text
+
+
+def test_a_printed_count_is_marked_as_a_minimum() -> None:
+    text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]))
+    assert f"Note: {entity_search.COUNT_NOTE}" in text
+
+
+def test_a_namesake_only_answer_neither_says_absent_nor_ends_with_nothing_found() -> None:
+    (mention,) = parse_mentions([{"name": "Lucas", "kind": "person"}]).mentions
+    people = [_person("e1", "Lucas Adeyemi"), _person("e2", "Lucas Nakamura")]
+    linking = Linking(
+        results=[LinkResult(mention, LinkStatus.AMBIGUOUS, namesakes=people, rejected=[_person("e9", "Lucas Arts")])],
+        timed_out=False, verifier_called=True, names={c.entity_id: c.name for c in [*people]},
+    )
+    text = entity_search.render_preamble(linking, RecordScope(per_name=[]), match_all=False, notes=[])
+    assert entity_search.COVERAGE_NOTE not in text and entity_search.COUNT_NOTE in text
+    assert "Not the same: Lucas Arts (person)." in text
+    assert "full name of the person meant" in entity_search._nothing_to_search(linking, match_all=False)
+
+
+
+def test_a_resolved_name_gives_the_call_that_lists_every_record() -> None:
+    text = _render(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e-acme", "Acme")]))
+    assert 'Every record: knowledgegraph__find_records_by_entity(entity_id="e-acme", entity_type="named_entity").' in text
+

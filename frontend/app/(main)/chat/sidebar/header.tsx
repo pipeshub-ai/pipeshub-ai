@@ -12,8 +12,8 @@ import { UserAvatar } from '@/app/components/ui/user-avatar';
 import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { toast } from '@/lib/store/toast-store';
 import { BrandMark } from '@/config';
+import { useChatStore } from '@/chat/store';
 
 /** A count you check rather than a place you browse to, so it rides the bar with its number on the glyph. */
 function InboxButton() {
@@ -27,6 +27,7 @@ function InboxButton() {
     <Tooltip content={t('nav.inbox')} side="bottom">
       <IconButton
         data-ph-notifications-trigger=""
+        className="touch-hit"
         variant="ghost"
         color="gray"
         size="1"
@@ -67,15 +68,46 @@ function InboxButton() {
 }
 
 /**
- * Sidebar header — logo, user avatar, and a desktop collapse button.
+ * Inbox and, on desktop, the collapse toggle. Every section's sidebar shows
+ * them, so notifications and a wider page are one tap away from anywhere.
+ */
+export function SidebarHeaderActions() {
+  const { t } = useTranslation();
+  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
+  const isMobile = useIsMobile();
+
+  return (
+    <Flex align="center" gap="1">
+      <InboxButton />
+      {!isMobile && (
+        <Tooltip content={t('sidebar.collapse')} side="right">
+          <IconButton
+            className="touch-hit"
+            variant="ghost"
+            color="gray"
+            size="1"
+            aria-label={t('sidebar.collapse')}
+            onClick={() => setNavCollapsed(true)}
+            style={{ width: 24, height: 24, padding: 0, margin: 0, cursor: 'pointer' }}
+          >
+            <MaterialIcon name="left_panel_close" size={16} color="var(--neutral-11)" />
+          </IconButton>
+        </Tooltip>
+      )}
+    </Flex>
+  );
+}
+
+/**
+ * Sidebar header — logo, user avatar, inbox and a desktop collapse button.
  * When the sidebar is collapsed the header is not visible (sidebar is 0-wide),
  * so we only need to handle the expanded state here.
  */
 export function ChatSidebarHeader() {
   const { t } = useTranslation();
   const profile = useUserStore((s) => s.profile);
-  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
   const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   const avatar = (
     <UserAvatar
@@ -91,42 +123,30 @@ export function ChatSidebarHeader() {
 
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
-      <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      <Link
+        href="/chat/"
+        onClick={(e) => {
+          // A modified click opens Home elsewhere; this tab keeps its search.
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          if (isMobile) closeMobileSidebar();
+          // Search results share /chat/ with the new-chat page, so the link alone would leave them open.
+          const chat = useChatStore.getState();
+          if (chat.settings.mode === 'search') {
+            chat.setMode('chat');
+            chat.clearSearchResults();
+          }
+        }}
+        className="touch-hit"
+        aria-label={t('nav.home')}
+        style={{ lineHeight: 0, display: 'inline-flex' }}
+      >
+        <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      </Link>
       <Flex align="center" gap="1">
-        {isMobile ? (
-          <IconButton
-            variant="ghost"
-            color="gray"
-            aria-label={t('common.openProfile')}
-            onClick={() => {
-              toast.info(t('chat.comingSoon'), {
-                description: t('chat.mobileProfileComingSoon'),
-              });
-            }}
-            style={{ margin: 0, padding: 0, lineHeight: 0, cursor: 'pointer' }}
-          >
-            {avatar}
-          </IconButton>
-        ) : (
-          <Link href="/workspace/profile/" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0 }}>
-            {avatar}
-          </Link>
-        )}
-        <InboxButton />
-        {!isMobile && (
-          <Tooltip content={t('sidebar.collapse')} side="right">
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="1"
-              aria-label={t('sidebar.collapse')}
-              onClick={() => setNavCollapsed(true)}
-              style={{ width: 24, height: 24, padding: 0, margin: 0, cursor: 'pointer' }}
-            >
-              <MaterialIcon name="left_panel_close" size={16} color="var(--neutral-11)" />
-            </IconButton>
-          </Tooltip>
-        )}
+        <Link href="/workspace/profile/" className="touch-hit" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
+          {avatar}
+        </Link>
+        <SidebarHeaderActions />
       </Flex>
     </Flex>
   );

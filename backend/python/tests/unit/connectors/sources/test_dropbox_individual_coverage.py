@@ -131,6 +131,16 @@ def _make_connector(existing_record=None):
     dep.upsert_permission_edge = AsyncMock()
     dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     dep.get_file_record_by_id = AsyncMock(return_value=None)
+    dep.get_records_by_file_path = AsyncMock(return_value=[])
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.withdraw_app_user_access = AsyncMock()
+    dep.on_external_app_users = AsyncMock()
+    dep.reap_external_app_users = AsyncMock(return_value=0)
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
+    dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    dep.batch_update_nodes = AsyncMock()
+    dep.get_records_by_parent = AsyncMock(return_value=[])
 
     dsp = _make_mock_data_store_provider(existing_record)
     cs = AsyncMock()
@@ -144,7 +154,7 @@ def _make_connector(existing_record=None):
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()
-    c.data_source.files_get_metadata = AsyncMock(return_value=_make_response(False))
+    c.data_source.files_get_metadata = AsyncMock(return_value=_make_response(False, error="path/not_found/"))
     c.dropbox_cursor_sync_point = AsyncMock()
     c.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
     c.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
@@ -183,6 +193,16 @@ def mock_data_entities_processor():
     proc.upsert_permission_edge = AsyncMock()
     proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
+    proc.get_records_by_file_path = AsyncMock(return_value=[])
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.withdraw_app_user_access = AsyncMock()
+    proc.on_external_app_users = AsyncMock()
+    proc.reap_external_app_users = AsyncMock(return_value=0)
+    proc.get_nodes_by_filters = AsyncMock(return_value=[])
+    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.batch_update_nodes = AsyncMock()
+    proc.get_records_by_parent = AsyncMock(return_value=[])
     return proc
 
 
@@ -535,50 +555,8 @@ class TestProcessDropboxEntry:
         assert result is not None
         assert result.record.signed_url is None
 
-    @pytest.mark.asyncio
-    async def test_shared_link_second_call_succeeds(self):
-        c, _, _ = _make_connector()
-        entry = _make_file_entry()
-        _mock_temp_link(c)
-        first = _make_response(False, error="shared_link_already_exists")
-        second = _make_response(True, MagicMock(url="https://dropbox.com/existing"))
-        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first, second]
-        )
 
-        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl == "https://dropbox.com/existing"
 
-    @pytest.mark.asyncio
-    async def test_shared_link_url_extracted_from_error(self):
-        c, _, _ = _make_connector()
-        entry = _make_file_entry()
-        _mock_temp_link(c)
-        first = _make_response(False, error="shared_link_already_exists")
-        second = _make_response(
-            False,
-            error="shared_link_already_exists: SharedLinkAlreadyExistsMetadata(url='https://dropbox.com/preview')",
-        )
-        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first, second]
-        )
-
-        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl == "https://dropbox.com/preview"
-
-    @pytest.mark.asyncio
-    async def test_shared_link_unexpected_second_error(self):
-        c, _, _ = _make_connector()
-        entry = _make_file_entry()
-        _mock_temp_link(c)
-        first = _make_response(False, error="shared_link_already_exists")
-        second = _make_response(False, error="rate_limit")
-        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first, second]
-        )
-
-        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_unexpected_first_error(self):
@@ -592,19 +570,6 @@ class TestProcessDropboxEntry:
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
         assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
-    @pytest.mark.asyncio
-    async def test_shared_link_regex_miss_logs_error(self):
-        c, _, _ = _make_connector()
-        entry = _make_file_entry()
-        _mock_temp_link(c)
-        first = _make_response(False, error="shared_link_already_exists")
-        second = _make_response(False, error="shared_link_already_exists: no url here")
-        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first, second]
-        )
-
-        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_fallback_url_encodes_special_characters(self):
@@ -857,7 +822,9 @@ class TestRunSyncWithCursor:
 
         await c._run_sync_with_cursor("uid", "u@test.com")
 
-        assert dep.on_new_records.await_count == 2
+        # One ordered write per page (the processor slices it): a moved file and its new folder land together.
+        assert dep.on_new_records.await_count == 1
+        assert len(dep.on_new_records.await_args.args[0]) == 3
         c.dropbox_cursor_sync_point.update_sync_point.assert_awaited()
 
     @pytest.mark.asyncio
@@ -908,35 +875,10 @@ class TestRunSyncWithCursor:
 
         await c._run_sync_with_cursor("uid", "u@test.com")
 
-        c.data_entities_processor.on_record_metadata_update.assert_awaited_once()
-        dep.on_new_records.assert_not_called()
+        # A rename or move is written by on_new_records, which moves the record and its edges.
+        dep.on_new_records.assert_awaited_once_with([(record, [])])
+        c.data_entities_processor.on_record_metadata_update.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_deleted_records_call_handle_updates(self):
-        c, _, _ = _make_connector()
-        entry = _make_file_entry()
-        c.data_source.files_list_folder = AsyncMock(return_value=self._list_result([entry]))
-        deleted = RecordUpdate(
-            record=None,
-            is_new=False,
-            is_updated=False,
-            is_deleted=True,
-            metadata_changed=False,
-            content_changed=False,
-            permissions_changed=False,
-            external_record_id="id:deleted",
-        )
-
-        async def _deleted_gen(*_args, **_kwargs):
-            yield (None, [], deleted)
-
-        c._process_dropbox_items_generator = _deleted_gen
-
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        await c._run_sync_with_cursor("uid", "u@test.com")
-
-        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "id:deleted")
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_api_error_invalid_cursor_stops(self):
@@ -963,8 +905,9 @@ class TestRunSyncWithCursor:
             side_effect=ApiError("req", MagicMock(), "msg", "other_failure")
         )
 
-        with pytest.raises(ApiError):
-            await c._run_sync_with_cursor("uid", "u@test.com")
+        # Recorded, not raised mid-listing: run_sync then fails the run, and a full sync removes nothing.
+        await c._run_sync_with_cursor("uid", "u@test.com")
+        assert not c._health.complete
 
     @pytest.mark.asyncio
     async def test_generic_loop_exception_stops(self):
@@ -1037,6 +980,25 @@ class TestReindexRecords:
 
         dep.on_new_records.assert_awaited_once()
         dep.reindex_existing_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_folder_moved_since_is_repathed(self):
+        """The folder is stored at its new path by the reindex, so no later listing sees the move."""
+        c, _, _ = _make_connector()
+        c._get_current_user_info = AsyncMock(return_value=("uid", "u@test.com"))
+
+        async def check(*_args):
+            c._moved_folders.append(("id:f", "/old", "/new"))
+            return (MagicMock(), [])
+
+        c._check_and_fetch_updated_record = check
+        with patch("app.connectors.sources.dropbox_individual.connector.repath_descendants",
+                   AsyncMock(return_value=(2, True))) as repath:
+            await c.reindex_records([MagicMock(id="r1")])
+
+        repath.assert_awaited_once()
+        assert repath.await_args.args[2:5] == ("id:f", "/old", "/new")
+        assert c._moved_folders == []
 
     @pytest.mark.asyncio
     async def test_per_record_error_continues(self):
@@ -1174,25 +1136,19 @@ class TestCheckAndFetchUpdatedRecord:
     @pytest.mark.asyncio
     async def test_no_update_returns_none(self):
         c, _, _ = _make_connector()
-        record = MagicMock(id="r1", external_record_id="id:f1", external_record_group_id="uid")
         entry = _make_file_entry()
+        record = MagicMock(id="r1", external_record_id="id:f1", external_record_group_id="uid",
+                           record_name=entry.name, external_revision_id=entry.rev)
         c.data_source.files_get_metadata = AsyncMock(
             return_value=_make_response(True, entry)
         )
-        update = RecordUpdate(
-            record=MagicMock(),
-            is_new=False,
-            is_updated=False,
-            is_deleted=False,
-            metadata_changed=False,
-            content_changed=False,
-            permissions_changed=False,
-            new_permissions=[],
-        )
-        c._process_dropbox_entry = AsyncMock(return_value=update)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path=entry.path_lower))
+        c._process_dropbox_entry = AsyncMock()
 
         result = await c._check_and_fetch_updated_record("org", record, "uid", "u@test.com")
+        # Same name, revision and place: only a re-index is wanted.
         assert result is None
+        c._process_dropbox_entry.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):

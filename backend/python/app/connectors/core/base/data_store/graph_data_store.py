@@ -4,7 +4,7 @@ import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional, TypeVar
 
@@ -66,7 +66,8 @@ def ensure_written(result: bool | None, what: str) -> None:
         raise GraphWriteError(f"The graph database did not save {what}")
 
 
-_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b')
+# "[1200]" is how a batch reports one, e.g. "[1200] timeout waiting to lock key".
+_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b|\[1200\]')
 
 
 def is_write_conflict(exception: Exception) -> bool:
@@ -197,7 +198,7 @@ class GraphTransactionStore(TransactionStore):
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
-        self.explicit = explicit  # the caller asked for one real transaction
+        self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -266,7 +267,8 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Optional[Record]:
         # Sync decides create-or-update on this answer; hiding a trashed record
         # would mint a second record for the same source item.
@@ -278,7 +280,8 @@ class GraphTransactionStore(TransactionStore):
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
         value = await self.graph_provider.get_record_by_external_id(
-            connector_id, external_id, transaction=self.txn, visibility=visibility
+            connector_id, external_id, transaction=self.txn, visibility=visibility,
+            **({"raise_on_error": True} if raise_on_error else {}),
         )
         self._memo_put(key, value)
         return value
@@ -416,6 +419,9 @@ class GraphTransactionStore(TransactionStore):
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
@@ -543,6 +549,13 @@ class GraphTransactionStore(TransactionStore):
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
+
+    async def claim_push_record(self, **claim: object) -> object:
+        """The conditional write that arbitrates concurrent pushes, within the active transaction."""
+        return await self.graph_provider.claim_push_record(transaction=self.txn, **claim)
+
+    async def retag_push_record(self, **retag: object) -> bool:
+        return await self.graph_provider.retag_push_record(transaction=self.txn, **retag)
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
@@ -722,6 +735,8 @@ class GraphTransactionStore(TransactionStore):
             return True
 
         except Exception as e:
+            if self.graph_provider.is_transient_error(e) is True:
+                raise  # the transaction is aborted; its owner runs it again
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True
@@ -1281,9 +1296,9 @@ class GraphDataStore(DataStoreProvider):
         - All operations pass txn_id in HTTP headers
         - commit/rollback are fully async HTTP calls
 
-        explicit=True makes the block all-or-nothing on Neo4j too, where each
-        statement otherwise commits on its own while NEO4J_EXPLICIT_TRANSACTIONS
-        is off. It holds its locks until commit, so keep such a block to a few
+        Neo4j blocks are all-or-nothing unless NEO4J_EXPLICIT_TRANSACTIONS is false,
+        where each statement commits on its own; explicit=True still asks for a
+        real transaction then. It holds its locks until commit, so keep such a block to a few
         writes, with no slow calls inside.
         """
         options = {} if explicit is None else {"explicit": explicit}
@@ -1294,7 +1309,9 @@ class GraphDataStore(DataStoreProvider):
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
-        tx_store = GraphTransactionStore(self.graph_provider, txn, explicit=explicit is True)
+        tx_store = GraphTransactionStore(
+            self.graph_provider, txn, explicit=self.graph_provider.opens_explicit_transaction(explicit) is True,
+        )
 
         try:
             yield tx_store
@@ -1329,6 +1346,10 @@ class GraphDataStore(DataStoreProvider):
                 # its locks until the server's idle timeout, so abort it. Neo4j has
                 # already closed the session and answers the abort with ValueError.
                 self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
+                # The store may still have applied it: callers that created something outside the
+                # transaction (a pushed record's storage document) must not undo it on this error.
+                with suppress(Exception):
+                    e.commit_outcome_unknown = True  # type: ignore[attr-defined]
                 try:
                     await tx_store.rollback()
                 except ValueError:

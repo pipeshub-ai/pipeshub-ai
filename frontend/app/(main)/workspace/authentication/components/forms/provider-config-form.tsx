@@ -8,7 +8,7 @@ import React, {
   useCallback,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
@@ -22,7 +22,6 @@ import { InputField } from './input-field';
 import { PasswordInputField } from './password-input-field';
 import { TextareaField } from './textarea-field';
 import { JitField } from './jit-field';
-import { XmlUploadField } from './xml-upload-field';
 
 // ============================================================
 // Public ref type
@@ -103,11 +102,9 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     }, [method]);
     const canReveal =
       revealAvailable &&
-      method !== 'samlSso' &&
       Object.values(values).some((value) => value === CONFIG_SECRET_PLACEHOLDER);
 
     const handleReveal = async () => {
-      if (method === 'samlSso') return;
       const stillCurrent = beginReveal();
       setIsRevealing(true);
       try {
@@ -217,18 +214,6 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
                 providerName={field.providerName}
                 checked={Boolean(values.enableJit)}
                 onCheckedChange={(val) => setBool('enableJit', val)}
-              />
-            );
-          }
-
-          if (field.type === 'xml-upload') {
-            return (
-              <XmlUploadField
-                key={field.key}
-                field={field}
-                onPopulate={(parsed) => {
-                  setValues((prev) => ({ ...prev, ...parsed }));
-                }}
               />
             );
           }

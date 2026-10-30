@@ -105,3 +105,22 @@ async def test_unchanged_record_restored_for_reindexing_starts_clean() -> None:
     assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
     assert processed.parsing_status == ProgressStatus.NOT_STARTED.value
     assert processed.md5_hash is None
+
+
+async def test_unchanged_password_protected_record_keeps_its_verdict_and_reason() -> None:
+    stored = _stored(
+        ProgressStatus.PASSWORD_PROTECTED.value, reason="This file is password-protected.",
+    )
+    processed, _ = await _processor()._process_record(_incoming(), [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+    assert processed.reason == "This file is password-protected."
+    assert processed.md5_hash == "stored-md5"
+
+
+async def test_changed_password_protected_record_starts_clean() -> None:
+    stored = _stored(ProgressStatus.PASSWORD_PROTECTED.value, reason="This file is password-protected.")
+    processed, _ = await _processor()._process_record(_incoming("rev-2"), [], _store(stored))
+
+    assert processed.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
+    assert processed.md5_hash is None

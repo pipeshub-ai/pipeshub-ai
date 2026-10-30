@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
+from urllib.parse import unquote_plus, urlsplit
 
 from pydantic import BaseModel
 
@@ -50,6 +51,7 @@ _ENTITY_SCHEMA_LAYERS: Final[dict[str, tuple[str, ...]]] = {
     "code_file_record": ("record.yaml", "code_file_record.yaml"),
     "link_record": ("record.yaml", "link_record.yaml"),
     "webpage_record": ("record.yaml", "webpage_record.yaml"),
+    "mail_record": ("record.yaml", "mail_record.yaml"),
     "record_group": ("record_group.yaml",),
     "app_user_group": ("app_user_group.yaml",),
     "app_role": ("app_role.yaml",),
@@ -63,6 +65,7 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
     "code_file_record",
     "link_record",
     "webpage_record",
+    "mail_record",
     "record_group",
     "app_user_group",
     "app_role",
@@ -77,6 +80,8 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
     "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+    # Write-time permission hints (Record model), never persisted on the node.
+    "inherit_permissions_from_group", "rewrite_permissions",
 })
 
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
@@ -86,6 +91,7 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
     "code_file_record": _RECORD_DEFAULT_SKIP,
     "link_record": _RECORD_DEFAULT_SKIP,
     "webpage_record": _RECORD_DEFAULT_SKIP,
+    "mail_record": _RECORD_DEFAULT_SKIP,
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),
@@ -95,10 +101,36 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
 }
 
 
+_GOOGLE_FILE_HOSTS: Final[frozenset[str]] = frozenset({"docs.google.com", "drive.google.com"})
+
+
+def _comparable_weburl(url: object) -> object:
+    """``url`` without Google's ``ouid``, which Drive adds to an Office file's webViewLink
+    on some reads of the same file and not on others.
+
+    Only the raw ``ouid`` pairs are cut, so every other byte still has to match:
+    decoding the query would make ``%20`` equal ``+``.
+    """
+    if not isinstance(url, str) or urlsplit(url).hostname not in _GOOGLE_FILE_HOSTS:
+        return url
+    head, mark, rest = url.partition("?")
+    if not mark:
+        return url
+    query, hash_mark, fragment = rest.partition("#")
+    pairs = query.split("&")
+    kept = [pair for pair in pairs if unquote_plus(pair.partition("=")[0]) != "ouid"]
+    if len(kept) == len(pairs):
+        return url
+    return f"{head}{'?' if kept else ''}{'&'.join(kept)}{hash_mark}{fragment}"
+
+
 def _field_values_equal(key: str, expected: object, actual: object) -> bool:
-    """Return True if expected and actual match for this field (special case for empty semantic_metadata)."""
+    """Return True if expected and actual match for this field (special cases for empty
+    semantic_metadata and Google file links)."""
     if key == "semantic_metadata" and expected in (None, {}) and actual in (None, {}):
         return True
+    if key == "weburl":
+        return _comparable_weburl(expected) == _comparable_weburl(actual)
     return expected == actual
 
 
@@ -166,7 +198,7 @@ def assert_graph_entity_matches(
 
 _ENTITY_KINDS_WITH_RECORD_EDGES: Final[frozenset[str]] = frozenset({
     "ticket_record", "file_record", "link_record", "webpage_record",
-    "pull_request_record", "code_file_record",
+    "pull_request_record", "code_file_record", "mail_record",
 })
 
 

@@ -9,7 +9,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
-import { parsedStepStatus } from './parsed-step-status';
+import { buildStageTrackSteps } from './stage-track-steps';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -43,8 +43,6 @@ const LABEL_STYLE: CSSProperties = {
   color: 'var(--olive-10)',
   minWidth: '38%',
   flexShrink: 0,
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
 };
 
 /** Scales with viewport so narrow panels truncate; wide screens show more text before ellipsis. Tooltip when truncated: TruncatingText. */
@@ -117,9 +115,28 @@ function humanizeMetadataKey(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function humanizeIndexingStatus(status: string | undefined): string {
+const INDEXING_STATUS_KEYS: Record<string, string> = {
+  COMPLETED: 'kb.indexingStatus.completed',
+  IN_PROGRESS: 'kb.indexingStatus.inProgress',
+  FAILED: 'kb.indexingStatus.failed',
+  FILE_TYPE_NOT_SUPPORTED: 'kb.indexingStatus.fileTypeNotSupported',
+  NOT_STARTED: 'kb.indexingStatus.notStarted',
+  QUEUED: 'kb.indexingStatus.queued',
+  AUTO_INDEX_OFF: 'kb.indexingStatus.manualIndexing',
+  EMPTY: 'kb.indexingStatus.empty',
+  PAUSED: 'kb.indexingStatus.paused',
+  ENABLE_MULTIMODAL_MODELS: 'kb.indexingStatus.needsMultimodalModel',
+  SKIPPED: 'kb.indexingStatus.skipped',
+  PASSWORD_PROTECTED: 'kb.indexingStatus.passwordProtected',
+};
+
+/** The translated status, or an unknown one in sentence case ("SOME_STATE" → "Some state"). */
+function humanizeIndexingStatus(status: string | undefined, t: (key: string) => string): string {
   if (!status) return '—';
-  return status.replace(/_/g, ' ');
+  const key = INDEXING_STATUS_KEYS[status];
+  if (key) return t(key);
+  const words = status.replace(/_/g, ' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 type IndexingStatusColors = { bg: string; text: string; border: string };
@@ -134,6 +151,7 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
     case 'FAILED':
       return { bg: 'var(--red-3)', text: 'var(--red-11)', border: 'var(--red-6)' };
     case 'FILE_TYPE_NOT_SUPPORTED':
+    case 'PASSWORD_PROTECTED':
       return { bg: 'var(--orange-3)', text: 'var(--orange-11)', border: 'var(--orange-6)' };
     case 'AUTO_INDEX_OFF':
     case 'NOT_STARTED':
@@ -144,7 +162,8 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
 }
 
 function IndexingStatusChip({ status }: { status: string | undefined }) {
-  const label = humanizeIndexingStatus(status);
+  const { t } = useTranslation();
+  const label = humanizeIndexingStatus(status, t);
   const { bg, text, border } = indexingStatusColors(status);
   return (
     <Box
@@ -161,7 +180,7 @@ function IndexingStatusChip({ status }: { status: string | undefined }) {
       <Text
         size="2"
         weight="medium"
-        style={{ color: text, whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.04em' }}
+        style={{ color: text, whiteSpace: 'nowrap' }}
       >
         {label}
       </Text>
@@ -191,8 +210,6 @@ function ReasonHintButton({ content, ariaLabel }: { content: string; ariaLabel: 
   );
 }
 
-const CLASSIFY_STAGE = 'classify';
-
 function StageStep({
   label,
   status,
@@ -209,7 +226,7 @@ function StageStep({
       <Text
         size="1"
         weight="medium"
-        style={{ color: 'var(--olive-10)', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.04em' }}
+        style={{ color: 'var(--olive-10)', whiteSpace: 'nowrap' }}
       >
         {label}
       </Text>
@@ -230,6 +247,7 @@ function shouldShowIndexingReasonTooltip(
     status === 'FAILED' ||
     status === 'AUTO_INDEX_OFF' ||
     status === 'FILE_TYPE_NOT_SUPPORTED' ||
+    status === 'PASSWORD_PROTECTED' ||
     status === 'NOT_STARTED'
   );
 }
@@ -347,11 +365,14 @@ function DetailRow({
   value,
   monospace,
   isLast,
+  wrap,
 }: {
   label: string;
   value: string | null | undefined;
   monospace?: boolean;
   isLast?: boolean;
+  /** Break long unbroken values (file names) onto several lines instead of clipping them. */
+  wrap?: boolean;
 }) {
   const display = value?.trim() ? value.trim() : '—';
   return (
@@ -359,11 +380,17 @@ function DetailRow({
       <Text size="2" weight="medium" style={LABEL_STYLE}>
         {label}
       </Text>
+      {wrap ? (
+        <Text size="2" style={{ color: 'var(--olive-12)', minWidth: 0, flex: 1, overflowWrap: 'anywhere' }}>
+          {display}
+        </Text>
+      ) : (
       <TruncatingText
         text={display}
         size="2"
         style={monospace ? { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } : undefined}
       />
+      )}
     </Flex>
   );
 }
@@ -397,8 +424,6 @@ function MetadataSection({
         weight="medium"
         style={{
           color: 'var(--olive-10)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
         }}
       >
         {title}
@@ -406,13 +431,6 @@ function MetadataSection({
       <MetadataChipRow items={items} />
     </Box>
   );
-}
-
-interface StageTrackStep {
-  key: string;
-  label: string;
-  status: string | null | undefined;
-  hint?: string;
 }
 
 function StageTrack({
@@ -423,31 +441,15 @@ function StageTrack({
   stageStates: RecordDetailsResponse['stageStates'];
 }) {
   const { t } = useTranslation();
-  const classify = stageStates?.find((s) => s.stage === CLASSIFY_STAGE);
-  const classifyHint = classify
-    ? [t('recordView.stageAttempt', { n: classify.attempt }), classify.reason?.trim()]
-        .filter(Boolean)
-        .join(' · ')
-    : undefined;
-
-  const parsedStatus = parsedStepStatus(record.parsingStatus, record.indexingStatus);
-  const steps: StageTrackStep[] = [
-    ...(parsedStatus ? [{ key: 'parsed', label: t('recordView.stageParsed'), status: parsedStatus }] : []),
-    { key: 'searchable', label: t('recordView.stageSearchable'), status: record.indexingStatus },
-    {
-      key: 'classified',
-      label: t('recordView.stageClassified'),
-      status: record.extractionStatus,
-      hint: classifyHint,
-    },
-  ];
+  const steps = buildStageTrackSteps(record, stageStates, t);
 
   return (
-    <Flex style={{ ...ROW_STYLE, alignItems: 'center' }}>
+    // The steps drop under the label when the panel is too narrow for both side by side.
+    <Flex style={{ ...ROW_STYLE, alignItems: 'center', flexWrap: 'wrap' }}>
       <Text size="2" weight="medium" style={LABEL_STYLE}>
         {t('recordView.stageTrackLabel')}
       </Text>
-      <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0, flex: 1 }}>
+      <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0, flex: '1 1 12rem' }}>
         {steps.map((step, i) => (
           <Flex key={step.key} align="center" gap="2" style={{ minWidth: 0 }}>
             {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-8)" /> : null}
@@ -569,11 +571,11 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
           <Flex direction="column" gap="4" style={{ minWidth: 0 }}>
 
             {/* Document Summary */}
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-11)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
               {t('recordView.sections.documentFields')}
             </Text>
             <Box style={SECTION_GROUP_STYLE}>
-              <DetailRow label={primaryLabel} value={primaryValue} />
+              <DetailRow label={primaryLabel} value={primaryValue} wrap />
               <DetailRow label={t('recordView.labels.recordType')} value={typeDisplay} />
               <DetailRow label={t('recordView.labels.recordId')} value={record.id} monospace />
               <Flex style={{ ...ROW_STYLE, alignItems: 'center' }}>
@@ -690,7 +692,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 {mailCc ? <DetailRow label={t('recordView.mail.cc')} value={mailCc} /> : null}
                 {mailLabels?.length ? (
                   <Box style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', minWidth: 0 }}>
-                    <Text size="2" weight="medium" style={{ color: 'var(--olive-10)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--olive-10)' }}>
                       {t('recordView.mail.labels')}
                     </Text>
                     <MetadataChipRow

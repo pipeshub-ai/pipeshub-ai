@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    EntityRelations,
     OriginTypes,
     RecordRelations,
 )
@@ -90,6 +91,61 @@ PATH_MAX_CANDIDATES = 64
 # Deepest a knowledge-base folder may sit; a folder directly in the collection is
 # depth 1. Enforced on folder create, upload and move.
 KB_MAX_FOLDER_DEPTH = 20
+
+
+# Bound on the chains enumerated by ancestor_chain_rows; chains only branch on
+# graph anomalies, so this is a safety net, not a tuning knob.
+ANCESTOR_CHAIN_ENUMERATION_CAP = 10_000
+
+
+class AncestorChainLimitError(ValueError):
+    """More ancestor chains than ANCESTOR_CHAIN_ENUMERATION_CAP: a cut list could
+    leave out the canonical chain, so no chain is picked."""
+
+
+def ancestor_chain_rows(
+    start: str,
+    links: list[dict[str, str]] | None,
+    *,
+    max_depth: int,
+) -> list[list[str]]:
+    """Every maximal ancestor chain from *start*, as id lists ``[start, parent, ...]``.
+
+    *links* are distinct ``{"child", "parent"}`` pairs, so parallel edges between
+    the same two nodes count once (the path count no longer doubles per level).
+    A chain never repeats a node and has at most *max_depth* steps, matching the
+    path traversals this replaces; ``select_canonical_chain_names`` picks one.
+    Raises AncestorChainLimitError past ANCESTOR_CHAIN_ENUMERATION_CAP chains.
+    """
+    parents: dict[str, list[str]] = {}
+    for link in links or []:
+        child, parent = link.get("child"), link.get("parent")
+        if child and parent and parent not in parents.setdefault(child, []):
+            parents[child].append(parent)
+    for ids in parents.values():
+        ids.sort()
+    rows: list[list[str]] = []
+    path = [start]
+    on_path = {start}
+
+    def walk() -> None:
+        nexts = [p for p in parents.get(path[-1], []) if p not in on_path] if len(path) <= max_depth else []
+        if not nexts:
+            if len(rows) >= ANCESTOR_CHAIN_ENUMERATION_CAP:
+                raise AncestorChainLimitError(
+                    f"{start} has more than {ANCESTOR_CHAIN_ENUMERATION_CAP} ancestor chains"
+                )
+            rows.append(list(path))
+            return
+        for parent in nexts:
+            path.append(parent)
+            on_path.add(parent)
+            walk()
+            on_path.discard(parent)
+            path.pop()
+
+    walk()
+    return rows
 
 
 def select_canonical_chain_names(
@@ -191,6 +247,43 @@ class PermittedEntityRows(EntityCandidateRows):
         )
 
 
+# A person (User node) as a listable entity: the connector-written relations
+# linking a person to a record, by the direction they are stored in.
+PERSON_ENTITY_TYPE = "person"
+PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
+    EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+))
+PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
+))
+
+
+def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
+    """The person fields of a ``person`` ref as a candidate query reads them:
+    its user ids, and its edge types kept to the allow-list of each direction
+    (Record->User ``outTypes``, User->Record ``inTypes``)."""
+    return {
+        "userIds": list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i)),
+        "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
+        "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
+    }
+
+
+def within_param(within: list[dict[str, list[str]]] | None) -> list[dict[str, list[str]]] | None:
+    """Scopes for a candidate query's ``within`` bind variable: each
+    ``{"apps", "groups", "records"}`` with every key present and only string
+    ids, or None when there is no limit. An empty list is a limit too; it is
+    kept as one empty scope, so it admits nothing instead of everything."""
+    if within is None:
+        return None
+    scopes = [
+        {key: [str(i) for i in (scope.get(key) or []) if i] for key in ("apps", "groups", "records")}
+        for scope in within
+    ]
+    return scopes or [{"apps": [], "groups": [], "records": []}]
+
+
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
     Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,
@@ -250,7 +343,9 @@ def build_connector_stats_response(
     get_connector_stats query results.
 
     Args:
-        rows: Query results with recordType, indexingStatus, extractionStatus, cnt
+        rows: Query results with recordType, indexingStatus, extractionStatus,
+            entitiesStatus (the record's ``entities`` stage state on its current
+            revision; absent or None when it has none), cnt
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
@@ -261,6 +356,7 @@ def build_connector_stats_response(
     """
     indexing_status_counts = {s: 0 for s in statuses}
     extraction_status_counts = dict.fromkeys(statuses, 0)
+    entities_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -273,6 +369,9 @@ def build_connector_stats_response(
         ex = row.get("extractionStatus")
         if ex in extraction_status_counts:
             extraction_status_counts[ex] += cnt
+        en = row.get("entitiesStatus")
+        if en in entities_status_counts:
+            entities_status_counts[en] += cnt
         rt = row.get("recordType")
         if rt:
             if rt not in record_type_counts:
@@ -281,12 +380,15 @@ def build_connector_stats_response(
                     "total": 0,
                     "indexingStatus": {s: 0 for s in statuses},
                     "extractionStatus": dict.fromkeys(statuses, 0),
+                    "entitiesStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:
                 record_type_counts[rt]["indexingStatus"][st] += cnt
             if ex in statuses:
                 record_type_counts[rt]["extractionStatus"][ex] += cnt
+            if en in statuses:
+                record_type_counts[rt]["entitiesStatus"][en] += cnt
 
     return {
         "orgId": org_id,
@@ -296,6 +398,7 @@ def build_connector_stats_response(
             "total": total,
             "indexingStatus": indexing_status_counts,
             "extractionStatus": extraction_status_counts,
+            "entitiesStatus": entities_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
     }
@@ -315,6 +418,33 @@ TRASH_STATE_FIELDS = (
     "purgeLastError",
     "trashedExternalRecordId",
 )
+
+# Bookkeeping the services keep on a stored record for their own use: the trash
+# state (the record endpoint refuses a trashed record, and a restore clears it),
+# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# taxonomy copy. No client reads them, and the record endpoint's response
+# schema rejects fields it does not list, so the endpoint leaves these out.
+# `deletedByUserId` predates the trash and is documented, so it stays in.
+INTERNAL_RECORD_FIELDS = frozenset({
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+    "rateLimitedSince",
+    "lastRepublishedAt",
+    "republishCount",
+    "duplicateReconcilePending",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+})
+
+
+def api_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
 TRASH_LIST_OTHER_ROOT_NAMES = 3
