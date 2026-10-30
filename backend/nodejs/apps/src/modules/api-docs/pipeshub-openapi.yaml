@@ -2,17 +2,11 @@ openapi: 3.0.0
 info:
   title: PipesHub API
   description: |
-    Unified API documentation for PipesHub services.
+    Search and chat over your company's knowledge, with citations to the source.
 
-    PipesHub is an enterprise-grade platform providing:
-    - User authentication and management
-    - Document storage and version control
-    - Knowledge base management
-    - Enterprise search and conversational AI
-    - Third-party integrations via connectors
-    - System configuration management
-    - Crawling job scheduling
-    - Email services
+    PipesHub connects workplace apps such as Google Drive, Slack, Confluence and Jira and indexes
+    their content. This API searches and chats over that knowledge, runs agents, and manages
+    knowledge bases, connectors, users and access.
 
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
@@ -46,14 +40,14 @@ servers:
     description: Base API URL
     variables:
       instance_url:
-        default: https://app.pipeshub.com
-        description: Base server URL (without /api/v1)
+        default: app.pipeshub.com
+        description: Host name, with an optional port, of a PipesHub instance served over HTTPS. For a plain-HTTP instance, such as a local one, set the full server URL instead.
   - url: "{instance_url}"
     description: Root URL (used for MCP endpoints mounted at /mcp)
     variables:
       instance_url:
-        default: https://app.pipeshub.com
-        description: Base server URL
+        default: app.pipeshub.com
+        description: Host name, with an optional port, of a PipesHub instance served over HTTPS. For a plain-HTTP instance, such as a local one, set the full server URL instead.
 tags:
   - name: User Account
     description: User authentication including multi-step MFA, password reset, OTP login, and token management
@@ -47598,6 +47592,9 @@ paths:
         yet) is a `200` with an empty `chunks` list.
       operationId: retrieve
       x-pipeshub-sdk: true
+      x-speakeasy-usage-example:
+        title: Retrieve passages with citations
+        position: 1
       security:
         - bearerAuth: []
         - oauth2: [semantic:write]
@@ -47608,6 +47605,11 @@ paths:
             schema:
               $ref: '#/components/schemas/RetrieveRequest'
             examples:
+              basic:
+                summary: Chunks from everything the caller can see
+                value:
+                  query: "how do we roll back a canary?"
+                  limit: 8
               simple:
                 summary: Chunks from one collection
                 value:
@@ -70498,7 +70500,7 @@ paths:
         - url: "{instance_url}"
           variables:
             instance_url:
-              default: https://app.pipeshub.com
+              default: app.pipeshub.com
       security:
         - bearerAuth: []
         - oauth2: []
@@ -70672,7 +70674,7 @@ paths:
         - url: "{instance_url}"
           variables:
             instance_url:
-              default: https://app.pipeshub.com
+              default: app.pipeshub.com
       security:
         - bearerAuth: []
         - oauth2: []
