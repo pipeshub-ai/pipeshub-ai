@@ -660,6 +660,9 @@ describe('Application', () => {
       const expressApp = (app as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
       const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
       expect(helmetLayer, 'helmet middleware layer').to.exist;
+      // First after Express's own layers, so raw-body routes and early refusals carry the headers too.
+      const layerNames = expressApp._router.stack.map((layer) => layer.name);
+      expect(layerNames.indexOf('helmetMiddleware')).to.equal(layerNames.indexOf('expressInit') + 1);
 
       const headers: Record<string, string> = {};
       const removed: string[] = [];

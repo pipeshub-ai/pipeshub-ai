@@ -343,6 +343,7 @@ export class Application {
       // Initialize API Documentation
       this.apiDocsContainer = await ApiDocsContainer.initialize();
 
+      this.configureSecurityHeaders(appConfig);
       // Slack events proxy must be mounted before body-parsing middleware
       // so the raw request body is forwarded intact for signature verification
       this.setupSlackEventsProxy();
@@ -489,14 +490,8 @@ export class Application {
     }
   }
 
-  private configureMiddleware(appConfig: AppConfig): void {
-    // Unset means trust no proxy: req.ip is the socket address.
-    if (appConfig.trustProxy.warning) {
-      this.logger.warn(appConfig.trustProxy.warning);
-    }
-    this.app.set('trust proxy', appConfig.trustProxy.value);
-
-    // Security middleware - configure helmet once with all options
+  // Before the raw-body routes too, so every response carries the headers.
+  private configureSecurityHeaders(appConfig: AppConfig): void {
     const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
     const connectSrc = [
       ...new Set([
@@ -557,6 +552,14 @@ export class Application {
         },
       }),
     );
+  }
+
+  private configureMiddleware(appConfig: AppConfig): void {
+    // Unset means trust no proxy: req.ip is the socket address.
+    if (appConfig.trustProxy.warning) {
+      this.logger.warn(appConfig.trustProxy.warning);
+    }
+    this.app.set('trust proxy', appConfig.trustProxy.value);
 
     // Request context middleware
     this.app.use(requestContextMiddleware);
