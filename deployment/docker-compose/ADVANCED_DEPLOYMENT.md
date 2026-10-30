@@ -172,6 +172,19 @@ docker compose -p pipeshub-ai logs -f pipeshub-ai
 
 The installer prints this when it detects the old pinned names.
 
+### Legacy compose file: secrets are required
+
+`docker-compose.prod-legacy.yml` no longer falls back to built-in values for `SECRET_KEY`, `MONGO_PASSWORD`, `ARANGO_PASSWORD` and `QDRANT_API_KEY`. It refuses to start until each one is set in `.env`.
+
+If your stack ran without these in `.env`, its data was written with the old built-in values. Do not generate new ones: a new `SECRET_KEY` cannot decrypt the credentials already stored, and a new database password does not change the one already in the existing database volume. Put the old values in `.env` first:
+
+```env
+SECRET_KEY=your_random_encryption_secret_key
+MONGO_PASSWORD=password
+ARANGO_PASSWORD=your_password
+QDRANT_API_KEY=your_qdrant_secret_api_key
+```
+
 ---
 
 ## A second instance on the same host
