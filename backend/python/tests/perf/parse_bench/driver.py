@@ -234,6 +234,7 @@ def _build_ocr(latency: float):  # noqa: ANN202
 
 def build_registry(pdf_parser: str, ocr_latency: float) -> Any:  # noqa: ANN401
     from app.modules.parsers.json.json_parser import JSONParser
+    from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
     from app.modules.parsers.pdf.docling_processor import DoclingProcessor
     from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
@@ -250,7 +251,8 @@ def build_registry(pdf_parser: str, ocr_latency: float) -> Any:  # noqa: ANN401
     md = MarkdownItParser()
     docling = LocalDoclingParser(DoclingProcessor(logger=log, config=None))
     plumber = PdfPlumberParser(PDFPlumberOpenCVProcessor(log, None))  # type: ignore[arg-type]
-    ocr = OCRParser(_build_ocr(ocr_latency), md)
+    # As parsing_main.py:151: each OCR page goes through the Docling markdown parser, not markdown-it.
+    ocr = OCRParser(_build_ocr(ocr_latency), DoclingMarkdownParser(log, None))
     if pdf_parser == "pdfplumber":
         pdf = SmartPDFParser(plumber, ocr)
     else:
@@ -408,7 +410,8 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
 
     guard = asyncio.create_task(watchdog())
     await asyncio.gather(*tasks, return_exceptions=True)
-    wall = time.monotonic() - t0
+    window_end = time.monotonic()
+    wall = window_end - t0
     guard.cancel()
     cg_after = report.read_cgroup(cg_path) if cg_path else None
     if peak is not None and cg_after is not None:
@@ -437,6 +440,7 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     failed = [o for o in outcomes if o["error"] is not None and o["kind"] != "damaged"]
     return {
         "wall_s": wall,
+        "window": (t0, window_end),
         "outcomes": outcomes,
         "ok": len(ok),
         "failed": len(failed),
@@ -475,7 +479,7 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
     return {
         "config": {
             "label": args.label, "mix": args.mix, "passes": args.passes, "cpus": args.cpus,
-            "mem_limit_gb": args.mem_limit_gb, "pdf_parser": args.pdf_parser, "concurrency": raw["concurrency"],
+            "mem_limit_gb": args.mem_limit_gb, "pdf_parser": args.pdf_parser, "arm": report.ARM_LABELS[args.pdf_parser], "concurrency": raw["concurrency"],
             "ocr_latency_s": args.ocr_latency, "corpus_id": manifest_id, "seed": args.seed,
             "emulated": not raw["cgroup"], "table_model": os.environ.get("PDF_TABLE_MODEL", "heron"),
             "onnx_threads_per_worker": onnx_threads,
@@ -536,6 +540,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--ocr-latency", type=float, default=0.2, help="seconds the stubbed VLM takes per page")
     ap.add_argument("--gate-timeout", type=float, default=120.0)
     ap.add_argument("--cgroup", default="auto", help="cgroup v2 dir to read, 'auto' (only inside a container) or ''")
+    ap.add_argument("--require-cgroup", action="store_true",
+                    help="exit 6 unless the cgroup counters (memory.peak, cpu.stat, memory.events) can be read")
     ap.add_argument("--max-host-pct", type=float, default=HOST_LIMIT_PCT, help="refuse to start above this host CPU/memory %%")
     ap.add_argument("--verbose", action="store_true", help="show the services' own INFO logs")
     ap.add_argument("--out", type=Path, default=None)
@@ -563,6 +569,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cgroup == "auto":
         own = report.in_own_cgroup(Path("/proc/self/cgroup").read_text())
         args.cgroup = "/sys/fs/cgroup" if own else ""
+    if args.require_cgroup:
+        missing = report.missing_cgroup_files(Path(args.cgroup)) if args.cgroup else list(report.REQUIRED_CGROUP_FILES)
+        if missing:
+            print(f"cgroup counters unreadable under {args.cgroup or '(no cgroup path)'}: {', '.join(missing)}; "
+                  "refusing to produce a tier result without them (is this a cgroup v2 container with a private "
+                  "cgroup namespace?)", file=sys.stderr)
+            return 6
     load = host_load()
     if load["cpu_pct"] >= args.max_host_pct or load["mem_pct"] >= args.max_host_pct:
         print(f"host busy (cpu {load['cpu_pct']:.0f} %, mem {load['mem_pct']:.0f} %); not starting", file=sys.stderr)
@@ -582,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         args.out.write_text(text)
     print(report.markdown_report([result]))
+    print(f"arm: {result['config']['arm']}")
     print(f"status: {result['status']}; failed {result['files']['failed']}; corpus {manifest.corpus_id}")
     code = 0 if result["status"] == "ok" else 4
     if args.golden_write:

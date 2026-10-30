@@ -85,7 +85,26 @@ def summarize(out_dirs: list[Path], limits_gb: dict[str, float]) -> str:
     for result in results:
         counts[(result["config"]["label"], result["config"]["mix"])] += 1
     rows = [report.run_row(run) for _, run in sorted(chosen.items())]
-    text = ["## Median run per tier and mix", "", report.markdown_table(report.HEADER, rows), ""]
+    arms = sorted({report.arm_label(r) for r in results})
+    finished: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for result in results:
+        if result["status"] == "ok":
+            finished[(result["config"]["label"], result["config"]["mix"])].append(result)
+    spread_rows = [report.cell_row(runs) for _, runs in sorted(finished.items())]
+    text = [
+        "Arm: " + "; ".join(arms),
+        "",
+        "## Median run per tier and mix",
+        "",
+        report.markdown_table(report.HEADER, rows),
+        "",
+        "## Spread over the runs of each cell: median (min-max)",
+        "",
+        "Loop-lag p99 is the third-worst of a few hundred samples on a short run, so read its range, not one value.",
+        "",
+        report.markdown_table(report.CELL_HEADER, spread_rows),
+        "",
+    ]
     text.append("Runs per cell: " + ", ".join(f"{k[0]}/{k[1]}={v}" for k, v in sorted(counts.items())))
     unfinished = [r["config"]["label"] + "/" + r["config"]["mix"] + ": " + r["status"]
                   for r in results if r["status"] != "ok"]

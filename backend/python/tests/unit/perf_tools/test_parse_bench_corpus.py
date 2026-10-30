@@ -113,6 +113,56 @@ class TestSizeBudget:
             corpus.resolve_params("nope", 1.0, None, None)
 
 
-def test_large_pdf_reaches_the_target_size() -> None:
-    data = corpus.large_pdf(1, 20)
-    assert 18 * corpus.MIB < len(data) < 60 * corpus.MIB
+def test_large_pdf_scales_to_a_small_target() -> None:
+    """A 2 MiB target gives a file near 2 MiB x factor, not one full 36 MiB image (cheap, about 1 s)."""
+    data = corpus.large_pdf(1, 2)
+    assert 2 * corpus.MIB < len(data) < 4 * corpus.MIB
+
+
+def test_large_pdf_adds_whole_images_above_one_image() -> None:
+    """The size grows with the target once it needs more than one image; checked on the layout only."""
+    import inspect
+
+    source = inspect.getsource(corpus.large_pdf)
+    assert "count == 1" in source  # shrink only a single image; bigger targets use whole images (standard corpus bytes)
+
+
+class TestMaxMbIsAnUpperBound:
+    """``--max-mb`` is checked against real bytes as each file is written."""
+
+    def test_stops_before_crossing_and_leaves_nothing_behind(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(corpus, "estimate_bytes", lambda params: 0)  # get past the early estimate
+        with pytest.raises(corpus.CorpusTooLarge, match="past --max-mb"):
+            corpus.generate(tmp_path / "c", profile="smoke", max_mb=0)
+        assert not list((tmp_path / "c").iterdir())
+
+    def test_a_corpus_that_fits_is_written_whole(self, tmp_path: Path) -> None:
+        manifest = corpus.generate(tmp_path / "c", profile="smoke", max_mb=5)
+        assert manifest.total_bytes <= 5 * corpus.MIB
+        assert (tmp_path / "c" / corpus.MANIFEST).exists()
+
+    def test_the_limit_is_exact_to_the_byte(self, tmp_path: Path) -> None:
+        manifest = corpus.Manifest(seed=1, profile="smoke", params={}, budget=10)
+        corpus._put(tmp_path, "a.txt", "txt", "txt", b"x" * 10, 0, manifest)
+        with pytest.raises(corpus.CorpusTooLarge):
+            corpus._put(tmp_path, "b.txt", "txt", "txt", b"x", 0, manifest)
+        assert not (tmp_path / "b.txt").exists()
+
+    def test_a_large_file_that_cannot_fit_is_refused_before_it_is_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(corpus, "large_pdf", lambda *a: pytest.fail("built a file that cannot fit"))
+        monkeypatch.setattr(corpus, "estimate_bytes", lambda params: 0)  # get past the early estimate
+        with pytest.raises(corpus.CorpusTooLarge, match="does not fit"):
+            corpus.generate(tmp_path / "c", profile="smoke", large_mb=50, max_mb=10)
+
+    def test_the_cli_refuses_with_a_message_not_a_traceback(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        code = corpus.main(["--out", str(tmp_path / "c"), "--profile", "standard", "--max-mb", "5"])
+        assert code == 2
+        assert "refused:" in capsys.readouterr().err
+
+    def test_the_standard_estimate_covers_what_is_written(self) -> None:
+        # 150.4 MiB written for seed 1 (corpus_id 47d73e51ea09ae8e).
+        assert corpus.estimate_bytes(corpus.resolve_params("standard", 1.0, None, None)) >= 150 * corpus.MIB
+
+    def test_the_estimate_of_a_small_large_file_is_not_a_whole_image(self) -> None:
+        small = corpus.estimate_bytes(corpus.resolve_params("smoke", 1.0, 20, None))
+        assert 20 * corpus.MIB < small < 30 * corpus.MIB

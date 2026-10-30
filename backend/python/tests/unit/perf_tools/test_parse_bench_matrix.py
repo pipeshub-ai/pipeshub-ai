@@ -35,6 +35,14 @@ def test_summarize_reports_the_median_of_three(tmp_path: Path) -> None:
     assert "T-small: 50 % (ok)" in text
 
 
+def test_summarize_labels_the_arm_and_shows_the_spread_of_each_cell(tmp_path: Path) -> None:
+    for i, fps in enumerate((1.0, 9.0, 2.0)):
+        _write(tmp_path / f"T-small-io-heavy-r{i}.json", "T-small", "io-heavy", fps)
+    text = matrix.summarize([tmp_path], {})
+    assert "Arm: PdfPlumber arm (not yet the shipped default)" in text
+    assert "| T-small | io-heavy | 3 | 2 (1-9) |" in text
+
+
 def test_summarize_lists_runs_that_did_not_finish(tmp_path: Path) -> None:
     _write(tmp_path / "a.json", "T-small", "cpu-heavy", 1.0)
     _write(tmp_path / "b.json", "T-small", "io-heavy", 0.0, status="aborted: tree RSS too high")
@@ -79,11 +87,39 @@ class TestRunTiersScript:
         done = subprocess.run(["bash", str(RUN_TIERS), "--dry-run"], capture_output=True, text=True, env=full, check=True)
         return done.stdout
 
-    def test_one_container_per_tier_with_cgroup_limits(self, tmp_path: Path) -> None:
-        out = self._dry(tmp_path, BENCH_TIERS="T-small:2:4 T-laptop:4:8")
+    def test_cgroup_limits_per_tier(self, tmp_path: Path) -> None:
+        out = self._dry(tmp_path, BENCH_TIERS="T-small:2:4 T-laptop:4:8", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy")
         assert "--cpus 2 --memory 4g --memory-swap 4g" in out
         assert "--cpus 4 --memory 8g --memory-swap 8g" in out
-        assert out.count("docker run") == 2
+
+    def test_a_fresh_container_per_run_so_memory_peak_is_that_runs(self, tmp_path: Path) -> None:
+        out = self._dry(tmp_path, BENCH_TIERS="T-small:2:4", BENCH_REPEATS="3", BENCH_MIXES="cpu-heavy io-heavy")
+        assert out.count("docker run") == 6  # 2 mixes x 3 repeats, one container each
+        assert out.count("--out /out/T-small-cpu-heavy-r") == 3
+
+    def test_the_cgroup_is_private_required_and_read_from_the_container_root(self, tmp_path: Path) -> None:
+        out = self._dry(tmp_path, BENCH_TIERS="T-small:1:1", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy")
+        assert "--cgroupns=private" in out
+        assert "--require-cgroup" in out
+        assert "--cgroup /sys/fs/cgroup" in out
+
+    def test_results_are_handed_back_to_the_invoking_user(self, tmp_path: Path) -> None:
+        out = self._dry(tmp_path, BENCH_TIERS="T-small:1:1", BENCH_REPEATS="1", BENCH_MIXES="cpu-heavy")
+        assert f"HOST_OWNER={os.getuid()}:{os.getgid()}" in out
+        assert "chown" in out
+
+    def test_a_missing_corpus_is_generated_in_the_image_not_with_host_python(self, tmp_path: Path) -> None:
+        env = {**os.environ, "BENCH_OUT": str(tmp_path / "o"), "BENCH_CORPUS": str(tmp_path / "none"),
+               "BENCH_TIERS": "T-small:1:1", "BENCH_REPEATS": "1", "BENCH_MIXES": "cpu-heavy"}
+        out = subprocess.run(["bash", str(RUN_TIERS), "--dry-run"], capture_output=True, text=True, env=env, check=True).stdout
+        corpus_line = next(line for line in out.splitlines() if "parse_bench.corpus" in line)
+        assert corpus_line.startswith("docker run")
+        assert not (tmp_path / "none").exists()
+
+    def test_the_busy_wait_is_bounded_and_configurable(self, tmp_path: Path) -> None:
+        text = RUN_TIERS.read_text()
+        assert "BENCH_BUSY_RETRIES:-10" in text
+        assert "RUN FAILED" in text  # a run that never starts is reported and fails the script
 
     def test_a_tier_that_does_not_fit_the_host_is_skipped_not_run(self, tmp_path: Path) -> None:
         out = self._dry(tmp_path, BENCH_TIERS="T-big:4096:100000")

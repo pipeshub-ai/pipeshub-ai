@@ -126,6 +126,14 @@ class TestMain:
         monkeypatch.setattr(driver, "host_load", lambda: {"loadavg_1m": 9.0, "cpu_pct": 91.0, "mem_pct": 40.0})
         assert driver.main(["--corpus", str(tmp_path)]) == 3
 
+    def test_required_cgroup_counters_missing_is_a_loud_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        code = driver.main(["--corpus", str(tmp_path), "--cgroup", str(tmp_path), "--require-cgroup"])
+        assert code == 6
+        assert "memory.peak" in capsys.readouterr().err
+
+    def test_required_cgroup_with_no_path_fails_too(self, tmp_path: Path) -> None:
+        assert driver.main(["--corpus", str(tmp_path), "--cgroup", "", "--require-cgroup"]) == 6
+
     def test_cpus_beyond_the_host_is_an_error(self) -> None:
         with pytest.raises(SystemExit):
             driver.pin_cpus(100000)
@@ -153,15 +161,80 @@ def test_summaries_count_blocks_and_groups_for_both_shapes() -> None:
     assert (docling["blocks"], docling["groups"]) == (3, 1)
 
 
-def test_hashing_does_not_run_inside_the_timed_window() -> None:
+class _FakeContainer:
+    def model_dump_json(self) -> str:
+        return '{"blocks": [{"id": "a"}], "block_groups": []}'
+
+
+class _FakeParser:
+    async def parse(self, content: bytes, name: str, config: dict) -> SimpleNamespace:  # noqa: ARG002
+        return SimpleNamespace(block_container=_FakeContainer(), raw_document=None)
+
+
+class _FakeRegistry:
+    def resolve(self, mime: str, ext: str, provider: object) -> _FakeParser:  # noqa: ARG002
+        return _FakeParser()
+
+
+def _run_with_spy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, hash_in_window: bool) -> tuple[list[float], tuple[float, float]]:
+    """Run the real ``driver.run`` with fake parsers; return when hashing helpers were called and the window."""
+    import argparse
+    import asyncio
+    import time
+
+    from app.modules.parsers import parse_pool
+    from app.modules.parsers.pdf import docling_processor, pdf_rasterizer
+    from tests.perf.parse_bench import golden
+
+    # ``run`` wires its governor into three process-wide slots; put them back afterwards so no other
+    # test in this worker finds a closed governor (or a parse pool) there.
+    monkeypatch.setattr(parse_pool._State, "governor", None)
+    monkeypatch.setattr(docling_processor, "_resource_governor", None)
+    monkeypatch.setattr(pdf_rasterizer, "_resource_governor", None)
+    calls: list[float] = []
+    for name in ("summarize", "digest", "canonicalize"):
+        original = getattr(golden, name)
+
+        def spy(*args, _orig=original, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append(time.monotonic())
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(golden, name, spy)
+    monkeypatch.setattr(driver, "build_registry", lambda *a: _FakeRegistry())
+    if hash_in_window:  # what the first version of the driver did
+        real_serialize = driver.serialize
+
+        def serialize_and_hash(result: object) -> object:
+            payload = real_serialize(result)
+            driver.summarize_payload(payload)
+            return payload
+
+        monkeypatch.setattr(driver, "serialize", serialize_and_hash)
+    files = []
+    for i in range(3):
+        (tmp_path / f"n{i}.md").write_text("# t")
+        files.append(Entry(f"n{i}.md", "md", "md", MIME["md"], 3, "0" * 64))
+    args = argparse.Namespace(pdf_parser="pdfplumber", ocr_latency=0.0, mem_limit_gb=None, cpus=None,
+                              concurrency=2, gate_timeout=30.0, cgroup="")
+    sampler = driver.TreeSampler(mem_limit=None, host_limit_pct=101.0)
+    raw = asyncio.run(driver.run(args, files, tmp_path, sampler))
+    assert raw["ok"] == 3
+    assert len(raw["golden"]) == 3
+    return calls, raw["window"]
+
+
+def test_hashing_does_not_run_inside_the_timed_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The loop-lag figures must not contain the harness's own hashing (found in a first run:
     uuid renaming held the loop for 100s of ms and was blamed on the parsers)."""
-    import inspect
+    calls, (start, end) = _run_with_spy(tmp_path, monkeypatch, hash_in_window=False)
+    assert calls, "the golden hashing never ran, so this test would prove nothing"
+    assert all(t >= end for t in calls), "golden work ran inside the timed window"
+    assert all(t > start for t in calls)
 
-    source = inspect.getsource(driver.run)
-    end_of_window = source.index("wall = time.monotonic() - t0")
-    for marker in ("summarize", "golden.", "canonicalize", "digest("):
-        assert marker not in source[:end_of_window], f"{marker} runs before the timed window ends"
+
+def test_the_window_check_catches_hashing_put_back_inside(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, (_, end) = _run_with_spy(tmp_path, monkeypatch, hash_in_window=True)
+    assert any(t < end for t in calls)
 
 
 def test_stack_collector_keeps_only_the_watchdog_stacks() -> None:

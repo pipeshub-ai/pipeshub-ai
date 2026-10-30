@@ -126,6 +126,20 @@ def read_cgroup(root: Path) -> dict[str, int | None]:
     }
 
 
+REQUIRED_CGROUP_FILES = ("memory.peak", "cpu.stat", "memory.events")
+
+
+def missing_cgroup_files(root: Path) -> list[str]:
+    """Counter files the tier table needs that cannot be read under *root* (cgroup v2)."""
+    missing = []
+    for name in REQUIRED_CGROUP_FILES:
+        try:
+            (root / name).read_text()
+        except OSError:
+            missing.append(name)
+    return missing
+
+
 def cgroup_delta(before: Mapping[str, int | None], after: Mapping[str, int | None]) -> dict[str, int | None]:
     """Run-scoped counters. ``memory_peak`` is absolute (it is a high-water mark)."""
     out: dict[str, int | None] = {"memory_peak": after.get("memory_peak")}
@@ -158,6 +172,40 @@ def memory_safety(peak_bytes: float | None, limit_bytes: float | None) -> str:
         return "n/a"
     ratio = peak_bytes / limit_bytes
     return f"{ratio * 100:.0f} % ({'ok' if ratio < GATE_MEM_FRACTION else 'OVER 85 %'})"
+
+
+ARM_LABELS = {
+    "pdfplumber": "PdfPlumber arm (not yet the shipped default)",
+    "docling": "Docling arm (upper bound, local Docling)",
+}
+
+
+def arm_label(result: Mapping[str, Any]) -> str:
+    return ARM_LABELS.get(result["config"].get("pdf_parser", "pdfplumber"), "unknown arm")
+
+
+def spread(values: Sequence[float], digits: int = 1) -> str:
+    """``median (min-max)`` of *values*."""
+    if not values:
+        return "n/a"
+    return f"{round(median(values), digits):g} ({round(min(values), digits):g}-{round(max(values), digits):g})"
+
+
+def cell_row(results: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One row for all finished runs of a (tier, mix) cell: medians with their min-max."""
+    first = results[0]
+    return [
+        first["config"]["label"],
+        first["config"]["mix"],
+        str(len(results)),
+        spread([r["metrics"]["files_per_s"] for r in results], 3),
+        spread([r["metrics"]["loop_lag"]["p99_ms"] for r in results], 0),
+        spread([r["metrics"]["memory"]["peak_tree_rss_mib"] for r in results], 0),
+        spread([r["metrics"]["cpu_seconds"] for r in results], 0),
+    ]
+
+
+CELL_HEADER = ["run", "mix", "runs", "files/s", "loop lag p99 ms", "peak tree RSS MiB", "CPU s"]
 
 
 def run_row(result: Mapping[str, Any]) -> list[str]:

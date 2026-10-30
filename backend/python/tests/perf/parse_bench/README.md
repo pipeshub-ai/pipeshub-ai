@@ -4,13 +4,33 @@ Measures how the parsing path uses a machine: files/s, event-loop lag, memory,
 CPU, threads and workers. It drives what `app/api/routes/parsing.py` drives,
 without HTTP: the real `ResourceGovernor` and its gates admit each file; the
 real providers parse it; the parse pool, PdfPlumber+OpenCV (the default PDF
-path), local Docling for DOCX (and for PDFs with `--pdf-parser docling`, the
-`ENABLE_PDFPLUMBER_PROCESSOR=false` setting), and the VLM OCR strategy with only
-the model call stubbed (pages are still rendered, a fixed delay per page stands
-in for the model).
+path), local Docling for DOCX, and the VLM OCR strategy with only the model call
+stubbed (pages are still rendered, a fixed delay per page stands in for the model;
+each OCR page goes through `DoclingMarkdownParser`, as `parsing_main.py:151`).
 
-What it does not do: HTTP, auth, the Kafka/Redis consumer, LLM table
-summaries (`skip_table_enrichment`), or the indexing stages after parsing.
+Two arms, labelled in every result and table:
+
+- **PdfPlumber arm (not yet the shipped default)**: `ENABLE_PDFPLUMBER_PROCESSOR=true`, the
+  primary arm. Compose files and the code default are still `false` today; this is the
+  path the programme optimises and the one whose cost lands in the parsing container.
+- **Docling arm (upper bound, local Docling)**: `--pdf-parser docling`. It runs Docling
+  in-process for PDFs. Today's `false` setting instead sends PDFs to the remote Docling
+  service, so this arm is neither deployment; read it as an upper bound on Docling cost,
+  not as a regression baseline for existing installs.
+
+What it does not do (caveats):
+
+- HTTP, auth, the Kafka/Redis consumer, LLM table summaries (`skip_table_enrichment`), the
+  indexing stages after parsing.
+- The route's `parse_admission_cap`, per-org share check, password check for office files and
+  `scope_from_claims` are not in the driver. The governor is built with `worker_count=1`,
+  no `MAX_CONCURRENT_PARSING`, and no local-embedding CPU reservation, where a deployed
+  parsing service may set all three. The loop's thread pool headroom is the service's (4).
+- `OMP_NUM_THREADS` is unset on the host and 2 in the image. Measured on this host at 4 CPUs
+  (cpu-heavy): 0.190 vs 0.193 files/s, no effect, but check it if a tier run disagrees.
+- Loop-lag p99 on a run of a few hundred samples is the third-worst sample. Six identical
+  io-heavy runs gave 112-295 ms. Use the median and the min-max over repeats (`matrix.py`
+  prints both) and do not read one run's p99. Throughput repeats to about 1-5 %; lag does not.
 
 | File | Role |
 |---|---|
@@ -31,10 +51,12 @@ python -m tests.perf.parse_bench.corpus --out /data/bench-corpus            # st
 python -m tests.perf.parse_bench.corpus --out /tmp/c --profile smoke        # 10 files, 0.5 MiB
 ```
 
-Parameters: `--seed`, `--scale` (multiplies file counts), `--large-mb` (the
-over-100 MB PDF, default 105, 0 skips it), `--boundary-pages` (the scanned file
-at the OCR limit; `VLM_OCR_MAX_PAGES` is 500), and `--max-mb`, which refuses to
-write a corpus whose estimate is over the budget. The same seed and parameters
+Parameters: `--seed`, `--scale` (multiplies file counts), `--large-mb` (pixel bytes of the
+over-100 MB PDF, default 105, which gives a 135 MiB file because the PDF is about 1.3x the
+pixels; 0 skips it), `--boundary-pages` (the scanned file at the OCR limit;
+`VLM_OCR_MAX_PAGES` is 500), and `--max-mb`. `--max-mb` is a true upper bound: a conservative
+estimate refuses early, and every file is checked against the budget by its real size
+before it is written. A corpus that would cross it is refused (exit 2, files removed). The same seed and parameters
 give the same bytes; `manifest.json` has a `corpus_id` over them.
 
 ## 2. The tier runs (owner, needs Docker)
@@ -48,11 +70,16 @@ BENCH_GOLDEN=/path/to/golden-standard-seed1.json \
   tests/perf/parse_bench/run_tiers.sh
 ```
 
-For each tier it runs one container with `--cpus C --memory Mg --memory-swap Mg`
-(swap off, so `memory.peak` is the working set), runs the three mixes
-(`cpu-heavy`, `io-heavy`, `laptop-typical`) three times each in fresh
-processes, and prints and saves (`$BENCH_OUT/summary.md`) the median run per
-cell and the targets table. Default tiers: `T-small:2:4 T-laptop:4:8 T-server:16:32`
+For each tier, mix and repeat it starts a fresh container with
+`--cpus C --memory Mg --memory-swap Mg --cgroupns=private` (swap off, so `memory.peak` is the
+working set; a private cgroup namespace so `/sys/fs/cgroup` is the container's own). One
+container per run is what makes `memory.peak` the peak of that run: the file is the container's
+high-water mark since it started, and resetting it needs a writable cgroup mount that Docker
+does not give by default. The peak includes page cache of the corpus and model files, as the OOM
+killer's accounting does. The driver is started with `--require-cgroup`, which exits 6 if
+`memory.peak`, `cpu.stat` or `memory.events` cannot be read, so a result is never silently
+labelled emulated. The script prints and saves (`$BENCH_OUT/summary.md`) the median run per
+cell, the min-max spread, and the targets table, and exits non-zero if any run failed. Default tiers: `T-small:2:4 T-laptop:4:8 T-server:16:32`
 (override `BENCH_TIERS="label:cpus:memGB ..."`). `--dry-run` prints the
 commands.
 
@@ -63,12 +90,18 @@ commands.
   GB free.** The script skips a tier that does not fit and says so. A 8-CPU /
   32 GB host runs T-small and T-laptop only. T-big (64 / 128 GB) needs a real
   host and is not in the default list.
+- The corpus, if missing, is generated inside the image (the host needs only docker, bash and
+  python3 for the summary). The container runs `python` through `sh`, not
+  `docker-entrypoint.sh` (which starts the services); the image ENV still applies. Result files
+  are chowned back to the invoking user.
 - Run on a quiet host: the driver refuses to start when host CPU or memory is
-  at 85 % or more (exit 3, `matrix.py` waits and retries), and record
+  at 85 % or more (exit 3). The script waits `BENCH_BUSY_WAIT` (60 s) up to
+  `BENCH_BUSY_RETRIES` (10) times per run, then reports `RUN FAILED` and exits non-zero. Record
   `loadavg_1m` from each result's `host` block. The plan asks for under 30 %
   load before a tier run.
-- `cgroup.memory_peak_scope` says whether `memory.peak` was reset for the run
-  (kernel 5.19+) or is the container's lifetime peak.
+- `cgroup.memory_peak_scope` is "container lifetime" in tier runs, which is the run because
+  the container is fresh. (`matrix.py` run inside one long-lived container would also try a
+  per-fd reset, which works only where `/sys/fs/cgroup` is writable.)
 - The first run of each cell is checked against `BENCH_GOLDEN`.
 
 ## 3. Without Docker (emulated tiers)

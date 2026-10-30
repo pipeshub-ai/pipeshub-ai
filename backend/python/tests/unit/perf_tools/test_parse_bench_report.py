@@ -85,6 +85,15 @@ class TestCgroup:
     def test_in_own_cgroup(self, text: str, own: bool) -> None:
         assert report.in_own_cgroup(text) is own
 
+    def test_missing_required_files_are_named(self, tmp_path: Path) -> None:
+        (tmp_path / "cpu.stat").write_text("usage_usec 1\n")
+        assert report.missing_cgroup_files(tmp_path) == ["memory.peak", "memory.events"]
+
+    def test_all_required_files_present(self, tmp_path: Path) -> None:
+        for name in report.REQUIRED_CGROUP_FILES:
+            (tmp_path / name).write_text("0\n")
+        assert report.missing_cgroup_files(tmp_path) == []
+
     def test_peak_reader_resets_and_reads(self, tmp_path: Path) -> None:
         (tmp_path / "memory.peak").write_text("999")
         reader = report.PeakReader(tmp_path)
@@ -189,3 +198,26 @@ class TestStalls:
 
     def test_no_stalls(self) -> None:
         assert report.top_stalls([]) == []
+
+
+class TestSpreadAndArms:
+    def test_spread_is_median_with_min_max(self) -> None:
+        assert report.spread([112, 295, 150], 0) == "150 (112-295)"
+
+    def test_spread_of_nothing(self) -> None:
+        assert report.spread([]) == "n/a"
+
+    def test_cell_row_reports_runs_and_ranges(self) -> None:
+        runs = [_result("T", "io-heavy", f) for f in (4.0, 5.0, 6.0)]
+        for run, lag in zip(runs, (100.0, 300.0, 150.0), strict=True):
+            run["metrics"]["loop_lag"]["p99_ms"] = lag
+        row = report.cell_row(runs)
+        assert row[:3] == ["T", "io-heavy", "3"]
+        assert row[3] == "5 (4-6)"
+        assert row[4] == "150 (100-300)"
+        assert len(row) == len(report.CELL_HEADER)
+
+    def test_arms_are_labelled_as_the_coordinator_asked(self) -> None:
+        assert report.arm_label({"config": {"pdf_parser": "pdfplumber"}}) == "PdfPlumber arm (not yet the shipped default)"
+        assert report.arm_label({"config": {"pdf_parser": "docling"}}) == "Docling arm (upper bound, local Docling)"
+        assert report.arm_label({"config": {}}) == "PdfPlumber arm (not yet the shipped default)"

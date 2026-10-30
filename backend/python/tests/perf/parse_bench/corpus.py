@@ -76,6 +76,7 @@ class Manifest:
     profile: str
     params: dict[str, Any]
     total_bytes: int = 0
+    budget: int = 1 << 60
     entries: list[Entry] = field(default_factory=list)
 
     def to_json(self) -> str:
@@ -257,8 +258,17 @@ def damaged_pdf(words: Words, pages: int, variant: int) -> bytes:
     return bytes(data)
 
 
+LARGE_FILE_FACTOR = 1.3  # PDF bytes per raw pixel byte (ASCII85 + Flate of noise), measured: 141.6 MB / 108 MiB
+
+
 def large_pdf(seed: int, target_mb: int) -> bytes:
-    """Images of seeded noise: they do not compress, so the file is about *target_mb*."""
+    """Images of seeded noise, which do not compress.
+
+    Up to one 4096x3072 image (36 MiB of pixels) the image is shrunk so the pixel data is
+    *target_mb*; above that whole images are added, so the file can be up to one image over.
+    The file is about ``LARGE_FILE_FACTOR`` times the pixel bytes. ``generate`` checks the
+    real size against ``--max-mb``.
+    """
     import numpy as np
     from PIL import Image
     from reportlab.lib.pagesizes import A4
@@ -268,6 +278,8 @@ def large_pdf(seed: int, target_mb: int) -> bytes:
     width, height = 4096, 3072
     per_image = width * height * 3
     count = max(1, math.ceil(target_mb * MIB / per_image))
+    if count == 1:
+        height = max(16, min(height, target_mb * MIB // (width * 3)))
     rng = np.random.default_rng(seed)
     buf = io.BytesIO()
     pdf = canvas.Canvas(buf, pagesize=A4, invariant=1)
@@ -343,7 +355,17 @@ def text_file(words: Words) -> bytes:
 # -- driver -------------------------------------------------------------------
 
 
+class CorpusTooLarge(ValueError):
+    """The corpus would cross ``--max-mb``."""
+
+
 def _put(out: Path, name: str, kind: str, ext: str, data: bytes, pages: int, manifest: Manifest) -> None:
+    budget = manifest.budget
+    if manifest.total_bytes + len(data) > budget:
+        raise CorpusTooLarge(
+            f"writing {name} ({len(data) / MIB:.1f} MiB) would take the corpus past --max-mb "
+            f"({budget // MIB} MiB; {manifest.total_bytes / MIB:.1f} MiB written so far)"
+        )
     (out / name).write_bytes(data)
     manifest.entries.append(Entry(
         path=name, kind=kind, ext=ext, mime=MIME[ext], bytes=len(data),
@@ -369,16 +391,17 @@ def resolve_params(profile: str, scale: float, large_mb: int | None, boundary_pa
 
 
 def estimate_bytes(params: dict[str, Any]) -> int:
-    """A rough upper bound, to refuse a corpus that cannot fit before writing it."""
-    per_page = {"digital": 4_000, "tables": 6_000, "figures": 90_000, "scanned": 260_000, "damaged": 4_000}
-    total = params["large_mb"] * MIB
+    """A conservative guess (measured rates plus 20 %), only to refuse early; ``_put`` is the real limit."""
+    per_page = {"digital": 2_600, "tables": 3_000, "figures": 33_000, "scanned": 195_000, "damaged": 2_500}
+    total = int(params["large_mb"] * MIB * LARGE_FILE_FACTOR)
     for kind, rate in per_page.items():
         count, pages = params[kind]
         total += count * pages * rate
     count, pages = params["docx"]
-    total += count * pages * 25_000
+    total += count * pages * 5_500
     total += params["scanned_boundary_pages"] * per_page["scanned"]
-    total += (params["md"] + params["txt"]) * 8_000 + params["json"] * 400_000
+    n = params["json"]
+    total += (params["md"] * 4_500 + params["txt"] * 6_500) + 59_000 * n * (n + 1) // 2
     return total
 
 
@@ -395,36 +418,45 @@ def generate(
     params = resolve_params(profile, scale, large_mb, boundary_pages)
     estimate = estimate_bytes(params)
     if estimate > max_mb * MIB:
-        raise ValueError(
-            f"the corpus would be about {estimate // MIB} MB, over --max-mb {max_mb}; "
+        raise CorpusTooLarge(
+            f"the corpus would be about {estimate // MIB} MiB, over --max-mb {max_mb}; "
             "lower --scale or --large-mb, or raise --max-mb"
         )
     out.mkdir(parents=True, exist_ok=True)
+    existing = set(out.iterdir())
     manifest = Manifest(seed=seed, profile=profile, params={**params, "scale": scale})
-    words = Words(random.Random(seed))
-    makers = {"digital": digital_pdf, "tables": tables_pdf, "figures": figures_pdf, "scanned": scanned_pdf}
-    for kind, make in makers.items():
-        count, pages = params[kind]
+    manifest.budget = max_mb * MIB
+    try:
+        words = Words(random.Random(seed))
+        makers = {"digital": digital_pdf, "tables": tables_pdf, "figures": figures_pdf, "scanned": scanned_pdf}
+        for kind, make in makers.items():
+            count, pages = params[kind]
+            for i in range(count):
+                _put(out, f"{kind}-{i:02d}.pdf", kind, "pdf", make(words, pages), pages, manifest)
+        boundary = params["scanned_boundary_pages"]
+        if boundary:
+            _put(out, "scanned-boundary.pdf", "scanned", "pdf", scanned_pdf(words, boundary), boundary, manifest)
+        count, pages = params["damaged"]
         for i in range(count):
-            _put(out, f"{kind}-{i:02d}.pdf", kind, "pdf", make(words, pages), pages, manifest)
-    boundary = params["scanned_boundary_pages"]
-    if boundary:
-        _put(out, "scanned-boundary.pdf", "scanned", "pdf", scanned_pdf(words, boundary), boundary, manifest)
-    count, pages = params["damaged"]
-    for i in range(count):
-        _put(out, f"damaged-{i:02d}.pdf", "damaged", "pdf", damaged_pdf(words, pages, i), pages, manifest)
-    if params["large_mb"]:
-        _put(out, "large-00.pdf", "large", "pdf", large_pdf(seed, params["large_mb"]), 0, manifest)
-    count, pages = params["docx"]
-    for i in range(count):
-        _put(out, f"docx-{i:02d}.docx", "docx", "docx", docx_file(words, pages), pages, manifest)
-    for i in range(params["md"]):
-        _put(out, f"doc-{i:02d}.md", "md", "md", markdown_file(words), 0, manifest)
-    for i in range(params["json"]):
-        _put(out, f"data-{i:02d}.json", "json", "json", json_file(words, 200 * (i + 1)), 0, manifest)
-    for i in range(params["txt"]):
-        _put(out, f"note-{i:02d}.txt", "txt", "txt", text_file(words), 0, manifest)
-    (out / MANIFEST).write_text(manifest.to_json())
+            _put(out, f"damaged-{i:02d}.pdf", "damaged", "pdf", damaged_pdf(words, pages, i), pages, manifest)
+        if params["large_mb"]:
+            if manifest.total_bytes + params["large_mb"] * MIB > manifest.budget:  # before building it
+                raise CorpusTooLarge(f"the {params['large_mb']} MiB large PDF does not fit --max-mb {max_mb}")
+            _put(out, "large-00.pdf", "large", "pdf", large_pdf(seed, params["large_mb"]), 0, manifest)
+        count, pages = params["docx"]
+        for i in range(count):
+            _put(out, f"docx-{i:02d}.docx", "docx", "docx", docx_file(words, pages), pages, manifest)
+        for i in range(params["md"]):
+            _put(out, f"doc-{i:02d}.md", "md", "md", markdown_file(words), 0, manifest)
+        for i in range(params["json"]):
+            _put(out, f"data-{i:02d}.json", "json", "json", json_file(words, 200 * (i + 1)), 0, manifest)
+        for i in range(params["txt"]):
+            _put(out, f"note-{i:02d}.txt", "txt", "txt", text_file(words), 0, manifest)
+        (out / MANIFEST).write_text(manifest.to_json())
+    except CorpusTooLarge:
+        for path in set(out.iterdir()) - existing:
+            path.unlink()
+        raise
     return manifest
 
 
@@ -439,10 +471,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="pages of the scanned file at the OCR limit (VLM_OCR_MAX_PAGES is 500); 0 skips it")
     ap.add_argument("--max-mb", type=int, default=1024, help="refuse a corpus estimated above this")
     args = ap.parse_args(argv)
-    manifest = generate(
-        args.out, seed=args.seed, profile=args.profile, scale=args.scale,
-        large_mb=args.large_mb, boundary_pages=args.boundary_pages, max_mb=args.max_mb,
-    )
+    try:
+        manifest = generate(
+            args.out, seed=args.seed, profile=args.profile, scale=args.scale,
+            large_mb=args.large_mb, boundary_pages=args.boundary_pages, max_mb=args.max_mb,
+        )
+    except CorpusTooLarge as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
     print(f"{len(manifest.entries)} files, {manifest.total_bytes / MIB:.1f} MiB, corpus_id {manifest.corpus_id}")
     return 0
 
