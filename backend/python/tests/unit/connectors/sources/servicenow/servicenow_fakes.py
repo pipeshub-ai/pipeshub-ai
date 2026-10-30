@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import random
 import re
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,7 +40,7 @@ from app.sources.external.servicenow.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
 _CONDITION = re.compile(r"^([a-z_][\w.]*?)(ISNOTEMPTY|ISEMPTY|NOT IN|IN|<=|>=|!=|=|>|<)(.*)$")
 
