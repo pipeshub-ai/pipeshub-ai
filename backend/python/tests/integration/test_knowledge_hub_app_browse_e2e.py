@@ -19,7 +19,8 @@ One seeded Drive app, browsed by three users:
 * the owner, who sees both top-level groups.
 
 Both backends must return the same nodes with the same type and children flag
-(a connector's items carry no role). On Arango the test also asks the optimizer
+(a connector's items carry no role; a record group's flag is always true).
+On Arango the test also asks the optimizer
 for the plan of every statement the browse sends: nesting the permission lookups
 once made planning alone need more than 1 GB.
 
@@ -87,7 +88,9 @@ DIRECT_GRANTS = (
 # (nodeType, hasChildren) by name.
 EXTERNAL_SEES = {
     "shared_top": ("recordGroup", True),
-    "nested_orphan": ("recordGroup", False),
+    # A record group always answers yes: whether it holds anything this user
+    # may open is not its row's to say.
+    "nested_orphan": ("recordGroup", True),
     "orphan_direct": ("record", False),
     "in_hidden_folder": ("record", False),
     "shared_folder": ("folder", True),
