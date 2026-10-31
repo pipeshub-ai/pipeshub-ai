@@ -6,6 +6,8 @@ import {
 } from "./ask-user-format";
 import type { ToolApprovalDetails } from './approval-card';
 
+const APPROVAL_ANSWERS = new Set(['allowed', 'declined', 'expired']);
+
 export interface AGUIJsonPatchOp {
   op: string;
   path: string;
@@ -80,6 +82,8 @@ export interface SlackAGUICallbacks {
   onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
   onApprovalRequested?: (approval: ToolApprovalDetails) => void;
+  /** An answered approval's call row: `replayed` when it repeats an earlier answer. */
+  onApprovalSettled?: (answer: string, replayed: boolean) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
@@ -327,6 +331,15 @@ export function createSlackAGUIEventHandler(
           typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
         if (toolCallId) {
           toolNameById.set(toolCallId, { name: toolCallName, displayName });
+        }
+        if (
+          typeof data?.approvalAnswer === 'string' &&
+          APPROVAL_ANSWERS.has(data.approvalAnswer)
+        ) {
+          callbacks.onApprovalSettled?.(
+            data.approvalAnswer,
+            data.approvalReplayed === true,
+          );
         }
 
         // Settle preamble into the activity timeline before the tool row so

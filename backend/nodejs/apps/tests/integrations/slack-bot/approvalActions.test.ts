@@ -3,9 +3,9 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import type { App } from '@slack/bolt';
 import {
+  approvalTurnResult,
   registerApprovalActions,
-  rememberApprovalCard,
-  resetApprovalCardsForTests,
+  resetApprovalGuardForTests,
 } from '../../../src/integrations/slack-bot/src/approvalActions';
 import {
   buildApprovalCard,
@@ -14,6 +14,11 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Handler = (args: any) => Promise<void>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyBlock = any;
+
+const OWNER = 'owner@example.com';
+const WRONG = 'Something went wrong, try again';
 
 function fakeApp() {
   const actions = new Map<string, Handler>();
@@ -25,60 +30,75 @@ function fakeApp() {
   return { app: app as unknown as App, actions, views };
 }
 
-function fakeClient(emails: Record<string, string>) {
+function approval(fields: Partial<ToolApprovalDetails> = {}): ToolApprovalDetails {
   return {
-    users: {
-      info: sinon.stub().callsFake(async ({ user }: { user: string }) => ({
-        user: { profile: { email: emails[user] } },
-      })),
-    },
-    chat: { update: sinon.stub().resolves({}), postEphemeral: sinon.stub().resolves({}) },
-    views: { open: sinon.stub().resolves({}) },
+    approvalId: 'ap-1',
+    instanceId: 'inst-1',
+    serverName: 'Jira',
+    toolName: 'create_issue',
+    toolTitle: 'Create issue',
+    readOnly: false,
+    kind: 'write',
+    canRemember: true,
+    expiresAt: Date.now() + 60_000,
+    arguments: { project: 'OPS' },
+    toolPath: 'jira.create_issue',
+    source: 'toolset',
+    argsHash: 'h1',
+    editable: true,
+    ...fields,
   };
 }
 
-const APPROVAL: ToolApprovalDetails = {
-  approvalId: 'ap-1',
-  instanceId: 'inst-1',
-  serverName: 'Jira',
-  toolName: 'create_issue',
-  toolTitle: 'Create issue',
-  readOnly: false,
-  kind: 'write',
-  canRemember: true,
-  expiresAt: Date.now() + 60_000,
-  arguments: { project: 'OPS' },
-  toolPath: 'jira.create_issue',
-  source: 'toolset',
-  argsHash: 'h1',
-  editable: true,
-};
-
-function remember(fields: Partial<ToolApprovalDetails> = {}) {
-  const approval = { ...APPROVAL, ...fields };
-  rememberApprovalCard(approval, buildApprovalCard(approval, 'U1'), {
-    requesterSlackId: 'U1',
-    requesterEmail: 'owner@example.com',
-    channel: 'C1',
-    threadTs: '100.1',
-    cardTs: '100.2',
-  });
+function fakeClient(emails: Record<string, string | undefined | Error>, card = buildApprovalCard(approval(), 'U1', 'T1')) {
+  return {
+    users: {
+      info: sinon.stub().callsFake(async ({ user }: { user: string }) => {
+        const email = emails[user];
+        if (email instanceof Error) throw email;
+        return { user: { profile: { email } } };
+      }),
+    },
+    chat: { update: sinon.stub().resolves({}), postEphemeral: sinon.stub().resolves({}) },
+    views: { open: sinon.stub().resolves({}) },
+    conversations: {
+      replies: sinon.stub().resolves({
+        messages: [{ ts: '100.1', text: 'question' }, { ts: '100.2', text: card.text, blocks: card.blocks }],
+      }),
+    },
+  };
 }
 
-function click(actionId: string, user: string, client: ReturnType<typeof fakeClient>) {
+type Client = ReturnType<typeof fakeClient>;
+
+function click(
+  actionId: string,
+  user: string,
+  client: Client,
+  { card = buildApprovalCard(approval(), 'U1', 'T1'), team = 'T1' } = {},
+) {
+  const button = (card.blocks.find((b) => b.type === 'actions') as AnyBlock).elements.find(
+    (b: AnyBlock) => b.action_id === actionId,
+  );
   return {
     ack: sinon.stub().resolves(),
     body: {
       type: 'block_actions',
       user: { id: user },
+      team: { id: team },
       trigger_id: 'trig-1',
       channel: { id: 'C1' },
-      message: { ts: '100.2', blocks: [] },
-      actions: [{ action_id: actionId, value: JSON.stringify({ approvalId: 'ap-1', argsHash: 'h1' }) }],
+      message: { ts: '100.2', thread_ts: '100.1', text: card.text, blocks: card.blocks },
+      actions: [{ action_id: actionId, value: button.value }],
     },
     client,
-    context: { teamId: 'T1' },
+    context: { teamId: team },
   };
+}
+
+function lastText(stub: sinon.SinonStub): string {
+  const blocks = stub.lastCall.args[0].blocks as AnyBlock[];
+  return blocks[blocks.length - 1].elements[0].text as string;
 }
 
 describe('slack-bot/approvalActions', () => {
@@ -86,108 +106,215 @@ describe('slack-bot/approvalActions', () => {
   let handlers: ReturnType<typeof fakeApp>;
 
   beforeEach(() => {
-    resetApprovalCardsForTests();
-    resumeApproval = sinon.stub().resolves();
+    resetApprovalGuardForTests();
+    resumeApproval = sinon.stub().resolves('allowed');
     handlers = fakeApp();
     registerApprovalActions(handlers.app, { resumeApproval });
   });
 
-  it('tells anyone but the requester to wait, and sends nothing', async () => {
-    remember();
-    const client = fakeClient({ U2: 'other@example.com' });
-    const args = click('approval_allow', 'U2', client);
-    await handlers.actions.get('approval_allow')!(args);
+  const press = (actionId: string, user: string, client: Client, options?: Parameters<typeof click>[3]) => {
+    const args = click(actionId, user, client, options);
+    return handlers.actions.get(actionId)!(args).then(() => args);
+  };
 
-    expect(args.ack.calledOnce).to.equal(true);
-    expect(client.chat.postEphemeral.calledOnce).to.equal(true);
-    expect(client.chat.postEphemeral.firstCall.args[0]).to.deep.include({
-      channel: 'C1',
-      user: 'U2',
-      text: 'Only <@U1> can approve this',
-    });
-    expect(resumeApproval.called).to.equal(false);
-    expect(client.chat.update.called).to.equal(false);
-  });
+  describe('who may answer', () => {
+    it('tells anyone but the requester to wait, and changes nothing', async () => {
+      const client = fakeClient({ U1: OWNER, U2: 'other@example.com' });
+      const args = await press('approval_allow', 'U2', client);
 
-  it('lets another Slack account with the requester email answer', async () => {
-    remember();
-    const client = fakeClient({ U3: 'Owner@example.com' });
-    await handlers.actions.get('approval_allow')!(click('approval_allow', 'U3', client));
-    expect(resumeApproval.calledOnce).to.equal(true);
-  });
-
-  it('approves for the requester: resumes with allow and turns the card into a receipt', async () => {
-    remember();
-    const client = fakeClient({ U1: 'owner@example.com' });
-    const args = click('approval_allow', 'U1', client);
-    await handlers.actions.get('approval_allow')!(args);
-
-    expect(args.ack.calledBefore(resumeApproval)).to.equal(true);
-    expect(resumeApproval.calledOnce).to.equal(true);
-    expect(resumeApproval.firstCall.args[0]).to.deep.equal({
-      channel: 'C1',
-      threadTs: '100.1',
-      clickerSlackId: 'U1',
-      approvalId: 'ap-1',
-      argsHash: 'h1',
-      decision: 'allow',
-    });
-    const update = client.chat.update.firstCall.args[0];
-    expect(update).to.deep.include({ channel: 'C1', ts: '100.2' });
-    const blocks = update.blocks as Array<{ type: string; elements?: Array<{ text: string }> }>;
-    expect(blocks.map((b) => b.type)).to.deep.equal(['header', 'section', 'context']);
-    expect(blocks[blocks.length - 1]!.elements![0]!.text).to.equal('Approved by <@U1>');
-  });
-
-  it('runs one answer for a double click', async () => {
-    remember();
-    const client = fakeClient({ U1: 'owner@example.com' });
-    await Promise.all([
-      handlers.actions.get('approval_allow')!(click('approval_allow', 'U1', client)),
-      handlers.actions.get('approval_deny')!(click('approval_deny', 'U1', client)),
-    ]);
-    await handlers.actions.get('approval_allow')!(click('approval_allow', 'U1', client));
-    expect(resumeApproval.calledOnce).to.equal(true);
-    expect(client.chat.update.calledOnce).to.equal(true);
-  });
-
-  it('denies with feedback from the change something else modal', async () => {
-    remember();
-    const client = fakeClient({ U1: 'owner@example.com' });
-    const args = click('approval_change', 'U1', client);
-    await handlers.actions.get('approval_change')!(args);
-
-    expect(args.ack.calledBefore(client.views.open)).to.equal(true);
-    const view = client.views.open.firstCall.args[0].view;
-    expect(client.views.open.firstCall.args[0].trigger_id).to.equal('trig-1');
-    expect(view.callback_id).to.equal('approval_feedback');
-    expect(view.blocks[0].element).to.deep.include({ multiline: true, max_length: 2000 });
-    expect(resumeApproval.called).to.equal(false);
-
-    const ack = sinon.stub().resolves();
-    await handlers.views.get('approval_feedback')!({
-      ack,
-      body: { user: { id: 'U1' } },
-      view: {
-        private_metadata: view.private_metadata,
-        state: { values: { [view.blocks[0].block_id]: { [view.blocks[0].element.action_id]: { value: '  Use OPS-2  ' } } } },
-      },
-      client,
-      context: { teamId: 'T1' },
+      expect(args.ack.calledOnce).to.equal(true);
+      expect(client.chat.postEphemeral.firstCall.args[0]).to.deep.include({
+        channel: 'C1',
+        thread_ts: '100.1',
+        user: 'U2',
+        text: 'Only <@U1> can approve this',
+      });
+      expect(resumeApproval.called).to.equal(false);
+      expect(client.chat.update.called).to.equal(false);
     });
 
-    expect(ack.calledOnce).to.equal(true);
-    expect(resumeApproval.firstCall.args[0]).to.deep.include({ decision: 'deny', feedback: 'Use OPS-2' });
-    const blocks = client.chat.update.firstCall.args[0].blocks;
-    expect(blocks[blocks.length - 1].elements[0].text).to.equal('Declined by <@U1>: Use OPS-2');
+    it('leaves an expired card alone when someone else clicks it', async () => {
+      const client = fakeClient({ U1: OWNER, U2: 'other@example.com' });
+      await press('approval_allow', 'U2', client, {
+        card: buildApprovalCard(approval({ expiresAt: Date.now() - 1 }), 'U1', 'T1'),
+      });
+      expect(client.chat.update.called).to.equal(false);
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal('Only <@U1> can approve this');
+    });
+
+    it('treats a clicker with no email as someone else', async () => {
+      const client = fakeClient({ U1: OWNER, U2: undefined });
+      await press('approval_allow', 'U2', client);
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal('Only <@U1> can approve this');
+      expect(resumeApproval.called).to.equal(false);
+    });
+
+    it('says something went wrong when the lookup fails', async () => {
+      const client = fakeClient({ U1: OWNER, U2: new Error('ratelimited') });
+      await press('approval_allow', 'U2', client);
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal(WRONG);
+      expect(resumeApproval.called).to.equal(false);
+      expect(client.chat.update.called).to.equal(false);
+    });
+
+    it('turns away a click from another workspace', async () => {
+      const client = fakeClient({ U1: OWNER });
+      await press('approval_allow', 'U1', client, { team: 'T2' });
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal('Only <@U1> can approve this');
+      expect(resumeApproval.called).to.equal(false);
+    });
+
+    it('lets another Slack account with the requester email answer', async () => {
+      const client = fakeClient({ U1: OWNER, U3: 'Owner@example.com' });
+      await press('approval_allow', 'U3', client);
+      expect(resumeApproval.calledOnce).to.equal(true);
+    });
   });
 
-  it('turns an expired card into "Expired" and runs nothing', async () => {
-    remember({ expiresAt: Date.now() - 1 });
-    const client = fakeClient({ U1: 'owner@example.com' });
-    await handlers.actions.get('approval_allow')!(click('approval_allow', 'U1', client));
-    expect(resumeApproval.called).to.equal(false);
-    const blocks = client.chat.update.firstCall.args[0].blocks;
-    expect(blocks[blocks.length - 1].elements[0].text).to.equal('Expired');
+  describe('the answer', () => {
+    it('shows it is sending, resumes with allow, then shows the receipt', async () => {
+      const client = fakeClient({ U1: OWNER });
+      const args = await press('approval_allow', 'U1', client);
+
+      expect(args.ack.calledBefore(resumeApproval)).to.equal(true);
+      expect(resumeApproval.firstCall.args[0]).to.deep.equal({
+        channel: 'C1',
+        threadTs: '100.1',
+        clickerSlackId: 'U1',
+        approvalId: 'ap-1',
+        argsHash: 'h1',
+        decision: 'allow',
+      });
+      const sending = client.chat.update.firstCall.args[0];
+      expect(sending).to.deep.include({ channel: 'C1', ts: '100.2' });
+      expect(sending.blocks.map((b: AnyBlock) => b.type)).to.deep.equal(['header', 'section', 'context']);
+      expect(sending.blocks[2].elements[0].text).to.equal('Sending your answer…');
+      expect(client.chat.update.firstCall.calledBefore(resumeApproval.firstCall)).to.equal(true);
+      expect(client.chat.update.calledTwice).to.equal(true);
+      expect(lastText(client.chat.update)).to.equal('Approved by <@U1>');
+    });
+
+    it('shows "Expired" when the backend says so', async () => {
+      resumeApproval.resolves('expired');
+      const client = fakeClient({ U1: OWNER });
+      await press('approval_deny', 'U1', client);
+      expect(lastText(client.chat.update)).to.equal('Expired');
+    });
+
+    it('shows "Already answered", never "Approved by", for a card answered elsewhere', async () => {
+      resumeApproval.resolves('answered');
+      const client = fakeClient({ U1: OWNER });
+      await press('approval_allow', 'U1', client);
+      expect(lastText(client.chat.update)).to.equal('Already answered');
+    });
+
+    for (const failure of ['resolves', 'rejects'] as const) {
+      it(`puts the buttons back and says so when the answer did not go through (${failure})`, async () => {
+        if (failure === 'resolves') resumeApproval.resolves('failed');
+        else resumeApproval.rejects(new Error('boom'));
+        const client = fakeClient({ U1: OWNER });
+        const args = await press('approval_allow', 'U1', client);
+
+        expect(client.chat.update.lastCall.args[0].blocks).to.deep.equal(args.body.message.blocks);
+        expect(client.chat.postEphemeral.firstCall.args[0]).to.deep.include({ user: 'U1', text: WRONG });
+
+        resumeApproval.resolves('allowed');
+        await press('approval_allow', 'U1', client);
+        expect(resumeApproval.calledTwice).to.equal(true);
+      });
+    }
+
+    it('runs one answer for a double click', async () => {
+      let finish: (value: string) => void = () => undefined;
+      resumeApproval.returns(new Promise((resolve) => { finish = resolve; }));
+      const client = fakeClient({ U1: OWNER });
+      const first = press('approval_allow', 'U1', client);
+      const second = press('approval_deny', 'U1', client);
+      await second;
+      finish('allowed');
+      await first;
+      expect(resumeApproval.calledOnce).to.equal(true);
+    });
+
+    it('turns an expired card into "Expired" and runs nothing', async () => {
+      const client = fakeClient({ U1: OWNER });
+      await press('approval_allow', 'U1', client, {
+        card: buildApprovalCard(approval({ expiresAt: Date.now() - 1 }), 'U1', 'T1'),
+      });
+      expect(resumeApproval.called).to.equal(false);
+      expect(lastText(client.chat.update)).to.equal('Expired');
+    });
+  });
+
+  describe('change something else', () => {
+    async function openModal(client: Client) {
+      const args = await press('approval_change', 'U1', client);
+      expect(args.ack.calledBefore(client.views.open)).to.equal(true);
+      return client.views.open.firstCall.args[0];
+    }
+
+    function submit(view: AnyBlock, user: string, client: Client, text = '  Use OPS-2  ') {
+      const ack = sinon.stub().resolves();
+      const block = view.blocks[0];
+      return handlers.views
+        .get('approval_feedback')!({
+          ack,
+          body: { user: { id: user }, team: { id: 'T1' } },
+          view: {
+            private_metadata: view.private_metadata,
+            state: { values: { [block.block_id]: { [block.element.action_id]: { value: text } } } },
+          },
+          client,
+          context: { teamId: 'T1' },
+        })
+        .then(() => ack);
+    }
+
+    it('denies with the feedback typed in the modal', async () => {
+      resumeApproval.resolves('declined');
+      const client = fakeClient({ U1: OWNER });
+      const opened = await openModal(client);
+      expect(opened.trigger_id).to.equal('trig-1');
+      expect(opened.view.callback_id).to.equal('approval_feedback');
+      expect(opened.view.blocks[0].element).to.deep.include({ multiline: true, max_length: 2000 });
+      expect(resumeApproval.called).to.equal(false);
+
+      const ack = await submit(opened.view, 'U1', client);
+
+      expect(ack.calledOnce).to.equal(true);
+      expect(resumeApproval.firstCall.args[0]).to.deep.include({
+        channel: 'C1',
+        threadTs: '100.1',
+        decision: 'deny',
+        feedback: 'Use OPS-2',
+      });
+      expect(client.chat.update.firstCall.args[0].ts).to.equal('100.2');
+      expect(lastText(client.chat.update)).to.equal('Declined by <@U1>: Use OPS-2');
+    });
+
+    it('runs nothing for a submission by someone else', async () => {
+      const client = fakeClient({ U1: OWNER, U2: 'other@example.com' });
+      const opened = await openModal(client);
+      await submit(opened.view, 'U2', client);
+      expect(resumeApproval.called).to.equal(false);
+      expect(client.chat.update.called).to.equal(false);
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal('Only <@U1> can approve this');
+    });
+
+    it('says something went wrong when the modal cannot open', async () => {
+      const client = fakeClient({ U1: OWNER });
+      client.views.open.rejects(new Error('expired_trigger_id'));
+      await press('approval_change', 'U1', client);
+      expect(client.chat.postEphemeral.firstCall.args[0].text).to.equal(WRONG);
+    });
+  });
+
+  it('reads the turn: the first settled answer decides', () => {
+    expect(approvalTurnResult('allow', undefined)).to.equal('failed');
+    expect(approvalTurnResult('allow', { answer: 'allowed', replayed: false })).to.equal('allowed');
+    expect(approvalTurnResult('deny', { answer: 'declined', replayed: false })).to.equal('declined');
+    expect(approvalTurnResult('allow', { answer: 'expired', replayed: false })).to.equal('expired');
+    expect(approvalTurnResult('allow', { answer: 'allowed', replayed: true })).to.equal('answered');
+    expect(approvalTurnResult('allow', { answer: 'declined', replayed: false })).to.equal('answered');
   });
 });
