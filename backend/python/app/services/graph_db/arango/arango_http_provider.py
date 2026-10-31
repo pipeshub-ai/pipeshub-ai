@@ -177,6 +177,7 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.name_match import aql_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -18672,8 +18673,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             conditions.append("(node.isPlaceholder != true)")
 
         if search_query:
-            params["kh_search"] = search_query.lower()
-            conditions.append("CONTAINS(LOWER(node.name), @kh_search)")
+            params.update(name_query_params(search_query))
+            conditions.append(f"CONTAINS({aql_name_key('node.name')}, @kh_search)")
 
         if node_types:
             params["kh_node_types"] = node_types
@@ -19594,7 +19595,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         the listing's name filter reads it, or None past ``_KH_NAME_FIRST_MAX``.
         Any connector may list them: the walks, not the connectorId, place a node."""
         found = await self._kh_v3_run("name_matches", {
-            "org_id": org_id, "kh_search": search.lower(), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
+            "org_id": org_id, **name_query_params(search), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
         }, transaction)
         return None if len(found) > self._KH_NAME_FIRST_MAX else found
 
@@ -20166,11 +20167,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "name_matches": f"""
             FOR kh_n IN UNION(
                 (FOR x IN {records} FILTER x.orgId == @org_id AND x.isDeleted != true
-                    FILTER CONTAINS(LOWER(NOT_NULL(x.name, x.recordName, x.groupName)), @kh_search)
+                    FILTER CONTAINS({aql_name_key("NOT_NULL(x.name, x.recordName, x.groupName)")}, @kh_search)
                     LIMIT @kh_cap
                     RETURN x._id),
                 (FOR x IN {groups} FILTER x.orgId == @org_id AND x.isDeleted != true
-                    FILTER CONTAINS(LOWER(NOT_NULL(x.name, x.recordName, x.groupName)), @kh_search)
+                    FILTER CONTAINS({aql_name_key("NOT_NULL(x.name, x.recordName, x.groupName)")}, @kh_search)
                     LIMIT @kh_cap
                     RETURN x._id)
             )

@@ -134,6 +134,7 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -19026,8 +19027,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             conditions.append("NOT coalesce(node.isPlaceholder, false)")
 
         if search_query:
-            params["kh_search"] = search_query.lower()
-            conditions.append("toLower(node.name) CONTAINS $kh_search")
+            params.update(name_query_params(search_query))
+            conditions.append(f"{cypher_name_key('node.name')} CONTAINS $kh_search")
 
         if node_types:
             params["kh_node_types"] = node_types
@@ -21227,11 +21228,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (kh_c:Record|RecordGroup)
         WHERE kh_c.orgId = $org_id
           AND NOT {self._kh_deleted("kh_c", state=state)}
-          AND toLower({name}) CONTAINS $kh_search
+          AND {cypher_name_key(name)} CONTAINS $kh_search
         WITH kh_c.id AS kh_name_matches LIMIT $kh_cap
         RETURN collect(kh_name_matches) AS ids
         """, parameters={
-            "org_id": org_id, "kh_search": search.lower(), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
+            "org_id": org_id, **name_query_params(search), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
         }, txn_id=transaction)
         ids = (rows or [{}])[0].get("ids") or []
         return None if len(ids) > self._KH_NAME_FIRST_MAX else ids
