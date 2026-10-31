@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +20,7 @@ import pytest
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.chat_modes.attachments import ResolvedAttachments
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
     _apply_policy_to_chat_state,
@@ -1529,3 +1530,119 @@ class TestConnectorFlagsReachChatState:
         seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
         assert (seen["has_sql_connector"], seen["has_slack_connector"],
                 seen["has_code_connector"]) == (True, True, True)
+
+class TestCensusRunsAfterTheIntentCall:
+    """The census reads the CORPUS_CENSUS marker, which the intent call inside
+    `PipesHubAgentFactory.create()` stores. Consulted before that, the marker
+    is always absent and a model "no" can never decline a pattern match."""
+
+    @staticmethod
+    def _run(
+        policy, *, marker: str | None, clarifying: list | None = None, census_answers: bool = True,
+    ) -> tuple[
+        dict[str, Any],
+        Callable[..., Awaitable[tuple[Any, Any, Any, list[Any]]]],
+        Callable[..., Awaitable[bool]],
+        Callable[..., Awaitable[dict[str, Any]]],
+    ]:
+        seen: dict[str, Any] = {"markers": [], "streamed": False}
+
+        async def _fake_create(
+            self, context, llm, chat_mode, *, query, model_name="", model_key=None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            # The real create() awaits the intent call, which lets a
+            # prefetch started before it get going.
+            await asyncio.sleep(0)
+            context.tool_state["corpus_census_marker"] = marker
+            agent = _stream_agent(MagicMock(success=True, error=None, output="from the agent"))
+            original_stream = agent.stream
+
+            def _tracking_stream(goal, **kwargs) -> object:
+                seen["streamed"] = True
+                return original_stream(goal, **kwargs)
+
+            agent.stream = _tracking_stream
+            return agent, MagicMock(tool_registry=MagicMock()), MagicMock(constraints=[], description="q"), clarifying or []
+
+        async def _fake_census(*, context, **kwargs) -> bool:
+            seen["markers"].append(context.tool_state.get("corpus_census_marker"))
+            return census_answers
+
+        async def _fake_finalizer_run(
+            self, *, agent_success, agent_error, event_sink, agent_output=None,
+            streamed_answer="", reasoning_turns=None,
+        ) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        return seen, _fake_create, _fake_census, _fake_finalizer_run
+
+    async def _drive(self, policy, seen, fake_create, fake_census, fake_finalizer, extra=()) -> list[str]:
+        sql_patch, slack_patch = _patch_connectors()
+        kwargs = TestRunChatStream._base_kwargs(policy=policy)
+        kwargs["query_info"]["query"] = "How many documents do we have?"
+        with contextlib.ExitStack() as stack:
+            for p in (
+                patch(
+                    "app.modules.agents.qna.chat_state.build_initial_state",
+                    return_value={"org_id": "org-1", "user_id": "user-1", "query": "q"},
+                ),
+                sql_patch,
+                slack_patch,
+                patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=fake_create),
+                patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=fake_finalizer),
+                patch("app.modules.agents.enumeration.run.try_answer_enumeration", new=fake_census),
+                *extra,
+            ):
+                stack.enter_context(p)
+            return [chunk async for chunk in run_chat_stream(**kwargs)]
+
+    async def test_the_census_sees_the_marker_the_intent_call_stored(self) -> None:
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="no", census_answers=False)
+        await self._drive(AGENT_POLICY, seen, create, census, finalizer)
+        assert seen["markers"] == ["no"]
+        assert seen["streamed"] is True
+
+    async def test_a_census_answer_skips_the_agent(self) -> None:
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes")
+        await self._drive(AGENT_POLICY, seen, create, census, finalizer)
+        assert seen["markers"] == ["yes"]
+        assert seen["streamed"] is False
+
+    async def test_a_question_that_needs_clarifying_is_not_a_census(self) -> None:
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes", clarifying=[MagicMock()])
+        with patch("app.agents.chat_modes.bridge.emit_pre_run_clarification", new=AsyncMock()):
+            await self._drive(AGENT_POLICY, seen, create, census, finalizer)
+        assert seen["markers"] == []
+
+    async def test_a_question_with_attachments_is_not_a_census(self) -> None:
+        """Attachment ids are added to the kb filter, so a census would count
+        only them; the question is about the attachments anyway."""
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes")
+        attachments = patch(
+            "app.agents.chat_modes.bridge.resolve_attachments",
+            new=AsyncMock(return_value=ResolvedAttachments(virtual_record_ids=["att-vr"])),
+        )
+        await self._drive(AGENT_POLICY, seen, create, census, finalizer, extra=(attachments,))
+        assert seen["markers"] == []
+        assert seen["streamed"] is True
+
+    async def test_a_census_answer_cancels_the_prefetch(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _slow_prefetch(**kwargs) -> None:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        seen, create, census, finalizer = self._run(INTERNAL_SEARCH_POLICY, marker="yes")
+        await self._drive(
+            INTERNAL_SEARCH_POLICY, seen, create, census, finalizer,
+            extra=(patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=_slow_prefetch),),
+        )
+        assert seen["markers"] == ["yes"]
+        assert started.is_set() and cancelled.is_set()

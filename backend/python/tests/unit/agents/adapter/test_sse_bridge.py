@@ -11,14 +11,19 @@ import json
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
+from app.agent_loop_lib.events.base import (
+    AgentEvent,
+    EventType,
+    RunContext,
+    ToolCallStatus,
+)
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _heartbeat,
     run_agent_loop_stream,
     sse_queue_maxsize,
-    _heartbeat
 )
 
 _RUN_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
@@ -850,7 +855,9 @@ class TestRunAgentLoopStream:
         `_produce()` must call `emit_pre_run_clarification()` instead of
         `agent.stream()`/`AnswerFinalizer.run()` — see `clarification.py`."""
         from app.agent_loop_lib.core.types import Goal
-        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+        from app.agents.actions.internal_tools.intrim_tools import (
+            AskUserQuestionItemInput,
+        )
 
         question = AskUserQuestionItemInput(
             question="Which project should this apply to?",
@@ -1408,6 +1415,48 @@ class TestHeartbeat:
         # running by the time the comprehension above finishes.
         leaked_tasks = tasks_after - tasks_before
         assert all(task.done() for task in leaked_tasks)
+
+
+class TestCensusRunsAfterTheIntentCall:
+    async def test_the_census_sees_the_marker_the_intent_call_stored(self) -> None:
+        """Same ordering as the chat bridge: the census runs after
+        `factory.create()`, whose intent call stores CORPUS_CENSUS."""
+        seen: list[Any] = []
+
+        async def _fake_create(
+            self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            context.tool_state["corpus_census_marker"] = "no"
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_census(*, context, **kwargs) -> bool:
+            seen.append(context.tool_state.get("corpus_census_marker"))
+            return False
+
+        async def _fake_finalizer_run(
+            self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="",
+            reasoning_turns=None, agent_confidence=None, agent_cancelled=False, agent_needs_input=None,
+        ) -> dict[str, str]:
+            await event_sink.write({"event": "complete", "data": {"answer": "42"}})
+            return {"answer": "42"}
+
+        kwargs = TestRunAgentLoopStream._base_kwargs()
+        kwargs["query_info"]["query"] = "How many documents do we have?"
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "q", "has_knowledge": True},
+            ),
+            patch("app.utils.execute_query.has_sql_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.utils.fetch_slack_thread.has_slack_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.modules.agents.enumeration.run.try_answer_enumeration", new=_fake_census),
+        ):
+            events = [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        assert seen == ["no"]
+        assert events[-1].startswith("event: complete\n")
 
 
 class TestConnectorFlagsReachChatState:
