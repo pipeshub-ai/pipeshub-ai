@@ -354,6 +354,8 @@ describe('enterprise_search/validators/es_validators', () => {
         const noted = { approvalId: 'ap-1', decision: 'deny', feedback: 'Use the team list', remember: true }
         expect(parse(noted).success).to.be.true
         expect(parse({ approvalId: 'ap-1', decision: 'allow', remember: true }).success).to.be.true
+        const conversation = { approvalId: 'ap-1', decision: 'allow', rememberForConversation: true }
+        expect((parse(conversation) as any).data.body.toolApproval).to.deep.equal(conversation)
       })
 
       it('refuses combinations a card does not send', () => {
@@ -364,6 +366,9 @@ describe('enterprise_search/validators/es_validators', () => {
           'feedback over 2000 chars': { decision: 'deny', feedback: 'x'.repeat(2001) },
           'arguments over 64000 chars': { decision: 'allow', arguments: { v: 'x'.repeat(64_000) } },
           'argsHash over 64 chars': { decision: 'allow', argsHash: 'a'.repeat(65), arguments: {} },
+          'rememberForConversation with deny': { decision: 'deny', rememberForConversation: true },
+          'rememberForConversation with remember': { decision: 'allow', remember: true, rememberForConversation: true },
+          'rememberForConversation with arguments': { decision: 'allow', rememberForConversation: true, arguments: { title: 'x' } },
           'arguments that are not an object': { decision: 'allow', arguments: ['x'] },
         }
         for (const [name, answer] of Object.entries(refused)) {

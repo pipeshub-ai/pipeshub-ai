@@ -353,6 +353,7 @@ const contextFieldsSchema = {
       approvalId: z.string().min(1).max(64),
       decision: z.enum(['allow', 'deny']),
       remember: z.boolean().optional(),
+      rememberForConversation: z.boolean().optional(),
       argsHash: z.string().max(64).optional(),
       arguments: z.record(z.string(), z.unknown()).optional(),
       feedback: z.string().max(2000).optional(),
@@ -375,6 +376,18 @@ const contextFieldsSchema = {
             message: 'The edited arguments are too large',
           });
         }
+      }
+      if (
+        answer.rememberForConversation &&
+        (answer.decision !== 'allow' ||
+          answer.remember ||
+          answer.arguments !== undefined)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rememberForConversation'],
+          message: 'Allowing for the conversation goes only with a plain allow',
+        });
       }
       if (answer.feedback !== undefined && answer.decision !== 'deny') {
         ctx.addIssue({
