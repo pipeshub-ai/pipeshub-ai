@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
+import pytest
 from langchain_core.messages import AIMessageChunk
 
 from app.agent_loop_lib.agent import Agent
@@ -52,8 +53,11 @@ class _DropsOnceModel:
     """A LangChain chat model whose first stream sends `first_attempt` and
     then loses the connection; later streams complete."""
 
-    def __init__(self, first_attempt: list[AIMessageChunk]) -> None:
+    def __init__(self, first_attempt: list[AIMessageChunk], drop: Exception | None = None) -> None:
         self._first_attempt = first_attempt
+        self._drop = drop or httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body (incomplete chunked read)",
+        )
         self.attempts = 0
 
     def bind_tools(self, tools: list[object], **kwargs: object) -> _DropsOnceModel:
@@ -66,9 +70,7 @@ class _DropsOnceModel:
         if self.attempts == 1:
             for chunk in self._first_attempt:
                 yield chunk
-            raise httpx.RemoteProtocolError(
-                "peer closed connection without sending complete message body (incomplete chunked read)",
-            )
+            raise self._drop
         for text in _ANSWER:
             yield AIMessageChunk(content=text)
 
@@ -107,8 +109,14 @@ def _text_left_on_screen(sink: _Sink) -> str:
 
 
 class TestStreamDropMidAnswer:
-    async def test_dropped_answer_is_retried_and_shown_once(self) -> None:
-        model = _DropsOnceModel([AIMessageChunk(content="The dep"), AIMessageChunk(content="loy br")])
+    @pytest.mark.parametrize("drop", [
+        None,
+        # Azure's stream reset mid-answer surfaces as httpx's unwrapped ReadError, with no message.
+        httpx.ReadError(""),
+        httpx.WriteError("connection reset"),
+    ])
+    async def test_dropped_answer_is_retried_and_shown_once(self, drop: Exception | None) -> None:
+        model = _DropsOnceModel([AIMessageChunk(content="The dep"), AIMessageChunk(content="loy br")], drop)
 
         agent, agui, status, transcript = await _run(model)
 
