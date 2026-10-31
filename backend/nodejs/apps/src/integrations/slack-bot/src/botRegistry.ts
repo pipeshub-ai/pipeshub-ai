@@ -14,6 +14,7 @@ export interface SlackBotConfig {
   botId?: string;
   botUserId?: string;
   agentId?: string | null;
+  approveActionsFromSlack: boolean;
 }
 
 interface SlackBotIdentity {
@@ -75,6 +76,7 @@ function normalizeBotEntry(entry: unknown): SlackBotConfig | null {
     signingSecret,
     botId,
     agentId,
+    approveActionsFromSlack: record.approveActionsFromSlack === true,
   };
 }
 

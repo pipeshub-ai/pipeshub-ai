@@ -3,12 +3,33 @@ import { Logger } from '../../../libs/services/logger.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
+import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
 };
+
+const SLACK_BOT_APPROVAL_TTL_MS = 60_000;
+
+/** configId -> whether the bot allows Slack to answer approvals, cached like the bot registry. A failed read throws and is not cached. */
+function slackBotApprovalLookup(kvs: KeyValueStoreService) {
+  let loadedAt = 0;
+  let allowed = new Set<string>();
+  return async (configId: string): Promise<boolean> => {
+    if (Date.now() - loadedAt >= SLACK_BOT_APPROVAL_TTL_MS) {
+      const store = await getSlackBotStore(kvs);
+      allowed = new Set(
+        store.configs
+          .filter((c) => c.approveActionsFromSlack === true)
+          .map((c) => c.id),
+      );
+      loadedAt = Date.now();
+    }
+    return allowed.has(configId);
+  };
+}
 
 export class EnterpriseSearchAgentContainer {
   protected static instance: Container;
@@ -59,6 +80,8 @@ export class EnterpriseSearchAgentContainer {
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),
         authTokenService,
+        undefined,
+        slackBotApprovalLookup(keyValueStoreService),
       );
       container
         .bind<AuthMiddleware>('AuthMiddleware')

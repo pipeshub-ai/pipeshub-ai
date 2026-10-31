@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
+import { Flex, Text, TextField, Select, Button, IconButton, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -257,6 +257,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
   const [botToken, setBotToken] = useState('');
   const [signingSecret, setSigningSecret] = useState('');
   const [agentId, setAgentId] = useState<string>(DEFAULT_ASSISTANT_ID);
+  const [approveFromSlack, setApproveFromSlack] = useState(false);
   const [showBotToken, setShowBotToken] = useState(false);
   const [showSigningSecret, setShowSigningSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -268,11 +269,13 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
       setBotToken(editingConfig.botToken);
       setSigningSecret(editingConfig.signingSecret);
       setAgentId(editingConfig.agentId || DEFAULT_ASSISTANT_ID);
+      setApproveFromSlack(editingConfig.approveActionsFromSlack === true);
     } else {
       setName('');
       setBotToken('');
       setSigningSecret('');
       setAgentId(DEFAULT_ASSISTANT_ID);
+      setApproveFromSlack(false);
     }
   }, [editingConfig]);
 
@@ -329,6 +332,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         name: name.trim(),
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
+        approveActionsFromSlack: approveFromSlack,
         ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
       };
 
@@ -352,7 +356,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
     } finally {
       setIsSaving(false);
     }
-  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, isEditMode, editingConfig, onSaved]);
+  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, approveFromSlack, isEditMode, editingConfig, onSaved]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -461,6 +465,18 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             </Select.Content>
           </Select.Root>
         </FormField>
+
+        <Text as="label" size="2">
+          <Flex gap="3" align="start">
+            <Switch checked={approveFromSlack} onCheckedChange={setApproveFromSlack} />
+            <Flex direction="column" gap="1">
+              <Text weight="medium">{t('workspace.bots.form.approveActionsFromSlack')}</Text>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                {t('workspace.bots.form.approveActionsFromSlackHint')}
+              </Text>
+            </Flex>
+          </Flex>
+        </Text>
 
         {/* ── Delete zone (edit mode only) ── */}
         {isEditMode && (
