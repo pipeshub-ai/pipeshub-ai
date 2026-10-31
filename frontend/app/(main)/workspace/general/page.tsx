@@ -33,7 +33,7 @@ import {
   selectAgentHarnessOn,
 } from '@/lib/store/feature-flags-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
-import { WorkspaceEditionSection } from '@/config';
+import { GeneralPageExtras, WorkspaceEditionSection } from '@/config';
 
 // ========================================
 // Read-only view for non-admin users
@@ -517,6 +517,8 @@ export default function GeneralPage() {
         <Box onClickCapture={confirmLeavingWithEdits}>
           <WorkspaceEditionSection />
         </Box>
+
+        <GeneralPageExtras />
 
         {/* The section spaces itself, so a build without it leaves no gap */}
         <DataCollectionSection />
