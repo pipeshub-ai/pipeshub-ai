@@ -131,7 +131,7 @@ class TestSkills(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         skills = sorted(root.glob(".claude/skills/qa-*/SKILL.md"))
         names = {p.parent.name for p in skills}
-        self.assertTrue({"qa-pr", "qa-commit", "qa-review"} <= names, names)
+        self.assertTrue({"qa-pr", "qa-commit", "qa-review", "qa-generate"} <= names, names)
         sub = next(a for a in qa_main.parser()._actions if getattr(a, "choices", None))
         for path in skills:
             text = path.read_text(encoding="utf-8")

@@ -66,6 +66,9 @@ directory.
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
 | `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build`, and defaults to a managed stack unless `--stack` is given. For a commit already on the base branch it tests that commit's own change (a root commit runs the full profile). It cannot be combined with `--head`; results land in your `--out` |
 | `review --pr N \| --body-file F` | Trace the PR's stated requirements to this run's tests (`pass`, `fail`, `not_run`, `untested`), list risks and exploratory probes. Writes `review-input.json`, `review-llm.json`, `review.json` and `review.md`. `--run` executes the probes locally (they write under `review/` and never gate). `--comment` posts its own sticky comment, separate from the gate report. PR text is untrusted and sanitised |
+| `generate --module ID [--from-plan]` | Ask a model for planned scenarios and write each as a stub test in a `planned = true` suite; writes `scenarios-llm.json`, `generate.md`. Never overwrites a file |
+| `generate --implement ID[,ID...] --pr N` | Replace committed, clean stubs with model-written tests and keep only the proven ones, uncommitted. Needs the label `qa-scenarios-ok` on PR N. Takes `--base`, `--repeat`, `--max-mutants`, `--stack`, `--base-url` for `prove` |
+| `prove ID` | Run one test on head `--repeat` times (default 3, 1 for stack tests), then with the change reverted (`--base REF`) or up to `--max-mutants` mutants (default 5, 1 for stack tests); writes `prove/<id>.json` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
 | `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and the failed, errored and flaky ids; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
 | `stuck --runs DIR...` | Print the tests that failed in each of the last 3 runs with distinct heads, oldest run directory first; exits 3 when there are any |
@@ -322,10 +325,20 @@ async def test_tc_jira_004_issue_properties(...):
 After changing tests, run `python3 scripts/qa catalog build` and commit the
 catalog. CI fails when it is stale.
 
+## Generating tests
+
+1. `python3 scripts/qa generate --module <id>` (add `--from-plan` after `go --plan-only`). It writes stubs and `qa-out/generate.md`. Commit the stubs and open a PR.
+2. A person reviews the scenarios and adds the label `qa-scenarios-ok`.
+3. `python3 scripts/qa generate --implement <ids> --pr <n>` asks the model for each test file, checks it, proves it and leaves only proven tests uncommitted. Evidence is in `qa-out/prove/*.json`. `python3 scripts/qa prove <id>` re-checks one test.
+
+**Warning.** `qa generate --implement` runs model-written test code on your machine, under your account, during `qa prove`, before you review it. The checks on the reply are a best-effort filter, not a sandbox, and a determined or injected reply can bypass them. Run it only for a PR whose scenarios you have reviewed and labelled `qa-scenarios-ok`, in a checkout and on a machine where you would run that PR's own tests. Never run it with production credentials in your environment. Read `git diff` on every kept test before you commit it. Generated code runs in CI only after it is merged through normal review.
+
+The `qa-scenarios-ok` label is a human process control. It is not bound to the stub, the head commit or the repo.
+
 ## Claude Code skills
 
-`.claude/skills/qa-pr`, `qa-commit` and `qa-review` walk an agent through
-`go`, `go --commit` and `review`, next to `qa-planner`.
+`.claude/skills/qa-pr`, `qa-commit`, `qa-review` and `qa-generate` walk an agent through
+`go`, `go --commit`, `review` and `generate`/`prove`, next to `qa-planner`.
 
 ## Teaching the engine about a new area
 

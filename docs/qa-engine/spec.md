@@ -21,6 +21,11 @@ referenced from tests and reviews.
 | I14 | Only a schedule run or a push to the default branch writes `qa-history` | `branchstore.may_write`; `test_publish_refused_outside_schedule_or_main_push`, `test_history_is_written_only_by_scheduled_jobs` |
 | I15 | History writes never force; a concurrent writer is merged by re-applying | `branchstore.update`; `test_concurrent_publish_keeps_both_entries` |
 | I16 | A quarantined test still runs and is reported | `config.load`, `report`; `test_auto_file_quarantines_in_config_and_report` |
+| I17 | The model never writes files: it returns JSON, and the engine writes only the one stub file of a planned row | `generate.implement`; `test_implement_writes_only_the_stub_file`, `test_implement_writes_only_the_stub_file_for_an_it_row` |
+| I18 | Stubs go only inside the directory of a suite with `planned = true`, never outside it | `generate.write_scenarios`; `test_nothing_is_written_outside_the_suite_dir`, `test_traversal_absolute_and_glob_covers_are_dropped` |
+| I19 | Proof means the test passes on head every time, and then fails when the change is reverted or a parseable mutant replaces a covered line; an unparsable or not-run variant proves nothing | `prove.prove`; `test_prove_flaky_head_is_unproven`, `test_prove_prefers_the_revert_when_base_is_given`, `test_unparsable_mutant_is_never_a_kill`, `test_prove_not_run_variant_is_inconclusive` |
+| I20 | A generated test that is not proven is removed and its stub restored from git, also when prove crashes; a failed restore is reported | `generate.implement`; `test_unproven_test_is_removed_and_the_stub_restored`, `test_prove_crash_restores_the_stub`, `test_failed_restore_is_loud` |
+| I21 | The engine never commits a generated test: a kept test is only a change against HEAD, for a person to review | `generate.implement`; `test_implement_writes_only_the_stub_file` (the only change against `HEAD` is the stub file) |
 
 ## 2. Pipeline and contracts
 
@@ -41,6 +46,8 @@ producer against them, and `validate` checks model output against
 | `plan-llm.json` | `plan-llm.v1.json` | `add[{id, reason, confidence}]`, `add_matrix`, `missing`, `risk`; `_planner` status added by the adapter runner |
 | `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep, flows}]`; `flows{id: why}`; `planner`; `stack{needed, graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
 | `review-input.json`, `review-llm.json`, `review.json` | `review-llm.v1.json` for the model reply | `requirements[{id, text, tests[], result}]` (`pass`, `fail`, `not_run`, `untested`), `risks`, `probes`; written by `qa review`, never read by the gate |
+| `scenarios-llm.json`, `implement-llm.json` | `scenarios-llm.v1.json`, `implement-llm.v1.json` for the model replies | scenarios: `scenarios[{title, level, covers, ...}]`; implement: the whole test file as one string. Written by `qa generate`, never read by the gate |
+| `prove/<id>.json` | `proof.v1.json` | `verdict` (`proven` or `unproven`), `reason`, head outcomes, `revert`, `mutants[{file, line, op, outcome}]`; written by `qa prove` |
 | `results*.json` | `results.v1.json` | `tests[{id, outcome, seconds, details}]`, `invocations[{label, cmd, exit, log}]`, `fatal`, `scope`, `environment` (image digest, pinned and unpinned bases, lockfile and compose hashes) |
 
 ## 3. Selection algorithm (the floor)
@@ -178,9 +185,9 @@ journeys the tests protect.
 
 ## 7. Not yet built (tracked in the implementation plan)
 
-- **`/qa draft-tests`** (P5): a write-enabled planner whose drafts are kept
-  only if they compile, pass 3 runs and raise diff coverage (TestGen-LLM
-  filters).
+- **Generation is local and two-stage** (`qa generate`, `qa prove`), which supersedes
+  the earlier `/qa draft-tests` idea. A CI `/qa generate` and unit stubs for overlay
+  suites are not built yet.
 - **Diff coverage per changed line** (P4): `changeset.hunks` is already
   recorded for it.
 - **Nightly miss attribution as a scheduled job.** `history.misses` and
