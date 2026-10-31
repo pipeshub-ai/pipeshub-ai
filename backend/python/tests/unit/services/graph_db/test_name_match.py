@@ -1,4 +1,4 @@
-"""The knowledge-hub listings read "-", "_" and "." in names and name queries as spaces.
+"""The knowledge-hub listings read "-", "_" and "." in names and name queries as spaces, and "ς" as "σ".
 
 That the stores apply the same rule is proven on real stores in
 tests/integration/graph_permissions/test_kh_name_search_first.py.
@@ -24,6 +24,13 @@ def test_only_a_spaced_query_compares_spaced_names() -> None:
     assert name_query_params("Printer") == {"kh_search": "printer", "kh_norm": False}
     assert name_query_params("printer jam") == {"kh_search": "printer jam", "kh_norm": True}
     assert name_query_params("printer-jam") == {"kh_search": "printer jam", "kh_norm": True}
+
+
+def test_a_final_sigma_reads_as_a_sigma() -> None:
+    """A capital sigma lowercases by what follows it: "ΟΣ.Α" to "οσ.α" but "ΟΣ Α" to "ος α"."""
+    assert name_query_key("ΟΣ.Α") == name_query_key("ΟΣ Α") == "οσ α"
+    # A query typed alone ends in "ς" where a longer name has "σ", so it takes the compared path.
+    assert name_query_params("νομος") == {"kh_search": "νομοσ", "kh_norm": True}
 
 
 def test_a_term_with_no_wildcards() -> None:

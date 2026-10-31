@@ -84,8 +84,20 @@ def provider(request, neo4j_provider, arango_provider) -> IGraphDBProvider:
     return neo4j_provider if request.param == "neo4j" else arango_provider
 
 
+def _renamed(graph: tuple[list, list], names: dict[str, str]) -> tuple[list, list]:
+    nodes, edges = graph
+    for n in nodes:
+        if n["id"] in names:
+            n["props"]["recordName"] = names[n["id"]]
+    return nodes, edges
+
+
 def _graphs() -> dict[str, tuple[list, list]]:
-    return {"arms": _graph(), "synced": production_shaped(), "as-built": build_fixture(), "hidden": hidden._graph()}
+    return {
+        "arms": _graph(), "synced": production_shaped(), "as-built": build_fixture(), "hidden": hidden._graph(),
+        # Names holding a "." and a capital sigma before one, which lowercases unlike one before a space.
+        "separators": _renamed(production_shaped(), {"pl-r5": "Reachable.child", "pl-r11": "ΝΟΜΟΣ.Α second gap"}),
+    }
 
 
 async def _truncate_arango(settings: dict) -> None:
@@ -154,11 +166,15 @@ async def test_a_name_search_is_the_full_listing_filtered(arms_graph, provider, 
 
 async def test_a_name_search_reads_separators_as_spaces(load_graph, provider, full_listing) -> None:
     """Names join words with "-", "_" or "." and a query may too: on both sides each reads as a space,
-    so "group granted" finds "group-granted", and the hyphenated query still finds it as before."""
-    await load_graph("synced")
+    so "group granted" finds "group-granted", and the hyphenated query still finds it as before.
+    A final sigma reads as a sigma, so "νομος α" finds "ΝΟΜΟΣ.Α" and "νομος" finds it too."""
+    await load_graph("separators")
     app_id = "pl-app"
     everything = await _connector_page(provider, app_id)
-    for term in ("group granted", "group-granted", "group_granted", "granted.group", "in group granted"):
+    for term in (
+        "group granted", "group-granted", "group_granted", "granted.group", "in group granted",
+        "reachable child", "reachable.child", "reachable-child", "νομος α", "ΝΟΜΟΣ Α", "νομος", "νομοσ.α",
+    ):
         filters = {"search_query": term}
         got = await _connector_page(provider, app_id, filters=filters)
         want = await full_listing(lambda f=filters: _connector_page(provider, app_id, filters=f))
