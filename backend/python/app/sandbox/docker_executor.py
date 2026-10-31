@@ -249,10 +249,11 @@ class DockerExecutor(BaseExecutor):
             )
             network_name = self.egress_network
 
+            # shortcut: no hash pinning (agent picks packages at runtime); upgrade by installing the allowlist from a hashed lock or baking it into the sandbox image
             if language == SandboxLanguage.PYTHON:
                 cmd = [
                     "sh", "-c",
-                    f"pip install --quiet --no-cache-dir --target /deps "
+                    f"pip install --quiet --no-cache-dir --only-binary=:all: --target /deps "
                     f"--index-url {_DEFAULT_PIP_INDEX_URL} "
                     + " ".join(packages),
                 ]
@@ -262,7 +263,7 @@ class DockerExecutor(BaseExecutor):
                 cmd = [
                     "sh", "-c",
                     f"mkdir -p /install && cd /install && "
-                    f"npm install --prefix /install --no-save --loglevel=error "
+                    f"npm install --ignore-scripts --prefix /install --no-save --loglevel=error "
                     f"--registry={_DEFAULT_NPM_REGISTRY} "
                     + " ".join(packages),
                 ]

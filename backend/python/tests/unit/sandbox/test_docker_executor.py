@@ -474,6 +474,7 @@ class TestInstallPhase:
         cmd_str = " ".join(install_kwargs["command"])
         assert "pip install" in cmd_str
         assert "--target /deps" in cmd_str
+        assert "--only-binary=:all:" in cmd_str
         assert "pandas" in cmd_str
         # The bridge filters nothing by address, so the install runs behind
         # the per-container firewall and drops privileges before pip starts.
@@ -534,6 +535,7 @@ class TestInstallPhase:
         cmd_str = " ".join(install_kwargs["command"])
         assert "npm install" in cmd_str
         assert "--prefix /install" in cmd_str
+        assert "npm install --ignore-scripts " in cmd_str
         assert "chart.js" in cmd_str
 
     def test_install_failure_raises(self, executor):

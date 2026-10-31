@@ -89,11 +89,13 @@ def detect_mime_type(file_name: str) -> str:
 
 
 # Strict allowlist for package names to prevent shell injection.
-# Allows standard PyPI/npm names with optional version specifiers.
+# Allows standard PyPI/npm names with an optional exact version only: a range
+# or dist-tag installs whatever was published last.
 _PACKAGE_NAME_RE = re.compile(
     r"^@?[a-zA-Z0-9]"            # must start with alphanum (or @ for npm scoped)
     r"[a-zA-Z0-9._\-/]*"         # body: alphanum, dots, underscores, hyphens, slash (scoped)
-    r"([<>=!~]+[a-zA-Z0-9.*]+)?$" # optional version specifier
+    r"(==[0-9][a-zA-Z0-9.]*"     # optional exact PyPI pin (pkg==1.2.3)
+    r"|@[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.\-]+)?)?$"  # or exact npm pin (pkg@1.2.3)
 )
 
 _SHELL_DANGEROUS = re.compile(r"[;&|`$(){}\[\]!#~\\'\"\n\r]")

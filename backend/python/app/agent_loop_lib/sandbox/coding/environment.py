@@ -28,7 +28,11 @@ Key safety decisions (see the design plan's "Safety Practices Summary"):
       `npx` would try to download and fail.
     - `npm install --ignore-scripts` — no postinstall script execution,
       the canonical npm supply-chain attack vector.
-    - `pip install --no-cache-dir` — no cross-sandbox cache poisoning.
+    - `pip install --only-binary=:all:` — wheels only; building an sdist
+      runs its setup.py. `--no-cache-dir` — no cross-sandbox cache poisoning.
+    - Specs are a bare name or an exact pin (`pkg==1.2.3`, `pkg@1.2.3`), but
+      there is no hash pinning: the registry's file for that version is
+      trusted as served.
     - Installs run under the same kernel confinement as execution (file
       writes scoped to the sandbox dir); only the network policy differs
       (installs may allow network, execution never does by default).
@@ -192,13 +196,14 @@ class EnvironmentManager:
         if not to_install:
             return InstallResult(success=True, installed=[])
 
+        # shortcut: no hash pinning (agent picks packages at runtime); upgrade by installing the allowlist from a hashed lock or baking it into the sandbox image
         if language == "typescript":
             if not _is_runtime_setup:
                 await self.ensure_typescript_runtime()
             cmd = ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund", *to_install]
         else:
             await self.ensure_python_venv()
-            cmd = [self.pip_bin, "install", "--no-cache-dir", *to_install]
+            cmd = [self.pip_bin, "install", "--no-cache-dir", "--only-binary=:all:", *to_install]
 
         result = await self._run_confined(cmd, allow_network=self._allow_network_on_install)
         success = result.exit_code == 0

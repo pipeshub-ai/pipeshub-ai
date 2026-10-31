@@ -774,10 +774,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self, to_install: list[str], language: CodingLanguage,
         client: Any, network_name: str, egress_cidrs: list[str] | None = None,
     ) -> tuple[bool, str, str]:
+        # shortcut: no hash pinning (agent picks packages at runtime); upgrade by installing the allowlist from a hashed lock or baking it into the sandbox image
         if language == "python":
             cmd = [
                 "sh", "-c",
-                "pip install --quiet --no-cache-dir --target /deps "
+                "pip install --quiet --no-cache-dir --only-binary=:all: --target /deps "
                 f"--index-url {self._pip_index_url} " + " ".join(to_install),
             ]
             extract_path = "/deps"
@@ -785,7 +786,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         else:
             cmd = [
                 "sh", "-c",
-                "mkdir -p /install && npm install --prefix /install --no-save "
+                "mkdir -p /install && npm install --ignore-scripts --prefix /install --no-save "
                 f"--loglevel=error --registry={self._npm_registry} "
                 + " ".join(to_install),
             ]

@@ -91,7 +91,7 @@ _ANTHROPIC_PUBLISHED_PYTHON: frozenset[str] = frozenset({
     # File Processing
     "pyarrow", "openpyxl", "xlsxwriter", "xlrd", "pillow",
     "python-pptx", "python-docx", "pypdf", "pdfplumber", "pypdfium2",
-    "pdfkit", "tabula-py", "reportlab", "pycairo", "img2pdf",
+    "pdfkit", "tabula-py", "reportlab", "img2pdf",
     # Math & Computing
     "sympy", "mpmath",
     # Utilities
