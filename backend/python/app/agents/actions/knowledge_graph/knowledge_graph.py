@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from app.modules.demo_data.chat import excluded_app_ids
@@ -582,10 +583,12 @@ class KnowledgeGraph:
             )
         except ListingFailedError as exc:
             logger.warning("navigate listing failed for node_id=%s: %s", node_id, exc)
-            return False, (
-                f"Listing failed: {exc} This place may hold too many items to list at once; "
-                "knowledgegraph__list_files with a name query, or search, can reach its records instead."
-            )
+            if exc.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
+                return False, (
+                    f"Listing failed: {exc} knowledgegraph__list_files with a name query, "
+                    "or search, can reach its records instead."
+                )
+            return False, f"Listing failed: {exc}"
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
