@@ -42,6 +42,26 @@ class TestCommand(unittest.TestCase):
         out = command.parse(f"/qa range a1b2c3d..e4f5a6b --trusted {FULL}", "admin")
         self.assertEqual((out["head"], out["trusted_head"]), ("e4f5a6b", FULL))
 
+    def test_commit_pins_the_head(self) -> None:
+        out = command.parse(f"/qa commit {FULL}", "write")
+        self.assertEqual((out["command"], out["mode"], out["head"]), ("commit", "pr", FULL))
+
+    def test_commit_needs_the_full_sha(self) -> None:
+        with self.assertRaisesRegex(command.CommandError, "40-character"):
+            command.parse("/qa commit abc1234", "write")
+        for body in ("/qa commit", f"/qa commit {FULL.upper()}"):
+            with self.assertRaises(command.CommandError, msg=body):
+                command.parse(body, "write")
+
+    def test_commit_needs_write(self) -> None:
+        with self.assertRaises(command.CommandError):
+            command.parse(f"/qa commit {FULL}", "read")
+
+    def test_fork_commit_must_be_the_trusted_head(self) -> None:
+        # The workflow rejects a fork range head that differs from trusted_head.
+        out = command.parse(f"/qa commit {FULL} --trusted {'a' * 40}", "admin")
+        self.assertEqual((out["head"], out["trusted_head"]), (FULL, "a" * 40))
+
     def test_since_is_its_own_mode(self) -> None:
         self.assertEqual(command.parse("/qa since abc1234", "write")["mode"], "since")
 

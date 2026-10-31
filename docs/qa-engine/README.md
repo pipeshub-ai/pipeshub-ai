@@ -136,6 +136,7 @@ recall of 98% or better (design doc, rollout P1–P3).
 /qa range <a>..<b>       an explicit range
 /qa full                 every suite, both graph DBs (admin)
 /qa run --profile conservative
+/qa commit <sha>          run this PR's plan at an earlier commit of the PR (full sha)
 /qa run --trusted <sha>  fork PRs only: run with secrets at the reviewed head; <sha> must be the full 40 characters, refused if the PR moved (admin)
 ```
 

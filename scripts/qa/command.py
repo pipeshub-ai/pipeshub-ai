@@ -16,6 +16,7 @@ LEVEL_NAME = {k: k for k in LEVEL}
 COMMANDS: dict[str, dict[str, Any]] = {
     "plan": {"min": "write", "mode": "plan", "args": r""},
     "run": {"min": "write", "mode": "pr", "args": r""},
+    "commit": {"min": "write", "mode": "pr", "args": r"(?P<head>[0-9a-f]{40})"},
     "missing": {"min": "write", "mode": "missing", "args": r""},
     "since": {"min": "write", "mode": "since", "args": rf"(?P<base>{SHA})"},
     "range": {"min": "write", "mode": "range", "args": rf"(?P<base>{SHA})(?:\.\.(?P<head>{SHA}))?"},
@@ -66,6 +67,7 @@ def parse(body: str, permission: str, is_admin_team: bool = False) -> dict[str, 
 
 def _usage(name: str) -> str:
     return {
+        "commit": "the full 40-character commit sha: /qa commit <sha>",
         "since": "one commit sha: /qa since <sha>",
         "range": "a range: /qa range <sha> or /qa range <sha>..<sha>",
     }.get(name, "no arguments")

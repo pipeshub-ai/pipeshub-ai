@@ -78,6 +78,10 @@ jobs:
             gh pr comment "$PR" --repo "$REPO" --body "QA command not run: On a fork PR, a range must end at the reviewed commit."
             exit 0
           fi
+          if [[ "$(jq -r .command <<<"$PARSED")" == commit ]] && ! gh pr view "$PR" --repo "$REPO" --json commits --jq '.commits[].oid' | grep -qx "$range_head"; then
+            gh pr comment "$PR" --repo "$REPO" --body "QA command not run: \`${range_head:0:10}\` is not a commit of this PR."
+            exit 0
+          fi
           mode=$(jq -r .mode <<<"$PARSED")
           base=$(jq -r '.base // ""' <<<"$PARSED")
           head_arg=$(jq -r --arg h "$head" '.head // $h' <<<"$PARSED")
