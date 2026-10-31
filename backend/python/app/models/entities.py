@@ -509,6 +509,15 @@ class Record(BaseModel):
         return base
 
     @staticmethod
+    def progress_state_from_arango(record_doc: dict) -> dict[str, Any]:
+        """Constructor kwargs for the indexing and extraction status of a stored record. Without them a typed record
+        kept the field defaults, so an indexed record read by id reported itself QUEUED ("not indexed")."""
+        return {
+            "indexing_status": record_doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            "extraction_status": record_doc.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        }
+
+    @staticmethod
     def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
         """Constructor kwargs for the soft-delete fields of a stored record."""
         delete_source = record_doc.get("deleteSource")
@@ -825,10 +834,12 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            virtual_record_id=arango_base_record.get("virtualRecordId"),
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
             source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
             **Record.delete_state_from_arango(arango_base_record),
+            **Record.progress_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -985,6 +996,7 @@ class MessageRecord(Record):
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -1114,6 +1126,7 @@ class MailRecord(Record):
             label_ids=mail_doc.get("labelIds", []),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1177,6 +1190,7 @@ class WebpageRecord(Record):
             is_placeholder=record_doc.get("isPlaceholder", False),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1287,6 +1301,7 @@ class LinkRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1379,6 +1394,7 @@ class CommentRecord(Record):
             comment_selection=comment_doc.get("commentSelection"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 # How a ticket's source is named beside its own status name ("Status: NEW
@@ -1646,6 +1662,7 @@ class TicketRecord(Record):
             due_date=ticket_doc.get("dueDateTimestamp"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1753,6 +1770,7 @@ class ProjectRecord(Record):
             lead_email=project_doc.get("leadEmail"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1836,6 +1854,7 @@ class ProductRecord(Record):
             list_price=product_doc.get("listPrice"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2161,6 +2180,7 @@ class DealRecord(Record):
             close_date=deal_doc.get("closeDate"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2359,6 +2379,7 @@ class SQLViewRecord(Record):
             access_rule=read_access_rule(record_doc),
             ddl=view_doc.get("ddl"),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2466,6 +2487,7 @@ class SQLTableRecord(Record):
             comment=table_doc.get("comment"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2806,6 +2828,7 @@ class PullRequestRecord(Record):
             closed_at=pr_doc.get("closedAtTimestamp"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -3004,6 +3027,7 @@ class ArtifactRecord(Record):
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
         
@@ -3768,6 +3792,7 @@ class MeetingRecord(Record):
             recording_url=meeting_doc.get("recordingUrl"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
