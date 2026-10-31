@@ -90,4 +90,21 @@ describe('slack-bot/utils/agui-stream', () => {
       expect(activity.format()).to.contain('Searching.');
     });
   });
+
+  describe('a tool call waiting for approval', () => {
+    const frame = (type: string, fields: Record<string, unknown> = {}) => ({ event: type, data: { type, ...fields } });
+
+    it('hands the approval card details to the caller', () => {
+      const onApprovalRequested = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalRequested });
+      const approval = { approvalId: 'ap-1', argsHash: 'h1' };
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'awaiting_approval', approval }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c2', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'completed', approval }));
+
+      expect(onApprovalRequested.calledOnceWithExactly(approval)).to.equal(true);
+    });
+  });
 });
