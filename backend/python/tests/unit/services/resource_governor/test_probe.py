@@ -170,6 +170,87 @@ class TestCgroupV2CpuQuota:
         assert quota > 0
 
 
+class TestGovernorQuotaFollowsAffinity:
+    """G-12: the governor's quota and ``effective_cpu_count()`` agree."""
+
+    @pytest.fixture(autouse=True)
+    def _host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 2)
+
+    def test_governor_quota_follows_smaller_affinity(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.max", "400000 100000")
+        assert probe_mod._resolve_cpu_quota() == 2.0
+        assert probe_mod.effective_cpu_count() == 2
+
+    def test_v1_quota_follows_smaller_affinity(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu" / "cpu.cfs_quota_us", "400000")
+        _write(tmp_path / "cpu" / "cpu.cfs_period_us", "100000")
+        assert probe_mod._resolve_cpu_quota() == 2.0
+
+    def test_smaller_quota_still_wins_over_affinity(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 8)
+        _write(tmp_path / "cpu.max", "300000 100000")
+        assert probe_mod._resolve_cpu_quota() == 3.0
+
+    @pytest.mark.parametrize("cpu_max", ["0 100000", "-100000 100000"])
+    def test_non_positive_quota_is_no_limit(self, tmp_path: Path, cpu_max: str) -> None:
+        _write(tmp_path / "cpu.max", cpu_max)
+        assert probe_mod._resolve_cpu_quota() == 2.0  # falls back to the affinity mask
+
+    def test_fractional_quota_kept_for_utilisation(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.max", "150000 100000")
+        assert probe_mod._resolve_cpu_quota() == 1.5
+
+    def test_fractional_quota_below_affinity_is_not_floored_early(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 1)
+        _write(tmp_path / "cpu.max", "150000 100000")
+        assert probe_mod._resolve_cpu_quota() == 1.0  # min(1.5, 1): the mask is the bound
+
+    @pytest.mark.parametrize(
+        ("cpu_max", "affinity"),
+        [("150000 100000", 16), ("400000 100000", 2), ("250000 100000", 4), ("max 100000", 3)],
+    )
+    def test_ceilings_floor_the_fraction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpu_max: str, affinity: int,
+    ) -> None:
+        from app.services.resource_governor.policy import ceiling_cpus
+
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: affinity)
+        _write(tmp_path / "cpu.max", cpu_max)
+        assert ceiling_cpus(probe_mod._resolve_cpu_quota()) == probe_mod.effective_cpu_count()
+
+    def test_sub_one_quota_keeps_its_fraction_for_ceilings(self) -> None:
+        from app.services.resource_governor.policy import ceiling_cpus
+
+        assert ceiling_cpus(0.5) == 0.5  # the existing sub-1 sizing; heavy is floored at 1 either way
+
+    def test_ceilings_from_a_fractional_snapshot(self) -> None:
+        from app.services.resource_governor.models import ResourceSnapshot
+        from app.services.resource_governor.policy import resolve_ceilings
+
+        def snap(quota: float) -> ResourceSnapshot:
+            return ResourceSnapshot(
+                cpu_quota=quota, cpu_utilisation=None, cpu_throttled_ratio=None, cpu_pressure=None,
+                mem_limit_bytes=None, mem_working_set_bytes=None, source="t",
+            )
+
+        assert resolve_ceilings(snap(1.5), None, None) == resolve_ceilings(snap(1.0), None, None)
+        assert resolve_ceilings(snap(3.9), None, None) == resolve_ceilings(snap(3.0), None, None)
+
+    def test_plain_host_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No cgroup files: the quota is the affinity count, as before."""
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 6)
+        assert probe_mod._resolve_cpu_quota() == 6.0
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: None)
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: 12)
+        assert probe_mod._resolve_cpu_quota() == 12.0
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: None)
+        assert probe_mod._resolve_cpu_quota() == 1.0
+
+
 class TestCgroupV1CpuQuota:
     def test_parses_quota_over_period(self, tmp_path: Path) -> None:
         _write(tmp_path / "cpu" / "cpu.cfs_quota_us", "200000")

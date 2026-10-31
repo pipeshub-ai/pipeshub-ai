@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestHealthCheck:
     async def test_governor_stats_failure_is_not_echoed(self) -> None:
@@ -13,6 +15,7 @@ class TestHealthCheck:
         error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
         mock_governor = MagicMock()
         mock_governor.stats.side_effect = error
+        mock_governor.fleet_ceilings.heavy = 6
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {"pdf": ["default"]}
 
@@ -31,12 +34,51 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu"}
+        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes"}
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
         )
 
+    async def test_health_reports_lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        governor = MagicMock()
+        governor.fleet_ceilings.heavy = 6
+        governor.stats.return_value = {}
+        # An explicit thread count in the environment would make the plan "explicit_threads".
+        monkeypatch.delenv("PDF_TABLE_MODEL_THREADS", raising=False)
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", governor, create=True),
+            patch("app.parsing_main.effective_cpu_count", return_value=8),
+        ):
+            body = json.loads((await health_check()).body)
+
+        assert set(body["lanes"]) == {"mode", "plan", "in_use_domain"}
+        assert body["lanes"]["mode"] == "off"
+        assert body["lanes"]["in_use_domain"] is None
+        assert body["lanes"]["plan"] == {
+            "cpus": 8, "heavy": 6, "lanes": 3, "threads_per_lane": 2,
+            "cpus_per_lane": 2, "source": "rule",
+        }
+
+    async def test_lanes_block_without_governor(self) -> None:
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", None, create=True),
+        ):
+            body = json.loads((await health_check()).body)
+
+        assert body["lanes"] == {"mode": "off", "plan": None, "in_use_domain": None}
 
     async def test_reports_cpu_source_and_pool_sizes(self) -> None:
         from app.parsing_main import app as parsing_main_app
