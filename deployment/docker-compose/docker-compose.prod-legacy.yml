@@ -44,7 +44,7 @@ services:
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
 
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -74,7 +74,7 @@ services:
       - ARANGO_URL=http://arango:8529
       - ARANGO_DB_NAME=es
       - ARANGO_USERNAME=root
-      - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      - ARANGO_PASSWORD=${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Message broker config
@@ -117,13 +117,13 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:?set MONGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=es
       # Standalone mongod — multi-document transactions unavailable. App branches on this.
       - REPLICA_SET_AVAILABLE=false
 
       # Qdrant config
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       - QDRANT_HOST=qdrant
       - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
@@ -344,7 +344,7 @@ services:
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:?set MONGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
@@ -378,11 +378,11 @@ services:
     container_name: arango
     restart: always
     environment:
-      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
     volumes:
       - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -455,7 +455,7 @@ services:
     container_name: qdrant
     restart: always
     environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       # Performance optimizations
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334

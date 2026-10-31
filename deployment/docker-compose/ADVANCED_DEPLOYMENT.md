@@ -171,6 +171,47 @@ docker compose -p pipeshub-ai logs -f pipeshub-ai
 
 The installer prints this when it detects the old pinned names.
 
+### Legacy compose file: secrets are required
+
+`docker-compose.prod-legacy.yml` no longer falls back to built-in values for `SECRET_KEY`, `MONGO_PASSWORD`, `ARANGO_PASSWORD` and `QDRANT_API_KEY`. It refuses to start until each one is set in `.env`.
+
+Your existing data was written with whatever values the stack ran with. Do not generate new ones yet: a new `SECRET_KEY` cannot decrypt the credentials already stored, and a new database password does not change the one already in the existing database volume.
+
+1. **Recover the values your stack uses** and put them in `.env`. Look, in this order, in:
+   - your current `.env` and any `.env.bak.*` the installer left next to it;
+   - wherever you keep this deployment's secrets (a secret manager, or the shell or CI environment you start Compose from);
+   - the running containers, before you pull the new compose file:
+
+     ```bash
+     docker inspect pipeshub-ai --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(SECRET_KEY|ARANGO_PASSWORD|QDRANT_API_KEY)='
+     docker inspect mongodb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^MONGO_INITDB_ROOT_(USERNAME|PASSWORD)='
+     ```
+
+     `MONGO_INITDB_ROOT_USERNAME` goes into `.env` as `MONGO_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` as `MONGO_PASSWORD`.
+
+   Use the defaults from the previous release's `docker-compose.prod-legacy.yml` only if you know this stack ran with none of these variables set, neither in `.env` nor in the environment. If you can't recover a value, don't guess: a wrong `SECRET_KEY` leaves the stored credentials unreadable, and a wrong database password fails against the existing volume.
+2. **Start the stack** with those values in `.env` and check that it is healthy.
+3. **Rotate the database passwords and the Qdrant key.** The old built-in values are public, so replace them. Change each password in the database first, then in `.env`. The commands below read the passwords from variables, so they don't end up in your shell history or in the process list:
+
+   ```bash
+   read -rs CURRENT_MONGO_PW && read -rs CURRENT_ARANGO_PW   # type the current passwords
+   NEW_MONGO_PW=$(openssl rand -hex 32) NEW_ARANGO_PW=$(openssl rand -hex 32)
+   MONGO_USERNAME=$(sed -n 's/^MONGO_USERNAME=//p' .env); MONGO_USERNAME=${MONGO_USERNAME:-admin}   # from step 1
+   export MONGO_USERNAME CURRENT_MONGO_PW NEW_MONGO_PW NEW_ARANGO_PW
+
+   # MongoDB
+   docker exec -e MONGO_USERNAME -e CURRENT_MONGO_PW -e NEW_MONGO_PW mongodb mongosh --quiet --nodb \
+     --eval "const a = connect('mongodb://localhost:27017/admin'); a.auth(process.env.MONGO_USERNAME, process.env.CURRENT_MONGO_PW); a.changeUserPassword(process.env.MONGO_USERNAME, process.env.NEW_MONGO_PW)"
+
+   # ArangoDB (arangosh reads the current password from its prompt)
+   printf '%s\n' "$CURRENT_ARANGO_PW" | docker exec -i -e NEW_ARANGO_PW arango arangosh \
+     --server.endpoint tcp://localhost:8529 \
+     --javascript.execute-string "require('@arangodb/users').update('root', require('internal').env.NEW_ARANGO_PW)"
+   ```
+
+   Then put `NEW_MONGO_PW` in `.env` as `MONGO_PASSWORD`, `NEW_ARANGO_PW` as `ARANGO_PASSWORD`, set a new `QDRANT_API_KEY` (`openssl rand -hex 32`), and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
+4. **Keep `SECRET_KEY`.** PipesHub cannot re-encrypt stored credentials with a new key, so changing it on an existing install makes the saved connector and model credentials unreadable. Treat it as a secret: keep `.env` readable only by the user that runs Compose.
+
 ---
 
 ## A second instance on the same host
