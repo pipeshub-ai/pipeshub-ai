@@ -290,13 +290,13 @@ export function McpInstanceConfigPanel({
             if (!cancelled) setDcrProbe({ status: 'error' });
           });
       },
-      isTemplateBased ? 0 : DCR_PROBE_DEBOUNCE_MS
+      isTemplateBased && !urlEditable ? 0 : DCR_PROBE_DEBOUNCE_MS
     );
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [open, authMode, isTemplateBased, oauthProbeUrl]);
+  }, [open, authMode, isTemplateBased, urlEditable, oauthProbeUrl]);
 
   const dcrSupported = resolveDcrSupport(dcrProbe, resolvedTemplate?.supportsDcr);
 
