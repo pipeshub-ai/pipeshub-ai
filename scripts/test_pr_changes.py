@@ -322,7 +322,7 @@ class TestIntegrationShards(unittest.TestCase):
     def test_a_connector_test_helper_other_suites_import_runs_their_shards_too(self) -> None:
         # MinIO subclasses S3's storage helper, and the cleanup tests on core use MinIO's.
         self.assertEqual(shards("integration-tests/connectors/s3/s3_storage_helper.py"), {"connectors-1", "connectors-3", "core"})
-        self.assertEqual(shards("integration-tests/connectors/jira/jira_block_utils.py"), {"connectors-1", "connectors-2", "connectors-3"})
+        self.assertEqual(shards("integration-tests/connectors/jira/jira_block_utils.py"), {"connectors-1", "connectors-2", "connectors-4"})
 
     def test_markdown_the_code_or_tests_read_is_not_docs(self) -> None:
         self.assertEqual(shards("integration-tests/parsers/fixtures/research.md"), {"core"})

@@ -295,8 +295,10 @@ against a local Ollama model in `integration-tests-ollama.yml`. Each shard
 brings up its own stack and runs both graph databases, so a shard's wall clock is
 roughly the sum of its two legs, and has to stay under the job's 300-minute timeout.
 
-Adding a connector means adding its marker to `CONN_SHARD_4`, the shard new
-connector suites go on (shards 1–3 are full). Connector
+Adding a connector means adding its marker to one of the `CONN_SHARD_*` lines.
+All four shards are close to the timeout, so a new suite of any size needs a
+fifth shard or a rebalance first; the comment above those lines says which
+suites must stay on which shard. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that

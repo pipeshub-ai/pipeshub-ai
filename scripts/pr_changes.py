@@ -200,15 +200,15 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
     "connectors-1": (
-        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "postgres", "web", "rss", "local_fs",
+        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "rss", "local_fs",
         "local_fs_sim", "github", "sharepoint",
     ),
     "connectors-2": (
-        "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
-        "servicenow",
+        "jira", "linear", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
+        "servicenow", "github_teams",
     ),
-    "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
-    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+    "connectors-3": ("notion", "confluence", "s3", "gcs", "zammad", "sharepoint_sim", "postgres"),
+    "connectors-4": ("google_drive_workspace", "google_drive_individual", "gitlab", "azure_blob"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -325,13 +325,13 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
 }
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
-# Teams' (which uses Jira's block parser), Gmail on Google Drive's sync helpers,
+# Teams' (which, like GitLab's, uses Jira's block parser), Gmail on Google Drive's sync helpers,
 # and the cleanup tests on core create MinIO, Postgres and S3 connectors.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
     "google_drive_workspace": ("connectors-2",),
-    "jira": ("connectors-1", "connectors-3"),
+    "jira": ("connectors-1", "connectors-4"),
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),

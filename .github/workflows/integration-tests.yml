@@ -490,21 +490,29 @@ jobs:
       # these four and the `demo` shard do not own, built in the test step
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~235 min (with servicenow's estimate), shard 3
-      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
-      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
-      # and shard 3 zammad (zammad-source). The two Google Drive suites have
-      # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on the lightest shard (outlook and then
-      # servicenow went on shard 2, which was lightest); check with scripts/shard_balance.py. The
-      # Gmail suites are on shard 2 too: they need the simulator image Jira's
-      # shard already builds, and no Google secrets.
-      # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      # one job, so a shard's wall clock is the sum of the two plus ~15 min of
+      # stack build and start-up, and the job times out at 300 min): shard 1
+      # ~280 min, shard 2 ~285 min (servicenow's 60 is still an estimate),
+      # shard 3 ~283 min, shard 4 ~278 min. That leaves almost no headroom:
+      # four shards are full, and the next suite that grows needs a fifth.
+      # GitLab (shard 4) and Zendesk (shard 2) cost about a minute today
+      # because their tests fail at setup; working, they add ~33 and ~15 min.
+      # Shard 1 keeps nextcloud and bookstack, the only suites needing
+      # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
+      # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
+      # zendesk (its token is minted only there) and the Gmail suites (the
+      # Gmail simulator starts only there). Shard 3 keeps zammad
+      # (zammad-source), notion (notion-sim) and sharepoint_sim, whose
+      # simulator answers Microsoft's host names for the whole stack, so the
+      # live sharepoint and outlook suites must stay off shard 3. Jira and
+      # Confluence need the Atlassian simulators, which start on shards 2
+      # and 3 only. The two Google Drive suites have shard 4.
+      # Rebalance with scripts/shard_balance.py when a suite grows, and keep
+      # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or rss or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_2: "jira or linear or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow or github_teams"
+      CONN_SHARD_3: "notion or confluence or s3 or gcs or zammad or sharepoint_sim or postgres"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or gitlab or azure_blob"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
