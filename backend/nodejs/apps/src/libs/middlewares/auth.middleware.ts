@@ -424,7 +424,10 @@ export class AuthMiddleware {
     scope: string,
     configId: unknown,
   ): Promise<void> {
-    if (scope === TokenScopes.CONVERSATION_CREATE && typeof configId === 'string') {
+    if (
+      scope === TokenScopes.CONVERSATION_CREATE &&
+      typeof configId === 'string'
+    ) {
       let approves = false;
       try {
         approves = (await this.slackBotApproves?.(configId)) === true;
