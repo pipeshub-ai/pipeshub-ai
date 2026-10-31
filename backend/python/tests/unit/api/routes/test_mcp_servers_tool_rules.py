@@ -2,12 +2,18 @@
 part of this edition, so neither has a route."""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from app.agents.agent_loop.tool_approvals import args_hash
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_tool_approval_claim_path,
+    get_mcp_tool_approval_path,
+)
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import (
     ToolRulesBody,
@@ -69,3 +75,44 @@ class TestNotInThisEdition:
 
         for name in ("CompanyPolicy", "CompanyToolRule", "load_company_policy", "rules_owner", "can_always_allow"):
             assert not hasattr(tool_approvals, name)
+
+
+class TestValidateEdit:
+    _ID = "ap-1"
+    _SCHEMA = {"type": "object", "properties": {"q": {"type": "string"}}}
+
+    def _store(self, **over: object) -> FakeConfigService:
+        record = {
+            "approvalId": self._ID, "orgId": "org-1", "userId": "user-1", "conversationId": "c", "source": "mcp",
+            "instanceId": "inst-1", "serverName": "Jira", "toolName": "t", "arguments": {"q": "a"},
+            "toolPath": "/tools/jira/t", "kind": "write", "inputSchema": self._SCHEMA,
+            "createdAt": time.time(), "expiresAt": time.time() + 60, **over,
+        }
+        return FakeConfigService({get_mcp_tool_approval_path(self._ID): record})
+
+    async def _validate(self, store: FakeConfigService, arguments: dict[str, Any], *, user_id: str = "user-1", approval_id: str = "ap-1") -> Any:  # noqa: ANN401
+        body = mcp_servers.ToolApprovalValidateBody(args_hash=args_hash({"q": "a"}), arguments=arguments)
+        return await mcp_servers.validate_tool_approval_edit(route_request(store, user_id=user_id), approval_id, body)
+
+    async def test_valid_edit_has_no_errors_and_is_not_claimed(self) -> None:
+        store = self._store()
+        assert await self._validate(store, {"q": "b"}) == {"errors": []}
+        assert store.writes == []
+
+    async def test_invalid_edit_lists_errors(self) -> None:
+        out = await self._validate(self._store(), {"q": 5})
+        assert out["errors"][0].path == "/q"
+
+    async def test_unknown_and_foreign_approvals_are_not_found(self) -> None:
+        for store, kw in ((self._store(), {"approval_id": "nope"}), (self._store(), {"user_id": "user-2"})):
+            with pytest.raises(HTTPException) as caught:
+                await self._validate(store, {"q": "b"}, **kw)
+            assert caught.value.status_code == 404
+
+    async def test_expired_or_answered_is_gone(self) -> None:
+        answered = self._store()
+        answered.data[get_mcp_tool_approval_claim_path(self._ID)] = {"claimedAt": 1}
+        for store in (self._store(expiresAt=1.0), answered):
+            with pytest.raises(HTTPException) as caught:
+                await self._validate(store, {"q": "b"})
+            assert caught.value.status_code == 410
