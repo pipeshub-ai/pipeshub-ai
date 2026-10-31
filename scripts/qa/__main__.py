@@ -70,6 +70,9 @@ def _history(args) -> dict:
 
 def _record(store: Path, plan: dict, results: dict, trigger: str | None = None,
             wall_seconds: float | None = None, run_url: str | None = None) -> None:
+    if store.exists() and not store.is_dir():
+        print(f"history: {store} is a file; QA_HISTORY and --store name a directory", file=sys.stderr)
+        raise SystemExit(2)
     entry = history.entry(plan, results, trigger=trigger or history.trigger(os.environ),
                           wall_seconds=wall_seconds, run_url=run_url)
     history.write_dir(store, history.add_run(history.read_dir(store), entry, results, dt.date.today()))
@@ -369,8 +372,8 @@ def cmd_stuck(args) -> int:
     seen = []
     for d in args.runs:
         plan, results = _merged(Path(d))
-        if results is not None:
-            seen.append((plan.get("head"), results))
+        if results is not None and plan.get("head"):
+            seen.append((plan["head"], results))
     ids = history.stuck(seen)
     for t in ids:
         print(t)

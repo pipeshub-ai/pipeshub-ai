@@ -159,6 +159,33 @@ class TestHistory(unittest.TestCase):
             self.assertEqual(out.getvalue(), "a\n")
             self.assertEqual(history.runs(history.read_dir(store))[0]["trigger"], "nightly")
 
+    def test_stuck_skips_runs_without_a_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = []
+            for i in range(3):
+                d = Path(tmp) / str(i)
+                d.mkdir()
+                plan = {k: v for k, v in self.PLAN.items() if k != "head"}
+                (d / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+                (d / "results.json").write_text(json.dumps({"tests": [{"id": "a", "outcome": "fail"}]}), encoding="utf-8")
+                dirs.append(str(d))
+            with mock.patch.object(history, "stuck", wraps=history.stuck) as stuck:
+                self.assertEqual(qa_main.main(["stuck", "--runs", *dirs]), 0)
+            self.assertEqual(stuck.call_args.args[0], [])
+
+    def test_record_into_a_file_exits_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "run"
+            d.mkdir()
+            (d / "plan.json").write_text(json.dumps(self.PLAN), encoding="utf-8")
+            (d / "results.json").write_text(json.dumps({"seconds": 1, "tests": []}), encoding="utf-8")
+            store = Path(tmp) / "history.jsonl"
+            store.write_text("", encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as cm:
+                qa_main.main(["--out", str(d), "history", "record", "--store", str(store)])
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("is a file", err.getvalue())
+
     def test_miss_is_a_failing_test_the_culprit_run_did_not_select(self) -> None:
         entries = [{"head": "c1", "selected": {"a": "floor"}}]
         self.assertEqual(history.misses(entries, ["a", "b"], "c1"), ["b"])

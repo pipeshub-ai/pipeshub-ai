@@ -97,7 +97,8 @@ def windows(files: Mapping[str, str]) -> dict[str, str]:
 
 
 def add_run(files: dict[str, str], entry: dict[str, Any], results: dict[str, Any], today: dt.date) -> dict[str, str]:
-    files = {**files, "runs.jsonl": files.get("runs.jsonl", "") + json.dumps(entry, sort_keys=True) + "\n"}
+    # Re-dump rather than append: a truncated last line would swallow the new entry.
+    files = {**files, "runs.jsonl": _dump_jsonl(runs(files) + [entry])}
     tests = _tests(files)
     for t in results.get("tests", []):
         letter = LETTERS.get(t["outcome"])
