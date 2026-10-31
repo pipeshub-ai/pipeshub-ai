@@ -76,20 +76,16 @@ class TestParseCommaSeparatedStr:
 
 
 class TestParseStringIdList:
-    def test_none(self):
+    def test_none(self) -> None:
         assert _parse_string_id_list(None, "writerUserIds") is None
 
-    def test_strips_values(self):
+    def test_strips_values(self) -> None:
         assert _parse_string_id_list([" a ", "b"], "writerUserIds") == ["a", "b"]
 
-    def test_rejects_empty_string(self):
-        from fastapi import HTTPException
-        try:
+    def test_rejects_empty_string(self) -> None:
+        with pytest.raises(HTTPException) as exc:
             _parse_string_id_list(["ok", ""], "writerUserIds")
-        except HTTPException as exc:
-            assert exc.status_code == 400
-        else:
-            raise AssertionError("expected HTTPException")
+        assert exc.value.status_code == 400
 
 
 class TestConstants:
@@ -209,7 +205,7 @@ class TestCreateKnowledgeBase:
         resp = client.post("/api/v1/kb/", json={"name": "Bad", "isHidden": 1})
         assert resp.status_code == 400
 
-    def test_owner_user_id_rejected_unless_hidden(self):
+    def test_owner_user_id_rejected_unless_hidden(self) -> None:
         app, kb_svc, _ = _make_app()
         client = TestClient(app)
         resp = client.post(
@@ -219,7 +215,7 @@ class TestCreateKnowledgeBase:
         assert resp.status_code == 400
         kb_svc.create_knowledge_base.assert_not_called()
 
-    def test_owner_user_id_and_grants_passed_when_hidden(self):
+    def test_owner_user_id_and_grants_passed_when_hidden(self) -> None:
         app, kb_svc, _ = _make_app()
         kb_svc.create_knowledge_base = AsyncMock(return_value={
             "success": True, "id": "kb1", "name": "Hidden",
@@ -242,7 +238,7 @@ class TestCreateKnowledgeBase:
         assert kwargs["reader_user_ids"] == ["viewer-1"]
         assert kwargs["team_ids"] == ["team-1"]
 
-    def test_writer_user_ids_must_be_strings(self):
+    def test_writer_user_ids_must_be_strings(self) -> None:
         app, _, _ = _make_app()
         client = TestClient(app)
         resp = client.post(
@@ -251,7 +247,7 @@ class TestCreateKnowledgeBase:
         )
         assert resp.status_code == 400
 
-    def test_empty_owner_user_id_rejected(self):
+    def test_empty_owner_user_id_rejected(self) -> None:
         app, kb_svc, _ = _make_app()
         client = TestClient(app)
         resp = client.post(
@@ -261,7 +257,7 @@ class TestCreateKnowledgeBase:
         assert resp.status_code == 400
         kb_svc.create_knowledge_base.assert_not_called()
 
-    def test_grants_rejected_unless_hidden(self):
+    def test_grants_rejected_unless_hidden(self) -> None:
         app, kb_svc, _ = _make_app()
         client = TestClient(app)
         resp = client.post(

@@ -155,7 +155,7 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     return [item.strip() for item in value.split(',') if item.strip()]
 
 
-def _parse_string_id_list(value: Any, field: str) -> Optional[List[str]]:
+def _parse_string_id_list(value: object, field: str) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list) or not all(

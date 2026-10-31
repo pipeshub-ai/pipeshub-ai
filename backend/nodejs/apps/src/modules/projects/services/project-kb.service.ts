@@ -1,4 +1,7 @@
-import { NotFoundError, InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  NotFoundError,
+  InternalServerError,
+} from '../../../libs/errors/http.errors';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
   executeConnectorCommand,
@@ -21,7 +24,7 @@ function allOrgTeamId(orgId: string): string {
   return `all_${orgId}`;
 }
 
-/** Current project members as the hidden-collection grant buckets. The project owner is never a writer/reader here — they are always KB OWNER. */
+/** Hidden-collection grants. The project owner is skipped — they stay KB OWNER. */
 function memberGrantBuckets(project: ProjectDto): {
   editorUserIds: string[];
   viewerUserIds: string[];
@@ -38,16 +41,22 @@ function memberGrantBuckets(project: ProjectDto): {
     if (member.principalId === project.userId) {
       continue;
     }
-    (member.role === 'editor' ? editorUserIds : viewerUserIds).push(member.principalId);
+    const bucket = member.role === 'editor' ? editorUserIds : viewerUserIds;
+    bucket.push(member.principalId);
   }
   return { editorUserIds, viewerUserIds, teamIds };
 }
 
-/** Body for `POST /api/v1/kb/` so Python records the project owner as createdBy/OWNER and grants everyone else in the same create. */
-function hiddenKbCreateBody(project: ProjectDto, projectId: string): Record<string, unknown> {
+/** POST /api/v1/kb/ body: project owner is createdBy/OWNER. */
+function hiddenKbCreateBody(
+  project: ProjectDto,
+  projectId: string,
+): Record<string, unknown> {
   const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(project);
   const teams =
-    project.visibility === 'org' ? [...teamIds, allOrgTeamId(project.orgId)] : teamIds;
+    project.visibility === 'org'
+      ? [...teamIds, allOrgTeamId(project.orgId)]
+      : teamIds;
   const body: Record<string, unknown> = {
     name: `project:${projectId}`,
     isHidden: true,
@@ -95,7 +104,10 @@ export class ProjectKnowledgeBaseService {
       { userIds, teamIds: [], role },
     );
     if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base user permissions');
+      throw handleBackendError(
+        response,
+        'sync project knowledge base user permissions',
+      );
     }
   }
 
@@ -119,7 +131,10 @@ export class ProjectKnowledgeBaseService {
       { userIds: [], teamIds },
     );
     if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base team permissions');
+      throw handleBackendError(
+        response,
+        'sync project knowledge base team permissions',
+      );
     }
   }
 
@@ -160,7 +175,8 @@ export class ProjectKnowledgeBaseService {
         // OWNER/createdBy. Re-sync when that opener (or the project owner)
         // still holds OWNER so the real owner is granted and the opener can
         // later be revoked. A WRITER opener is already the post-fix shape.
-        const role = (check.data as { userRole?: string } | undefined)?.userRole;
+        const role = (check.data as { userRole?: string } | undefined)
+          ?.userRole;
         if (role === 'OWNER') {
           await this.syncMemberPermissions(appConfig, headers, project).catch(
             () => undefined,
@@ -178,12 +194,17 @@ export class ProjectKnowledgeBaseService {
       headers,
       hiddenKbCreateBody(project, projectId),
     );
-    if (createResponse.statusCode !== 200 && createResponse.statusCode !== 201) {
+    if (
+      createResponse.statusCode !== 200 &&
+      createResponse.statusCode !== 201
+    ) {
       throw handleBackendError(createResponse, 'create project knowledge base');
     }
     const kbId = (createResponse.data as { id?: string } | undefined)?.id;
     if (!kbId) {
-      throw new InternalServerError('Knowledge base creation did not return an id');
+      throw new InternalServerError(
+        'Knowledge base creation did not return an id',
+      );
     }
 
     const won = await getProjectRepository().claimLinkedKb(
@@ -235,13 +256,22 @@ export class ProjectKnowledgeBaseService {
 
     await this.grantUsers(appConfig, headers, kbId, [project.userId], 'OWNER');
 
-    const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(project);
+    const { editorUserIds, viewerUserIds, teamIds } =
+      memberGrantBuckets(project);
 
-    await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
+    await this.grantUsers(
+      appConfig,
+      headers,
+      kbId,
+      viewerUserIds,
+      KB_ROLE_BY_PROJECT_ROLE.viewer,
+    );
     await this.grantTeams(appConfig, headers, kbId, teamIds);
 
     if (project.visibility === 'org') {
-      await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId)]);
+      await this.grantTeams(appConfig, headers, kbId, [
+        allOrgTeamId(project.orgId),
+      ]);
     }
 
     // Editors last so a repair of an old editor-created KB can grant the
@@ -276,7 +306,10 @@ export class ProjectKnowledgeBaseService {
       body,
     );
     if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base permission');
+      throw handleBackendError(
+        response,
+        'revoke project knowledge base permission',
+      );
     }
   }
 
@@ -295,7 +328,10 @@ export class ProjectKnowledgeBaseService {
       { userIds: [], teamIds: [allOrgTeamId(project.orgId)] },
     );
     if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base org visibility');
+      throw handleBackendError(
+        response,
+        'revoke project knowledge base org visibility',
+      );
     }
   }
 

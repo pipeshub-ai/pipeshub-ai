@@ -131,7 +131,7 @@ HIDDEN_GRANTS_ONLY_REASON = (
 )
 
 
-def _hidden_kb_follows_project_membership(kb_doc: Optional[Dict]) -> bool:
+def _hidden_kb_follows_project_membership(kb_doc: dict | None) -> bool:
     """A project's linked file collection is `isHidden`. Its membership must
     follow the project, so the person who first opened it is not an immovable
     creator the way they are on a normal Collection."""
@@ -144,7 +144,7 @@ def _user_kb_permission_edge(
     kb_id: str,
     role: str,
     timestamp: int,
-) -> Dict[str, Any]:
+) -> dict[str, object]:
     return {
         "from_id": from_id,
         "from_collection": CollectionNames.USERS.value,
@@ -566,10 +566,10 @@ class KnowledgeBaseService:
         org_id: str,
         name: str,
         is_hidden: bool = False,
-        owner_user_id: Optional[str] = None,
-        writer_user_ids: Optional[List[str]] = None,
-        reader_user_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
+        owner_user_id: str | None = None,
+        writer_user_ids: list[str] | None = None,
+        reader_user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
     ) -> Optional[Dict]:
         """Create a new knowledge base.
 
@@ -767,10 +767,10 @@ class KnowledgeBaseService:
         self,
         kb_id: str,
         owner_user_id: str,
-        writer_user_ids: List[str],
-        reader_user_ids: List[str],
-        team_ids: List[str],
-    ) -> Optional[Dict]:
+        writer_user_ids: list[str],
+        reader_user_ids: list[str],
+        team_ids: list[str],
+    ) -> dict | None:
         """Grant the rest of a project's members after create, acting as the
         owner so an editor's JWT is not required to share the new collection."""
         if writer_user_ids:

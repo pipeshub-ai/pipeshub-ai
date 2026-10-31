@@ -172,8 +172,8 @@ class TestCreateKnowledgeBase:
         assert kb_data["vectorMembershipBackfilled"] is True
 
     @pytest.mark.asyncio
-    async def test_hidden_kb_is_owned_by_owner_user_id_not_the_caller(self, service):
-        async def lookup(*, user_id, **_kwargs):
+    async def test_hidden_kb_is_owned_by_owner_user_id_not_the_caller(self, service) -> None:
+        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
             users = {
                 "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
                 "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
@@ -210,7 +210,7 @@ class TestCreateKnowledgeBase:
         }
 
     @pytest.mark.asyncio
-    async def test_owner_user_id_is_rejected_unless_the_kb_is_hidden(self, service):
+    async def test_owner_user_id_is_rejected_unless_the_kb_is_hidden(self, service) -> None:
         result = await service.create_knowledge_base(
             "user1", "org1", "My KB", owner_user_id="owner-1",
         )
@@ -219,8 +219,8 @@ class TestCreateKnowledgeBase:
         service.graph_provider.get_user_by_user_id.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_owner_in_another_org_is_not_found(self, service):
-        async def lookup(*, user_id, **_kwargs):
+    async def test_owner_in_another_org_is_not_found(self, service) -> None:
+        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
             if user_id == "editor-1":
                 return {"id": "ek1", "orgId": "org1"}
             return {"id": "ok1", "orgId": "org-other"}
@@ -238,7 +238,7 @@ class TestCreateKnowledgeBase:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_hidden_create_shares_remaining_members_as_the_owner(self, service):
+    async def test_hidden_create_shares_remaining_members_as_the_owner(self, service) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
         )
@@ -269,7 +269,7 @@ class TestCreateKnowledgeBase:
         assert service.create_kb_permissions.await_args_list[2].args[3] == ["team-1"]
 
     @pytest.mark.asyncio
-    async def test_owner_user_id_matching_the_caller_stays_owner(self, service):
+    async def test_owner_user_id_matching_the_caller_stays_owner(self, service) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
         )
@@ -298,7 +298,7 @@ class TestCreateKnowledgeBase:
         assert {edge["from_id"]: edge["role"] for edge in perm_edges} == {"ok1": "OWNER"}
 
     @pytest.mark.asyncio
-    async def test_a_failed_member_share_is_not_reported_as_created(self, service):
+    async def test_a_failed_member_share_is_not_reported_as_created(self, service) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
         )
@@ -323,7 +323,7 @@ class TestCreateKnowledgeBase:
         assert result["code"] == 403
 
     @pytest.mark.asyncio
-    async def test_initial_grants_are_rejected_unless_hidden(self, service):
+    async def test_initial_grants_are_rejected_unless_hidden(self, service) -> None:
         result = await service.create_knowledge_base(
             "user1", "org1", "My KB", writer_user_ids=["editor-1"],
         )
@@ -2002,7 +2002,7 @@ class TestUpdateKbPermission:
     @pytest.mark.asyncio
     async def test_hidden_kb_allows_demoting_the_creator_when_another_owner_remains(
         self, service,
-    ):
+    ) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "rk1", "orgId": "org-1"}
         )
@@ -2257,7 +2257,7 @@ class TestRemoveKbPermission:
     @pytest.mark.asyncio
     async def test_hidden_kb_allows_removing_the_creator_when_another_owner_remains(
         self, service,
-    ):
+    ) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "rk1", "orgId": "org-1"}
         )
@@ -2281,7 +2281,7 @@ class TestRemoveKbPermission:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_hidden_kb_still_refuses_removing_the_last_owner(self, service):
+    async def test_hidden_kb_still_refuses_removing_the_last_owner(self, service) -> None:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "rk1", "orgId": "org-1"}
         )
