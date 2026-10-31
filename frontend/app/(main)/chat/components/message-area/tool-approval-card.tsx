@@ -139,7 +139,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
       ...(approval.argsHash ? { argsHash: approval.argsHash } : {}),
       ...extra,
       ...(plain && remember && approval.canRemember !== false ? { remember: true } : {}),
-      ...(plain && forConversation && decision === 'allow' ? { rememberForConversation: true } : {}),
+      ...(plain && forConversation && decision === 'allow' && approval.canRemember !== false ? { rememberForConversation: true } : {}),
     });
     if (!request) return;
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
@@ -161,7 +161,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
       refuse(local);
       return;
     }
-    const args = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined));
+    // A field the call didn't set and the person left empty stays out of the call.
+    const args = Object.fromEntries(Object.entries(values).filter(([k, v]) => v !== undefined && !(original?.[k] === undefined && blank(v))));
     setSending(true);
     let found: EditError[] = [];
     try {
@@ -356,23 +357,22 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
           {t('chat.toolApproval.changeSomethingElse')}
         </Button>
       </Flex>
-      {!edited && (
+      {/* An admin owns the rule: neither choice is the person's to save. */}
+      {!edited && approval.canRemember !== false && (
         <Flex mt="3" direction="column" gap="2">
-          {approval.canRemember !== false && (
-            <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
-              <Flex gap="2" align="center">
-                <Checkbox
-                  size="1"
-                  checked={remember}
-                  onCheckedChange={(value) => {
-                    setRemember(value === true);
-                    if (value === true) setForConversation(false);
-                  }}
-                />
-                {t('chat.toolApproval.dontAskAgain')}
-              </Flex>
-            </Text>
-          )}
+          <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
+            <Flex gap="2" align="center">
+              <Checkbox
+                size="1"
+                checked={remember}
+                onCheckedChange={(value) => {
+                  setRemember(value === true);
+                  if (value === true) setForConversation(false);
+                }}
+              />
+              {t('chat.toolApproval.dontAskAgain')}
+            </Flex>
+          </Text>
           <Box>
             <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
               <Flex gap="2" align="center">
