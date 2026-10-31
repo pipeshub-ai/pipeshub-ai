@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from qa import junit
+from qa import shard as shard_mod
 from qa.catalog import rel_to
 from qa.config import Config
 from qa import stack as stack_mod
@@ -362,18 +363,26 @@ def run(
     cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]], out: Path,
     stack_mode: str = "none", base_url: str | None = None, build: bool = False,
     dry_run: bool = False, retry: bool = True, scope: str = "all",
+    shard: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
-    """scope: "all", "unit" (no stack needed) or "stack" (integration and e2e only)."""
+    """scope: "all", "unit" (no stack needed) or "stack" (integration and e2e only).
+    shard (k, n): run only stack shard k of n; the other shards' stack tests are not_run scope."""
     out.mkdir(parents=True, exist_ok=True)
     log_dir = out / "logs"
-    invs, not_run = resolve(cfg, plan, rows, out)
+    elsewhere: set[str] = set()
+    if shard:
+        elsewhere = set(shard_mod.stack_ids(cfg, plan, rows)) - shard_mod.select(cfg, plan, rows, *shard)
+    # Resolve without them, so no runner command names another shard's files.
+    invs, not_run = resolve(cfg, {**plan, "tests": [t for t in plan["tests"] if t["id"] not in elsewhere]}, rows, out)
+    if shard:
+        _mark(not_run, sorted(elsewhere), "scope", f"runs in another stack shard (this is {shard[0]}/{shard[1]})")
     if scope != "all":
         keep = [i for i in invs if i.needs_stack == (scope == "stack")]
         kept_ids = {t for i in keep for t in i.ids}
         _mark(not_run, [t["id"] for t in plan["tests"] if t["id"] not in kept_ids], "scope", f"outside --scope {scope}")
         invs = keep
     if dry_run:
-        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out)}
+        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)}
 
     started = time.time()
     pre_not_run, fatal = preflight(cfg, invs, rows, stack_mode)
@@ -395,7 +404,7 @@ def run(
                     for i in inv.ids:
                         _mark(not_run, [i], "infra", "infra: " + "; ".join(fatal))
             else:
-                stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out)
+                stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)
                 setup_error = _prepare(cfg, stacks, out) if stack_mode == "managed" and stacks else None
                 if setup_error:
                     for inv in stacked:

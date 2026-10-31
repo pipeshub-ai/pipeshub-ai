@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from qa import (
     report,
     run,
     score,
+    shard,
     validate,
 )
 
@@ -173,6 +175,9 @@ def cmd_validate(args) -> int:
             fh.write(f"matrix={json.dumps(plan['matrix'])}\n")
             fh.write(f"has_python={'true' if families & {'pytest', 'unittest'} else 'false'}\n")
             fh.write(f"has_node={'true' if families & {'mocha', 'vitest', 'npm-script', 'playwright'} else 'false'}\n")
+            n = shard.count(cfg, plan, rows, int(os.environ.get("QA_STACK_SHARDS") or 1))
+            fh.write(f"shards={json.dumps(list(range(1, n + 1)))}\n")
+            fh.write(f"shard_total={n}\n")
     return 0
 
 
@@ -203,7 +208,8 @@ def cmd_run(args) -> int:
     try:
         stack_mode = args.stack or os.environ.get("QA_STACK", "none")
         result = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=args.base_url,
-                         build=args.build, dry_run=args.dry_run, retry=not args.no_retry, scope=args.scope)
+                         build=args.build, dry_run=args.dry_run, retry=not args.no_retry, scope=args.scope,
+                         shard=args.shard)
     finally:
         # The upload steps run even when the run raises, so the logs it already wrote must be clean first.
         report.redact_files(out)
@@ -213,7 +219,8 @@ def cmd_run(args) -> int:
         print(text)
         return 0
     report.redact_results(result)
-    _dump(out / ("results.json" if args.scope == "all" else f"results-{args.scope}.json"), result)
+    name = "results" + ("" if args.scope == "all" else f"-{args.scope}") + (f"-{args.graph_db}" if args.graph_db else "")
+    _dump(out / (name + (f"-{args.shard[0]}of{args.shard[1]}" if args.shard else "") + ".json"), result)
     from collections import Counter
     counts = Counter(t["outcome"] for t in result["tests"])
     print("results: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + f" ({result['seconds']}s)")
@@ -378,6 +385,13 @@ def cmd_score(args) -> int:
     return 0
 
 
+def _shard_arg(text: str) -> tuple[int, int]:
+    m = re.fullmatch(r"(\d+)/(\d+)", text)
+    if not m or not 1 <= int(m.group(1)) <= int(m.group(2)):
+        raise argparse.ArgumentTypeError("--shard must be K/N with 1 <= K <= N")
+    return int(m.group(1)), int(m.group(2))
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="qa", description="Select, run and report the tests a change needs.")
     p.add_argument("--out", default=os.environ.get("QA_OUT", paths.DEFAULT_OUT), help="run directory (default qa-out)")
@@ -414,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--no-retry", action="store_true")
         sp.add_argument("--scope", choices=["all", "unit", "stack"], default="all",
                         help="unit: tests that need no stack; stack: integration and e2e only")
+        sp.add_argument("--shard", type=_shard_arg, metavar="K/N",
+                        help="run only stack shard K of N (duration-balanced test groups)")
 
     s = sub.add_parser("collect", help="what changed")
     change_args(s)

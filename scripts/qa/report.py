@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from qa import junit
 from qa.config import Config
 
 BLOCKING = {"fail", "error"}
@@ -192,7 +193,8 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
 
 
 def merge_results(parts: list[dict[str, Any]], planned: list[str] = ()) -> dict[str, Any]:
-    """Combine results from separate run jobs; an executed outcome beats not_run.
+    """Combine results from separate run jobs; an executed outcome beats not_run,
+    and between executed outcomes the worst wins (a pass on one graph DB must not hide a fail on the other).
 
     A planned test no job reported is not_run, so the report never counts it as covered.
     """
@@ -201,6 +203,8 @@ def merge_results(parts: list[dict[str, Any]], planned: list[str] = ()) -> dict[
         for t in part["tests"]:
             prev = by_id.get(t["id"])
             if prev is None or (prev["outcome"] == "not_run" and (t["outcome"] != "not_run" or _blocks_more(t, prev))):
+                by_id[t["id"]] = t
+            elif "not_run" not in (prev["outcome"], t["outcome"]) and junit.worst([prev["outcome"], t["outcome"]]) != prev["outcome"]:
                 by_id[t["id"]] = t
     for test_id in planned:
         by_id.setdefault(test_id, {"id": test_id, "outcome": "not_run", "kind": "no_result", "details": "no result: no run covered it", "seconds": 0.0})

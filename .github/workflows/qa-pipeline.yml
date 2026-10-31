@@ -60,6 +60,9 @@ jobs:
       has_python: ${{ steps.validate.outputs.has_python }}
       has_node: ${{ steps.validate.outputs.has_node }}
       families: ${{ steps.validate.outputs.families }}
+      graph_db: ${{ steps.validate.outputs.graph_db }}
+      shards: ${{ steps.validate.outputs.shards }}
+      shard_total: ${{ steps.validate.outputs.shard_total }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,6 +160,10 @@ jobs:
 
       - name: Validate
         id: validate
+        env:
+          # Parallel stack jobs per graph DB, each a duration-balanced share of the
+          # stack tests (scripts/qa/shard.py). One on PRs keeps runner use low.
+          QA_STACK_SHARDS: ${{ vars.QA_STACK_SHARDS || (github.event_name == 'pull_request' && '1' || '4') }}
         run: QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" validate --emit-gh-outputs
 
       - uses: actions/upload-artifact@v4
@@ -225,6 +232,11 @@ jobs:
     needs: plan
     if: vars.QA_ENFORCE == 'true' && !inputs.plan_only && needs.plan.outputs.needs_stack == 'true'
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    strategy:
+      fail-fast: false
+      matrix:
+        graph: ${{ fromJSON(needs.plan.outputs.graph_db) }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     timeout-minutes: 300
@@ -489,13 +501,14 @@ jobs:
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
       - name: Run the selected integration and e2e tests
-        run: python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build
+        run: python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "${{ matrix.graph }}" --shard "${{ matrix.shard }}/${{ needs.plan.outputs.shard_total }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qa-results-stack-${{ inputs.edition }}
+          # Must end in -<edition>: the report and gate download qa-*-<edition>.
+          name: qa-results-stack-${{ matrix.graph }}-${{ matrix.shard }}-${{ inputs.edition }}
           path: |
-            qa-out/results-stack.json
+            qa-out/results-stack-*.json
             qa-out/logs/
             qa-out/junit-*.xml
           retention-days: 14

@@ -89,6 +89,18 @@ only base-controlled while `.github/workflows/qa*.yml`, `scripts/qa/**` and
 rule overlays need an owner's review (CODEOWNERS plus branch protection
 that requires code-owner review).
 
+**Stack shards.** `run-stack` is a matrix of graph DB × shard. The plan job
+sets the shard cap from the `QA_STACK_SHARDS` repository variable (default 1 on
+pull requests, 4 otherwise) and uses `min(cap, groups)` shards. A group is one
+connector marker with measured minutes in `scripts/shard_durations.json`, else
+one test file, so a connector suite or an ordered module never splits; a group
+with no measured minutes counts as 5. Groups go to the lightest shard, longest
+first (`scripts/qa/shard.py`). Each job runs `qa run --graph-db G --shard K/N`,
+writes `results-stack-G-KofN.json`, and lists the other shards' stack tests as
+`not_run` `scope`. The report merges the parts: an executed outcome beats
+`not_run`, and the worst executed outcome wins, so a pass on one graph DB never
+hides a fail on the other.
+
 The run jobs call `scripts/qa` from the PR's tree. Once `QA_ENFORCE` is on, a PR
 branch created before the engine landed has no `scripts/qa` and must be rebased.
 

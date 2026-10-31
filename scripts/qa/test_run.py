@@ -598,6 +598,103 @@ class TestScope(RunCase):
         self.assertIn("outside --scope unit", result["tests"][0]["details"])
 
 
+RANKING = "it:retrieval/test_search.py::test_ranking"
+
+
+class TestShard(RunCase):
+    def test_assign_is_longest_first_and_deterministic(self) -> None:
+        from qa import shard
+        got = shard.assign({"a": (10, ["a"]), "b": (7, ["b"]), "c": (5, ["c"]), "d": (3, ["d"])}, 2)
+        self.assertEqual(got, [["a", "d"], ["b", "c"]])
+
+    def test_every_stack_test_lands_in_exactly_one_shard(self) -> None:
+        from qa import shard
+        plan = plan_for(list(self.rows))
+        stack = set(shard.stack_ids(self.cfg, plan, self.rows))
+        self.assertIn("e2e:tests/e2e/login.spec.ts", stack)
+        self.assertNotIn("py:tests/unit/test_patch_only.py", stack)
+        for n in range(1, 6):
+            parts = [shard.select(self.cfg, plan, self.rows, k, n) for k in range(1, n + 1)]
+            self.assertEqual(set().union(*parts), stack, n)
+            self.assertEqual(sum(len(p) for p in parts), len(stack), n)
+
+    def test_a_connector_suite_and_a_file_never_split(self) -> None:
+        from qa import shard
+        rows = {
+            "a": {"path": "x/test_a.py", "markers": ["integration", "jira"]},
+            "b": {"path": "x/test_b.py", "markers": ["jira"]},
+            "c": {"path": "y/test_c.py", "markers": ["integration"]},
+            "d": {"path": "y/test_c.py", "markers": []},
+            "e": {"path": "z/test_e.py", "markers": []},
+        }
+        g = shard.groups(rows, list(rows), {"jira": 2.0})
+        self.assertEqual(g["jira"], (2.0, ["a", "b"]))
+        self.assertEqual(g["y/test_c.py"], (shard.DEFAULT_MINUTES, ["c", "d"]))
+        for n in range(1, 5):
+            where = {i: k for k, ids in enumerate(shard.assign(g, n)) for i in ids}
+            self.assertEqual(where["a"], where["b"])
+            self.assertEqual(where["c"], where["d"])
+
+    def test_shard_run_leaves_other_shards_tests_not_run_scope(self) -> None:
+        from qa import shard
+        plan = plan_for([JIRA_SYNC, ACL, RANKING, "e2e:tests/e2e/login.spec.ts", "py:tests/unit/test_patch_only.py"])
+        mine = shard.select(self.cfg, plan, self.rows, 1, 2)
+        others = set(shard.stack_ids(self.cfg, plan, self.rows)) - mine
+        self.assertTrue(others)
+        result = run.run(self.cfg, plan, self.rows, self.out, stack_mode="none", scope="stack", shard=(1, 2))
+        by_id = {t["id"]: t for t in result["tests"]}
+        for i in others:
+            self.assertEqual(by_id[i]["kind"], "scope")
+            self.assertIn("another stack shard (this is 1/2)", by_id[i]["details"])
+        for i in mine:
+            self.assertNotIn("another stack shard", by_id[i]["details"])
+        self.assertIn("outside --scope stack", by_id["py:tests/unit/test_patch_only.py"]["details"])
+
+    def test_bad_shard_argument_exits_2(self) -> None:
+        for bad in ("3/2", "x", "0/2"):
+            err = io.StringIO()
+            with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as cm:
+                qa_main.main(["--out", str(self.out), "run", "--ids", ACL, "--shard", bad])
+            self.assertEqual(cm.exception.code, 2, bad)
+            self.assertIn("--shard must be K/N with 1 <= K <= N", err.getvalue())
+
+    def test_sharded_results_file_name(self) -> None:
+        plan_path = self.out / "plan.json"
+        plan_path.write_text(json.dumps(plan_for([ACL])), encoding="utf-8")
+        seen = {}
+
+        def fake_run(cfg, plan, rows, out, **kw):
+            seen.update(kw)
+            return {"tests": [], "seconds": 0, "fatal": []}
+
+        with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), mock.patch.object(run, "run", fake_run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            qa_main.main(["--out", str(self.out), "run", "--plan", str(plan_path), "--scope", "stack", "--graph-db", "neo4j", "--shard", "1/2"])
+        self.assertEqual(seen["shard"], (1, 2))
+        self.assertTrue((self.out / "results-stack-neo4j-1of2.json").is_file())
+
+    def test_merge_keeps_the_worst_executed_outcome_across_parts(self) -> None:
+        def merged(*outcomes):
+            parts = [{"tests": [{"id": "a", "outcome": o}]} for o in outcomes]
+            return report.merge_results(parts, ["a"])["tests"][0]["outcome"]
+        self.assertEqual(merged("pass", "fail"), "fail")
+        self.assertEqual(merged("fail", "pass"), "fail")
+        self.assertEqual(merged("pass", "flaky"), "flaky")
+
+    def test_emit_gh_outputs_names_the_shards(self) -> None:
+        from qa import validate
+        (self.out / "plan-input.json").write_text("{}", encoding="utf-8")
+        gh = self.out / "gh-output"
+        plan = {**plan_for([ACL, RANKING]), "matrix": []}
+        with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root), "QA_STACK_SHARDS": "3", "GITHUB_OUTPUT": str(gh)}), \
+                mock.patch.object(validate, "merge", return_value=plan), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(qa_main.main(["--out", str(self.out), "validate", "--emit-gh-outputs"]), 0)
+        lines = gh.read_text(encoding="utf-8").splitlines()
+        self.assertIn("shards=[1]", lines)
+        self.assertIn("shard_total=1", lines)
+
+
 class TestAllowNotRun(unittest.TestCase):
     def parse(self, *argv: str) -> frozenset:
         p = argparse.ArgumentParser()
