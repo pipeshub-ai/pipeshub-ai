@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from app.modules.demo_data.chat import excluded_app_ids
@@ -46,7 +47,7 @@ from app.utils.chat_helpers import (
 from .catalog import ConnectorCatalog
 from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
-from .navigator import GraphNavigator
+from .navigator import GraphNavigator, ListingFailedError
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     NODE_NOT_FOUND_MESSAGE,
@@ -580,6 +581,14 @@ class KnowledgeGraph:
             await keep_row_summaries_inside_connection(
                 [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
             )
+        except ListingFailedError as exc:
+            logger.warning("navigate listing failed for node_id=%s: %s", node_id, exc)
+            if exc.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
+                return False, (
+                    f"Listing failed: {exc} knowledgegraph__list_files with a name query, "
+                    "or search, can reach its records instead."
+                )
+            return False, f"Listing failed: {exc}"
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."

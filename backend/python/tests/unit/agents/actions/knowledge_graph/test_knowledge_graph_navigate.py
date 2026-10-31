@@ -1842,3 +1842,44 @@ class TestNavigateTimestampRendering:
             success, text = await tool.navigate()
         assert success
         assert "created:" not in text
+
+
+class TestNavigateFailedListing:
+    """A listing that failed (a busy or out-of-memory graph on a huge app) read as "(no children)"."""
+
+    @staticmethod
+    async def _navigate_failing_with(error: str, code: int) -> tuple[bool, str]:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        failed = _make_knowledge_hub_response(items=[])
+        failed.success = False
+        failed.error = error
+        failed.errorCode = code
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=failed),
+        ):
+            return await KnowledgeGraph(state=state).navigate()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_is_reported_not_shown_as_empty(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "The listing is busy right now. Please try again in a few seconds.", 503,
+        )
+
+        assert not success
+        assert text == "Listing failed: The listing is busy right now. Please try again in a few seconds."
+        assert "no children" not in text
+
+    @pytest.mark.asyncio
+    async def test_only_a_listing_too_large_to_read_points_to_a_name_query(self) -> None:
+        success, text = await self._navigate_failing_with(
+            "This view has too many records to list at once. Open a folder, or narrow by search.", 422,
+        )
+
+        assert not success
+        assert text.startswith("Listing failed: This view has too many records to list at once.")
+        assert "knowledgegraph__list_files with a name query" in text
