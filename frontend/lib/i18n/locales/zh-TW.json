@@ -3825,6 +3825,8 @@
         "signingSecretPlaceholder": "輸入簽署密鑰",
         "agent": "代理程式",
         "agentPlaceholder": "選取代理程式",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "輸入「{{name}}」以確認",
         "deleteBotBodyLine1": "確定要刪除 {{name}} 嗎？此操作無法復原。",
         "deleteBotBodyLine2": "與此機器人相關的所有設定與憑證都將被永久移除。"

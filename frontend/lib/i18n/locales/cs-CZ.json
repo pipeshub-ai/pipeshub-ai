@@ -3966,6 +3966,8 @@
         "signingSecretPlaceholder": "Zadejte podpisový tajný klíč",
         "agent": "Agent",
         "agentPlaceholder": "Vyberte agenta",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "Pro potvrzení napište \"{{name}}\"",
         "deleteBotBodyLine1": "Opravdu chcete smazat {{name}}? Tuto akci nelze vrátit zpět.",
         "deleteBotBodyLine2": "Všechny konfigurace a přihlašovací údaje spojené s tímto botem budou trvale odstraněny."

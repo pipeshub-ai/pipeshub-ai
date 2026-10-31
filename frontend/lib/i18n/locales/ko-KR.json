@@ -3825,6 +3825,8 @@
         "signingSecretPlaceholder": "서명 시크릿 입력",
         "agent": "에이전트",
         "agentPlaceholder": "에이전트 선택",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "확인하려면 \"{{name}}\"을(를) 입력하세요",
         "deleteBotBodyLine1": "{{name}}을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         "deleteBotBodyLine2": "이 봇과 연결된 모든 구성과 자격 증명이 영구적으로 제거됩니다."

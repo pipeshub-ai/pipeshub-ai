@@ -3685,6 +3685,8 @@
         "signingSecretPlaceholder": "Enter signing secret",
         "agent": "Agent",
         "agentPlaceholder": "Select an agent",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
         "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."

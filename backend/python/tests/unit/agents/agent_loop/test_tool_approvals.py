@@ -375,7 +375,7 @@ def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN
 class TestWhoIsWatching:
     @pytest.mark.parametrize("overrides,expected", [
         ({}, True),
-        ({"client_name": "slack"}, False),
+        ({"client_name": "api"}, False),
         ({"client_name": None}, False),
         ({"chat_streaming": False}, False),
         ({"conversation_id": None}, False),
@@ -508,7 +508,7 @@ class TestTheGate:
         assert ctx.pending_approval.details["readOnly"] is False
 
     async def test_nobody_watching_blocks_with_a_reason(self) -> None:
-        ctx = await _gate(_context(client_name="slack"), _adapter(read_only=False), title="Bug")
+        ctx = await _gate(_context(client_name="api"), _adapter(read_only=False), title="Bug")
         assert ctx.decision == PreDecision.DENY
         assert "approve it in the PipesHub app" in (ctx.decision_reason or "")
 
@@ -1289,3 +1289,20 @@ def test_call_kind_explain_with_execution_needs_approval(tool_path: str, sql: st
     target = SimpleNamespace(kind="write")
     assert approvals.call_kind(target, tool_path, {"query": sql}) == "destructive"
     assert approvals.call_kind(target, tool_path, {"query": "EXPLAIN SELECT 1"}) == "write"
+
+
+class TestWatched:
+    @staticmethod
+    def _ctx(client_name: str, streaming: bool = True, conversation_id: str | None = "c1") -> SimpleNamespace:
+        return SimpleNamespace(
+            client_name=client_name, chat_streaming=streaming, conversation_id=conversation_id, is_service_account=False,
+        )
+
+    @pytest.mark.parametrize("client", ["pipeshub-ai", "slack"])
+    def test_the_web_app_and_slack_can_answer_a_card(self, client: str) -> None:
+        assert approvals.watched(self._ctx(client)) is True  # type: ignore[arg-type]
+
+    def test_the_api_cannot_and_the_other_conditions_still_apply(self) -> None:
+        assert approvals.watched(self._ctx("api")) is False  # type: ignore[arg-type]
+        assert approvals.watched(self._ctx("slack", streaming=False)) is False  # type: ignore[arg-type]
+        assert approvals.watched(self._ctx("slack", conversation_id=None)) is False  # type: ignore[arg-type]

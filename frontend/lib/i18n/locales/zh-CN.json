@@ -3825,6 +3825,8 @@
         "signingSecretPlaceholder": "输入签名密钥",
         "agent": "智能体",
         "agentPlaceholder": "选择一个智能体",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "输入“{{name}}”以确认",
         "deleteBotBodyLine1": "确定要删除 {{name}} 吗？此操作无法撤销。",
         "deleteBotBodyLine2": "与此机器人关联的所有配置和凭据将被永久删除。"

@@ -3689,6 +3689,8 @@
         "signingSecretPlaceholder": "साइनिंग सीक्रेट दर्ज करें",
         "agent": "एजेंट",
         "agentPlaceholder": "एक एजेंट चुनें",
+        "approveActionsFromSlack": "Approve actions from Slack",
+        "approveActionsFromSlackHint": "Needs interactivity turned on in your Slack app",
         "typeNameToConfirm": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
         "deleteBotBodyLine1": "क्या आप वाकई {{name}} को हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
         "deleteBotBodyLine2": "इस बॉट से जुड़ी सभी कॉन्फ़िगरेशन और क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।"
