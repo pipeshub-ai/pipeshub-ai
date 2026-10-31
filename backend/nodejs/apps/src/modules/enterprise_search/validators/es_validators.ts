@@ -301,6 +301,9 @@ const modelFieldsSchema = {
   reasoningEffort: z.enum(REASONING_EFFORT_VALUES).optional(),
 };
 
+// Python's `_MAX_EDITED_ARGUMENT_CHARS`: the largest edit of a call's arguments, as JSON.
+const MAX_EDITED_ARGUMENT_CHARS = 64_000;
+
 /** Execution-context fields shared by every stream/regenerate body schema. */
 const contextFieldsSchema = {
   timezone: z
@@ -343,12 +346,43 @@ const contextFieldsSchema = {
   runId: z.string().check(guidCheck('runId must be a valid UUID')).optional(),
   // The person's answer to a tool approval card (Python `tool_approvals.py`). Same
   // declare-or-be-stripped constraint as `protocol` above. The call it answers is
-  // the one saved server-side; only its id, the decision and "don't ask again" travel here.
+  // the one saved server-side; the answer may carry an edit of its arguments (checked
+  // there against the tool's schema before anything runs) or a note on a deny.
   toolApproval: z
     .object({
       approvalId: z.string().min(1).max(64),
       decision: z.enum(['allow', 'deny']),
       remember: z.boolean().optional(),
+      argsHash: z.string().max(64).optional(),
+      arguments: z.record(z.string(), z.unknown()).optional(),
+      feedback: z.string().max(2000).optional(),
+    })
+    .superRefine((answer, ctx) => {
+      if (answer.arguments !== undefined) {
+        if (answer.decision !== 'allow' || answer.remember) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['arguments'],
+            message:
+              'Edited arguments go only with allow, and not with remember',
+          });
+        } else if (
+          JSON.stringify(answer.arguments).length > MAX_EDITED_ARGUMENT_CHARS
+        ) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['arguments'],
+            message: 'The edited arguments are too large',
+          });
+        }
+      }
+      if (answer.feedback !== undefined && answer.decision !== 'deny') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['feedback'],
+          message: 'Feedback goes only with deny',
+        });
+      }
     })
     .optional(),
 };

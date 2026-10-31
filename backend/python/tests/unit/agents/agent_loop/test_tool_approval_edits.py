@@ -1,11 +1,24 @@
-"""Checking an edited tool call before it is approved."""
+"""Checking an edited tool call before it is approved, and answering a card with an edit or a note."""
 from __future__ import annotations
 
 import time
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
+from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall
+from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agents.agent_loop import tool_approvals as approvals
 from app.agents.agent_loop.tool_approvals import args_hash, check_edit
+from tests.unit.agents.agent_loop.test_tool_approvals import (
+    _DONE,
+    _answer,
+    _ask,
+    _result_of,
+    _Server,
+    _Store,
+)
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -102,3 +115,175 @@ def test_call_kind_unchanged_for_existing_callers() -> None:
 
 def test_args_hash_survives_a_value_json_cannot_encode() -> None:
     assert len(args_hash({"when": {1, 2}})) == 64
+
+
+# ---------------------------------------------------------------------------
+# Answering a card with edited arguments, or declining it with a note
+# ---------------------------------------------------------------------------
+
+_ASKED = {"title": "Login is broken"}
+_HASH = args_hash(_ASKED)
+
+
+def _claimed(store: _Store) -> list[str]:
+    return [k for k in store.values if "/claims/" in k]
+
+
+async def _edited(store: _Store, mcp: _Server, approval_id: str, arguments: dict[str, Any], **fields: Any):  # noqa: ANN202, ANN401
+    return await _answer(
+        store, mcp, approval_id, "allow", answer_fields={"arguments": arguments, "args_hash": _HASH, **fields},
+    )
+
+
+async def test_edited_allow_runs_with_edited_arguments() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
+    assert mcp.calls == [{"tool": "create_issue", "title": "Signin is broken"}]
+    (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
+    assert (started["edited"], started["args"]) == (True, {"title": "Signin is broken"})
+    claim = store.values[_claimed(store)[0]]["outcome"]
+    assert claim["editedArguments"] == {"title": "Signin is broken"}
+    assert approvals.PendingCall.model_validate(store.pending()[0]).arguments == _ASKED
+
+
+async def test_model_is_told_which_fields_changed() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _edited(store, mcp, approval_id, {"title": "Signin is broken", "labels": ["auth"]})
+    text = _result_of(answered.sent[0]).content
+    assert text.startswith("The user changed `labels`, `title` before approving.")
+    assert text.endswith("created Signin is broken")
+
+
+async def test_history_call_rewritten_to_edited_arguments() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
+    calls = [c for m in answered.sent[0] if isinstance(m, AssistantMessage) for c in m.tool_calls or [] if c.id == "c1"]
+    assert [c.arguments for c in calls] == [{"title": "Signin is broken"}]
+
+
+async def test_unchanged_arguments_are_a_plain_allow() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _edited(store, mcp, approval_id, dict(_ASKED))
+    assert _result_of(answered.sent[0]).content == "created Login is broken"
+    (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
+    assert started.get("edited") is None
+    assert store.values[_claimed(store)[0]]["outcome"]["editedArguments"] is None
+
+
+async def test_refused_edit_keeps_card_open_and_runs_nothing() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    # A model that ignores the instruction and calls the tool again still runs nothing.
+    again = ToolCall(id="c3", name="mcp_jira_create_issue", arguments={"title": "Signin is broken"})
+    answered = await _answer(
+        store, mcp, approval_id, "allow", again, _DONE, answer_fields={"arguments": {"title": 5}, "args_hash": _HASH},
+    )
+    assert mcp.calls == [] and _claimed(store) == []
+    assert "only one action can wait" in _result_of(answered.sent[1], "c3").content
+    (card,) = answered.events.of(EventType.TOOL_BLOCKED, "c1")
+    assert card["status"] == ToolCallStatus.AWAITING_APPROVAL
+    assert card["approval"]["approvalId"] == approval_id
+    assert card["approval"]["editErrors"][0]["path"] == "/title"
+    assert answered.events.of(EventType.TOOL_CALL_START, "c1") == []
+    # The model is only told to point the person at the card; the call keeps waiting for them.
+    assert any("highlighted" in c for c in answered.goal.constraints)
+    # The card can still be answered.
+    await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
+    assert mcp.calls == [{"tool": "create_issue", "title": "Signin is broken"}]
+
+
+async def test_stale_card_edit_is_refused() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _edited(store, mcp, approval_id, {"title": "x"}, args_hash="0" * 64)
+    (card,) = answered.events.of(EventType.TOOL_BLOCKED, "c1")
+    assert card["approval"]["editErrors"] == [{"path": "", "message": "This request changed. Reload."}]
+    assert mcp.calls == [] and _claimed(store) == []
+
+
+async def test_edits_turned_off_refuse_edited_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    monkeypatch.setenv("TOOL_APPROVAL_EDITS", "false")
+    await _edited(store, mcp, approval_id, {"title": "x"})
+    assert mcp.calls == [] and _claimed(store) == []
+
+
+async def test_edit_from_another_user_isnt_checked_or_shown() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _answer(
+        store, mcp, approval_id, "allow", answer_fields={"arguments": {"title": 5}, "args_hash": _HASH}, user_id="user-2",
+    )
+    assert answered.events.of(EventType.TOOL_BLOCKED, "c1") == []
+    assert mcp.calls == [] and _claimed(store) == []
+
+
+async def test_store_failure_while_checking_an_edit_runs_nothing() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    store.reads_fail = True
+    answered = await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
+    store.reads_fail = False
+    assert mcp.calls == [] and _claimed(store) == []
+    assert "answer the card again" in _result_of(answered.sent[0]).content
+
+
+async def test_second_answer_after_edited_allow_shows_first_outcome() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
+    again = await _edited(store, mcp, approval_id, {"title": 5})
+    assert len(mcp.calls) == 1
+    assert again.events.of(EventType.TOOL_BLOCKED, "c1") == []
+    assert _result_of(again.sent[0]).content.startswith("The user changed `title` before approving.")
+    (started,) = again.events.of(EventType.TOOL_CALL_START, "c1")
+    assert (started["edited"], started["args"]) == (True, {"title": "Signin is broken"})
+
+
+async def test_deny_with_feedback_tells_the_model() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    answered = await _answer(store, mcp, approval_id, "deny", answer_fields={"feedback": "Use the team list"})
+    assert mcp.calls == []
+    assert _result_of(answered.sent[0]).content == (
+        "The user declined this call and said: Use the team list. Follow their instruction; don't repeat the same call."
+    )
+    (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
+    assert ended["content"] == "Declined: Use the team list"
+
+
+def test_answer_rejects_arguments_with_deny() -> None:
+    with pytest.raises(ValidationError):
+        approvals.ToolApprovalAnswer(approval_id="a", decision="deny", arguments={})
+
+
+def test_answer_rejects_arguments_with_remember() -> None:
+    with pytest.raises(ValidationError):
+        approvals.ToolApprovalAnswer(approval_id="a", decision="allow", remember=True, arguments={})
+
+
+def test_answer_rejects_feedback_with_allow() -> None:
+    with pytest.raises(ValidationError):
+        approvals.ToolApprovalAnswer(approval_id="a", decision="allow", feedback="no")
+
+
+def test_answer_rejects_feedback_over_2000_chars() -> None:
+    with pytest.raises(ValidationError):
+        approvals.ToolApprovalAnswer(approval_id="a", decision="deny", feedback="x" * 2001)
+
+
+def test_answer_rejects_arguments_over_64000_chars() -> None:
+    with pytest.raises(ValidationError):
+        approvals.ToolApprovalAnswer(approval_id="a", decision="allow", arguments={"v": "x" * 64_000})
+
+
+def test_answer_reads_the_wire_names() -> None:
+    answer = approvals.ToolApprovalAnswer.model_validate(
+        {"approvalId": "a", "decision": "allow", "argsHash": _HASH, "arguments": {"title": "x"}},
+    )
+    assert (answer.args_hash, answer.arguments) == (_HASH, {"title": "x"})

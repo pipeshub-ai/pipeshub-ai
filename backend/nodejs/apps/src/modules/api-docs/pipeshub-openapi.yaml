@@ -2299,6 +2299,13 @@ components:
         shown (answerable for 15 minutes, settled once, bound to the asking user and
         conversation); only its id and the answer travel here. A reply that answered a card
         can't be regenerated.
+
+        An allow may carry an edit of the call's arguments (`arguments`, with the `argsHash` the
+        card showed). The edit is checked against the tool's input schema, the tool's rules and
+        what the call does to data before anything runs; an edit that fails a check runs nothing,
+        leaves the card open with `editErrors`, and the card can be answered again. A deny may
+        carry a note (`feedback`) for the model to follow. `arguments` goes only with `allow` and
+        not with `remember`; `feedback` goes only with `deny`.
       required: [approvalId, decision]
       properties:
         approvalId:
@@ -2312,6 +2319,20 @@ components:
           description: |
             "Don't ask again for this tool": the answer becomes the person's own rule for the
             tool (Pre-approved for allow, Deny for deny).
+        argsHash:
+          type: string
+          maxLength: 64
+          description: The `argsHash` of the approval card the edit was made on.
+        arguments:
+          type: object
+          additionalProperties: true
+          description: |
+            The person's edit of the call's arguments, run in place of the ones asked for. At
+            most 64,000 characters as JSON. Arguments equal to the ones asked for are a plain allow.
+        feedback:
+          type: string
+          maxLength: 2000
+          description: Why the person declined, passed to the model as an instruction.
     McpToolRules:
       type: object
       properties:

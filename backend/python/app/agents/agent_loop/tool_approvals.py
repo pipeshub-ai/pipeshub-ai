@@ -13,8 +13,10 @@ deletes data at Block. A toolset tool: reads and changes at Allow, one that dele
 - **Ask**: the call is saved and the turn stops on it, with an approval card on the tool's row.
   The person's answer comes back as a request that resumes that same call (`Tool approval: …`
   with `toolApproval`, like the ask-user card's `User selections:`): the saved call runs, on the
-  server, with the arguments it was asked with, and its result becomes the result of the call the
-  model made. The model carries on from there in the same reply; it never re-creates the call.
+  server, with the arguments it was asked with (or the person's edit of them, once it passes the
+  tool's schema and rules; a refused edit runs nothing and leaves the card open), and its result
+  becomes the result of the call the model made. A Deny may carry a note the model is told to
+  follow. The model carries on from there in the same reply; it never re-creates the call.
   "Don't ask again" also saves the answer as the person's rule for an MCP tool or a personal
   toolset; an org toolset's rules change only in its rules editor.
 - Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
@@ -38,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from jsonschema import Draft202012Validator
 from jsonschema.validators import validator_for
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agent_loop_lib.core.types import ToolCall
@@ -92,6 +94,8 @@ _MAX_PREVIEW_CHARS = 2_000
 _MAX_CARD_ARGUMENT_CHARS = 8_000
 # A tool's input schema larger than this isn't sent on the card, so the card can't be edited.
 _MAX_CARD_SCHEMA_CHARS = 16_000
+# How large an answer's edited arguments may be, as JSON.
+_MAX_EDITED_ARGUMENT_CHARS = 64_000
 EDITS_ENV = "TOOL_APPROVAL_EDITS"
 # The stopped turn is kept (`parked_turn`) until the card can no longer be answered.
 TURN_TTL_SECONDS = APPROVAL_TTL_SECONDS + 600
@@ -154,6 +158,23 @@ class ToolApprovalAnswer(MCPCamelModel):
     decision: Decision
     # "Don't ask again for this tool": the answer becomes the person's rule for it.
     remember: bool = False
+    # The arguments the card showed (`args_hash`), and the person's edit of them, to run instead.
+    args_hash: str = Field(default="", max_length=64)
+    arguments: dict[str, Any] | None = None
+    # Why the person declined, for the model to follow.
+    feedback: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _fits_the_decision(self) -> "ToolApprovalAnswer":
+        if self.arguments is not None:
+            if self.decision != "allow" or self.remember:
+                raise ValueError("Edited arguments go only with allow, and not with remember")
+            text = json.dumps(self.arguments, separators=(",", ":"), default=str, ensure_ascii=False)
+            if len(text) > _MAX_EDITED_ARGUMENT_CHARS:
+                raise ValueError("The edited arguments are too large")
+        if self.feedback is not None and self.decision != "deny":
+            raise ValueError("Feedback goes only with deny")
+        return self
 
 
 class Outcome(MCPCamelModel):
@@ -166,6 +187,8 @@ class Outcome(MCPCamelModel):
     preview: str = ""
     summary: Optional[str] = None
     ran: bool = False
+    # The person's edit of the arguments, when that is what ran.
+    edited_arguments: dict[str, Any] | None = None
 
 
 def enabled(source: Source = "mcp") -> bool:
@@ -649,23 +672,25 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
+    ctx.ask_later(PendingApproval(message=message, details=_card_details(target, pending)))
+
+
+def _card_details(target: ApprovalTarget, pending: PendingCall) -> dict[str, Any]:
     card_arguments = _card_arguments(pending.arguments)
     args_summary = _quietly(target.tool.summarize_args, pending.arguments)
-    ctx.ask_later(PendingApproval(
-        message=message,
-        details={
-            "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
-            "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
-            # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
-            "canRemember": target.own_rules,
-            "expiresAt": int(pending.expires_at * 1000), **card_arguments,
-            "toolPath": pending.tool_path, "source": target.source, "argsHash": args_hash(pending.arguments),
-            "displayName": target.tool.display_name,
-            "editable": edits_enabled() and card_arguments["arguments"] is not None and schema is not None,
-            **({"inputSchema": schema} if schema is not None else {}),
-            **({"argsSummary": args_summary} if isinstance(args_summary, str) else {}),
-        },
-    ))
+    schema = pending.input_schema
+    return {
+        "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": pending.server_name,
+        "toolName": pending.tool_name, "toolTitle": target.title, "readOnly": pending.kind == "read", "kind": pending.kind,
+        # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
+        "canRemember": target.own_rules,
+        "expiresAt": int(pending.expires_at * 1000), **card_arguments,
+        "toolPath": pending.tool_path, "source": target.source, "argsHash": args_hash(pending.arguments),
+        "displayName": target.tool.display_name,
+        "editable": edits_enabled() and card_arguments["arguments"] is not None and schema is not None,
+        **({"inputSchema": schema} if schema is not None else {}),
+        **({"argsSummary": args_summary} if isinstance(args_summary, str) else {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +732,17 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
         if history is None or answer is None:
             await next_fn()
             return
+        try:
+            refused = await _refused_edit(context, answer)
+        except Exception as e:
+            logger.warning(f"Couldn't check the edited arguments of tool approval {answer.approval_id}: {e}")
+            await _bind(history, _not_applied(), ctx.scope.goal)
+            await next_fn()
+            return
+        if refused is not None:
+            await _keep_card_open(context, ctx.scope, history, *refused)
+            await next_fn()
+            return
         settled = await _settle(context, ctx.scope, answer)
         names = await parked_turn.restore(context, history, call_id=settled.call_id)
         if names:
@@ -724,6 +760,62 @@ async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
         await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
 
 
+async def _refused_edit(
+    context: "AgentContext", answer: ToolApprovalAnswer,
+) -> tuple[ApprovalTarget, PendingCall, list[EditError]] | None:
+    """Why an answer's edited arguments can't run, checked before the call is claimed, so a refused
+    edit leaves the card answerable. None when there is nothing to refuse: no edit, the arguments
+    as asked, or a call that isn't waiting for this person any more (settling it says why). A store
+    failure raises."""
+    if answer.arguments is None:
+        return None
+    pending = await read_pending(context.config_service, answer.approval_id)
+    if (
+        pending is None or answer.arguments == pending.arguments
+        or (pending.org_id, pending.user_id, pending.conversation_id) != (context.org_id, context.user_id, context.conversation_id or "")
+        or pending.expires_at <= time.time()
+        or await _read(context.config_service, get_mcp_tool_approval_claim_path(pending.approval_id)) is not None
+    ):
+        return None
+    target = _target_for(context, pending)
+    if target is None:
+        return None
+    if not edits_enabled():
+        errors = [EditError(path="", message="This action can't be edited.")]
+    else:
+        errors = check_edit(
+            pending, answer.arguments, shown_hash=answer.args_hash,
+            own_rule=await own_rule_for(context.config_service, pending), enabled_on_project=pending.enabled_on_project,
+        )
+    return (target, pending, errors) if errors else None
+
+
+async def _keep_card_open(
+    context: "AgentContext", run: "RunScope", history: "ContextManager",
+    target: ApprovalTarget, pending: PendingCall, errors: list[EditError],
+) -> None:
+    """A refused edit: the card is shown again with what's wrong, nothing is claimed or run, and the
+    turn still waits on the call. The run goes on only so the reply can point the person at the card;
+    the call keeps counting as the one waiting, so the gate asks for nothing else meanwhile."""
+    call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
+    message = f"{WAITING_PREFIX} {pending.tool_name} on {pending.server_name}."
+    details = {**_card_details(target, pending), "editErrors": [e.model_dump(by_alias=True) for e in errors]}
+    await _emit(run, EventType.TOOL_BLOCKED, {
+        "tool": target.tool.name, "reason": message, "tool_call_id": call_id,
+        "status": ToolCallStatus.AWAITING_APPROVAL, "approval": details,
+    })
+    context.tool_state[_PENDING_IN_RUN] = pending.approval_id
+    context.tool_state[PENDING_MESSAGE] = message
+    names = await parked_turn.restore(context, history, call_id=call_id)
+    if names:
+        _show_tools(run, names)
+    run.goal.constraints.append(
+        f"The user's changes to {pending.tool_name} on {pending.server_name} can't be used, so nothing ran and it still "
+        "waits for their approval. Don't call any tool. In one short sentence, tell them to fix the highlighted fields "
+        "on the approval card."
+    )
+
+
 def _show_tools(run: "RunScope", names: list[str]) -> None:
     """Makes the tools the stopped turn could see visible again."""
     registry = run.runtime.tool_registry
@@ -736,12 +828,29 @@ def _show_tools(run: "RunScope", names: list[str]) -> None:
 
 @dataclass
 class _Settled:
-    # The stopped call's id ("" when it isn't known); its tool and arguments, for a history without it.
+    # The stopped call's id ("" when it isn't known); its tool and the arguments it ran with, for a
+    # history without it.
     call_id: str
     tool: str
     arguments: dict[str, Any]
     result: str
     is_error: bool
+    # The person edited the arguments: the call in the history gets them too.
+    edited: bool = False
+
+
+def _not_applied() -> _Settled:
+    # Nothing was claimed, so the card can be answered again.
+    return _Settled("", "", {}, "The user's answer to the approval request couldn't be applied, so nothing ran. "
+                    "Tell them to answer the card again.", True)
+
+
+_MISSING = object()
+
+
+def _changed_note(asked: dict[str, Any], edited: dict[str, Any]) -> str:
+    changed = sorted(k for k in asked.keys() | edited.keys() if asked.get(k, _MISSING) != edited.get(k, _MISSING))
+    return f"The user changed {', '.join(f'`{k}`' for k in changed)} before approving."
 
 
 async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
@@ -752,9 +861,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
         )
     except Exception as e:
         logger.warning(f"Couldn't claim tool approval {answer.approval_id}: {e}")
-        # Nothing was claimed, so the card can be answered again.
-        return _Settled("", "", {}, "The user's answer to the approval request couldn't be applied, so nothing ran. "
-                        "Tell them to answer the card again.", True)
+        return _not_applied()
     pending = claim.pending
     if pending is None:
         return _Settled("", "", {}, "The approval request the user answered wasn't found, so nothing ran.", True)
@@ -770,8 +877,10 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 "it may still be running. Don't run it again."
             ), True)
         await _show(run, call_id, tool_name, pending, target, outcome)
-        return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+        return _settled(call_id, tool_name, pending, outcome)
     tool, server = pending.tool_name, pending.server_name
+    # Checked before the claim (`_refused_edit`); the arguments as asked are a plain allow.
+    edited = answer.arguments if answer.arguments not in (None, pending.arguments) else None
     outcome: Optional[Outcome] = None
     try:
         if claim.status == "expired":
@@ -780,6 +889,14 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 result=f"The approval request for {tool} on {server} expired before the user answered, so it didn't run. "
                 "If it's still needed, call the tool again to ask again.",
             )
+        elif answer.decision == "deny" and answer.feedback:
+            outcome = Outcome(
+                answer="declined", status="blocked", preview=f"Declined: {answer.feedback}",
+                result=f"The user declined this call and said: {answer.feedback}. Follow their instruction; "
+                "don't repeat the same call.",
+            )
+            if answer.remember:
+                await _remember(context, pending, "block")
         elif answer.decision == "deny":
             outcome = Outcome(
                 answer="declined", status="blocked", preview="Declined by the user.",
@@ -796,7 +913,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 result=f"{tool} on {server} is no longer available here, so the approved action didn't run.",
             )
         else:
-            outcome = await _run(context, run, target, pending, call_id)
+            outcome = await _run(context, run, target, pending, call_id, edited)
             if answer.remember and outcome.status != "blocked":
                 await _remember(context, pending, "allow")
     finally:
@@ -809,7 +926,15 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             ))
     if outcome.answer != "allowed" or target is None:
         await _show(run, call_id, tool_name, pending, target, outcome)
-    return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+    return _settled(call_id, tool_name, pending, outcome)
+
+
+def _settled(call_id: str, tool_name: str, pending: PendingCall, outcome: Outcome) -> _Settled:
+    edited = outcome.edited_arguments
+    return _Settled(
+        call_id, tool_name, edited if edited is not None else pending.arguments, outcome.result,
+        outcome.status != "completed", edited=edited is not None,
+    )
 
 
 async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
@@ -862,13 +987,19 @@ def _target_for(context: "AgentContext", pending: PendingCall) -> Optional[Appro
     return next((t for t in targets if (t.instance_id, t.tool_name) == (pending.instance_id, pending.tool_name)), None)
 
 
-def _start_payload(call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome_answer: str) -> dict[str, Any]:
+def _start_payload(
+    call_id: str, tool_name: str, pending: PendingCall, target: ApprovalTarget | None, outcome_answer: str,
+    edited: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    arguments = edited if edited is not None else pending.arguments
     payload: dict[str, Any] = {
-        "tool": tool_name, "args": pending.arguments, "tool_call_id": call_id, "approval_answer": outcome_answer,
+        "tool": tool_name, "args": arguments, "tool_call_id": call_id, "approval_answer": outcome_answer,
     }
+    if edited is not None:
+        payload["edited"] = True
     if target is not None:
         payload["display_name"] = target.tool.display_name
-        args_summary = _quietly(target.tool.summarize_args, pending.arguments)
+        args_summary = _quietly(target.tool.summarize_args, arguments)
         if isinstance(args_summary, str):
             payload["args_summary"] = args_summary
     return payload
@@ -876,7 +1007,7 @@ def _start_payload(call_id: str, tool_name: str, pending: PendingCall, target: O
 
 async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome: Outcome) -> None:  # noqa: ANN401
     """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
-    start = _start_payload(call_id, tool_name, pending, target, outcome.answer)
+    start = _start_payload(call_id, tool_name, pending, target, outcome.answer, outcome.edited_arguments)
     if outcome.ran:
         # Kept on the reply's part: regenerating that reply could run the action again.
         start["approved"] = True
@@ -893,9 +1024,24 @@ def _end_status(outcome: Outcome) -> dict[str, Any]:
     return {"status": ToolCallStatus.ERROR if outcome.status == "failed" else ToolCallStatus.SUCCESS}
 
 
-async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pending: PendingCall, call_id: str) -> Outcome:  # noqa: ANN401
-    """The saved call, through the executor (so every PreToolUse check runs again: a Block set
-    since the card was shown still stops it), on the stopped call's row."""
+async def _run(
+    context: "AgentContext", run: Any, target: ApprovalTarget, pending: PendingCall, call_id: str,  # noqa: ANN401
+    edited: dict[str, Any] | None = None,
+) -> Outcome:
+    """The saved call, or the person's edit of it, through the executor (so every PreToolUse check
+    runs again: a Block set since the card was shown still stops it), on the stopped call's row."""
+    outcome = await _run_call(context, run, target, pending, call_id, edited)
+    if edited is None:
+        return outcome
+    return outcome.model_copy(update={
+        "edited_arguments": edited, "result": f"{_changed_note(pending.arguments, edited)}\n{outcome.result}",
+    })
+
+
+async def _run_call(
+    context: "AgentContext", run: Any, target: ApprovalTarget, pending: PendingCall, call_id: str,  # noqa: ANN401
+    edited: dict[str, Any] | None,
+) -> Outcome:
     tool, server = pending.tool_name, pending.server_name
     name = target.tool.name
     denied: list[str] = []
@@ -903,8 +1049,9 @@ async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pendin
     async def _on_denied(reason: str) -> None:
         denied.append(reason)
 
-    call = ToolCall(id=call_id, name=name, arguments=pending.arguments)
-    await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, name, pending, target, "allowed"), "approved": True})
+    arguments = edited if edited is not None else pending.arguments
+    call = ToolCall(id=call_id, name=name, arguments=arguments)
+    await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, name, pending, target, "allowed", edited), "approved": True})
     context.tool_state[_APPROVED_CALL] = _identity(target)
     try:
         result = await ToolExecutor(run.runtime.tool_registry, run.runtime.hooks).call_tool(
@@ -939,13 +1086,13 @@ async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pendin
         )
         end.update(content=outcome.preview, status=ToolCallStatus.ERROR)
     else:
-        summary = _quietly(target.tool.summarize_result, pending.arguments, result)
+        summary = _quietly(target.tool.summarize_result, arguments, result)
         outcome = Outcome(
             answer="allowed", status="completed", ran=True, preview=text[:_MAX_PREVIEW_CHARS],
             summary=summary if isinstance(summary, str) else None, result=text,
         )
         end.update(content=outcome.preview, result_summary=outcome.summary, status=ToolCallStatus.SUCCESS)
-        view = _quietly(target.tool.result_view, pending.arguments, result)
+        view = _quietly(target.tool.result_view, arguments, result)
         if isinstance(view, dict):
             end["result_view"] = view
     await _emit(run, EventType.TOOL_CALL_END, end)
@@ -981,6 +1128,8 @@ async def _bind(history: "ContextManager", settled: _Settled, goal: Any) -> None
         messages[index] = ToolMessage(
             content=settled.result, tool_call_id=messages[index].tool_call_id, is_error=settled.is_error,
         )
+        if settled.edited:
+            _rewrite_call(messages, messages[index].tool_call_id, settled.arguments)
     elif settled.call_id:
         messages.append(AssistantMessage(
             content=[], tool_calls=[ToolCall(id=settled.call_id, name=settled.tool, arguments=settled.arguments)],
@@ -991,6 +1140,14 @@ async def _bind(history: "ContextManager", settled: _Settled, goal: Any) -> None
     await history.clear()
     for message in messages:
         await history.add(message)
+
+
+def _rewrite_call(messages: list[Any], call_id: str, arguments: dict[str, Any]) -> None:
+    """The model's call, as it ran: with the person's edit of its arguments."""
+    for i, message in enumerate(messages):
+        if isinstance(message, AssistantMessage) and any(c.id == call_id for c in message.tool_calls or []):
+            calls = [c.model_copy(update={"arguments": arguments}) if c.id == call_id else c for c in message.tool_calls]
+            messages[i] = message.model_copy(update={"tool_calls": calls})
 
 
 def _is_stopped_call(message: ToolMessage, call_id: str) -> bool:

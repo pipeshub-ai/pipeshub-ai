@@ -821,9 +821,10 @@ async def _ask(store: _Store, mcp: _Server) -> str:
 
 async def _answer(
     store: _Store, mcp: _Server, approval_id: str, decision: str, *model_calls: ToolCall,
-    remember: bool = False, history: list[dict[str, Any]] | None = None, loop: Any = None, **overrides: Any,  # noqa: ANN401
+    remember: bool = False, history: list[dict[str, Any]] | None = None, loop: Any = None,  # noqa: ANN401
+    answer_fields: dict[str, Any] | None = None, **overrides: Any,  # noqa: ANN401
 ) -> _Request:
-    answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember)  # type: ignore[arg-type]
+    answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember, **(answer_fields or {}))  # type: ignore[arg-type]
     context = _context(store, tool_approval=answer, **overrides)
     return await _request(
         context, mcp, *(model_calls or (_DONE,)), history=history or _stopped_turn(), query=f"Tool approval: {decision}",
