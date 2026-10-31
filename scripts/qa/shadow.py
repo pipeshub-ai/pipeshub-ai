@@ -25,6 +25,9 @@ from qa.config import Config
 # Artifact name pattern and catalog id prefix of each workflow's JUnit files. The py shards
 # run from backend/python, the integration shards from integration-tests.
 WORKFLOW_ARTIFACTS = {"unit-test.yml": [("py-junit-*", "py")], "integration-tests.yml": [("reports-*", "it")]}
+FAMILIES = sorted({prefix for pairs in WORKFLOW_ARTIFACTS.values() for _, prefix in pairs})
+POPULATION = (f"Covers failures of the {' and '.join(FAMILIES)} test families seen by "
+              f"{', '.join(sorted(WORKFLOW_ARTIFACTS))} only; not whole-suite recall.")
 
 
 def failures(cases: list[junit.Case], rows: list[dict[str, Any]], prefix: str) -> tuple[set[str], list[str]]:
@@ -107,7 +110,8 @@ def enforcement(records: list[dict[str, Any]], today: dt.date, days: int = 14, t
     else:
         status, reason = "not_ready", f"recall {recall} < {target} over {n} failures in the last {days} days"
     return {"ready": status == "ready", "status": status, "recall": recall, "failures": n, "caught": caught,
-            "missed": missed, "since": since.isoformat() if since else None, "reason": reason}
+            "missed": missed, "since": since.isoformat() if since else None, "reason": reason,
+            "families": FAMILIES, "population": POPULATION}
 
 
 def _today() -> dt.date:
@@ -126,8 +130,12 @@ def fetch(repo: str, workflows: list[str], since: dt.datetime, dest: Path) -> li
     out = []
     for wf in workflows:
         # shortcut: the newest 200 failed runs per workflow; page with --created if a day ever has more.
-        runs = json.loads(_gh(["run", "list", "-R", repo, "--workflow", wf, "--status", "failure",
-                               "--limit", "200", "--json", "databaseId,headSha,createdAt"]) or "[]")
+        try:
+            runs = json.loads(_gh(["run", "list", "-R", repo, "--workflow", wf, "--status", "failure",
+                                   "--limit", "200", "--json", "databaseId,headSha,createdAt"]) or "[]")
+        except (RuntimeError, OSError, ValueError) as err:
+            print(f"shadow: {wf}: cannot list failed runs: {err}", file=sys.stderr)
+            continue
         for r in runs:
             if dt.datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")) < since:
                 continue

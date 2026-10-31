@@ -1,7 +1,7 @@
 """Check a document against the JSON Schemas in scripts/qa/schema/.
 
 Implements the subset those schemas use (type, const, enum, required,
-properties, items), so contract checks need no third-party package.
+properties, additionalProperties, items), so contract checks need no third-party package.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ def errors(doc: Any, schema: dict[str, Any], where: str = "$") -> list[str]:
         for key, sub in schema.get("properties", {}).items():
             if key in doc:
                 out += errors(doc[key], sub, f"{where}.{key}")
+        extra = schema.get("additionalProperties")
+        if isinstance(extra, dict):
+            for key in doc.keys() - schema.get("properties", {}).keys():
+                out += errors(doc[key], extra, f"{where}.{key}")
     if isinstance(doc, list) and "items" in schema:
         for i, item in enumerate(doc):
             out += errors(item, schema["items"], f"{where}[{i}]")

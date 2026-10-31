@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qa import branchstore, config, history, quarantine, shadow, testing
+from qa import branchstore, catalog, config, history, metrics, quarantine, shadow, testing
 from qa.testing import git
 
 
@@ -425,6 +425,52 @@ class TestShadow(unittest.TestCase):
         self.assertEqual(got[0]["junit"], [("py", self.tmp / "1" / "py-junit-1" / "junit-1.xml")])
         self.assertEqual(got[1]["junit"], [("it", self.tmp / "2" / "reports-1" / "junit-1.xml")])
 
+    def test_switch_boundaries_are_inclusive(self) -> None:
+        # Exactly 14 days of data and exactly 20 failures are enough.
+        self.assertEqual(shadow.enforcement(_records(14, 20, 20), TODAY)["status"], "ready")
+        self.assertEqual(shadow.enforcement(_records(14, 19, 19), TODAY)["status"], "insufficient")
+        self.assertEqual(shadow.enforcement(_records(13, 20, 20), TODAY)["status"], "insufficient")
+
+    def test_verdict_names_its_population(self) -> None:
+        got = shadow.enforcement(_records(15, 50, 49), TODAY)
+        self.assertEqual(got["families"], ["it", "py"])
+        self.assertIn("not whole-suite recall", got["population"])
+
+    def test_fetch_skips_a_workflow_whose_run_list_fails(self) -> None:
+        def gh(args):
+            if args[:2] == ["run", "list"]:
+                if "unit-test.yml" in args:
+                    raise RuntimeError("gh run: HTTP 502")
+                return json.dumps([{"databaseId": 2, "headSha": "a" * 40, "createdAt": "2026-10-31T10:00:00Z"}])
+            _xml(Path(args[args.index("-D") + 1]) / "reports-1" / "j.xml", [("a", "b", "fail")])
+            return ""
+        with mock.patch.object(shadow, "_gh", side_effect=gh), \
+                mock.patch("sys.stderr", new_callable=lambda: __import__("io").StringIO()) as err:
+            got = shadow.fetch("o/r", ["unit-test.yml", "integration-tests.yml"], dt.datetime(2026, 10, 30, tzinfo=dt.timezone.utc), self.tmp)
+        self.assertEqual([r["run_id"] for r in got], ["2"])
+        self.assertIn("unit-test.yml", err.getvalue())
+
+    def test_fetch_command_continues_past_a_bad_run(self) -> None:
+        from qa import __main__ as cli
+        to = self.tmp / "h" / "shadow.jsonl"
+        runs = [{"run_id": str(i), "workflow": "unit-test.yml", "head": c * 40, "junit": []} for i, c in ((1, "a"), (2, "b"))]
+        with mock.patch.object(shadow, "fetch", return_value=runs), \
+                mock.patch.object(cli.collect, "git", return_value="f" * 40), \
+                mock.patch.object(shadow, "compare", side_effect=[ValueError("bad junit"), {"ts": 1, "head": "b"}]), \
+                mock.patch("sys.stderr", new_callable=lambda: __import__("io").StringIO()) as err:
+            self.assertEqual(cli.main(["shadow", "fetch", "--repo", "o/r", "--to", str(to)]), 0)
+        self.assertEqual(to.read_text(encoding="utf-8"), '{"head": "b", "ts": 1}\n')
+        self.assertIn("run 1", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_append_jsonl_appends_after_a_truncated_line(self) -> None:
+        from qa import __main__ as cli
+        path = self.tmp / "s.jsonl"
+        path.write_text('{"a": 1}\n{"b"', encoding="utf-8")
+        cli._append_jsonl(path, {"c": 3})
+        cli._append_jsonl(path, {"d": 4})
+        self.assertEqual(path.read_text(encoding="utf-8"), '{"a": 1}\n{"b"\n{"c": 3}\n{"d": 4}\n')
+
     def test_verdict_exit_codes(self) -> None:
         from qa import __main__ as cli
         store = self.tmp / "h"
@@ -434,6 +480,148 @@ class TestShadow(unittest.TestCase):
                     mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()) as out:
                 self.assertEqual(cli.main(["shadow", "verdict", "--store", str(store)]), code)
             self.assertEqual(json.loads(out.getvalue())["status"], ["ready", "not_ready", "insufficient"][code])
+
+
+def _run(day: dt.date, trigger: str, wall: float | None, counts: dict | None = None) -> dict:
+    return {"ts": _ts(day), "trigger": trigger, "wall_seconds": wall, "counts": counts or {"pass": 1}, "outcomes": {}}
+
+
+def _history(runs: list[dict], tests: dict | None = None, quarantined: list[dict] | None = None,
+             shadow_records: list[dict] | None = None) -> dict[str, str]:
+    return {"runs.jsonl": "".join(json.dumps(r) + "\n" for r in runs),
+            "tests.json": json.dumps({k: {"o": v, "seen": TODAY.isoformat()} for k, v in (tests or {}).items()}),
+            "quarantine.json": json.dumps({"tests": quarantined or []}),
+            "shadow.jsonl": "".join(json.dumps(r) + "\n" for r in shadow_records or [])}
+
+
+def fixture_metrics(rows: list[dict] | None = None, **kw) -> dict:
+    """Two triggers over the window, one flaky test and an auto quarantine entry."""
+    days = [TODAY - dt.timedelta(days=d) for d in range(3)]
+    runs = [_run(d, "nightly", 100 + i, {"pass": 5, "fail": 1, "flaky": 1}) for i, d in enumerate(days)]
+    runs += [_run(TODAY, "local", 12.5, {"pass": 2, "not_run": 1}), _run(TODAY - dt.timedelta(days=40), "nightly", 9)]
+    files = _history(runs, {"py:a.py": "ppkp"}, [{"id": "py:a.py", "expires": "2026-11-10", "auto": True}], _records(15, 50, 49))
+    rows = rows if rows is not None else [{"id": "py:a.py", "suite": "py-unit", "module": "m", "flows": ["f"], "priority": "P0"}]
+    return metrics.compute(files, rows, TODAY, bugs=kw.get("bugs", {"caught": 0, "escaped": 0, "escaped_by_flow": {}, "unlinked": 0}),
+                           coverage=kw.get("coverage", {"py-unit": 87.5, "node-unit": None}))
+
+
+class TestMetrics(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="qa-metrics-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_percentile_is_nearest_rank(self) -> None:
+        values = [float(v) for v in range(10, 101, 10)]
+        self.assertEqual((metrics.percentile(values, 50), metrics.percentile(values, 95)), (50.0, 100.0))
+        self.assertEqual(metrics.percentile([7.0], 95), 7.0)
+        self.assertIsNone(metrics.percentile([], 50))
+
+    def test_percentiles_per_trigger(self) -> None:
+        runs = [_run(TODAY - dt.timedelta(days=i % 5), "nightly", float(w)) for i, w in enumerate(range(100, 9, -10))]
+        runs += [_run(TODAY, "local", 500.0), _run(TODAY, "local", None), _run(TODAY - dt.timedelta(days=31), "nightly", 9999.0)]
+        got = metrics.compute(_history(runs), [], TODAY, bugs={}, coverage={})["duration"]
+        self.assertEqual(got["nightly"], {"runs": 10, "p50": 50.0, "p95": 100.0})
+        self.assertEqual(got["local"], {"runs": 2, "p50": 500.0, "p95": 500.0})
+
+    def test_trend_groups_by_day_and_trigger(self) -> None:
+        trend = fixture_metrics()["trend"]
+        self.assertEqual(len(trend), 4)  # three nightly days and one local; the 40-day-old run is outside the window
+        self.assertEqual(trend[-1], {"date": TODAY.isoformat(), "trigger": "nightly", "runs": 1, "pass": 5, "fail": 1,
+                                     "error": 0, "flaky": 1, "not_run": 0})
+        self.assertEqual(trend[-2]["trigger"], "local")
+        self.assertEqual(trend[-2]["not_run"], 1)
+
+    def test_flake_rate_and_quarantined_list(self) -> None:
+        tests = {"py:a.py": "ppkk", "it:b.py": "pppp", "py:gone.py": "kp"}
+        quarantined = [{"id": "py:a.py", "expires": "2026-11-10", "auto": True},
+                       {"id": "py:old.py", "expires": "2026-10-20", "auto": True, "expired": True}]
+        rows = [{"id": "py:a.py", "suite": "py-unit"}, {"id": "it:b.py", "suite": "it-stack"},
+                {"id": "py:s.py", "suite": "py-unit", "status": "quarantined"}]
+        got = metrics.compute(_history([], tests, quarantined), rows, TODAY, bugs={}, coverage={})["flake"]
+        self.assertEqual(got["rate"], 0.3)
+        self.assertEqual(got["by_suite"], {"py-unit": 0.5, "it-stack": 0.0, "unknown": 0.5})
+        self.assertEqual(got["quarantined"], ["py:a.py", "py:s.py"])
+
+    def test_coverage_counts_tests_per_module_and_flow(self) -> None:
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        cfg = config.load(root)
+        rows = catalog.build(cfg)
+        cov = metrics.compute(_history([]), rows, TODAY, bugs={}, coverage={"py-unit": None}, cfg=cfg)["coverage"]
+        self.assertEqual(cov["flows"]["search"], {"tests": 2, "priority": "P0"})
+        self.assertEqual(cov["flows"]["login"], {"tests": 1, "priority": "P1"})
+        self.assertEqual(cov["flows"]["usage"], {"tests": 1, "priority": "P0"})
+        self.assertEqual(cov["modules"]["retrieval"], {"tests": 3})
+        self.assertEqual(cov["modules"]["graph-db"], {"tests": 1})
+        self.assertEqual(cov["modules"]["connectors"], {"tests": 0})  # a module with no tests still shows
+        self.assertEqual(cov["line"], {"py-unit": None})
+        self.assertEqual(cov["api_operations"], {"hit_rate": None, "source": "not measured"})
+
+    def test_line_coverage_formats(self) -> None:
+        files = {
+            "coverage.json": json.dumps({"totals": {"percent_covered": 87.5}}),
+            "coverage.xml": '<?xml version="1.0" ?><coverage line-rate="0.875" branch-rate="0"></coverage>',
+            "coverage-summary.json": json.dumps({"total": {"lines": {"total": 8, "covered": 7, "pct": 87.5}}}),
+        }
+        for name, text in files.items():
+            (self.tmp / name).write_text(text, encoding="utf-8")
+            self.assertEqual(metrics.line_coverage(self.tmp / name), 87.5, name)
+        self.assertIsNone(metrics.line_coverage(self.tmp / "missing.json"))
+        (self.tmp / "bad.json").write_text("{", encoding="utf-8")
+        self.assertIsNone(metrics.line_coverage(self.tmp / "bad.json"))
+
+    def test_bugs_caught_and_escaped(self) -> None:
+        since = TODAY - dt.timedelta(days=30)
+
+        def gh(args):
+            if args[:2] == ["pr", "list"]:
+                return json.dumps([{"number": 1, "headRefName": "fix-a", "mergedAt": "2026-10-20T00:00:00Z"},
+                                   {"number": 2, "headRefName": "fix-b", "mergedAt": "2026-10-21T00:00:00Z"},
+                                   {"number": 3, "headRefName": "fix-c", "mergedAt": "2026-09-01T00:00:00Z"}])
+            if args[:2] == ["run", "list"]:
+                return json.dumps([  # newest first, as gh lists them
+                    {"headBranch": "fix-a", "conclusion": "success", "createdAt": "2026-10-19T02:00:00Z"},
+                    {"headBranch": "fix-a", "conclusion": "failure", "createdAt": "2026-10-19T01:00:00Z"},
+                    {"headBranch": "fix-b", "conclusion": "success", "createdAt": "2026-10-20T01:00:00Z"},
+                    {"headBranch": "fix-c", "conclusion": "success", "createdAt": "2026-08-31T02:00:00Z"},
+                    {"headBranch": "fix-c", "conclusion": "failure", "createdAt": "2026-08-31T01:00:00Z"},
+                ])
+            if args[:2] == ["issue", "list"]:
+                return json.dumps([
+                    {"number": 7, "createdAt": "2026-10-25T00:00:00Z", "labels": [{"name": "escaped"}, {"name": "flow:search"}]},
+                    {"number": 8, "createdAt": "2026-10-26T00:00:00Z", "labels": [{"name": "escaped"}]},
+                    {"number": 9, "createdAt": "2026-08-01T00:00:00Z", "labels": [{"name": "escaped"}, {"name": "flow:login"}]},
+                ])
+            raise AssertionError(args)
+        with mock.patch.object(metrics, "_gh", side_effect=gh) as fake, \
+                mock.patch.object(metrics, "PR_WORKFLOWS", ("qa-pr.yml",)):
+            got = metrics.bugs("o/r", since)
+        self.assertEqual(got, {"caught": 1, "escaped": 2, "escaped_by_flow": {"search": 1}, "unlinked": 1})
+        issue_list = next(c.args[0] for c in fake.call_args_list if c.args[0][:2] == ["issue", "list"])
+        self.assertEqual(issue_list[issue_list.index("--label") + 1], "escaped")
+        self.assertEqual(issue_list[issue_list.index("--state") + 1], "all")
+
+    def test_bugs_without_gh_report_an_error(self) -> None:
+        with mock.patch.object(metrics, "_gh", side_effect=RuntimeError("gh: not logged in")):
+            got = metrics.bugs("o/r", TODAY)
+        self.assertEqual(list(got), ["error"])
+        self.assertIn("not logged in", got["error"])
+        self.assertEqual(list(metrics.bugs("", TODAY)), ["error"])
+        self.assertEqual(fixture_metrics(bugs=got)["bugs"], got)
+
+    def test_enforcement_is_in_the_metrics(self) -> None:
+        got = fixture_metrics()["enforcement"]
+        self.assertEqual((got["status"], got["families"]), ("ready", ["it", "py"]))
+
+    def test_summary_leads_with_enforcement(self) -> None:
+        text = metrics.summary(fixture_metrics())
+        first = next(line for line in text.splitlines() if line.strip() and not line.startswith("#"))
+        self.assertIn("ready", first)
+        self.assertIn("not whole-suite recall", text)
+        for heading in ("Trend", "Flaky tests", "Duration", "Coverage", "Bugs"):
+            self.assertIn(heading, text)
+        self.assertIn("not measured", metrics.summary(fixture_metrics(bugs={"error": "no repo"}, coverage={"py-unit": None})))
 
 
 if __name__ == "__main__":

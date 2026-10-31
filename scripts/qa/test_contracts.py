@@ -52,6 +52,13 @@ class TestContracts(unittest.TestCase):
         self.assertEqual(schema.check(doc, "results.v1.json"), [])
         self.assertTrue(schema.check({**doc, "environment": {**env, "unpinned": "node"}}, "results.v1.json"))
 
+    def test_metrics_match_the_schema(self) -> None:
+        from qa.test_reliability import fixture_metrics
+        doc = fixture_metrics(self.rows)
+        self.assertEqual({t["trigger"] for t in doc["trend"]}, {"nightly", "local"})
+        self.assertEqual(schema.check(doc, "metrics.v1.json"), [])
+        self.assertTrue(schema.check({**doc, "flake": {**doc["flake"], "by_suite": {"py-unit": "high"}}}, "metrics.v1.json"))
+
     def test_validator_catches_a_wrong_shape(self) -> None:
         self.assertTrue(schema.check({"schema": "qa-plan-llm/v1", "add": [{"reason": "no id"}]}, "plan-llm.v1.json"))
 

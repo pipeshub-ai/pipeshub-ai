@@ -383,10 +383,14 @@ def cmd_stuck(args) -> int:
 
 def _append_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    # A truncated last line must not swallow the new record.
-    path.write_text(text + ("\n" if text and not text.endswith("\n") else "") + json.dumps(record, sort_keys=True) + "\n",
-                    encoding="utf-8")
+    with path.open("a+b") as fh:
+        fh.seek(0, os.SEEK_END)
+        lead = b""
+        if fh.tell():
+            fh.seek(-1, os.SEEK_END)
+            # A truncated last line must not swallow the new record.
+            lead = b"" if fh.read(1) == b"\n" else b"\n"
+        fh.write(lead + (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def cmd_shadow(args) -> int:
@@ -423,8 +427,13 @@ def cmd_shadow(args) -> int:
             except subprocess.CalledProcessError as err:
                 print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {(err.stderr or '').strip()}", file=sys.stderr)
                 continue
-            _append_jsonl(to, shadow.compare(cfg, base, run_["head"], run_["junit"], workflow=run_["workflow"],
-                                             run_id=run_["run_id"], edition=args.edition))
+            try:
+                record = shadow.compare(cfg, base, run_["head"], run_["junit"], workflow=run_["workflow"],
+                                        run_id=run_["run_id"], edition=args.edition)
+            except Exception as err:  # one bad run must not stop the others
+                print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {type(err).__name__}: {err}", file=sys.stderr)
+                continue
+            _append_jsonl(to, record)
     return 0
 
 
