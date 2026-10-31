@@ -896,9 +896,12 @@ def _not_applied() -> _Settled:
 _MISSING = object()
 
 
+def _changed_fields(asked: dict[str, Any], edited: dict[str, Any]) -> list[str]:
+    return sorted(k for k in asked.keys() | edited.keys() if asked.get(k, _MISSING) != edited.get(k, _MISSING))
+
+
 def _changed_note(asked: dict[str, Any], edited: dict[str, Any]) -> str:
-    changed = sorted(k for k in asked.keys() | edited.keys() if asked.get(k, _MISSING) != edited.get(k, _MISSING))
-    return f"The user changed {', '.join(f'`{k}`' for k in changed)} before approving."
+    return f"The user changed {', '.join(f'`{k}`' for k in _changed_fields(asked, edited))} before approving."
 
 
 async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
@@ -1047,6 +1050,8 @@ def _start_payload(
     }
     if edited is not None:
         payload["edited"] = True
+        # For the card's receipt: the saved `args` cut long values, so they can't be compared.
+        payload["changed_fields"] = _changed_fields(pending.arguments, edited)
     if target is not None:
         payload["display_name"] = target.tool.display_name
         args_summary = _quietly(target.tool.summarize_args, arguments)

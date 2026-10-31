@@ -152,6 +152,7 @@ async def test_edited_allow_runs_with_edited_arguments() -> None:
     assert mcp.calls == [{"tool": "create_issue", "title": "Signin is broken"}]
     (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
     assert (started["edited"], started["args"]) == (True, {"title": "Signin is broken"})
+    assert started["changed_fields"] == ["title"]
     claim = store.values[_claimed(store)[0]]["outcome"]
     assert claim["editedArguments"] == {"title": "Signin is broken"}
     assert approvals.PendingCall.model_validate(store.pending()[0]).arguments == _ASKED

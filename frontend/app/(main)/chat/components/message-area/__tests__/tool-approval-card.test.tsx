@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { ToolApprovalDetails } from '../../../types';
@@ -8,6 +8,7 @@ import type { ToolApprovalDetails } from '../../../types';
 const chat = vi.hoisted(() => ({
   streamMessageForSlot: vi.fn(),
   buildStreamChatRequestForSlot: vi.fn((slotId: string, query: string) => ({ slotId, query })),
+  validate: vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []),
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -16,6 +17,10 @@ vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot: chat.streamMessageForSlot }));
 vi.mock('../../../runtime', () => ({ buildStreamChatRequestForSlot: chat.buildStreamChatRequestForSlot }));
+vi.mock('../../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api')>()),
+  validateApprovalEdits: chat.validate,
+}));
 vi.mock('../../../store', () => ({
   useChatStore: Object.assign(
     (selector: (state: typeof chat.state) => unknown) => selector(chat.state),
@@ -100,7 +105,7 @@ describe('ToolApprovalCard', () => {
   it("has no \"Don't ask again\" on a toolset's card: an admin sets its rules", () => {
     renderInTheme(<ToolApprovalCard approval={approval({ serverName: 'Jira (Engineering)', canRemember: false })} isLatest rowId="row-1" />);
 
-    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
     expect(chat.buildStreamChatRequestForSlot).toHaveBeenCalledWith(
       'slot-1', 'Tool approval: allow', undefined, { approvalId: 'ap-1', decision: 'allow' },
@@ -158,6 +163,194 @@ describe('ToolApprovalCard', () => {
 
     expect(screen.getByText(body)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+  });
+});
+
+function editable(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDetails {
+  return approval({
+    editable: true,
+    argsHash: 'h1',
+    arguments: { title: 'Login fails', labels: ['bug'], meta: { a: 1 } },
+    inputSchema: {
+      type: 'object',
+      required: ['title'],
+      properties: { title: { type: 'string' }, labels: { type: 'array', items: { type: 'string' } }, meta: { type: 'object' } },
+    },
+    ...overrides,
+  });
+}
+
+const sent = () => chat.buildStreamChatRequestForSlot.mock.calls.at(-1)?.[3];
+const titleField = () => screen.getByRole('textbox', { name: /Title/ }) as HTMLInputElement;
+
+describe('ToolApprovalCard: editing and notes', () => {
+  it('offers Edit only on a card that can be edited', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={editable({ editable: false })} isLatest />);
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy();
+  });
+
+  it('marks an edited field, hides both "ask again" choices, and Reset puts it back', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    expect(screen.getByText('Changed')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Allow for this conversation' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(titleField().value).toBe('Login fails');
+    expect(screen.queryByText('Changed')).toBeNull();
+    expect(screen.getByRole('checkbox', { name: "Don't ask again for this tool" })).toBeTruthy();
+  });
+
+  it('shows nested values read-only', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByText("Can't be edited here")).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Meta' })).toBeNull();
+  });
+
+  it('keeps an invalid edit on the card, with the error on the field and focus on it', async () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: '' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('This field is required.')).toBeTruthy();
+    expect(screen.getByText('Fix the highlighted fields')).toBeTruthy();
+    expect(document.activeElement).toBe(titleField());
+    expect(chat.validate).not.toHaveBeenCalled();
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's errors on the field and sends nothing", async () => {
+    chat.validate.mockResolvedValueOnce([{ path: '/title', message: 'Title is too vague' }]);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Bug' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('Title is too vague')).toBeTruthy();
+    expect(chat.validate).toHaveBeenCalledWith('ap-1', 'h1', { title: 'Bug', labels: ['bug'], meta: { a: 1 } });
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+  });
+
+  it('says when the request changed under the card', async () => {
+    chat.validate.mockResolvedValueOnce([{ path: '', code: 'requestChanged', message: 'Gone' }]);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Bug' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('This request changed. Reload.')).toBeTruthy();
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+  });
+
+  it('sends a checked edit with the arguments and the hash it was shown', async () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
+    expect(sent()).toEqual({
+      approvalId: 'ap-1', decision: 'allow', argsHash: 'h1',
+      arguments: { title: 'Login broken', labels: ['bug'], meta: { a: 1 } },
+    });
+  });
+
+  it('still sends when the check itself fails, for the server to decide', async () => {
+    chat.validate.mockRejectedValueOnce(new Error('offline'));
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ decision: 'allow', arguments: { title: 'Login broken' } });
+  });
+
+  it('sends no arguments when nothing was changed', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(chat.validate).not.toHaveBeenCalled();
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1' });
+  });
+
+  it('opens on the errors the server sent back for a refused edit', () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({ editErrors: [{ path: '/title', message: 'Title is too vague' }, { path: '', message: 'A rule blocks this action with these details.' }] })}
+        isLatest
+      />,
+    );
+
+    expect(titleField()).toBeTruthy();
+    expect(screen.getByText('Title is too vague')).toBeTruthy();
+    expect(screen.getByText('A rule blocks this action with these details.')).toBeTruthy();
+  });
+
+  it('"Change something else" declines with a note for the agent', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change something else' }));
+    const note = screen.getByPlaceholderText('Tell the agent what to change');
+    expect(note.getAttribute('maxlength')).toBe('2000');
+
+    fireEvent.change(note, { target: { value: 'Put it on the Q4 board' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to agent' }));
+
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'deny', argsHash: 'h1', feedback: 'Put it on the Q4 board' });
+  });
+
+  it('"Allow for this conversation" and "Don\'t ask again" are one choice or the other', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    const never = screen.getByRole('checkbox', { name: "Don't ask again for this tool" });
+    const chat_ = screen.getByRole('checkbox', { name: 'Allow for this conversation' });
+    expect(screen.getByText("It won't ask again in this chat unless the tool changes")).toBeTruthy();
+
+    fireEvent.click(never);
+    fireEvent.click(chat_);
+    expect(never.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', rememberForConversation: true });
+
+    fireEvent.click(never);
+    expect(chat_.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', remember: true });
+  });
+
+  it('offers "Allow for this conversation" on a card that can\'t set a rule', () => {
+    renderInTheme(<ToolApprovalCard approval={approval({ canRemember: false })} isLatest />);
+    expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: 'Allow for this conversation' })).toBeTruthy();
+  });
+
+  it('Esc leaves edit mode and keeps the edit; Enter in a field sends nothing', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+
+    fireEvent.keyDown(titleField(), { key: 'Enter' });
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(titleField(), { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
+    expect(screen.getByText('Login broken')).toBeTruthy();
   });
 });
 
@@ -267,6 +460,27 @@ describe('ChatResponse with a call waiting for approval', () => {
 
     expect(screen.getByTestId('tool-approval-card')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+  });
+
+  it('says what was changed, or the note sent with a decline', () => {
+    const settled = [
+      {
+        type: 'tool_call' as const, toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'completed' as const,
+        approvalAnswer: 'allowed' as const, changedFields: ['title', 'labels'], approval: approval(),
+      },
+      {
+        type: 'tool_call' as const, toolCallId: 'c2', toolName: 'mcp_jira_create_issue', status: 'blocked' as const,
+        approvalAnswer: 'declined' as const, resultPreview: 'Declined: Put it on the Q4 board', approval: approval(),
+      },
+      { type: 'text' as const, content: 'Done.', isFinal: true },
+    ];
+    renderInTheme(<ChatResponse question="Q" answer="Done." persistedParts={settled} isLastMessage />);
+
+    const receipts = screen.getByTestId('tool-approval-receipts');
+    expect(receipts.textContent).toContain('Declined: Put it on the Q4 board');
+    expect(screen.queryByText('Changed: title, labels')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Allowed with changes' }));
+    expect(screen.getByText('Changed: title, labels')).toBeTruthy();
   });
 
   it('says when an allowed call was stopped before it ran', () => {

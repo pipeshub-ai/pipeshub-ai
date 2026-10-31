@@ -207,6 +207,22 @@ class TestToolCallTranslation:
         assert starts[0]["approved"] is True
         assert "approved" not in starts[1]
 
+    async def test_an_edited_calls_start_names_the_changed_fields(self) -> None:
+        start = _event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {"title": "b"}, "tool_call_id": "approved_2", "approval_answer": "allowed",
+            "changed_fields": ["title"],
+        })
+        emitter, sink = _make_emitter()
+        collector = TranscriptCollector()
+
+        await emitter.emit(start)
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(start)
+
+        start_frame = sink.write.await_args_list[0].args[0]
+        assert start_frame["data"]["changedFields"] == ["title"]
+        assert collector.parts[0]["changedFields"] == ["title"]
+
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()
 

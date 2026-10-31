@@ -194,6 +194,9 @@ class LivePartsBuilder {
     if (data.approvalAnswer === 'allowed' || data.approvalAnswer === 'declined' || data.approvalAnswer === 'expired') {
       part.approvalAnswer = data.approvalAnswer;
     }
+    if (Array.isArray(data.changedFields)) {
+      part.changedFields = data.changedFields.filter((f): f is string => typeof f === 'string');
+    }
     this.containerFor(runId).push(part);
     this.openToolCalls.set(toolCallId, part);
   }

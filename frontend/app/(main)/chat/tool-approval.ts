@@ -82,7 +82,14 @@ export interface SettledToolApproval {
   server: string;
   /** `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). */
   answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun';
+  /** Allowed after the person changed these arguments. */
+  changedFields?: string[];
+  /** Declined with this note for the agent. */
+  note?: string;
 }
+
+// How the server words a decline with a note (Python `tool_approvals._settle`, `Outcome.preview`).
+const DECLINED_NOTE = /^Declined: ([\s\S]+)$/;
 
 /** The cards this reply answered, in order, at any depth. */
 export function settledToolApprovals(parts: MessagePart[] | undefined): SettledToolApproval[] {
@@ -91,11 +98,14 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
+        const note = part.approvalAnswer === 'declined' ? DECLINED_NOTE.exec(part.resultPreview ?? '')?.[1] : undefined;
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
           server: details?.serverName ?? '',
           answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
+          ...(part.approvalAnswer === 'allowed' && part.changedFields?.length ? { changedFields: part.changedFields } : {}),
+          ...(note ? { note } : {}),
         });
       }
       walk(part.parts);
