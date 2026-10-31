@@ -39,11 +39,16 @@ export interface ApprovalSettled {
   answer: string;
   /** The backend replayed an earlier answer (from the web app, say) and ran nothing. */
   replayed: boolean;
+  /** How the call's row ended: `blocked` for an allowed call that didn't run (a Block set since). */
+  ended?: string;
 }
 
-/** `failed`: the answer never reached the backend, so the card can be answered again. */
+/**
+ * `failed`: the answer never reached the backend, so the card can be answered again.
+ * `allowedNotRun`: allowed, but the call was stopped before it ran.
+ */
 export type ApprovalTurnResult =
-  'allowed' | 'declined' | 'expired' | 'answered' | 'failed';
+  'allowed' | 'allowedNotRun' | 'declined' | 'expired' | 'answered' | 'failed';
 
 export interface ApprovalDeps {
   resumeApproval: (
@@ -64,7 +69,10 @@ export function approvalTurnResult(
   if (settled.replayed) return 'answered';
   if (settled.answer === 'expired') return 'expired';
   const expected = decision === 'allow' ? 'allowed' : 'declined';
-  return settled.answer === expected ? expected : 'answered';
+  if (settled.answer !== expected) return 'answered';
+  return expected === 'allowed' && settled.ended === 'blocked'
+    ? 'allowedNotRun'
+    : expected;
 }
 
 interface CardLocation {

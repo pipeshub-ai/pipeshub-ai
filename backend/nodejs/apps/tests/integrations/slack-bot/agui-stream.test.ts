@@ -128,5 +128,19 @@ describe('slack-bot/utils/agui-stream', () => {
 
       expect(onApprovalSettled.args).to.deep.equal([['allowed', false], ['declined', true]]);
     });
+
+    it("reports how the answered call's row ended, and only that call's", () => {
+      const onApprovalCallEnded = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalCallEnded });
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c0', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c0', status: 'blocked' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue', approvalAnswer: 'allowed' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'blocked' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c2', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'completed' }));
+
+      expect(onApprovalCallEnded.args).to.deep.equal([['blocked']]);
+    });
   });
 });

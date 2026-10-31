@@ -1102,6 +1102,9 @@ async function processSlackMessage(
           approvalTurn.settled = { answer, replayed };
         }
       },
+      onApprovalCallEnded: (status) => {
+        if (approvalTurn?.settled) approvalTurn.settled.ended = status;
+      },
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
