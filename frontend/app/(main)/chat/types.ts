@@ -1027,10 +1027,20 @@ export interface JsonSchema {
   minLength?: number;
   maxLength?: number;
   pattern?: string;
+  const?: unknown;
+  $ref?: string;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
 }
 
 /** Why the server would refuse an edit; `path` is a JSON pointer, "" for the whole call. */
-export type EditError = { path: string; message: string };
+export type EditError = {
+  path: string;
+  message: string;
+  /** Set by the app's own checks, for the card to translate; server errors carry only `message`. */
+  code?: string;
+  params?: Record<string, string | number>;
+};
 
 /** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
 export interface ToolApprovalDetails {

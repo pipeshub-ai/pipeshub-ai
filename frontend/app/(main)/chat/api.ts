@@ -960,12 +960,6 @@ export interface AiModelsConfigResponse {
 }
 
 /**
- * Fetch the org's AI model configuration.
- *
- * Returns the list of models available for chat (with their keys and names).
- * Used by the runtime to dynamically pick the model instead of hardcoding.
- */
-/**
  * Asks the server whether edited arguments would be accepted, without answering the card.
  * A request that is gone (404) or already answered or expired (410) comes back as one
  * whole-call error; any other failure throws so the card can send and let the server decide.
@@ -982,9 +976,15 @@ export async function validateApprovalEdits(
   );
   if (res.status === 200) return res.data.errors ?? [];
   const message = typeof res.data?.message === 'string' && res.data.message ? res.data.message : 'This request is no longer available.';
-  return [{ path: '', message }];
+  return [{ path: '', code: 'requestChanged', message }];
 }
 
+/**
+ * Fetch the org's AI model configuration.
+ *
+ * Returns the list of models available for chat (with their keys and names).
+ * Used by the runtime to dynamically pick the model instead of hardcoding.
+ */
 export async function fetchAiModelsConfig(): Promise<AiModelConfig[]> {
   const { data } = await apiClient.get<AiModelsConfigResponse>(
     '/api/v1/configurationManager/aiModelsConfig',
