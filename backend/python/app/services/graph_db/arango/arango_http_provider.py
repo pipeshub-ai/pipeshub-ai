@@ -4358,6 +4358,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return []
 
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See IGraphDBProvider.filter_linked_record_ids."""
+        if not record_ids:
+            return []
+        query = f"""
+        FOR key IN @ids
+            LET rid = CONCAT("{CollectionNames.RECORDS.value}/", key)
+            LET grouped = FIRST(
+                FOR e IN {CollectionNames.BELONGS_TO.value}
+                    FILTER e._from == rid AND STARTS_WITH(e._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                    LIMIT 1
+                    RETURN 1
+            )
+            LET parented = FIRST(
+                FOR e IN {CollectionNames.NODE_RELATIONS.value}
+                    FILTER e._to == rid AND e.relationshipType IN @parent_types
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER grouped != null OR parented != null
+            RETURN key
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            bind_vars={"ids": record_ids, "parent_types": list(CANONICAL_PARENT_RELATION_TYPES)},
+            txn_id=transaction,
+        )
+        return list(results or [])
+
     async def get_nodes_by_field_in(
         self,
         collection: str,

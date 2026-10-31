@@ -49,7 +49,6 @@ from app.connectors.sources.salesforce.connector import (
     _ts_in_bounds,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.utils.time_conversion import epoch_ms_to_iso
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 
@@ -75,6 +74,8 @@ def _make_mock_deps():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
 
     mock_tx = MagicMock()
+
+    mock_tx.filter_linked_record_ids = AsyncMock(side_effect=lambda ids: list(ids))
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.delete_edges_to = AsyncMock()
     mock_tx.delete_edges_from = AsyncMock()
@@ -119,6 +120,34 @@ def _sf_response(
     return SalesforceResponse(
         success=success, data=data or {}, error=error, status_code=status_code
     )
+
+
+def _streaming_http_client(*outcomes: Any) -> MagicMock:
+    """An httpx-like client whose ``stream("GET", ...)`` context managers yield the given
+    responses in order (an exception instance is raised instead). Each response is a
+    MagicMock with ``status_code``, ``headers`` and ``content``; its body is streamed
+    back through ``aiter_bytes`` the way the capped download reads it."""
+
+    def _open(*_args: Any, **_kwargs: Any) -> MagicMock:
+        outcome = remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+        async def _aiter_bytes(_chunk_size: int = 0):
+            body = getattr(outcome, "content", b"")
+            if isinstance(body, bytes) and body:
+                yield body
+
+        outcome.aiter_bytes = _aiter_bytes
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=outcome)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return ctx
+
+    remaining = list(outcomes)
+    client = MagicMock()
+    client.stream = MagicMock(side_effect=_open)
+    return client
 
 
 class _PagesFactory:
@@ -292,6 +321,18 @@ class TestAccumulateLatestFeedEpoch:
             latest,
         )
         assert latest == {}
+
+    def test_an_edited_post_counts_from_its_edit(self):
+        """A reply or an edit moves the post's SystemModstamp, not its CreatedDate (seen live)."""
+        parent = "006000000000001AAA"
+        edited = "2024-06-01T12:00:00.000+0000"
+        latest: Dict[str, int] = {}
+        _accumulate_latest_feed_epoch(
+            [SalesforceFeedRecord.model_validate(
+                {"ParentId": parent, "CreatedDate": "2024-01-01T00:00:00.000+0000", "SystemModstamp": edited})],
+            latest,
+        )
+        assert latest[parent] == _parse_salesforce_timestamp(edited)
 
 
 class TestSalesforceFeedAndLinkModels:
@@ -1964,12 +2005,13 @@ class TestStreamRecord:
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_run_sync_returns_when_no_data_source(self):
+    async def test_run_sync_fails_when_no_data_source(self):
         connector = _make_connector()
         connector._reinitialize_token_if_needed = AsyncMock()
         connector.data_source = None
-        # Should not raise, just return
-        await connector.run_sync()
+        # A sync that could not run must not report success.
+        with pytest.raises(HTTPException):
+            await connector.run_sync()
 
     @pytest.mark.asyncio
     async def test_run_sync_calls_all_steps(self):
@@ -2046,6 +2088,9 @@ class TestRunSync:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector.user_sync_point = MagicMock()
             connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
+            # run_sync reads the deals checkpoint first to tell a full run from an incremental one.
+            connector.records_sync_point = MagicMock()
+            connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
 
             def _failing_factory(*args, **kwargs):
                 async def _gen():
@@ -2980,6 +3025,29 @@ class TestGetUpdatedDeal:
         assert len(result) == 1
         assert result[0].latest_comment_epoch is not None
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,ts_arg,base_arg", [
+        ("_get_updated_deal", "opportunities_last_ts_ms", "base_opportunities_soql"),
+        ("_get_updated_case", "cases_last_ts_ms", "base_cases_soql"),
+    ])
+    async def test_incremental_finds_edited_posts_and_replies(self, method, ts_arg, base_arg):
+        """Edits and replies only move SystemModstamp, so the feed queries filter on it."""
+        connector = _make_connector()
+        queries: list[str] = []
+
+        async def pages(api_version: str, q: str):
+            queries.append(q)
+            if False:
+                yield []
+
+        connector._soql_query_paginated = pages
+        await _drain_async_pages(getattr(connector, method)(
+            api_version="59.0", **{ts_arg: 1_000_000, base_arg: "SELECT Id FROM X"},
+        ))
+        feed = [q for q in queries if "FeedItem" in q or "FeedComment" in q]
+        assert len(feed) == 4, queries
+        assert all("SystemModstamp >=" in q and "CreatedDate >=" not in q for q in feed), feed
+
 
 # ===========================================================================
 # SalesforceConnector._get_updated_product / _get_updated_task / _get_updated_file
@@ -3009,9 +3077,9 @@ class TestGetUpdatedProductTaskFile:
             base_products_soql="SELECT Id FROM Product2",
         ))
         assert len(result) == 1
-        # Confirm a WHERE clause with timestamp was injected
+        # Confirm a WHERE clause with timestamp was injected (SystemModstamp moves on every change)
         call_q = connector._soql_query_paginated.call_args.kwargs["q"]
-        assert "LastModifiedDate" in call_q
+        assert "SystemModstamp >= 1970-01-01T00:16:40Z" in call_q
 
     @pytest.mark.asyncio
     async def test_get_updated_task_full_sync(self):
@@ -3283,7 +3351,10 @@ class TestSyncFiles:
         connector.data_source = MagicMock()
         connector._soql_query_paginated = _mock_pages([])
         file_row = self._make_file_row()
-        stored = connector._build_file_record(file_row, "doc-1", external_record_group_id="org-files")
+        # An unlinked file is filed in the org's files group; the stored one sits there too.
+        stored = connector._build_file_record(
+            file_row, "doc-1", external_record_group_id=f"{connector.data_entities_processor.org_id}-files",
+        )
         self._store_like_the_graph(connector, stored)
         connector._handle_record_updates = AsyncMock()
 
@@ -3295,13 +3366,39 @@ class TestSyncFiles:
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_full_sync_writes_an_unchanged_file_again_without_reindexing_it(self) -> None:
+        """A full sync unlinks what it did not write, so an unchanged file must still be written."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        connector._full_run_parents = set()
+        file_row = self._make_file_row()
+        stored = connector._build_file_record(
+            file_row, "doc-1", external_record_group_id=f"{connector.data_entities_processor.org_id}-files",
+        )
+        self._store_like_the_graph(connector, stored)
+        connector._handle_record_updates = AsyncMock()
+        connector.data_entities_processor.on_record_metadata_update = AsyncMock()
+
+        await connector._sync_files(
+            api_version="59.0", file_records_pages=_async_iter_pages([file_row]),
+        )
+
+        connector._handle_record_updates.assert_not_awaited()
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        written = connector.data_entities_processor.on_record_metadata_update.await_args.args[0]
+        assert written.id == stored.id and written.external_record_id == "doc-1"
+
+    @pytest.mark.asyncio
     async def test_a_failed_update_write_stops_the_file_sync(self) -> None:
         """run_sync saves the files checkpoint only after _sync_files returns, so this keeps it in place."""
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._soql_query_paginated = _mock_pages([])
         file_row = self._make_file_row()
-        stored = connector._build_file_record(file_row, "doc-1", external_record_group_id="org-files")
+        stored = connector._build_file_record(
+            file_row, "doc-1", external_record_group_id=f"{connector.data_entities_processor.org_id}-files",
+        )
         self._store_like_the_graph(connector, stored)
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             side_effect=GraphQueryError("Could not read file record: unavailable")
@@ -3329,7 +3426,10 @@ class TestSyncFiles:
         connector.data_source = MagicMock()
         connector._soql_query_paginated = _mock_pages([])
         file_row = self._make_file_row()
-        stored = connector._build_file_record(file_row, "doc-1", external_record_group_id="org-files")
+        # An unlinked file is filed in the org's files group; the stored one sits there too.
+        stored = connector._build_file_record(
+            file_row, "doc-1", external_record_group_id=f"{connector.data_entities_processor.org_id}-files",
+        )
         self._store_like_the_graph(connector, stored)
         connector.data_entities_processor.get_file_record_by_id = file_record_read
         connector._handle_record_updates = AsyncMock()
@@ -3503,8 +3603,8 @@ class TestSyncPermissionsEdges:
             [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}],
             # salesforce_record_groups
             [],
-            # db_users
-            [{"email": "alice@example.com", "id": "user-1"}],
+            # db_users (only PipesHub users of this org are matched)
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
@@ -3517,8 +3617,39 @@ class TestSyncPermissionsEdges:
         mock_tx.batch_create_edges.assert_awaited()
 
 
+class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
+
+    @pytest.mark.asyncio
+    async def test_a_record_a_full_sync_unlinked_gets_no_readers(self):
+        """Outside the sync filters, a full sync unlinks the record; the next incremental sync
+        must not grant it again."""
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([{"Id": "sf-user-1", "Email": "alice@example.com"}])
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-in", "id": "deal-in", "connectorId": "conn-sf-1"},
+             {"externalRecordId": "opp-out", "id": "deal-out", "connectorId": "conn-sf-1"}],
+            [],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
+        ])
+        mock_tx.filter_linked_record_ids = AsyncMock(return_value=["deal-in"])
+        connector._sync_permissions_for_user = AsyncMock(return_value=[])
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        asked = connector._sync_permissions_for_user.await_args.kwargs["salesforce_external_ids"]
+        assert asked == ["opp-in"]
+
+
 class TestSyncPermissionsEdgesPartialReads:
-    """A failed per-user access read must not remove stored access (unknown is not empty)."""
+    """A failed per-user access read must not remove that user's stored access: the
+    targets' edges are rewritten, and the user's stored edges are written back."""
+
+    # bob's stored edges: one to the synced deal, one to a record of something else.
+    _BOB_STORED = [
+        {"_from": "users/u2", "_to": "records/deal-1", "role": "WRITER"},
+        {"_from": "users/u2", "_to": "records/not-this-connector", "role": "READER"},
+    ]
 
     def _connector(self, per_user) -> tuple[SalesforceConnector, MagicMock]:
         connector = _make_connector()
@@ -3530,12 +3661,36 @@ class TestSyncPermissionsEdgesPartialReads:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}],
             [],
-            [{"email": "alice@example.com", "id": "u1"}, {"email": "bob@example.com", "id": "u2"}],
+            [
+                {"email": "alice@example.com", "id": "u1", "orgId": "org-sf-1"},
+                {"email": "bob@example.com", "id": "u2", "orgId": "org-sf-1"},
+            ],
         ])
         mock_tx.delete_edges_to = AsyncMock(return_value=1)
         mock_tx.batch_create_edges = AsyncMock()
+        mock_tx.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=lambda node_id, _collection, raise_on_error=False: (
+                self._BOB_STORED if node_id == "users/u2" else []
+            )
+        )
         connector._sync_permissions_for_user = AsyncMock(side_effect=per_user)
         return connector, mock_tx
+
+    @staticmethod
+    def _written(tx: MagicMock) -> list[tuple[str, str, str]]:
+        return [
+            (e["from_id"], e["to_id"], e["role"])
+            for call in tx.batch_create_edges.await_args_list
+            for e in call.args[0]
+        ]
+
+    def _assert_bob_keeps_his_stored_edge(self, tx: MagicMock) -> None:
+        tx.delete_edges_to.assert_awaited_once_with("deal-1", "records", "permission")
+        tx.get_edges_from_node_with_target_name.assert_awaited_once_with("users/u2", "permission", raise_on_error=True)
+        written = self._written(tx)
+        assert ("u2", "deal-1", "WRITER") in written  # bob's stored edge, written back
+        assert ("u1", "deal-1", "READER") in written  # alice's fresh edge
+        assert all(to_id != "not-this-connector" for _, to_id, _ in written)
 
     @pytest.mark.asyncio
     async def test_a_user_whose_fetch_raised_keeps_all_stored_edges(self) -> None:
@@ -3546,19 +3701,19 @@ class TestSyncPermissionsEdgesPartialReads:
 
         connector, tx = self._connector(per_user)
         await connector._sync_permissions_edges(api_version="59.0")
-        tx.delete_edges_to.assert_not_awaited()
-        tx.batch_create_edges.assert_awaited()  # alice's fresh edge is still added
+        self._assert_bob_keeps_his_stored_edge(tx)
 
     @pytest.mark.asyncio
     async def test_a_partial_read_flagged_by_the_collector_keeps_stored_edges(self) -> None:
-        async def per_user(user, incomplete=None, **_) -> list[tuple[str, str, str, bool]]:
+        async def per_user(user, unknown_users=None, **_) -> list[tuple[str, str, str, bool]]:
             if user["Id"] == "sf-2":
-                incomplete.add(user["Email"])  # a composite batch failed mid-way
+                unknown_users.add(user["Email"].lower())  # a composite batch failed mid-way
+                return []
             return [("alice@example.com", "opp-1", "READER", False)]
 
         connector, tx = self._connector(per_user)
         await connector._sync_permissions_edges(api_version="59.0")
-        tx.delete_edges_to.assert_not_awaited()
+        self._assert_bob_keeps_his_stored_edge(tx)
 
     @pytest.mark.asyncio
     async def test_complete_reads_still_replace_the_edges(self) -> None:
@@ -3576,16 +3731,16 @@ class TestSyncPermissionsEdgesPartialReads:
         connector.data_source.composite = AsyncMock(
             return_value=MagicMock(success=False, data=None, error="503")
         )
-        incomplete: set = set()
+        unknown_users: set = set()
         out = await connector._sync_permissions_for_user(
-            user={"Id": "005000000000001", "Email": "alice@example.com"},
+            user={"Id": "005000000000001", "Email": "Alice@Example.com"},
             salesforce_external_ids=["006000000000001"],
             salesforce_record_group_external_ids=[],
             api_version="59.0",
             semaphore=__import__("asyncio").Semaphore(1),
-            incomplete=incomplete,
+            unknown_users=unknown_users,
         )
-        assert out == [] and incomplete == {"alice@example.com"}
+        assert out == [] and unknown_users == {"alice@example.com"}
 
 
 class TestSyncPermissionsEdgesDropsCachedAccess:
@@ -3617,7 +3772,7 @@ class TestSyncPermissionsEdgesDropsCachedAccess:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=lambda **kwargs: {
             "records": records if records is not None else default_records,
             "recordGroups": [],
-            "users": [{"email": "alice@example.com", "id": "user-1"}],
+            "users": [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         }[kwargs["collection"]])
         return connector, mock_tx
 
@@ -4078,8 +4233,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "image/png"}
         mock_response.content = b'\x89PNG' + b'\x00' * 10
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4099,8 +4253,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "application/octet-stream"}
         mock_response.content = b'\xff\xd8\xff' + b'\x00' * 10  # JPEG magic
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4119,8 +4272,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.status_code = 403
         mock_response.headers = {}
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4143,15 +4295,15 @@ class TestFetchFileAsBase64Uri:
         response_200.headers = {"Content-Type": "image/jpeg"}
         response_200.content = b'\xff\xd8\xff' + b'\x00' * 5
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=[response_404, response_200])
+        mock_client = _streaming_http_client(response_404, response_200)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
             "https://myinstance.salesforce.com/file-asset-public/img.jpg"
         )
         assert result is not None
-        assert mock_client.get.await_count == 2
+        assert mock_client.stream.call_count == 2
+        assert mock_client.stream.call_args.kwargs["headers"] == {"Authorization": "Bearer tok-retry"}
 
     @pytest.mark.asyncio
     async def test_returns_none_when_access_token_missing_for_api_file(self):
@@ -4170,8 +4322,7 @@ class TestFetchFileAsBase64Uri:
         connector.data_source = MagicMock()
         connector._get_access_token = AsyncMock(return_value="tok-1")
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=Exception("Network error"))
+        mock_client = _streaming_http_client(Exception("Network error"))
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4191,8 +4342,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "image/png", "Content-Length": str(20 * 1024 * 1024)}
         mock_response.content = b'\x89PNG' + b'\x00' * 10
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4211,8 +4361,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "image/gif"}
         mock_response.content = b'GIF89a' + b'\x00' * 10
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4232,8 +4381,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "image/webp"}
         mock_response.content = b'RIFF' + b'\x00' * 10
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4253,8 +4401,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "application/octet-stream"}
         mock_response.content = b'GIF' + b'\x00' * 10  # GIF magic bytes
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4274,8 +4421,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "application/octet-stream"}
         mock_response.content = b'\x89PNG' + b'\x00' * 10  # PNG magic bytes
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4295,8 +4441,7 @@ class TestFetchFileAsBase64Uri:
         mock_response.headers = {"Content-Type": "image/jpeg"}
         mock_response.content = b'\x00' * 20  # no magic bytes but content-type is jpeg
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -4953,12 +5098,18 @@ class TestRunSyncIncrementalPaths:
             connector.records_sync_point.read_sync_point = AsyncMock(return_value={"lastSyncTimestamp": TS})
             connector.records_sync_point.update_sync_point = AsyncMock()
 
+            # Step 11.5 (getDeleted) is covered by the deletions module's own tests.
+            deletions = MagicMock()
+            deletions.run = AsyncMock()
+            connector._deletions = MagicMock(return_value=deletions)
+
             await connector.run_sync()
 
             # Incremental SOQL should contain LastModifiedDate WHERE clause
             assert any("LastModifiedDate" in q for q in soql_calls), (
                 "Expected at least one incremental SOQL with LastModifiedDate filter"
             )
+            deletions.run.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_run_sync_full_paths_when_no_sync_points(self):
@@ -5246,15 +5397,35 @@ class TestFetchAndBuildDiscussionBlockGroups:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_feed_fetch_fails(self):
+    @pytest.mark.parametrize("status", [400, 404])
+    async def test_returns_empty_when_record_has_no_feed(self, status: int):
+        """An object without a Chatter feed answers 400 or 404: the record has no discussion."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(False, error="API error", status_code=status)
+        )
+        result = await connector._fetch_and_build_discussion_block_groups("opp-1", 0)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_raises_when_feed_fetch_fails(self):
+        """Any other failure of the first page (no status, a 5xx) fails the read."""
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
         connector.data_source.record_feed_elements = AsyncMock(
             return_value=_sf_response(False, error="API error")
         )
-        result = await connector._fetch_and_build_discussion_block_groups("opp-1", 0)
-        assert result == []
+        with pytest.raises(RuntimeError, match="API error"):
+            await connector._fetch_and_build_discussion_block_groups("opp-1", 0)
+
+        connector.data_source.record_feed_elements = AsyncMock(
+            return_value=_sf_response(False, error="unavailable", status_code=503)
+        )
+        with pytest.raises(HTTPException):
+            await connector._fetch_and_build_discussion_block_groups("opp-1", 0)
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_elements(self):
@@ -5789,8 +5960,9 @@ class TestGetUpdatedDealWithDateBounds:
             updated_before_ms=before_ms,
         ))
         soql = connector._soql_query_paginated.call_args.kwargs["q"]
-        assert epoch_ms_to_iso(after_ms) in soql
-        assert epoch_ms_to_iso(before_ms) in soql
+        # SOQL dateTime literals in the documented YYYY-MM-DDThh:mm:ssZ form.
+        assert "LastModifiedDate >= 2023-11-14T22:13:20Z" in soql
+        assert "LastModifiedDate <= 2027-01-15T08:00:00Z" in soql
 
 
 class TestGetUpdatedCaseWithDateBounds:
@@ -6289,8 +6461,7 @@ class TestFetchFileAsBase64UriRemaining:
         response_404.status_code = 404
         response_404.headers = {}
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=response_404)
+        mock_client = _streaming_http_client(response_404)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -6308,8 +6479,7 @@ class TestFetchFileAsBase64UriRemaining:
         mock_response.headers = {"Content-Type": "application/octet-stream"}
         mock_response.content = b"unknown-bytes"
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = _streaming_http_client(mock_response)
         connector._http_client = mock_client
 
         result = await connector._fetch_file_as_base64_uri(
@@ -6330,7 +6500,9 @@ class TestDiscussionBlockGroupsRemaining:
         }
 
     @pytest.mark.asyncio
-    async def test_pagination_stops_on_failed_follow_up_request(self):
+    async def test_pagination_raises_on_failed_follow_up_request(self):
+        """A feed page that did not come back is not the end of the feed: the read fails
+        rather than storing the discussion as complete without it."""
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._get_api_version = AsyncMock(return_value="59.0")
@@ -6349,8 +6521,9 @@ class TestDiscussionBlockGroupsRemaining:
             return_value=_sf_response(False, error="page failed")
         )
 
-        result = await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
-        assert len(result) >= 1
+        with pytest.raises(RuntimeError, match="page failed"):
+            await connector._fetch_and_build_discussion_block_groups(self.PARENT_ID, 0)
+        connector.data_source._execute_request.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_call_log_post_title_from_entity_link_in_header(self):
@@ -6972,12 +7145,12 @@ class TestSyncPermissionsEdgesRemaining:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": opp_id, "id": "deal-int-1", "connectorId": "conn-sf-1"}],
             [{"externalGroupId": acc_id, "id": "rg-int-1", "connectorId": "conn-sf-1"}],
-            [{"email": "alice@example.com", "id": "user-int-1"}],
+            [{"email": "alice@example.com", "id": "user-int-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "READER")
@@ -6999,13 +7172,17 @@ class TestSyncPermissionsEdgesRemaining:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": "006000000000001AAA", "id": "deal-1", "connectorId": "conn-sf-1"}],
             [],
-            [{"email": "fail@example.com", "id": "user-1"}],
+            [{"email": "fail@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
+        # The failed user's stored edges are looked up to be kept; this one has none.
+        mock_tx.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
         connector._sync_permissions_for_user = AsyncMock(side_effect=RuntimeError("API down"))
 
         await connector._sync_permissions_edges(api_version="59.0")
+        connector._sync_permissions_for_user.assert_awaited_once()
+        mock_tx.get_edges_from_node_with_target_name.assert_awaited_once_with("users/user-1", "permission", raise_on_error=True)
         mock_tx.batch_create_edges.assert_not_awaited()
 
 
@@ -7019,7 +7196,7 @@ class TestSyncPermissionsForUserRemaining:
         acc_id = "001000000000001AAA"
         semaphore = __import__("asyncio").Semaphore(1)
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 yield (rid, user_email, "READER")
 
@@ -7584,12 +7761,12 @@ class TestSyncPermissionsEdgesUnknownAccess:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
             [{"externalGroupId": acc_id, "id": "rg-1", "connectorId": "conn-sf-1"}],
-            [{"email": "alice@example.com", "id": "user-1"}],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "INVALID_LEVEL")
@@ -8164,6 +8341,10 @@ class TestRunSyncDateFilterWrapping:
             connector.records_sync_point = MagicMock()
             connector.records_sync_point.read_sync_point = AsyncMock(return_value={"lastSyncTimestamp": TS})
             connector.records_sync_point.update_sync_point = AsyncMock()
+            # Step 11.5 (getDeleted) is covered by the deletions module's own tests.
+            deletions = MagicMock()
+            deletions.run = AsyncMock()
+            connector._deletions = MagicMock(return_value=deletions)
 
             await connector.run_sync()
             connector._sync_opportunities.assert_awaited_once()
@@ -8456,7 +8637,7 @@ class TestFinalCoveragePush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             yield (opp_id, user_email, "READER")
 
         connector._iter_record_access = _iter_access
@@ -8475,12 +8656,12 @@ class TestFinalCoveragePush:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
             [],
-            [{"email": "alice@example.com", "id": "user-1"}],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             if record_ids and record_ids[0] == opp_id:
                 yield (opp_id, user_email, "READER")
 
@@ -8928,12 +9109,12 @@ class TestCoverageFinalPush:
         mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
             [{"externalRecordId": opp_id, "id": "deal-1", "connectorId": "conn-sf-1"}],
             [],
-            [{"email": "alice@example.com", "id": "user-1"}],
+            [{"email": "alice@example.com", "id": "user-1", "orgId": "org-sf-1"}],
         ])
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
+        async def _iter_access(user_id, user_email, record_ids, api_version, unknown=None) -> AsyncIterator[tuple[str, str, str]]:
             yield ("006000000000099AAA", user_email, "READER")
 
         connector._iter_record_access = _iter_access
@@ -9223,3 +9404,54 @@ class TestConverterReachesTheBlock:
             "# Re: Proposal\n\n**From:** a@example.com\n\n**To:** b@example.com\n\n---\n\n"
             "Acme Quotes\n\nHello **Kim**\n\nQuote Q-9\n\nDo not forward\n"
         )
+
+
+class TestRecordAccessBatching:
+    """Salesforce takes at most 5 query subrequests per composite call and 200 ids per
+    UserRecordAccess query."""
+
+    @pytest.mark.asyncio
+    async def test_composite_calls_carry_at_most_five_queries(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(return_value=_sf_response(data={"compositeResponse": []}))
+        ids = [f"006{i:012d}AAA" for i in range(1201)]  # 7 queries of up to 200 ids
+        unknown: set = set()
+        async for _ in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", unknown):
+            pass
+        sizes = [len(call.kwargs["data"]["compositeRequest"]) for call in connector.data_source.composite.await_args_list]
+        assert sizes == [5, 2]
+        for call in connector.data_source.composite.await_args_list:
+            for sub in call.kwargs["data"]["compositeRequest"]:
+                assert sub["url"].count("%27006") <= 200
+        # No query came back, so none of these ids is known.
+        assert len(unknown) == 1201
+
+    @pytest.mark.asyncio
+    async def test_a_failed_query_marks_only_its_ids_unknown(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        ids = [f"006{i:012d}AAA" for i in range(400)]
+
+        async def composite(version, data):
+            parts = data["compositeRequest"]
+            return _sf_response(data={"compositeResponse": [
+                {"referenceId": parts[0]["referenceId"], "httpStatusCode": 200,
+                 "body": {"done": True, "records": [{"RecordId": ids[0], "MaxAccessLevel": "Read"}]}},
+                {"referenceId": parts[1]["referenceId"], "httpStatusCode": 500, "body": [{"errorCode": "UNKNOWN_EXCEPTION"}]},
+            ]})
+        connector.data_source.composite = composite
+        unknown: set = set()
+        rows = [r async for r in connector._iter_record_access("005000000000001AAA", "u@x.com", ids, "59.0", unknown)]
+        assert rows == [(ids[0], "u@x.com", "READER")]
+        assert unknown == set(ids[200:])
+
+
+class TestCappedDownload:
+    @pytest.mark.asyncio
+    async def test_a_body_without_content_length_stops_at_the_cap(self):
+        connector = _make_connector()
+        body = b"x" * (connector._MAX_INLINE_IMAGE_BYTES + 1)
+        response = MagicMock(status_code=200, headers={}, content=body)
+        raw, status, _ = await connector._get_capped(_streaming_http_client(response), "https://x/img", {})
+        assert status == 200 and raw is None

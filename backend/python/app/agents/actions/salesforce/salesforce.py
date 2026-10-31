@@ -275,6 +275,23 @@ class Salesforce:
         value = value.replace("'", "\\'")
         return value
 
+    @classmethod
+    def _like_value(cls, value: str) -> str:
+        """A value for ``LIKE '%...%'``: quoted as a SOQL string, with the LIKE wildcards
+        ``%`` and ``_`` matched literally."""
+        return cls._sanitize_soql_value(value).replace("%", "\\%").replace("_", "\\_")
+
+    # The search tools document "max 50"; the model may ask for more, or for a non-number.
+    MAX_SEARCH_LIMIT = 50
+
+    @classmethod
+    def _search_limit(cls, limit: object, default: int = 10) -> int:
+        try:
+            value = int(limit)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+        return max(1, min(value, cls.MAX_SEARCH_LIMIT))
+
     # Regex for valid Salesforce API names (sObject names, field names, etc.)
     _VALID_API_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*(__[a-zA-Z0-9]+)?$")
 
@@ -288,6 +305,17 @@ class Salesforce:
         if not cls._VALID_API_NAME_RE.match(name):
             raise ValueError(f"Invalid Salesforce API name: {name!r}")
         return name
+
+    # A Salesforce record id: 15 or 18 letters and digits (Object Reference, "ID field type").
+    _VALID_RECORD_ID_RE = re.compile(r"^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$")
+
+    @classmethod
+    def _validate_record_id(cls, record_id: str) -> str:
+        """Validate a record id before it goes into a REST path: a '/' or '..' in it would
+        point the request at another endpoint (httpx collapses dot segments)."""
+        if not isinstance(record_id, str) or not cls._VALID_RECORD_ID_RE.match(record_id):
+            raise ValueError(f"Invalid Salesforce record ID: {record_id!r}")
+        return record_id
 
     def _build_soql_conditions(self, conditions: list[str]) -> str:
         """Build a WHERE clause from a list of conditions."""
@@ -529,6 +557,8 @@ class Salesforce:
             logger.info(
                 "salesforce.get_record called: sobject=%s, record_id=%s", sobject, record_id
             )
+            self._validate_api_name(sobject)
+            self._validate_record_id(record_id)
             response = await self.client.sobject_get(
                 api_version=self.api_version,
                 sobject=sobject,
@@ -581,6 +611,7 @@ class Salesforce:
                         "args": {"sobject": sobject},
                     },
                 })
+            self._validate_api_name(sobject)
             response = await self.client.sobject_create(
                 api_version=self.api_version, sobject=sobject, data=data
             )
@@ -634,6 +665,8 @@ class Salesforce:
                         "args": {"sobject": sobject},
                     },
                 })
+            self._validate_api_name(sobject)
+            self._validate_record_id(record_id)
             response = await self.client.sobject_update(
                 api_version=self.api_version,
                 sobject=sobject,
@@ -1000,6 +1033,7 @@ class Salesforce:
                 "salesforce.describe_object called: sobject=%s",
                 sobject,
             )
+            self._validate_api_name(sobject)
             response = await self.client.s_object_describe(
                 sobject_api_name=sobject, version=self.api_version
             )
@@ -1107,11 +1141,11 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if industry:
                 conditions.append(f"Industry = '{self._sanitize_soql_value(industry)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_ACCOUNTS.format(where=where, limit=limit)
+            query = SOQL_SEARCH_ACCOUNTS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_accounts query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1210,13 +1244,13 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if email:
-                conditions.append(f"Email LIKE '%{self._sanitize_soql_value(email)}%'")
+                conditions.append(f"Email LIKE '%{self._like_value(email)}%'")
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_CONTACTS.format(where=where, limit=limit)
+            query = SOQL_SEARCH_CONTACTS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_contacts query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1311,13 +1345,13 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if company:
-                conditions.append(f"Company LIKE '%{self._sanitize_soql_value(company)}%'")
+                conditions.append(f"Company LIKE '%{self._like_value(company)}%'")
             if status:
                 conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_LEADS.format(where=where, limit=limit)
+            query = SOQL_SEARCH_LEADS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_leads query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1416,13 +1450,13 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if stage:
                 conditions.append(f"StageName = '{self._sanitize_soql_value(stage)}'")
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_OPPORTUNITIES.format(where=where, limit=limit)
+            query = SOQL_SEARCH_OPPORTUNITIES.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_opportunities query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1549,7 +1583,7 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if subject:
-                conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
+                conditions.append(f"Subject LIKE '%{self._like_value(subject)}%'")
             if status:
                 conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             if priority:
@@ -1557,7 +1591,7 @@ class Salesforce:
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_CASES.format(where=where, limit=limit)
+            query = SOQL_SEARCH_CASES.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_cases query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1680,15 +1714,15 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if product_code:
-                conditions.append(f"ProductCode LIKE '%{self._sanitize_soql_value(product_code)}%'")
+                conditions.append(f"ProductCode LIKE '%{self._like_value(product_code)}%'")
             if family:
                 conditions.append(f"Family = '{self._sanitize_soql_value(family)}'")
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_PRODUCTS.format(where=where, limit=limit)
+            query = SOQL_SEARCH_PRODUCTS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_products query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1777,11 +1811,11 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
+                conditions.append(f"Name LIKE '%{self._like_value(name)}%'")
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_LIST_PRICEBOOKS.format(where=where, limit=limit)
+            query = SOQL_LIST_PRICEBOOKS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.list_pricebooks query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1978,7 +2012,7 @@ class Salesforce:
         try:
             conditions: list[str] = []
             if subject:
-                conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
+                conditions.append(f"Subject LIKE '%{self._like_value(subject)}%'")
             if status:
                 conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             if priority:
@@ -1990,7 +2024,7 @@ class Salesforce:
             if who_id:
                 conditions.append(f"WhoId = '{self._sanitize_soql_value(who_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_SEARCH_TASKS.format(where=where, limit=limit)
+            query = SOQL_SEARCH_TASKS.format(where=where, limit=self._search_limit(limit))
             logger.info("salesforce.search_tasks query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -2082,6 +2116,7 @@ class Salesforce:
         """Fetch the Chatter feed for a Salesforce record."""
         try:
             logger.info("salesforce.get_record_chatter called: record_id=%s", record_id)
+            self._validate_record_id(record_id)
             response = await self.client.record_feed_elements(
                 record_group_id=record_id, version=self.api_version
             )
@@ -2119,6 +2154,7 @@ class Salesforce:
                 [s.model_dump(by_alias=True) for s in self._markdown_to_chatter_segments(text)]
                 if is_rich_text else None
             )
+            self._validate_record_id(feed_element_id)
             response = await self.client.feed_elements_capability_comments_items(
                 feed_element_id=feed_element_id,
                 version=self.api_version,
