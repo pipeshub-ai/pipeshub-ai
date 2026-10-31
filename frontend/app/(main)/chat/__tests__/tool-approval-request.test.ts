@@ -141,10 +141,15 @@ describe('validateApprovalEdits', () => {
   it('maps 404 and 410 to one whole-call error and throws on other failures', async () => {
     const { apiClient } = await import('@/lib/api');
     const { validateApprovalEdits } = await import('../api');
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 410, data: { message: 'Expired' } });
+    // The shape the API's error handler sends.
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 410, data: { error: { code: 'GONE', message: 'Expired' } } });
     await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([{ path: '', code: 'requestChanged', message: 'Expired' }]);
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 404, data: { error: { code: 'NOT_FOUND', message: 'Not found' } } });
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([{ path: '', code: 'requestChanged', message: 'Not found' }]);
     vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 404, data: {} });
-    await expect(validateApprovalEdits('a', 'h', {})).resolves.toMatchObject([{ path: '', code: 'requestChanged' }]);
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([
+      { path: '', code: 'requestChanged', message: 'This request is no longer available.' },
+    ]);
     vi.mocked(apiClient.post).mockRejectedValueOnce(new Error('network'));
     await expect(validateApprovalEdits('a', 'h', {})).rejects.toThrow('network');
   });

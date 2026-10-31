@@ -969,13 +969,15 @@ export async function validateApprovalEdits(
   argsHash: string,
   args: Record<string, unknown>
 ): Promise<EditError[]> {
-  const res = await apiClient.post<{ errors?: EditError[]; message?: string }>(
+  const res = await apiClient.post<{ errors?: EditError[]; error?: { message?: string } }>(
     `/api/v1/mcp-servers/tool-approvals/${encodeURIComponent(approvalId)}/validate`,
     { argsHash, arguments: args },
     { suppressErrorToast: true, validateStatus: (s) => s === 200 || s === 404 || s === 410 }
   );
   if (res.status === 200) return res.data.errors ?? [];
-  const message = typeof res.data?.message === 'string' && res.data.message ? res.data.message : 'This request is no longer available.';
+  // The API answers a refusal as { error: { code, message } }.
+  const sent = res.data?.error?.message;
+  const message = typeof sent === 'string' && sent ? sent : 'This request is no longer available.';
   return [{ path: '', code: 'requestChanged', message }];
 }
 
