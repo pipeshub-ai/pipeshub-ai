@@ -5,7 +5,7 @@
   "_core_note": "The `core` shard is not marker-split: it runs everything the connector shards do not name, plus the browser tests. Measured at ~52 min of work (34 min pytest across both legs, the rest Playwright) in the same run. Shown for reference; only the connector shards can be rebalanced by moving markers.",
   "_caveats": {
     "sharepoint": "Now runs in CI (4 tests against the live tenant, 3.6 min across both legs on 2026-10-25); it was skipped for want of credentials before.",
-    "zendesk": "0 min measured: every test failed at setup because the Zendesk token was not minted. Working, it is estimated at 15 min (19 tests, no scenario matrix); replace that with the minutes from the first run that executes it.",
+    "zendesk": "0 min measured: every test failed at setup because the Zendesk token was not minted. The shards are balanced on the 15 min it is estimated to take when it works (19 tests, no scenario matrix); replace that with the minutes from the first run that executes it.",
     "servicenow": "Estimated, not measured: this suite is new (four test modules against a live developer instance, about a dozen syncs of the whole instance's users per graph leg, scenario matrix on Neo4j only). Sized from jira and zendesk plus the instance's publish scripts and the per-person permission oracle. Replace with the minutes from the first nightly that runs it.",
     "local_fs_sim": "Measured locally, not in CI: 9.6 min on Neo4j and 13.3 min on ArangoDB of pytest time (22 tests, 2 workers), three runs each on fresh stacks, 2026-10-29. Replace with the minutes from the first nightly that runs it.",
     "bookstack_sim": "Measured locally, not in CI: 9.5 min on Neo4j and 9.0 min on ArangoDB of pytest time (27 tests, 2 workers), three runs each on fresh stacks, 2026-10-29. Replace with the minutes from the first nightly that runs it.",
@@ -13,14 +13,14 @@
     "s3": "Includes test_tc_life_001_disable_keeps_data_and_re_enable_resumes at 15.5 min on Neo4j. It hit its settle deadline on 2026-10-30, but it took 14.8 and 11.8 min when it passed on 2026-10-25, so that is its usual cost and is counted.",
     "connectors_1": "Taken from the 2026-10-25 run. The 2026-10-28 run is not used: its connector tests ran on both xdist workers at once (291 min of test time in 150 min of wall clock), so its times measure two suites contending for one stack. Its postgres and mariadb scenario matrices also waited out 300 s timeouts. minio adds the lifecycle and visibility tests added since, measured on 2026-10-28 (5.5 min across both legs).",
     "local_fs": "0: every local_fs test skips (the suite still assumes the connector walks a mounted folder, but Local FS now pulls events from the desktop). It needs new minutes once the suite is rewritten.",
-    "gitlab": "1.1 min measured, because every test failed at setup: the GitLab test instance answered HTTP 502. When it works the suite takes about 33 min (2026-09-19)."
+    "gitlab": "1.1 min measured, because every test failed at setup: the GitLab test instance answered HTTP 502. When it works the suite takes about 33 min (2026-09-19), and the shards are balanced on that figure, so this file counts 32.9 rather than the 1.1 measured."
   },
   "minutes": {
     "notion": 71.0,
     "google_drive_workspace": 184.3,
     "google_drive_individual": 63.8,
     "github_teams": 38.0,
-    "gitlab": 1.1,
+    "gitlab": 32.9,
     "web": 26.8,
     "local_fs": 0.0,
     "rss": 42.1,
@@ -39,7 +39,7 @@
     "github": 7.9,
     "sharepoint": 3.6,
     "zammad": 16.8,
-    "zendesk": 0.0,
+    "zendesk": 15.0,
     "smb": 7.4,
     "outlook": 20.0,
     "sharepoint_sim": 20.0,
