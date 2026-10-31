@@ -73,6 +73,7 @@ from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.core.org_context import current_org_id
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -2281,7 +2282,7 @@ async def validate_tool_approval_edit(
     if (getattr(request.state, "user", None) or {}).get("isOAuth"):
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Tool approvals can only be answered from the PipesHub app.")
     pending = await tool_approvals.read_pending(config_service, approval_id)
-    if pending is None or (pending.org_id, pending.user_id) != (user_context["org_id"], user_context["user_id"]):
+    if pending is None or (pending.org_id, pending.user_id) != (current_org_id(), user_context["user_id"]):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="This approval request was not found.")
     claim = await config_service.get_config(get_mcp_tool_approval_claim_path(approval_id), default=None, use_cache=False, raise_on_error=True, keep_in_cache=False)
     if isinstance(claim, dict) or pending.expires_at <= time.time():
