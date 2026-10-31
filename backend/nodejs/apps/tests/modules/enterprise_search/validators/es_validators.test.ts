@@ -339,6 +339,39 @@ describe('enterprise_search/validators/es_validators', () => {
       }
     })
 
+    describe('toolApproval edits and notes', () => {
+      const parse = (toolApproval: Record<string, unknown>) =>
+        agentStreamCreateSchema.safeParse({
+          params: { agentKey: 'a1' },
+          body: { query: 'Tool approval: allow', chatMode: AGENT_CHAT_MODES[0], toolApproval },
+        })
+
+      it('keeps an allow with edited arguments and a deny with a note', () => {
+        const edited = { approvalId: 'ap-1', decision: 'allow', argsHash: 'a'.repeat(64), arguments: { title: 'New' } }
+        const allowed = parse(edited)
+        expect(allowed.success).to.be.true
+        expect((allowed as any).data.body.toolApproval).to.deep.equal(edited)
+        const noted = { approvalId: 'ap-1', decision: 'deny', feedback: 'Use the team list', remember: true }
+        expect(parse(noted).success).to.be.true
+        expect(parse({ approvalId: 'ap-1', decision: 'allow', remember: true }).success).to.be.true
+      })
+
+      it('refuses combinations a card does not send', () => {
+        const refused: Record<string, Record<string, unknown>> = {
+          'arguments with deny': { decision: 'deny', arguments: { title: 'x' } },
+          'arguments with remember': { decision: 'allow', remember: true, arguments: { title: 'x' } },
+          'feedback with allow': { decision: 'allow', feedback: 'no' },
+          'feedback over 2000 chars': { decision: 'deny', feedback: 'x'.repeat(2001) },
+          'arguments over 64000 chars': { decision: 'allow', arguments: { v: 'x'.repeat(64_000) } },
+          'argsHash over 64 chars': { decision: 'allow', argsHash: 'a'.repeat(65), arguments: {} },
+          'arguments that are not an object': { decision: 'allow', arguments: ['x'] },
+        }
+        for (const [name, answer] of Object.entries(refused)) {
+          expect(parse({ approvalId: 'ap-1', ...answer }).success, name).to.be.false
+        }
+      })
+    })
+
     it('should leave the non-stream create schema backward compatible', () => {
       const result = enterpriseSearchCreateSchema.safeParse({
         body: { query: 'hello' },
