@@ -1534,6 +1534,7 @@
         "changedFields": "已修改：{{fields}}"
       },
       "edit": "編輯",
+      "doneEditing": "完成編輯",
       "reset": "重設",
       "changeSomethingElse": "修改其他內容",
       "feedbackPlaceholder": "告訴代理程式要修改什麼",

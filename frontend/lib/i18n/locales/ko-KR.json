@@ -1534,6 +1534,7 @@
         "changedFields": "변경됨: {{fields}}"
       },
       "edit": "편집",
+      "doneEditing": "편집 완료",
       "reset": "초기화",
       "changeSomethingElse": "다른 내용 변경",
       "feedbackPlaceholder": "에이전트에게 변경할 내용을 알려 주세요",

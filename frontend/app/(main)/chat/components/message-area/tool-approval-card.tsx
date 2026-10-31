@@ -66,6 +66,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [sending, setSending] = useState(false);
   const [focusTick, setFocusTick] = useState(0);
   const cardRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
   // Someone viewing a conversation shared with them can't send in it.
   const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
 
@@ -77,6 +78,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   );
   const edited = changed.size > 0;
   const showForm = editing && canEdit;
+
+  // The form grows the card under the composer; keep its actions where the person can reach them.
+  useEffect(() => {
+    if (!showForm) return;
+    // After the next frame, so the form's fields have their final height.
+    const frame = requestAnimationFrame(() => actionsRef.current?.scrollIntoView?.({ block: 'nearest' }));
+    return () => cancelAnimationFrame(frame);
+  }, [showForm]);
 
   useEffect(() => {
     const invalid = focusTick ? cardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') : null;
@@ -311,13 +320,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
         </Flex>
       )}
 
-      <Flex mt="3" align="center" gap="2" wrap="wrap">
+      {/* The margin clears the ghost buttons, which reach past the row. */}
+      <Flex ref={actionsRef} mt="3" align="center" gap="2" wrap="wrap" style={{ scrollMarginBottom: 'var(--space-4)' }}>
         <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>
           {t('chat.toolApproval.allow')}
         </Button>
         {canEdit && (
-          <Button size="2" variant={showForm ? 'soft' : 'outline'} aria-pressed={showForm} onClick={() => setEditing((value) => !value)}>
-            {t('chat.toolApproval.edit')}
+          <Button size="2" variant={showForm ? 'soft' : 'outline'} onClick={() => setEditing((value) => !value)}>
+            {showForm ? t('chat.toolApproval.doneEditing') : t('chat.toolApproval.edit')}
           </Button>
         )}
         {showForm && (

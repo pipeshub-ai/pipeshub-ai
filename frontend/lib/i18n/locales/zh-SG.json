@@ -1534,6 +1534,7 @@
         "changedFields": "已修改：{{fields}}"
       },
       "edit": "编辑",
+      "doneEditing": "完成编辑",
       "reset": "重置",
       "changeSomethingElse": "修改其他内容",
       "feedbackPlaceholder": "告诉智能体要修改什么",

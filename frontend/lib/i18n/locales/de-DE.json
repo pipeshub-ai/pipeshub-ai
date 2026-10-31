@@ -1448,6 +1448,7 @@
         "changedFields": "Geändert: {{fields}}"
       },
       "edit": "Bearbeiten",
+      "doneEditing": "Bearbeitung beenden",
       "reset": "Zurücksetzen",
       "changeSomethingElse": "Etwas anderes ändern",
       "feedbackPlaceholder": "Sagen Sie dem Agenten, was er ändern soll",

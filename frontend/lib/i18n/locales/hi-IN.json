@@ -1448,6 +1448,7 @@
         "changedFields": "बदला गया: {{fields}}"
       },
       "edit": "संपादित करें",
+      "doneEditing": "संपादन पूरा",
       "reset": "रीसेट करें",
       "changeSomethingElse": "कुछ और बदलें",
       "feedbackPlaceholder": "एजेंट को बताएँ कि क्या बदलना है",

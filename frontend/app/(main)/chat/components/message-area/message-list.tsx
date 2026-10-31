@@ -1082,6 +1082,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         // writes scrollTop every frame) — native scroll anchoring would otherwise
         // fight those writes whenever streamed table/content geometry shifts.
         overflowAnchor: isStreaming ? 'none' : 'auto',
+        // The sticky composer covers the bottom of the scroller: focus and scrollIntoView stop above it.
+        scrollPaddingBottom: composerDockHeight,
         // Column so the composer dock can sit at the bottom of a short transcript.
         display: 'flex',
         flexDirection: 'column',

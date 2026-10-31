@@ -1601,6 +1601,7 @@
         "changedFields": "Změněno: {{fields}}"
       },
       "edit": "Upravit",
+      "doneEditing": "Dokončit úpravy",
       "reset": "Obnovit",
       "changeSomethingElse": "Změnit něco jiného",
       "feedbackPlaceholder": "Napište agentovi, co má změnit",
