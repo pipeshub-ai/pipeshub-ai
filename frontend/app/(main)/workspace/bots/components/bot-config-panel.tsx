@@ -471,7 +471,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
             <Switch checked={approveFromSlack} onCheckedChange={setApproveFromSlack} />
             <Flex direction="column" gap="1">
               <Text weight="medium">{t('workspace.bots.form.approveActionsFromSlack')}</Text>
-              <Text size="1" style={{ color: 'var(--gray-11)' }}>
+              <Text size="1" color="gray">
                 {t('workspace.bots.form.approveActionsFromSlackHint')}
               </Text>
             </Flex>

@@ -517,7 +517,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 # Clients that show question cards and send the answer back: the web app (the desktop app too) and
 # Slack. Node names API-token callers `api`; they, like headless runs, have no one to answer.
-_CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
+_CARD_CLIENTS = frozenset({"pipeshub-ai", "slack", "slack-approvals"})
 
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,

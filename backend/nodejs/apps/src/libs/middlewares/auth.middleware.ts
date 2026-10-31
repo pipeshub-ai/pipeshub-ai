@@ -27,14 +27,20 @@ const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
 export const TOKEN_CLIENT_NAME = 'api';
 export const SLACK_CLIENT_NAME = 'slack';
+// Slack questions already use `slack`; this name is the one that also lets Slack answer tool approvals.
+export const SLACK_APPROVALS_CLIENT_NAME = 'slack-approvals';
 
 /** Whether the Slack bot with this config id lets Slack answer tool approvals. */
 export type SlackBotApprovalLookup = (configId: string) => Promise<boolean>;
 
-// A caller picks its own client-name header, so the two names that unlock an approval surface are never taken from it.
+// A caller picks its own client-name header, so the names that unlock an approval surface are never taken from it.
+const claimedClientName = (req: Request): string =>
+  String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase();
+const isSlackClientName = (name: string): boolean =>
+  name === SLACK_CLIENT_NAME || name === SLACK_APPROVALS_CLIENT_NAME;
 const claimsPrivilegedClientName = (req: Request): boolean => {
-  const name = String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase();
-  return name === WEB_CLIENT_NAME || name === SLACK_CLIENT_NAME;
+  const name = claimedClientName(req);
+  return name === WEB_CLIENT_NAME || isSlackClientName(name);
 };
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
@@ -140,10 +146,7 @@ export class AuthMiddleware {
       throw new UnauthorizedError(refusal);
     }
 
-    if (
-      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
-      SLACK_CLIENT_NAME
-    ) {
+    if (isSlackClientName(claimedClientName(req))) {
       req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
     }
 
@@ -415,26 +418,22 @@ export class AuthMiddleware {
     };
   };
 
-  // Only the bot's own scoped token, for a bot that opted in, may be "slack"; any failure falls back to the plain API name.
+  // Only the bot's own scoped token is Slack: `slack`, or `slack-approvals` when its bot opted in (a failed read stays `slack`).
   private async setScopedClientName(
     req: Request,
     scope: string,
     configId: unknown,
   ): Promise<void> {
-    let approves = false;
-    if (
-      scope === TokenScopes.CONVERSATION_CREATE &&
-      typeof configId === 'string' &&
-      this.slackBotApproves
-    ) {
+    if (scope === TokenScopes.CONVERSATION_CREATE && typeof configId === 'string') {
+      let approves = false;
       try {
-        approves = await this.slackBotApproves(configId);
+        approves = (await this.slackBotApproves?.(configId)) === true;
       } catch (lookupError) {
         this.logger.error('Failed to read Slack bot settings', lookupError);
       }
-    }
-    if (approves) {
-      req.headers[CLIENT_NAME_HEADER] = SLACK_CLIENT_NAME;
+      req.headers[CLIENT_NAME_HEADER] = approves
+        ? SLACK_APPROVALS_CLIENT_NAME
+        : SLACK_CLIENT_NAME;
     } else if (claimsPrivilegedClientName(req)) {
       req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
     }

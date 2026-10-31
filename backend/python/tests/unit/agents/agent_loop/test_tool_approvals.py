@@ -375,6 +375,7 @@ def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN
 class TestWhoIsWatching:
     @pytest.mark.parametrize("overrides,expected", [
         ({}, True),
+        ({"client_name": "slack"}, False),
         ({"client_name": "api"}, False),
         ({"client_name": None}, False),
         ({"chat_streaming": False}, False),
@@ -1298,11 +1299,14 @@ class TestWatched:
             client_name=client_name, chat_streaming=streaming, conversation_id=conversation_id, is_service_account=False,
         )
 
-    @pytest.mark.parametrize("client", ["pipeshub-ai", "slack"])
-    def test_the_web_app_and_slack_can_answer_a_card(self, client: str) -> None:
+    @pytest.mark.parametrize("client", ["pipeshub-ai", "slack-approvals"])
+    def test_the_web_app_and_an_approving_slack_bot_can_answer_a_card(self, client: str) -> None:
         assert approvals.watched(self._ctx(client)) is True  # type: ignore[arg-type]
 
-    def test_the_api_cannot_and_the_other_conditions_still_apply(self) -> None:
-        assert approvals.watched(self._ctx("api")) is False  # type: ignore[arg-type]
-        assert approvals.watched(self._ctx("slack", streaming=False)) is False  # type: ignore[arg-type]
-        assert approvals.watched(self._ctx("slack", conversation_id=None)) is False  # type: ignore[arg-type]
+    @pytest.mark.parametrize("client", ["slack", "api"])
+    def test_plain_slack_and_the_api_cannot(self, client: str) -> None:
+        assert approvals.watched(self._ctx(client)) is False  # type: ignore[arg-type]
+
+    def test_the_other_conditions_still_apply(self) -> None:
+        assert approvals.watched(self._ctx("slack-approvals", streaming=False)) is False  # type: ignore[arg-type]
+        assert approvals.watched(self._ctx("slack-approvals", conversation_id=None)) is False  # type: ignore[arg-type]

@@ -204,15 +204,17 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.equal(decoded)
     })
 
-    it("can't claim the Slack client name on a session token", async () => {
-      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: Math.floor(Date.now() / 1000) })
-      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
+    for (const claimed of ['Slack', 'SLACK-approvals']) {
+      it(`can't claim the Slack client name ${claimed} on a session token`, async () => {
+        tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: Math.floor(Date.now() / 1000) })
+        sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
 
-      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}`, 'client-name': 'Slack' } })
-      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+        const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}`, 'client-name': claimed } })
+        await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
 
-      expect(req.headers['client-name']).to.equal('api')
-    })
+        expect(req.headers['client-name']).to.equal('api')
+      })
+    }
 
     it("keeps the web app's client name on a session token", async () => {
       tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: Math.floor(Date.now() / 1000) })
@@ -572,17 +574,19 @@ describe('AuthMiddleware', () => {
       expect(error.message).to.equal('Token carries no scopes')
     })
 
-    it("can't claim the Slack client name on an OAuth token", async () => {
+    for (const claimed of ['slack', 'Slack-Approvals']) {
+    it(`can't claim the Slack client name ${claimed} on an OAuth or personal access token`, async () => {
       sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
       mockOAuthTokenService.verifyAccessToken.resolves({
         userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'conversation:chat',
       })
       sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', fullName: 'Test User', role: 'member' }))
 
-      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': 'slack' } })
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': claimed } })
       await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
       expect(req.headers['client-name']).to.equal('api')
     })
+    }
 
     it("can't claim the web app's client name, which lets a run wait for a person's approval", async () => {
       sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
@@ -1222,34 +1226,36 @@ describe('AuthMiddleware', () => {
           lookup,
         )
 
-      it('sets slack when the token is the bot token and the bot allows approvals', async () => {
+      it('upgrades the bot token to slack-approvals when the bot allows approvals', async () => {
         tokenService.verifyScopedToken.resolves(botToken as any)
         const lookup = sinon.stub().resolves(true)
-        expect(await run(withLookup(lookup), TokenScopes.CONVERSATION_CREATE, undefined)).to.equal('slack')
+        expect(await run(withLookup(lookup), TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('slack-approvals')
         expect(lookup.calledWith('bot-1')).to.be.true
       })
 
-      it('uses api when the bot has approvals off, whatever the header says', async () => {
+      it('keeps slack for the bot token when approvals are off, even if the header says otherwise', async () => {
         tokenService.verifyScopedToken.resolves(botToken as any)
         const mw = withLookup(sinon.stub().resolves(false))
-        expect(await run(mw, TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('api')
+        expect(await run(mw, TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('slack')
+        expect(await run(mw, TokenScopes.CONVERSATION_CREATE, 'slack-approvals')).to.equal('slack')
       })
 
-      it('uses api when the bot settings cannot be read', async () => {
+      it('keeps slack when the bot settings cannot be read', async () => {
         tokenService.verifyScopedToken.resolves(botToken as any)
         const mw = withLookup(sinon.stub().rejects(new Error('store down')))
-        expect(await run(mw, TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('api')
+        expect(await run(mw, TokenScopes.CONVERSATION_CREATE, 'slack-approvals')).to.equal('slack')
       })
 
-      it('uses api when no lookup is wired', async () => {
+      it('keeps slack when no lookup is wired', async () => {
         tokenService.verifyScopedToken.resolves(botToken as any)
-        expect(await run(authMiddleware, TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('api')
+        expect(await run(authMiddleware, TokenScopes.CONVERSATION_CREATE, 'slack-approvals')).to.equal('slack')
       })
 
       it('uses api for a token without a configId', async () => {
         tokenService.verifyScopedToken.resolves({ email: 'u@x.com', scopes: [TokenScopes.CONVERSATION_CREATE] } as any)
         const lookup = sinon.stub().resolves(true)
         expect(await run(withLookup(lookup), TokenScopes.CONVERSATION_CREATE, 'slack')).to.equal('api')
+        expect(await run(withLookup(lookup), TokenScopes.CONVERSATION_CREATE, 'slack-approvals')).to.equal('api')
         expect(lookup.called).to.be.false
       })
 
@@ -1257,12 +1263,13 @@ describe('AuthMiddleware', () => {
         tokenService.verifyScopedToken.resolves(botToken as any)
         const lookup = sinon.stub().resolves(true)
         expect(await run(withLookup(lookup), 'mail:send', 'SLACK')).to.equal('api')
+        expect(await run(withLookup(lookup), 'mail:send', 'slack-approvals')).to.equal('api')
         expect(lookup.called).to.be.false
       })
 
-      it('leaves other client names alone', async () => {
-        tokenService.verifyScopedToken.resolves(botToken as any)
-        expect(await run(withLookup(sinon.stub().resolves(false)), TokenScopes.CONVERSATION_CREATE, 'my-script')).to.equal('my-script')
+      it('leaves other client names alone off the bot path', async () => {
+        tokenService.verifyScopedToken.resolves({ email: 'u@x.com', scopes: ['mail:send'] } as any)
+        expect(await run(authMiddleware, 'mail:send', 'my-script')).to.equal('my-script')
       })
     })
 

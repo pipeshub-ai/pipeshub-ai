@@ -90,7 +90,7 @@ APPROVAL_TTL_SECONDS = 900
 _RECORD_TTL_SECONDS = 86400
 # The web app's `client-name`: the one client that can show an approval card.
 WEB_CLIENT_NAME = "pipeshub-ai"
-SLACK_CLIENT_NAME = "slack"  # the Node API only passes it for a bot whose admin turned approvals on
+SLACK_APPROVALS_CLIENT_NAME = "slack-approvals"  # the Node API sets it only for a bot whose admin turned approvals on
 # How the app's answer to a card starts; the rest of the text is only for reading.
 TOOL_APPROVAL_RESUME_PREFIX = "Tool approval:"
 # How much of an approved call's result the model is given.
@@ -365,7 +365,7 @@ def decide(
 def watched(context: "AgentContext") -> bool:
     """Whether someone can answer an approval card in this run."""
     return bool(
-        context.client_name in (WEB_CLIENT_NAME, SLACK_CLIENT_NAME) and context.chat_streaming
+        context.client_name in (WEB_CLIENT_NAME, SLACK_APPROVALS_CLIENT_NAME) and context.chat_streaming
         and context.conversation_id and not context.is_service_account
     )
 

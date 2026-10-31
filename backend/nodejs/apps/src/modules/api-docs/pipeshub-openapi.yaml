@@ -23676,11 +23676,17 @@ components:
             Agent to link. It is stored as given (trimmed) and never looked up. An empty or
             whitespace-only value links no agent. `null` is refused. One agent can be linked to
             only one config: a second link answers `400 HTTP_BAD_REQUEST`.
+        approveActionsFromSlack:
+          type: boolean
+          default: false
+          description: |
+            Lets people answer tool approval cards in Slack. Leaving it out turns it off, as
+            for `agentId`. Slack must have interactivity turned on for the app.
     SlackBotConfig:
       type: object
       description: A Slack bot configuration as admins see it. Credentials are always masked.
       additionalProperties: false
-      required: [id, name, agentId, createdAt, updatedAt, botToken, signingSecret]
+      required: [id, name, agentId, approveActionsFromSlack, createdAt, updatedAt, botToken, signingSecret]
       properties:
         id:
           type: string
@@ -23692,6 +23698,10 @@ components:
           type: string
           nullable: true
           description: The linked agent, or null when none is linked.
+        approveActionsFromSlack:
+          type: boolean
+          default: false
+          description: Whether people can answer tool approval cards in Slack.
         createdAt:
           type: string
           format: date-time
