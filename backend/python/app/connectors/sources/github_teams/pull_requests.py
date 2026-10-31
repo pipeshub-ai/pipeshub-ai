@@ -51,6 +51,7 @@ from .common.utils import (
     epoch_ms_or_now,
     listing_payload,
     listing_since,
+    relative_window,
     resume_fields_to_clear,
     resume_point,
     sync_window_start,
@@ -126,14 +127,21 @@ class PullRequestsSync:
         window_dt = sync_window_start(c.sync_filters)
         since_dt = listing_since(checkpoint_dt, window_dt)
         since_ms = datetime_to_epoch_ms(since_dt) if since_dt else None
+        from_window = since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
+        rolling = relative_window(c.sync_filters) if from_window else None
 
         page = 1
         watermark = 0
         processed = 0
         stored_page = 0  # the place this listing reads on from, if any
         saved = await c.issues._read_checkpoint(group_id)
-        resume = resume_point(saved, since_ms)
+        resume = resume_point(saved, since_ms, rolling)
         if resume is not None:
+            if resume.get(GitHubLiterals.RESUME_SINCE.value) != since_ms:
+                # A rolling window has moved on since the stop: keep the start the listing
+                # began with, so it stops at the same pull request.
+                since_ms = resume.get(GitHubLiterals.RESUME_SINCE.value)
+                since_dt = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
             stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
             # A page number is an offset: a pull request removed from a page already
             # read moves a later one onto it. Reading the page before again covers that.
@@ -151,6 +159,7 @@ class PullRequestsSync:
                     GitHubLiterals.RESUME_PAGE.value: place,
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
                     GitHubLiterals.RESUME_WATERMARK.value: watermark or None,
+                    GitHubLiterals.RESUME_WINDOW.value: rolling,
                 })
 
         while True:

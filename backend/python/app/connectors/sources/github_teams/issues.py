@@ -60,6 +60,7 @@ from .common.utils import (
     epoch_ms_or_now,
     listing_payload,
     listing_since,
+    relative_window,
     resume_fields_to_clear,
     resume_point,
     sync_window_start,
@@ -260,6 +261,7 @@ class IssuesSync:
         )
         request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
         since_ms = datetime_to_epoch_ms(request_since) if request_since else None
+        rolling = relative_window(c.sync_filters) if window_floor else None
 
         page = 1
         cursor: str | None = None
@@ -268,8 +270,14 @@ class IssuesSync:
         processed = 0
         watermarks: dict[str, int] = {}
         stored_page = 0  # the place this listing reads on from, if any
-        resume = resume_point(checkpoint, since_ms)
+        resume = resume_point(checkpoint, since_ms, rolling)
         if resume is not None:
+            if resume.get(GitHubLiterals.RESUME_SINCE.value) != since_ms:
+                # A rolling window has moved on since the stop: read on with the start the
+                # listing began with, which GitHub's cursor and page offsets belong to.
+                since_ms = resume.get(GitHubLiterals.RESUME_SINCE.value)
+                request_since = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
+                window_dt = since_dt = window_floor = request_since + timedelta(seconds=1)
             page = stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
             cursor = resume.get(GitHubLiterals.RESUME_CURSOR.value)
             if cursor is None and page > 1:
@@ -293,6 +301,7 @@ class IssuesSync:
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
                     GitHubLiterals.RESUME_WATERMARK.value: watermarks.get(group_id),
                     GitHubLiterals.RESUME_CREATED.value: created_before + len(created),
+                    GitHubLiterals.RESUME_WINDOW.value: rolling,
                 })
 
         async def forget_place() -> None:

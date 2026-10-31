@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.models.entities import TicketRecord
@@ -350,7 +351,14 @@ _RESUME = {
     "listing_resume_since": None,
     "listing_resume_watermark": 1_800_000_000_000,
     "listing_resume_created": 100,
+    "listing_resume_window": None,
 }
+
+
+def _rolling(operator: str) -> FilterCollection:
+    return FilterCollection(filters=[Filter(
+        key=SyncFilterKey.MODIFIED.value, type="datetime", operator=operator, value=None,
+    )])
 
 
 class TestResumeInterruptedListing:
@@ -383,6 +391,7 @@ class TestResumeInterruptedListing:
             "listing_resume_since": None,
             "listing_resume_watermark": epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc)),
             "listing_resume_created": 100,
+            "listing_resume_window": None,
         })
 
     async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
@@ -400,6 +409,19 @@ class TestResumeInterruptedListing:
         # The watermark is the newest issue of the whole listing, read before the stop.
         assert written["last_sync_time"] == _RESUME["listing_resume_watermark"]
         assert all(written[k] is None for k in _RESUME)
+
+    async def test_a_place_read_back_without_its_null_fields_reads_on(self) -> None:
+        """Neo4j drops a property set to null, so a place saved with no window comes back
+        without its start."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
+        place = {k: v for k, v in _RESUME.items() if v is not None}
+        sync = self._sync(c, place)
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"], kwargs["since"]) == (2, "cursor-2", None)
 
     async def test_a_saved_place_from_another_window_is_not_used(self) -> None:
         c = make_mock_connector()
@@ -480,6 +502,53 @@ class TestResumeInterruptedListing:
         assert c.runtime.ds_call.await_args.kwargs["page"] == 3
         (_, written), _ = sync._write_checkpoint.await_args
         assert written == place
+
+    async def test_a_rolling_window_saves_its_name_with_the_place(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        recent = [_issue(number=n) for n in range(100)]
+        for issue in recent:  # inside the window
+            issue.updated_at = issue.created_at = datetime.now(timezone.utc)
+        first = ok_response(recent)
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, failed_response("rate limited", status_code=429)])
+        sync = self._sync(c, {})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written["listing_resume_window"] == "last_90_days"
+        assert written["listing_resume_since"] is not None
+
+    async def test_a_rolling_window_that_moved_on_reads_on_with_its_saved_start(self) -> None:
+        """"Last 90 days" starts later on every sync. The interrupted listing reads on
+        with the start it began with, or it would begin again from page 1 every sync."""
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        saved_since = 1_780_000_000_000
+        place = {**_RESUME, "listing_resume_since": saved_since, "listing_resume_window": "last_90_days"}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (2, "cursor-2")
+        assert kwargs["since"] == datetime.fromtimestamp(saved_since / 1000, tz=timezone.utc)
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
+    async def test_a_place_saved_for_another_rolling_window_is_not_used(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = _rolling("last_90_days")
+        c.runtime.ds_call = AsyncMock(return_value=ok_response([]))
+        sync = self._sync(c, {**_RESUME, "listing_resume_since": 1_780_000_000_000,
+                              "listing_resume_window": "last_30_days"})
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        kwargs = c.runtime.ds_call.await_args.kwargs
+        assert (kwargs["page"], kwargs["after"]) == (1, None)
 
 
 class TestProcessIssueToTicket:

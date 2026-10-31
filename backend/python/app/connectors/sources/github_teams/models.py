@@ -50,6 +50,7 @@ class GitHubLiterals(str, Enum):
     RESUME_SINCE = "listing_resume_since"
     RESUME_WATERMARK = "listing_resume_watermark"
     RESUME_CREATED = "listing_resume_created"
+    RESUME_WINDOW = "listing_resume_window"
     LAST_COMMIT_SHA = "last_commit_sha"
     # The branch the code checkpoint was taken on. The key predates branch
     # selection; it keeps its name so checkpoints written before still read.
