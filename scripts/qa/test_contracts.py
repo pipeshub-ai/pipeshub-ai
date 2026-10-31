@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from qa import __main__ as qa_main
-from qa import catalog, collect, config, impact, run, schema, testing, validate
+from qa import catalog, collect, config, impact, run, schema, test_prove, testing, validate
 
 
 class TestContracts(unittest.TestCase):
@@ -66,6 +66,13 @@ class TestContracts(unittest.TestCase):
 
     def test_review_llm_schema_rejects_extra_keys(self) -> None:
         self.assertTrue(schema.check({"requirements": [], "checklist": [], "risks": [], "x": 1}, "review-llm.v1.json"))
+
+
+class TestProofContract(test_prove.ProveCase):
+    def test_proof_schema_matches_prove_output(self) -> None:
+        evidence = test_prove.prove_with_mutant_kill(self)
+        self.assertEqual(schema.check(evidence, "proof.v1.json"), [])
+        self.assertTrue(schema.check({**evidence, "verdict": "maybe"}, "proof.v1.json"))
 
 
 if __name__ == "__main__":

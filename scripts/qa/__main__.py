@@ -28,6 +28,7 @@ from qa import (
     impact,
     paths,
     planner,
+    prove,
     report,
     review,
     run,
@@ -621,6 +622,27 @@ def cmd_generate(args) -> int:
     return 0
 
 
+def cmd_prove(args) -> int:
+    cfg = config.load()
+    out = _out(args)
+    rows = catalog.index(_rows(cfg, out, refresh=True))
+    row = rows.get(args.id)
+    if row is None:
+        print(f"unknown test id {args.id!r}", file=sys.stderr)
+        return 2
+    try:
+        result = prove.prove(cfg, row, out, base=args.base, repeat=args.repeat, max_mutants=args.max_mutants,
+                             stack_mode=args.stack or os.environ.get("QA_STACK", "none"), base_url=args.base_url, rows=rows)
+    except run._Cancelled:
+        print("prove: cancelled by SIGTERM", file=sys.stderr)
+        return 143
+    except subprocess.CalledProcessError as exc:
+        print(f"prove: git failed: {' '.join(map(str, exc.cmd))}", file=sys.stderr)
+        return 2
+    print(f"{result['verdict']}: {result['reason']}")
+    return 0 if result["verdict"] == "proven" else 1
+
+
 def cmd_command(args) -> int:
     try:
         parsed = command.parse(args.body, args.permission, args.admin_team)
@@ -832,6 +854,15 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--adapter", choices=sorted(planner.ADAPTERS))
     s.add_argument("--timeout", type=int, default=600)
     s.set_defaults(fn=cmd_generate)
+
+    s = sub.add_parser("prove", help="prove a test checks behavior: it passes on head and fails on a revert or a mutant")
+    s.add_argument("id")
+    s.add_argument("--base", help="revert the covered files to this ref, and mutate only changed lines")
+    s.add_argument("--repeat", type=int, help="head runs that must all pass (default 3, 1 for stack tests)")
+    s.add_argument("--max-mutants", type=int, help="mutants to try (default 5, 1 for stack tests)")
+    s.add_argument("--stack", default=None, choices=["none", "managed", "external"])
+    s.add_argument("--base-url", default=None)
+    s.set_defaults(fn=cmd_prove)
     p.subcommands = sub.choices
     return p
 

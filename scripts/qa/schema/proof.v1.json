@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa prove evidence",
+  "type": "object",
+  "required": ["schema", "id", "head", "lint", "head_runs", "revert", "mutants", "verdict", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "qa-proof/v1"},
+    "id": {"type": "string"},
+    "head": {"type": "string"},
+    "lint": {"type": "array", "items": {"type": "string"}},
+    "head_runs": {"type": "array", "items": {"type": "string"}},
+    "revert": {
+      "type": ["object", "null"],
+      "required": ["base", "files", "outcome"],
+      "additionalProperties": false,
+      "properties": {
+        "base": {"type": "string"},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "outcome": {"type": "string"}
+      }
+    },
+    "mutants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "op", "outcome"],
+        "additionalProperties": false,
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "op": {"type": "string"},
+          "outcome": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {"enum": ["proven", "unproven"]},
+    "reason": {"type": "string"}
+  }
+}
