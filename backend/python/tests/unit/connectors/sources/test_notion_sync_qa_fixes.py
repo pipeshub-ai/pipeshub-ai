@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.notion.connector import (
     NotionConnector,
@@ -132,6 +133,43 @@ async def test_an_unchanged_recheck_saves_a_file_a_failed_batch_never_stored() -
 
     records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
     assert records is not None and missing in [r for r, _ in records]
+
+
+def _unchanged_recheck(stored_files: list[Any], fetched_files: list[Any]) -> NotionConnector:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    proc.get_records_by_parent = AsyncMock(return_value=stored_files)
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=fetched_files)
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_file_a_failed_batch_left_stale() -> None:
+    edited = _stored("ca_c1_file", RecordType.FILE, revision="2026-01-02T00:00:00.000Z")
+    conn = _unchanged_recheck([_stored("ca_c1_file", RecordType.FILE)], [edited])
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and edited in [r for r, _ in records]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_page_whose_indexing_was_turned_back_on() -> None:
+    conn = _unchanged_recheck([], [])
+    stored_page = conn.data_entities_processor.get_record_by_external_id.return_value
+    stored_page.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+    conn.indexing_filters = MagicMock()
+    conn.indexing_filters.is_enabled = MagicMock(return_value=True)
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_still_removes_a_file_gone_within_the_minute() -> None:
+    conn = _unchanged_recheck([_stored("ca_c1_file", RecordType.FILE), _stored("gone_file", RecordType.FILE)],
+                              [_stored("ca_c1_file", RecordType.FILE)])
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
+    conn.data_entities_processor.on_record_deleted.assert_awaited_once_with("rid-gone_file")
 
 
 @pytest.mark.asyncio

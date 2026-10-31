@@ -173,6 +173,14 @@ _OAUTH_REQUIRED_SCOPES = (
 )
 
 
+def _indexing_turned_on(record: Record, *, enabled: bool) -> bool:
+    """Stored with indexing off while its filter now allows it: only a save queues it again."""
+    return enabled and getattr(record, "indexing_status", None) in (
+        ProgressStatus.AUTO_INDEX_OFF,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+    )
+
+
 def _edit_part(revision: str | None) -> str | None:
     """A revision without the comment digest or row marker: the part last_edited_time sets."""
     return revision.split("|", 1)[0] if revision else revision
@@ -2658,16 +2666,26 @@ class NotionConnector(BaseConnector):
         )
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
+        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
         if recheck_comments and same_edit and existing.external_revision_id == record.external_revision_id:
             children = await self.data_entities_processor.get_records_by_parent(self.connector_id, obj_id)
-            stored_files = [c for c in children or [] if c.record_type == RecordType.FILE]
-            stored_ids = {c.external_record_id for c in stored_files}
+            stored = {c.external_record_id: c for c in children or [] if c.record_type == RecordType.FILE}
             # Saving it again would change nothing but its timestamps, on every page the rotation
-            # reaches. A file a failed batch never stored is the exception: it is saved below.
-            if all(f.external_record_id in stored_ids for f in files):
+            # reaches. It is saved below when a failed batch left one of its files unstored or
+            # stale, or when indexing was turned back on for the page or a file.
+            if not _indexing_turned_on(existing, enabled=indexing_enabled) and all(
+                f.external_record_id in stored
+                and stored[f.external_record_id].external_revision_id == f.external_revision_id
+                and not _indexing_turned_on(stored[f.external_record_id], enabled=files_indexing_enabled)
+                for f in files
+            ):
+                current = {f.external_record_id for f in files}
+                # Notion's edit time has minute precision, so a file removed within the minute
+                # leaves the revision as it was.
+                await self._prune_removed_files(obj_id, current)
                 if self.data_entities_processor.full_sync_running(self.connector_id):
                     self.data_entities_processor.note_kept_records(
-                        self.connector_id, [existing.id, *(c.id for c in stored_files)]
+                        self.connector_id, [existing.id, *(stored[i].id for i in current)]
                     )
                 return None
         # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
@@ -2678,7 +2696,6 @@ class NotionConnector(BaseConnector):
         if will_stream and len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
             self._sync_comments[obj_id] = (record.external_revision_id, comments_by_block)
 
-        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
         for file_record in files:
             if not files_indexing_enabled:
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
