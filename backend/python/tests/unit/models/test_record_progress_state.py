@@ -12,7 +12,7 @@ import inspect
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.models import entities
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import FileRecord, Record, RecordType, SQLColumnRecord
 
 
 def _base(**overrides) -> dict:
@@ -42,6 +42,20 @@ def test_a_record_stored_without_a_status_keeps_the_defaults() -> None:
     assert typed.extraction_status == ProgressStatus.NOT_STARTED.value
 
 
+def test_a_column_keeps_its_stored_status_and_its_own_default() -> None:
+    base = _base(recordType=RecordType.SQL_COLUMN.value, indexingStatus=ProgressStatus.COMPLETED.value,
+                 extractionStatus=ProgressStatus.COMPLETED.value)
+    typed = SQLColumnRecord.from_arango_record({"fqn": "sales.orders.total"}, base)
+    assert typed.indexing_status == ProgressStatus.COMPLETED.value
+    assert typed.extraction_status == ProgressStatus.COMPLETED.value
+
+    base.pop("indexingStatus")
+    base.pop("extractionStatus")
+    typed = SQLColumnRecord.from_arango_record({"fqn": "sales.orders.total"}, base)
+    # Columns are not indexed unless asked, so an unset status reads as off, not queued.
+    assert typed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+    assert typed.extraction_status == ProgressStatus.NOT_STARTED.value
+
 def test_every_typed_converter_reads_the_stored_status() -> None:
     """A converter that forgot reports every record of its type as not indexed."""
     tree = ast.parse(inspect.getsource(entities))
@@ -53,7 +67,7 @@ def test_every_typed_converter_reads_the_stored_status() -> None:
                 continue
             converters += 1
             source = ast.unparse(fn)
-            if "Record.progress_state_from_arango(" not in source and "indexing_status=" not in source:
+            if "Record.progress_state_from_arango(" not in source:
                 missing.append(cls.name)
     assert converters >= 16
     assert not missing

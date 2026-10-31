@@ -509,11 +509,13 @@ class Record(BaseModel):
         return base
 
     @staticmethod
-    def progress_state_from_arango(record_doc: dict) -> dict[str, Any]:
+    def progress_state_from_arango(
+        record_doc: dict, indexing_default: str = ProgressStatus.QUEUED.value,
+    ) -> dict[str, Any]:
         """Constructor kwargs for the indexing and extraction status of a stored record. Without them a typed record
         kept the field defaults, so an indexed record read by id reported itself QUEUED ("not indexed")."""
         return {
-            "indexing_status": record_doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            "indexing_status": record_doc.get("indexingStatus", indexing_default),
             "extraction_status": record_doc.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
         }
 
@@ -574,8 +576,7 @@ class Record(BaseModel):
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -2601,7 +2602,7 @@ class SQLColumnRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_internal=record_doc.get("isInternal", False),
-            indexing_status=record_doc.get("indexingStatus", ProgressStatus.AUTO_INDEX_OFF.value),
+            **Record.progress_state_from_arango(record_doc, indexing_default=ProgressStatus.AUTO_INDEX_OFF.value),
             fqn=column_doc.get("fqn"),
             table_fqn=column_doc.get("tableFqn"),
             data_type=column_doc.get("dataType"),
@@ -3235,8 +3236,7 @@ class CodeFileRecord(Record):
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
