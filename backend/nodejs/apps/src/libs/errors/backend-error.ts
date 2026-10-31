@@ -3,6 +3,7 @@ import {
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  GoneError,
   HttpError,
   InternalServerError,
   NotFoundError,
@@ -338,6 +339,8 @@ const errorForStatus = (
       return new ForbiddenError(errorDetail);
     case 404:
       return new NotFoundError(errorDetail);
+    case 410:
+      return new GoneError(errorDetail);
     case 409:
       // The connector service words this refusal the same way everywhere (kb_service.py); it is
       // the one 409 a client may want to tell apart, because retrying the write can never work.
