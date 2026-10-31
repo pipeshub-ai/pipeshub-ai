@@ -3,13 +3,17 @@ the working tree. Writes changeset.json and the unified diff beside it."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from qa import classify, globs
+from qa import classify, config, globs
 from qa.config import Config
 
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -32,6 +36,20 @@ def resolve_base(root: Path, base_ref: str | None = None) -> str:
 
 def rev(root: Path, ref: str) -> str:
     return git(root, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+
+
+@contextlib.contextmanager
+def worktree(root: Path, sha: str) -> Iterator[Path]:
+    """A throwaway detached worktree at sha; the caller's checkout is never touched."""
+    tmp = Path(tempfile.mkdtemp(prefix="qa-worktree-"))
+    try:
+        subprocess.run(["git", "worktree", "add", "--detach", str(tmp), sha], cwd=root, check=True, capture_output=True)
+        config.clear_cache()
+        yield tmp
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        config.clear_cache()
 
 
 def parent_or_empty(root: Path, sha: str) -> str:

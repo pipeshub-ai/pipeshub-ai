@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -199,7 +200,8 @@ def cmd_run(args) -> int:
     if args.graph_db:
         plan["stack"]["graph_db"] = [args.graph_db] if args.graph_db != "both" else ["neo4j", "arango"]
     try:
-        result = run.run(cfg, plan, rows, out, stack_mode=args.stack, base_url=args.base_url,
+        stack_mode = args.stack or os.environ.get("QA_STACK", "none")
+        result = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=args.base_url,
                          build=args.build, dry_run=args.dry_run, retry=not args.no_retry, scope=args.scope)
     finally:
         # The upload steps run even when the run raises, so the logs it already wrote must be clean first.
@@ -257,6 +259,8 @@ def cmd_report(args) -> int:
 
 def cmd_go(args) -> int:
     """collect -> impact -> plan -> validate -> run -> report in one command."""
+    if getattr(args, "commit", None):
+        return _go_at_commit(args)
     steps = [cmd_collect, cmd_impact, cmd_plan, cmd_validate]
     for step in steps:
         rc = step(args)
@@ -274,6 +278,30 @@ def cmd_go(args) -> int:
     rc = cmd_report(args)
     print(f"report: {Path(_out(args)) / 'report.md'}")
     return rc
+
+
+def _go_at_commit(args) -> int:
+    """Run go against a detached worktree at --commit. Rules and hooks stay the
+    invoking engine's; results land in the caller's run directory."""
+    args.out = str(_out(args))
+    root = paths.tree_root()
+    try:
+        sha = collect.rev(root, args.commit)
+    except subprocess.CalledProcessError:
+        print(f"unknown commit {args.commit}", file=sys.stderr)
+        return 2
+    args.commit = None
+    args.head, args.build, args.stack = sha, True, args.stack or "managed"
+    saved = os.environ.get("QA_ROOT")
+    with collect.worktree(root, sha) as tree:
+        os.environ["QA_ROOT"] = str(tree)
+        try:
+            return cmd_go(args)
+        finally:
+            if saved is None:
+                os.environ.pop("QA_ROOT", None)
+            else:
+                os.environ["QA_ROOT"] = saved
 
 
 def cmd_history(args) -> int:
@@ -354,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--history", default=os.environ.get("QA_HISTORY"))
 
     def run_args(sp):
-        sp.add_argument("--stack", default=os.environ.get("QA_STACK", "none"), choices=["none", "managed", "external"])
+        sp.add_argument("--stack", default=None, choices=["none", "managed", "external"])
         sp.add_argument("--base-url", default=None)
         sp.add_argument("--graph-db", choices=["neo4j", "arango", "both"])
         sp.add_argument("--build", action="store_true", help="build images before compose up (managed)")
@@ -407,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     run_args(s)
     s.add_argument("--adapter", choices=sorted(planner.ADAPTERS))
     s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--commit", metavar="SHA",
+                   help="run in a detached worktree at SHA (implies --build; --stack defaults to managed)")
     s.add_argument("--plan-only", action="store_true")
     s.add_argument("--strict", action="store_true")
     s.add_argument("--allow-not-run", default=",".join(sorted(report.DEFAULT_ALLOWED)), metavar="KINDS")

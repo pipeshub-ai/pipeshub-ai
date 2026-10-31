@@ -37,9 +37,14 @@ PIPESHUB_TEST_USER_EMAIL=... PIPESHUB_TEST_USER_PASSWORD=... \
 python3 scripts/qa run --stack external
 python3 scripts/qa report --gate
 
+# Test one exact commit: a throwaway worktree at <sha>, a managed stack built from it
+python3 scripts/qa go --commit <sha> --scope stack --graph-db neo4j
+
 # Ask Claude for additions (needs the claude CLI and a key)
 python3 scripts/qa go --adapter claude_code --plan-only
 ```
+
+`--commit` installs nothing into its worktree: Python suites use `QA_PYTHON` / `QA_IT_PYTHON`, and Node suites report `not_run` (kind `toolchain`), which blocks the gate. Use it with `--scope stack`.
 
 A managed stack generates `PIPESHUB_TEST_USER_PASSWORD` for each run and replaces any value in the environment.
 
@@ -57,7 +62,7 @@ directory.
 | `validate` | Merge floor and additions into `plan.json` |
 | `run` | Execute `plan.json`, or `--tests FILE` / `--ids ...`. `--stack none\|managed\|external`, `--scope unit\|stack`, `--dry-run` |
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
-| `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report` |
+| `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build` and `--stack managed` by default; results land in your `--out` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
 | `history record \| failing \| flaky` | Run history |
 | `command --body ... --permission ...` | Parse a `/qa` PR comment |

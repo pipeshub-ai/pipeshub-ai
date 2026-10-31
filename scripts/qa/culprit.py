@@ -6,9 +6,6 @@ so the caller's checkout is never touched.
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -38,15 +35,8 @@ def worktree_probe(run_ids: Callable[[Path, list[str]], dict[str, str]]) -> Prob
     """Wrap a runner so it executes against a detached worktree at a commit."""
     def probe(root: Path, sha_and_ids: list[str]) -> dict[str, str]:
         sha, ids = sha_and_ids[0], sha_and_ids[1:]
-        tmp = Path(tempfile.mkdtemp(prefix="qa-bisect-"))
-        try:
-            subprocess.run(["git", "worktree", "add", "--detach", str(tmp), sha], cwd=root, check=True, capture_output=True)
-            config.clear_cache()
+        with collect.worktree(root, sha) as tmp:
             return run_ids(tmp, ids)
-        finally:
-            subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True)
-            shutil.rmtree(tmp, ignore_errors=True)
-            config.clear_cache()
     return probe
 
 

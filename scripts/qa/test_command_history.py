@@ -3,11 +3,16 @@
 Run: python3 -m unittest discover -s scripts -p 'test_*.py'
 """
 
+import contextlib
+import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from qa import command, config, culprit, history, testing
+from qa import __main__ as qa_main
+from qa import command, config, culprit, history, run, testing
 
 
 FULL = "e4f5a6b" + "0" * 33
@@ -103,6 +108,81 @@ class TestCulpritSearch(unittest.TestCase):
         testing.commit(root, "empty")
         result = culprit.search(config.load(root), base, "HEAD", ["x"], lambda _r, a: {i: "pass" for i in a[1:]})
         self.assertEqual(result["result"], "flaky")
+
+
+class TestGoCommit(unittest.TestCase):
+    """go --commit runs the pipeline in a throwaway worktree at that commit."""
+
+    def setUp(self) -> None:
+        self.root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.first = testing.git(self.root, "rev-parse", "HEAD")
+        testing.write(self.root, "backend/python/app/services/retrieval.py", "def search():\n    return [1]\n")
+        testing.commit(self.root, "second")
+        self.seen: dict = {}
+
+    def fake_run(self, cfg, plan, rows, out, **kw):
+        self.seen.update(root=cfg.root, head=plan["head"], out=out, **kw)
+        self.seen["checked_out"] = testing.git(cfg.root, "rev-parse", "HEAD")
+        return {"tests": [], "seconds": 0}
+
+    def go(self, *extra: str, side_effect=None) -> tuple[int, str]:
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), \
+             mock.patch.object(run, "run", side_effect=side_effect or self.fake_run), \
+             contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = qa_main.main(["--out", "qa-out", "go", *extra, "--adapter", "none", "--scope", "unit"])
+            self.assertEqual(os.environ["QA_ROOT"], str(self.root))
+        return code, err.getvalue()
+
+    def assert_cleaned_up(self) -> None:
+        self.assertFalse(Path(self.seen["root"]).exists())
+        self.assertEqual(len(testing.git(self.root, "worktree", "list").splitlines()), 1)
+
+    def test_go_commit_runs_in_a_worktree_at_the_sha(self) -> None:
+        code, _ = self.go("--commit", self.first)
+        self.assertEqual(code, 0)
+        self.assertNotEqual(Path(self.seen["root"]).resolve(), self.root.resolve())
+        self.assertEqual(self.seen["checked_out"], self.first)
+        self.assertEqual(self.seen["head"], self.first)
+        self.assertTrue((self.root / "qa-out" / "results-unit.json").is_file())
+        self.assert_cleaned_up()
+
+    def test_go_commit_cleans_up_when_the_run_raises(self) -> None:
+        def boom(cfg, plan, rows, out, **kw):
+            self.fake_run(cfg, plan, rows, out, **kw)
+            (out / "run.log").write_text("partial", encoding="utf-8")
+            raise RuntimeError("stack exploded")
+
+        with self.assertRaises(RuntimeError):
+            self.go("--commit", self.first, side_effect=boom)
+        self.assert_cleaned_up()
+        self.assertEqual(Path(self.seen["out"]), self.root / "qa-out")
+        self.assertTrue((self.root / "qa-out" / "run.log").is_file())
+        self.assertTrue((self.root / "qa-out" / "plan.json").is_file())
+
+    def test_go_commit_rejects_an_unknown_sha(self) -> None:
+        code, err = self.go("--commit", "deadbeef" * 5)
+        self.assertEqual(code, 2)
+        self.assertIn("unknown commit", err)
+        self.assertEqual(len(testing.git(self.root, "worktree", "list").splitlines()), 1)
+
+    def test_go_commit_defaults_to_a_managed_build(self) -> None:
+        self.go("--commit", self.first)
+        self.assertEqual((self.seen["stack_mode"], self.seen["build"]), ("managed", True))
+        self.go("--commit", self.first, "--stack", "none")
+        self.assertEqual((self.seen["stack_mode"], self.seen["build"]), ("none", True))
+
+
+class TestWorktree(unittest.TestCase):
+    def test_worktree_is_removed_after_use(self) -> None:
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        sha = testing.git(root, "rev-parse", "HEAD")
+        with qa_main.collect.worktree(root, sha) as tree:
+            self.assertEqual(testing.git(tree, "rev-parse", "HEAD"), sha)
+        self.assertFalse(tree.exists())
+        self.assertEqual(len(testing.git(root, "worktree", "list").splitlines()), 1)
 
 
 if __name__ == "__main__":
