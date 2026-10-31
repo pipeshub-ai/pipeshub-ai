@@ -9,14 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import BackgroundTasks
+from fastapi.responses import JSONResponse
 
 import app.services.docling.docling_service as mod
 from app.services.docling.docling_service import DoclingService
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterator
-
-    from fastapi.responses import JSONResponse
 
 
 class _Ledger:
@@ -45,6 +44,7 @@ def ledger() -> Iterator[_Ledger]:
     led = _Ledger()
     original = mod.docling_service
     mod._parse_tasks.clear()
+    mod._abandoned.clear()
     with (
         patch.object(mod, "_acquire_docling_gate", led.acquire),
         patch.object(mod, "_release_docling_gate", led.release),
@@ -237,3 +237,14 @@ async def test_a_failure_is_logged_once(ledger: _Ledger, caplog: pytest.LogCaptu
     await _call()
     await ledger.settle()
     assert len([r for r in caplog.records if "Abandoned" in r.getMessage()]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_parse_that_raises_timeout_itself_is_not_left_abandoned(ledger: _Ledger) -> None:
+    _wire(AsyncMock(side_effect=asyncio.TimeoutError()))
+    response = await _call()
+    await ledger.settle()
+    assert isinstance(response, JSONResponse) and response.status_code == 422
+    assert (ledger.acquired, ledger.released) == (1, 1)
+    assert not mod._parse_tasks
+    assert not mod._abandoned

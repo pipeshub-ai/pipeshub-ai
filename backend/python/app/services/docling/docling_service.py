@@ -273,7 +273,10 @@ async def parse_pdf_endpoint(
                 asyncio.shield(parse_task), timeout=PDF_PARSING_TIMEOUT_SECONDS
             )
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            _abandoned.add(parse_task)
+            # A parse that itself raised TimeoutError is already done and reported
+            # here; only a task still running is left without a caller.
+            if not parse_task.done():
+                _abandoned.add(parse_task)
             raise
 
         return ParseResponse(
