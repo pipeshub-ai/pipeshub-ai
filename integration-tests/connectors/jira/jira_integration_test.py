@@ -23,7 +23,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED; then manual indexing on
   order 8  TC-INCR-001        — dedicated connector: create + incremental (by id) + delete
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
-  order 10 TC-JIRA-HIER-001   — a sub-task under its task (PARENT_CHILD); an epic's child off its project
+  order 10 TC-JIRA-HIER-001   — a sub-task under its task (PARENT_CHILD); an epic's child under its epic when its readers can read the epic
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
   order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
@@ -341,10 +341,22 @@ class TestJiraConnector:
             f"ATTACHMENT edges {attach} != synced Jira attachments "
             f"{jira_connector['expected_attachment_edges']}"
         )
+        # A story that shares its epic's level is filed under it only if the level grants the
+        # same people on every issue, which the live count cannot see; it may add an edge.
         pc = await graph_provider.count_parent_child_edges(connector_id)
-        assert pc == jira_connector["expected_parent_child_edges"], (
-            f"PARENT_CHILD {pc} != Jira issues-with-parent {jira_connector['expected_parent_child_edges']}"
+        expected_pc = jira_connector["expected_parent_child_edges"]
+        by_level = jira_connector["parent_child_edges_by_level"]
+        assert expected_pc <= pc <= expected_pc + by_level, (
+            f"PARENT_CHILD {pc}: Jira has {expected_pc} sub-tasks and stories filed under their parent"
+            + (f", plus up to {by_level} stories that share their epic's level" if by_level else "")
         )
+        # The range alone would let one of those stories stand in for a missing or a wrong edge.
+        wrong = {}
+        for parent_id, child_id in jira_connector["expected_parent_child_pairs"]:
+            parents = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
+            if parents != [parent_id]:
+                wrong[child_id] = {"expected": parent_id, "graph": parents}
+        assert not wrong, f"PARENT_CHILD parents differ from Jira for {len(wrong)} children: {dict(list(wrong.items())[:10])}"
 
         # Independent: record-group count from filter scope (primary only).
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
@@ -963,25 +975,35 @@ class TestJiraHierarchy:
         jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-HIER-001: a sub-task hangs under its task as PARENT_CHILD; an epic's child hangs off its project."""
+        """TC-JIRA-HIER-001: a sub-task hangs under its task as PARENT_CHILD; an epic's child hangs under
+        its epic when everyone who reads the child reads the epic, and off its project otherwise."""
         connector_id = jira_connector["connector_id"]
         checked = 0
 
-        # Epic ↔ child: the child hangs off its project, not its epic. Jira copies a parent's security
-        # level onto its sub-tasks but not onto an epic's children, so filing a story under its epic would
-        # hide it from people who may open it.
+        # Epic ↔ child: Jira copies a parent's security level onto its sub-tasks but not onto an epic's
+        # children, so a story is filed under its epic only when that hides it from nobody who may open
+        # it. Setup picked a pair whose placement does not depend on a level's members.
         epic_id = jira_connector.get("epic_id")
         child_id = jira_connector.get("epic_child_id")
         if epic_id and child_id:
             child = await graph_provider.get_record_by_external_id(connector_id, child_id)
-            assert child is not None and not child.parent_external_record_id, (
-                f"{child_id} must not be filed under an issue (parent={child.parent_external_record_id!r})"
-            )
+            assert child is not None, f"{child_id} was not synced"
             # The project's record group holds it through the same edge; it has no record id, so only a
             # record parent shows up here.
             incoming = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
             record_parents = [parent for parent in incoming if parent]
-            assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r} (epic {epic_id})"
+            if jira_connector["epic_child_filed_under_epic"]:
+                assert str(child.parent_external_record_id) == str(epic_id), (
+                    f"{child_id} must be filed under its epic {epic_id}, which every reader of it can read "
+                    f"(parent={child.parent_external_record_id!r})"
+                )
+                assert str(epic_id) in incoming, f"PARENT_CHILD epic {epic_id} → {child_id} missing"
+            else:
+                assert not child.parent_external_record_id, (
+                    f"{child_id} must not be filed under its epic, whose level not every reader of it holds "
+                    f"(parent={child.parent_external_record_id!r})"
+                )
+                assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r}"
             checked += 1
 
         # Task ↔ sub-task
