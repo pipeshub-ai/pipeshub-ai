@@ -161,3 +161,38 @@ describe('a card the fork settled as expired', () => {
     ]);
   });
 });
+
+describe('toolApprovalDetails edit fields', () => {
+  const schema = { type: 'object', properties: { a: { type: 'string' } } };
+  it('keeps the new fields', () => {
+    const editErrors = [{ path: '/a', message: 'bad' }];
+    expect(
+      toolApprovalDetails({
+        ...WIRE,
+        toolPath: 'jira.create',
+        source: 'toolset',
+        inputSchema: schema,
+        argsHash: 'h1',
+        editable: true,
+        argsSummary: 'sum',
+        displayName: 'Create issue',
+        editErrors,
+      })
+    ).toMatchObject({ toolPath: 'jira.create', source: 'toolset', inputSchema: schema, argsHash: 'h1', editable: true, argsSummary: 'sum', displayName: 'Create issue', editErrors });
+  });
+  it('drops malformed ones', () => {
+    const d = toolApprovalDetails({
+      ...WIRE,
+      source: 'other',
+      inputSchema: 'x',
+      editable: 'yes',
+      argsHash: 5,
+      editErrors: [{ path: '/a', message: 'ok' }, { path: 1 }, 'x'],
+    });
+    expect(d).not.toHaveProperty('source');
+    expect(d).not.toHaveProperty('inputSchema');
+    expect(d).not.toHaveProperty('editable');
+    expect(d).not.toHaveProperty('argsHash');
+    expect(d?.editErrors).toEqual([{ path: '/a', message: 'ok' }]);
+  });
+});
