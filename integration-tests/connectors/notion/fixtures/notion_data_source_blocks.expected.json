@@ -13,10 +13,10 @@
       "comments": [],
       "data": {
         "column_headers": [
-          "Tag",
-          "Name"
+          "Name",
+          "Tag"
         ],
-        "table_markdown": "| Tag | Name |\n| --- | --- |\n|  | PHIT-DbRowWithChildren |\n| alpha | PHIT-DbRowNamed |",
+        "table_markdown": "| Name | Tag |\n| --- | --- |\n| PHIT-DbRowWithChildren |  |\n| PHIT-DbRowNamed | alpha |",
         "table_summary": ""
       },
       "format": "json",
@@ -25,8 +25,8 @@
       "table_metadata": {
         "captions": [],
         "column_names": [
-          "Tag",
-          "Name"
+          "Name",
+          "Tag"
         ],
         "footnotes": [],
         "has_header": true,
@@ -42,11 +42,11 @@
       "comments": [],
       "data": {
         "cells": [
-          "Tag",
-          "Name"
+          "Name",
+          "Tag"
         ],
-        "row": "{\"cells\": [\"Tag\", \"Name\"]}",
-        "row_natural_language_text": "Tag\u200b|\u200bName",
+        "row": "{\"cells\": [\"Name\", \"Tag\"]}",
+        "row_natural_language_text": "Name\u200b|\u200bTag",
         "row_number": 1
       },
       "format": "json",
@@ -62,11 +62,11 @@
       "comments": [],
       "data": {
         "cells": [
-          "",
-          "PHIT-DbRowWithChildren"
+          "PHIT-DbRowWithChildren",
+          ""
         ],
-        "row": "{\"cells\": [\"\", \"PHIT-DbRowWithChildren\"], \"source_name\": \"PHIT-DbRowWithChildren\", \"page_id\": \"UUID-PLACEHOLDER\"}",
-        "row_natural_language_text": "\u200b|\u200bPHIT-DbRowWithChildren",
+        "row": "{\"cells\": [\"PHIT-DbRowWithChildren\", \"\"], \"source_name\": \"PHIT-DbRowWithChildren\", \"page_id\": \"UUID-PLACEHOLDER\"}",
+        "row_natural_language_text": "PHIT-DbRowWithChildren\u200b|\u200b",
         "row_number": 2
       },
       "format": "json",
@@ -74,6 +74,9 @@
       "parent_index": 0,
       "table_row_metadata": {
         "children_records": [
+          {
+            "child_type": "record"
+          },
           {
             "child_type": "record"
           }
@@ -87,11 +90,11 @@
       "comments": [],
       "data": {
         "cells": [
-          "alpha",
-          "PHIT-DbRowNamed"
+          "PHIT-DbRowNamed",
+          "alpha"
         ],
-        "row": "{\"cells\": [\"alpha\", \"PHIT-DbRowNamed\"], \"source_name\": \"PHIT-DbRowNamed\", \"page_id\": \"UUID-PLACEHOLDER\"}",
-        "row_natural_language_text": "alpha\u200b|\u200bPHIT-DbRowNamed",
+        "row": "{\"cells\": [\"PHIT-DbRowNamed\", \"alpha\"], \"source_name\": \"PHIT-DbRowNamed\", \"page_id\": \"UUID-PLACEHOLDER\"}",
+        "row_natural_language_text": "PHIT-DbRowNamed\u200b|\u200balpha",
         "row_number": 3
       },
       "format": "json",
