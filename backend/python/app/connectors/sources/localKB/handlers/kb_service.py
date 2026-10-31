@@ -138,6 +138,13 @@ def _hidden_kb_follows_project_membership(kb_doc: dict | None) -> bool:
     return bool(kb_doc) and kb_doc.get("isHidden") is True
 
 
+def _is_hidden_orphan_initiator(kb_doc: dict | None, user_id: str) -> bool:
+    return (
+        _hidden_kb_follows_project_membership(kb_doc)
+        and str(kb_doc.get("initiatedBy") or "") == str(user_id)
+    )
+
+
 def _user_kb_permission_edge(
     *,
     from_id: str,
@@ -682,6 +689,8 @@ class KnowledgeBaseService:
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
+            if is_hidden:
+                kb_data["initiatedBy"] = user_id
 
             permission_edges = [
                 _user_kb_permission_edge(
@@ -1023,6 +1032,19 @@ class KnowledgeBaseService:
                 "reason": action_failed("update this knowledge base")
             }
 
+    async def _writer_may_delete_hidden_orphan(self, kb_id: str, user_id: str) -> bool:
+        """The editor who created a project collection may remove their empty
+        unused copy after losing the link race. Any WRITER delete would let
+        another editor drop the project's live collection."""
+        kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value)
+        if not _is_hidden_orphan_initiator(kb, user_id):
+            return False
+        try:
+            files = await self.graph_provider.get_uploaded_document_ids(kb_id)
+        except Exception:
+            return False
+        return not files
+
     async def delete_knowledge_base(
         self,
         kb_id: str,
@@ -1040,15 +1062,23 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER"],
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
                 permission_denied_reason="Only KB owners can delete knowledge bases",
             )
             if err:
                 # _resolve_user_and_kb_access already logged the denial at warning level;
                 # re-logging here at error would inflate error-rate metrics with auth events.
                 return err
+            if user_role != "OWNER" and not await self._writer_may_delete_hidden_orphan(
+                kb_id, user_id,
+            ):
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": "Only KB owners can delete knowledge bases",
+                }
 
-            self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
+            self.logger.info(f"🔐 User {user_key} has {user_role} permission - proceeding with deletion")
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished

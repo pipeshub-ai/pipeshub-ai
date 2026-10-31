@@ -202,6 +202,7 @@ class TestCreateKnowledgeBase:
         kb_data = service.graph_provider.batch_upsert_nodes.call_args[0][0][0]
         assert kb_data["createdBy"] == "owner-1"
         assert kb_data["isHidden"] is True
+        assert kb_data["initiatedBy"] == "editor-1"
         perm_edges = next(
             call.args[0]
             for call in service.graph_provider.batch_create_edges.call_args_list
@@ -741,6 +742,60 @@ class TestDeleteKnowledgeBase:
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 403
+
+    @pytest.mark.asyncio
+    async def test_the_initiator_can_delete_an_empty_hidden_kb(self, service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={
+            "id": "ek1", "fullName": "Ed",
+        })
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"isHidden": True, "initiatedBy": "editor-1"},
+        )
+        service.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+
+        result = await service.delete_knowledge_base("kb-orphan", "editor-1", "org1")
+        assert result["success"] is True
+        assert result["code"] == 200
+
+    @pytest.mark.asyncio
+    async def test_another_writer_cannot_delete_a_hidden_orphan(self, service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={
+            "id": "ek2", "fullName": "Other",
+        })
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"isHidden": True, "initiatedBy": "editor-1"},
+        )
+        service.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[])
+
+        result = await service.delete_knowledge_base("kb-orphan", "editor-2", "org1")
+        assert result["success"] is False
+        assert result["code"] == 403
+        service.graph_provider.delete_connector_instance.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_initiator_cannot_delete_a_hidden_kb_that_has_files(
+        self, service,
+    ) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={
+            "id": "ek1", "fullName": "Ed",
+        })
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"isHidden": True, "initiatedBy": "editor-1"},
+        )
+        service.graph_provider.get_uploaded_document_ids = AsyncMock(
+            return_value=["doc-1"],
+        )
+
+        result = await service.delete_knowledge_base("kb1", "editor-1", "org1")
+        assert result["success"] is False
+        assert result["code"] == 403
+        service.graph_provider.delete_connector_instance.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_fails(self, service):
