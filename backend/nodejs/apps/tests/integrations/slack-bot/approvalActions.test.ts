@@ -201,6 +201,13 @@ describe('slack-bot/approvalActions', () => {
       expect(lastText(client.chat.update)).to.equal('Expired');
     });
 
+    it('says an approved call that a Block stopped did not run', async () => {
+      resumeApproval.resolves('allowedNotRun');
+      const client = fakeClient({ U1: OWNER });
+      await press('approval_allow', 'U1', client);
+      expect(lastText(client.chat.update)).to.equal("Approved by <@U1>, but it didn't run");
+    });
+
     it('shows "Already answered", never "Approved by", for a card answered elsewhere', async () => {
       resumeApproval.resolves('answered');
       const client = fakeClient({ U1: OWNER });
@@ -316,5 +323,9 @@ describe('slack-bot/approvalActions', () => {
     expect(approvalTurnResult('allow', { answer: 'expired', replayed: false })).to.equal('expired');
     expect(approvalTurnResult('allow', { answer: 'allowed', replayed: true })).to.equal('answered');
     expect(approvalTurnResult('allow', { answer: 'declined', replayed: false })).to.equal('answered');
+    // Allowed, but a Block set since the card was shown stopped it.
+    expect(approvalTurnResult('allow', { answer: 'allowed', replayed: false, ended: 'blocked' })).to.equal('allowedNotRun');
+    expect(approvalTurnResult('allow', { answer: 'allowed', replayed: false, ended: 'completed' })).to.equal('allowed');
+    expect(approvalTurnResult('deny', { answer: 'declined', replayed: false, ended: 'blocked' })).to.equal('declined');
   });
 });
