@@ -191,12 +191,11 @@ def compute(
     for fl in cfg.flows:
         hit = next((f for f in files if globs.match_any(f, fl.get("triggers", []))), None)
         if hit:
-            flows[fl["id"]] = f"trigger {hit}"
+            flows[fl["id"]], why = f"trigger {hit}", f"flow {fl['id']}"
         elif fl.get("critical"):
-            flows[fl["id"]] = "critical"
+            flows[fl["id"]], why = "critical", f"critical flow {fl['id']}"
         else:
             continue
-        why = f"flow {fl['id']}" if hit else f"critical flow {fl['id']}"
         for r in rows:
             if fl["id"] in r.get("flows", []):
                 floor.add(r, why, hit)

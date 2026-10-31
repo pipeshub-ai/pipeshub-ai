@@ -99,6 +99,8 @@ def merge_by_id(base: list[dict[str, Any]], extra: list[dict[str, Any]], kind: s
                 continue
             if key not in LIST_KEYS:
                 raise ValueError(f"{kind} {entry['id']}: an overlay may only extend {', '.join(LIST_KEYS)}, not {key}")
+            if not isinstance(value, list):
+                raise ValueError(f"{kind} {entry['id']}: {key} must be a list")
             match[key] = [*match.get(key, []), *value]
 
 

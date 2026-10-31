@@ -31,6 +31,13 @@ class TestRegistry(unittest.TestCase):
         self.assertIn("search", str(ctx.exception))
         self.assertIn("priority", str(ctx.exception))
 
+    def test_overlay_scalar_for_list_key_raises(self) -> None:
+        testing.write(self.root, "scripts/plus/qa/rules/flows.toml", '[[flow]]\nid = "search"\ntriggers = "backend/x/**"\n')
+        with self.assertRaises(ValueError) as ctx:
+            config.load(self.root)
+        for word in ("flow", "search", "triggers"):
+            self.assertIn(word, str(ctx.exception))
+
     def test_duplicate_flow_ids_raise(self) -> None:
         testing.write(self.root, "scripts/qa/rules/flows.toml", testing.FLOWS + '\n[[flow]]\nid = "login"\n')
         with self.assertRaises(ValueError) as ctx:

@@ -8,7 +8,8 @@
 # modules   module ids the flow spans (scripts/qa/rules/modules.toml)
 # triggers  globs over source files that put the flow in scope
 # tests     globs over test file paths (any suite)
-# markers   integration-tests markers; selects every it-stack test carrying one
+# markers   integration-tests markers; selects every it-stack test carrying one.
+#           Prefer explicit tests: a marker pulls in every test that carries it.
 #
 # An overlay may repeat a flow id to add triggers, tests, markers and modules;
 # it cannot change the priority or critical flag.
@@ -83,9 +84,8 @@ id = "permissions"
 title = "Permissions"
 priority = "P0"
 modules = ["graph-db", "retrieval", "user-management", "auth"]
-triggers = ["backend/python/app/services/graph_db/**", "backend/python/app/modules/retrieval/**", "backend/python/app/connectors/core/**", "backend/python/app/api/routes/**", "backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/libs/middlewares/**"]
-tests = ["integration-tests/permissions/**", "backend/python/tests/integration/graph_permissions/**", "backend/python/tests/unit/utils/test_record_access.py"]
-markers = ["permissions", "security"]
+triggers = ["backend/python/app/services/graph_db/**", "backend/python/app/modules/retrieval/**", "backend/python/app/connectors/core/**", "backend/python/app/api/routes/records.py", "backend/python/app/api/routes/entity.py", "backend/python/app/api/routes/agent.py", "backend/python/app/api/routes/chatbot.py", "backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/libs/middlewares/**"]
+tests = ["integration-tests/permissions/**", "integration-tests/response-validation/enterprise-search/search/integration_test_permission_matrix.py", "backend/python/tests/integration/graph_permissions/**", "backend/python/tests/unit/utils/test_record_access.py"]
 
 [[flow]]
 id = "api-access"
@@ -93,15 +93,14 @@ title = "API access"
 priority = "P0"
 modules = ["oauth"]
 triggers = ["backend/nodejs/apps/src/modules/oauth_provider/**", "backend/nodejs/apps/src/modules/oauth_apps/**", "backend/nodejs/apps/src/libs/enums/oauth-scopes.enum.ts", "backend/python/app/api/middlewares/**"]
-tests = ["backend/nodejs/apps/tests/modules/oauth_provider/**", "backend/nodejs/apps/tests/contract/**", "frontend/tests/e2e/workspace/personal-access-tokens.spec.ts", "frontend/tests/e2e/workspace/oauth-apps.spec.ts"]
-markers = ["oauth_clients", "oauth_provider"]
+tests = ["backend/nodejs/apps/tests/modules/oauth_provider/**", "backend/nodejs/apps/tests/contract/**", "frontend/tests/e2e/workspace/personal-access-tokens.spec.ts", "frontend/tests/e2e/workspace/oauth-apps.spec.ts", "integration-tests/response-validation/oauth_app/**", "integration-tests/response-validation/oauth_provider/**"]
 
 [[flow]]
 id = "admin-settings"
 title = "Admin settings"
 priority = "P1"
 modules = ["configuration", "kv-config", "storage", "mail-notification"]
-triggers = ["backend/nodejs/apps/src/modules/configuration_manager/**", "backend/nodejs/apps/src/modules/mail/**", "backend/nodejs/apps/src/modules/storage/**", "backend/python/app/api/routes/health.py", "backend/python/app/services/messaging/kafka/handlers/ai_config.py", "backend/python/app/config/**"]
+triggers = ["backend/nodejs/apps/src/modules/configuration_manager/**", "backend/nodejs/apps/src/modules/mail/**", "backend/nodejs/apps/src/modules/storage/**", "backend/python/app/services/messaging/kafka/handlers/ai_config.py", "backend/python/app/config/**"]
 tests = ["backend/nodejs/apps/tests/modules/configuration_manager/**", "frontend/tests/e2e/workspace/ai-models-*.spec.ts", "integration-tests/response-validation/configuration-manager/**"]
 
 [[flow]]

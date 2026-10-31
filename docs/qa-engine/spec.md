@@ -15,9 +15,9 @@ referenced from tests and reviews.
 | I6 | Teardown runs on success, failure, timeout and SIGTERM | `run.run` `finally`, `stack.Stack.stop` |
 | I7 | A PR cannot weaken its own selection: rules come from the target branch, and an engine or rules change runs everything | `qa-pipeline.yml` "Pick the engine" (the target branch's engine and rules, checked out into `qa-engine/`); `always.toml` `[[full_run]]` |
 | I10 | The committed catalog matches the tests | `catalog check` in `main.yml` |
-| I13 | Every test file belongs to a suite or an `[[unowned]]` entry | `catalog.lint`; `test_orphan_test_file_is_a_lint_error` |
 | I11 | Model text in PR comments has no mentions, markup or links, and is at most 200 characters per reason | `validate.clean_text`; `test_model_text_cannot_inject_markup_or_mentions` |
 | I12 | `/qa` arguments match fixed patterns; permission comes from the GitHub API; fork code runs with secrets only through an admin's `--trusted` | `command.parse`, `qa-command.yml`; `test_untrusted_arguments_are_rejected` |
+| I13 | Every test file belongs to a suite or an `[[unowned]]` entry | `catalog.lint`; `test_orphan_test_file_is_a_lint_error` |
 
 ## 2. Pipeline and contracts
 
@@ -111,11 +111,13 @@ journeys the tests protect.
 - **Flows.** `[[flow]]` has `id`, `title`, `priority` (`P0`, `P1` or `P2`),
   `critical` (P0 only), `modules`, `triggers` (globs over source files),
   `tests` (globs over test paths, any suite) and `markers` (integration-tests
-  markers). `catalog.stamp` writes `module`, `flows` and `priority` onto each
+  markers). Keep triggers to the files that implement the flow and prefer
+  explicit `tests` to `markers`: a broad trigger or a marker adds every matching
+  test to the floor of an unrelated one-file change. `catalog.stamp` writes `module`, `flows` and `priority` onto each
   catalog row.
 - **Overlays.** An overlay may repeat a module or flow id to extend its list
-  keys (`paths`, `modules`, `triggers`, `tests`, `markers`); it cannot change
-  `title`, `priority` or `critical` (`config.merge_by_id`). A repeated id
+  keys (`paths`, `modules`, `triggers`, `tests`, `markers`), each given as a
+  list; it cannot change `title`, `priority` or `critical` (`config.merge_by_id`). A repeated id
   inside one file is an error.
 - **Report.** `report.md` has a "By flow" table (priority, tests, failed, not
   run) and the line "Affected flows with no planned test".

@@ -204,6 +204,12 @@ module = "toolsets-mcp"
 paths = ["backend/nodejs/apps/src/modules/toolsets/**"]
 tests = ["integration-tests/response-validation/toolsets/**"]
 
+[[rule]]
+id = "model-health-check"
+module = "configuration"
+paths = ["backend/python/app/api/routes/health.py"]
+tests = ["frontend/tests/e2e/workspace/ai-models-*.spec.ts"]
+
 # --- frontend areas to e2e specs ----------------------------------------------
 
 [[rule]]
