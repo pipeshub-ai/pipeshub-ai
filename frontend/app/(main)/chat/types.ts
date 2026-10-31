@@ -1004,7 +1004,33 @@ export interface ToolApprovalAnswer {
   decision: ToolApprovalDecision;
   /** "Don't ask again for this tool": the answer becomes the person's own rule for it. */
   remember?: boolean;
+  /** The server's hash of the call the person saw; echoed back, never recomputed. */
+  argsHash?: string;
+  /** Allow only, never with `remember`: the edited arguments to run instead. */
+  arguments?: Record<string, unknown>;
+  /** Deny only: why, for the assistant to read. */
+  feedback?: string;
+  /** Allow only, never with `remember` or `arguments`: allow this tool for the rest of the conversation. */
+  rememberForConversation?: boolean;
 }
+
+/** The part of JSON Schema the approval form reads. */
+export interface JsonSchema {
+  type?: string | string[];
+  title?: string;
+  description?: string;
+  format?: string;
+  enum?: unknown[];
+  items?: JsonSchema;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+}
+
+/** Why the server would refuse an edit; `path` is a JSON pointer, "" for the whole call. */
+export type EditError = { path: string; message: string };
 
 /** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
 export interface ToolApprovalDetails {
@@ -1023,6 +1049,15 @@ export interface ToolApprovalDetails {
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
   arguments?: Record<string, unknown> | null;
   argumentsPreview?: string;
+  toolPath?: string;
+  source?: 'mcp' | 'toolset';
+  inputSchema?: JsonSchema;
+  argsHash?: string;
+  /** Whether the person may change the arguments before allowing. */
+  editable?: boolean;
+  argsSummary?: string;
+  displayName?: string;
+  editErrors?: EditError[];
 }
 
 /**

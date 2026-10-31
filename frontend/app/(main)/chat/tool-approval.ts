@@ -1,5 +1,5 @@
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
-import type { MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
+import type { EditError, JsonSchema, MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
 const MAX_VALUE_CHARS = 300;
 // How the app's answer to a card starts (Python `TOOL_APPROVAL_RESUME_PREFIX`).
@@ -24,6 +24,10 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
   const toolName = text('toolName');
   if (!approvalId || !serverName || !toolName || typeof raw.expiresAt !== 'number') return null;
   const args = raw.arguments;
+  const schema = raw.inputSchema;
+  const editErrors = Array.isArray(raw.editErrors)
+    ? raw.editErrors.filter((e): e is EditError => !!e && typeof e.path === 'string' && typeof e.message === 'string')
+    : [];
   return {
     approvalId,
     instanceId: text('instanceId') ?? '',
@@ -37,6 +41,14 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),
+    ...(text('toolPath') ? { toolPath: text('toolPath') as string } : {}),
+    ...(raw.source === 'mcp' || raw.source === 'toolset' ? { source: raw.source } : {}),
+    ...(schema && typeof schema === 'object' && !Array.isArray(schema) ? { inputSchema: schema as JsonSchema } : {}),
+    ...(text('argsHash') ? { argsHash: text('argsHash') as string } : {}),
+    ...(typeof raw.editable === 'boolean' ? { editable: raw.editable } : {}),
+    ...(text('argsSummary') ? { argsSummary: text('argsSummary') as string } : {}),
+    ...(text('displayName') ? { displayName: text('displayName') as string } : {}),
+    ...(editErrors.length ? { editErrors } : {}),
   };
 }
 

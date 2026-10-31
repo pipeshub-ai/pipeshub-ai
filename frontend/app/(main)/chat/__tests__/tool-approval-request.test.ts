@@ -105,3 +105,38 @@ describe('buildStreamChatRequestForSlot with a tool approval answer', () => {
     expect(request?.toolApproval).toEqual(ANSWER);
   });
 });
+
+describe('buildStreamChatRequestForSlot with an edited answer', () => {
+  it('carries argsHash, arguments and feedback as given', () => {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    const edited = { approvalId: 'ap-1', decision: 'allow' as const, argsHash: 'h', arguments: { a: 1 } };
+    const denied = { approvalId: 'ap-1', decision: 'deny' as const, argsHash: 'h', feedback: 'no' };
+    expect(buildStreamChatRequestForSlot(slotId, 'x', undefined, edited)?.toolApproval).toEqual(edited);
+    expect(buildStreamChatRequestForSlot(slotId, 'x', undefined, denied)?.toolApproval).toEqual(denied);
+  });
+});
+
+describe('validateApprovalEdits', () => {
+  it('posts to the validate route and returns the errors', async () => {
+    const { apiClient } = await import('@/lib/api');
+    const { validateApprovalEdits } = await import('../api');
+    const errors = [{ path: '/a', message: 'bad' }];
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 200, data: { errors } });
+    await expect(validateApprovalEdits('ap 1', 'h', { a: 1 })).resolves.toEqual(errors);
+    expect(vi.mocked(apiClient.post).mock.calls.at(-1)?.slice(0, 2)).toEqual([
+      '/api/v1/mcp-servers/tool-approvals/ap%201/validate',
+      { argsHash: 'h', arguments: { a: 1 } },
+    ]);
+  });
+
+  it('maps 404 and 410 to one whole-call error and throws on other failures', async () => {
+    const { apiClient } = await import('@/lib/api');
+    const { validateApprovalEdits } = await import('../api');
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 410, data: { message: 'Expired' } });
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([{ path: '', message: 'Expired' }]);
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 404, data: {} });
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toMatchObject([{ path: '' }]);
+    vi.mocked(apiClient.post).mockRejectedValueOnce(new Error('network'));
+    await expect(validateApprovalEdits('a', 'h', {})).rejects.toThrow('network');
+  });
+});

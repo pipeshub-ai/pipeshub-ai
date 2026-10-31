@@ -4,6 +4,7 @@ import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
+  type EditError,
   Conversation,
   ConversationMessage,
   ConversationPagination,
@@ -964,6 +965,26 @@ export interface AiModelsConfigResponse {
  * Returns the list of models available for chat (with their keys and names).
  * Used by the runtime to dynamically pick the model instead of hardcoding.
  */
+/**
+ * Asks the server whether edited arguments would be accepted, without answering the card.
+ * A request that is gone (404) or already answered or expired (410) comes back as one
+ * whole-call error; any other failure throws so the card can send and let the server decide.
+ */
+export async function validateApprovalEdits(
+  approvalId: string,
+  argsHash: string,
+  args: Record<string, unknown>
+): Promise<EditError[]> {
+  const res = await apiClient.post<{ errors?: EditError[]; message?: string }>(
+    `/api/v1/mcp-servers/tool-approvals/${encodeURIComponent(approvalId)}/validate`,
+    { argsHash, arguments: args },
+    { suppressErrorToast: true, validateStatus: (s) => s === 200 || s === 404 || s === 410 }
+  );
+  if (res.status === 200) return res.data.errors ?? [];
+  const message = typeof res.data?.message === 'string' && res.data.message ? res.data.message : 'This request is no longer available.';
+  return [{ path: '', message }];
+}
+
 export async function fetchAiModelsConfig(): Promise<AiModelConfig[]> {
   const { data } = await apiClient.get<AiModelsConfigResponse>(
     '/api/v1/configurationManager/aiModelsConfig',
