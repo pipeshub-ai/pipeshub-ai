@@ -1313,3 +1313,17 @@ class TestWatched:
     def test_the_other_conditions_still_apply(self) -> None:
         assert approvals.watched(self._ctx("slack-approvals", streaming=False)) is False  # type: ignore[arg-type]
         assert approvals.watched(self._ctx("slack-approvals", conversation_id=None)) is False  # type: ignore[arg-type]
+
+    async def test_an_approving_slack_bot_parks_a_call_and_its_answer_runs_it_once(self) -> None:
+        store, mcp = _Store(), _Server()
+        asked = await _request(_context(store, client_name="slack-approvals"), mcp, _FILE_IT, _DONE)
+        assert mcp.calls == [] and asked.result.output == _WAITING
+        (blocked,) = asked.events.of(EventType.TOOL_BLOCKED)
+        assert blocked["status"] == ToolCallStatus.AWAITING_APPROVAL
+
+        answered = await _answer(store, mcp, blocked["approval"]["approvalId"], "allow", client_name="slack-approvals")
+
+        assert len(mcp.calls) == 1
+        (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
+        assert (started["approved"], started["approval_answer"]) == (True, "allowed")
+        assert answered.result.output == "done"
