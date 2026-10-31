@@ -49,6 +49,9 @@ env:
   # The not_run kinds that do not block, for the PR comment and the gate alike.
   # Nightly and full runs allow none: a missing secret there must show red.
   QA_ALLOW_NOT_RUN: ${{ (github.event_name != 'schedule' && inputs.mode != 'full') && 'secret,profile' || '' }}
+  # The automatic quarantine from qa-history. Plan, report and gate fetch it
+  # themselves with their read-only token; no run job's artifact supplies it.
+  QA_QUARANTINE_AUTO: qa-out/quarantine-auto.json
 
 jobs:
   plan:
@@ -92,6 +95,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
 
       - name: Choose the change and profile
         id: args
@@ -177,7 +188,7 @@ jobs:
 
   run-unit:
     needs: plan
-    if: vars.QA_ENFORCE == 'true' && !inputs.plan_only && needs.plan.outputs.tests != '0'
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.tests != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -230,7 +241,7 @@ jobs:
 
   run-stack:
     needs: plan
-    if: vars.QA_ENFORCE == 'true' && !inputs.plan_only && needs.plan.outputs.needs_stack == 'true'
+    if: (vars.QA_ENFORCE == 'true' || github.event_name == 'schedule') && !inputs.plan_only && needs.plan.outputs.needs_stack == 'true'
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     strategy:
       fail-fast: false
@@ -561,6 +572,13 @@ jobs:
           pattern: qa-*-${{ inputs.edition }}
           path: qa-out
           merge-multiple: true
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
       - name: Report
         env:
           GH_TOKEN: ${{ github.token }}
@@ -614,6 +632,13 @@ jobs:
           pattern: qa-*-${{ inputs.edition }}
           path: qa-out
           merge-multiple: true
+      - name: Auto quarantine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On failure, drop any copy an artifact brought in: no file means no auto entries.
+        run: |
+          python3 "$ENGINE" history fetch-quarantine --repo "$GITHUB_REPOSITORY" --to qa-out/quarantine-auto.json \
+            || { rm -f qa-out/quarantine-auto.json; echo "::warning::no auto quarantine; quarantined tests will block"; }
       - name: Gate
         env:
           PLAN: ${{ needs.plan.result }}

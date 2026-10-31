@@ -58,3 +58,67 @@ jobs:
       pr: ${{ inputs.pr }}
       plan_only: ${{ inputs.plan_only || false }}
     secrets: inherit
+
+  # The only job that writes qa-history: run history, shadow recall, the
+  # automatic quarantine and metrics.json. Nightly only, so no pull request or
+  # dispatch can write it (scripts/test_workflow_trust.py).
+  history:
+    needs: pipeline
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Credentials stay for the push to qa-history.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qa-*-oss
+          path: qa-out
+          merge-multiple: true
+
+      - name: Coverage from the latest unit-test run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow unit-test.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty') || true
+          if [[ -n "$run_id" ]]; then
+            gh run download "$run_id" -R "$GITHUB_REPOSITORY" -p '*-coverage-report-*' -D cov || true
+            for z in cov/*/*.zip; do [[ -f "$z" ]] && { unzip -oq "$z" -d "$(dirname "$z")" || true; }; done
+          fi
+          true
+
+      - name: Shadow recall
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/qa shadow fetch --repo "$GITHUB_REPOSITORY" --since-hours 24 --to qa-out/shadow-new.jsonl \
+            || echo "::warning::shadow fetch failed; publishing without new shadow records"
+
+      - name: Publish history and metrics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(--out qa-out --remote origin --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
+                --started-at "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)")
+          # shadow fetch writes no file when no workflow run failed; publish rejects a missing --shadow file.
+          if [[ -f qa-out/shadow-new.jsonl ]]; then args+=(--shadow qa-out/shadow-new.jsonl); fi
+          # cov/<suite>-coverage-report-<os>/.../coverage-summary.json, e.g. python, nodejs.
+          while IFS= read -r f; do
+            suite=${f#cov/}; suite=${suite%%-coverage-report-*}
+            args+=(--coverage "$suite=$f")
+          done < <(find cov -name coverage-summary.json 2>/dev/null | sort)
+          python3 scripts/qa history publish "${args[@]}"

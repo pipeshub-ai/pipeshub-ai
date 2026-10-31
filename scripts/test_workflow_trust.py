@@ -685,6 +685,53 @@ def _ungated_secret_jobs(text: str) -> list[str]:
     ]
 
 
+# Only a schedule run (or, later, a push to main) may write qa-history; see docs/qa-engine/README.md.
+_HISTORY_WRITER_CONDITIONS = frozenset({
+    "always() && github.event_name == 'schedule'",
+    "github.event_name == 'schedule'",
+    "always() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))",
+})
+_PR_TRIGGERS = frozenset({"pull_request", "pull_request_target", "issue_comment"})
+
+
+def _jobs(workflow: Any) -> dict[Any, Any]:
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    return {k: v for k, v in jobs.items() if isinstance(v, dict)} if isinstance(jobs, dict) else {}
+
+
+def _history_writers(workflow: Any) -> list[str]:
+    """Jobs with a step that runs `history publish`."""
+    return [
+        name for name, job in _jobs(workflow).items()
+        if any(isinstance(s, dict) and "history publish" in str(s.get("run", "")) for s in job.get("steps") or [])
+    ]
+
+
+def _content_write_jobs(workflow: Any) -> list[str]:
+    """Jobs whose token can write contents: their own permissions, else the workflow's."""
+    def writes(perms: Any) -> bool:
+        return perms == "write-all" or (isinstance(perms, dict) and perms.get("contents") == "write")
+    default = workflow.get("permissions") if isinstance(workflow, dict) else None
+    return [name for name, job in _jobs(workflow).items() if writes(job.get("permissions", default))]
+
+
+def _history_writer_problems(workflow: Any) -> list[str]:
+    problems = []
+    for name in _history_writers(workflow):
+        bad = sorted(_triggers(workflow) & (_PR_TRIGGERS | {"workflow_run"}))
+        if bad:
+            problems.append(f"{name}: publishes history in a workflow triggered by {', '.join(bad)}")
+        if str(_jobs(workflow)[name].get("if", "")).strip() not in _HISTORY_WRITER_CONDITIONS:
+            problems.append(f"{name}: publishes history under if: {_jobs(workflow)[name].get('if')!r}")
+    return problems
+
+
+def _pr_write_problems(workflow: Any) -> list[str]:
+    if not isinstance(workflow, dict) or not _triggers(workflow) & _PR_TRIGGERS:
+        return []
+    return [f"{name}: contents write in a pull-request workflow" for name in _content_write_jobs(workflow)]
+
+
 class TestWorkflowTrust(unittest.TestCase):
     def test_workflows_found(self) -> None:
         self.assertTrue(WORKFLOWS, f"no workflows under {REPO}/.github/workflows; set REPO_ROOT")
@@ -1447,6 +1494,34 @@ class TestPinnedPrivilegedWorkflows(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertRegex(digest, r"^[0-9a-f]{64}$")
                 self.assertNotIn(name, PRIVILEGED_TRIGGER_ALLOWLIST, "a pinned file must not also be allowlisted by name")
+
+
+class TestHistoryWriters(unittest.TestCase):
+    PUBLISH = "      - run: python3 scripts/qa history publish --out qa-out --remote origin\n"
+
+    def test_history_is_written_only_by_scheduled_jobs(self) -> None:
+        writers = []
+        for path in WORKFLOWS:
+            workflow = _parsed(path)
+            writers += [(path.name, job) for job in _history_writers(workflow)]
+            self.assertEqual(_history_writer_problems(workflow), [], path.name)
+        self.assertIn(("qa.yml", "history"), writers)
+        on_pr = yaml.safe_load("on:\n  pull_request:\njobs:\n  h:\n    if: github.event_name == 'schedule'\n    steps:\n" + self.PUBLISH)
+        self.assertEqual(_history_writers(on_pr), ["h"])
+        self.assertTrue(_history_writer_problems(on_pr))
+        dispatch = yaml.safe_load(
+            "on:\n  schedule:\n  workflow_dispatch:\njobs:\n  h:\n"
+            "    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'\n    steps:\n" + self.PUBLISH)
+        self.assertTrue(_history_writer_problems(dispatch))
+
+    def test_pull_request_jobs_never_get_contents_write(self) -> None:
+        for path in WORKFLOWS:
+            self.assertEqual(_pr_write_problems(_parsed(path)), [], path.name)
+        sample = yaml.safe_load("on: pull_request\npermissions: write-all\njobs:\n  a:\n    steps: []\n")
+        self.assertEqual(_content_write_jobs(sample), ["a"])
+        self.assertTrue(_pr_write_problems(sample))
+        overridden = yaml.safe_load("on: pull_request\npermissions: write-all\njobs:\n  a:\n    permissions: {contents: read}\n")
+        self.assertEqual(_pr_write_problems(overridden), [])
 
 
 if __name__ == "__main__":
