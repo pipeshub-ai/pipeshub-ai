@@ -2659,12 +2659,17 @@ class NotionConnector(BaseConnector):
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
         if recheck_comments and same_edit and existing.external_revision_id == record.external_revision_id:
-            # Saving it again would change nothing but its timestamps, on every page the
-            # rotation reaches.
-            if self.data_entities_processor.full_sync_running(self.connector_id):
-                self.data_entities_processor.note_kept_records(self.connector_id, [existing.id])
-            await self._note_stored_files_kept(obj_id)
-            return None
+            children = await self.data_entities_processor.get_records_by_parent(self.connector_id, obj_id)
+            stored_files = [c for c in children or [] if c.record_type == RecordType.FILE]
+            stored_ids = {c.external_record_id for c in stored_files}
+            # Saving it again would change nothing but its timestamps, on every page the rotation
+            # reaches. A file a failed batch never stored is the exception: it is saved below.
+            if all(f.external_record_id in stored_ids for f in files):
+                if self.data_entities_processor.full_sync_running(self.connector_id):
+                    self.data_entities_processor.note_kept_records(
+                        self.connector_id, [existing.id, *(c.id for c in stored_files)]
+                    )
+                return None
         # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
         # whose revision did not change. Full: keep the oldest, which indexing streams first.
         will_stream = indexing_enabled and not (

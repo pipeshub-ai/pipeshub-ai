@@ -104,6 +104,37 @@ async def test_recheck_leaves_a_page_whose_comments_did_not_change_unsaved() -> 
 
 
 @pytest.mark.asyncio
+async def test_an_unchanged_recheck_keeps_the_page_and_its_files_in_a_full_sync() -> None:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    proc.get_records_by_parent = AsyncMock(return_value=[_stored("ca_c1_file", RecordType.FILE)])
+    proc.full_sync_running = MagicMock(return_value=True)
+    proc.note_kept_records = MagicMock()
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[_stored("ca_c1_file", RecordType.FILE)])
+
+    assert await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True) is None
+    kept = {i for call in proc.note_kept_records.call_args_list for i in call.args[1]}
+    assert {"rid-p1", "rid-ca_c1_file"} <= kept
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_recheck_saves_a_file_a_failed_batch_never_stored() -> None:
+    comments = {"p1": [(_comment("c1"), "p1")]}
+    conn = _connector_with(MagicMock())
+    proc = conn.data_entities_processor
+    proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=_with_comment_digest(OLD, comments)))
+    missing = _stored("ca_c1_file", RecordType.FILE)
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], comments))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[missing])
+
+    records = await conn._records_for_search_object(_page("p1"), "page", recheck_comments=True)
+    assert records is not None and missing in [r for r, _ in records]
+
+
+@pytest.mark.asyncio
 async def test_recheck_rotates_through_the_stored_pages() -> None:
     conn = _connector_with(MagicMock())
     conn._COMMENT_RECHECK_PAGES_PER_SYNC = 2
