@@ -33,6 +33,10 @@ from app.services.resource_governor.policy import (
     MEM_HARD,
     MEM_SOFT,
 )
+from app.services.resource_governor.shared_slots import (
+    ensure_private_directory,
+    open_private_file,
+)
 
 try:
     import fcntl
@@ -285,10 +289,10 @@ class DomainLedger:
         self._last_good: LedgerRecord | None = None
         self._fail_since: float | None = None
         self._closed = False
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._record_fd = os.open(directory / "ledger", os.O_RDWR | os.O_CREAT, 0o600)
+        ensure_private_directory(directory)
+        self._record_fd = open_private_file(directory / "ledger")
         try:
-            self._lock_fd = os.open(directory / "ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
+            self._lock_fd = open_private_file(directory / "ledger.lock")
         except BaseException:
             os.close(self._record_fd)
             raise
@@ -337,6 +341,9 @@ class DomainLedger:
             return
         locked = False
         try:
+            if self._closed:  # close() may have run while we waited for the thread lock
+                yield None
+                return
             while True:
                 try:
                     fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -368,16 +375,19 @@ class DomainLedger:
         """
         now = self._clock()
         with self._state_lock:
-            cache = self._cache
+            # Under the state lock, which close() also takes before it frees the
+            # descriptors: a closed fd number can be reused by an unrelated file.
             if self._closed:
                 return self._last_good or BLANK
-        if cache is not None and 0 <= now - cache[0] < self._view_ttl:
-            return cache[1]
-        for _ in range(3):
-            record = LedgerRecord.decode(os.pread(self._record_fd, RECORD_SIZE, 0))
-            if record is not None:
-                self._remember(record)
-                return record
+            cache = self._cache
+            if cache is not None and 0 <= now - cache[0] < self._view_ttl:
+                return cache[1]
+            for _ in range(3):
+                record = LedgerRecord.decode(os.pread(self._record_fd, RECORD_SIZE, 0))
+                if record is not None:
+                    self._last_good = record
+                    self._cache = (self._clock(), record)
+                    return record
         with self.transaction() as txn:
             if txn is not None:
                 return txn.read()
@@ -390,10 +400,13 @@ class DomainLedger:
 
     def close(self) -> None:
         self._closed = True
-        with self._thread_lock:
+        # Both locks, in the order everything else takes them, so no reader or
+        # transaction is between its closed check and its syscall.
+        with self._thread_lock, self._state_lock:
             for fd in (self._record_fd, self._lock_fd):
                 with contextlib.suppress(OSError):
                     os.close(fd)
+            self._record_fd = self._lock_fd = -1
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +424,7 @@ class Presence:
 
     def __init__(self, directory: Path, pid: int | None = None) -> None:
         self._directory = directory / "presence"
-        self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_directory(self._directory)
         pid = os.getpid() if pid is None else pid
         self._fd: int | None = None
         for attempt in range(64):

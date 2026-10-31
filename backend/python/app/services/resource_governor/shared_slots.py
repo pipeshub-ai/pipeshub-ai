@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -87,7 +88,7 @@ class SharedSlots:
         self._lock = threading.Lock()
         self._held_here: set[int] = set()
         self._closed = False
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_directory(directory)
         opened: list[int] = []
         try:
             self._directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
@@ -191,6 +192,38 @@ class SharedSlots:
                 if index in self._held_here:
                     self._held_here.discard(index)
                     _unlock(self._slot_fds[index])
+
+
+def ensure_private_directory(directory: Path) -> None:
+    """Create *directory* if needed and refuse one that is not ours alone.
+
+    The names under ``/tmp`` are predictable, so another local user could have
+    created the directory first, or planted a symlink at its name. A real
+    directory, owned by this uid, with no group or other bits, is the only kind
+    that can be trusted with files we write to. Raises ``PermissionError``.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise PermissionError(f"{directory} is not a private directory owned by this user")
+
+
+def open_private_file(path: Path) -> int:
+    """Open (creating) a file we write to, refusing links and files that are not
+    ours alone. Raises ``OSError`` or ``PermissionError``."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o177:
+            raise PermissionError(f"{path} is not a private regular file owned by this user")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def shared_slots_directory(name: str) -> Path | None:

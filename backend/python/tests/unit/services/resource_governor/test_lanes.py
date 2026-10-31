@@ -199,7 +199,7 @@ class TestAcrossProcesses:
         all see "no resident" before any of them is let in."""
         for round_no in range(3):
             directory = lane_dir / f"r{round_no}"
-            directory.mkdir(parents=True)
+            directory.mkdir(parents=True, mode=0o700)
             start_at = now() + 1.2
             args = {
                 "dir": str(directory), "lanes": 8, "mem_limit": 10 * GIB, "mem_raw": int(9.5 * GIB),
@@ -300,7 +300,7 @@ class TestAcrossProcesses:
         """The ledger lock is unavailable everywhere; tokens still bound the domain."""
         import fcntl
 
-        lane_dir.mkdir(parents=True)
+        lane_dir.mkdir(parents=True, mode=0o700)
         fd = os.open(lane_dir / "ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         budgets = [
@@ -328,7 +328,7 @@ class TestAcrossProcesses:
     def test_degraded_exemption_is_one_worker_not_one_per_process(self, lane_dir: Path) -> None:
         import fcntl
 
-        lane_dir.mkdir(parents=True)
+        lane_dir.mkdir(parents=True, mode=0o700)
         fd = os.open(lane_dir / "ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         over = Mem(10 * GIB, int(9.5 * GIB))

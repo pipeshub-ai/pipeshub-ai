@@ -40,6 +40,7 @@ from app.services.resource_governor.policy import INCIDENT_COOLDOWN_SECONDS
 from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotHold,
+    ensure_private_directory,
     shared_slots_directory,
 )
 
@@ -468,6 +469,7 @@ class LaneBudget:
         ledger_options = {k: rest.pop(k) for k in _LEDGER_OPTIONS if k in rest}
         clock = rest.get("clock", time.monotonic)
         opened: list[Any] = []
+        ensure_private_directory(directory)
         try:
             run = SharedSlots(directory / "run", LANE_SLOT_CAPACITY)
             opened.append(run)
@@ -775,6 +777,7 @@ class LaneBudget:
                 with self._guard:
                     self._check_open()
                     return self._admit_shared(txn, plan, now, ws, mem_limit, raw)
+        self._check_open()  # a closed ledger yields no transaction: that is not a busy lock
         if not self._ledger.degraded:
             return None
         self._log_degraded()
