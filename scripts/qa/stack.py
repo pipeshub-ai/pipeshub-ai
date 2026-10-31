@@ -133,9 +133,9 @@ class Stack:
         unpinned: list[str] = []
         for name, ref in base_image_args((self.root / self.compose_file).read_text(encoding="utf-8")).items():
             digest = None
-            if "@sha256:" not in ref:
-                subprocess.run(["docker", "pull", ref], capture_output=True, timeout=1800)  # offline or local-only is fine
             try:
+                if "@sha256:" not in ref:
+                    subprocess.run(["docker", "pull", ref], capture_output=True, timeout=300)  # offline or local-only is fine
                 out = subprocess.run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", ref], capture_output=True, text=True, timeout=60)
                 digest = repo_digest(ref, json.loads(out.stdout or "[]") or []) if out.returncode == 0 else None
             except (ValueError, OSError, subprocess.SubprocessError):
@@ -146,7 +146,16 @@ class Stack:
             else:
                 unpinned.append(ref)
         dockerfile = (self.root / "Dockerfile").read_text(encoding="utf-8") if (self.root / "Dockerfile").is_file() else ""
-        unpinned += [m for m in re.findall(r"^FROM\s+(\S+)", dockerfile, re.M | re.I) if "$" not in m and m not in unpinned]
+        stages: set[str] = set()
+        for line in dockerfile.splitlines():
+            parts = line.split()
+            if not parts or parts[0].upper() != "FROM":
+                continue
+            ref = next((p for p in parts[1:] if not p.startswith("-")), "")
+            if ref and "$" not in ref and ref not in stages and ref not in unpinned:
+                unpinned.append(ref)
+            if len(parts) > 2 and parts[-2].upper() == "AS":
+                stages.add(parts[-1])
         self.environment.update({"base_images": bases, "unpinned": unpinned})
 
     def record_environment(self) -> None:

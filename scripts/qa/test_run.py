@@ -619,7 +619,6 @@ class TestAllowNotRun(unittest.TestCase):
 
 
 
-
 class TestPinnedBases(unittest.TestCase):
     COMPOSE = "deployment/docker-compose/docker-compose.integration.neo4j.yml"
     BASE = "pipeshubai/pipeshub-ai-base:python-deps"
@@ -666,6 +665,26 @@ class TestPinnedBases(unittest.TestCase):
         self.assertIn(self.BASE, s.environment["unpinned"])
         self.assertIn("node:20-slim", s.environment["unpinned"])
         self.assertEqual(s.environment["base_images"], {})
+
+    def test_a_failing_pull_leaves_the_base_unpinned(self) -> None:
+        import subprocess
+        from qa import stack
+        for exc in (subprocess.TimeoutExpired("docker", 300), FileNotFoundError("docker")):
+            s = self.stack()
+            with mock.patch.object(stack.subprocess, "run", side_effect=exc):
+                s.pin_bases()
+            self.assertIn(self.BASE, s.environment["unpinned"])
+            self.assertNotIn("PYTHON_DEPS_IMAGE", s.extra_env)
+
+    def test_from_lines_skip_flags_and_stage_names(self) -> None:
+        from qa import stack
+        root = Path(tempfile.mkdtemp())
+        (root / "deployment/docker-compose").mkdir(parents=True)
+        (root / self.COMPOSE).write_text("", encoding="utf-8")
+        (root / "Dockerfile").write_text("FROM --platform=linux/amd64 node:20 AS builder\nFROM builder AS final\nFROM alpine:3\n", encoding="utf-8")
+        s = self.stack(root)
+        s.pin_bases()
+        self.assertEqual(s.environment["unpinned"], ["node:20", "alpine:3"])
 
     def test_pinned_base_is_passed_to_the_build(self) -> None:
         from qa import stack
