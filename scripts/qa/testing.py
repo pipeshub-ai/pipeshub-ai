@@ -61,6 +61,7 @@ kafka = ["requires_kafka"]
 
 ALWAYS = """
 max_files = 300
+test_files = ["**/test_*.py", "**/*.test.ts"]
 matrix_entries = ["neo4j", "arangodb", "qdrant", "kafka"]
 
 [[full_run]]

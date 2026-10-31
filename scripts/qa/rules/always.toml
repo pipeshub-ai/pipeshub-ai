@@ -4,6 +4,9 @@
 # More changed files than this is treated as "everything changed".
 max_files = 300
 
+# Files that count as tests: each must belong to a suite or an [[unowned]] entry.
+test_files = ["**/test_*.py", "**/*_test.py", "**/integration_test_*.py", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/*.itest.ts", "**/*.test.mjs"]
+
 matrix_entries = ["kafka", "redis-streams", "qdrant", "opensearch", "redis", "neo4j", "arangodb", "etcd"]
 
 # Tracked files: a change runs the named suites in full ("*" = every suite).
@@ -90,3 +93,44 @@ vitest = 3
 npm-script = 120
 playwright = 30
 it-pytest = 90
+
+# Test files no suite runs, with what runs them instead ("not run" is a valid answer).
+[[unowned]]
+paths = ["backend/db/tests/**"]
+reason = "run by the db-migrations workflow"
+
+[[unowned]]
+paths = ["backend/nodejs/apps/tests/**/*.itest.ts"]
+reason = "run by npm run test:pg and test:pg-services against a database"
+
+[[unowned]]
+paths = ["backend/python/app/scripts/*_integration_test.py"]
+reason = "manual script, not a test"
+
+[[unowned]]
+paths = ["deployment/helm/tests/**"]
+reason = "run by the helm-chart workflow"
+
+[[unowned]]
+paths = ["frontend/**/*.node.test.mjs", "frontend/scripts/*.test.mjs"]
+reason = "node test runner scripts run directly with node --test"
+
+[[unowned]]
+paths = ["frontend/tests/text-fragments/**"]
+reason = "text-fragment browser tests run by hand"
+
+[[unowned]]
+paths = ["integration-tests/examples/**"]
+reason = "examples, not run"
+
+[[unowned]]
+paths = ["integration-tests/helper/**"]
+reason = "run by the integration-suite-guards workflow"
+
+[[unowned]]
+paths = ["integration-tests/sdk_tests/handwritten/**"]
+reason = "run by the sdk-tests workflow"
+
+[[unowned]]
+paths = ["loadtest/tests/**"]
+reason = "load-test harness, run by hand"

@@ -176,6 +176,27 @@ class TestBuild(unittest.TestCase):
         errors, _ = catalog.lint(self.cfg, catalog.build(self.cfg))
         self.assertTrue(any("matches no file" in e for e in errors))
 
+    def _lint_errors(self) -> list[str]:
+        config.clear_cache()
+        return catalog.lint(self.cfg, catalog.build(self.cfg))[0]
+
+    def test_orphan_test_file_is_a_lint_error(self) -> None:
+        testing.write(self.root, "tools/test_tool.py", "def test_t():\n    pass\n")
+        self.assertTrue(any("tools/test_tool.py" in e and "belongs to no suite" in e for e in self._lint_errors()))
+
+    def test_unowned_entry_silences_orphan(self) -> None:
+        testing.write(self.root, "tools/test_tool.py", "def test_t():\n    pass\n")
+        self.cfg.always["unowned"] = [{"paths": ["tools/**"], "reason": "manual"}]
+        self.assertFalse(any("belongs to no suite" in e for e in self._lint_errors()))
+
+    def test_unowned_entry_needs_a_reason(self) -> None:
+        self.cfg.always["unowned"] = [{"paths": ["tools/**"]}]
+        self.assertTrue(any("unowned" in e and "reason" in e for e in self._lint_errors()))
+
+    def test_excluded_suite_path_is_an_orphan(self) -> None:
+        testing.write(self.root, "integration-tests/unit/test_x.py", "def test_x():\n    pass\n")
+        self.assertTrue(any("integration-tests/unit/test_x.py" in e for e in self._lint_errors()))
+
 
 class TestOverlayIsOptional(unittest.TestCase):
     def test_oss_checkout_loads_without_overlay(self) -> None:

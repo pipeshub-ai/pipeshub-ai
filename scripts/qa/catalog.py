@@ -455,6 +455,20 @@ def stale(cfg: Config, rows: list[dict[str, Any]] | None = None) -> list[Path]:
     ]
 
 
+def _unowned(cfg: Config) -> list[dict[str, Any]]:
+    return cfg.always.get("unowned", [])
+
+
+def orphans(cfg: Config) -> list[str]:
+    """Test files no suite runs and no [[unowned]] entry says is run elsewhere."""
+    tests = cfg.always.get("test_files", [])
+    skip = [g for u in _unowned(cfg) for g in u.get("paths", [])]
+    return [
+        f for f in list_files(cfg.root)
+        if globs.match_any(f, tests) and suite_of(f, cfg) is None and not globs.match_any(f, skip)
+    ]
+
+
 # --- lint -------------------------------------------------------------------
 
 def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple[list[str], list[str]]:
@@ -506,6 +520,14 @@ def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple
         for pattern in rule.get("tests", []):
             if not any(globs.match(r["path"], pattern) for r in rows):
                 warnings.append(f"impact rule {rule['id']}: tests {pattern!r} matches no catalogued test")
+    for path in orphans(cfg):
+        errors.append(f"test file {path} belongs to no suite (add a suite or an [[unowned]] entry)")
+    for u in _unowned(cfg):
+        if not u.get("reason"):
+            errors.append(f"unowned entry {u.get('paths', '?')} is missing a reason")
+        for pattern in u.get("paths", []):
+            if not any(globs.match(f, pattern) for f in files):
+                warnings.append(f"unowned entry: path {pattern!r} matches no file")
     today = dt.date.today()
     for q in cfg.quarantine:
         missing = [k for k in ("id", "owner", "issue", "expires") if not q.get(k)]
