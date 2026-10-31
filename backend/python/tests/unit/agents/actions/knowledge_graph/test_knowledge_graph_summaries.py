@@ -528,6 +528,7 @@ class TestLookupRecord:
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
     async def test_empty_catalog_with_knowledge(self, mock_uk, mock_catalog_build) -> None:
+        """A KB-only user has no connector in the catalog; the lookup still runs."""
         catalog = MagicMock()
         catalog.is_empty.return_value = True
         mock_catalog_build.return_value = catalog
@@ -539,7 +540,7 @@ class TestLookupRecord:
             "has_knowledge": True,
         })
         ok, msg = await kg.lookup_record("JIRA-1")
-        assert ok is False
+        assert ok is True
         assert "Not found" in msg
 
     @pytest.mark.asyncio

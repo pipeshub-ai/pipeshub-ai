@@ -685,12 +685,13 @@ class KnowledgeGraph:
         if catalog.is_empty():
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.warning(
-                "lookup_record: catalog is empty — apps=%r, kb=%r, agent_knowledge=%d entries",
-                state.get("apps"), state.get("kb"),
-                len(state.get("agent_knowledge") or []),
+            # No connector to search: a KB-only user's knowledge bases stand in.
+            catalog = await ConnectorCatalog.knowledge_bases(
+                state,
+                graph_provider=graph_provider,
+                user_key=user_key,
+                org_id=org_id,
             )
-            return False, _NOT_FOUND_MSG
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
