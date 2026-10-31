@@ -25,6 +25,7 @@ export const PROVIDER_FRIENDLY_NAMES: Record<string, string> = {
   ollama: 'Ollama',
   openAICompatible: 'OpenAI Compatible',
   openRouter: 'OpenRouter',
+  atlascloud: 'Atlas Cloud',
   lmStudio: 'LM Studio',
   litellmProxy: 'LiteLLM Proxy',
   voyage: 'Voyage AI',

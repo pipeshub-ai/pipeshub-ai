@@ -47,6 +47,10 @@ class TestAllProviderRegistrations:
     def test_provider_registered_in_singleton(self, provider_id):
         assert provider_id in self.provider_map, f"{provider_id} not found in registry"
 
+    def test_atlascloud_registered_with_text_generation(self):
+        assert "atlascloud" in self.provider_map
+        assert self.provider_map["atlascloud"]["capabilities"] == ["text_generation"]
+
     def test_fields_for_each_capability_exist(self):
         for p in self.providers:
             if p["providerId"] == "default":
