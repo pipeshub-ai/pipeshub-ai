@@ -30,6 +30,7 @@ from qa import (
     report,
     run,
     score,
+    shadow,
     shard,
     validate,
 )
@@ -380,6 +381,53 @@ def cmd_stuck(args) -> int:
     return 3 if ids else 0
 
 
+def _append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    # A truncated last line must not swallow the new record.
+    path.write_text(text + ("\n" if text and not text.endswith("\n") else "") + json.dumps(record, sort_keys=True) + "\n",
+                    encoding="utf-8")
+
+
+def cmd_shadow(args) -> int:
+    if args.action == "verdict":
+        files = history.read_dir(Path(args.store))
+        result = shadow.enforcement(history._jsonl(files.get("shadow.jsonl", "")), shadow._today())
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return {"ready": 0, "not_ready": 1}.get(result["status"], 2)
+    cfg = config.load()
+    if args.edition not in cfg.editions():
+        print(f"unknown edition {args.edition!r}; known: {', '.join(cfg.editions())}", file=sys.stderr)
+        return 2
+    to = Path(args.to)
+    if args.action == "compare":
+        pairs = []
+        for item in args.junit:
+            prefix, sep, path = item.partition("=")
+            if not (sep and prefix and path):
+                print(f"--junit {item!r}: use PREFIX=PATH", file=sys.stderr)
+                return 2
+            pairs.append((prefix, Path(path)))
+        _append_jsonl(to, shadow.compare(cfg, args.base, args.head, pairs, workflow=args.workflow,
+                                         run_id=args.run_id, edition=args.edition))
+        return 0
+    import tempfile
+    from qa import branchstore
+    default = branchstore._default_branch(os.environ)
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=args.since_hours)
+    with tempfile.TemporaryDirectory(prefix="qa-shadow-") as tmp:
+        for run_ in shadow.fetch(args.repo, args.workflow or sorted(shadow.WORKFLOW_ARTIFACTS), since, Path(tmp)):
+            try:
+                collect.git(cfg.root, "fetch", "--no-tags", "-q", "origin", run_["head"])
+                base = collect.git(cfg.root, "merge-base", run_["head"], f"origin/{default}").strip()
+            except subprocess.CalledProcessError as err:
+                print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {(err.stderr or '').strip()}", file=sys.stderr)
+                continue
+            _append_jsonl(to, shadow.compare(cfg, base, run_["head"], run_["junit"], workflow=run_["workflow"],
+                                             run_id=run_["run_id"], edition=args.edition))
+    return 0
+
+
 def cmd_command(args) -> int:
     try:
         parsed = command.parse(args.body, args.permission, args.admin_team)
@@ -530,6 +578,22 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--runs", nargs="+", required=True, metavar="DIR", help="run directories, oldest first")
     s.set_defaults(fn=cmd_stuck)
 
+    s = sub.add_parser("shadow", help="recall of the floor against the existing workflows' failures")
+    s.add_argument("action", choices=["compare", "fetch", "verdict"])
+    s.add_argument("--base")
+    s.add_argument("--head")
+    s.add_argument("--junit", action="append", default=[], metavar="PREFIX=PATH")
+    s.add_argument("--workflow", action="append", choices=sorted(shadow.WORKFLOW_ARTIFACTS),
+                   help="compare: the run's workflow; fetch: workflows to read (default all)")
+    s.add_argument("--run-id")
+    s.add_argument("--edition", default="all")
+    s.add_argument("--repo")
+    s.add_argument("--since-hours", type=float, default=24)
+    s.add_argument("--to", metavar="FILE", help="shadow.jsonl to append to")
+    s.add_argument("--store", default=os.environ.get("QA_HISTORY", "qa-out/history"), metavar="DIR")
+    s.set_defaults(fn=cmd_shadow)
+    shadow_parser = s
+
     s = sub.add_parser("command", help="parse a /qa PR comment")
     s.add_argument("--body", required=True)
     s.add_argument("--permission", required=True)
@@ -551,6 +615,15 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_score)
 
     args = p.parse_args(argv)
+    if args.cmd == "shadow":
+        need = {"compare": ("base", "head", "junit", "workflow", "to"), "fetch": ("repo", "to"), "verdict": ()}[args.action]
+        missing = [n for n in need if not getattr(args, n)]
+        if missing:
+            shadow_parser.error(f"shadow {args.action} needs " + ", ".join("--" + n.replace("_", "-") for n in missing))
+        if args.action == "compare":
+            if len(args.workflow) != 1:
+                shadow_parser.error("shadow compare takes one --workflow")
+            args.workflow = args.workflow[0]
     if getattr(args, "commit", None) and args.head:
         go_parser.error("--commit and --head cannot be used together (--commit sets the head)")
     return args.fn(args)

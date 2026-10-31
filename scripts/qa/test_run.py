@@ -506,6 +506,14 @@ class TestReportGate(RunCase):
         section = body.split("### Quarantined (ran, not blocking)\n\n", 1)[1]
         self.assertEqual(section.splitlines()[0], f"- `{ACL}`: fail (https://x/issues/7)")
         self.assertNotIn(JIRA_SYNC, section.split("\n\n")[0])
+        # An entry without an issue link shows none, not "(None)".
+        cfg.quarantine.append({"id": JIRA_SYNC, "owner": "qa-auto", "auto": True,
+                               "expires": (today + dt.timedelta(days=3)).isoformat()})
+        body = report.render(cfg, plan_for([ACL, JIRA_SYNC]), results)
+        section = body.split("### Quarantined (ran, not blocking)\n\n", 1)[1].split("\n\n")[0]
+        self.assertIn(f"- `{JIRA_SYNC}`: pass", section.splitlines())
+        self.assertNotIn("None", section)
+        cfg.quarantine.pop()
         # An auto entry past expiry is not a lint error; it is simply no longer active.
         cfg.quarantine.append({**active, "expires": (today - dt.timedelta(days=1)).isoformat()})
         errors, _ = catalog.lint(cfg, catalog.build(cfg))

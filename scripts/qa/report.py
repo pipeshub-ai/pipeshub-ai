@@ -133,7 +133,8 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
         if held:
             issue = {q["id"]: q.get("issue") for q in cfg.quarantine}
             lines += ["", "### Quarantined (ran, not blocking)", ""]
-            lines += [f"- `{_short(t['id'])}`: {t['outcome']} ({issue.get(t['id'])})" for t in held]
+            lines += [f"- `{_short(t['id'])}`: {t['outcome']}" + (f" ({issue[t['id']]})" if issue.get(t["id"]) else "")
+                      for t in held]
         not_run = defaultdict(list)
         for t in results["tests"]:
             if t["outcome"] == "not_run":

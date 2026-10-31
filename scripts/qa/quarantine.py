@@ -31,9 +31,17 @@ def _last(letters: str) -> str:
     return letters[-history.WINDOW:]
 
 
+def _expires(entry: dict[str, Any]) -> dt.date:
+    """An entry with no readable expiry counts as long expired."""
+    try:
+        return dt.date.fromisoformat(str(entry.get("expires")))
+    except ValueError:
+        return dt.date.min
+
+
 def _held(entry: dict[str, Any], today: dt.date) -> bool:
     """Active, or expired but still in its cooldown."""
-    return dt.date.fromisoformat(str(entry["expires"])) + dt.timedelta(days=COOLDOWN_DAYS) >= today
+    return _expires(entry) + dt.timedelta(days=COOLDOWN_DAYS) >= today
 
 
 def candidates(windows: dict[str, str], current: list[dict[str, Any]], static_ids: set[str], today: dt.date) -> list[str]:
@@ -47,7 +55,7 @@ def update(current: list[dict[str, Any]], windows: dict[str, str], issues: dict[
     for e in current:
         if not _held(e, today):
             continue
-        if dt.date.fromisoformat(str(e["expires"])) < today:
+        if _expires(e) < today:
             e = {**e, "expired": True}
         elif _last(windows.get(e["id"], "")) == "p" * history.WINDOW:
             continue
@@ -77,9 +85,9 @@ def ensure_issue(repo: str, test_id: str, letters: str) -> str | None:
     title = f"Flaky test: {test_id}"
     try:
         if not _labelled:
-            _labelled = True
             _gh(["label", "create", LABEL, "--force", "--repo", repo, "--color", "fbca04",
                  "--description", "Quarantined automatically as flaky"])
+            _labelled = True  # only once it exists: a failed create is retried on the next issue
         # shortcut: at most 1000 open qa-flaky issues are checked; past that a duplicate is possible, so page with --paginate via gh api then.
         # A plain label listing, not search: the search index lags, and a missed issue would be duplicated.
         listed = json.loads(_gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
