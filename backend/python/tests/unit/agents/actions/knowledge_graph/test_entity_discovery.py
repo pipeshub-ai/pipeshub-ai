@@ -15,6 +15,10 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     LIMITED_SCOPE_NOTE,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KnowledgeGraphMode,
+    KnowledgeGraphPolicy,
+)
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
@@ -170,6 +174,14 @@ class TestGuards:
         assert ok is True
         _, search_kwargs = patched[1].call_args
         assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["person", "named_entity"], ["person"])
+
+    @pytest.mark.asyncio
+    async def test_the_taxonomy_arm_does_not_search_people_as_entities(self, patched, monkeypatch) -> None:
+        taxonomy = KnowledgeGraphPolicy(mode=KnowledgeGraphMode.TAXONOMY)
+        monkeypatch.setattr(entity_discovery, "knowledge_graph_policy_in", lambda _state: taxonomy)
+        ok, _ = await execute_search_entities(_state(), "Mira Kowalski", entity_types=["person"])
+        assert ok is False
+        patched[1].assert_not_called()
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
