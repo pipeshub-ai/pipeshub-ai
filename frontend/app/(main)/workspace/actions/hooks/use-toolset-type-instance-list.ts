@@ -12,6 +12,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import type { ActionInstanceAuthTab } from '../components/action-type-details-layout';
 
 const TYPE_INSTANCE_PAGE_SIZE = 20;
+const EMPTY_INSTANCES: BuilderSidebarToolset[] = [];
 
 export interface UseToolsetTypeInstanceListOptions {
   toolsetTypeParam: string | null;
@@ -39,9 +40,13 @@ export function useToolsetTypeInstanceList({
   const [instanceSearch, setInstanceSearch] = useState('');
   const [debouncedInstanceSearch, setDebouncedInstanceSearch] = useState('');
   const [typeListPage, setTypeListPage] = useState(1);
-  const [typeListInstances, setTypeListInstances] = useState<BuilderSidebarToolset[]>([]);
-  const [typeListPagination, setTypeListPagination] = useState<ToolsetsListPagination | null>(null);
-  const [typeListFilterCounts, setTypeListFilterCounts] = useState<ToolsetsFilterCounts | null>(null);
+  /** Tagged with the type it was fetched for, so another type's rows and counts never render. */
+  const [typeList, setTypeList] = useState<{
+    toolsetType: string;
+    instances: BuilderSidebarToolset[];
+    pagination: ToolsetsListPagination | null;
+    filterCounts: ToolsetsFilterCounts | null;
+  } | null>(null);
   const [typeListLoading, setTypeListLoading] = useState(false);
   const [typeListRefreshing, setTypeListRefreshing] = useState(false);
   const typeListHasLoadedForScopeRef = useRef(false);
@@ -94,20 +99,27 @@ export function useToolsetTypeInstanceList({
           scope,
         });
         if (cancelled) return;
-        setTypeListInstances(res.toolsets);
-        setTypeListPagination(res.pagination ?? null);
-        if (res.filterCounts) {
-          setTypeListFilterCounts({
-            all: res.filterCounts.all,
-            authenticated: res.filterCounts.authenticated,
-            notAuthenticated: res.filterCounts.notAuthenticated,
-          });
-        } else {
-          setTypeListFilterCounts(null);
-        }
+        setTypeList({
+          toolsetType: toolsetTypeParam,
+          instances: res.toolsets,
+          pagination: res.pagination ?? null,
+          filterCounts: res.filterCounts
+            ? {
+                all: res.filterCounts.all,
+                authenticated: res.filterCounts.authenticated,
+                notAuthenticated: res.filterCounts.notAuthenticated,
+              }
+            : null,
+        });
         typeListHasLoadedForScopeRef.current = true;
       } catch {
         if (!cancelled) {
+          // Record this type as loaded and empty, so the empty state shows instead of a stuck spinner.
+          setTypeList((prev) =>
+            prev?.toolsetType === toolsetTypeParam
+              ? prev
+              : { toolsetType: toolsetTypeParam, instances: [], pagination: null, filterCounts: null }
+          );
           addToast({ variant: 'error', title: t('workspace.actions.loadError') });
         }
       } finally {
@@ -132,15 +144,18 @@ export function useToolsetTypeInstanceList({
     scope,
   ]);
 
+  const current = typeList?.toolsetType === toolsetTypeParam ? typeList : null;
+
   return {
     instanceSearch,
     setInstanceSearch,
     typeListPage,
     setTypeListPage,
-    typeListInstances,
-    typeListPagination,
-    typeListFilterCounts,
-    typeListLoading,
+    typeListInstances: current?.instances ?? EMPTY_INSTANCES,
+    typeListPagination: current?.pagination ?? null,
+    typeListFilterCounts: current?.filterCounts ?? null,
+    // Also true for the render before the fetch effect runs on a type switch.
+    typeListLoading: typeListLoading || (enabled && Boolean(toolsetTypeParam) && !current),
     typeListRefreshing,
   };
 }
