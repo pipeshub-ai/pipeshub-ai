@@ -3,12 +3,14 @@ suites in each language, a rule overlay, and git history to diff against."""
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
 
-from qa import config
+from qa import config, metrics
 
 SUITES = """
 [[suite]]
@@ -353,3 +355,42 @@ def write(root: Path, rel: str, body: str) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
+
+
+# --- reliability fixtures: history files, shadow records and metrics --------------
+
+TODAY = dt.date(2026, 10, 31)
+
+
+def ts(day: dt.date) -> int:
+    return int(dt.datetime.combine(day, dt.time(12), tzinfo=dt.timezone.utc).timestamp())
+
+
+def shadow_records(days: int, n: int, caught: int) -> list[dict]:
+    """One old record so the data spans `days`, then n failures today, `caught` of them caught."""
+    old = {"ts": ts(TODAY - dt.timedelta(days=days)), "head": "h0", "caught": [], "missed": [], "unmapped": []}
+    ids = [f"py:t{i}.py" for i in range(n)]
+    return [old, {"ts": ts(TODAY), "head": "h1", "caught": ids[:caught], "missed": ids[caught:], "unmapped": []}]
+
+
+def history_run(day: dt.date, trigger: str, wall: float | None, counts: dict | None = None) -> dict:
+    return {"ts": ts(day), "trigger": trigger, "wall_seconds": wall, "counts": counts or {"pass": 1}, "outcomes": {}}
+
+
+def history_files(runs: list[dict], tests: dict | None = None, quarantined: list[dict] | None = None,
+                  shadow: list[dict] | None = None) -> dict[str, str]:
+    return {"runs.jsonl": "".join(json.dumps(r) + "\n" for r in runs),
+            "tests.json": json.dumps({k: {"o": v, "seen": TODAY.isoformat()} for k, v in (tests or {}).items()}),
+            "quarantine.json": json.dumps({"tests": quarantined or []}),
+            "shadow.jsonl": "".join(json.dumps(r) + "\n" for r in shadow or [])}
+
+
+def fixture_metrics(rows: list[dict] | None = None, **kw) -> dict:
+    """Two triggers over the window, one flaky test and an auto quarantine entry."""
+    days = [TODAY - dt.timedelta(days=d) for d in range(3)]
+    runs = [history_run(d, "nightly", 100 + i, {"pass": 5, "fail": 1, "flaky": 1}) for i, d in enumerate(days)]
+    runs += [history_run(TODAY, "local", 12.5, {"pass": 2, "not_run": 1}), history_run(TODAY - dt.timedelta(days=40), "nightly", 9)]
+    files = history_files(runs, {"py:a.py": "ppkp"}, [{"id": "py:a.py", "expires": "2026-11-10", "auto": True}], shadow_records(15, 50, 49))
+    rows = rows if rows is not None else [{"id": "py:a.py", "suite": "py-unit", "module": "m", "flows": ["f"], "priority": "P0"}]
+    return metrics.compute(files, rows, TODAY, bugs=kw.get("bugs", {"caught": 0, "escaped": 0, "escaped_by_flow": {}, "unlinked": 0}),
+                           coverage=kw.get("coverage", {"py-unit": 87.5, "node-unit": None}))

@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
-import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -44,13 +43,6 @@ def line_coverage(path: Path) -> float | None:
         return None
 
 
-def _gh(args: list[str]) -> str:
-    r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
-    if r.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:2])}: {r.stderr.strip() or f'exit {r.returncode}'}")
-    return r.stdout
-
-
 def _date(stamp: str) -> dt.date:
     return dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).date()
 
@@ -59,15 +51,18 @@ def bugs(repo: str, since: dt.date) -> dict[str, Any]:
     """Merged PRs the PR gate caught (a failure before the last success) and escaped issues, since `since`."""
     if not repo:
         return {"error": "no --repo given"}
+    if not PR_WORKFLOWS:
+        return {"error": "no qa-pr*.yml workflow found"}
+    gh = shadow._gh  # looked up per call, so tests patch shadow._gh
     try:
         # shortcut: the newest 1000 of each listing; page with gh api --paginate if a window ever holds more.
-        merged = [p for p in json.loads(_gh(["pr", "list", "-R", repo, "--state", "merged", "--limit", "1000",
+        merged = [p for p in json.loads(gh(["pr", "list", "-R", repo, "--state", "merged", "--limit", "1000",
                                              "--json", "number,headRefName,mergedAt"]) or "[]")
                   if p.get("mergedAt") and _date(p["mergedAt"]) >= since]
         caught_branches: set[str] = set()
         for wf in PR_WORKFLOWS:
             by_branch: dict[str, list[dict[str, Any]]] = defaultdict(list)
-            for r in json.loads(_gh(["run", "list", "-R", repo, "--workflow", wf, "--limit", "1000",
+            for r in json.loads(gh(["run", "list", "-R", repo, "--workflow", wf, "--limit", "1000",
                                      "--json", "headBranch,conclusion,createdAt"]) or "[]"):
                 by_branch[r.get("headBranch")].append(r)
             for branch, runs_ in by_branch.items():
@@ -75,7 +70,7 @@ def bugs(repo: str, since: dt.date) -> dict[str, Any]:
                 order = [r.get("conclusion") for r in sorted(runs_, key=lambda r: r.get("createdAt", ""))]
                 if "success" in order and "failure" in order[:len(order) - order[::-1].index("success")]:
                     caught_branches.add(branch)
-        issues = [i for i in json.loads(_gh(["issue", "list", "-R", repo, "--label", "escaped", "--state", "all",
+        issues = [i for i in json.loads(gh(["issue", "list", "-R", repo, "--label", "escaped", "--state", "all",
                                              "--limit", "1000", "--json", "number,createdAt,labels"]) or "[]")
                   if i.get("createdAt") and _date(i["createdAt"]) >= since]
     except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as err:
@@ -83,7 +78,8 @@ def bugs(repo: str, since: dt.date) -> dict[str, Any]:
     by_flow: Counter[str] = Counter()
     unlinked = 0
     for i in issues:
-        flows = {lbl["name"].split(":", 1)[1] for lbl in i.get("labels", []) if lbl.get("name", "").startswith("flow:")}
+        # A set: an issue counts once per flow, however often a label repeats.
+        flows = {lbl["name"].split(":", 1)[1] for lbl in i.get("labels") or [] if (lbl.get("name") or "").startswith("flow:")}
         by_flow.update(flows)
         unlinked += not flows
     return {"caught": sum(p.get("headRefName") in caught_branches for p in merged), "escaped": len(issues),
@@ -94,14 +90,18 @@ def _coverage(rows: list[dict[str, Any]], cfg: Any) -> tuple[dict[str, Any], dic
     """Tests (catalog ids) per module and per flow. With the registry, untested ones show as 0."""
     modules: dict[str, dict[str, Any]] = {m["id"]: {"tests": 0} for m in (cfg.modules if cfg else [])}
     flows: dict[str, dict[str, Any]] = {f["id"]: {"tests": 0, "priority": f.get("priority")} for f in (cfg.flows if cfg else [])}
+    registered = set(flows)
     for r in rows:
         if r.get("status") == "planned":
             continue
         if r.get("module"):
             modules.setdefault(r["module"], {"tests": 0})["tests"] += 1
         for f in r.get("flows") or []:
-            # Without the registry a row's priority is the best of its flows: exact for single-flow rows.
-            flows.setdefault(f, {"tests": 0, "priority": r.get("priority")})["tests"] += 1
+            entry = flows.setdefault(f, {"tests": 0, "priority": None})
+            entry["tests"] += 1
+            if f not in registered and r.get("priority"):
+                # Without the registry, the best priority among the flow's rows ("P0" < "P1" < "P2").
+                entry["priority"] = min(filter(None, [entry["priority"], r["priority"]]))
     return dict(sorted(modules.items())), dict(sorted(flows.items()))
 
 
@@ -123,16 +123,16 @@ def compute(files: dict[str, str], rows: list[dict[str, Any]], today: dt.date, *
 
     suite_of = {r["id"]: r.get("suite") or "unknown" for r in rows}
     flakes: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    for tid, letters in history.windows(files).items():
+    # Tests seen in the window only; each still counts its last 10 outcomes, which may be older.
+    seen_since = (today - dt.timedelta(days=WINDOW_DAYS)).isoformat()
+    for tid, w in history.tests_seen(files, seen_since).items():
+        letters = w.get("o", "")
         s = flakes[suite_of.get(tid, "unknown")]
         s[0] += letters.count("k")
         s[1] += len(letters)
     k, n = sum(v[0] for v in flakes.values()), sum(v[1] for v in flakes.values())
 
-    try:
-        auto = json.loads(files.get("quarantine.json") or "{}").get("tests", [])
-    except (json.JSONDecodeError, AttributeError):
-        auto = []
+    auto = history.quarantine_entries(files)
     quarantined = {e["id"] for e in auto if e.get("id") and not e.get("expired") and quarantine._expires(e) >= today}
     quarantined |= {r["id"] for r in rows if r.get("status") == "quarantined"}
 
@@ -174,6 +174,7 @@ def summary(metrics: dict[str, Any]) -> str:
     if "error" in b:
         out += ["### Bugs", "", f"Caught and escaped bugs: not measured ({b['error']}).", ""]
     else:
-        out += ["### Bugs", "", "Caught stays 0 while the PR gate only plans and runs no tests.", "", _table(["Caught by the PR gate", "Escaped", "Escaped, no flow"],
+        note = ["Caught is 0. It stays 0 while the PR gate only plans and runs no tests.", ""] if not b["caught"] else []
+        out += ["### Bugs", "", *note, _table(["Caught by the PR gate", "Escaped", "Escaped, no flow"],
                                        [[b["caught"], b["escaped"], b["unlinked"]]]), ""]
     return "\n".join(out)

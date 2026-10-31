@@ -66,7 +66,7 @@ directory.
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
 | `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build`, and defaults to a managed stack unless `--stack` is given. For a commit already on the base branch it tests that commit's own change (a root commit runs the full profile). It cannot be combined with `--head`; results land in your `--out` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
-| `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and non-pass outcomes; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too |
+| `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and non-pass outcomes; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
 | `stuck --runs DIR...` | Print the tests that failed in each of the last 3 runs with distinct heads, oldest run directory first; exits 3 when there are any |
 | `command --body ... --permission ...` | Parse a `/qa` PR comment |
 | `score --adapter X` | Score an adapter on past changes with known failures |
@@ -129,7 +129,7 @@ or the nightly schedule.
 **Shadow mode.** Until the repository variable `QA_ENFORCE` is `true`, only
 `plan` and `report` run. The PR gets the plan as a comment, and the existing
 workflows keep running everything. Turn enforcement on once shadow data shows
-recall of 98% or better (design doc, rollout P1–P3).
+recall of 98% or better; see [Enforcement](#enforcement).
 
 **PR comment commands** (write access; `full` and `--trusted` need admin):
 
@@ -168,6 +168,98 @@ a PR.
 `claude_code` and agent CLIs can grep the catalogs and read code. `litellm` sends
 one request with `plan-input.json` and the diff, so it can add only tests listed
 in `candidates`, which are ranked by how closely they relate to the change.
+
+## History, quarantine and metrics
+
+### History
+
+Run history lives on the orphan branch `qa-history`, as flat files only:
+
+| File | Holds | Bound |
+| --- | --- | --- |
+| `runs.jsonl` | One compact entry per run: outcome counts and the non-pass outcomes | Newest 1,000 from the last 90 days |
+| `tests.json` | `{id: {"o": last 10 outcome letters, "seen": date}}`; `p` pass, `f` fail, `e` error, `k` flaky, newest last | Ids unseen for 90 days are dropped |
+| `quarantine.json` | The automatic quarantine, `{"tests": [entry...]}` | Expired entries kept 30 days as a cooldown |
+| `shadow.jsonl` | One shadow comparison per failed workflow run | 90 days |
+| `metrics.json` | The latest metrics | Overwritten on every publish |
+
+`qa history publish` adds the run in `--out` (`plan.json` and the merged
+`results*.json`), any `--shadow FILE` lines, the quarantine update and fresh
+metrics in one commit, `qa-history: <trigger> <edition> <head12>`. Every write
+is a fast-forward. When another writer got there first, publish re-reads the
+branch and re-applies its change, up to 5 times, then exits 4. It never forces.
+
+**Who may write.** In GitHub Actions only a `schedule` run, or a `push` to the
+default branch, may publish. Any other event (pull requests, dispatches, PR
+comments) exits 2 and writes nothing. Outside Actions publishing is allowed;
+without `--remote` it writes the local `qa-history` branch.
+
+Run it locally:
+
+```bash
+python3 scripts/qa history publish --out qa-out     # local branch; flaky tests print "deferred (no --repo)"
+git show qa-history:metrics.json
+python3 scripts/qa history pull --to h               # copy the branch files into h/
+python3 scripts/qa history flaky --store h
+```
+
+Options: `--remote NAME` publishes to (or pulls from) that remote's branch;
+`--repo OWNER/NAME` opens flaky-test issues and reads bug metrics there;
+`--started-at ISO` gives the wall time; `--run-url`; `--coverage SUITE=PATH`
+(repeatable).
+
+### Quarantine
+
+A test flaky in at least 3 of its last 10 runs is quarantined for 14 days
+(3 flakes in a shorter window count too). Publish opens or reuses the issue
+`Flaky test: <id>` (label `qa-flaky`) before it writes, and an entry is never
+added without one: if the issue cannot be made, the test waits for the next
+publish. Ten straight passes release it early. It is not renewed: after it
+expires the id cannot be re-added for 30 days, so only a human can make a
+quarantine last, by adding it to `quarantine.toml` with an owner. Ids already
+in `quarantine.toml` are left alone.
+
+A quarantined test still runs, and the report lists it under "Quarantined (ran,
+not blocking)" with its issue. Runs read the file through `QA_QUARANTINE_AUTO`;
+`qa history fetch-quarantine --repo OWNER/NAME --to PATH` writes it from the
+branch (`{"tests": []}` when there is none). If the fetch fails, the run has no
+automatic entries, which only makes the gate stricter.
+
+### Metrics
+
+`metrics.json` covers the last 30 days:
+
+- `coverage`: tests per module and per flow from the catalog (a flow with none
+  shows 0); line coverage per `--coverage` suite (`null` when the file is
+  missing or unreadable); API operation hit rate, not measured yet.
+- `trend`: runs and outcome counts per day and trigger (`nightly`, `main`,
+  `dispatch`, `pr`, `local`).
+- `flake`: flaky outcomes over all outcomes, overall and per suite, for tests
+  seen in the window, and the quarantined ids.
+- `duration`: p50 and p95 wall seconds per trigger (nearest rank).
+- `bugs`: PRs the PR gate caught (a failed QA PR run before the last success)
+  and issues labelled `escaped`, by `flow:<id>` label. Both stay 0 while the PR
+  gate only plans. Without `--repo`, or on a `gh` error, it holds `error`.
+- `enforcement`: the shadow verdict below.
+
+Publish also writes a summary to `$GITHUB_STEP_SUMMARY` when it is set.
+
+### Enforcement
+
+Shadow recall compares the floor plan with the tests the existing workflows saw
+fail (`qa shadow fetch`, `compare`). `qa shadow verdict` is ready only when the
+oldest record is at least 14 days old, the last 14 days hold at least 20
+distinct failures, and recall over them is at least 0.98. It exits 0 ready,
+1 not ready, 2 not enough data.
+
+To switch:
+
+```bash
+python3 scripts/qa history pull --to h && python3 scripts/qa shadow verdict --store h
+```
+
+If it exits 0, a maintainer sets the repository variable `QA_ENFORCE=true`.
+Nothing sets it automatically.
 
 ## Writing tests the engine understands
 
@@ -234,7 +326,9 @@ Each one usually becomes one of the edits above.
 | `QA_IT_WORKERS` | unset | `pytest -n` for integration tests |
 | `QA_MIN_DISK_GB` | 20 | Preflight before a managed stack |
 | `QA_TIMEOUT_<FAMILY>` | 1–4 h | Per-runner timeout |
-| `QA_OUT`, `QA_PROFILE`, `QA_EDITION`, `QA_HISTORY` | `qa-out`, `standard`, `all`, unset | Defaults for the CLI (`QA_HISTORY` names a history directory) |
+| `QA_OUT`, `QA_PROFILE`, `QA_EDITION` | `qa-out`, `standard`, `all` | Defaults for the CLI |
+| `QA_HISTORY` | unset (`history` uses `qa-out/history`) | A history directory (`runs.jsonl`, `tests.json`, ...), for example one written by `qa history pull`; not a file |
+| `QA_QUARANTINE_AUTO` | unset | A `quarantine.json` from `qa history fetch-quarantine`; its unexpired entries are quarantined for this run |
 
 `QA_PLANNER_CMD` makes any agent CLI a planner. It gets `{prompt_file}`,
 `{input}` and `{output}` placeholders, and its stdout or `{output}` must hold

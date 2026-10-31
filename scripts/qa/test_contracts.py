@@ -53,7 +53,7 @@ class TestContracts(unittest.TestCase):
         self.assertTrue(schema.check({**doc, "environment": {**env, "unpinned": "node"}}, "results.v1.json"))
 
     def test_metrics_match_the_schema(self) -> None:
-        from qa.test_reliability import fixture_metrics
+        from qa.testing import fixture_metrics
         doc = fixture_metrics(self.rows)
         self.assertEqual({t["trigger"] for t in doc["trend"]}, {"nightly", "local"})
         self.assertEqual(schema.check(doc, "metrics.v1.json"), [])

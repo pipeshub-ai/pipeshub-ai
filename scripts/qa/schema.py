@@ -46,7 +46,7 @@ def errors(doc: Any, schema: dict[str, Any], where: str = "$") -> list[str]:
                 out += errors(doc[key], sub, f"{where}.{key}")
         extra = schema.get("additionalProperties")
         if isinstance(extra, dict):
-            for key in doc.keys() - schema.get("properties", {}).keys():
+            for key in sorted(doc.keys() - schema.get("properties", {}).keys()):
                 out += errors(doc[key], extra, f"{where}.{key}")
     if isinstance(doc, list) and "items" in schema:
         for i, item in enumerate(doc):

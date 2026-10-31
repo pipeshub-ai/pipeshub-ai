@@ -18,6 +18,9 @@ referenced from tests and reviews.
 | I11 | Model text in PR comments has no mentions, markup or links, and is at most 200 characters per reason | `validate.clean_text`; `test_model_text_cannot_inject_markup_or_mentions` |
 | I12 | `/qa` arguments match fixed patterns; permission comes from the GitHub API; fork code runs with secrets only through an admin's `--trusted` | `command.parse`, `qa-command.yml`; `test_untrusted_arguments_are_rejected` |
 | I13 | Every test file belongs to a suite or an `[[unowned]]` entry | `catalog.lint`; `test_orphan_test_file_is_a_lint_error` |
+| I14 | Only a schedule run or a push to the default branch writes `qa-history` | `branchstore.may_write`; `test_publish_refused_outside_schedule_or_main_push`, `test_history_is_written_only_by_scheduled_jobs` |
+| I15 | History writes never force; a concurrent writer is merged by re-applying | `branchstore.update`; `test_concurrent_publish_keeps_both_entries` |
+| I16 | A quarantined test still runs and is reported | `config.load`, `report`; `test_auto_file_quarantines_in_config_and_report` |
 
 ## 2. Pipeline and contracts
 
@@ -180,7 +183,5 @@ journeys the tests protect.
 - **Diff coverage per changed line** (P4): `changeset.hunks` is already
   recorded for it.
 - **Nightly miss attribution as a scheduled job.** `history.misses` and
-  `culprit.search` are the building blocks. Storing history (orphan branch or
-  S3) is an open decision.
-- **Shadow comparison** against the existing workflows' JUnit artifacts
-  ("would have missed").
+  `culprit.search` are the building blocks. Shadow recall already measures
+  selection quality; `qa bisect` stays manual.

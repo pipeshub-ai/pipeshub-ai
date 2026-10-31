@@ -352,7 +352,90 @@ def _go_at_commit(args) -> int:
         signal.signal(signal.SIGTERM, previous)
 
 
+def _publish(args) -> int:
+    """Add the run in --out, shadow lines, auto quarantine and metrics to qa-history in one commit."""
+    from qa import branchstore, metrics, quarantine
+    ok, why = branchstore.may_write(os.environ)
+    if not ok:
+        print(f"history publish: {why}", file=sys.stderr)
+        return 2
+    out = _out(args)
+    plan, results = _merged(out) if (out / "plan.json").is_file() else ({}, None)
+    today = shadow._today()
+    wall = None
+    if args.started_at:
+        started = dt.datetime.fromisoformat(args.started_at.replace("Z", "+00:00"))
+        wall = round((dt.datetime.now(dt.timezone.utc) - started).total_seconds(), 1)
+    trig = args.trigger or history.trigger(os.environ)
+    entry = history.entry(plan, results, trigger=trig, wall_seconds=wall, run_url=args.run_url) if results else None
+    shadow_lines = history._jsonl(Path(args.shadow).read_text(encoding="utf-8")) if args.shadow else []
+    coverage = {}
+    for item in args.coverage:
+        suite, sep, path = item.partition("=")
+        if not (sep and suite and path):
+            print(f"--coverage {item!r}: use SUITE=PATH", file=sys.stderr)
+            return 2
+        coverage[suite] = metrics.line_coverage(Path(path))
+    cfg = config.load()
+    rows = _rows(cfg, out)
+    static = {q["id"] for q in cfg.quarantine if not q.get("auto")}
+
+    def apply_run(files: dict[str, str]) -> dict[str, str]:
+        return history.add_run(files, entry, results, today) if entry else dict(files)
+
+    # Issues are side effects, so they are opened here, before the store write, never inside `mutate`.
+    _, current = branchstore.read(cfg.root, args.remote)
+    preview = apply_run(current)
+    issues = {}
+    for tid in quarantine.candidates(history.windows(preview), history.quarantine_entries(preview), static, today):
+        if args.repo:
+            issues[tid] = quarantine.ensure_issue(args.repo, tid, history.windows(preview)[tid])
+        else:
+            print(f"deferred (no --repo): {tid}")
+    bugs = metrics.bugs(args.repo, today - dt.timedelta(days=metrics.WINDOW_DAYS)) if args.repo else {"error": "no --repo given"}
+    computed: dict = {}
+
+    def mutate(files: dict[str, str]) -> dict[str, str]:
+        files = apply_run(files)
+        if shadow_lines:
+            files["shadow.jsonl"] = history._dump_jsonl(history._jsonl(files.get("shadow.jsonl", "")) + shadow_lines)
+        q = quarantine.update(history.quarantine_entries(files), history.windows(files), issues, static, today)
+        files["quarantine.json"] = json.dumps({"tests": q}, sort_keys=True)
+        computed["metrics"] = metrics.compute(files, rows, today, bugs=bugs, coverage=coverage, cfg=cfg)
+        files["metrics.json"] = json.dumps(computed["metrics"], indent=2, sort_keys=True)
+        return history.trim(files, today)
+
+    message = f"qa-history: {trig} {plan.get('edition') or 'all'} {(plan.get('head') or 'no-run')[:12]}"
+    try:
+        sha = branchstore.update(cfg.root, mutate, remote=args.remote, message=message)
+    except branchstore.Conflict as err:
+        print(f"history publish: gave up after concurrent writers: {err}", file=sys.stderr)
+        return 4
+    report.write_summary(metrics.summary(computed["metrics"]))
+    print(sha)
+    return 0
+
+
 def cmd_history(args) -> int:
+    from qa import branchstore
+    if args.action == "publish":
+        return _publish(args)
+    if args.action == "pull":
+        sha, files = branchstore.read(paths.tree_root(), args.remote)
+        if sha is None:
+            print(f"history pull: no {branchstore.BRANCH} branch yet", file=sys.stderr)
+        history.write_dir(Path(args.to), files)
+        return 0
+    if args.action == "fetch-quarantine":
+        try:
+            text = branchstore.fetch_file(args.repo, "quarantine.json")
+        except RuntimeError as err:
+            print(f"history fetch-quarantine: {err}", file=sys.stderr)
+            return 1
+        to = Path(args.to)
+        to.parent.mkdir(parents=True, exist_ok=True)
+        to.write_text(text if text is not None else '{"tests": []}', encoding="utf-8")
+        return 0
     files = history.read_dir(Path(args.store))
     if args.action == "failing":
         for t in history.failing_on_main(history.runs(files), args.branch):
@@ -576,12 +659,20 @@ def main(argv: list[str] | None = None) -> int:
     go_parser = s
 
     s = sub.add_parser("history", help="run history")
-    s.add_argument("action", choices=["record", "failing", "flaky"])
+    s.add_argument("action", choices=["record", "failing", "flaky", "publish", "pull", "fetch-quarantine"])
     s.add_argument("--store", default=os.environ.get("QA_HISTORY", "qa-out/history"), metavar="DIR")
     s.add_argument("--branch", default="main")
     s.add_argument("--trigger", default=None, help="nightly, main, dispatch, pr or local (default: from GITHUB_EVENT_NAME)")
     s.add_argument("--wall-seconds", type=float, default=None)
+    s.add_argument("--remote", help="publish, pull: git remote holding qa-history (default: the local branch)")
+    s.add_argument("--repo", metavar="OWNER/NAME", help="publish: open flaky-test issues and read bug metrics here")
+    s.add_argument("--started-at", metavar="ISO", help="publish: workflow start time, for wall seconds")
+    s.add_argument("--run-url")
+    s.add_argument("--shadow", metavar="FILE", help="publish: shadow.jsonl lines to add")
+    s.add_argument("--coverage", action="append", default=[], metavar="SUITE=PATH", help="publish: line coverage report")
+    s.add_argument("--to", metavar="PATH", help="pull: directory; fetch-quarantine: file")
     s.set_defaults(fn=cmd_history)
+    history_parser = s
 
     s = sub.add_parser("stuck", help="tests that failed in each of the last 3 runs with distinct heads (exit 3)")
     s.add_argument("--runs", nargs="+", required=True, metavar="DIR", help="run directories, oldest first")
@@ -633,6 +724,11 @@ def main(argv: list[str] | None = None) -> int:
             if len(args.workflow) != 1:
                 shadow_parser.error("shadow compare takes one --workflow")
             args.workflow = args.workflow[0]
+    if args.cmd == "history":
+        need = {"pull": ("to",), "fetch-quarantine": ("repo", "to")}.get(args.action, ())
+        missing = [n for n in need if not getattr(args, n)]
+        if missing:
+            history_parser.error(f"history {args.action} needs " + ", ".join("--" + n for n in missing))
     if getattr(args, "commit", None) and args.head:
         go_parser.error("--commit and --head cannot be used together (--commit sets the head)")
     return args.fn(args)

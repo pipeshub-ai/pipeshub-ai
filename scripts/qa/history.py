@@ -105,6 +105,18 @@ def _tests(files: Mapping[str, str]) -> dict[str, dict[str, str]]:
         return {}
 
 
+def quarantine_entries(files: Mapping[str, str]) -> list[dict[str, Any]]:
+    try:
+        return list(json.loads(files.get("quarantine.json") or "{}").get("tests", []))
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return []
+
+
+def tests_seen(files: Mapping[str, str], since: str = "") -> dict[str, dict[str, str]]:
+    """tests.json entries last seen on or after `since` (YYYY-MM-DD)."""
+    return {tid: w for tid, w in _tests(files).items() if w.get("seen", "") >= since}
+
+
 def windows(files: Mapping[str, str]) -> dict[str, str]:
     return {tid: w.get("o", "") for tid, w in _tests(files).items()}
 
@@ -130,17 +142,12 @@ def trim(files: dict[str, str], today: dt.date) -> dict[str, str]:
     if "shadow.jsonl" in files:
         files["shadow.jsonl"] = _dump_jsonl([r for r in _jsonl(files["shadow.jsonl"]) if r.get("ts", 0) >= cutoff])
     if "tests.json" in files:
-        keep = {tid: w for tid, w in _tests(files).items() if w.get("seen", "") >= cutoff_day.isoformat()}
-        files["tests.json"] = json.dumps(keep, sort_keys=True)
+        files["tests.json"] = json.dumps(tests_seen(files, cutoff_day.isoformat()), sort_keys=True)
     if "quarantine.json" in files:
-        try:
-            q = json.loads(files["quarantine.json"])
-        except json.JSONDecodeError:
-            q = {"tests": []}
         gone = (today - dt.timedelta(days=COOLDOWN_DAYS)).isoformat()
         # An expired auto entry stays as a cooldown so the same id is not re-added at once.
-        q["tests"] = [e for e in q.get("tests", []) if not (e.get("auto") and str(e.get("expires", "")) < gone)]
-        files["quarantine.json"] = json.dumps(q, sort_keys=True)
+        q = [e for e in quarantine_entries(files) if not (e.get("auto") and str(e.get("expires", "")) < gone)]
+        files["quarantine.json"] = json.dumps({"tests": q}, sort_keys=True)
     return files
 
 
