@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agents.agent_loop import tool_approvals as approvals
-from app.agents.agent_loop.tool_approvals import args_hash, check_edit
+from app.agents.agent_loop.tool_approvals import ToolRules, args_hash, check_edit
 from tests.unit.agents.agent_loop.test_tool_approvals import (
     _DONE,
     _answer,
@@ -122,6 +122,7 @@ def test_args_hash_survives_a_value_json_cannot_encode() -> None:
 # ---------------------------------------------------------------------------
 
 _ASKED = {"title": "Login is broken"}
+_NOTHING_RUNS = "Nothing runs until the user fixes the approval card."
 _HASH = args_hash(_ASKED)
 
 
@@ -183,7 +184,10 @@ async def test_refused_edit_keeps_card_open_and_runs_nothing() -> None:
         store, mcp, approval_id, "allow", again, _DONE, answer_fields={"arguments": {"title": 5}, "args_hash": _HASH},
     )
     assert mcp.calls == [] and _claimed(store) == []
-    assert "only one action can wait" in _result_of(answered.sent[1], "c3").content
+    assert _result_of(answered.sent[1], "c3").content == _NOTHING_RUNS
+    # No second card or saved call for the repeat.
+    assert answered.events.of(EventType.TOOL_BLOCKED, "c3")[0]["status"] == ToolCallStatus.BLOCKED
+    assert len(store.pending()) == 1
     (card,) = answered.events.of(EventType.TOOL_BLOCKED, "c1")
     assert card["status"] == ToolCallStatus.AWAITING_APPROVAL
     assert card["approval"]["approvalId"] == approval_id
@@ -194,6 +198,19 @@ async def test_refused_edit_keeps_card_open_and_runs_nothing() -> None:
     # The card can still be answered.
     await _edited(store, mcp, approval_id, {"title": "Signin is broken"})
     assert mcp.calls == [{"tool": "create_issue", "title": "Signin is broken"}]
+
+
+async def test_refused_edit_turn_runs_no_allow_rule_tool() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "allow"}), user_id="user-1", instance_id="inst-1")  # type: ignore[arg-type]
+    pre_approved = ToolCall(id="c3", name="mcp_jira_create_issue", arguments={"title": "Signin is broken"})
+    answered = await _answer(
+        store, mcp, approval_id, "allow", pre_approved, _DONE,
+        answer_fields={"arguments": {"title": 5}, "args_hash": _HASH},
+    )
+    assert mcp.calls == [] and _claimed(store) == []
+    assert _result_of(answered.sent[1], "c3").content == _NOTHING_RUNS
 
 
 async def test_stale_card_edit_is_refused() -> None:
@@ -231,6 +248,22 @@ async def test_store_failure_while_checking_an_edit_runs_nothing() -> None:
     store.reads_fail = False
     assert mcp.calls == [] and _claimed(store) == []
     assert "answer the card again" in _result_of(answered.sent[0]).content
+
+
+async def test_store_failure_while_checking_an_edit_raises_no_second_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+
+    async def _down(*_args: Any) -> None:  # noqa: ANN401
+        raise ConnectionError("the store is down")
+
+    monkeypatch.setattr(approvals, "read_pending", _down)
+    again = ToolCall(id="c3", name="mcp_jira_create_issue", arguments={"title": "Signin is broken"})
+    answered = await _answer(
+        store, mcp, approval_id, "allow", again, _DONE, answer_fields={"arguments": {"title": "x"}, "args_hash": _HASH},
+    )
+    assert mcp.calls == [] and _claimed(store) == [] and len(store.pending()) == 1
+    assert _result_of(answered.sent[1], "c3").content == _NOTHING_RUNS
 
 
 async def test_second_answer_after_edited_allow_shows_first_outcome() -> None:
