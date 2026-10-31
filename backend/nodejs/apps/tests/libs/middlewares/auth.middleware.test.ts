@@ -2,7 +2,14 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon, { SinonStub } from 'sinon'
 import jwt from 'jsonwebtoken'
-import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware'
+import {
+  AuthMiddleware,
+  cachedApprovalLookup,
+  claimedClientName,
+  claimsPrivilegedClientName,
+  isSlackClientName,
+  scopedClientName,
+} from '../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
@@ -1419,6 +1426,89 @@ describe('AuthMiddleware', () => {
       // Non-fatal: should still call next without error
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+    })
+  })
+})
+
+describe('client-name trust rules', () => {
+  const reqWith = (name?: string) =>
+    ({ headers: name === undefined ? {} : { 'client-name': name } }) as any
+
+  afterEach(() => sinon.restore())
+
+  it('claimedClientName lower-cases the header and is empty without one', () => {
+    expect(claimedClientName(reqWith('SLACK'))).to.equal('slack')
+    expect(claimedClientName(reqWith())).to.equal('')
+  })
+
+  it('isSlackClientName accepts only the two Slack names', () => {
+    expect(isSlackClientName('slack')).to.be.true
+    expect(isSlackClientName('slack-approvals')).to.be.true
+    expect(isSlackClientName('slack-bot')).to.be.false
+    expect(isSlackClientName('')).to.be.false
+  })
+
+  it('claimsPrivilegedClientName flags the web and Slack names in any case', () => {
+    expect(claimsPrivilegedClientName(reqWith('PipesHub-AI'))).to.be.true
+    expect(claimsPrivilegedClientName(reqWith('Slack-Approvals'))).to.be.true
+    expect(claimsPrivilegedClientName(reqWith('my-script'))).to.be.false
+    expect(claimsPrivilegedClientName(reqWith())).to.be.false
+  })
+
+  describe('scopedClientName', () => {
+    const logger = { error: sinon.stub() }
+    const apply = async (scope: string, configId: unknown, header?: string, lookup?: SinonStub) => {
+      const req = reqWith(header)
+      await scopedClientName(req, scope, configId, lookup, logger)
+      return req.headers['client-name']
+    }
+
+    it('names an opted-in bot slack-approvals and any other bot slack', async () => {
+      expect(await apply(TokenScopes.CONVERSATION_CREATE, 'bot-1', 'api', sinon.stub().resolves(true))).to.equal('slack-approvals')
+      expect(await apply(TokenScopes.CONVERSATION_CREATE, 'bot-1', 'slack-approvals', sinon.stub().resolves(false))).to.equal('slack')
+      expect(await apply(TokenScopes.CONVERSATION_CREATE, 'bot-1', undefined)).to.equal('slack')
+    })
+
+    it('stays slack and logs when the lookup fails', async () => {
+      logger.error.resetHistory()
+      expect(await apply(TokenScopes.CONVERSATION_CREATE, 'bot-1', undefined, sinon.stub().rejects(new Error('down')))).to.equal('slack')
+      expect(logger.error.calledOnce).to.be.true
+    })
+
+    it('demotes a claimed privileged name to api off the bot path and leaves others alone', async () => {
+      expect(await apply('mail:send', 'bot-1', 'slack')).to.equal('api')
+      expect(await apply(TokenScopes.CONVERSATION_CREATE, undefined, 'pipeshub-ai')).to.equal('api')
+      expect(await apply('mail:send', undefined, 'my-script')).to.equal('my-script')
+    })
+  })
+
+  describe('cachedApprovalLookup', () => {
+    it('answers from the first config with the id and reloads only after the ttl', async () => {
+      const clock = sinon.useFakeTimers({ now: 1_000 })
+      const load = sinon.stub().resolves([
+        { id: 'a', approveActionsFromSlack: true },
+        { id: 'b' },
+        { id: 'a', approveActionsFromSlack: false },
+      ])
+      const lookup = cachedApprovalLookup(load, 60_000)
+      expect(await lookup('a')).to.be.true
+      expect(await lookup('b')).to.be.false
+      expect(await lookup('missing')).to.be.false
+      expect(load.callCount).to.equal(1)
+      clock.tick(60_000)
+      await lookup('a')
+      expect(load.callCount).to.equal(2)
+    })
+
+    it('does not cache a failed load', async () => {
+      const load = sinon.stub()
+      load.onFirstCall().rejects(new Error('down'))
+      load.onSecondCall().resolves([{ id: 'a', approveActionsFromSlack: true }])
+      const lookup = cachedApprovalLookup(load, 60_000)
+      let failed = false
+      try { await lookup('a') } catch { failed = true }
+      expect(failed).to.be.true
+      expect(await lookup('a')).to.be.true
     })
   })
 })

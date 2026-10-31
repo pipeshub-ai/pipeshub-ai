@@ -4,7 +4,10 @@ import { ConfigurationManagerConfig } from '../../configuration_manager/config/c
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import {
+  AuthMiddleware,
+  cachedApprovalLookup,
+} from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 const loggerConfig = {
@@ -13,24 +16,6 @@ const loggerConfig = {
 
 // A saved change reaches this process within this window: the config is saved elsewhere and the read is cached to spare the store on every bot request.
 const SLACK_BOT_APPROVAL_TTL_MS = 60_000;
-
-/** configId -> whether the bot allows Slack to answer approvals, cached like the bot registry. A failed read throws and is not cached. */
-function slackBotApprovalLookup(kvs: KeyValueStoreService) {
-  let loadedAt = 0;
-  let allowed = new Set<string>();
-  return async (configId: string): Promise<boolean> => {
-    if (Date.now() - loadedAt >= SLACK_BOT_APPROVAL_TTL_MS) {
-      const store = await getSlackBotStore(kvs);
-      allowed = new Set(
-        store.configs
-          .filter((c) => c.approveActionsFromSlack === true)
-          .map((c) => c.id),
-      );
-      loadedAt = Date.now();
-    }
-    return allowed.has(configId);
-  };
-}
 
 export class EnterpriseSearchAgentContainer {
   protected static instance: Container;
@@ -82,7 +67,10 @@ export class EnterpriseSearchAgentContainer {
         container.get('Logger'),
         authTokenService,
         undefined,
-        slackBotApprovalLookup(keyValueStoreService),
+        cachedApprovalLookup(
+          async () => (await getSlackBotStore(keyValueStoreService)).configs,
+          SLACK_BOT_APPROVAL_TTL_MS,
+        ),
       );
       container
         .bind<AuthMiddleware>('AuthMiddleware')

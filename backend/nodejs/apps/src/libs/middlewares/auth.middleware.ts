@@ -33,15 +33,67 @@ export const SLACK_APPROVALS_CLIENT_NAME = 'slack-approvals';
 /** Whether the Slack bot with this config id lets Slack answer tool approvals. */
 export type SlackBotApprovalLookup = (configId: string) => Promise<boolean>;
 
+/**
+ * A lookup over the saved bot configs, reloaded at most once per `ttlMs`. The first config with the id decides.
+ * A failed load throws and is not cached.
+ */
+export function cachedApprovalLookup(
+  loadConfigs: () => Promise<
+    ReadonlyArray<{ id: string; approveActionsFromSlack?: boolean }>
+  >,
+  ttlMs: number,
+): SlackBotApprovalLookup {
+  let loadedAt = -Infinity;
+  let configs: ReadonlyArray<{
+    id: string;
+    approveActionsFromSlack?: boolean;
+  }> = [];
+  return async (configId: string): Promise<boolean> => {
+    if (Date.now() - loadedAt >= ttlMs) {
+      configs = await loadConfigs();
+      loadedAt = Date.now();
+    }
+    return (
+      configs.find((c) => c.id === configId)?.approveActionsFromSlack === true
+    );
+  };
+}
+
 // A caller picks its own client-name header, so the names that unlock an approval surface are never taken from it.
-const claimedClientName = (req: Request): string =>
+export const claimedClientName = (req: Request): string =>
   String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase();
-const isSlackClientName = (name: string): boolean =>
+export const isSlackClientName = (name: string): boolean =>
   name === SLACK_CLIENT_NAME || name === SLACK_APPROVALS_CLIENT_NAME;
-const claimsPrivilegedClientName = (req: Request): boolean => {
+export const claimsPrivilegedClientName = (req: Request): boolean => {
   const name = claimedClientName(req);
   return name === WEB_CLIENT_NAME || isSlackClientName(name);
 };
+
+/** Only the bot's own scoped token is Slack: `slack`, or `slack-approvals` when its bot opted in (a failed read stays `slack`). */
+export async function scopedClientName(
+  req: Request,
+  scope: string,
+  configId: unknown,
+  slackBotApproves: SlackBotApprovalLookup | undefined,
+  logger: Pick<Logger, 'error'>,
+): Promise<void> {
+  if (
+    scope === TokenScopes.CONVERSATION_CREATE &&
+    typeof configId === 'string'
+  ) {
+    let approves = false;
+    try {
+      approves = (await slackBotApproves?.(configId)) === true;
+    } catch (lookupError) {
+      logger.error('Failed to read Slack bot settings', lookupError);
+    }
+    req.headers[CLIENT_NAME_HEADER] = approves
+      ? SLACK_APPROVALS_CLIENT_NAME
+      : SLACK_CLIENT_NAME;
+  } else if (claimsPrivilegedClientName(req)) {
+    req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
+  }
+}
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -418,28 +470,18 @@ export class AuthMiddleware {
     };
   };
 
-  // Only the bot's own scoped token is Slack: `slack`, or `slack-approvals` when its bot opted in (a failed read stays `slack`).
-  private async setScopedClientName(
+  private setScopedClientName(
     req: Request,
     scope: string,
     configId: unknown,
   ): Promise<void> {
-    if (
-      scope === TokenScopes.CONVERSATION_CREATE &&
-      typeof configId === 'string'
-    ) {
-      let approves = false;
-      try {
-        approves = (await this.slackBotApproves?.(configId)) === true;
-      } catch (lookupError) {
-        this.logger.error('Failed to read Slack bot settings', lookupError);
-      }
-      req.headers[CLIENT_NAME_HEADER] = approves
-        ? SLACK_APPROVALS_CLIENT_NAME
-        : SLACK_CLIENT_NAME;
-    } else if (claimsPrivilegedClientName(req)) {
-      req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
-    }
+    return scopedClientName(
+      req,
+      scope,
+      configId,
+      this.slackBotApproves,
+      this.logger,
+    );
   }
 
   extractToken(req: Request): string | null {
