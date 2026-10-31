@@ -188,6 +188,61 @@ class TestPlannerAdapters(ValidateCase):
         text = planner._instructions(self.root, self.root / "plan-input.json")
         self.assertNotIn("PR-WRITTEN NOTES", text)
 
+PROBE = {"probe": {"prompt": "scripts/qa/prompts/planner.md", "schema": "plan-llm.v1.json", "diff": False, "empty": {"x": 1}}}
+
+
+class TestModelTasks(ValidateCase):
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.dict(planner.TASKS, PROBE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.inp, self.out = self.dir / "probe-input.json", self.dir / "probe-llm.json"
+        self.inp.write_text('{"a": 1}', encoding="utf-8")
+
+    def test_every_task_keeps_the_read_only_tools(self) -> None:
+        import subprocess
+        seen: list = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": '{"schema": "qa-plan-llm/v1"}'}), "")
+
+        with mock.patch.object(planner.subprocess, "run", fake_run), \
+                mock.patch.object(planner.shutil, "which", return_value="/bin/claude"):
+            status = planner.ask(self.root, "claude_code", "probe", self.inp, self.out, timeout=5)
+        self.assertEqual(status["status"], "ok")
+        cmd = seen[0]
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], planner.READ_ONLY_TOOLS)
+
+    def test_invalid_task_reply_is_the_empty_result(self) -> None:
+        with mock.patch.dict(planner.ADAPTERS, {"fake": lambda *a, **kw: {"bogus": 1}}):
+            planner.ask(self.root, "fake", "probe", self.inp, self.out)
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["_planner"]["status"], "failed")
+        self.assertEqual({k: v for k, v in result.items() if k != "_planner"}, {"x": 1})
+
+    def test_task_prompt_comes_from_the_engine_checkout(self) -> None:
+        testing.write(self.root, "scripts/qa/prompts/planner.md", "PR-WRITTEN PROMPT\n")
+        with mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}):
+            text = planner._instructions(self.root, self.inp, "probe")
+        self.assertIn((paths.REPO / "scripts/qa/prompts/planner.md").read_text(encoding="utf-8"), text)
+        self.assertNotIn("PR-WRITTEN PROMPT", text)
+        # The probe reuses planner.md, which itself mentions the diff; only the run section must not.
+        self.assertNotIn("changeset.diff", text.rsplit("## This run", 1)[1])
+
+    def test_oversized_task_input_fails_without_a_call(self) -> None:
+        self.inp.write_text("x" * 200_001, encoding="utf-8")
+        called = mock.Mock(return_value={"schema": "qa-plan-llm/v1"})
+        with mock.patch.dict(planner.ADAPTERS, {"fake": called}):
+            status = planner.ask(self.root, "fake", "probe", self.inp, self.out)
+        self.assertEqual(status["status"], "failed")
+        called.assert_not_called()
+
+
+class TestJson(unittest.TestCase):
     def test_prose_around_json_is_tolerated(self) -> None:
         self.assertEqual(planner.extract_json('Sure!\n```json\n{"schema": "x"}\n```\nDone.'), {"schema": "x"})
 
