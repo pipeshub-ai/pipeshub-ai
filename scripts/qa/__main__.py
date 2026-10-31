@@ -405,15 +405,19 @@ def _publish(args) -> int:
         else:
             print(f"deferred (no --repo): {tid}")
     bugs = metrics.bugs(args.repo, today - dt.timedelta(days=metrics.WINDOW_DAYS)) if args.repo else {"error": "no --repo given"}
+    pr_walls = metrics.pr_walls(args.repo, today - dt.timedelta(days=metrics.WINDOW_DAYS)) if args.repo else None
     computed: dict = {}
 
     def mutate(files: dict[str, str]) -> dict[str, str]:
         files = apply_run(files)
         if shadow_lines:
-            files["shadow.jsonl"] = history._dump_jsonl(history._jsonl(files.get("shadow.jsonl", "")) + shadow_lines)
+            old = history._jsonl(files.get("shadow.jsonl", ""))
+            # The nightly fetch window overlaps the previous one, so a run can arrive twice.
+            known = {r.get("run_id") for r in old if r.get("run_id")}
+            files["shadow.jsonl"] = history._dump_jsonl(old + [r for r in shadow_lines if not r.get("run_id") or r["run_id"] not in known])
         q = quarantine.update(history.quarantine_entries(files), history.windows(files), issues, static, today)
         files["quarantine.json"] = json.dumps({"tests": q}, sort_keys=True)
-        computed["metrics"] = metrics.compute(files, rows, today, bugs=bugs, coverage=coverage, cfg=cfg)
+        computed["metrics"] = metrics.compute(files, rows, today, bugs=bugs, coverage=coverage, cfg=cfg, pr_walls=pr_walls)
         files["metrics.json"] = json.dumps(computed["metrics"], indent=2, sort_keys=True)
         return history.trim(files, today)
 
@@ -437,6 +441,8 @@ def cmd_history(args) -> int:
         sha, files = branchstore.read(paths.tree_root(), args.remote)
         if sha is None:
             print(f"history pull: no {branchstore.BRANCH} branch yet", file=sys.stderr)
+        for name in set(history.FILES) - set(files):  # a file the branch no longer has must not survive a re-pull
+            (Path(args.to) / name).unlink(missing_ok=True)
         history.write_dir(Path(args.to), files)
         return 0
     if args.action == "fetch-quarantine":
@@ -518,14 +524,14 @@ def cmd_shadow(args) -> int:
     with tempfile.TemporaryDirectory(prefix="qa-shadow-") as tmp:
         for run_ in shadow.fetch(args.repo, args.workflow or sorted(shadow.WORKFLOW_ARTIFACTS), since, Path(tmp)):
             try:
-                collect.git(cfg.root, "fetch", "--no-tags", "-q", "origin", run_["head"])
-                base = collect.git(cfg.root, "merge-base", run_["head"], f"origin/{default}").strip()
-            except subprocess.CalledProcessError as err:
-                print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {(err.stderr or '').strip()}", file=sys.stderr)
+                base, head = shadow.plan_revs(cfg.root, run_, default)
+            except (subprocess.CalledProcessError, shadow.MergeConflict) as err:
+                why = str(err) if isinstance(err, shadow.MergeConflict) else (err.stderr or "").strip()
+                print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {why}", file=sys.stderr)
                 continue
             try:
-                record = shadow.compare(cfg, base, run_["head"], run_["junit"], workflow=run_["workflow"],
-                                        run_id=run_["run_id"], edition=args.edition)
+                record = shadow.compare(cfg, base, head, run_["junit"], workflow=run_["workflow"],
+                                        run_id=run_["run_id"], edition=args.edition, key=run_.get("key"))
             except Exception as err:  # one bad run must not stop the others
                 print(f"shadow: skipping run {run_['run_id']} at {run_['head'][:12]}: {type(err).__name__}: {err}", file=sys.stderr)
                 continue

@@ -325,6 +325,8 @@ def _xml(path: Path, cases: list[tuple[str, str, str]]) -> Path:
 
 JIRA_SYNC = "it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync"
 RETRIEVAL = "py:tests/unit/services/test_retrieval.py"
+SAME_REPO_RUN = json.dumps({"event": "push", "head_branch": "main", "repository": {"full_name": "o/r"},
+                            "head_repository": {"full_name": "o/r"}, "pull_requests": []})
 
 
 class TestShadow(unittest.TestCase):
@@ -376,7 +378,8 @@ class TestShadow(unittest.TestCase):
         self.assertIn(JIRA_SYNC, shadow.selected_by_floor(cfg, base, head, "all"))
         rec = shadow.compare(cfg, base, head, [("it", xml), ("py", py)], workflow="integration-tests.yml", run_id="9", edition="all", ts=7)
         self.assertEqual(rec, {"ts": 7, "workflow": "integration-tests.yml", "run_id": "9", "head": head, "base": base,
-                               "edition": "all", "caught": [JIRA_SYNC], "missed": [RETRIEVAL], "unmapped": ["gone.test_x::test_y"]})
+                               "edition": "all", "key": None, "caught": [JIRA_SYNC], "missed": [RETRIEVAL], "unmapped": ["gone.test_x::test_y"],
+                               "missed_count": 1, "unmapped_count": 1})
         self.assertEqual(git(root, "rev-parse", "HEAD"), base)
         self.assertEqual(git(root, "worktree", "list").count("\n"), 0)
 
@@ -406,6 +409,8 @@ class TestShadow(unittest.TestCase):
 
         def gh(args):
             calls.append(args)
+            if args[0] == "api":
+                return SAME_REPO_RUN
             if args[:2] == ["run", "list"]:
                 wf = args[args.index("--workflow") + 1]
                 return json.dumps([
@@ -442,6 +447,8 @@ class TestShadow(unittest.TestCase):
 
     def test_fetch_skips_a_workflow_whose_run_list_fails(self) -> None:
         def gh(args):
+            if args[0] == "api":
+                return SAME_REPO_RUN
             if args[:2] == ["run", "list"]:
                 if "unit-test.yml" in args:
                     raise RuntimeError("gh run: HTTP 502")
@@ -729,6 +736,15 @@ class TestPublish(unittest.TestCase):
         self.assertEqual(len(git(self.root, "show", "qa-history:shadow.jsonl").splitlines()), 1)
         self.assertEqual(json.loads(git(self.root, "show", "qa-history:metrics.json"))["enforcement"]["failures"], 1)
 
+    def test_publish_adds_a_shadow_run_once(self) -> None:
+        lines = self.tmp / "shadow.jsonl"
+        lines.write_text(json.dumps({"ts": ts(TODAY), "run_id": "9", "head": "h", "caught": ["py:x.py"], "missed": [], "unmapped": []}) + "\n",
+                         encoding="utf-8")
+        for name in ("r1", "r2"):  # overlapping fetch windows see the same run twice
+            code, _, err = self._main(["--out", str(self._run_dir(name, "pass")), "history", "publish", "--shadow", str(lines)], self.env)
+            self.assertEqual(code, 0, err)
+        self.assertEqual(len(git(self.root, "show", "qa-history:shadow.jsonl").splitlines()), 1)
+
     def test_publish_rejects_bad_input_with_one_line(self) -> None:
         cases = {"missing shadow": ["--shadow", str(self.tmp / "absent.jsonl")],
                  "malformed start": ["--started-at", "yesterday"],
@@ -767,6 +783,193 @@ class TestPublish(unittest.TestCase):
             code, _, err = self._main(["history", "fetch-quarantine", "--repo", "o/r", "--to", str(to)], self.env)
         self.assertEqual(code, 1)
         self.assertIn("HTTP 500", err)
+
+
+class TestReviewFixes(unittest.TestCase):
+    """Fixes from the final review: trust, dedup, merge-tree planning, bounds."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="qa-fixes-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def _stderr(self):
+        return mock.patch("sys.stderr", new_callable=lambda: __import__("io").StringIO())
+
+    # I1
+    def test_forged_auto_quarantine_entries_are_rejected(self) -> None:
+        today = dt.datetime.now(dt.timezone.utc).date()
+        d = lambda n: (today + dt.timedelta(days=n)).isoformat()  # noqa: E731
+        ok = {"id": "ok", "owner": "qa-auto", "issue": "https://github.com/o/r/issues/3", "added": d(0), "expires": d(14)}
+        forged = [
+            {**ok, "id": "human", "owner": "someone"},
+            {**ok, "id": "nolink", "issue": "https://evil.example/issues/3"},
+            {**ok, "id": "forever", "added": d(-1), "expires": d(400)},
+            {**ok, "id": "future-added", "added": d(300), "expires": d(310)},
+            {**ok, "id": "no-added", "added": None},
+            {"owner": "qa-auto", "issue": ok["issue"], "added": d(0), "expires": d(1)},
+        ]
+        path = self.tmp / "q.json"
+        path.write_text(json.dumps({"tests": [ok, *forged]}), encoding="utf-8")
+        with mock.patch.dict("os.environ", {"QA_QUARANTINE_AUTO": str(path)}), self._stderr() as err:
+            got = config._auto_quarantine()
+        self.assertEqual([e["id"] for e in got], ["ok"])
+        self.assertEqual(err.getvalue().count("ignoring auto quarantine entry"), len(forged))
+
+    # I2
+    def test_two_pushes_of_one_pr_count_once(self) -> None:
+        old = {"ts": ts(TODAY - dt.timedelta(days=15)), "head": "h0", "caught": [], "missed": [], "unmapped": []}
+        push = lambda head: {"ts": ts(TODAY), "head": head, "key": "pr-7", "caught": [], "missed": ["py:a.py"], "unmapped": []}  # noqa: E731
+        got = shadow.enforcement([old, push("h1"), push("h2")], TODAY)
+        self.assertEqual(got["failures"], 1)
+
+    def test_fetch_excludes_fork_runs_and_keys_by_pr(self) -> None:
+        def gh(args):
+            if args[:2] == ["run", "list"]:
+                return json.dumps([{"databaseId": i, "headSha": c * 40, "createdAt": "2026-10-31T10:00:00Z"} for i, c in ((1, "a"), (2, "b"))])
+            if args[0] == "api":
+                run_id = args[1].rsplit("/", 1)[1]
+                head = "fork/r" if run_id == "2" else "o/r"
+                return json.dumps({"event": "pull_request", "head_branch": "feat", "repository": {"full_name": "o/r"},
+                                   "head_repository": {"full_name": head},
+                                   "pull_requests": [{"number": 7, "base": {"ref": "main", "sha": "f" * 40}}]})
+            _xml(Path(args[args.index("-D") + 1]) / "py-junit-1" / "j.xml", [("a", "b", "fail")])
+            return ""
+        with mock.patch.object(shadow, "_gh", side_effect=gh), self._stderr() as err:
+            got = shadow.fetch("o/r", ["unit-test.yml"], dt.datetime(2026, 10, 30, tzinfo=dt.timezone.utc), self.tmp)
+        self.assertEqual([(r["run_id"], r["key"], r["event"], r["base_sha"]) for r in got], [("1", "pr-7", "pull_request", "f" * 40)])
+        self.assertIn("run 2", err.getvalue())
+        self.assertIn("fork", err.getvalue())
+
+    # I3
+    def _pr_repo(self, conflict: bool) -> tuple[Path, str, str]:
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        git(root, "remote", "add", "origin", str(root))
+        git(root, "checkout", "-q", "-b", "feat")
+        testing.write(root, "backend/python/app/connectors/sources/jira/sync.py", "def fetch():\n    return 2\n")
+        head = testing.commit(root, "feat change")
+        git(root, "checkout", "-q", "main")
+        if conflict:
+            testing.write(root, "backend/python/app/connectors/sources/jira/sync.py", "def fetch():\n    return 3\n")
+        testing.write(root, "backend/python/tests/unit/services/test_new.py", "def test_it():\n    assert True\n")
+        return root, head, testing.commit(root, "main moves on")
+
+    def test_pull_request_run_plans_on_the_merge_tree(self) -> None:
+        root, head, main = self._pr_repo(conflict=False)
+        cfg = config.load(root)
+        xml = _xml(self.tmp / "py-junit-1" / "j.xml", [("tests.unit.services.test_new", "test_it", "fail")])
+        # At the PR head alone, a test added on main is unknown.
+        at_head = shadow.compare(cfg, main, head, [("py", xml)], workflow="unit-test.yml", run_id="1", edition="all")
+        self.assertEqual(at_head["unmapped"], ["tests.unit.services.test_new::test_it"])
+        run_ = {"run_id": "1", "event": "pull_request", "head": head, "base_sha": main, "base_ref": "main"}
+        base, merged = shadow.plan_revs(root, run_, "main")
+        self.assertEqual(base, main)
+        self.assertEqual(git(root, "rev-parse", f"{merged}^1", f"{merged}^2").split(), [main, head])
+        rec = shadow.compare(cfg, base, merged, [("py", xml)], workflow="unit-test.yml", run_id="1", edition="all", key="pr-7")
+        self.assertEqual(rec["unmapped"], [])
+        self.assertEqual(rec["caught"] + rec["missed"], ["py:tests/unit/services/test_new.py"])
+        self.assertEqual(rec["key"], "pr-7")
+
+    def test_merge_conflict_skips_the_run(self) -> None:
+        from qa import __main__ as cli
+        root, head, main = self._pr_repo(conflict=True)
+        run_ = {"run_id": "5", "workflow": "unit-test.yml", "event": "pull_request", "head": head, "base_sha": main,
+                "base_ref": "main", "key": "pr-7", "junit": []}
+        to = self.tmp / "s.jsonl"
+        load = config.load
+        with mock.patch.object(shadow, "fetch", return_value=[run_]), \
+                mock.patch.object(cli.config, "load", side_effect=lambda *a, **k: load(root)), \
+                mock.patch.dict("os.environ", {"QA_DEFAULT_BRANCH": "main"}), self._stderr() as err:
+            self.assertEqual(cli.main(["shadow", "fetch", "--repo", "o/r", "--to", str(to)]), 0)
+        self.assertFalse(to.exists())
+        self.assertRegex(err.getvalue(), r"shadow: skipping run 5 at [0-9a-f]{12}: merge conflict with ")
+
+    # I5
+    def test_run_entries_hold_only_failed_errored_and_flaky_ids(self) -> None:
+        outcomes = ["pass", "fail", "error", "flaky", "not_run"]
+        e = history.entry({}, {"tests": [{"id": o, "outcome": o} for o in outcomes]}, trigger="local")
+        self.assertEqual(e["outcomes"], {"fail": "fail", "error": "error", "flaky": "flaky"})
+        self.assertEqual(e["counts"]["not_run"], 1)
+
+    # I6
+    def test_conflict_retry_is_reported(self) -> None:
+        root = _repo(self.tmp / "r")
+        moved = []
+
+        def mutate(files):
+            if not moved:
+                moved.append(branchstore.update(root, _append("B"), remote=None, message="qa: B"))
+            return _append("A")(files)
+        with mock.patch.object(branchstore.time, "sleep"), self._stderr() as err:
+            branchstore.update(root, mutate, remote=None, message="qa: A")
+        self.assertEqual(err.getvalue(), "qa-history: conflict, retrying (2/5)\n")
+
+    # Minors
+    def test_quarantine_entry_without_id_is_skipped(self) -> None:
+        current = [{"owner": "qa-auto", "expires": TODAY.isoformat()}, _entry("t", TODAY)]
+        self.assertEqual([e["id"] for e in quarantine.update(current, {}, {}, set(), TODAY)], ["t"])
+        self.assertEqual(quarantine.candidates({"t": "kkk"}, current, set(), TODAY), [])
+
+    def test_long_issue_titles_are_truncated_and_stable(self) -> None:
+        long_id = "py:tests/x.py::test_p[" + "a" * 400 + "]"
+        other = long_id[:-2] + "b]"
+        created = []
+
+        def gh(args):
+            if args[:2] == ["issue", "create"]:
+                created.append(args)
+            return "[]" if args[:2] == ["issue", "list"] else "https://github.com/o/r/issues/1\n"
+        with mock.patch.object(quarantine, "_gh", side_effect=gh), mock.patch.object(quarantine, "_labelled", True):
+            quarantine.ensure_issue("o/r", long_id, "kkk")
+            quarantine.ensure_issue("o/r", other, "kkk")
+        titles = [c[c.index("--title") + 1] for c in created]
+        self.assertTrue(all(len(t) <= 256 for t in titles))
+        self.assertNotEqual(titles[0], titles[1])
+        self.assertEqual(titles[0], quarantine.title(long_id))
+        self.assertIn(long_id, created[0][created[0].index("--body") + 1])
+        self.assertEqual(quarantine.title("py:a.py"), "Flaky test: py:a.py")
+
+    def test_shadow_lists_are_capped_but_counted(self) -> None:
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        base = git(root, "rev-parse", "HEAD")
+        xml = _xml(self.tmp / "py-junit-1" / "j.xml", [(f"gone.test_{i}", "test_x", "fail") for i in range(250)])
+        rec = shadow.compare(config.load(root), base, base, [("py", xml)], workflow="unit-test.yml", run_id="1", edition="all")
+        self.assertEqual((len(rec["unmapped"]), rec["unmapped_count"], rec["missed_count"]), (200, 250, 0))
+        old = {"ts": ts(TODAY - dt.timedelta(days=15)), "head": "h0", "caught": [], "missed": [], "unmapped": []}
+        got = shadow.enforcement([old, {**rec, "ts": ts(TODAY), "key": "pr-1"}, {**rec, "ts": ts(TODAY), "head": "other", "key": "pr-1"}], TODAY)
+        self.assertEqual(got["failures"], 250)
+
+    def test_pull_clears_stale_files(self) -> None:
+        from qa import __main__ as cli
+        root = _repo(self.tmp / "r")
+        to = self.tmp / "h"
+        history.write_dir(to, {"shadow.jsonl": "stale\n", "metrics.json": "{}"})
+        (to / "notes.txt").write_text("mine", encoding="utf-8")
+        branchstore.update(root, lambda f: {"runs.jsonl": "x\n"}, remote=None, message="qa: x")
+        with mock.patch.object(cli.paths, "tree_root", return_value=root):
+            self.assertEqual(cli.main(["history", "pull", "--to", str(to)]), 0)
+        self.assertEqual(sorted(p.name for p in to.iterdir()), ["notes.txt", "runs.jsonl"])
+
+    def test_pr_durations_come_from_the_run_list(self) -> None:
+        listed = [{"startedAt": "2026-10-30T10:00:00Z", "updatedAt": "2026-10-30T10:01:40Z"},
+                  {"startedAt": "2026-10-30T11:00:00Z", "updatedAt": "2026-10-30T11:00:20Z"},
+                  {"startedAt": "2026-08-01T11:00:00Z", "updatedAt": "2026-08-01T11:00:20Z"}]
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            return json.dumps(listed)
+        with mock.patch.object(shadow, "_gh", side_effect=gh), mock.patch.object(metrics, "PR_WORKFLOWS", ("qa-pr.yml",)):
+            walls = metrics.pr_walls("o/r", TODAY - dt.timedelta(days=30))
+        self.assertEqual(sorted(walls), [20.0, 100.0])
+        self.assertIn("completed", calls[0])
+        m = fixture_metrics(pr_walls=walls)
+        self.assertEqual(m["duration"]["pr"], {"runs": 2, "p50": 20.0, "p95": 100.0})
+        self.assertEqual(schema.check(m, "metrics.v1.json"), [])
+        with mock.patch.object(shadow, "_gh", side_effect=RuntimeError("gh run: HTTP 502")), self._stderr():
+            self.assertEqual(metrics.pr_walls("o/r", TODAY), [])
 
 
 if __name__ == "__main__":

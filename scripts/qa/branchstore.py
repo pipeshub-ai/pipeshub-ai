@@ -12,6 +12,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -133,6 +134,7 @@ def update(root: Path, mutate: Callable[[dict[str, str]], dict[str, str]], *, re
         except Conflict:
             if attempt == attempts:
                 raise
+            print(f"{BRANCH}: conflict, retrying ({attempt + 1}/{attempts})", file=sys.stderr)
             time.sleep(random.uniform(1, 3) * attempt)
     raise Conflict(f"{BRANCH}: no attempts")
 

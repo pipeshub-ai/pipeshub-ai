@@ -66,7 +66,7 @@ directory.
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
 | `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build`, and defaults to a managed stack unless `--stack` is given. For a commit already on the base branch it tests that commit's own change (a root commit runs the full profile). It cannot be combined with `--head`; results land in your `--out` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
-| `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and non-pass outcomes; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
+| `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and the failed, errored and flaky ids; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
 | `stuck --runs DIR...` | Print the tests that failed in each of the last 3 runs with distinct heads, oldest run directory first; exits 3 when there are any |
 | `command --body ... --permission ...` | Parse a `/qa` PR comment |
 | `score --adapter X` | Score an adapter on past changes with known failures |
@@ -177,7 +177,7 @@ Run history lives on the orphan branch `qa-history`, as flat files only:
 
 | File | Holds | Bound |
 | --- | --- | --- |
-| `runs.jsonl` | One compact entry per run: outcome counts and the non-pass outcomes | Newest 1,000 from the last 90 days |
+| `runs.jsonl` | One compact entry per run: outcome counts and the failed, errored and flaky ids | Newest 1,000 from the last 90 days |
 | `tests.json` | `{id: {"o": last 10 outcome letters, "seen": date}}`; `p` pass, `f` fail, `e` error, `k` flaky, newest last | Ids unseen for 90 days are dropped |
 | `quarantine.json` | The automatic quarantine, `{"tests": [entry...]}` | Expired entries kept 30 days as a cooldown |
 | `shadow.jsonl` | One shadow comparison per failed workflow run | 90 days |
@@ -187,7 +187,13 @@ Run history lives on the orphan branch `qa-history`, as flat files only:
 `results*.json`), any `--shadow FILE` lines, the quarantine update and fresh
 metrics in one commit, `qa-history: <trigger> <edition> <head12>`. Every write
 is a fast-forward. When another writer got there first, publish re-reads the
-branch and re-applies its change, up to 5 times, then exits 4. It never forces.
+branch and re-applies its change, up to 5 times (printing
+`qa-history: conflict, retrying (n/5)`), then exits 4. It never forces.
+
+The files stay bounded, but every publish is a new commit, so the branch's git
+history grows by one small commit per run. That is by design: the commits are
+the audit record. `history pull` reads only the tip, and replaces the five
+files in `--to`, removing any the branch no longer has.
 
 **Who may write.** In GitHub Actions only a `schedule` run, or a `push` to the
 default branch, may publish. Any other event (pull requests, dispatches, PR
@@ -223,7 +229,12 @@ A quarantined test still runs, and the report lists it under "Quarantined (ran,
 not blocking)" with its issue. Runs read the file through `QA_QUARANTINE_AUTO`;
 `qa history fetch-quarantine --repo OWNER/NAME --to PATH` writes it from the
 branch (`{"tests": []}` when there is none). If the fetch fails, the run has no
-automatic entries, which only makes the gate stricter.
+automatic entries, which only makes the gate stricter. A run accepts only entries
+publish could have written: owner `qa-auto`, a GitHub issue URL, and an expiry at
+most 14 days after `added` and at most 14 days from today. It ignores any other
+entry with a warning, so editing the branch cannot quarantine a test for longer.
+Issue titles longer than 256 characters are cut and end with a short hash of the
+id; the body holds the full id.
 
 ### Metrics
 
@@ -236,7 +247,9 @@ automatic entries, which only makes the gate stricter.
   `dispatch`, `pr`, `local`).
 - `flake`: flaky outcomes over all outcomes, overall and per suite, for tests
   seen in the window, and the quarantined ids.
-- `duration`: p50 and p95 wall seconds per trigger (nearest rank).
+- `duration`: p50 and p95 wall seconds per trigger (nearest rank). PR jobs do
+  not write history, so `pr` comes from the completed runs of the `qa-pr*.yml`
+  workflows (`gh run list`, start to last update).
 - `bugs`: PRs the PR gate caught (a failed QA PR run before the last success)
   and issues labelled `escaped`, by `flow:<id>` label. Both stay 0 while the PR
   gate only plans. Without `--repo`, or on a `gh` error, it holds `error`.
@@ -247,12 +260,22 @@ Publish also writes a summary to `$GITHUB_STEP_SUMMARY` when it is set.
 ### Enforcement
 
 Shadow recall compares the floor plan with the tests the existing workflows saw
-fail (`qa shadow fetch`, `compare`). `qa shadow verdict` is ready only when the
+fail (`qa shadow fetch`, `compare`). The nightly reads the failed runs of the
+last 48 hours, so a run that finished after the previous nightly is not lost;
+publish adds each run once. Runs whose head is in a fork are skipped. A
+`pull_request` run is planned on the merge of its head into the base tip, as
+GitHub tested it; a run whose head no longer merges cleanly is skipped with a
+`merge conflict` line. A failure counts once per pull request (or branch),
+however many pushes saw it. Each record lists at most 200 missed and unmapped
+ids and keeps their full counts.
+
+`qa shadow verdict` is ready only when the
 oldest record is at least 14 days old, the last 14 days hold at least 20
 distinct failures, and recall over them is at least 0.98. It exits 0 ready,
 1 not ready, 2 not enough data.
 
-To switch:
+The verdict covers only the `py` and `it` families that `unit-test.yml` and
+`integration-tests.yml` report; it is not recall over every suite. To switch:
 
 ```bash
 python3 scripts/qa history pull --to h && python3 scripts/qa shadow verdict --store h

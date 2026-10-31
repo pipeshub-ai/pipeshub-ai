@@ -11,6 +11,7 @@ quarantine last (by adding it to quarantine.toml with an owner).
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import subprocess
 import sys
@@ -23,6 +24,7 @@ EXPIRY_DAYS = 14
 COOLDOWN_DAYS = history.COOLDOWN_DAYS
 LABEL = "qa-flaky"
 OWNER = "qa-auto"
+TITLE_MAX = 256  # GitHub's limit on issue titles
 
 _labelled = False
 
@@ -45,7 +47,7 @@ def _held(entry: dict[str, Any], today: dt.date) -> bool:
 
 
 def candidates(windows: dict[str, str], current: list[dict[str, Any]], static_ids: set[str], today: dt.date) -> list[str]:
-    held = {e["id"] for e in current if _held(e, today)} | static_ids
+    held = {e.get("id") for e in current if _held(e, today)} | static_ids
     return sorted(tid for tid, w in windows.items() if tid not in held and _last(w).count("k") >= FLAKES)
 
 
@@ -53,7 +55,7 @@ def update(current: list[dict[str, Any]], windows: dict[str, str], issues: dict[
            static_ids: set[str], today: dt.date) -> list[dict[str, Any]]:
     out = []
     for e in current:
-        if not _held(e, today):
+        if not e.get("id") or not _held(e, today):
             continue
         if _expires(e) < today:
             e = {**e, "expired": True}
@@ -79,10 +81,19 @@ def _gh(args: list[str]) -> str:
     return r.stdout
 
 
+def title(test_id: str) -> str:
+    """`Flaky test: <id>`; a long id is cut and keeps a hash, so the title stays unique and stable."""
+    full = f"Flaky test: {test_id}"
+    if len(full) <= TITLE_MAX:
+        return full
+    digest = hashlib.sha256(test_id.encode("utf-8")).hexdigest()[:10]
+    return f"{full[:TITLE_MAX - 12]}… {digest}"
+
+
 def ensure_issue(repo: str, test_id: str, letters: str) -> str | None:
     """The URL of the open `Flaky test: <id>` issue, created if missing; None on any gh error."""
     global _labelled
-    title = f"Flaky test: {test_id}"
+    name = title(test_id)
     try:
         if not _labelled:
             _gh(["label", "create", LABEL, "--force", "--repo", repo, "--color", "fbca04",
@@ -93,13 +104,13 @@ def ensure_issue(repo: str, test_id: str, letters: str) -> str | None:
         listed = json.loads(_gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                                  "--limit", "1000", "--json", "title,url"]) or "[]")
         for issue in listed:
-            if issue.get("title") == title:
+            if issue.get("title") == name:
                 return issue["url"]
         w = _last(letters)
         body = (f"`{test_id}` was flaky in {w.count('k')} of its last {len(w)} runs (`{w}`, newest last).\n\n"
                 f"It is quarantined for {EXPIRY_DAYS} days: it still runs, but cannot block a merge. "
                 f"Ten straight passes release it early. It is not renewed automatically.")
-        return _gh(["issue", "create", "--repo", repo, "--title", title, "--label", LABEL, "--body", body]).strip() or None
+        return _gh(["issue", "create", "--repo", repo, "--title", name, "--label", LABEL, "--body", body]).strip() or None
     except (RuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError) as err:
         print(f"warning: no issue for {test_id}, quarantine deferred: {err}", file=sys.stderr)
         return None

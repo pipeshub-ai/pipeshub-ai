@@ -104,7 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/qa shadow fetch --repo "$GITHUB_REPOSITORY" --since-hours 24 --to qa-out/shadow-new.jsonl \
+          python3 scripts/qa shadow fetch --repo "$GITHUB_REPOSITORY" --since-hours 48 --to qa-out/shadow-new.jsonl \
             || echo "::warning::shadow fetch failed; publishing without new shadow records"
 
       - name: Publish history and metrics

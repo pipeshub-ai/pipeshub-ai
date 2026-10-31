@@ -6,6 +6,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -14,7 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from qa import paths
+from qa import paths, quarantine
 
 
 @dataclass
@@ -158,21 +159,41 @@ def _load_hook(overlay: Path) -> ModuleType | None:
     return module
 
 
+ISSUE_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+")
+
+
+def _trusted(e: dict[str, Any], today: dt.date) -> bool:
+    """Only an entry publish could have written: qa-auto, a GitHub issue, and at most 14 days long."""
+    added, expires = dt.date.fromisoformat(str(e["added"])), dt.date.fromisoformat(str(e["expires"]))
+    limit = dt.timedelta(days=quarantine.EXPIRY_DAYS)
+    return (e.get("owner") == quarantine.OWNER and bool(ISSUE_URL.fullmatch(str(e.get("issue", ""))))
+            and isinstance(e["id"], str) and expires <= added + limit and expires <= today + limit)
+
+
 def _auto_quarantine() -> list[dict[str, Any]]:
-    """The active entries of the automatic quarantine file named by QA_QUARANTINE_AUTO."""
+    """The active, trusted entries of the automatic quarantine file named by QA_QUARANTINE_AUTO."""
     path = os.environ.get("QA_QUARANTINE_AUTO")
     if not path:
         return []
     try:
-        entries = [{**e, "auto": True} for e in json.loads(Path(path).read_text(encoding="utf-8"))["tests"] if not e.get("expired")]
-        for e in entries:  # a malformed entry would otherwise fail later, inside the gate
-            dt.date.fromisoformat(str(e["expires"]))
-            str(e["id"])
-        return entries
+        entries = [e for e in json.loads(Path(path).read_text(encoding="utf-8"))["tests"] if not e.get("expired")]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
         # Without the file nothing extra is quarantined, which only makes the gate stricter.
         print(f"warning: ignoring QA_QUARANTINE_AUTO={path}: {err!r}", file=sys.stderr)
         return []
+    today = dt.datetime.now(dt.timezone.utc).date()
+    out = []
+    for e in entries:
+        # Anyone who can push qa-history can edit the file, so an entry that could not come from publish is dropped.
+        try:
+            ok = _trusted(e, today)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            ok = False
+        if ok:
+            out.append({**e, "auto": True})
+        else:
+            print(f"warning: ignoring auto quarantine entry {str(e)[:200]}", file=sys.stderr)
+    return out
 
 
 def load(root: Path | None = None, engine_root: Path | None = None) -> Config:

@@ -1,7 +1,7 @@
 """Run history: a directory of small flat files. Feeds "failing on main" and flaky
 rates back into selection, and is what miss attribution and `qa stuck` read.
 
-runs.jsonl       one compact entry per run (counts, non-pass outcomes only)
+runs.jsonl       one compact entry per run (counts; failed, errored and flaky ids only)
 tests.json       {id: {"o": last <=10 outcome letters, newest last, "seen": "YYYY-MM-DD"}}
 quarantine.json  {"tests": [entry...]}
 shadow.jsonl     one shadow comparison per failed workflow run
@@ -76,7 +76,8 @@ def entry(plan: dict[str, Any], results: dict[str, Any], *, trigger: str, wall_s
         # A full plan lists every test; storing them all would add megabytes per run.
         "selected": "all" if plan.get("profile") == "full" else {t["id"]: t["source"] for t in plan.get("tests", [])},
         "counts": dict(Counter(t["outcome"] for t in tests)),
-        "outcomes": {t["id"]: t["outcome"] for t in tests if t["outcome"] != "pass"},
+        # not_run ids are left out: a broken stack would list every test in every run.
+        "outcomes": {t["id"]: t["outcome"] for t in tests if t["outcome"] in ("fail", "error", "flaky")},
     }
 
 

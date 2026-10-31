@@ -393,4 +393,4 @@ def fixture_metrics(rows: list[dict] | None = None, **kw) -> dict:
     files = history_files(runs, {"py:a.py": "ppkp"}, [{"id": "py:a.py", "expires": "2026-11-10", "auto": True}], shadow_records(15, 50, 49))
     rows = rows if rows is not None else [{"id": "py:a.py", "suite": "py-unit", "module": "m", "flows": ["f"], "priority": "P0"}]
     return metrics.compute(files, rows, TODAY, bugs=kw.get("bugs", {"caught": 0, "escaped": 0, "escaped_by_flow": {}, "unlinked": 0}),
-                           coverage=kw.get("coverage", {"py-unit": 87.5, "node-unit": None}))
+                           coverage=kw.get("coverage", {"py-unit": 87.5, "node-unit": None}), pr_walls=kw.get("pr_walls"))

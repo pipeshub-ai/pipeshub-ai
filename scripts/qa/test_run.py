@@ -492,8 +492,8 @@ class TestReportGate(RunCase):
     def test_auto_file_quarantines_in_config_and_report(self) -> None:
         import datetime as dt
         today = dt.date.today()
-        active = {"id": ACL, "owner": "qa-auto", "issue": "https://x/issues/7", "auto": True,
-                  "expires": (today + dt.timedelta(days=3)).isoformat()}
+        active = {"id": ACL, "owner": "qa-auto", "issue": "https://github.com/o/r/issues/7", "auto": True,
+                  "added": today.isoformat(), "expires": (today + dt.timedelta(days=3)).isoformat()}
         expired = {"id": JIRA_SYNC, "owner": "qa-auto", "issue": "https://x/issues/8", "auto": True,
                    "expires": (today - dt.timedelta(days=2)).isoformat(), "expired": True}
         auto = self._auto_file(json.dumps({"tests": [active, expired]}))
@@ -504,7 +504,7 @@ class TestReportGate(RunCase):
         self.assertEqual(report.verdict(cfg, results), ("pass", []))
         body = report.render(cfg, plan_for([ACL, JIRA_SYNC]), results)
         section = body.split("### Quarantined (ran, not blocking)\n\n", 1)[1]
-        self.assertEqual(section.splitlines()[0], f"- `{ACL}`: fail (https://x/issues/7)")
+        self.assertEqual(section.splitlines()[0], f"- `{ACL}`: fail (https://github.com/o/r/issues/7)")
         self.assertNotIn(JIRA_SYNC, section.split("\n\n")[0])
         # An entry without an issue link shows none, not "(None)".
         cfg.quarantine.append({"id": JIRA_SYNC, "owner": "qa-auto", "auto": True,
@@ -524,7 +524,8 @@ class TestReportGate(RunCase):
         rows = catalog.build(self.cfg)
         target = next(r["id"] for r in rows if r.get("status") != "planned")
         expires = (dt.date.today() + dt.timedelta(days=3)).isoformat()
-        auto = self._auto_file(json.dumps({"tests": [{"id": target, "owner": "qa-auto", "issue": "u", "expires": expires, "auto": True}]}))
+        auto = self._auto_file(json.dumps({"tests": [{"id": target, "owner": "qa-auto", "issue": "https://github.com/o/r/issues/1",
+                                                          "added": dt.date.today().isoformat(), "expires": expires, "auto": True}]}))
         with mock.patch.dict(os.environ, {"QA_QUARANTINE_AUTO": auto}):
             cfg = config.load(self.root)
         self.assertIn(target, cfg.quarantined_ids())

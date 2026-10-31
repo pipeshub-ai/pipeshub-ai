@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import sys
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -86,6 +87,24 @@ def bugs(repo: str, since: dt.date) -> dict[str, Any]:
             "escaped_by_flow": dict(sorted(by_flow.items())), "unlinked": unlinked}
 
 
+def pr_walls(repo: str, since: dt.date) -> list[float]:
+    """Wall seconds of completed PR workflow runs since `since`; [] on a gh error."""
+    gh = shadow._gh
+    out = []
+    try:
+        for wf in PR_WORKFLOWS:
+            # shortcut: updatedAt stands in for the end time, and only the newest 1000 runs are read.
+            for r in json.loads(gh(["run", "list", "-R", repo, "--workflow", wf, "--status", "completed", "--limit", "1000",
+                                    "--json", "startedAt,updatedAt"]) or "[]"):
+                if r.get("startedAt") and r.get("updatedAt") and _date(r["startedAt"]) >= since:
+                    start, end = (dt.datetime.fromisoformat(r[k].replace("Z", "+00:00")) for k in ("startedAt", "updatedAt"))
+                    out.append((end - start).total_seconds())
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as err:
+        print(f"warning: no PR run durations: {err}", file=sys.stderr)
+        return []
+    return out
+
+
 def _coverage(rows: list[dict[str, Any]], cfg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Tests (catalog ids) per module and per flow. With the registry, untested ones show as 0."""
     modules: dict[str, dict[str, Any]] = {m["id"]: {"tests": 0} for m in (cfg.modules if cfg else [])}
@@ -106,7 +125,7 @@ def _coverage(rows: list[dict[str, Any]], cfg: Any) -> tuple[dict[str, Any], dic
 
 
 def compute(files: dict[str, str], rows: list[dict[str, Any]], today: dt.date, *, bugs: dict[str, Any],
-            coverage: dict[str, float | None], cfg: Any = None) -> dict[str, Any]:
+            coverage: dict[str, float | None], cfg: Any = None, pr_walls: list[float] | None = None) -> dict[str, Any]:
     cutoff = dt.datetime.combine(today - dt.timedelta(days=WINDOW_DAYS), dt.time.min, tzinfo=dt.timezone.utc).timestamp()
     recent = [r for r in history.runs(files) if isinstance(r.get("ts"), (int, float)) and r["ts"] >= cutoff]
 
@@ -136,6 +155,10 @@ def compute(files: dict[str, str], rows: list[dict[str, Any]], today: dt.date, *
     quarantined = {e["id"] for e in auto if e.get("id") and not e.get("expired") and quarantine._expires(e) >= today}
     quarantined |= {r["id"] for r in rows if r.get("status") == "quarantined"}
 
+    duration = {t: {"runs": sum(x["runs"] for x in trend.values() if x["trigger"] == t), "p50": percentile(v, 50), "p95": percentile(v, 95)}
+                for t, v in sorted(walls.items())}
+    if pr_walls:  # PR jobs never write history, so their durations come from the run list
+        duration["pr"] = {"runs": len(pr_walls), "p50": percentile(pr_walls, 50), "p95": percentile(pr_walls, 95)}
     modules, flows = _coverage(rows, cfg)
     return {
         "schema": "qa-metrics/v1",
@@ -147,7 +170,7 @@ def compute(files: dict[str, str], rows: list[dict[str, Any]], today: dt.date, *
         "flake": {"rate": round(k / n, 4) if n else 0.0,
                   "by_suite": {s: round(v[0] / v[1], 4) if v[1] else 0.0 for s, v in sorted(flakes.items())},
                   "quarantined": sorted(quarantined)},
-        "duration": {t: {"runs": sum(x["runs"] for x in trend.values() if x["trigger"] == t), "p50": percentile(v, 50), "p95": percentile(v, 95)} for t, v in sorted(walls.items())},
+        "duration": duration,
         "bugs": bugs,
         "enforcement": shadow.enforcement(history._jsonl(files.get("shadow.jsonl", "")), today),
     }
