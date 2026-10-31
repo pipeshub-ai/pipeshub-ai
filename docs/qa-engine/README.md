@@ -66,7 +66,8 @@ directory.
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
 | `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build`, and defaults to a managed stack unless `--stack` is given. For a commit already on the base branch it tests that commit's own change (a root commit runs the full profile). It cannot be combined with `--head`; results land in your `--out` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
-| `history record \| failing \| flaky` | Run history |
+| `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and non-pass outcomes; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too |
+| `stuck --runs DIR...` | Print the tests that failed in each of the last 3 runs with distinct heads, oldest run directory first; exits 3 when there are any |
 | `command --body ... --permission ...` | Parse a `/qa` PR comment |
 | `score --adapter X` | Score an adapter on past changes with known failures |
 
@@ -233,7 +234,7 @@ Each one usually becomes one of the edits above.
 | `QA_IT_WORKERS` | unset | `pytest -n` for integration tests |
 | `QA_MIN_DISK_GB` | 20 | Preflight before a managed stack |
 | `QA_TIMEOUT_<FAMILY>` | 1–4 h | Per-runner timeout |
-| `QA_OUT`, `QA_PROFILE`, `QA_EDITION`, `QA_HISTORY` | `qa-out`, `standard`, `all`, unset | Defaults for the CLI |
+| `QA_OUT`, `QA_PROFILE`, `QA_EDITION`, `QA_HISTORY` | `qa-out`, `standard`, `all`, unset | Defaults for the CLI (`QA_HISTORY` names a history directory) |
 
 `QA_PLANNER_CMD` makes any agent CLI a planner. It gets `{prompt_file}`,
 `{input}` and `{output}` placeholders, and its stdout or `{output}` must hold

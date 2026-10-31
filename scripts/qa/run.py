@@ -353,10 +353,11 @@ def _summarize(cases: list[junit.Case] | None, exit_code: int) -> dict[str, Any]
     return {"outcome": outcome, "seconds": round(sum(c.seconds for c in cases), 2), "details": " | ".join(failing)[:800]}
 
 
-def _retry_ids(inv: Invocation, results: dict[str, dict[str, Any]]) -> list[str]:
+def _retry_ids(inv: Invocation, results: dict[str, dict[str, Any]], rows: dict[str, dict[str, Any]]) -> list[str]:
     if inv.family not in ("pytest", "it-pytest"):
         return []
-    return [i for i, r in results.items() if r["outcome"] in ("fail", "error")]
+    # An ordered module's tests depend on each other, so rerunning one alone proves nothing.
+    return [i for i, r in results.items() if r["outcome"] in ("fail", "error") and not rows.get(i, {}).get("ordered")]
 
 
 def run(
@@ -494,7 +495,7 @@ def _run_one(cfg, inv, rows, log_dir, extra_env, not_run, results, invocation_lo
     invocation_log.append(record)
     got = _outcomes(inv, rows, record["exit"])
     if retry:
-        again = _retry_ids(inv, got)
+        again = _retry_ids(inv, got, rows)
         if again and len(again) <= 50:
             retry_inv = _retry_invocation(inv, again)
             record2 = _execute(cfg, retry_inv, log_dir, extra_env)

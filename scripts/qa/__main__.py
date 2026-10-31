@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -62,9 +63,23 @@ def _rows(cfg: config.Config, out: Path, refresh: bool = False) -> list[dict]:
 
 def _history(args) -> dict:
     store = Path(args.history) if getattr(args, "history", None) else None
-    if store and store.is_file():
-        return {"failing_on_main": history.failing_on_main(history.load(store))}
+    if store and store.is_dir():
+        return {"failing_on_main": history.failing_on_main(history.runs(history.read_dir(store)))}
     return {}
+
+
+def _record(store: Path, plan: dict, results: dict, trigger: str | None = None,
+            wall_seconds: float | None = None, run_url: str | None = None) -> None:
+    entry = history.entry(plan, results, trigger=trigger or history.trigger(os.environ),
+                          wall_seconds=wall_seconds, run_url=run_url)
+    history.write_dir(store, history.add_run(history.read_dir(store), entry, results, dt.date.today()))
+
+
+def _merged(out: Path) -> tuple[dict, dict | None]:
+    """plan.json and every results*.json part merged, as the report reads them."""
+    plan = _load(out / "plan.json")
+    parts = [_load(p) for p in sorted(out.glob("results*.json"))]
+    return plan, (report.merge_results(parts, [t["id"] for t in plan["tests"]]) if parts else None)
 
 
 # --- commands --------------------------------------------------------------------
@@ -225,7 +240,7 @@ def cmd_run(args) -> int:
     counts = Counter(t["outcome"] for t in result["tests"])
     print("results: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + f" ({result['seconds']}s)")
     if args.history:
-        history.record(Path(args.history), plan, result)
+        _record(Path(args.history), plan, result, run_url=getattr(args, "run_url", None))
     return 0
 
 
@@ -243,9 +258,7 @@ def cmd_report(args) -> int:
     cfg = config.load()
     allowed = _allowed(args)
     out = _out(args)
-    plan = _load(out / "plan.json")
-    parts = [_load(p) for p in sorted(out.glob("results*.json"))]
-    results = report.merge_results(parts, [t["id"] for t in plan["tests"]]) if parts else None
+    plan, results = _merged(out)
     body = report.render(cfg, plan, results, allowed=allowed, run_url=args.run_url)
     (out / "report.md").write_text(body, encoding="utf-8")
     if args.summary:
@@ -336,17 +349,32 @@ def _go_at_commit(args) -> int:
 
 
 def cmd_history(args) -> int:
-    entries = history.load(Path(args.store))
+    files = history.read_dir(Path(args.store))
     if args.action == "failing":
-        for t in history.failing_on_main(entries, args.branch):
+        for t in history.failing_on_main(history.runs(files), args.branch):
             print(t)
     elif args.action == "flaky":
-        for tid, rate in sorted(history.flaky_rates(entries).items(), key=lambda kv: -kv[1]):
+        for tid, rate in sorted(history.flaky_rates(history.windows(files)).items(), key=lambda kv: -kv[1]):
             print(f"{rate:.3f} {tid}")
     else:
-        out = _out(args)
-        history.record(Path(args.store), _load(out / "plan.json"), _load(out / "results.json"))
+        plan, results = _merged(_out(args))
+        if results is None:
+            print("history record: no results*.json in the run directory", file=sys.stderr)
+            return 2
+        _record(Path(args.store), plan, results, args.trigger, args.wall_seconds)
     return 0
+
+
+def cmd_stuck(args) -> int:
+    seen = []
+    for d in args.runs:
+        plan, results = _merged(Path(d))
+        if results is not None:
+            seen.append((plan.get("head"), results))
+    ids = history.stuck(seen)
+    for t in ids:
+        print(t)
+    return 3 if ids else 0
 
 
 def cmd_command(args) -> int:
@@ -417,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     def impact_args(sp):
         sp.add_argument("--profile", default=os.environ.get("QA_PROFILE", "standard"), choices=impact.PROFILE_ORDER)
         sp.add_argument("--edition", default=os.environ.get("QA_EDITION", "all"))
-        sp.add_argument("--history", default=os.environ.get("QA_HISTORY"))
+        sp.add_argument("--history", default=os.environ.get("QA_HISTORY"), metavar="DIR",
+                        help="history directory: failing-on-main tests feed the plan; run and go add this run to it")
 
     def run_args(sp):
         sp.add_argument("--stack", default=None, choices=["none", "managed", "external"])
@@ -454,7 +483,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--tests", help="file with one catalog id per line")
     g.add_argument("--ids", nargs="+")
     run_args(s)
-    s.add_argument("--history", default=os.environ.get("QA_HISTORY"))
+    s.add_argument("--history", default=os.environ.get("QA_HISTORY"), metavar="DIR",
+                   help="history directory to add this run to")
     s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("report", help="render the report and gate")
@@ -487,9 +517,15 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("history", help="run history")
     s.add_argument("action", choices=["record", "failing", "flaky"])
-    s.add_argument("--store", default=os.environ.get("QA_HISTORY", "qa-out/history.jsonl"))
+    s.add_argument("--store", default=os.environ.get("QA_HISTORY", "qa-out/history"), metavar="DIR")
     s.add_argument("--branch", default="main")
+    s.add_argument("--trigger", default=None, help="nightly, main, dispatch, pr or local (default: from GITHUB_EVENT_NAME)")
+    s.add_argument("--wall-seconds", type=float, default=None)
     s.set_defaults(fn=cmd_history)
+
+    s = sub.add_parser("stuck", help="tests that failed in each of the last 3 runs with distinct heads (exit 3)")
+    s.add_argument("--runs", nargs="+", required=True, metavar="DIR", help="run directories, oldest first")
+    s.set_defaults(fn=cmd_stuck)
 
     s = sub.add_parser("command", help="parse a /qa PR comment")
     s.add_argument("--body", required=True)

@@ -336,6 +336,27 @@ class TestPreflight(RunCase):
         self.assertEqual(not_run[JIRA_SYNC][0], "toolchain")
 
 
+class TestRetry(RunCase):
+    def test_ordered_module_failure_is_not_retried(self) -> None:
+        invs, _ = run.resolve(self.cfg, plan_for([JIRA_SYNC, ACL]), self.rows, self.out)
+        inv = invs[0]
+        self.assertEqual(sorted(inv.ids), sorted([JIRA_SYNC, ACL]))
+        seen = []
+
+        def outcomes(i, rows, code):
+            seen.append(list(i.ids))
+            bad = len(seen) == 1
+            return {t: {"outcome": "fail" if bad else "pass", "seconds": 1.0, "details": "x"} for t in i.ids}
+
+        results: dict = {}
+        with mock.patch.object(run, "_execute", return_value={"exit": 1, "label": "x"}), \
+             mock.patch.object(run, "_outcomes", side_effect=outcomes):
+            run._run_one(self.cfg, inv, self.rows, self.out, {}, {}, results, [], True)
+        self.assertEqual(seen[1], [ACL])
+        self.assertEqual(results[JIRA_SYNC]["outcome"], "fail")
+        self.assertEqual(results[ACL]["outcome"], "flaky")
+
+
 class TestExecute(RunCase):
     """Runs real pytest when it is importable; the engine itself needs only stdlib."""
 

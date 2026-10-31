@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s scripts -p 'test_*.py'
 """
 
 import contextlib
+import datetime as dt
 import io
 import json
 import os
@@ -89,16 +90,74 @@ class TestCommand(unittest.TestCase):
 
 
 class TestHistory(unittest.TestCase):
-    def test_failing_on_main_and_flaky_rates(self) -> None:
+    PLAN = {"head": "x", "branch": "main", "profile": "standard", "tests": [{"id": "a", "source": "floor"}], "planner": {}}
+
+    def add(self, files, outcome, today=None, plan=None):
+        results = {"seconds": 5, "tests": [{"id": "a", "outcome": outcome, "seconds": 2.0}]}
+        e = history.entry(plan or self.PLAN, results, trigger="nightly")
+        return history.add_run(files, e, results, today or dt.date(2026, 10, 1))
+
+    def test_compact_entries_feed_failing_and_flaky(self) -> None:
+        files: dict = {}
+        for outcome in ("fail", "flaky", "pass"):
+            files = self.add(files, outcome)
+        self.assertEqual(history.failing_on_main(history.runs(files)), ["a"])
+        self.assertEqual(history.windows(files)["a"], "fkp")
+        self.assertEqual(history.flaky_rates(history.windows(files)), {"a": 0.333})
+        last = history.runs(files)[-1]
+        self.assertEqual((last["outcomes"], last["counts"]), ({}, {"pass": 1}))
         with tempfile.TemporaryDirectory() as tmp:
-            store = Path(tmp) / "h.jsonl"
-            for outcome in ("fail", "flaky", "pass"):
-                plan = {"head": "x", "branch": "main", "tests": [{"id": "a", "source": "floor"}], "planner": {}}
-                history.record(store, plan, {"tests": [{"id": "a", "outcome": outcome, "seconds": 2.0}]})
-            entries = history.load(store)
-            self.assertEqual(history.failing_on_main(entries), ["a"])
-            self.assertEqual(history.flaky_rates(entries), {"a": 0.333})
-            self.assertEqual(history.durations(entries), {"a": 2.0})
+            history.write_dir(Path(tmp) / "h", files)
+            self.assertEqual(history.read_dir(Path(tmp) / "h"), files)
+
+    def test_full_profile_entry_stores_selected_as_all(self) -> None:
+        e = history.entry({**self.PLAN, "profile": "full"}, {"seconds": 1, "tests": []}, trigger="local")
+        self.assertEqual(e["selected"], "all")
+        self.assertEqual(history.misses([e], ["a"], "x"), [])
+
+    def test_history_is_bounded(self) -> None:
+        today = dt.date(2026, 10, 31)
+        now = int(dt.datetime(2026, 10, 31, tzinfo=dt.timezone.utc).timestamp())
+        files = {"runs.jsonl": "".join(json.dumps({"ts": now - i}) + "\n" for i in range(1200))}
+        self.assertEqual(len(history.trim(files, today)["runs.jsonl"].splitlines()), 1000)
+        old = {"runs.jsonl": json.dumps({"ts": now - 91 * 86400}) + "\n" + json.dumps({"ts": now}) + "\n",
+               "tests.json": json.dumps({"gone": {"o": "p", "seen": "2026-08-01"}, "kept": {"o": "p", "seen": "2026-10-30"}})}
+        trimmed = history.trim(old, today)
+        self.assertEqual([r["ts"] for r in history.runs(trimmed)], [now])
+        self.assertEqual(set(history.windows(trimmed)), {"kept"})
+        files = {}
+        for _ in range(12):
+            files = self.add(files, "pass", today)
+        self.assertEqual(history.windows(files)["a"], "p" * 10)
+
+    def test_trigger_names(self) -> None:
+        for event, name in (("schedule", "nightly"), ("push", "main"), ("workflow_dispatch", "dispatch"), ("pull_request", "pr")):
+            self.assertEqual(history.trigger({"GITHUB_EVENT_NAME": event}), name)
+        self.assertEqual(history.trigger({}), "local")
+
+    def test_stuck_needs_three_distinct_heads(self) -> None:
+        def r(o):
+            return {"tests": [{"id": "a", "outcome": o}]}
+        self.assertEqual(history.stuck([("h1", r("fail")), ("h2", r("error")), ("h3", r("fail"))]), ["a"])
+        self.assertEqual(history.stuck([("h1", r("fail")), ("h2", r("fail")), ("h2", r("fail"))]), [])
+        self.assertEqual(history.stuck([("h1", r("fail")), ("h2", r("pass")), ("h3", r("fail"))]), [])
+
+    def test_record_and_stuck_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = []
+            for head in ("h1", "h2", "h3"):
+                d = Path(tmp) / head
+                d.mkdir()
+                (d / "plan.json").write_text(json.dumps({**self.PLAN, "head": head}), encoding="utf-8")
+                (d / "results.json").write_text(json.dumps({"seconds": 1, "tests": [{"id": "a", "outcome": "fail"}]}), encoding="utf-8")
+                dirs.append(str(d))
+            store = Path(tmp) / "store"
+            with contextlib.redirect_stdout(io.StringIO()) as out, mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule"}):
+                self.assertEqual(qa_main.main(["--out", dirs[0], "history", "record", "--store", str(store)]), 0)
+                self.assertEqual(qa_main.main(["stuck", "--runs", *dirs]), 3)
+                self.assertEqual(qa_main.main(["stuck", "--runs", *dirs[:2]]), 0)
+            self.assertEqual(out.getvalue(), "a\n")
+            self.assertEqual(history.runs(history.read_dir(store))[0]["trigger"], "nightly")
 
     def test_miss_is_a_failing_test_the_culprit_run_did_not_select(self) -> None:
         entries = [{"head": "c1", "selected": {"a": "floor"}}]
