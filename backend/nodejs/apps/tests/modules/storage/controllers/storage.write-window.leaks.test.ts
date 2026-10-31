@@ -8,9 +8,38 @@ import {
   writeWindowHooks,
 } from '../../../../src/modules/storage/controllers/storage.write-window'
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const timers = (): number =>
-  process.getActiveResourcesInfo().filter((t) => t === 'Timeout').length
+const realSetTimeout = global.setTimeout
+const realClearTimeout = global.clearTimeout
+const wait = (ms: number) => new Promise((r) => realSetTimeout(r, ms))
+
+/**
+ * Timers created by the writer window that have neither fired nor been cleared. A process-wide count also sees
+ * other suites' clients (the Redis cluster job keeps live timers), so only timers created from the module under
+ * test are tracked.
+ */
+function trackWindowTimers(): { pending: () => number; restore: () => void } {
+  const live = new Set<NodeJS.Timeout>()
+  global.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (!new Error().stack?.includes('storage.write-window.ts')) return realSetTimeout(fn, ms, ...args)
+    const handle: NodeJS.Timeout = realSetTimeout(() => {
+      live.delete(handle)
+      fn(...args)
+    }, ms)
+    live.add(handle)
+    return handle
+  }) as typeof setTimeout
+  global.clearTimeout = ((handle?: NodeJS.Timeout | string | number) => {
+    live.delete(handle as NodeJS.Timeout)
+    realClearTimeout(handle as NodeJS.Timeout)
+  }) as typeof clearTimeout
+  return {
+    pending: () => live.size,
+    restore: () => {
+      global.setTimeout = realSetTimeout
+      global.clearTimeout = realClearTimeout
+    },
+  }
+}
 const doc = { _id: '0123456789abcdef01234567', orgId: '0123456789abcdef01234567' }
 
 function fakeRepo(opts: { endFails?: boolean; renewMs?: number } = {}) {
@@ -55,33 +84,39 @@ describe('writer window heartbeat lifecycle (QA)', () => {
   ]
   for (const [name, opts, work] of cases) {
     it(`${name}: the heartbeat stops and no timer is left`, async () => {
-      await wait(30)
-      const base = timers()
-      const { repo, calls } = fakeRepo(opts)
-      writeWindowHooks.repo = () => repo as never
-      await withWriteWindow(doc, work).catch(() => undefined)
-      const atEnd = calls.renew
-      await wait(200)
-      expect(calls.renew, 'a renew started after the window ended').to.be.at.most(atEnd + 1)
-      expect(calls.end).to.be.greaterThan(0)
-      expect(timers(), 'timers left behind').to.be.at.most(base)
+      const tracked = trackWindowTimers()
+      try {
+        const { repo, calls } = fakeRepo(opts)
+        writeWindowHooks.repo = () => repo as never
+        await withWriteWindow(doc, work).catch(() => undefined)
+        const atEnd = calls.renew
+        await wait(200)
+        expect(calls.renew, 'a renew started after the window ended').to.be.at.most(atEnd + 1)
+        expect(calls.end).to.be.greaterThan(0)
+        expect(tracked.pending(), 'timers left behind').to.equal(0)
+      } finally {
+        tracked.restore()
+      }
     })
   }
 
   it('200 overlapping windows, a third of them failing, leave no timer', async () => {
-    await wait(100)
-    const base = timers()
-    const { repo } = fakeRepo()
-    writeWindowHooks.repo = () => repo as never
-    await Promise.all(
-      Array.from({ length: 200 }, (_, i) =>
-        withWriteWindow(doc, async () => {
-          await wait(20 + (i % 50))
-          if (i % 3 === 0) throw new Error('x')
-        }).catch(() => undefined),
-      ),
-    )
-    await wait(150)
-    expect(timers()).to.be.at.most(base)
+    const tracked = trackWindowTimers()
+    try {
+      const { repo } = fakeRepo()
+      writeWindowHooks.repo = () => repo as never
+      await Promise.all(
+        Array.from({ length: 200 }, (_, i) =>
+          withWriteWindow(doc, async () => {
+            await wait(20 + (i % 50))
+            if (i % 3 === 0) throw new Error('x')
+          }).catch(() => undefined),
+        ),
+      )
+      await wait(150)
+      expect(tracked.pending()).to.equal(0)
+    } finally {
+      tracked.restore()
+    }
   })
 })
