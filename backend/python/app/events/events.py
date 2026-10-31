@@ -287,6 +287,8 @@ class EventProcessor:
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    pdf_binary = inspected = None
                 yield event
             return
 
@@ -319,6 +321,8 @@ class EventProcessor:
                         docling_failed = True
                     else:
                         yielded = True
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
+                            pdf_binary = inspected = None
                         yield event
             except DoclingUnavailableError as exc:
                 # Only before Docling produced anything: after PARSING_COMPLETE a
@@ -341,6 +345,8 @@ class EventProcessor:
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
         ):
+            if event.event == IndexingEvent.PARSING_COMPLETE:
+                pdf_binary = inspected = None
             yield event
 
     @staticmethod
@@ -449,6 +455,8 @@ class EventProcessor:
             provider=provider,
             file_path=file_path,
         )
+        # The parsing service has the file; the blocks are what is left to index.
+        file_content = None
         block_container = parse_result.block_container
         if block_container is None:
             raise RuntimeError(f"Parsing service returned no block container for record {record_id}")
@@ -1687,6 +1695,8 @@ class EventProcessor:
                             event_type=event_type,
                             prev_virtual_record_id=prev_virtual_record_id,
                         ):
+                            if event.event == IndexingEvent.PARSING_COMPLETE:
+                                file_content = content_bytes = None
                             yield event
                         return
                     if plan.route in (CodeFileRoute.DELIMITED, CodeFileRoute.STRUCTURED):
@@ -1714,6 +1724,8 @@ class EventProcessor:
                     is_code=is_code,
                     file_path=event_data.get("filePath"),
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1735,6 +1747,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1751,6 +1765,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1767,6 +1783,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1782,6 +1800,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1798,6 +1818,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1816,6 +1838,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1832,6 +1856,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1847,6 +1873,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
                 return
 
@@ -1862,6 +1890,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
@@ -1876,6 +1906,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
@@ -1890,6 +1922,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
@@ -1904,6 +1938,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
@@ -1918,6 +1954,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
@@ -1932,6 +1970,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
@@ -1943,6 +1983,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
@@ -1955,6 +1997,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
@@ -1969,6 +2013,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
@@ -1983,6 +2029,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
@@ -1997,6 +2045,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
@@ -2008,6 +2058,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
@@ -2022,6 +2074,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
@@ -2039,6 +2093,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
 
@@ -2053,6 +2109,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif mime_type == MimeTypes.SQL_VIEW.value or extension == ExtensionTypes.SQL_VIEW.value:
@@ -2066,6 +2124,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
@@ -2078,6 +2138,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
@@ -2090,6 +2152,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             elif (
@@ -2116,6 +2180,8 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
+                    if event.event == IndexingEvent.PARSING_COMPLETE:
+                        file_content = content_bytes = None
                     yield event
 
             else:

@@ -11,6 +11,10 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from app.services.resource_governor.download_ahead import (
+    HEAVY_DOWNLOAD_AHEAD,
+    DownloadAhead,
+)
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
     FeedbackWindow,
@@ -175,6 +179,8 @@ class ResourceGovernor:
         # Records too big for the count limits reserve their memory here.
         self.memory_budget = MemoryBudget()
         self.memory_budget.limit = free_memory_share_bytes(initial_snapshot, self._worker_count)
+        # Heavy records downloaded but not yet holding a parse permit.
+        self.download_ahead = DownloadAhead(HEAVY_DOWNLOAD_AHEAD)
 
         self._running = False
 
@@ -548,6 +554,7 @@ class ResourceGovernor:
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
             "record_memory": self.memory_budget.stats(),
+            "download_ahead": self.download_ahead.stats(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),
