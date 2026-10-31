@@ -209,7 +209,9 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_LIFETIME,
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     DEFAULT_TRANSACTION_TIMEOUT,
+    WRITE_CONFLICT_ATTEMPTS,
     Neo4jClient,
+    is_write_conflict,
 )
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
@@ -471,15 +473,24 @@ def _cypher_kh_tree_refresh(rel_types: str, *node_vars: str) -> str:
     return "\n            ".join(_cypher_kh_tree_state(v) for v in node_vars)
 
 
+def _in_lock_order(rows: list[dict], key: Callable[[dict], tuple[str, ...]]) -> list[dict]:
+    """*rows* sorted by the ids they lock, so concurrent batches over the same
+    nodes take their locks in one order instead of deadlocking each other.
+    Edges between nodes of one kind can still cross; the client resends those.
+    Stable: a node written twice in one batch keeps its last write last."""
+    return sorted(rows, key=key)
+
+
+def _by_id(node: dict) -> tuple[str, ...]:
+    return (str(node.get("id")),)
+
+
+def _by_ends(edge: dict) -> tuple[str, ...]:
+    return (str(edge.get("from_key", edge.get("from_id"))), str(edge.get("to_key", edge.get("to_id"))))
+
+
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
-# Idempotent shared writes retried on a deadlock or lock timeout.
-_TRANSIENT_WRITE_ATTEMPTS = 6
-_WRITE_CONFLICT_CODES = frozenset({
-    "Neo.TransientError.Transaction.DeadlockDetected",
-    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
-    "Neo.TransientError.Transaction.LockClientStopped",
-})
 
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
@@ -939,7 +950,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """A deadlock or lock timeout, in either transaction mode. Other
         transient errors (memory limits, a terminated transaction, an
         unavailable database) are not collisions and are not retried here."""
-        return isinstance(error, TransientError) and getattr(error, "code", None) in _WRITE_CONFLICT_CODES
+        return is_write_conflict(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -1951,7 +1962,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             await self.client.execute_query(
                 query,
-                parameters={"nodes": self._nodes_for_upsert(nodes, collection)},
+                parameters={"nodes": _in_lock_order(self._nodes_for_upsert(nodes, collection), _by_id)},
                 txn_id=transaction
             )
 
@@ -1989,7 +2000,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         types = (self._nodes_for_upsert([r.to_arango_record() for r in records], collection)
                  if collection else [None] * len(records))
         parameters: dict[str, Any] = {
-            "rows": [{"node": b, "type_node": t} for b, t in zip(bases, types)],
+            "rows": _in_lock_order(
+                [{"node": b, "type_node": t} for b, t in zip(bases, types)], lambda row: _by_id(row["node"])
+            ),
             "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
         }
         # Each record releases only holders other than itself, as when records were written one at a time.
@@ -2248,7 +2261,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters={"nodes": neo4j_nodes},
+                parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
                 txn_id=transaction
             )
 
@@ -2299,7 +2312,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             key = (collection_to_label(from_collection), collection_to_label(to_collection))
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
-        return grouped
+        return {labels: _in_lock_order(rows, _by_ends) for labels, rows in grouped.items()}
 
     def _replace_edges_to_cypher(
         self, to_id: str, to_collection: str, edges: list[dict], collection: str
@@ -2531,11 +2544,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             if not grouped_edges:
                 return True
-            # Process each group separately
+            # Process each group separately, in the lock order _edges_by_labels gave it
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
-                # MERGE locks both end nodes row by row; one order for every
-                # writer keeps two batches onto shared hub nodes from deadlocking.
-                group_edges.sort(key=lambda edge: (edge["from_key"], edge["to_key"]))
                 merge = (
                     f"MERGE (from)-[r:{Neo4jRelationshipType.RECORD_LINK.value} "
                     "{relationshipType: edge.props.relationshipType}]->(to)"
@@ -2863,7 +2873,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
 
             total_deleted = 0
-            for (from_label, to_label), group_edges in grouped_edges.items():
+            for (from_label, to_label), unordered in grouped_edges.items():
+                group_edges = _in_lock_order(unordered, _by_ends)
                 query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: edge.to_id}})
@@ -22686,7 +22697,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Run *write*, which is safe to repeat, re-running it when it collides
         with a concurrent writer. Inside a caller's transaction the collision
         rolled the whole transaction back, so it is raised at once."""
-        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
+        for attempt in range(WRITE_CONFLICT_ATTEMPTS - 1):
             try:
                 return await write()
             except TransientError as exc:

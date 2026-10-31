@@ -7,13 +7,22 @@ handling connection pooling, transaction management, and query execution.
 
 import asyncio
 import math
+import random
+import re
 import threading
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from logging import Logger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from neo4j import AsyncGraphDatabase, Query
-from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired
+from neo4j.exceptions import (
+    ClientError,
+    ServiceUnavailable,
+    SessionExpired,
+    TransientError,
+)
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
@@ -44,6 +53,36 @@ DEFAULT_TRANSACTION_TIMEOUT = 120.0
 # pooled connection checked out. A ClientError, not ServiceUnavailable: the
 # server is fine, this process has too many queries in flight for its pool.
 _POOL_EXHAUSTED_MARKER = "failed to obtain a connection from the pool"
+# A statement that lost one of these to a concurrent writer was rolled back whole.
+WRITE_CONFLICT_CODES = frozenset({
+    "Neo.TransientError.Transaction.DeadlockDetected",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+})
+WRITE_CONFLICT_ATTEMPTS = 6
+# CALL { ... } IN TRANSACTIONS commits batch by batch, so a later batch's
+# conflict leaves the earlier ones written: such a statement is not sent again.
+_COMMITS_IN_BATCHES = re.compile(r"\}\s*IN\s+(?:\S+\s+)?(?:CONCURRENT\s+)?TRANSACTIONS\b", re.IGNORECASE)
+
+_T = TypeVar("_T")
+
+
+def is_write_conflict(error: BaseException) -> bool:
+    """A deadlock or lock timeout against a concurrent writer."""
+    return isinstance(error, TransientError) and error.code in WRITE_CONFLICT_CODES
+
+
+async def _until_no_conflict(run: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a statement that commits on its own, sending it again while it loses
+    a conflict: nothing of it landed. In an explicit transaction the conflict
+    ended the transaction, and only its owner can run it again."""
+    for attempt in range(1, WRITE_CONFLICT_ATTEMPTS):
+        try:
+            return await run()
+        except TransientError as e:
+            if not is_write_conflict(e):
+                raise
+            await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+    return await run()
 
 
 def _report_neo4j_failure(error: BaseException) -> None:
@@ -626,15 +665,16 @@ class Neo4jClient:
             runner = tx if tx is not None else session
             statement = Query(query, timeout=timeout) if tx is None and timeout is not None else query
 
+            async def run() -> list[dict[str, Any]]:
+                # Serialize access to the session to prevent concurrent operations
+                async with lock or nullcontext():
+                    result = await runner.run(statement, parameters)
+                    return await self._rows(result, plain=plain)
+
             try:
-                if lock:
-                    # Serialize access to the session to prevent concurrent operations
-                    async with lock:
-                        result = await runner.run(statement, parameters)
-                        return await self._rows(result, plain=plain)
-                # Fallback if lock doesn't exist (shouldn't happen)
-                result = await runner.run(statement, parameters)
-                return await self._rows(result, plain=plain)
+                # In an open transaction a conflict ended it: its owner runs it again.
+                once = tx is not None or _COMMITS_IN_BATCHES.search(query)
+                return await (run() if once else _until_no_conflict(run))
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
                 raise
@@ -667,11 +707,14 @@ class Neo4jClient:
     async def _run_autocommit(
         self, query: str, parameters: dict[str, Any], *, plain: bool = False, timeout: float | None = None,
     ) -> list[dict[str, Any]]:
-        try:
+        async def run() -> list[dict[str, Any]]:
             async with self.driver.session(database=self.database) as session:
                 statement = Query(query, timeout=timeout) if timeout is not None else query
                 result = await session.run(statement, parameters)
                 return await self._rows(result, plain=plain)
+
+        try:
+            return await (run() if _COMMITS_IN_BATCHES.search(query) else _until_no_conflict(run))
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
             raise

@@ -77,16 +77,17 @@ def is_write_conflict(exception: Exception) -> bool:
     return bool(_WRITE_CONFLICT.search(str(exception)))
 
 
+# The Neo4j conflicts with a concurrent writer that a re-run resolves.
+_NEO4J_CONFLICTS = ("DeadlockDetected", "LockAcquisitionTimeout")
+
+
 def _names_deadlock(exception: BaseException) -> bool:
-    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
-        return "DeadlockDetected" in str(exception)
-
     exception_str = str(exception)
-    exception_type = type(exception).__name__
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return any(conflict in exception_str for conflict in _NEO4J_CONFLICTS)
 
-    return (
-        "TransientError" in exception_type and
-        "DeadlockDetected" in exception_str
+    return "TransientError" in type(exception).__name__ and any(
+        conflict in exception_str for conflict in _NEO4J_CONFLICTS
     )
 
 
