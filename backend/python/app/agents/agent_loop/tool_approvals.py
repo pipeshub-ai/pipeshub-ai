@@ -47,6 +47,7 @@ from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
 from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
 from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
@@ -120,6 +121,9 @@ _APPROVED_CALL = "_tool_approval_running"
 # This request answers a card and continues the turn it stopped (read by the stream bridge).
 RESUMING = "_tool_approval_resuming"
 _RESUME_HISTORY = "_tool_approval_resume_history"
+# The answer couldn't be applied (a refused edit, or a store failure while checking it): this turn
+# only tells the person so, and runs nothing.
+_ANSWER_NOT_APPLIED = "_tool_approval_answer_not_applied"
 
 
 class ToolRules(MCPCamelModel):
@@ -602,6 +606,11 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
     leaves pending."""
 
     async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
+        # Not even an Allow-rule tool: the model would act on a call the person hasn't settled.
+        if context.tool_state.get(_ANSWER_NOT_APPLIED) and TAG_LIFECYCLE_TERMINAL not in ctx.tags:
+            ctx.deny("Nothing runs until the user fixes the approval card.")
+            await next_fn()
+            return
         target = _target(context, ctx.tool_path)
         if target is None:
             await next_fn()
@@ -736,6 +745,7 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
             refused = await _refused_edit(context, answer)
         except Exception as e:
             logger.warning(f"Couldn't check the edited arguments of tool approval {answer.approval_id}: {e}")
+            context.tool_state[_ANSWER_NOT_APPLIED] = True
             await _bind(history, _not_applied(), ctx.scope.goal)
             await next_fn()
             return
@@ -796,7 +806,7 @@ async def _keep_card_open(
 ) -> None:
     """A refused edit: the card is shown again with what's wrong, nothing is claimed or run, and the
     turn still waits on the call. The run goes on only so the reply can point the person at the card;
-    the call keeps counting as the one waiting, so the gate asks for nothing else meanwhile."""
+    the gate runs no tool meanwhile."""
     call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
     message = f"{WAITING_PREFIX} {pending.tool_name} on {pending.server_name}."
     details = {**_card_details(target, pending), "editErrors": [e.model_dump(by_alias=True) for e in errors]}
@@ -804,6 +814,7 @@ async def _keep_card_open(
         "tool": target.tool.name, "reason": message, "tool_call_id": call_id,
         "status": ToolCallStatus.AWAITING_APPROVAL, "approval": details,
     })
+    context.tool_state[_ANSWER_NOT_APPLIED] = True
     context.tool_state[_PENDING_IN_RUN] = pending.approval_id
     context.tool_state[PENDING_MESSAGE] = message
     names = await parked_turn.restore(context, history, call_id=call_id)
