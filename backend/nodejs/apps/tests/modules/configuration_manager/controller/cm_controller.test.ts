@@ -5052,7 +5052,7 @@ describe('ConfigurationManager Controller', () => {
         res,
         createMockNext(),
       )
-      expect(saved(kvs)[0].approveActionsFromSlack).to.equal(true)
+      expect(saved()[0].approveActionsFromSlack).to.equal(true)
       expect(res.json.firstCall.args[0].config.approveActionsFromSlack).to.equal(true)
     })
 
@@ -5066,7 +5066,7 @@ describe('ConfigurationManager Controller', () => {
         createMockResponse(),
         createMockNext(),
       )
-      expect(saved(kvs)[0].approveActionsFromSlack).to.equal(false)
+      expect(saved()[0].approveActionsFromSlack).to.equal(false)
     })
   })
 
