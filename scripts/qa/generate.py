@@ -41,9 +41,11 @@ MAX_CONTENT, MAX_NEIGHBOUR, MAX_SOURCES_TEXT = 30_000, 20_000, 40_000
 # file are the real gate. Run generated tests in a container if that ever stops being enough.
 BANNED_IMPORTS = {"os", "subprocess", "socket", "sys", "shutil", "pathlib", "importlib", "ctypes", "builtins",
                   "urllib", "http", "requests", "httpx", "aiohttp", "multiprocessing", "pty", "signal", "tempfile",
-                  "socketserver", "ftplib", "smtplib", "telnetlib", "pickle", "marshal"}
+                  "socketserver", "ftplib", "smtplib", "telnetlib", "pickle", "marshal", "asyncio", "io", "codecs"}
 BANNED_NAMES = {"__import__", "eval", "exec", "compile", "open", "getattr", "setattr", "delattr", "globals", "locals",
                 "vars", "__builtins__", "builtins", "importlib", "ctypes", "breakpoint", "input"}
+# Banned as a bare name or an attribute: pytest.importorskip imports any module by name.
+BANNED_ATTRS = {"importorskip"}
 RESTORE_FAILED = "restore failed: "
 IMPLEMENT_NEXT = "next: review the kept tests with git diff and commit them yourself; nothing was committed"
 
@@ -156,11 +158,12 @@ def home(cfg: Config, rows: list[dict], module: dict, scenario: dict) -> tuple[s
     return None, f"level {scenario['level']} has no stub suite"
 
 
-def _next_tc(root: Path, directory: str, area: str) -> str:
+def _last_tc(cfg: Config, area: str) -> int:
+    """The highest TC number of the area in any planned suite, so numbers stay unique across suites."""
     pattern = re.compile(rf"\bTC-{re.escape(area)}-(\d{{3}})\b")
-    d = root / directory
-    found = [int(n) for p in (d.glob("*.py") if d.is_dir() else []) for n in pattern.findall(p.read_text(encoding="utf-8", errors="replace"))]
-    return f"TC-{area}-{max(found, default=0) + 1:03d}"
+    files = [f for f in list_files(cfg.root) if (s := catalog.suite_of(f, cfg)) and s.get("planned")]
+    return max((int(n) for f in files if (cfg.root / f).is_file()
+                for n in pattern.findall((cfg.root / f).read_text(encoding="utf-8", errors="replace"))), default=0)
 
 
 def plain_path(path: str) -> bool:
@@ -206,6 +209,8 @@ def write_scenarios(cfg: Config, rows: list[dict], module_id: str, llm: dict) ->
     seen = {(r.get("title") or "").lower() for r in rows if r.get("module") == module_id or r.get("status") == "planned"}
     written: list[dict] = []
     dropped: list[dict] = []
+    # list_files is cached, so stubs written in this call are counted here, not rescanned.
+    last = _last_tc(cfg, tc_area(module_id))
     for raw in llm.get("scenarios", [])[:MAX_SCENARIOS]:
         title = doc_safe(raw.get("title"), MAX_TITLE)
         level = raw.get("level")
@@ -230,7 +235,7 @@ def write_scenarios(cfg: Config, rows: list[dict], module_id: str, llm: dict) ->
             dropped.append({"title": title, "why": f"no {clean_text(level, 20)} home: {why}"})
             continue
         path = _free(cfg.root, target)
-        tc = _next_tc(cfg.root, posixpath.dirname(path), tc_area(module_id))
+        tc = f"TC-{tc_area(module_id)}-{last + 1:03d}"
         values = {"tc": tc, "title": title, "slug": slug(title), "module": doc_safe(module.get("title", module_id))}
         if level == "unit":
             text = UNIT_STUB.format(doc=_doc_lines(sc, ""), **values)
@@ -249,6 +254,7 @@ def write_scenarios(cfg: Config, rows: list[dict], module_id: str, llm: dict) ->
             dropped.append({"title": title, "why": "stub did not parse as planned"})
             continue
         seen.add(title.lower())
+        last += 1
         written.append({"id": back[0]["id"], "path": path, "tc": tc, "title": title})
     return {"written": written, "dropped": dropped}
 
@@ -327,8 +333,10 @@ def check_content(stub: str, content: str) -> list[str]:
     for n in ast.walk(tree):
         mods = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module or ""] if isinstance(n, ast.ImportFrom) else []
         problems += [f"imports {m.split('.')[0]} (line {n.lineno})" for m in mods if m.split(".")[0] in BANNED_IMPORTS]
+        if isinstance(n, ast.ImportFrom):
+            problems += [f"uses {a.name} (line {n.lineno})" for a in n.names if a.name in BANNED_ATTRS]
         ident = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
-        if ident and (ident in BANNED_NAMES and isinstance(n, ast.Name)
+        if ident and (ident in BANNED_NAMES and isinstance(n, ast.Name) or ident in BANNED_ATTRS
                       or ident.startswith("__") and ident.endswith("__") and ident != "__name__"):
             problems.append(f"uses {ident} (line {n.lineno})")
     seen = False

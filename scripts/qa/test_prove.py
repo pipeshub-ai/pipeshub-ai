@@ -49,7 +49,9 @@ class ProveCase(unittest.TestCase):
         def fake_run(cfg, plan, rows, out, **opts):
             tree = Path(os.environ["QA_ROOT"]).resolve()
             self.assertEqual(cfg.root, tree)
-            self.calls.append((str(tree), plan.get("head"), opts))
+            # The evidence names the real commit; the tag only names images and projects.
+            self.assertEqual(plan["head"], testing.git(self.root, "rev-parse", "HEAD"))
+            self.calls.append((str(tree), plan.get("tag"), opts))
             if tree == self.root.resolve():
                 outcome, details = heads.pop(0), None
             else:
@@ -125,7 +127,7 @@ class TestProve(ProveCase):
         self.assertEqual(schema.check(result, "proof.v1.json"), [])
         heads = [h for _, h, _ in self.calls]
         sha = testing.git(self.root, "rev-parse", "HEAD")
-        self.assertEqual(heads, [f"{sha[:8]}h"] * 3 + [f"{sha[:8]}v1"])
+        self.assertEqual(heads, [f"{sha[:8]}h"] * 3 + [f"{sha[:8]}v1", f"{sha[:8]}v1-again"])
         self.assertEqual(result["head"], sha)
         self.assertTrue(all(opts["retry"] is False for _, _, opts in self.calls))
 
@@ -208,7 +210,7 @@ class TestProve(ProveCase):
         sha = testing.git(self.root, "rev-parse", "HEAD")
         tags = {stack.image_tag(h) for _, h, _ in self.calls}
         self.assertNotIn(stack.image_tag(sha), tags)
-        self.assertEqual(len(tags), 2)
+        self.assertEqual(len(tags), 3)  # head, the variant and its rerun
         self.assertTrue(all(opts["build"] for _, _, opts in self.calls))
 
     def test_unparsable_mutant_is_never_a_kill(self) -> None:
@@ -228,8 +230,32 @@ class TestProve(ProveCase):
         self.assertTrue(result["mutants"][0]["details"].startswith("error before any test ran"))
 
     def test_runtime_error_in_a_variant_still_kills(self) -> None:
-        result = self.prove(["pass"] * 3, lambda n, tree: ("error", "test_records: TypeError: NoneType"))
+        def variant(n, tree):
+            mutated = "return None" in (tree / PROVIDER).read_text(encoding="utf-8")
+            return ("error", "test_records: TypeError: NoneType") if mutated else ("pass", None)
+        result = self.prove(["pass"] * 3, variant)
         self.assertEqual(result["verdict"], "proven")
+        # Head 3 times, the mutant, its rerun, and the unmutated control.
+        self.assertEqual(len(self.calls), 6)
+
+    def test_error_kill_without_a_passing_control_is_not_counted(self) -> None:
+        result = self.prove(["pass"] * 3, lambda n, tree: ("error", "test_records: SyntaxWarning"))
+        self.assertEqual(result["verdict"], "unproven")
+        self.assertEqual(result["reason"], "inconclusive: 1 variants not run (no control)")
+        self.assertEqual(result["mutants"][0]["outcome"], "not_run")
+        self.assertEqual(schema.check(result, "proof.v1.json"), [])
+
+    def test_flaky_kill_is_inconclusive(self) -> None:
+        result = self.prove(["pass"] * 3, lambda n, tree: ("fail", None) if n == 1 else ("pass", None))
+        self.assertEqual(result["verdict"], "unproven")
+        self.assertEqual(result["reason"], "inconclusive: 1 variants not run (flaky kill)")
+        self.assertEqual(result["mutants"][0]["details"], "fail, then pass on a rerun")
+
+    def test_base_with_no_covered_change_says_so(self) -> None:
+        result = self.prove(["pass"] * 3, lambda n, tree: self.fail("no variant may run"), base="HEAD")
+        self.assertEqual((result["verdict"], result["reason"]), ("unproven", "no covered line changed since HEAD"))
+        self.assertIsNone(result["revert"])
+        self.assertEqual(result["mutants"], [])
 
     def _lint_row(self, target: str) -> dict:
         testing.write(self.root, "backend/python/tests/unit/services/graph_db/test_provider.py",

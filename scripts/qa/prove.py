@@ -129,13 +129,15 @@ def variant_tree(root: Path, head: str, test_path: str) -> Iterator[Path]:
 
 # --- prove ----------------------------------------------------------------------------
 
-def _attempt(cfg: Config, rows: dict, test_id: str, head: str, out: Path, stack_mode: str, base_url: str | None) -> tuple[str, str, str]:
-    """One run of the test in cfg.root: (outcome, not-run kind, details)."""
+def _attempt(cfg: Config, rows: dict, test_id: str, head: str, tag: str, out: Path, stack_mode: str,
+             base_url: str | None) -> tuple[str, str, str]:
+    """One run of the test in cfg.root: (outcome, not-run kind, details). The evidence records the real
+    head; tag names the image and compose project, so a variant never shares the qa run's."""
     saved = os.environ.get("QA_ROOT")
     os.environ["QA_ROOT"] = str(cfg.root)
     try:
         plan = validate.plan_from_tests(cfg, [test_id], rows)
-        plan["head"] = head
+        plan["head"], plan["tag"] = head, tag
         res = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=base_url,
                       build=stack_mode == "managed", retry=False)
     finally:
@@ -197,21 +199,40 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
     try:
         for n in range(repeat):
             # Its own tag, so a managed stack never builds or removes the plain qa-<sha12> image of a qa run.
-            result["head_runs"].append(_attempt(cfg, rows, row["id"], f"{head[:8]}h", work / f"head-{n + 1}", stack_mode, base_url)[0])
+            result["head_runs"].append(_attempt(cfg, rows, row["id"], head, f"{head[:8]}h", work / f"head-{n + 1}", stack_mode, base_url)[0])
         if any(o != "pass" for o in result["head_runs"]):
             return finish("unproven", "did not pass on head: " + ", ".join(result["head_runs"]))
 
         k = 0
         not_run: list[str] = []
 
-        def variant(edit) -> dict:
-            nonlocal k
-            k += 1
+        def attempt(edit, name: str) -> tuple[str, str, str]:
             with variant_tree(root, head, row["path"]) as tree:
                 edit(tree)
-                outcome, kind, details = _attempt(config.load(tree), rows, row["id"], f"{head[:8]}v{k}", work / f"v{k}", stack_mode, base_url)
+                outcome, kind, details = _attempt(config.load(tree), rows, row["id"], head, f"{head[:8]}{name}", work / name, stack_mode, base_url)
             if outcome == "error" and EARLY_ERROR.search(details):
                 outcome, kind, details = "not_run", "early error", f"error before any test ran: {details}"[:300]
+            return outcome, kind, details
+
+        controls: dict[str, bool] = {}
+
+        def variant(edit, control: str | None = None) -> dict:
+            """control: the source file a mutant rewrites with ast.unparse; an error kill counts only if the
+            unmutated rewrite of that file passes, so the rewrite itself is not what broke the test."""
+            nonlocal k
+            k += 1
+            outcome, kind, details = attempt(edit, f"v{k}")
+            if outcome in KILLS:
+                # A kill must repeat: a flaky test that fails once proves nothing.
+                again = attempt(edit, f"v{k}-again")[0]
+                if again not in KILLS:
+                    outcome, kind, details = "not_run", "flaky kill", f"{outcome}, then {again} on a rerun"
+            if outcome == "error" and control:
+                if control not in controls:
+                    src = ast.unparse(ast.parse((root / control).read_text(encoding="utf-8")))
+                    controls[control] = attempt(lambda tree: (tree / control).write_text(src, encoding="utf-8"), f"c{k}")[0] == "pass"
+                if not controls[control]:
+                    outcome, kind, details = "not_run", "no control", f"error, but the unmutated rewrite of {control} does not pass either"
             if outcome == "not_run":
                 not_run.append(kind)
                 return {"outcome": outcome, "details": details[:300]}
@@ -244,7 +265,8 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
                 not_run.append("unparsable mutant")
                 result["mutants"].append({"file": f, "line": line, "op": op, "outcome": "not_run", "details": "mutant does not parse"})
                 continue
-            got = variant(lambda tree: (tree / f).write_text(src, encoding="utf-8"))
+            # Without --base a mutant may touch any line, so an error kill needs the control run.
+            got = variant(lambda tree: (tree / f).write_text(src, encoding="utf-8"), None if base_sha else f)
             result["mutants"].append({"file": f, "line": line, "op": op, **got})
             if got["outcome"] in KILLS:
                 return finish("proven", f"fails under mutation {op} at {f}:{line}")
@@ -255,4 +277,6 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
         return finish("unproven", f"inconclusive: {len(not_run)} variants not run ({', '.join(sorted(set(not_run)))})")
     if not sources and not result["revert"]:
         return finish("unproven", "no Python source to mutate")
+    if base_sha and not candidates and not result["revert"]:
+        return finish("unproven", f"no covered line changed since {base}")
     return finish("unproven", "no revert or mutation made it fail")

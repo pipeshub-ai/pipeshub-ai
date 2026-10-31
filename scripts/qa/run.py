@@ -452,7 +452,7 @@ def run(
                                 stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
                     finally:
                         if stacks and build and stack_mode == "managed" and os.environ.get("QA_KEEP_IMAGE") != "1":
-                            _remove_image(stack_mod.image_tag(plan.get("head")), stacks[-1].events)
+                            _remove_image(stack_mod.image_tag(plan.get("tag") or plan.get("head")), stacks[-1].events)
     except (_Cancelled, KeyboardInterrupt):
         for t in plan["tests"]:
             if t["id"] not in results:
@@ -568,7 +568,8 @@ def _remove_image(tag: str, events: list[str]) -> None:
 def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, log_dir: Path, build: bool, out: Path, shard: tuple[int, int] | None = None) -> list[Stack]:
     if mode == "none" or not plan["stack"].get("needed"):
         return []
-    head = plan.get("head")
+    # prove passes a tag of its own, so its images and projects never collide with a qa run's.
+    head = plan.get("tag") or plan.get("head")
     rid = run_id(shard)
     url = base_url or os.environ.get("PIPESHUB_BASE_URL", "http://localhost:3000")
     graphs = plan["stack"]["graph_db"]

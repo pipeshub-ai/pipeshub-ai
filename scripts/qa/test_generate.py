@@ -97,6 +97,15 @@ class TestGenerate(GenerateCase):
         self.assertIs(body[0].value.value, Ellipsis)
         self.assertNotIn("\n", ast.get_docstring(tree).splitlines()[0])
 
+    def test_tc_numbers_are_unique_across_planned_suites(self) -> None:
+        # An integration stub of the area already holds 001 and 002; a unit stub in another suite takes 003.
+        testing.write(self.root, "integration-tests/retrieval/test_old.py",
+                      '"""TC-RETRIEVAL-001 and TC-RETRIEVAL-002"""\n')
+        config.clear_cache()
+        self.assertEqual(self.generate("retrieval", [scenario("Search ranks by score",
+                                                              covers=["backend/python/app/services/retrieval.py"])]), 0)
+        self.assertIn("TC-RETRIEVAL-003", self.report())
+
     def test_generate_never_overwrites_and_skips_duplicate_titles(self) -> None:
         reply = [scenario("Empty list"), scenario("Empty-list"), scenario("Search hides records the user cannot read")]
         self.generate("graph-db", reply)
@@ -343,6 +352,8 @@ class TestImplement(GenerateCase):
             "__subclasses__": "    ().__class__.__bases__[0].__subclasses__()\n",
             "open": "    open('/etc/passwd').read()\n",
             "imports pathlib": None, "imports shutil": None, "imports requests": None,
+            "imports asyncio": None, "imports io": None, "imports codecs": None,
+            "importorskip": "    pytest.importorskip('os').system('x')\n",
         }
         for word, line in cases.items():
             if line is None:
@@ -352,6 +363,8 @@ class TestImplement(GenerateCase):
             problems = generate.check_content(stub, content)
             self.assertTrue(any(word in p for p in problems), (word, problems))
         self.assertEqual(generate.check_content(stub, GOOD.replace("    assert", "    assert __name__\n    assert")), [])
+        aliased = "from pytest import importorskip as skip\n" + GOOD
+        self.assertTrue(any("uses importorskip" in p for p in generate.check_content(stub, aliased)))
 
     def test_failed_restore_is_loud(self) -> None:
         real = generate._git
