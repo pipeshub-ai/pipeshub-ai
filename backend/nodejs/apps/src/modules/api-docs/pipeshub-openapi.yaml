@@ -46885,11 +46885,14 @@ paths:
       summary: Ensure (create-if-absent) the project's hidden file Collection
       description: |
         Requires editor access. Lazily creates the project's own hidden
-        Knowledge Base (`isHidden: true` in Python `POST /api/v1/kb`) the
-        first time a caller needs to upload a file, and returns its id
-        either way. Race-safe: concurrent callers converge on one KB —
-        the losing request's KB is deleted. The hidden KB is excluded from
-        the Collections sidebar, Knowledge Hub, and unscoped search, but is
+        Knowledge Base (`isHidden: true` and `ownerUserId` of the project
+        owner in Python `POST /api/v1/kb`) the first time a caller needs
+        to upload a file, and returns its id either way. The collection is
+        owned by the project owner even when an editor triggers first use,
+        so removing that editor also revokes their collection grant.
+        Race-safe: concurrent callers converge on one KB — the losing
+        request's KB is deleted. The hidden KB is excluded from the
+        Collections sidebar, Knowledge Hub, and unscoped search, but is
         always included in this project's own chat scope
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.

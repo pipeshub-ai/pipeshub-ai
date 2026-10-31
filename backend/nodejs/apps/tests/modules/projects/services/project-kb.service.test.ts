@@ -171,7 +171,7 @@ describe('ProjectKnowledgeBaseService', () => {
       expect(kbId).to.equal('kb-new');
       expect(exec.getCalls().some((call) => call.args[1] === HttpMethod.GET)).to.equal(false);
       expect(bodiesSentTo(exec, `${KB_URL}/`, HttpMethod.POST)).to.deep.equal([
-        { name: `project:${PROJECT_ID}`, isHidden: true },
+        { name: `project:${PROJECT_ID}`, isHidden: true, ownerUserId: OWNER_ID },
       ]);
       expect(linkStub.firstCall.args).to.deep.equal([
         { _id: PROJECT_ID, linkedKnowledgeBaseId: null },
@@ -180,17 +180,69 @@ describe('ProjectKnowledgeBaseService', () => {
       ]);
     });
 
-    it('grants the project owner on the new KB even when someone else created it', async () => {
-      sinon.stub(Project, 'findOne').resolves(makeProject());
+    it('creates the hidden KB as the project owner and does not grant with the caller\'s headers', async () => {
+      const editor = userMember('editor');
+      const viewer = userMember('viewer');
+      const team = teamMember('viewer');
+      sinon.stub(Project, 'findOne').resolves(
+        makeProject({
+          members: [editor.member, viewer.member, team.member],
+          visibility: 'org',
+        }),
+      );
       sinon.stub(Project, 'findOneAndUpdate').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
       exec.withArgs(`${KB_URL}/`, HttpMethod.POST).resolves(respond(200, { id: 'kb-new' }));
-      exec.withArgs(permissionsUrl('kb-new'), HttpMethod.POST).resolves(respond(200));
 
       await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
 
-      expect(bodiesSentTo(exec, permissionsUrl('kb-new'), HttpMethod.POST)).to.deep.equal([
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
+      expect(bodiesSentTo(exec, `${KB_URL}/`, HttpMethod.POST)).to.deep.equal([
+        {
+          name: `project:${PROJECT_ID}`,
+          isHidden: true,
+          ownerUserId: OWNER_ID,
+          writerUserIds: [editor.id],
+          readerUserIds: [viewer.id],
+          teamIds: [team.id, `all_${ORG_ID}`],
+        },
       ]);
+      expect(bodiesSentTo(exec, permissionsUrl('kb-new'), HttpMethod.POST)).to.have.length(0);
+    });
+
+    it('does not send the project owner as a WRITER even if they also appear in members', async () => {
+      sinon.stub(Project, 'findOne').resolves(
+        makeProject({
+          members: [{ principalType: 'user', principalId: OWNER_ID, role: 'editor' }],
+        }),
+      );
+      sinon.stub(Project, 'findOneAndUpdate').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
+      exec.withArgs(`${KB_URL}/`, HttpMethod.POST).resolves(respond(201, { id: 'kb-new' }));
+
+      await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
+
+      expect(bodiesSentTo(exec, `${KB_URL}/`, HttpMethod.POST)).to.deep.equal([
+        { name: `project:${PROJECT_ID}`, isHidden: true, ownerUserId: OWNER_ID },
+      ]);
+    });
+
+    it('repairs an already-linked KB when the caller is still OWNER, and ignores a failed repair', async () => {
+      sinon.stub(Project, 'findOne').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-1' }));
+      exec.withArgs(`${KB_URL}/kb-1`, HttpMethod.GET).resolves(respond(200, { id: 'kb-1', userRole: 'OWNER' }));
+      exec.withArgs(permissionsUrl('kb-1'), HttpMethod.POST).resolves(respond(403));
+
+      const kbId = await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
+
+      expect(kbId).to.equal('kb-1');
+      expect(bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST)).to.have.length.greaterThan(0);
+    });
+
+    it('does not re-grant when the already-linked caller is only a WRITER', async () => {
+      sinon.stub(Project, 'findOne').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-1' }));
+      exec.withArgs(`${KB_URL}/kb-1`, HttpMethod.GET).resolves(respond(200, { id: 'kb-1', userRole: 'WRITER' }));
+
+      const kbId = await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
+
+      expect(kbId).to.equal('kb-1');
+      expect(bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST)).to.have.length(0);
     });
 
     it('self-heals a stale link: recreates on 404 and guards the swap on the stale id', async () => {
@@ -297,16 +349,15 @@ describe('ProjectKnowledgeBaseService', () => {
       }
     });
 
-    it('propagates a permission-sync failure instead of reporting the KB as ready', async () => {
+    it('does not require a follow-up permission grant after a successful create', async () => {
       sinon.stub(Project, 'findOne').resolves(makeProject());
       sinon.stub(Project, 'findOneAndUpdate').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
       exec.withArgs(`${KB_URL}/`, HttpMethod.POST).resolves(respond(201, { id: 'kb-new' }));
-      exec.withArgs(permissionsUrl('kb-new'), HttpMethod.POST).resolves(respond(500));
 
-      await expectRejection(
-        ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID),
-        InternalServerError,
-      );
+      const kbId = await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
+
+      expect(kbId).to.equal('kb-new');
+      expect(bodiesSentTo(exec, permissionsUrl('kb-new'), HttpMethod.POST)).to.have.length(0);
     });
   });
 
@@ -361,6 +412,23 @@ describe('ProjectKnowledgeBaseService', () => {
       ]);
       // The KB API rejects a team grant that carries a role.
       expect(bodies[2]).to.not.have.property('role');
+    });
+
+    it('does not demote the project owner when they are also listed as an editor', async () => {
+      exec.resolves(respond(200));
+
+      await ProjectKnowledgeBaseService.syncMemberPermissions(
+        appConfig,
+        HEADERS,
+        makeProject({
+          linkedKnowledgeBaseId: 'kb-1',
+          members: [{ principalType: 'user', principalId: OWNER_ID, role: 'editor' }],
+        }),
+      );
+
+      expect(bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST)).to.deep.equal([
+        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
+      ]);
     });
 
     it('grants editors after everyone else, so an editor who created the KB can still grant the rest', async () => {

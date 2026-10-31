@@ -21,6 +21,50 @@ function allOrgTeamId(orgId: string): string {
   return `all_${orgId}`;
 }
 
+/** Current project members as the hidden-collection grant buckets. The project owner is never a writer/reader here — they are always KB OWNER. */
+function memberGrantBuckets(project: ProjectDto): {
+  editorUserIds: string[];
+  viewerUserIds: string[];
+  teamIds: string[];
+} {
+  const editorUserIds: string[] = [];
+  const viewerUserIds: string[] = [];
+  const teamIds: string[] = [];
+  for (const member of project.members) {
+    if (member.principalType === 'team') {
+      teamIds.push(member.principalId);
+      continue;
+    }
+    if (member.principalId === project.userId) {
+      continue;
+    }
+    (member.role === 'editor' ? editorUserIds : viewerUserIds).push(member.principalId);
+  }
+  return { editorUserIds, viewerUserIds, teamIds };
+}
+
+/** Body for `POST /api/v1/kb/` so Python records the project owner as createdBy/OWNER and grants everyone else in the same create. */
+function hiddenKbCreateBody(project: ProjectDto, projectId: string): Record<string, unknown> {
+  const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(project);
+  const teams =
+    project.visibility === 'org' ? [...teamIds, allOrgTeamId(project.orgId)] : teamIds;
+  const body: Record<string, unknown> = {
+    name: `project:${projectId}`,
+    isHidden: true,
+    ownerUserId: project.userId,
+  };
+  if (editorUserIds.length > 0) {
+    body.writerUserIds = editorUserIds;
+  }
+  if (viewerUserIds.length > 0) {
+    body.readerUserIds = viewerUserIds;
+  }
+  if (teams.length > 0) {
+    body.teamIds = teams;
+  }
+  return body;
+}
+
 /**
  * Owns the lifecycle and graph-permission sync of a project's hidden,
  * lazily-created linked Collection (`IProject.linkedKnowledgeBaseId`) —
@@ -112,6 +156,16 @@ export class ProjectKnowledgeBaseService {
         headers,
       );
       if (check.statusCode !== 404) {
+        // Collections created before ownerUserId kept the first opener as
+        // OWNER/createdBy. Re-sync when that opener (or the project owner)
+        // still holds OWNER so the real owner is granted and the opener can
+        // later be revoked. A WRITER opener is already the post-fix shape.
+        const role = (check.data as { userRole?: string } | undefined)?.userRole;
+        if (role === 'OWNER') {
+          await this.syncMemberPermissions(appConfig, headers, project).catch(
+            () => undefined,
+          );
+        }
         return previousKbId;
       }
       // Self-heal: Mongo points at a KB that no longer exists upstream —
@@ -122,7 +176,7 @@ export class ProjectKnowledgeBaseService {
       `${appConfig.connectorBackend}/api/v1/kb/`,
       HttpMethod.POST,
       headers,
-      { name: `project:${projectId}`, isHidden: true },
+      hiddenKbCreateBody(project, projectId),
     );
     if (createResponse.statusCode !== 200 && createResponse.statusCode !== 201) {
       throw handleBackendError(createResponse, 'create project knowledge base');
@@ -153,12 +207,10 @@ export class ProjectKnowledgeBaseService {
       return winner.linkedKnowledgeBaseId;
     }
 
-    // The KB creator (whoever's headers/identity made the call above) is
-    // its implicit OWNER — grant the project's real owner and every
-    // current member their role too, in the same call that just won the
-    // race, so a lazily-created-by-an-editor KB still ends up owned by
-    // the project owner as well (documented in the plan as acceptable).
-    await this.syncMemberPermissions(appConfig, headers, won);
+    // Create already recorded the project owner as createdBy/OWNER and
+    // granted current members. An editor's headers cannot share the KB
+    // (only OWNER may), so do not sync here — that would 403 and leave a
+    // linked collection the editor cannot finish setting up.
     return kbId;
   }
 
@@ -183,17 +235,7 @@ export class ProjectKnowledgeBaseService {
 
     await this.grantUsers(appConfig, headers, kbId, [project.userId], 'OWNER');
 
-    const editorUserIds: string[] = [];
-    const viewerUserIds: string[] = [];
-    const teamIds: string[] = [];
-    for (const member of project.members) {
-      const principalId = member.principalId;
-      if (member.principalType === 'team') {
-        teamIds.push(principalId);
-        continue;
-      }
-      (member.role === 'editor' ? editorUserIds : viewerUserIds).push(principalId);
-    }
+    const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(project);
 
     await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
     await this.grantTeams(appConfig, headers, kbId, teamIds);
@@ -202,8 +244,8 @@ export class ProjectKnowledgeBaseService {
       await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId)]);
     }
 
-    // Editors go last: an editor whose upload created the KB is its OWNER until
-    // this grant makes them WRITER, and only an OWNER may grant the rest.
+    // Editors last so a repair of an old editor-created KB can grant the
+    // project owner and viewers first, then demote that leftover OWNER.
     await this.grantUsers(
       appConfig,
       headers,
