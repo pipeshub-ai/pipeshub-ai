@@ -28,6 +28,7 @@ for OAuth and personal access tokens, so only a web sign-in can claim the web ap
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -51,6 +52,7 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
+from app.agents.mcp.tool_kind import ToolKind
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
@@ -66,7 +68,6 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import Tool
     from app.agents.agent_loop.context import AgentContext
     from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
-    from app.agents.mcp.tool_kind import ToolKind
     from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,9 @@ _MAX_RESULT_CHARS = 20_000
 _MAX_PREVIEW_CHARS = 2_000
 # Arguments larger than this are shown on the card as a preview only.
 _MAX_CARD_ARGUMENT_CHARS = 8_000
+# A tool's input schema larger than this isn't sent on the card, so the card can't be edited.
+_MAX_CARD_SCHEMA_CHARS = 16_000
+EDITS_ENV = "TOOL_APPROVAL_EDITS"
 # The stopped turn is kept (`parked_turn`) until the card can no longer be answered.
 TURN_TTL_SECONDS = APPROVAL_TTL_SECONDS + 600
 # How the result of a call that stopped on a card starts (its row, and its result in the history).
@@ -131,6 +135,10 @@ class PendingCall(MCPCamelModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     # The model's id for the call: the answer becomes that call's result, on that call's row.
     tool_call_id: str = ""
+    # Saved with the call so an edited answer can be checked against the tool's own schema and kind.
+    tool_path: str = ""
+    kind: ToolKind = "write"
+    input_schema: Optional[dict[str, Any]] = None
     created_at: float
     expires_at: float
 
@@ -481,6 +489,23 @@ def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"arguments": None, "argumentsPreview": text[:_MAX_CARD_ARGUMENT_CHARS] + "…"}
 
 
+def args_hash(arguments: dict[str, Any]) -> str:
+    """Names one set of arguments, so an answer can say which ones it saw."""
+    text = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def edits_enabled() -> bool:
+    return env_bool(EDITS_ENV, True)
+
+
+def _input_schema(tool: "Tool") -> Optional[dict[str, Any]]:
+    schema = getattr(tool, "raw_input_schema", None)
+    if schema is None:
+        schema = _quietly(lambda: tool.to_schema().input_schema)
+    return schema if isinstance(schema, dict) else None
+
+
 def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
     """PreToolUse middleware; registered last, so nothing after it can still deny a call it
     leaves pending."""
@@ -528,11 +553,15 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         return
     now = time.time()
     call = getattr(ctx.scope, "call", None)
+    schema = _input_schema(target.tool)
+    if schema is not None and len(json.dumps(schema, default=str, ensure_ascii=False)) > _MAX_CARD_SCHEMA_CHARS:
+        schema = None
     pending = PendingCall(
         approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
         conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
+        tool_path=ctx.tool_path, kind=target.kind, input_schema=schema,
         created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
@@ -552,6 +581,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
+    card_arguments = _card_arguments(pending.arguments)
+    args_summary = _quietly(target.tool.summarize_args, pending.arguments)
     ctx.ask_later(PendingApproval(
         message=message,
         details={
@@ -559,7 +590,12 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
             "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
             # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
             "canRemember": target.own_rules,
-            "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
+            "expiresAt": int(pending.expires_at * 1000), **card_arguments,
+            "toolPath": pending.tool_path, "source": target.source, "argsHash": args_hash(pending.arguments),
+            "displayName": target.tool.display_name,
+            "editable": edits_enabled() and card_arguments["arguments"] is not None and schema is not None,
+            **({"inputSchema": schema} if schema is not None else {}),
+            **({"argsSummary": args_summary} if isinstance(args_summary, str) else {}),
         },
     ))
 

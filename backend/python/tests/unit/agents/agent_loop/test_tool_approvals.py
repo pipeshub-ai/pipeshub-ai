@@ -545,6 +545,89 @@ class TestTheGate:
         assert ctx.decision == PreDecision.ALLOW
 
 
+class _ToolsetTool:
+    display_name = "Send email"
+
+    def __init__(self, schema: dict[str, Any]) -> None:
+        self._schema = schema
+
+    @property
+    def raw_input_schema(self) -> dict[str, Any]:
+        return self._schema
+
+    def summarize_args(self, args: dict[str, Any]) -> str:
+        return f"to {args.get('mail_to')}"
+
+
+_GMAIL_SCHEMA = {"type": "object", "properties": {"mail_subject": {"type": "string"}}}
+_GMAIL_PATH = "/tools/gmail/send_email"
+
+
+async def _toolset_card(store: _Store, arguments: dict[str, Any], schema: dict[str, Any] = _GMAIL_SCHEMA) -> dict[str, Any]:
+    context = _context(store)
+    target = approvals.ApprovalTarget(
+        source="toolset", instance_id="ts-1", tool_name="send_email", owner="Gmail", kind="destructive",
+        tool=_ToolsetTool(schema),  # type: ignore[arg-type]
+    )
+    context.tool_state.setdefault(approvals.TOOLSET_TOOLS_BY_PATH, {})[_GMAIL_PATH] = target
+
+    async def _next() -> None:
+        return None
+
+    ctx = ToolCallContext(tool_path=_GMAIL_PATH, tool_input=dict(arguments))
+    await approvals.approval_gate(context)(ctx, _next)
+    assert ctx.pending_approval is not None
+    return ctx.pending_approval.details
+
+
+class TestEditableCard:
+    ARGS = {"mail_to": ["a@x.com"], "mail_subject": "Hi"}
+
+    async def test_card_carries_path_source_schema_and_hash(self) -> None:
+        store = _Store()
+        details = await _toolset_card(store, self.ARGS)
+        assert details["toolPath"] == _GMAIL_PATH
+        assert details["source"] == "toolset"
+        assert details["inputSchema"]["properties"]["mail_subject"]["type"] == "string"
+        assert details["argsHash"] == approvals.args_hash(self.ARGS)
+        assert details["editable"] is True
+        assert details["displayName"] == "Send email" and details["argsSummary"] == "to ['a@x.com']"
+        saved = approvals.PendingCall.model_validate(store.pending()[0])
+        assert (saved.tool_path, saved.kind) == (_GMAIL_PATH, "destructive")
+        assert saved.input_schema == _GMAIL_SCHEMA
+
+    async def test_card_not_editable_when_arguments_only_previewed(self) -> None:
+        details = await _toolset_card(_Store(), {"mail_body": "x" * 9000})
+        assert details["arguments"] is None and details["editable"] is False
+
+    async def test_card_omits_schema_over_16000_chars(self) -> None:
+        details = await _toolset_card(_Store(), self.ARGS, {"type": "object", "description": "x" * 17000})
+        assert "inputSchema" not in details and details["editable"] is False
+
+    async def test_card_not_editable_when_edits_turned_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TOOL_APPROVAL_EDITS", "false")
+        assert (await _toolset_card(_Store(), self.ARGS))["editable"] is False
+
+    async def test_mcp_card_carries_its_path_and_schema(self) -> None:
+        adapter = _adapter(read_only=False)
+        ctx = await _gate(_context(), adapter, title="Bug")
+        assert ctx.pending_approval is not None
+        details = ctx.pending_approval.details
+        assert (details["toolPath"], details["source"]) == (adapter.path, "mcp")
+        assert details["inputSchema"] == {"type": "object"}
+
+    def test_args_hash_ignores_key_order(self) -> None:
+        assert approvals.args_hash({"a": 1, "b": 2}) == approvals.args_hash({"b": 2, "a": 1})
+
+    def test_pending_call_saved_before_this_change_still_loads(self) -> None:
+        old = {
+            "approvalId": "a", "orgId": "o", "userId": "u", "conversationId": "c", "instanceId": "i",
+            "serverName": "s", "toolName": "t", "createdAt": 1.0, "expiresAt": 2.0,
+        }
+        saved = approvals.PendingCall.model_validate(old)
+        assert (saved.tool_path, saved.input_schema) == ("", None)
+
+
 class TestClaimingAnApproval:
     async def _saved(self, store: _Store) -> str:
         ctx = await _gate(_context(store), _adapter(read_only=False), title="Bug")
