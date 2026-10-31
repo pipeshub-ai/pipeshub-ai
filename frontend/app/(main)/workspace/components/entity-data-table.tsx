@@ -39,6 +39,8 @@ export interface EntityDataTableProps<T> {
   selectedIds: Set<string>;
   /** Called when selection changes */
   onSelectionChange: (ids: Set<string>) => void;
+  /** Hide the checkbox column when false. Defaults to true. */
+  selectable?: boolean;
   /** Optional render function for row action cell (⋯ menu) */
   renderRowActions?: (item: T) => React.ReactNode;
   /** Whether data is currently loading */
@@ -72,6 +74,7 @@ export function EntityDataTable<T>({
   getItemId,
   selectedIds,
   onSelectionChange,
+  selectable = true,
   renderRowActions,
   isLoading,
   onRowClick,
@@ -83,7 +86,7 @@ export function EntityDataTable<T>({
   // checkbox (38) + columns + actions (80); percentage or missing widths fall back to minWidth, then 160
   const px = (v?: string) => (v && !v.endsWith('%') ? parseInt(v, 10) : NaN);
   const tableMinWidth =
-    38 + columns.reduce((sum, c) => sum + (px(c.width) || px(c.minWidth) || 160), 0) + 80;
+    (selectable ? 38 : 0) + columns.reduce((sum, c) => sum + (px(c.width) || px(c.minWidth) || 160), 0) + 80;
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   // Below desktop the table scrolls sideways; pin the ⋯ menu to the right edge so it stays in view.
   const stickyActions: React.CSSProperties = isBelowDesktop
@@ -142,6 +145,7 @@ export function EntityDataTable<T>({
     const [primary, ...rest] = columns;
     return (
       <Flex direction="column" data-testid="entity-data-table" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {selectable && (
         <Flex
           align="center"
           gap="2"
@@ -167,9 +171,10 @@ export function EntityDataTable<T>({
             {t('table.selectAll')}
           </Text>
         </Flex>
+        )}
         <Box style={{ position: 'relative', flex: '1 0 auto', opacity: isLoading && data.length > 0 ? 0.55 : 1 }}>
           {isLoading && data.length === 0 ? (
-            <TableSkeleton rows={6} columns={[{ barWidth: 0.6 }]} hasRowActions={Boolean(renderRowActions)} />
+            <TableSkeleton rows={6} columns={[{ barWidth: 0.6 }]} hasRowActions={Boolean(renderRowActions)} hasCheckbox={selectable} />
           ) : null}
           {refreshingStatus('52px')}
           {data.map((item) => {
@@ -192,9 +197,11 @@ export function EntityDataTable<T>({
                   userSelect: 'none',
                 }}
               >
+                {selectable && (
                 <Flex align="center" justify="center" className="touch-hit" style={{ paddingTop: 10 }} onClick={(e) => e.stopPropagation()}>
                   <Checkbox size="2" checked={isSelected} onCheckedChange={() => handleSelectItem(id)} style={{ cursor: 'pointer' }} />
                 </Flex>
+                )}
                 <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
                   {primary && <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{primary.render(item)}</Flex>}
                   {rest.length > 0 && (
@@ -243,7 +250,7 @@ export function EntityDataTable<T>({
           zIndex: 2,
         }}
       >
-        {/* Checkbox column */}
+        {selectable && (
         <Flex
           align="center"
           style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
@@ -256,6 +263,7 @@ export function EntityDataTable<T>({
             style={{ cursor: 'pointer' }}
           />
         </Flex>
+        )}
 
         {/* Data columns */}
         {columns.map((col) => (
@@ -294,6 +302,7 @@ export function EntityDataTable<T>({
         {isLoading && data.length === 0 ? (
           <TableSkeleton
             rows={6}
+            hasCheckbox={selectable}
             checkboxWidth={CHECKBOX_COL_WIDTH}
             cellPadding={CELL_PADDING}
             columns={columns.map<TableSkeletonColumnShape>((col, i) => ({
@@ -338,7 +347,7 @@ export function EntityDataTable<T>({
                 userSelect: 'none',
               }}
             >
-              {/* Checkbox cell */}
+              {selectable && (
               <Flex
                 align="center"
                 style={{ width: CHECKBOX_COL_WIDTH, flexShrink: 0, paddingLeft: 'var(--space-3)', boxSizing: 'border-box' }}
@@ -351,6 +360,7 @@ export function EntityDataTable<T>({
                   style={{ cursor: 'pointer' }}
                 />
               </Flex>
+              )}
 
               {/* Data cells */}
               {columns.map((col) => (
