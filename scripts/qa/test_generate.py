@@ -136,6 +136,55 @@ class TestGenerate(GenerateCase):
         self.generate("graph-db", [scenario("No covers", covers=[])])
         self.assertIn("No covers: no unit home:", self.report())
 
+    def written(self) -> list:
+        return [p.resolve() for p in self.root.rglob("test_*.py")
+                if not testing.git(self.root, "ls-files", str(p.relative_to(self.root)))]
+
+    def test_traversal_absolute_and_glob_covers_are_dropped(self) -> None:
+        outside = self.root.parent / "escape"
+        bad = [
+            "backend/python/app/services/graph_db/../../../../../../escape/x.py",
+            "backend/python/app/services/graph_db/./provider.py",
+            str(self.root / PROVIDER),
+            "/" + PROVIDER,
+            "backend/python/app/services/graph_db/*.py",
+            "backend/python/app/services/graph_db/prov?der.py",
+            "backend\\python/app/services/graph_db/provider.py",
+        ]
+        self.generate("graph-db", [scenario(f"Bad cover {i}", covers=[c]) for i, c in enumerate(bad)], "--max", "20")
+        for i in range(len(bad)):
+            self.assertIn(f"Bad cover {i}: covers outside the module", self.report())
+        self.assertEqual(self.written(), [])
+        self.assertFalse(outside.exists())
+        self.assertTrue(all(generate.plain_path(c) is False for c in bad))
+        self.assertTrue(generate.plain_path(PROVIDER))
+
+    def test_nothing_is_written_outside_the_suite_dir(self) -> None:
+        escape = "backend/python/tests/unit/../../../../escape/test_x.py"
+        with mock.patch.object(generate, "home", return_value=(escape, "forced")):
+            self.generate("graph-db", [scenario("Forced escape")])
+        self.assertIn("Forced escape: unsafe path", self.report())
+        self.assertEqual(self.written(), [])
+        self.generate("graph-db", [scenario("Lists nothing"), scenario("Search works", level="integration", covers=[])])
+        suite_dirs = [(self.root / d).resolve() for d in ("backend/python/tests/unit", "integration-tests")]
+        got = self.written()
+        self.assertEqual(len(got), 2)
+        for p in got:
+            self.assertTrue(any(p.is_relative_to(d) for d in suite_dirs), p)
+
+    def test_empty_title_is_dropped(self) -> None:
+        self.generate("graph-db", [scenario(""), scenario("!!! ---"), scenario("\u00e9\u00e9")])
+        self.assertEqual(self.report().count("empty title"), 3)
+        self.assertEqual(self.written(), [])
+
+    def test_read_rows_reads_one_planned_file(self) -> None:
+        self.generate("graph-db", [scenario("Lists nothing")])
+        cfg = config.load(self.root)
+        path = f"{GRAPH_DIR}/test_lists_nothing.py"
+        rows = catalog.read_rows(cfg, path)
+        self.assertEqual([(r["id"], r["status"]) for r in rows], [(f"py:{path.removeprefix('backend/python/')}", "planned")])
+        self.assertEqual(catalog.read_rows(cfg, "frontend/tests/e2e/login.spec.ts"), [])
+
     def test_unknown_module_is_an_error(self) -> None:
         self.assertEqual(self.generate("nope", []), 2)
         self.assertIn("graph-db", self.err)

@@ -137,6 +137,26 @@ def _next_tc(root: Path, directory: str, area: str) -> str:
     return f"TC-{area}-{max(found, default=0) + 1:03d}"
 
 
+def plain_path(path: str) -> bool:
+    """A relative repo path with no traversal, glob or backslash: string matching on it means what it says."""
+    return (not path.startswith("/") and not any(ch in path for ch in "*?\\")
+            and ".." not in path.split("/") and path == posixpath.normpath(path)
+            and bool(catalog.PATHISH.fullmatch(path)))
+
+
+def _inside_suite(cfg: Config, path: str) -> bool:
+    """The resolved target lies under the static directory of one of its planned suite's test globs."""
+    suite = catalog.suite_of(path, cfg)
+    if not suite or not suite.get("planned"):
+        return False
+    target = (cfg.root / path).resolve()
+    for pattern in suite.get("tests", []):
+        top = pattern.split("*", 1)[0].rsplit("/", 1)[0]
+        if top and target.is_relative_to((cfg.root / top).resolve()):
+            return True
+    return False
+
+
 def _free(root: Path, path: str) -> str:
     stem, n = path.removesuffix(".py"), 1
     while (root / path).exists():
@@ -163,12 +183,15 @@ def write_scenarios(cfg: Config, rows: list[dict], module_id: str, llm: dict) ->
     for raw in llm.get("scenarios", [])[:MAX_SCENARIOS]:
         title = doc_safe(raw.get("title"), MAX_TITLE)
         level = raw.get("level")
+        if not slug(title):
+            dropped.append({"title": title, "why": "empty title"})
+            continue
         if level == "e2e":
             dropped.append({"title": title, "why": "e2e stubs are not supported yet"})
             continue
         asked = [c for c in raw.get("covers", []) if isinstance(c, str)]
-        # Covers are written into the docstring, so only plain module paths survive.
-        covers = [c for c in asked if catalog.PATHISH.fullmatch(c) and _in_module(module, c)]
+        # Covers pick the stub's directory and go into its docstring, so only plain module paths survive.
+        covers = [c for c in asked if plain_path(c) and _in_module(module, c)]
         if asked and not covers:
             dropped.append({"title": title, "why": "covers outside the module"})
             continue
@@ -187,13 +210,15 @@ def write_scenarios(cfg: Config, rows: list[dict], module_id: str, llm: dict) ->
             text = UNIT_STUB.format(doc=_doc_lines(sc, ""), **values)
         else:
             text = IT_STUB.format(doc=_doc_lines(sc, "    "), **values)
+        if not _inside_suite(cfg, path):
+            dropped.append({"title": title, "why": "unsafe path"})
+            continue
         full = cfg.root / path
         full.parent.mkdir(parents=True, exist_ok=True)
         with open(full, "x", encoding="utf-8") as f:
             f.write(text)
-        suite = catalog.suite_of(path, cfg)
-        back = catalog._python_rows(cfg, suite, path, None) if suite else []
-        if not (len(back) == 1 and catalog._is_planned(cfg, back[0]) and back[0]["title"] == title and back[0]["tc"] == tc):
+        back = catalog.read_rows(cfg, path)
+        if not (len(back) == 1 and back[0]["status"] == "planned" and back[0]["title"] == title and back[0]["tc"] == tc):
             full.unlink()  # fail closed: a stub the catalog cannot read as this planned scenario is not kept
             dropped.append({"title": title, "why": "stub did not parse as planned"})
             continue

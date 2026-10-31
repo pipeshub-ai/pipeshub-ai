@@ -367,6 +367,18 @@ def build(cfg: Config, suites: Iterable[str] | None = None) -> list[dict[str, An
     return rows
 
 
+def read_rows(cfg: Config, path: str) -> list[dict[str, Any]]:
+    """The rows of one Python test file, with planned status, without building the whole catalog."""
+    suite = suite_of(path, cfg)
+    if not suite or suite["family"] not in ("pytest", "it-pytest", "unittest"):
+        return []
+    rows = _python_rows(cfg, suite, path, None)
+    for r in rows:
+        if _is_planned(cfg, r):
+            r["status"] = "planned"
+    return rows
+
+
 def stamp(cfg: Config, rows: list[dict[str, Any]]) -> None:
     """Set module (first match in load order), flows (load order) and best priority on each row."""
     rank = ("P0", "P1", "P2").index
