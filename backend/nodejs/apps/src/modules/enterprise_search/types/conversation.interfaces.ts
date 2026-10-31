@@ -157,6 +157,8 @@ export interface IMessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** The top-level arguments the person changed before allowing the call. */
+  changedFields?: string[];
   status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
   /** A call waiting for a person's approval: what the approval card shows (Python `tool_approvals.py`). */
