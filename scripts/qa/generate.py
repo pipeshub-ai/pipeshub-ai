@@ -42,8 +42,7 @@ MAX_CONTENT, MAX_NEIGHBOUR, MAX_SOURCES_TEXT = 30_000, 20_000, 40_000
 BANNED_IMPORTS = {"os", "subprocess", "socket", "sys", "shutil", "pathlib", "importlib", "ctypes", "builtins",
                   "urllib", "http", "requests", "httpx", "aiohttp", "multiprocessing", "pty", "signal", "tempfile",
                   "socketserver", "ftplib", "smtplib", "telnetlib", "pickle", "marshal"}
-# The builtin that runs a string as an expression is spelled in two parts: a repo text check reserves the word.
-BANNED_NAMES = {"__import__", "ev" "al", "exec", "compile", "open", "getattr", "setattr", "delattr", "globals", "locals",
+BANNED_NAMES = {"__import__", "eval", "exec", "compile", "open", "getattr", "setattr", "delattr", "globals", "locals",
                 "vars", "__builtins__", "builtins", "importlib", "ctypes", "breakpoint", "input"}
 RESTORE_FAILED = "restore failed: "
 IMPLEMENT_NEXT = "next: review the kept tests with git diff and commit them yourself; nothing was committed"
