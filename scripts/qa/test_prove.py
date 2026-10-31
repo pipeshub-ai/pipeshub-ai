@@ -125,7 +125,8 @@ class TestProve(ProveCase):
         self.assertEqual(schema.check(result, "proof.v1.json"), [])
         heads = [h for _, h, _ in self.calls]
         sha = testing.git(self.root, "rev-parse", "HEAD")
-        self.assertEqual(heads, [sha, sha, sha, f"{sha[:8]}v1"])
+        self.assertEqual(heads, [f"{sha[:8]}h"] * 3 + [f"{sha[:8]}v1"])
+        self.assertEqual(result["head"], sha)
         self.assertTrue(all(opts["retry"] is False for _, _, opts in self.calls))
 
     def test_prove_flaky_head_is_unproven(self) -> None:
@@ -200,6 +201,58 @@ class TestProve(ProveCase):
         with self.assertRaises(run._Cancelled):
             self.prove(["pass"] * 3, variant)
         self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+
+    def test_managed_head_runs_never_use_the_qa_run_image(self) -> None:
+        from qa import stack
+        self.prove(["pass"] * 3, lambda n, tree: ("fail", None), stack_mode="managed")
+        sha = testing.git(self.root, "rev-parse", "HEAD")
+        tags = {stack.image_tag(h) for _, h, _ in self.calls}
+        self.assertNotIn(stack.image_tag(sha), tags)
+        self.assertEqual(len(tags), 2)
+        self.assertTrue(all(opts["build"] for _, _, opts in self.calls))
+
+    def test_unparsable_mutant_is_never_a_kill(self) -> None:
+        with mock.patch.object(prove, "mutants", lambda src, lines=None: [(2, "== -> !=", "def (:\n")]):
+            result = self.prove(["pass"] * 3, lambda n, tree: self.fail("an unparsable mutant must not run"))
+        self.assertEqual(result["mutants"], [{"file": PROVIDER, "line": 2, "op": "== -> !=", "outcome": "not_run",
+                                              "details": "mutant does not parse"}])
+        self.assertEqual(result["reason"], "inconclusive: 1 variants not run (unparsable mutant)")
+        self.assertEqual(schema.check(result, "proof.v1.json"), [])
+
+    def test_collection_error_in_a_variant_is_inconclusive(self) -> None:
+        result = self.prove(["pass"] * 3, lambda n, tree: (
+            "error", "no result in JUnit (exit 2); collection error or not collected"))
+        self.assertEqual(result["verdict"], "unproven")
+        self.assertEqual(result["reason"], "inconclusive: 1 variants not run (early error)")
+        self.assertEqual(result["mutants"][0]["outcome"], "not_run")
+        self.assertTrue(result["mutants"][0]["details"].startswith("error before any test ran"))
+
+    def test_runtime_error_in_a_variant_still_kills(self) -> None:
+        result = self.prove(["pass"] * 3, lambda n, tree: ("error", "test_records: TypeError: NoneType"))
+        self.assertEqual(result["verdict"], "proven")
+
+    def _lint_row(self, target: str) -> dict:
+        testing.write(self.root, "backend/python/tests/unit/services/graph_db/test_provider.py",
+                      "from app.services.graph_db import provider\n\n\ndef test_weak():\n    provider.get_records()\n\n\n"
+                      "class TestP:\n    def test_good(self):\n        assert provider.get_records() == []\n\n"
+                      "    def test_weak(self):\n        provider.get_records()\n")
+        testing.commit(self.root, "mixed tests")
+        return {**self.row(), "id": f"{TEST_ID}::{target}"}
+
+    def test_lint_scopes_to_the_named_function(self) -> None:
+        row = self._lint_row("TestP::test_good")
+        with mock.patch.object(self, "row", lambda: row):
+            result = self.prove(["pass"] * 3, lambda n, tree: ("fail", None))
+        self.assertEqual((result["lint"], result["verdict"]), ([], "proven"))
+
+    def test_lint_blocks_a_weak_target_function(self) -> None:
+        for target in ("test_weak", "TestP::test_weak"):
+            self.calls.clear()
+            row = self._lint_row(target)
+            with mock.patch.object(self, "row", lambda: row):
+                result = self.prove([], lambda n, tree: self.fail("no run"))
+            self.assertEqual(result["lint"], ["test_weak: asserts nothing about behavior (only that the call did not raise)"], target)
+            self.assertEqual(self.calls, [])
 
     def test_stack_rows_default_to_one_run_and_one_mutant(self) -> None:
         row = self.row()

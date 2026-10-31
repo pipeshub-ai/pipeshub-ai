@@ -203,16 +203,6 @@ def cmd_validate(args) -> int:
     return 0
 
 
-def _plan_from_tests(cfg, ids: list[str], rows: dict) -> dict:
-    tests = [{"id": i, "source": "floor", "why": ["requested"], "grep": None} for i in ids]
-    plan_input = {"edition": "all", "profile": "standard", "mode": "manual", "floor": {"items": {}},
-                  "change": {"base": "", "head": collect.rev(cfg.root, "HEAD")}, "stack": {}}
-    plan = validate.merge(cfg, plan_input, None, rows)
-    plan["tests"] = tests
-    plan["stack"] = validate._stack(cfg, plan_input, "standard", [rows[i] for i in ids if i in rows])
-    return plan
-
-
 def cmd_run(args) -> int:
     cfg = config.load()
     out = _out(args)
@@ -221,7 +211,7 @@ def cmd_run(args) -> int:
         ids = list(args.ids or [])
         if args.tests:
             ids += [line.strip() for line in Path(args.tests).read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
-        plan = _plan_from_tests(cfg, ids, rows)
+        plan = validate.plan_from_tests(cfg, ids, rows)
         _dump(out / "plan.json", plan)
     else:
         plan = _load(Path(args.plan) if args.plan else out / "plan.json")
@@ -575,7 +565,7 @@ def cmd_review(args) -> int:
         probe_out.mkdir(exist_ok=True)
         try:
             # Probes write under review/ only: results*.json and the gate never see them.
-            probed = run.run(cfg, _plan_from_tests(cfg, ids, rows), rows, probe_out,
+            probed = run.run(cfg, validate.plan_from_tests(cfg, ids, rows), rows, probe_out,
                              stack_mode=args.stack or os.environ.get("QA_STACK", "none"), base_url=args.base_url, retry=False)
         finally:
             report.redact_files(probe_out)
@@ -663,7 +653,7 @@ def cmd_bisect(args) -> int:
         out = Path(args.out).resolve() / "bisect" / root.name
         out.mkdir(parents=True, exist_ok=True)
         rows = catalog.index(catalog.build(wcfg))
-        plan = _plan_from_tests(wcfg, [i for i in test_ids if i in rows], rows)
+        plan = validate.plan_from_tests(wcfg, [i for i in test_ids if i in rows], rows)
         res = run.run(wcfg, plan, rows, out, stack_mode=args.stack, base_url=args.base_url, retry=False)
         return {t["id"]: t["outcome"] for t in res["tests"]}
 

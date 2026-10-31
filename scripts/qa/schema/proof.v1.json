@@ -17,7 +17,8 @@
       "properties": {
         "base": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
-        "outcome": {"type": "string"}
+        "outcome": {"type": "string"},
+        "details": {"type": "string"}
       }
     },
     "mutants": {
@@ -30,7 +31,8 @@
           "file": {"type": "string"},
           "line": {"type": "integer"},
           "op": {"type": "string"},
-          "outcome": {"type": "string"}
+          "outcome": {"type": "string"},
+          "details": {"type": "string"}
         }
       }
     },

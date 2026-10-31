@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from qa import schema
+from qa import collect, schema
 from qa.config import Config
 from qa.impact import PROFILE_ORDER
 
@@ -165,3 +165,14 @@ def _stack(cfg: Config, plan_input: dict[str, Any], profile: str, rows: list[dic
         "broker": broker,
         "compose_profiles": profiles,
     }
+
+
+def plan_from_tests(cfg: Config, ids: list[str], rows: dict) -> dict[str, Any]:
+    """A plan that runs exactly these catalog ids."""
+    tests = [{"id": i, "source": "floor", "why": ["requested"], "grep": None} for i in ids]
+    plan_input = {"edition": "all", "profile": "standard", "mode": "manual", "floor": {"items": {}},
+                  "change": {"base": "", "head": collect.rev(cfg.root, "HEAD")}, "stack": {}}
+    plan = merge(cfg, plan_input, None, rows)
+    plan["tests"] = tests
+    plan["stack"] = _stack(cfg, plan_input, "standard", [rows[i] for i in ids if i in rows])
+    return plan

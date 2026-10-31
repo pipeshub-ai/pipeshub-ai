@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from qa import catalog, collect, config, globs, run
+from qa import catalog, collect, config, globs, run, validate
 from qa.config import Config
 
 LINT = "{}: asserts nothing about behavior (only that the call did not raise)"
@@ -29,6 +29,8 @@ COMPARE = {ast.Eq: (ast.NotEq, "== -> !="), ast.NotEq: (ast.Eq, "!= -> =="), ast
            ast.Gt: (ast.LtE, "> -> <="), ast.LtE: (ast.Gt, "<= -> >"), ast.GtE: (ast.Lt, ">= -> <"),
            ast.In: (ast.NotIn, "in -> not in"), ast.Is: (ast.IsNot, "is -> is not")}
 KILLS = ("fail", "error")
+# An error before any test ran (collection, import, no JUnit) says nothing about the test's assertions.
+EARLY_ERROR = re.compile(r"collection|no result in JUnit|wrote no JUnit|run-level error|could not start")
 
 
 # --- lint ---------------------------------------------------------------------
@@ -47,18 +49,18 @@ def _checks_behavior(fn: ast.AST) -> bool:
     return False
 
 
-def assertion_problems(source: str) -> list[str]:
-    """Tests whose only check is that the call did not raise."""
+def assertion_problems(source: str, only: str | None = None) -> list[str]:
+    """Tests whose only check is that the call did not raise. only: "test" or "Class::test" limits it to one."""
     tree = ast.parse(source)
     funcs = []
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-            funcs += node.body
+            funcs += [(f"{node.name}::{f.name}", f) for f in node.body]
         else:
-            funcs.append(node)
-    return [LINT.format(f.name) for f in funcs
+            funcs.append((getattr(node, "name", ""), node))
+    return [LINT.format(f.name) for qual, f in funcs
             if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name.startswith("test")
-            and not _checks_behavior(f)]
+            and (only is None or qual == only) and not _checks_behavior(f)]
 
 
 # --- mutants --------------------------------------------------------------------
@@ -127,13 +129,12 @@ def variant_tree(root: Path, head: str, test_path: str) -> Iterator[Path]:
 
 # --- prove ----------------------------------------------------------------------------
 
-def _attempt(cfg: Config, rows: dict, test_id: str, head: str, out: Path, stack_mode: str, base_url: str | None) -> tuple[str, str]:
-    """One run of the test in cfg.root: (outcome, not-run kind)."""
-    from qa.__main__ import _plan_from_tests
+def _attempt(cfg: Config, rows: dict, test_id: str, head: str, out: Path, stack_mode: str, base_url: str | None) -> tuple[str, str, str]:
+    """One run of the test in cfg.root: (outcome, not-run kind, details)."""
     saved = os.environ.get("QA_ROOT")
     os.environ["QA_ROOT"] = str(cfg.root)
     try:
-        plan = _plan_from_tests(cfg, [test_id], rows)
+        plan = validate.plan_from_tests(cfg, [test_id], rows)
         plan["head"] = head
         res = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=base_url,
                       build=stack_mode == "managed", retry=False)
@@ -144,8 +145,9 @@ def _attempt(cfg: Config, rows: dict, test_id: str, head: str, out: Path, stack_
             os.environ["QA_ROOT"] = saved
     t = next((t for t in res["tests"] if t["id"] == test_id), None)
     if t is None:
-        return "not_run", "no_result"
-    return t["outcome"], t.get("kind") or str(t.get("details") or "").split(":")[0]
+        return "not_run", "no_result", "no result"
+    details = str(t.get("details") or "")
+    return t["outcome"], t.get("kind") or details.split(":")[0], details
 
 
 def _is_test(cfg: Config, path: str) -> bool:
@@ -179,9 +181,11 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
         path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
         return result
 
+    # A test-grain id ("...::test" or "...::Class::test") is linted alone; a weak sibling is not its problem.
+    _, _, only = row["id"].partition("::")
     if row["path"].endswith(".py") and (root / row["path"]).is_file():
         try:
-            result["lint"] = assertion_problems((root / row["path"]).read_text(encoding="utf-8"))
+            result["lint"] = assertion_problems((root / row["path"]).read_text(encoding="utf-8"), only or None)
         except SyntaxError as exc:
             result["lint"] = [f"{row['path']}: does not parse: {exc.msg}"]
     if result["lint"]:
@@ -192,22 +196,26 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
     previous = signal.signal(signal.SIGTERM, run._on_term)
     try:
         for n in range(repeat):
-            result["head_runs"].append(_attempt(cfg, rows, row["id"], head, work / f"head-{n + 1}", stack_mode, base_url)[0])
+            # Its own tag, so a managed stack never builds or removes the plain qa-<sha12> image of a qa run.
+            result["head_runs"].append(_attempt(cfg, rows, row["id"], f"{head[:8]}h", work / f"head-{n + 1}", stack_mode, base_url)[0])
         if any(o != "pass" for o in result["head_runs"]):
             return finish("unproven", "did not pass on head: " + ", ".join(result["head_runs"]))
 
         k = 0
         not_run: list[str] = []
 
-        def variant(edit) -> str:
+        def variant(edit) -> dict:
             nonlocal k
             k += 1
             with variant_tree(root, head, row["path"]) as tree:
                 edit(tree)
-                outcome, kind = _attempt(config.load(tree), rows, row["id"], f"{head[:8]}v{k}", work / f"v{k}", stack_mode, base_url)
+                outcome, kind, details = _attempt(config.load(tree), rows, row["id"], f"{head[:8]}v{k}", work / f"v{k}", stack_mode, base_url)
+            if outcome == "error" and EARLY_ERROR.search(details):
+                outcome, kind, details = "not_run", "early error", f"error before any test ran: {details}"[:300]
             if outcome == "not_run":
                 not_run.append(kind)
-            return outcome
+                return {"outcome": outcome, "details": details[:300]}
+            return {"outcome": outcome}
 
         covers = [c for c in row.get("covers", []) if not _is_test(cfg, c)]
         if base_sha:
@@ -220,7 +228,7 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
                             (tree / f).unlink(missing_ok=True)
                         else:
                             _git(tree, "checkout", base_sha, "--", f, check=True)
-                result["revert"] = {"base": base_sha, "files": files, "outcome": variant(revert)}
+                result["revert"] = {"base": base_sha, "files": files, **variant(revert)}
                 if result["revert"]["outcome"] in KILLS:
                     return finish("proven", "fails when the change is reverted")
 
@@ -230,9 +238,15 @@ def prove(cfg: Config, row: dict, out: Path, base: str | None = None, repeat: in
             lines = _changed_lines(root, base_sha, f) if base_sha else None
             candidates += [(f, line, op, src) for line, op, src in mutants((root / f).read_text(encoding="utf-8"), lines)]
         for f, line, op, src in candidates[:max_mutants]:
-            outcome = variant(lambda tree: (tree / f).write_text(src, encoding="utf-8"))
-            result["mutants"].append({"file": f, "line": line, "op": op, "outcome": outcome})
-            if outcome in KILLS:
+            try:
+                ast.parse(src)
+            except SyntaxError:
+                not_run.append("unparsable mutant")
+                result["mutants"].append({"file": f, "line": line, "op": op, "outcome": "not_run", "details": "mutant does not parse"})
+                continue
+            got = variant(lambda tree: (tree / f).write_text(src, encoding="utf-8"))
+            result["mutants"].append({"file": f, "line": line, "op": op, **got})
+            if got["outcome"] in KILLS:
                 return finish("proven", f"fails under mutation {op} at {f}:{line}")
     finally:
         signal.signal(signal.SIGTERM, previous)
