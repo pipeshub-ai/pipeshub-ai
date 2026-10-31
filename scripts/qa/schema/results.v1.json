@@ -9,6 +9,17 @@
     "fatal"
   ],
   "properties": {
+    "environment": {
+      "type": "object",
+      "properties": {
+        "image": {"type": "string"},
+        "image_digest": {"type": ["string", "null"]},
+        "base_images": {"type": "object"},
+        "unpinned": {"type": "array", "items": {"type": "string"}},
+        "lockfiles": {"type": "object"},
+        "compose": {"type": "object"}
+      }
+    },
     "schema": {
       "const": "qa-results/v1"
     },

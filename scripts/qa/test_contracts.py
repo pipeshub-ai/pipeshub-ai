@@ -45,6 +45,13 @@ class TestContracts(unittest.TestCase):
             result = run.run(self.cfg, self.plan, catalog.index(self.rows), Path(out), stack_mode="none")
         self.assertEqual(schema.check(result, "results.v1.json"), [])
 
+    def test_results_environment_block(self) -> None:
+        env = {"image": "pipeshub-ai:qa-0123456789ab", "image_digest": None, "base_images": {"A_IMAGE": "a/b@sha256:1"},
+               "unpinned": ["node:20-slim"], "lockfiles": {"package-lock.json": "ab"}, "compose": {"c.yml": "cd"}}
+        doc = {"schema": "qa-results/v1", "tests": [], "invocations": [], "fatal": [], "environment": env}
+        self.assertEqual(schema.check(doc, "results.v1.json"), [])
+        self.assertTrue(schema.check({**doc, "environment": {**env, "unpinned": "node"}}, "results.v1.json"))
+
     def test_validator_catches_a_wrong_shape(self) -> None:
         self.assertTrue(schema.check({"schema": "qa-plan-llm/v1", "add": [{"reason": "no id"}]}, "plan-llm.v1.json"))
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import secrets
@@ -17,6 +19,25 @@ from typing import Any
 COMPOSE_FILE = "deployment/docker-compose/docker-compose.integration.{graph}.yml"
 STACK_DIR = "integration-tests/stack"
 APP_SERVICE = "pipeshub-ai"
+LOCKFILES = ["*package-lock.json", "*uv.lock", "*pyproject.toml"]
+_BASE_ARG = re.compile(r"^\s*(\w+_IMAGE):\s*\$\{\1:-([^}]+)\}\s*$", re.M)
+
+
+def base_image_args(compose_text: str) -> dict[str, str]:
+    """The build args the compose file takes from the environment, with their effective refs."""
+    return {n: os.environ.get(n) or d for n, d in _BASE_ARG.findall(compose_text)}
+
+
+def repo_digest(ref: str, repo_digests: list[str]) -> str | None:
+    if "@sha256:" in ref:
+        return ref
+    name = ref.rsplit(":", 1)[0] if ":" in ref.rsplit("/", 1)[-1] else ref
+    return next((d for d in repo_digests if d.split("@", 1)[0] == name), None)
+
+
+def file_hashes(root: Path, patterns: list[str]) -> dict[str, str]:
+    listed = subprocess.run(["git", "ls-files", "-z", "--", *patterns], cwd=root, capture_output=True, text=True, check=True, timeout=60).stdout
+    return {f: hashlib.sha256((root / f).read_bytes()).hexdigest() for f in sorted(filter(None, listed.split("\0"))) if (root / f).is_file()}
 
 
 def image_tag(head: str | None) -> str:
@@ -106,14 +127,52 @@ class Stack:
             fh.flush()
             subprocess.run(cmd, cwd=self.root, env=self.env(), stdout=fh, stderr=subprocess.STDOUT, check=True, timeout=timeout)
 
+    def pin_bases(self) -> None:
+        """Build from the digests the base tags point at now; a base with none keeps its tag and is recorded as unpinned."""
+        bases: dict[str, str] = {}
+        unpinned: list[str] = []
+        for name, ref in base_image_args((self.root / self.compose_file).read_text(encoding="utf-8")).items():
+            digest = None
+            if "@sha256:" not in ref:
+                subprocess.run(["docker", "pull", ref], capture_output=True, timeout=1800)  # offline or local-only is fine
+            try:
+                out = subprocess.run(["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", ref], capture_output=True, text=True, timeout=60)
+                digest = repo_digest(ref, json.loads(out.stdout or "[]") or []) if out.returncode == 0 else None
+            except (ValueError, OSError, subprocess.SubprocessError):
+                digest = None
+            if digest:
+                self.extra_env[name] = digest
+                bases[name] = digest
+            else:
+                unpinned.append(ref)
+        dockerfile = (self.root / "Dockerfile").read_text(encoding="utf-8") if (self.root / "Dockerfile").is_file() else ""
+        unpinned += [m for m in re.findall(r"^FROM\s+(\S+)", dockerfile, re.M | re.I) if "$" not in m and m not in unpinned]
+        self.environment.update({"base_images": bases, "unpinned": unpinned})
+
+    def record_environment(self) -> None:
+        """Image id, lockfile and compose hashes; best effort, never fails the run."""
+        tag = image_tag(self.extra_env.get("GIT_COMMIT"))
+        try:
+            ident = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", tag], capture_output=True, text=True, timeout=60)
+            digest = ident.stdout.strip() if ident.returncode == 0 and ident.stdout.strip() else None
+            self.environment.update({
+                "image": tag, "image_digest": digest,
+                "lockfiles": file_hashes(self.root, LOCKFILES),
+                "compose": {self.compose_file: hashlib.sha256((self.root / self.compose_file).read_bytes()).hexdigest()},
+            })
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.events.append(f"environment not recorded: {exc}")
+
     def start(self, health_timeout: float = 300) -> None:
         if self.mode == "none":
             return
         if self.mode == "managed":
             if self.build:
+                self.pin_bases()
                 self._run(self.compose("build"), f"stack-{self.graph_db}.log", timeout=3600)
             self.up = True
             self._run(self.compose("up", "-d"), f"stack-{self.graph_db}.log")
+            self.record_environment()
             self.events.append("compose up")
         pending = _load(self.root, "health").wait(self.base_url, health_timeout)
         if pending:

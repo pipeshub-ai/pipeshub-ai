@@ -41,6 +41,8 @@ python3 scripts/qa report --gate
 python3 scripts/qa go --adapter claude_code --plan-only
 ```
 
+A managed stack generates `PIPESHUB_TEST_USER_PASSWORD` for each run and replaces any value in the environment.
+
 Everything lands in `qa-out/` (git-ignored). Use `--out DIR` for a different run
 directory.
 

@@ -618,5 +618,83 @@ class TestAllowNotRun(unittest.TestCase):
             self.parse("--allow-not-run", "secret,bogus")
 
 
+
+
+class TestPinnedBases(unittest.TestCase):
+    COMPOSE = "deployment/docker-compose/docker-compose.integration.neo4j.yml"
+    BASE = "pipeshubai/pipeshub-ai-base:python-deps"
+
+    def stack(self, root=None):
+        from qa import stack
+        return stack.Stack(root or Path(__file__).resolve().parents[2], "managed", "neo4j", "redis", [], "p", "http://x", Path("."))
+
+    def fake(self, inspect_out, pull_rc=0):
+        calls = []
+
+        def run_(cmd, **kw):
+            calls.append((cmd, kw))
+            if cmd[:2] == ["docker", "pull"]:
+                return mock.Mock(returncode=pull_rc, stdout="")
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return mock.Mock(returncode=0, stdout=inspect_out)
+            return mock.Mock(returncode=0, stdout="")
+        return run_, calls
+
+    def test_base_image_args_come_from_the_compose_file(self) -> None:
+        from qa import stack
+        text = (Path(__file__).resolve().parents[2] / self.COMPOSE).read_text(encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTHON_DEPS_IMAGE", None)
+            os.environ.pop("RUNTIME_BASE_IMAGE", None)
+            self.assertEqual(stack.base_image_args(text), {"PYTHON_DEPS_IMAGE": self.BASE, "RUNTIME_BASE_IMAGE": "pipeshubai/pipeshub-ai-base:runtime"})
+        with mock.patch.dict(os.environ, {"PYTHON_DEPS_IMAGE": "x:y"}):
+            self.assertEqual(stack.base_image_args(text)["PYTHON_DEPS_IMAGE"], "x:y")
+
+    def test_repo_digest_picks_the_matching_repository(self) -> None:
+        from qa import stack
+        self.assertEqual(stack.repo_digest("a/b:t", ["c/d@sha256:1", "a/b@sha256:2"]), "a/b@sha256:2")
+        self.assertEqual(stack.repo_digest("a/b@sha256:9", []), "a/b@sha256:9")
+        self.assertIsNone(stack.repo_digest("a/b:t", []))
+
+    def test_base_without_repo_digest_is_recorded_unpinned(self) -> None:
+        from qa import stack
+        s = self.stack()
+        fake, _ = self.fake("[]", pull_rc=1)
+        with mock.patch.object(stack.subprocess, "run", fake):
+            s.pin_bases()
+        self.assertNotIn("PYTHON_DEPS_IMAGE", s.extra_env)
+        self.assertIn(self.BASE, s.environment["unpinned"])
+        self.assertIn("node:20-slim", s.environment["unpinned"])
+        self.assertEqual(s.environment["base_images"], {})
+
+    def test_pinned_base_is_passed_to_the_build(self) -> None:
+        from qa import stack
+        s = self.stack()
+        s.log_dir = Path(tempfile.mkdtemp())
+        s.build = True
+        fake, calls = self.fake('["pipeshubai/pipeshub-ai-base@sha256:abc"]')
+        with mock.patch.object(stack.subprocess, "run", fake):
+            s.pin_bases()
+            s._run(s.compose("build"), "x.log")
+        build = next(kw for cmd, kw in calls if cmd[-1] == "build")
+        self.assertEqual(build["env"]["PYTHON_DEPS_IMAGE"], "pipeshubai/pipeshub-ai-base@sha256:abc")
+        self.assertEqual(s.environment["base_images"]["PYTHON_DEPS_IMAGE"], "pipeshubai/pipeshub-ai-base@sha256:abc")
+
+    def test_file_hashes_are_stable(self) -> None:
+        from qa import stack
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        testing.write(root, "package-lock.json", "{}\n")
+        testing.write(root, "sub/uv.lock", "a\n")
+        testing.commit(root, "locks")
+        before = stack.file_hashes(root, stack.LOCKFILES)
+        self.assertEqual(before, stack.file_hashes(root, stack.LOCKFILES))
+        self.assertEqual({"package-lock.json", "sub/uv.lock"} - set(before), set())
+        testing.write(root, "package-lock.json", '{"a": 1}\n')
+        after = stack.file_hashes(root, stack.LOCKFILES)
+        self.assertNotEqual(before["package-lock.json"], after["package-lock.json"])
+        self.assertEqual(before["sub/uv.lock"], after["sub/uv.lock"])
+
+
 if __name__ == "__main__":
     unittest.main()

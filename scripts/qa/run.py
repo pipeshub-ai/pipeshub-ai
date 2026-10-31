@@ -382,6 +382,7 @@ def run(
     results: dict[str, dict[str, Any]] = {}
     invocation_log: list[dict[str, Any]] = []
     stack_events: list[dict[str, Any]] = []
+    environment: dict[str, Any] = {}
     previous = signal.signal(signal.SIGTERM, _on_term)
     try:
         plain = [i for i in invs if not i.needs_stack and not i.unavailable]
@@ -424,6 +425,7 @@ def run(
                                     for i in inv.ids:
                                         _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": f"stack {stack.graph_db}: {exc}"})
                             finally:
+                                environment = environment or stack.environment
                                 stack.collect_logs()
                                 stack.stop()
                                 stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
@@ -446,6 +448,7 @@ def run(
             kind, why = not_run.get(tid, ("no_result", "not executed"))
             tests.append({"id": tid, "outcome": "not_run", "kind": kind, "seconds": None, "details": why})
     return {
+        **({"environment": environment} if environment else {}),
         "schema": "qa-results/v1",
         "scope": scope,
         "head": plan.get("head"),
