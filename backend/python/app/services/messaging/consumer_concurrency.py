@@ -1221,6 +1221,28 @@ async def reserve_record_memory(
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
 
+async def acquire_download_slot(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    timeout: float | None = None,
+) -> "Admission | None":
+    """Take a place among the heavy records allowed to hold downloaded content
+    without a parse permit; ``None`` when the record needs none (a light
+    record, or no governor).
+
+    Taken before the download and handed back once the parse permit is held,
+    so a record queued for a parse slot has not fetched its file. With
+    *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
+    """
+    governor = host.governor
+    if governor is None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
+        return None
+    ahead = governor.download_ahead
+    if not await ahead.acquire(timeout):
+        raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
+    return Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+
+
 async def acquire_parsing_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,

@@ -16,6 +16,11 @@ from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     PasswordProtectedError,
 )
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from app.utils.user_errors import PASSWORD_PROTECTED
 from tests.unit.services.messaging.test_record_handler import (
@@ -56,7 +61,7 @@ def _failing_record(handler, error: Exception, **extra) -> dict:
 
     async def on_event(*_a, **_k) -> AsyncGenerator:
         record["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
-        yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
         raise error
 
     handler.event_processor.on_event = MagicMock(side_effect=on_event)

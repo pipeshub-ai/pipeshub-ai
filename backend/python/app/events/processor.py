@@ -333,12 +333,14 @@ class Processor:
 
             # Phase 1: Parse PDF layout (no LLM calls)
             parsed_data = await processor.parse_document(record_name, pdf_binary)
+            pdf_binary = None
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(parsed_data)
+            parsed_data = processor = None
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
@@ -380,6 +382,8 @@ class Processor:
 
             # Phase 1: Parse PDF via the external Docling service (no LLM calls)
             doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
+            # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
+            pdf_binary = None
             if doc is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
                 yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
@@ -389,6 +393,8 @@ class Processor:
 
             # Phase 2: Create blocks locally (involves LLM calls for tables)
             block_containers = await self.docling_processor.create_blocks(doc)
+            # The parsed document is not needed once its blocks exist, so it does not live through embedding.
+            doc = None
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
@@ -488,6 +494,7 @@ class Processor:
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
             ocr_result = await handler.process_document(pdf_binary)
+            pdf_binary = handler = None
 
             self.logger.debug("✅ OCR processing completed")
 
@@ -565,6 +572,9 @@ class Processor:
                 for page_block_containers in page_block_results:
                     if page_block_containers:
                         combined_block_containers.extend(page_block_containers)
+                # The OCR pages and their parsed documents are not needed once the blocks exist.
+                ocr_result = pages = all_conv_results = page_build_tasks = page_block_results = page_block_containers = None
+                processor = None
 
                 self.logger.info(
                     f"📦 Combined {len(combined_block_containers.blocks)} blocks and "
@@ -636,6 +646,7 @@ class Processor:
                             index += 1
 
             block_groups = ocr_result.get("tables", [])
+            ocr_result = blocks_from_ocr = None
             for block_group in block_groups:
                 # Convert list of BlockContainerIndex to BlockGroupChildren
                 block_container_indices = table_rows.get(block_group.index, [])
@@ -717,13 +728,14 @@ class Processor:
             # the bytes, so the name must say DOCX, as it does for PPTX below.
             doc_name = recordName if recordName.lower().endswith(".docx") else f"{recordName}.docx"
             conv_res = await processor.parse_document(doc_name, docx_binary)
+            docx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
-
+            conv_res = None
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1354,12 +1366,14 @@ class Processor:
             # self.parsers is shared by concurrent records.
             document_parser: ExcelParser = parser.new_document_parser()
             await asyncio.to_thread(document_parser.load_workbook_from_binary, excel_binary)
+            excel_binary = None
 
             # Signal parsing complete after workbook is loaded
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await document_parser.create_blocks(llm)
+            document_parser = None
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
@@ -2159,12 +2173,14 @@ class Processor:
             if not recordName.lower().endswith(".pptx"):
                 recordName = f"{recordName}.pptx"
             conv_res = await processor.parse_document(recordName, pptx_binary)
+            pptx_binary = None
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
+            conv_res = None
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value, raise_on_error=True
