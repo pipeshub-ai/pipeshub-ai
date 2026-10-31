@@ -36,6 +36,8 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from jsonschema import Draft202012Validator
+from jsonschema.validators import validator_for
 from pydantic import Field, ValidationError
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
@@ -52,7 +54,7 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
-from app.agents.mcp.tool_kind import ToolKind
+from app.agents.mcp.tool_kind import ToolKind  # noqa: TC001
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
@@ -138,7 +140,7 @@ class PendingCall(MCPCamelModel):
     # Saved with the call so an edited answer can be checked against the tool's own schema and kind.
     tool_path: str = ""
     kind: ToolKind = "write"
-    input_schema: Optional[dict[str, Any]] = None
+    input_schema: dict[str, Any] | None = None
     created_at: float
     expires_at: float
 
@@ -262,14 +264,18 @@ _CALL_CHECKS: dict[str, tuple[str, Callable[[Any], bool]]] = {
 }
 
 
-def call_kind(target: "ApprovalTarget", tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
+def kind_of_call(kind: ToolKind, tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
     """What this one call does to data: the tool's kind, unless this call can't be undone."""
     check = _CALL_CHECKS.get(tool_path)
-    if check is None or target.kind == "destructive":
-        return target.kind
+    if check is None or kind == "destructive":
+        return kind
     field, keeps_its_kind = check
     value = arguments.get(field) if isinstance(arguments, dict) else None
-    return target.kind if keeps_its_kind(value) else "destructive"
+    return kind if keeps_its_kind(value) else "destructive"
+
+
+def call_kind(target: "ApprovalTarget", tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
+    return kind_of_call(target.kind, tool_path, arguments)
 
 
 @dataclass(frozen=True)
@@ -491,15 +497,64 @@ def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def args_hash(arguments: dict[str, Any]) -> str:
     """Names one set of arguments, so an answer can say which ones it saw."""
-    text = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # default=str: the saved call must never fail to hash, whatever a tool was given.
+    text = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+class EditError(MCPCamelModel):
+    # A JSON pointer to the argument; "" for the call as a whole.
+    path: str
+    message: str
+
+
+_KIND_RANK: dict[str, int] = {"read": 0, "write": 1, "destructive": 2}
+
+
+def check_edit(
+    pending: PendingCall, edited: dict[str, Any], *, shown_hash: str, own_rule: Rule | None, enabled_on_project: bool = False,
+) -> list[EditError]:
+    """Why an edited set of arguments can't be run, one stage at a time (the first that fails
+    answers): the card is current, the tool can be edited, the schema holds, the call is no riskier
+    than the one asked for, and no rule now blocks it."""
+    if shown_hash != args_hash(pending.arguments):
+        return [EditError(path="", message="This request changed. Reload.")]
+    # A call saved before edits existed has no tool path, and its kind is a default, not the tool's.
+    if pending.input_schema is None or not pending.tool_path:
+        return [EditError(path="", message="This action can't be edited.")]
+    schema = pending.input_schema
+    validator = validator_for(schema, default=Draft202012Validator)(schema)
+    if errors := [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator.iter_errors(edited)]:
+        return errors
+    kind = kind_of_call(pending.kind, pending.tool_path, edited)
+    if _KIND_RANK[kind] > _KIND_RANK[pending.kind]:
+        return [EditError(path="", message="This change makes the action riskier, so it can't be made here. Use Change something else.")]
+    verdict = decide(own=own_rule, kind=kind, source=pending.source, watched=True, approved_call=False, enabled_on_project=enabled_on_project)
+    if verdict.rule == "block":
+        return [EditError(path="", message="A rule blocks this action with these details.")]
+    return []
+
+
+def _pointer(path: Any) -> str:  # noqa: ANN401
+    return "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in path)
+
+
+async def own_rule_for(config_service: "ConfigurationService", pending: PendingCall) -> Rule | None:
+    """The rule the person (or, for an org toolset, its admin) set for this call's tool, if any."""
+    if pending.source == "mcp":
+        rules = await load_own_rules(config_service, user_id=pending.user_id, instance_id=pending.instance_id)
+    elif pending.instance_id and (pending.personal or organization_toolset_tool_rules()):
+        rules = await load_instance_rules(config_service, instance_id=pending.instance_id)
+    else:
+        return None
+    return rules.tools.get(pending.tool_name)
 
 
 def edits_enabled() -> bool:
     return env_bool(EDITS_ENV, True)
 
 
-def _input_schema(tool: "Tool") -> Optional[dict[str, Any]]:
+def _input_schema(tool: "Tool") -> dict[str, Any] | None:
     schema = getattr(tool, "raw_input_schema", None)
     if schema is None:
         schema = _quietly(lambda: tool.to_schema().input_schema)

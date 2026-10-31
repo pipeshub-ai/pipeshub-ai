@@ -20,7 +20,10 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
-import { UnauthorizedError } from '../../../libs/errors/http.errors';
+import {
+  ForbiddenError,
+  UnauthorizedError,
+} from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { redactSensitiveQueryParams } from '../../../libs/utils/log-redaction.utils';
@@ -316,6 +319,32 @@ export const updateMyMcpToolRules = proxyMcp(
   (req) => `/instances/${encInstanceId(req)}/my-tool-rules`,
   'Update my MCP tool rules',
 );
+
+// Checks an edit to a waiting call without answering it. Only a web sign-in can answer a card.
+const validateToolApprovalEdit = proxyMcp(
+  HttpMethod.POST,
+  (req) =>
+    `/tool-approvals/${encodeURIComponent(String(req.params.approvalId))}/validate`,
+  'Validate an edited tool call',
+);
+
+export const validateMcpToolApproval =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    if (req.user?.isOAuth) {
+      next(
+        new ForbiddenError(
+          'Tool approvals can only be answered from the PipesHub app.',
+        ),
+      );
+      return Promise.resolve();
+    }
+    return validateToolApprovalEdit(appConfig)(req, res, next);
+  };
 
 export const getAgentMcpServers = proxyMcp(
   HttpMethod.GET,

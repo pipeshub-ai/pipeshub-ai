@@ -46,6 +46,7 @@ import {
   getAgentMcpOAuthAuthorizationUrl,
   getMyMcpToolRules,
   updateMyMcpToolRules,
+  validateMcpToolApproval,
 } from '../controller/mcp_servers.controller';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
@@ -92,6 +93,13 @@ export function createMcpServersRouter(container: Container): Router {
     authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.MCP_WRITE),
     updateMyMcpToolRules(config),
+  );
+  // Tool approvals: checks an edited call. The handler also refuses any OAuth token: only a web sign-in answers a card.
+  router.post(
+    '/tool-approvals/:approvalId/validate',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_WRITE),
+    validateMcpToolApproval(config),
   );
 
   // ---- Auth — API token / headers -----------------------------------------

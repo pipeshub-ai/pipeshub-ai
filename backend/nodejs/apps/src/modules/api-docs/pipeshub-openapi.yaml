@@ -2324,6 +2324,32 @@ components:
           description: >-
             Tool name → rule, the person's own, applied in all their chats. A tool without one
             starts from its kind: `read` at allow, `write` at ask, `destructive` at block.
+    McpToolApprovalValidateRequest:
+      type: object
+      required: [argsHash, arguments]
+      properties:
+        argsHash:
+          type: string
+          description: The hash of the arguments the card showed (`argsHash` on the card).
+        arguments:
+          type: object
+          additionalProperties: true
+          description: The edited arguments, at most 64,000 characters of JSON.
+    McpToolApprovalValidateResponse:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path:
+                type: string
+                description: JSON pointer to the argument; empty for the call as a whole.
+              message:
+                type: string
     ToolsetToolRulesUpdate:
       type: object
       required: [tools]
@@ -59706,6 +59732,69 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/tool-approvals/{approvalId}/validate:
+    post:
+      tags:
+        - MCP Server Instances
+      summary: Check edited arguments for a tool call waiting for approval
+      description: >-
+        Runs the checks on an edit without answering the approval, which stays open. Available to
+        a web sign-in only.
+      operationId: validateMcpToolApprovalEdit
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:write
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          description: The id of the waiting approval.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolApprovalValidateRequest'
+      responses:
+        '200':
+          description: The problems found; empty when the edit can be approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolApprovalValidateResponse'
+        '401':
+          description: Missing, invalid or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller used an OAuth token or personal access token (only a web sign-in can answer an approval), or lacks the `mcp:write` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such approval for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: The approval has expired or was already answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected failure in the gateway or in the connectors service
           content:
             application/json:
               schema:

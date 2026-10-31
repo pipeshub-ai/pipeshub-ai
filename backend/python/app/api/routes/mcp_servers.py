@@ -13,14 +13,16 @@ admin-shared credentials are masked); the underlying `ConfigurationService` stor
 values at rest exactly like the toolsets/connectors credential paths.
 """
 import asyncio
+import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal, NamedTuple, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.agents.agent_loop import tool_approvals
 from app.agents.constants.mcp_server_constants import (
@@ -31,6 +33,8 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_oauth_state_claim_path,
     get_mcp_oauth_state_path,
     get_mcp_shared_dcr_client_path,
+    get_mcp_tool_approval_claim_path,
+    get_mcp_tool_approval_path,
     get_mcp_unhashed_oauth_state_claim_path,
     get_mcp_unhashed_oauth_state_path,
 )
@@ -2247,3 +2251,42 @@ async def update_my_tool_rules(request: Request, instance_id: str, payload: Tool
     ):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the tool rules.")
     return {"tools": payload.tools}
+
+
+# Edits to a tool call waiting for approval (`tool_approvals.check_edit`).
+_MAX_EDITED_ARGUMENT_CHARS = 64_000
+
+
+class ToolApprovalValidateBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    args_hash: str = Field(alias="argsHash", max_length=64)
+    arguments: dict[str, Any]
+
+    @field_validator("arguments")
+    @classmethod
+    def _bounded_arguments(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, default=str, ensure_ascii=False)) > _MAX_EDITED_ARGUMENT_CHARS:
+            raise ValueError("The edited arguments are too large.")
+        return value
+
+
+@router.post("/tool-approvals/{approval_id}/validate")
+async def validate_tool_approval_edit(request: Request, approval_id: str, payload: ToolApprovalValidateBody) -> dict[str, Any]:
+    """Checks edited arguments for a waiting call without answering it: the approval stays open."""
+    config_service = _get_config_service(request)
+    user_context = _get_user_context(request)
+    try:
+        raw = await tool_approvals._read(config_service, get_mcp_tool_approval_path(approval_id))
+        pending = tool_approvals.PendingCall.model_validate(raw) if isinstance(raw, dict) else None
+    except ValidationError:
+        pending = None
+    if pending is None or (pending.org_id, pending.user_id) != (user_context["org_id"], user_context["user_id"]):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="This approval request was not found.")
+    claim = await tool_approvals._read(config_service, get_mcp_tool_approval_claim_path(approval_id))
+    if isinstance(claim, dict) or pending.expires_at <= time.time():
+        raise HTTPException(status_code=HttpStatusCode.GONE.value, detail="This approval request has already been answered or has expired.")
+    errors = tool_approvals.check_edit(
+        pending, payload.arguments, shown_hash=payload.args_hash, own_rule=await tool_approvals.own_rule_for(config_service, pending),
+    )
+    return {"errors": errors}
