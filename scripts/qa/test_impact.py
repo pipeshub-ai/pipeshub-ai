@@ -56,6 +56,8 @@ class TestSelectionSources(ImpactCase):
     def test_covers_tag_selects_the_integration_test(self) -> None:
         p = self.change({"backend/python/app/services/retrieval.py": "def search():\n    return []\n"})
         self.assertIn("covers backend/python/app/services/retrieval.py", self.why(p, "it:retrieval/test_search.py::test_acl_filter"))
+        # test_ranking is in the floor through flow `search`, not through a covers tag.
+        self.assertFalse([r for r in self.why(p, "it:retrieval/test_search.py::test_ranking") if r.startswith("covers")])
 
     def test_typescript_mirror_and_import_graph(self) -> None:
         p = self.change({"backend/nodejs/apps/src/modules/auth/auth.service.ts": "export const check = () => false;\n"})

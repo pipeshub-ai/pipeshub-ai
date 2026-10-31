@@ -400,6 +400,32 @@ class TestReportGate(RunCase):
         self.assertIn("the floor alone ran", body)
         self.assertTrue(body.startswith("<!-- qa-engine:all -->"))
 
+    def _flow_plan(self):
+        plan = plan_for([ACL, "it:retrieval/test_search.py::test_ranking", "e2e:frontend/tests/e2e/login.spec.ts"])
+        for t, f in zip(plan["tests"], (["search"], ["search"], ["login"])):
+            t["flows"] = f
+        return plan
+
+    def test_report_groups_results_by_flow(self) -> None:
+        results = {"tests": [
+            {"id": ACL, "outcome": "fail"},
+            {"id": "it:retrieval/test_search.py::test_ranking", "outcome": "pass"},
+            {"id": "e2e:frontend/tests/e2e/login.spec.ts", "outcome": "pass"},
+        ]}
+        body = report.render(self.cfg, self._flow_plan(), results)
+        self.assertIn("| search | P0 | 2 | 1 | 0 |", body)
+        self.assertIn("| login | P1 | 1 | 0 | 0 |", body)
+        self.assertLess(body.index("| search | P0"), body.index("| login | P1"))
+
+    def test_report_without_flows_still_renders(self) -> None:
+        body = report.render(self.cfg, plan_for([ACL, "it:retrieval/test_search.py::test_ranking"]), None)
+        self.assertIn("| (no flow) |  | 2 |  |  |", body)
+
+    def test_report_lists_affected_flows_without_tests(self) -> None:
+        plan = plan_for([ACL])
+        plan["flows"] = {"login": "trigger x"}
+        self.assertIn("Affected flows with no planned test: login", report.render(self.cfg, plan, None))
+
     def test_report_redacts_secret_values(self) -> None:
         plan = plan_for([ACL])
         results = {"tests": [{"id": "t", "outcome": "fail", "details": "bad key hunter2hunter2"}]}

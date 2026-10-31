@@ -80,7 +80,7 @@ class TestInvariants(ValidateCase):
         # A 2 minute budget fits one integration test (assumed 90 s).
         self.plan_input["budget"]["extra_minutes"] = 2
         adds = [
-                        {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync", "reason": "b", "confidence": 0.8},
+            {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync", "reason": "b", "confidence": 0.8},
             {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_incr_001_incremental", "reason": "c", "confidence": 0.8},
             {"id": "py:tests/unit/test_patch_only.py", "reason": "d", "confidence": 0.1},
         ]

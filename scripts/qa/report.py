@@ -129,6 +129,31 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
             for (kind, reason), ids in sorted(not_run.items(), key=lambda kv: -len(kv[1])):
                 lines.append(f"| {kind}{'' if kind in allowed else ' (blocks)'} | {_one_line(redact(reason))} | {len(ids)} |")
 
+    # Plans written before flows existed have no `flows` keys: every test lands in (no flow).
+    order = {f["id"]: i for i, f in enumerate(cfg.flows)}
+    by_flow: dict[str, list[str]] = defaultdict(list)
+    for t in plan["tests"]:
+        for fid in t.get("flows") or ["(no flow)"]:
+            by_flow[fid].append(t["id"])
+    outcome = {t["id"]: t["outcome"] for t in results["tests"]} if results is not None else {}
+
+    def flow_key(fid: str) -> tuple[str, int]:
+        f = cfg.flow(fid)
+        return (f["priority"] if f else "?", order.get(fid, len(order)))
+    rows = sorted((f for f in by_flow if f != "(no flow)"), key=flow_key) + (["(no flow)"] if "(no flow)" in by_flow else [])
+    if rows:
+        lines += ["", "### By flow", "", "| Flow | Priority | Tests | Failed | Not run |", "| --- | --- | --- | --- | --- |"]
+        for fid in rows:
+            ids = by_flow[fid]
+            f = cfg.flow(fid)
+            prio = "" if fid == "(no flow)" else f["priority"] if f else "?"
+            failed = "" if results is None else sum(outcome.get(i) in BLOCKING for i in ids)
+            not_run = "" if results is None else sum(outcome.get(i) == "not_run" for i in ids)
+            lines.append(f"| {fid} | {prio} | {len(ids)} | {failed} | {not_run} |")
+    untested = [fid for fid in plan.get("flows", {}) if fid not in by_flow]
+    if untested:
+        lines += ["", "Affected flows with no planned test: " + ", ".join(untested)]
+
     reasons: dict[str, list[str]] = defaultdict(list)
     for t in plan["tests"]:
         key = t["why"][0] if t["why"] else "unspecified"
