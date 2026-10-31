@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -34,7 +36,15 @@ def read_dir(path: Path) -> dict[str, str]:
 def write_dir(path: Path, files: dict[str, str]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (path / name).write_text(text, encoding="utf-8")
+        # A crash mid-write must not leave a truncated file: write aside, then rename over it.
+        fd, tmp = tempfile.mkstemp(dir=path, prefix=f".{name}.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path / name)
+        except BaseException:
+            os.unlink(tmp)
+            raise
 
 
 def trigger(env: Mapping[str, str]) -> str:

@@ -128,6 +128,12 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
         if flaky:
             lines += ["", "### Flaky (passed on retry, not blocking)", ""]
             lines += [f"- `{_short(t['id'])}`" for t in flaky[:20]]
+        quarantined = cfg.quarantined_ids()
+        held = [t for t in results["tests"] if t["id"] in quarantined]
+        if held:
+            issue = {q["id"]: q.get("issue") for q in cfg.quarantine}
+            lines += ["", "### Quarantined (ran, not blocking)", ""]
+            lines += [f"- `{_short(t['id'])}`: {t['outcome']} ({issue.get(t['id'])})" for t in held]
         not_run = defaultdict(list)
         for t in results["tests"]:
             if t["outcome"] == "not_run":

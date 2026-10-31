@@ -8,6 +8,7 @@ mutation is re-applied on the new tip. Nothing here ever forces.
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import subprocess
@@ -31,11 +32,22 @@ class Conflict(Exception):
     """Another writer moved qa-history first."""
 
 
+def _default_branch(env: Mapping[str, str]) -> str:
+    try:
+        with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
+            name = json.load(fh)["repository"]["default_branch"]
+        if isinstance(name, str) and name:
+            return name
+    except (KeyError, OSError, ValueError, TypeError):
+        pass
+    return env.get("QA_DEFAULT_BRANCH") or "main"
+
+
 def may_write(env: Mapping[str, str]) -> tuple[bool, str]:
     event, ref = env.get("GITHUB_EVENT_NAME"), env.get("GITHUB_REF", "")
     if not event and not env.get("GITHUB_ACTIONS"):
         return True, "local run"
-    main = f"refs/heads/{env.get('QA_DEFAULT_BRANCH') or 'main'}"
+    main = f"refs/heads/{_default_branch(env)}"
     if event == "schedule":
         return True, f"schedule run on {ref}"
     if event == "push" and ref == main:
@@ -47,7 +59,7 @@ def may_write(env: Mapping[str, str]) -> tuple[bool, str]:
 def _git(root: Path, args: list[str], *, input: str | None = None,
          env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=root, input=input, capture_output=True, text=True,
-                          encoding="utf-8", env={**os.environ, **env} if env else None)
+                          encoding="utf-8", env={**os.environ, "LC_ALL": "C", **(env or {})})  # the error-text matches need English
 
 
 def _ok(root: Path, args: list[str], **kw) -> str:

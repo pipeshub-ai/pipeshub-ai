@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qa import branchstore, history
+from qa import branchstore, history, quarantine
 from qa.testing import git
 
 
@@ -115,6 +115,7 @@ class TestBranchStore(unittest.TestCase):
             ({"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}, True),
             ({"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/feat"}, False),
             ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge"}, False),
+            ({"GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_REF": "refs/heads/main"}, False),
             ({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main"}, False),
             ({"GITHUB_EVENT_NAME": "issue_comment", "GITHUB_REF": "refs/heads/main"}, False),
             ({}, True),
@@ -127,6 +128,19 @@ class TestBranchStore(unittest.TestCase):
                 self.assertIn(env["GITHUB_REF"], reason)
         self.assertEqual(branchstore.may_write({"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/dev",
                                                 "QA_DEFAULT_BRANCH": "dev"})[0], True)
+
+    def test_default_branch_comes_from_the_event_payload(self) -> None:
+        event = self.tmp / "event.json"
+        event.write_text(json.dumps({"repository": {"default_branch": "trunk"}}), encoding="utf-8")
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(event), "QA_DEFAULT_BRANCH": "dev"}
+        self.assertTrue(branchstore.may_write({**env, "GITHUB_REF": "refs/heads/trunk"})[0])
+        self.assertFalse(branchstore.may_write({**env, "GITHUB_REF": "refs/heads/dev"})[0])
+        self.assertFalse(branchstore.may_write({**env, "GITHUB_REF": "refs/heads/main"})[0])
+        # An unreadable payload falls back to QA_DEFAULT_BRANCH, then main.
+        env["GITHUB_EVENT_PATH"] = str(self.tmp / "missing.json")
+        self.assertTrue(branchstore.may_write({**env, "GITHUB_REF": "refs/heads/dev"})[0])
+        del env["QA_DEFAULT_BRANCH"]
+        self.assertTrue(branchstore.may_write({**env, "GITHUB_REF": "refs/heads/main"})[0])
 
     def test_damaged_files_do_not_stop_a_publish(self) -> None:
         root = _repo(self.tmp / "r")
@@ -149,6 +163,99 @@ class TestBranchStore(unittest.TestCase):
         with mock.patch.object(branchstore, "_gh", side_effect=RuntimeError("HTTP 500")):
             with self.assertRaises(RuntimeError):
                 branchstore.fetch_file("o/r", "quarantine.json")
+
+
+TODAY = dt.date(2026, 10, 31)
+
+
+def _entry(test_id: str, expires: dt.date, **extra) -> dict:
+    return {"id": test_id, "owner": "qa-auto", "issue": "u", "expires": expires.isoformat(), "auto": True, **extra}
+
+
+class TestAutoQuarantine(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(quarantine, "_labelled", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_three_flakes_in_ten_quarantines_with_expiry_and_issue(self) -> None:
+        got = quarantine.update([], {"t": "pkpkpkpppp"}, {"t": "u"}, set(), TODAY)
+        self.assertEqual(len(got), 1)
+        e = got[0]
+        self.assertEqual(e["id"], "t")
+        self.assertEqual(e["issue"], "u")
+        self.assertEqual(e["expires"], (TODAY + dt.timedelta(days=14)).isoformat())
+        self.assertEqual(e["owner"], "qa-auto")
+        self.assertIs(e["auto"], True)
+        self.assertEqual(e["added"], TODAY.isoformat())
+        self.assertEqual(e["reason"], "flaky in 3 of the last 10 runs: pkpkpkpppp")
+        # The oldest flake has left the window: only 2 in the last 10.
+        self.assertEqual(quarantine.update([], {"t": "pkpkppppppp"}, {"t": "u"}, set(), TODAY), [])
+
+    def test_short_window_counts(self) -> None:
+        self.assertEqual(quarantine.candidates({"t": "kkpk", "s": "kkp"}, [], set(), TODAY), ["t"])
+
+    def test_issue_failure_defers_and_retry_never_duplicates(self) -> None:
+        calls = []
+
+        def failing(args):
+            calls.append(args)
+            if args[:2] == ["issue", "create"]:
+                raise RuntimeError("gh issue: HTTP 502")
+            return "[]" if args[:2] == ["issue", "list"] else ""
+        with mock.patch.object(quarantine, "_gh", side_effect=failing):
+            self.assertIsNone(quarantine.ensure_issue("o/r", "t", "kkk"))
+            self.assertIsNone(quarantine.ensure_issue("o/r", "t", "kkk"))
+        self.assertEqual(sum(c[:2] == ["label", "create"] for c in calls), 1)
+        self.assertIn("--force", next(c for c in calls if c[:2] == ["label", "create"]))
+        self.assertEqual(quarantine.update([], {"t": "kkk"}, {}, set(), TODAY), [])
+
+        calls.clear()
+        listed = [{"title": "Flaky test: t2", "url": "other"}, {"title": "Flaky test: t", "url": "https://x/1"}]
+
+        def found(args):
+            calls.append(args)
+            return json.dumps(listed) if args[:2] == ["issue", "list"] else "https://x/new\n"
+        with mock.patch.object(quarantine, "_gh", side_effect=found):
+            self.assertEqual(quarantine.ensure_issue("o/r", "t", "kkk"), "https://x/1")
+            self.assertEqual(quarantine.ensure_issue("o/r", "t3", "kkk"), "https://x/new")
+        creates = [c for c in calls if c[:2] == ["issue", "create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertIn("Flaky test: t3", creates[0])
+        self.assertIn(quarantine.LABEL, creates[0])
+        listing = next(c for c in calls if c[:2] == ["issue", "list"])
+        self.assertIn(quarantine.LABEL, listing)
+        self.assertIn("open", listing)
+
+    def test_expired_entry_is_not_renewed_within_cooldown(self) -> None:
+        current = [_entry("t", TODAY - dt.timedelta(days=1))]
+        windows = {"t": "kkkkk"}
+        self.assertEqual(quarantine.candidates(windows, current, set(), TODAY), [])
+        kept = quarantine.update(current, windows, {"t": "u"}, set(), TODAY)
+        self.assertEqual(len(kept), 1)
+        self.assertIs(kept[0]["expired"], True)
+        last_day = TODAY - dt.timedelta(days=1) + dt.timedelta(days=30)
+        self.assertEqual(quarantine.candidates(windows, kept, set(), last_day), [])
+        self.assertEqual(len(quarantine.update(kept, windows, {"t": "u"}, set(), last_day)), 1)
+        later = TODAY - dt.timedelta(days=1) + dt.timedelta(days=31)
+        self.assertEqual(quarantine.update(kept, windows, {}, set(), later), [])
+        self.assertEqual(quarantine.candidates(windows, kept, set(), later), ["t"])
+        again = quarantine.update(kept, windows, {"t": "u2"}, set(), later)
+        self.assertEqual([(e["id"], e["issue"], e.get("expired")) for e in again], [("t", "u2", None)])
+
+    def test_active_entry_is_not_a_candidate(self) -> None:
+        current = [_entry("t", TODAY)]
+        self.assertEqual(quarantine.candidates({"t": "kkk"}, current, set(), TODAY), [])
+        self.assertEqual(quarantine.update(current, {"t": "kkk"}, {"t": "u2"}, set(), TODAY), current)
+
+    def test_ten_passes_release_early(self) -> None:
+        current = [_entry("t", TODAY + dt.timedelta(days=5)), _entry("s", TODAY + dt.timedelta(days=5))]
+        got = quarantine.update(current, {"t": "pppppppppp", "s": "ppppppppp"}, {}, set(), TODAY)
+        self.assertEqual([e["id"] for e in got], ["s"])
+
+    def test_static_entries_are_left_alone(self) -> None:
+        self.assertEqual(quarantine.candidates({"t": "kkkk", "s": "kkk"}, [], {"t"}, TODAY), ["s"])
+        self.assertEqual([e["id"] for e in quarantine.update([], {"t": "kkkk"}, {"t": "u"}, {"t"}, TODAY)], [])
 
 
 if __name__ == "__main__":

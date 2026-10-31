@@ -533,7 +533,7 @@ def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple
         missing = [k for k in ("id", "owner", "issue", "expires") if not q.get(k)]
         if missing:
             errors.append(f"quarantine entry {q.get('id', '?')} is missing {', '.join(missing)}")
-        elif dt.date.fromisoformat(str(q["expires"])) < today:
+        elif not q.get("auto") and dt.date.fromisoformat(str(q["expires"])) < today:
             errors.append(f"quarantine entry {q['id']} expired on {q['expires']}")
     if strict:
         errors += warnings

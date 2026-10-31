@@ -484,6 +484,41 @@ class TestReportGate(RunCase):
         with mock.patch.object(self.cfg, "quarantined_ids", return_value={quarantined}):
             self.assertEqual(report.verdict(self.cfg, results)[0], "pass")
 
+    def _auto_file(self, text: str) -> str:
+        path = self.out / "quarantine.json"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def test_auto_file_quarantines_in_config_and_report(self) -> None:
+        import datetime as dt
+        today = dt.date.today()
+        active = {"id": ACL, "owner": "qa-auto", "issue": "https://x/issues/7", "auto": True,
+                  "expires": (today + dt.timedelta(days=3)).isoformat()}
+        expired = {"id": JIRA_SYNC, "owner": "qa-auto", "issue": "https://x/issues/8", "auto": True,
+                   "expires": (today - dt.timedelta(days=2)).isoformat(), "expired": True}
+        auto = self._auto_file(json.dumps({"tests": [active, expired]}))
+        with mock.patch.dict(os.environ, {"QA_QUARANTINE_AUTO": auto}):
+            cfg = config.load(self.root)
+        self.assertEqual(cfg.quarantined_ids(), {ACL})
+        results = {"tests": [{"id": ACL, "outcome": "fail", "details": "boom"}, {"id": JIRA_SYNC, "outcome": "pass"}]}
+        self.assertEqual(report.verdict(cfg, results), ("pass", []))
+        body = report.render(cfg, plan_for([ACL, JIRA_SYNC]), results)
+        section = body.split("### Quarantined (ran, not blocking)\n\n", 1)[1]
+        self.assertEqual(section.splitlines()[0], f"- `{ACL}`: fail (https://x/issues/7)")
+        self.assertNotIn(JIRA_SYNC, section.split("\n\n")[0])
+        # An auto entry past expiry is not a lint error; it is simply no longer active.
+        cfg.quarantine.append({**active, "expires": (today - dt.timedelta(days=1)).isoformat()})
+        errors, _ = catalog.lint(cfg, catalog.build(cfg))
+        self.assertFalse([e for e in errors if "quarantine" in e], errors)
+
+    def test_unreadable_auto_file_is_ignored(self) -> None:
+        auto = self._auto_file("not json")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"QA_QUARANTINE_AUTO": auto}), contextlib.redirect_stderr(err):
+            cfg = config.load(self.root)
+        self.assertEqual(cfg.quarantine, self.cfg.quarantine)
+        self.assertIn("QA_QUARANTINE_AUTO", err.getvalue())
+
     def test_merged_results_prefer_executed_outcomes(self) -> None:
         merged = report.merge_results([
             {"tests": [{"id": "a", "outcome": "not_run"}, {"id": "b", "outcome": "pass"}]},

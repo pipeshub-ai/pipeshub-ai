@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import json
+import os
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -154,6 +157,23 @@ def _load_hook(overlay: Path) -> ModuleType | None:
     return module
 
 
+def _auto_quarantine() -> list[dict[str, Any]]:
+    """The active entries of the automatic quarantine file named by QA_QUARANTINE_AUTO."""
+    path = os.environ.get("QA_QUARANTINE_AUTO")
+    if not path:
+        return []
+    try:
+        entries = [e for e in json.loads(Path(path).read_text(encoding="utf-8"))["tests"] if not e.get("expired")]
+        for e in entries:  # a malformed entry would otherwise fail later, inside the gate
+            dt.date.fromisoformat(str(e["expires"]))
+            str(e["id"])
+        return entries
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+        # Without the file nothing extra is quarantined, which only makes the gate stricter.
+        print(f"warning: ignoring QA_QUARANTINE_AUTO={path}: {err!r}", file=sys.stderr)
+        return []
+
+
 def load(root: Path | None = None, engine_root: Path | None = None) -> Config:
     """Catalog, tests and changes come from root; rules and quarantine from engine_root."""
     engine_root = (engine_root or root or paths.REPO).resolve()
@@ -172,6 +192,7 @@ def load(root: Path | None = None, engine_root: Path | None = None) -> Config:
         merge_by_id(cfg.modules, _read(d / "modules.toml").get("module", []), "module")
         merge_by_id(cfg.flows, _read(d / "flows.toml").get("flow", []), "flow")
         cfg.quarantine.extend(_read(d.parent / "quarantine.toml").get("test", []))
+    cfg.quarantine.extend(_auto_quarantine())
     ids = [s["id"] for s in cfg.suites]
     dupes = {i for i in ids if ids.count(i) > 1}
     if dupes:
