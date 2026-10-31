@@ -1,0 +1,122 @@
+# Modules: the product areas the registry knows. A file belongs to the first
+# module (in load order, overlays after this file) whose `paths` match it, so a
+# more specific module goes before a broader one.
+#
+# id      the name flows and impact rules refer to
+# title   what a person calls it
+# paths   globs over source and test files (suite mirrors are listed explicitly)
+
+[[module]]
+id = "edition-wiring"
+title = "Edition wiring"
+paths = ["backend/python/app/edition_*.py", "backend/python/tests/unit/test_edition_*.py", "backend/nodejs/apps/src/config.ts", "backend/nodejs/apps/src/edition.ts", "frontend/config-pages.ts"]
+
+[[module]]
+id = "graph-db"
+title = "Graph database"
+paths = ["backend/python/app/services/graph_db/**", "backend/python/tests/unit/services/graph_db/**", "backend/python/app/connectors/core/base/data_store/**"]
+
+[[module]]
+id = "vector-db"
+title = "Vector database"
+paths = ["backend/python/app/services/vector_db/**", "backend/python/tests/unit/services/vector_db/**"]
+
+[[module]]
+id = "messaging"
+title = "Messaging"
+paths = ["backend/python/app/services/messaging/**", "backend/python/tests/unit/services/messaging/**", "backend/nodejs/apps/src/libs/services/kafka*", "backend/nodejs/apps/tests/libs/services/kafka*.test.ts", "backend/nodejs/apps/src/libs/services/redis-streams*", "backend/nodejs/apps/tests/libs/services/redis-streams*.test.ts", "backend/nodejs/apps/src/libs/services/outbox/**", "backend/nodejs/apps/tests/libs/services/outbox/**"]
+
+[[module]]
+id = "kv-config"
+title = "Key-value config"
+paths = ["backend/python/app/services/key_value/**", "backend/python/tests/unit/services/key_value/**", "backend/python/app/config/**", "backend/python/tests/unit/config/**", "backend/python/app/services/redis/**", "backend/python/tests/unit/services/redis/**"]
+
+[[module]]
+id = "indexing"
+title = "Indexing pipeline"
+paths = ["backend/python/app/modules/transformers/**", "backend/python/tests/unit/modules/transformers/**", "backend/python/app/modules/indexing/**", "backend/python/tests/unit/modules/indexing/**", "backend/python/app/modules/pipeline/**", "backend/python/tests/unit/modules/pipeline/**", "backend/python/app/modules/parsers/**", "backend/python/tests/unit/modules/parsers/**", "backend/python/app/events/**", "backend/python/tests/unit/events/**", "backend/python/app/indexing_main.py", "backend/python/tests/unit/test_indexing_main*.py"]
+
+[[module]]
+id = "retrieval"
+title = "Retrieval"
+paths = ["backend/python/app/modules/retrieval/**", "backend/python/tests/unit/modules/retrieval/**", "backend/python/app/modules/qna/**", "backend/python/tests/unit/modules/qna/**", "backend/python/app/modules/reranker/**", "backend/python/tests/unit/modules/reranker/**", "backend/python/app/api/routes/search*.py", "backend/python/tests/unit/api/routes/test_search*.py"]
+
+[[module]]
+id = "chat"
+title = "Chat and citations"
+paths = ["backend/python/app/api/routes/chatbot.py", "backend/python/tests/unit/api/routes/test_chatbot*.py", "backend/python/app/utils/citations.py", "backend/python/tests/unit/utils/test_citations*.py", "backend/python/app/utils/chat_helpers.py", "backend/python/tests/unit/utils/test_chat_helpers*.py", "backend/python/app/utils/text_fragments/**", "backend/python/tests/unit/utils/text_fragments/**", "frontend/app/(main)/chat/**", "frontend/lib/api/streaming.ts", "frontend/tests/e2e/chat/**"]
+
+[[module]]
+id = "agents"
+title = "Agents"
+paths = ["backend/python/app/modules/agents/**", "backend/python/tests/unit/modules/agents/**", "backend/python/app/agents/**", "backend/python/tests/unit/agents/**", "backend/python/app/agent_loop_lib/**", "backend/python/tests/unit/agent_loop_lib/**", "backend/python/app/api/routes/agent.py", "backend/python/tests/unit/api/routes/test_agent*.py"]
+
+[[module]]
+id = "toolsets-mcp"
+title = "Toolsets and MCP"
+paths = ["backend/python/app/api/routes/toolset*.py", "backend/python/tests/unit/api/routes/test_toolset*.py", "backend/python/app/api/routes/mcp*.py", "backend/python/tests/unit/api/routes/test_mcp*.py", "backend/nodejs/apps/src/modules/toolsets/**", "backend/nodejs/apps/tests/modules/toolsets/**", "backend/nodejs/apps/src/modules/mcp/**", "backend/nodejs/apps/tests/modules/mcp/**", "backend/nodejs/apps/src/modules/mcp_servers/**", "backend/nodejs/apps/tests/modules/mcp_servers/**", "backend/nodejs/apps/src/modules/api_toolsets/**", "backend/nodejs/apps/tests/modules/api_toolsets/**", "backend/nodejs/apps/src/modules/skills/**", "backend/nodejs/apps/tests/modules/skills/**"]
+
+[[module]]
+id = "knowledge-base"
+title = "Knowledge base"
+paths = ["backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/tests/modules/knowledge_base/**", "backend/python/app/connectors/sources/localKB/**", "backend/python/tests/unit/connectors/sources/localKB/**", "frontend/app/(main)/knowledge-base/**", "frontend/tests/e2e/knowledge-base/**"]
+
+[[module]]
+id = "connectors"
+title = "Connectors"
+paths = ["backend/python/app/connectors/**", "backend/python/tests/unit/connectors/**", "backend/python/app/sources/external/**", "backend/python/tests/unit/sources/external/**", "backend/nodejs/apps/src/modules/tokens_manager/**", "backend/nodejs/apps/tests/modules/tokens_manager/**", "backend/nodejs/apps/src/modules/crawling_manager/**", "backend/nodejs/apps/tests/modules/crawling_manager/**", "integration-tests/connectors/**"]
+
+[[module]]
+id = "auth"
+title = "Authentication"
+paths = ["backend/nodejs/apps/src/modules/auth/**", "backend/nodejs/apps/tests/modules/auth/**", "backend/nodejs/apps/src/libs/middlewares/**", "backend/nodejs/apps/tests/libs/middlewares/**", "backend/python/app/api/middlewares/**", "backend/python/tests/unit/api/middlewares/**", "frontend/tests/e2e/auth/**"]
+
+[[module]]
+id = "user-management"
+title = "User management"
+paths = ["backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/tests/modules/user_management/**", "frontend/tests/e2e/users/**", "frontend/tests/e2e/groups/**", "frontend/tests/e2e/teams/**"]
+
+[[module]]
+id = "oauth"
+title = "OAuth and API access"
+paths = ["backend/nodejs/apps/src/modules/oauth_provider/**", "backend/nodejs/apps/tests/modules/oauth_provider/**", "backend/nodejs/apps/src/modules/oauth_apps/**", "backend/nodejs/apps/src/libs/enums/oauth-scopes.enum.ts", "backend/nodejs/apps/tests/libs/enums/oauth-scopes.enum*.test.ts", "backend/nodejs/apps/src/modules/api-docs/**", "backend/nodejs/apps/tests/modules/api-docs/**"]
+
+[[module]]
+id = "storage"
+title = "Storage"
+paths = ["backend/nodejs/apps/src/modules/storage/**", "backend/nodejs/apps/tests/modules/storage/**"]
+
+[[module]]
+id = "enterprise-search"
+title = "Enterprise search API"
+paths = ["backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/tests/modules/enterprise_search/**"]
+
+[[module]]
+id = "configuration"
+title = "Configuration"
+paths = ["backend/nodejs/apps/src/modules/configuration_manager/**", "backend/nodejs/apps/tests/modules/configuration_manager/**", "backend/python/app/api/routes/health.py", "backend/python/tests/unit/api/routes/test_health*.py"]
+
+[[module]]
+id = "mail-notification"
+title = "Mail and notifications"
+paths = ["backend/nodejs/apps/src/modules/mail/**", "backend/nodejs/apps/tests/modules/mail/**", "backend/nodejs/apps/src/modules/notification/**", "backend/nodejs/apps/tests/modules/notification/**"]
+
+[[module]]
+id = "slack-bot"
+title = "Slack bot"
+paths = ["backend/nodejs/apps/src/integrations/slack-bot/**", "backend/nodejs/apps/tests/integrations/slack-bot/**"]
+
+[[module]]
+id = "desktop"
+title = "Desktop app"
+paths = ["frontend/electron/**", "backend/nodejs/apps/src/modules/desktop_proxy/**", "backend/nodejs/apps/tests/modules/desktop_proxy/**"]
+
+[[module]]
+id = "projects-artifacts"
+title = "Projects and artifacts"
+paths = ["backend/nodejs/apps/src/modules/projects/**", "backend/nodejs/apps/tests/modules/projects/**", "backend/nodejs/apps/src/modules/artifacts/**", "backend/nodejs/apps/tests/modules/artifacts/**", "frontend/app/(main)/projects/**", "frontend/app/(main)/artifacts/**", "frontend/tests/e2e/artifacts/**"]
+
+[[module]]
+id = "frontend"
+title = "Frontend"
+paths = ["frontend/app/**", "frontend/lib/**", "frontend/tests/e2e/**"]

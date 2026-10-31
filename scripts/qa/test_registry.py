@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from qa import catalog, config, testing
+from qa import catalog, config, paths, testing
 
 
 class TestRegistry(unittest.TestCase):
@@ -66,6 +66,18 @@ critical = true
     def test_lint_flags_rule_with_unknown_module(self) -> None:
         testing.write(self.root, "scripts/qa/rules/impact.toml", testing.IMPACT + '\n[[rule]]\nid = "x"\nmodule = "ghost"\npaths = ["frontend/app/**"]\n')
         self.assertIn("impact rule x: unknown module ghost", self.lint_errors())
+
+    def test_every_rule_names_a_module(self) -> None:
+        testing.write(self.root, "scripts/qa/rules/impact.toml", testing.IMPACT + '\n[[rule]]\nid = "loose"\npaths = ["frontend/app/**"]\n')
+        self.assertIn("impact rule loose: no module", self.lint_errors())
+
+    def test_repo_registry_is_clean(self) -> None:
+        config.clear_cache()
+        cfg = config.load(paths.REPO)
+        errors, warnings = catalog.lint(cfg, catalog.build(cfg))
+        self.assertEqual([e for e in errors if e.startswith(("module ", "flow ", "impact rule "))], [])
+        bad = [w for w in warnings if w.startswith(("module ", "flow ")) or "unknown module" in w]
+        self.assertEqual(bad, [])
 
     def test_lint_warns_on_dead_registry_globs(self) -> None:
         testing.write(self.root, "scripts/qa/rules/modules.toml", '[[module]]\nid = "m"\npaths = ["nowhere/**"]\n')

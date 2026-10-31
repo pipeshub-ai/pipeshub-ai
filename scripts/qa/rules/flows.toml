@@ -1,0 +1,153 @@
+# Flows: the user journeys a release must not break. Triggers say which changes
+# touch a flow; tests say what proves it still works.
+#
+# id        the name reports and reviews use
+# title     what a person calls it
+# priority  "P0" | "P1" | "P2"
+# critical  true marks a P0 flow whose failure blocks everything (default false)
+# modules   module ids the flow spans (scripts/qa/rules/modules.toml)
+# triggers  globs over source files that put the flow in scope
+# tests     globs over test file paths (any suite)
+# markers   integration-tests markers; selects every it-stack test carrying one
+#
+# An overlay may repeat a flow id to add triggers, tests, markers and modules;
+# it cannot change the priority or critical flag.
+
+[[flow]]
+id = "edition-seams"
+title = "Edition seams"
+priority = "P0"
+critical = true
+modules = ["edition-wiring"]
+triggers = ["backend/python/app/edition_*.py", "backend/nodejs/apps/src/config.ts", "backend/nodejs/apps/src/edition.ts", "frontend/config-pages.ts"]
+tests = ["backend/python/tests/unit/test_edition_*.py"]
+
+[[flow]]
+id = "signup-onboarding"
+title = "Sign-up and onboarding"
+priority = "P0"
+modules = ["user-management", "messaging", "frontend"]
+triggers = ["backend/nodejs/apps/src/modules/user_management/**org*", "backend/nodejs/apps/src/libs/services/outbox/**", "backend/python/app/services/messaging/kafka/handlers/entity.py", "frontend/app/(public)/sign-up/**", "frontend/app/(main)/onboarding/**"]
+tests = ["frontend/tests/e2e/first-run/**", "backend/python/tests/unit/services/messaging/test_entity_handler*.py"]
+
+[[flow]]
+id = "login"
+title = "Login"
+priority = "P0"
+modules = ["auth"]
+triggers = ["backend/nodejs/apps/src/modules/auth/**", "backend/nodejs/apps/src/libs/middlewares/**", "backend/python/app/api/middlewares/**", "frontend/app/(public)/**"]
+tests = ["backend/nodejs/apps/tests/modules/auth/**", "frontend/tests/e2e/auth/**", "integration-tests/security/**"]
+
+[[flow]]
+id = "connector-setup"
+title = "Connector setup"
+priority = "P0"
+modules = ["connectors"]
+triggers = ["frontend/app/(main)/workspace/connectors/**", "frontend/app/(main)/connectors/**", "backend/nodejs/apps/src/modules/tokens_manager/**", "backend/python/app/connectors/api/**", "backend/python/app/connectors/core/base/token_service/**"]
+tests = ["backend/python/tests/unit/connectors/api/test_router_*.py", "backend/nodejs/apps/tests/modules/tokens_manager/**", "frontend/tests/e2e/workspace/connectors-*.spec.ts"]
+
+[[flow]]
+id = "sync-indexing"
+title = "Sync and indexing"
+priority = "P0"
+modules = ["connectors", "messaging", "indexing", "graph-db", "vector-db"]
+triggers = ["backend/python/app/connectors/core/**", "backend/python/app/services/messaging/**", "backend/python/app/events/**", "backend/python/app/modules/transformers/**", "backend/python/app/modules/pipeline/**", "backend/python/app/modules/parsers/**", "backend/python/app/indexing_main.py"]
+tests = ["backend/python/tests/unit/services/messaging/test_record_handler*.py", "backend/python/tests/unit/modules/transformers/**", "integration-tests/messaging/test_e2e_record_pipeline.py"]
+
+[[flow]]
+id = "search"
+title = "Search"
+priority = "P0"
+modules = ["retrieval", "enterprise-search", "graph-db"]
+triggers = ["backend/python/app/modules/retrieval/**", "backend/python/app/api/routes/search*.py", "backend/python/app/services/graph_db/**", "backend/nodejs/apps/src/modules/enterprise_search/**"]
+tests = ["backend/python/tests/unit/modules/retrieval/**", "backend/python/tests/integration/test_record_visibility_e2e.py", "integration-tests/retrieval/**"]
+
+[[flow]]
+id = "chat-citations"
+title = "Chat and citations"
+priority = "P0"
+modules = ["chat", "enterprise-search", "retrieval"]
+triggers = ["backend/python/app/api/routes/chatbot.py", "backend/python/app/utils/citations.py", "backend/python/app/utils/chat_helpers.py", "backend/python/app/utils/text_fragments/**", "frontend/app/(main)/chat/**", "frontend/lib/api/streaming.ts", "backend/nodejs/apps/src/modules/enterprise_search/**", "frontend/app/(main)/record/**"]
+tests = ["backend/nodejs/apps/tests/modules/enterprise_search/**/*streaming*.test.ts", "backend/python/tests/unit/utils/test_citations*.py", "frontend/tests/e2e/chat/**"]
+
+[[flow]]
+id = "knowledge-base"
+title = "Knowledge base"
+priority = "P0"
+modules = ["knowledge-base", "storage"]
+triggers = ["frontend/app/(main)/knowledge-base/**", "frontend/app/(main)/record/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/modules/storage/**", "backend/python/app/connectors/sources/localKB/**", "backend/python/app/connectors/services/trash_purge.py"]
+tests = ["backend/python/tests/unit/connectors/sources/test_kb_*", "frontend/tests/e2e/knowledge-base/**", "integration-tests/storage/**", "integration-tests/response-validation/knowledgebase/**"]
+
+[[flow]]
+id = "permissions"
+title = "Permissions"
+priority = "P0"
+modules = ["graph-db", "retrieval", "user-management", "auth"]
+triggers = ["backend/python/app/services/graph_db/**", "backend/python/app/modules/retrieval/**", "backend/python/app/connectors/core/**", "backend/python/app/api/routes/**", "backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/enterprise_search/**", "backend/nodejs/apps/src/modules/knowledge_base/**", "backend/nodejs/apps/src/libs/middlewares/**"]
+tests = ["integration-tests/permissions/**", "backend/python/tests/integration/graph_permissions/**", "backend/python/tests/unit/utils/test_record_access.py"]
+markers = ["permissions", "security"]
+
+[[flow]]
+id = "api-access"
+title = "API access"
+priority = "P0"
+modules = ["oauth"]
+triggers = ["backend/nodejs/apps/src/modules/oauth_provider/**", "backend/nodejs/apps/src/modules/oauth_apps/**", "backend/nodejs/apps/src/libs/enums/oauth-scopes.enum.ts", "backend/python/app/api/middlewares/**"]
+tests = ["backend/nodejs/apps/tests/modules/oauth_provider/**", "backend/nodejs/apps/tests/contract/**", "frontend/tests/e2e/workspace/personal-access-tokens.spec.ts", "frontend/tests/e2e/workspace/oauth-apps.spec.ts"]
+markers = ["oauth_clients", "oauth_provider"]
+
+[[flow]]
+id = "admin-settings"
+title = "Admin settings"
+priority = "P1"
+modules = ["configuration", "kv-config", "storage", "mail-notification"]
+triggers = ["backend/nodejs/apps/src/modules/configuration_manager/**", "backend/nodejs/apps/src/modules/mail/**", "backend/nodejs/apps/src/modules/storage/**", "backend/python/app/api/routes/health.py", "backend/python/app/services/messaging/kafka/handlers/ai_config.py", "backend/python/app/config/**"]
+tests = ["backend/nodejs/apps/tests/modules/configuration_manager/**", "frontend/tests/e2e/workspace/ai-models-*.spec.ts", "integration-tests/response-validation/configuration-manager/**"]
+
+[[flow]]
+id = "agents-toolsets-mcp"
+title = "Agents, toolsets and MCP"
+priority = "P1"
+modules = ["agents", "toolsets-mcp"]
+triggers = ["backend/python/app/api/routes/toolset*.py", "backend/python/app/api/routes/mcp*.py", "backend/nodejs/apps/src/modules/toolsets/**", "backend/nodejs/apps/src/modules/mcp/**", "backend/nodejs/apps/src/modules/mcp_servers/**", "backend/nodejs/apps/src/modules/api_toolsets/**", "backend/nodejs/apps/src/modules/skills/**", "backend/python/app/api/routes/agent.py", "backend/python/app/agent_loop_lib/**"]
+tests = ["backend/nodejs/apps/tests/modules/toolsets/**", "backend/nodejs/apps/tests/modules/mcp/**", "backend/nodejs/apps/tests/modules/mcp_servers/**", "backend/nodejs/apps/tests/contract/mcp-tools-list.test.ts", "frontend/tests/e2e/agents/**", "integration-tests/ai_agents/**"]
+
+[[flow]]
+id = "user-lifecycle"
+title = "User lifecycle"
+priority = "P1"
+modules = ["user-management", "mail-notification"]
+triggers = ["backend/nodejs/apps/src/modules/user_management/**", "backend/nodejs/apps/src/modules/mail/**"]
+tests = ["backend/nodejs/apps/tests/modules/user_management/**", "frontend/tests/e2e/users/**", "integration-tests/permissions/test_user_lifecycle_access.py"]
+
+[[flow]]
+id = "slack-bot"
+title = "Slack bot"
+priority = "P1"
+modules = ["slack-bot"]
+triggers = ["backend/nodejs/apps/src/integrations/slack-bot/**"]
+tests = ["backend/nodejs/apps/tests/integrations/slack-bot/**"]
+
+[[flow]]
+id = "notifications-mail"
+title = "Notifications and mail"
+priority = "P2"
+modules = ["mail-notification"]
+triggers = ["backend/nodejs/apps/src/modules/notification/**", "backend/nodejs/apps/src/modules/mail/**", "backend/nodejs/apps/src/libs/services/outbox/**"]
+tests = ["backend/nodejs/apps/tests/modules/notification/**", "backend/nodejs/apps/tests/modules/mail/**"]
+
+[[flow]]
+id = "desktop"
+title = "Desktop app"
+priority = "P2"
+modules = ["desktop"]
+triggers = ["frontend/electron/**", "backend/nodejs/apps/src/modules/desktop_proxy/**", "backend/python/app/connectors/sources/local_fs/**"]
+tests = ["frontend/electron/**/__tests__/*.test.ts", "backend/nodejs/apps/tests/modules/desktop_proxy/**", "integration-tests/connectors/local_fs/**"]
+
+[[flow]]
+id = "projects-artifacts"
+title = "Projects and artifacts"
+priority = "P2"
+modules = ["projects-artifacts"]
+triggers = ["backend/nodejs/apps/src/modules/projects/**", "backend/nodejs/apps/src/modules/artifacts/**", "frontend/app/(main)/projects/**", "frontend/app/(main)/artifacts/**"]
+tests = ["frontend/tests/e2e/artifacts/**", "frontend/tests/e2e/chat/chat-projects.spec.ts"]

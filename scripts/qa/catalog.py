@@ -482,7 +482,9 @@ def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple
             if not any(globs.match(r["path"], pattern) for r in rows):
                 warnings.append(f"flow {fl['id']}: tests {pattern!r} matches no catalogued test")
     for rule in cfg.rules:
-        if rule.get("module") and rule["module"] not in module_ids:
+        if not rule.get("module"):
+            errors.append(f"impact rule {rule['id']}: no module")
+        elif rule["module"] not in module_ids:
             errors.append(f"impact rule {rule['id']}: unknown module {rule['module']}")
         for pattern in rule.get("paths", []):
             if not any(globs.match(f, pattern) for f in files):
