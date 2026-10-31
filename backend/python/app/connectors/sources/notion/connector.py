@@ -2223,8 +2223,9 @@ class NotionConnector(BaseConnector):
         """
         keep = {email.lower() for email in keep_emails if email}
         kept_ids = set(keep_user_ids or ())
-        removed = 0
-        async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+
+        async def remove_leavers(tx_store: TransactionStore) -> int:
+            removed = 0
             existing = await tx_store.get_app_users(self.data_entities_processor.org_id, self.connector_id)
             for user in existing:
                 email = (user.email or "").lower()
@@ -2238,6 +2239,9 @@ class NotionConnector(BaseConnector):
                     CollectionNames.USER_APP_RELATION.value,
                 )
                 removed += 1
+            return removed
+
+        removed = await self.data_entities_processor.data_store_provider.execute_in_transaction(remove_leavers)
         if removed:
             self.logger.info("Removed %s Notion user(s) who are no longer in the workspace", removed)
 

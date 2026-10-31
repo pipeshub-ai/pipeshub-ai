@@ -233,8 +233,9 @@ class SqlSyncLifecycleMixin:
         updates = rename_updates(moves, renamed, column_fqn)
         if updates:
             try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+                await self.data_store_provider.execute_in_transaction(
+                    lambda tx_store: tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+                )
             except Exception as e:
                 self.sync_stats.errors += 1
                 self.logger.error(f"Could not move {len(moves)} renamed table(s): {e}")
@@ -305,8 +306,9 @@ class SqlSyncLifecycleMixin:
                 if (column := stored.get(column_fqn(table_fqn, old_name))) is not None and column.id
             ]
             if updates:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+                await self.data_store_provider.execute_in_transaction(
+                    lambda tx_store: tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
+                )
             return True
         except Exception as e:
             self.sync_stats.errors += 1

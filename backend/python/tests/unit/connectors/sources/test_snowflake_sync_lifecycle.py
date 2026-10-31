@@ -28,6 +28,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
 from app.connectors.sources.snowflake.sync_state import SnowflakeStateStore
 from app.models.entities import RecordType
 from app.sources.external.snowflake.profiling import TableProfile
+from tests.support.data_store import runs_in_its_transaction
 
 CONFIG = {"auth": {"accountIdentifier": "acct", "warehouse": "WH", "patToken": "pat"}}
 _ids = itertools.count(1)
@@ -228,6 +229,7 @@ class World:
         config_service.get_config = AsyncMock(return_value=CONFIG)
         data_store = MagicMock()
         data_store.transaction = MagicMock(side_effect=lambda: TxStore(self.graph))
+        runs_in_its_transaction(data_store)
         self.connector = SnowflakeConnector(MagicMock(), processor(self.graph), data_store, config_service, "conn-1")
         self.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
             side_effect=lambda ids, **_: {i: self.graph.records[i] for i in ids if i in self.graph.records}

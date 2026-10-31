@@ -4410,7 +4410,10 @@ class SalesforceConnector(BaseConnector):
                     )
                     total_record_groups += len(record_groups_with_perms)
 
-                async with self.data_store_provider.transaction() as tx_store:
+                async def write_orgs(
+                    tx_store: TransactionStore, orgs_with_edges: list[tuple[Org, RecordGroup, dict, dict | None]]
+                ) -> None:
+                    nonlocal external_org_key_by_name
                     all_orgs = await tx_store.get_all_orgs(is_external=True)
                     parent_org_id = self._get_parent_org_id()
                     external_org_key_by_name = {
@@ -4492,6 +4495,8 @@ class SalesforceConnector(BaseConnector):
                         await tx_store.batch_create_edges(
                             dealof_edges, collection=CollectionNames.DEAL_OF.value,
                         )
+
+                await self.data_store_provider.execute_in_transaction(write_orgs, orgs_with_edges)
 
                 total_orgs += len(orgs_with_edges)
 
@@ -4588,7 +4593,9 @@ class SalesforceConnector(BaseConnector):
                             dup_contact_ids, dup_email,
                         )
 
-                async with self.data_store_provider.transaction() as tx_store:
+                async def write_contacts(
+                    tx_store: TransactionStore, contact_with_edges: list[tuple[Person, dict, dict | None]]
+                ) -> tuple[list[tuple[Person, dict, dict | None]], set[str]]:
                     all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
@@ -4677,16 +4684,18 @@ class SalesforceConnector(BaseConnector):
                                 **contact_edge,
                             })
                         if member_of_edge and contact_edge:
-                            account_name = member_of_edge.pop("accountName", None)
+                            # Read, not popped: a re-run after a deadlock reads it again.
+                            account_name = member_of_edge.get("accountName")
                             if account_name:
                                 org_node = org_name_map.get(account_name)
                                 if org_node:
                                     member_of_edges.append({
+                                        **{k: v for k, v in member_of_edge.items() if k != "accountName"},
+                                        # After the edge's own fields: person.id is the stored one by now.
                                         "from_id": person.id,
                                         "from_collection": CollectionNames.PEOPLE.value,
                                         "to_id": org_node.get("id") or org_node.get("_key"),
                                         "to_collection": CollectionNames.ORGS.value,
-                                        **{k: v for k, v in member_of_edge.items()},
                                     })
 
                     if contact_edges:
@@ -4697,6 +4706,9 @@ class SalesforceConnector(BaseConnector):
                         await tx_store.batch_create_edges(
                             member_of_edges, collection=CollectionNames.MEMBER_OF.value,
                         )
+                    return changed_contacts, unchanged_emails
+
+                changed_contacts, unchanged_emails = await self.data_store_provider.execute_in_transaction(write_contacts, contact_with_edges)
 
                 total_changed += len(changed_contacts)
                 total_unchanged += len(unchanged_emails)
@@ -4775,7 +4787,7 @@ class SalesforceConnector(BaseConnector):
                 if not lead_with_edges:
                     continue
 
-                async with self.data_store_provider.transaction() as tx_store:
+                async def write_leads(tx_store: TransactionStore, lead_with_edges: list[tuple[Person, dict]]) -> None:
                     all_emails = [p.email.lower() for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
@@ -4819,6 +4831,8 @@ class SalesforceConnector(BaseConnector):
                         for p, e in lead_with_edges
                     ]
                     await tx_store.batch_create_edges(edges, collection=CollectionNames.LEAD.value)
+
+                await self.data_store_provider.execute_in_transaction(write_leads, lead_with_edges)
 
                 total += len(lead_with_edges)
 
@@ -5022,7 +5036,9 @@ class SalesforceConnector(BaseConnector):
                     r.external_record_id for r in new_opp_records if r.external_record_id
                 )
 
-                async with self.data_store_provider.transaction() as tx_store:
+                async def write_deal_info(
+                    tx_store: TransactionStore, opportunity_with_edges: list[tuple[Record, dict]]
+                ) -> None:
                     existing_records_list = await asyncio.gather(*[
                         tx_store.get_record_by_external_id(
                             connector_id=record.connector_id,
@@ -5067,6 +5083,8 @@ class SalesforceConnector(BaseConnector):
                         await tx_store.batch_create_edges(
                             deal_info_edges, collection=CollectionNames.DEAL_INFO.value,
                         )
+
+                await self.data_store_provider.execute_in_transaction(write_deal_info, opportunity_with_edges)
 
                 total += len(records)
                 total_new += len(new_opp_records)
@@ -5251,7 +5269,7 @@ class SalesforceConnector(BaseConnector):
                 final_sold_in_items.append((deal_internal_id, edges_list))
 
             if final_sold_in_items:
-                async with self.data_store_provider.transaction() as tx_store:
+                async def write_sold_in(tx_store: TransactionStore) -> None:
                     delete_tasks = [
                         tx_store.delete_edge(
                             from_id=edge.from_id,
@@ -5277,6 +5295,8 @@ class SalesforceConnector(BaseConnector):
                             all_sold_in_edges,
                             collection=CollectionNames.SOLD_IN.value,
                         )
+
+                await self.data_store_provider.execute_in_transaction(write_sold_in)
 
             self.logger.info(
                 "Synced soldIn edges for %d unique deals (total %d edges)",
@@ -5553,12 +5573,14 @@ class SalesforceConnector(BaseConnector):
                     if existing_internal_id:
                         record.id = existing_internal_id
                     if existing_rg_ext_id and existing_rg_ext_id != record.external_record_group_id:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            await tx_store.delete_edges_from(
-                                record.id,
+                        await self.data_store_provider.execute_in_transaction(
+                            lambda tx_store, record_id: tx_store.delete_edges_from(
+                                record_id,
                                 CollectionNames.RECORDS.value,
                                 CollectionNames.BELONGS_TO.value,
-                            )
+                            ),
+                            record.id,
+                        )
                     await self.data_entities_processor.on_record_content_update(record)
 
                 total += len(records)
@@ -6054,7 +6076,7 @@ class SalesforceConnector(BaseConnector):
         }
         narrowed_orgs: set[str | None] = set()
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            async def write_permissions(tx_store: TransactionStore) -> tuple[list[dict], list[dict]]:
                 for node_id, collection in delete_targets:
                     if await tx_store.delete_edges_to(
                         node_id, collection, CollectionNames.PERMISSION.value
@@ -6102,6 +6124,9 @@ class SalesforceConnector(BaseConnector):
                     await tx_store.batch_create_edges(record_edges, collection=CollectionNames.PERMISSION.value)
                 if rg_edges:
                     await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
+                return record_edges, rg_edges
+
+            record_edges, rg_edges = await self.data_store_provider.execute_in_transaction(write_permissions)
         finally:
             # Even when the write raised: on Neo4j without explicit transactions each
             # delete commits on its own, and a rerun finds nothing left to delete.

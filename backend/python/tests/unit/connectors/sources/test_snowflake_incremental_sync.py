@@ -21,6 +21,7 @@ from app.models.entities import RecordType
 from app.sources.client.snowflake.snowflake import SnowflakeResponse
 from app.sources.external.snowflake.profiling import TableProfile
 from app.sources.external.snowflake.statements import SnowflakeStatementRunner
+from tests.support.data_store import runs_in_its_transaction
 from tests.unit.connectors.sources.test_snowflake_sync_lifecycle import (
     Graph,
     TxStore,
@@ -136,6 +137,7 @@ class World:
         self.flags = {"fail_reads": False, "fail_writes": False}
         data_store = MagicMock()
         data_store.transaction = MagicMock(side_effect=lambda: Neo4jLikeStore(self.graph, self.nodes, self.flags))
+        runs_in_its_transaction(data_store)
         data_store.graph_provider.get_typed_records_batch = AsyncMock(
             side_effect=lambda ids: {i: self.graph.records[i] for i in ids if i in self.graph.records}
         )

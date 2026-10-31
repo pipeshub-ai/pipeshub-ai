@@ -52,6 +52,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
+from tests.support.data_store import runs_in_its_transaction
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -111,7 +112,7 @@ def mock_tx_store():
 
 @pytest.fixture()
 def mock_data_store_provider(mock_tx_store):
-    provider = MagicMock()
+    provider = runs_in_its_transaction(MagicMock())
     provider.transaction.return_value = mock_tx_store
     return provider
 

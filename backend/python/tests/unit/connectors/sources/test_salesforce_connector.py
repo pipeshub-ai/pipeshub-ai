@@ -1,8 +1,8 @@
 """Tests for app.connectors.sources.salesforce.connector."""
 
 import logging
-from datetime import datetime, timezone
 from collections.abc import AsyncIterator, Iterator
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -10,7 +10,13 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.salesforce.connector import (
     ACCOUNTS_SYNC_POINT_KEY,
@@ -22,8 +28,8 @@ from app.connectors.sources.salesforce.connector import (
     PRODUCTS_SYNC_POINT_KEY,
     ROLES_SYNC_POINT_KEY,
     SOLD_IN_SYNC_POINT_KEY,
-    USERS_SYNC_POINT_KEY,
     USER_GROUPS_SYNC_POINT_KEY,
+    USERS_SYNC_POINT_KEY,
     MessageSegment,
     RecordUpdate,
     SalesforceAccount,
@@ -49,10 +55,10 @@ from app.connectors.sources.salesforce.connector import (
     _ts_in_bounds,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.utils.time_conversion import epoch_ms_to_iso
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
-
+from app.utils.time_conversion import epoch_ms_to_iso
+from tests.support.data_store import runs_in_its_transaction
 
 # ===========================================================================
 # Helpers
@@ -87,7 +93,7 @@ def _make_mock_deps():
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
 
-    dsp = MagicMock()
+    dsp = runs_in_its_transaction(MagicMock())
     dsp.transaction.return_value = mock_tx
     dep.data_store_provider = dsp
 
@@ -2274,6 +2280,62 @@ class TestSyncContacts:
         mock_tx.batch_create_edges.assert_awaited()
         people = mock_tx.batch_upsert_people.await_args.args[0]
         assert people[0].org_id == "org-sf-1"
+
+    @pytest.mark.asyncio
+    async def test_a_page_run_again_after_a_deadlock_still_links_the_account(self) -> None:
+        """A deadlock rolls the page back and execute_in_transaction runs it again."""
+        connector = _make_connector()
+        dsp = connector.data_store_provider
+        mock_tx = dsp.transaction.return_value
+
+        async def nodes(collection, field, values) -> list[dict]:
+            return [{"id": "org-acme", "name": "Acme Corp"}] if collection == CollectionNames.ORGS.value else []
+
+        async def first_attempt_rolled_back(func, *args) -> object:
+            async with dsp.transaction() as tx_store:
+                await func(tx_store, *args)
+            async with dsp.transaction() as tx_store:
+                return await func(tx_store, *args)
+
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=nodes)
+        dsp.execute_in_transaction = first_attempt_rolled_back
+        contact = {
+            "Id": "contact-1", "Email": "alice@example.com", "Account": {"Name": "Acme Corp"},
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+
+        await connector._sync_contacts(_async_iter_pages([contact]))
+
+        member_of = [
+            c.args[0] for c in mock_tx.batch_create_edges.await_args_list
+            if c.kwargs["collection"] == CollectionNames.MEMBER_OF.value
+        ]
+        assert [[e["to_id"] for e in edges] for edges in member_of] == [["org-acme"], ["org-acme"]]
+        assert all("accountName" not in e for edges in member_of for e in edges)
+
+    @pytest.mark.asyncio
+    async def test_a_changed_existing_contact_is_linked_from_its_stored_node(self) -> None:
+        connector = _make_connector()
+        mock_tx = connector.data_store_provider.transaction.return_value
+
+        async def nodes(collection, field, values) -> list[dict]:
+            if collection == CollectionNames.ORGS.value:
+                return [{"id": "org-acme", "name": "Acme Corp"}]
+            return [{"id": "person-stored", "email": "alice@example.com", "updatedAtTimestamp": 1}]
+
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=nodes)
+        contact = {
+            "Id": "contact-1", "Email": "alice@example.com", "Account": {"Name": "Acme Corp"},
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+        }
+
+        await connector._sync_contacts(_async_iter_pages([contact]))
+
+        member_of = [
+            e for c in mock_tx.batch_create_edges.await_args_list
+            if c.kwargs["collection"] == CollectionNames.MEMBER_OF.value for e in c.args[0]
+        ]
+        assert [(e["from_id"], e["to_id"]) for e in member_of] == [("person-stored", "org-acme")]
 
 
 # ===========================================================================

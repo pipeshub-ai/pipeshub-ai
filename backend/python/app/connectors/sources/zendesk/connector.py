@@ -37,7 +37,10 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_found_at_source,
@@ -2764,7 +2767,7 @@ class ZendeskConnector(BaseConnector):
         self, groups: list[tuple[RecordGroup, list[Permission]]]
     ) -> None:
         """Replace a section's old parent/app edge when its hierarchy changes."""
-        async with self.data_store_provider.transaction() as tx_store:
+        async def detach(tx_store: TransactionStore) -> None:
             for group, _ in groups:
                 existing = await tx_store.get_record_group_by_external_id(
                     connector_id=self.connector_id,
@@ -2794,6 +2797,8 @@ class ZendeskConnector(BaseConnector):
                         collection,
                         CollectionNames.BELONGS_TO.value,
                     )
+
+        await self.data_store_provider.execute_in_transaction(detach)
 
     @staticmethod
     def _section_depth(

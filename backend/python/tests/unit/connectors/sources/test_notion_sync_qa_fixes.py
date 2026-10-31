@@ -19,6 +19,7 @@ from app.connectors.sources.notion.connector import (
 from app.models.blocks import BlocksContainer
 from app.models.entities import RecordType
 from app.sources.client.notion.notion import NotionRESTClientViaOAuth
+from tests.support.data_store import runs_in_its_transaction
 from tests.unit.connectors.sources.test_notion_connector import (
     _make_api_response,
     _make_connector,
@@ -199,7 +200,7 @@ async def test_member_without_email_keeps_access_while_a_departed_user_loses_it(
     async def transaction() -> AsyncIterator[MagicMock]:
         yield tx
 
-    conn.data_entities_processor.data_store_provider.transaction = transaction
+    runs_in_its_transaction(conn.data_entities_processor.data_store_provider).transaction = transaction
     await conn._remove_departed_workspace_users(["here@example.com"], ["u-hidden"])
     assert [c.args[0] for c in tx.delete_edge.await_args_list] == ["key-u-left"]
 
