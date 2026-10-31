@@ -6,6 +6,8 @@ when the manifest names it.
 """
 
 import importlib.metadata
+import site
+import sys
 import tomllib
 from pathlib import Path
 
@@ -29,6 +31,15 @@ SECURITY_FLOORS = {
     "setuptools": Version("84.1.0"),
 }
 
+# package -> malicious releases that must never resolve, whatever the floor.
+COMPROMISED_RELEASES = {
+    # 1.107.0 shipped cook.pth, which runs at every interpreter start and posts credentials out.
+    "litellm": (Version("1.107.0"),),
+}
+
+# Files those releases drop into site-packages; a .pth runs before any test does.
+COMPROMISED_FILES = ("cook.pth", "cook.py")
+
 
 def _specifiers(manifest: Path) -> dict[str, str]:
     dependencies = tomllib.loads(manifest.read_text(encoding="utf-8"))["project"]["dependencies"]
@@ -49,3 +60,21 @@ def test_backend_manifest_does_not_admit_a_vulnerable_release(package: str) -> N
     ]
     assert lower_bounds
     assert min(lower_bounds) >= SECURITY_FLOORS[package]
+
+
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_installed_release_is_not_a_compromised_one(package: str) -> None:
+    assert Version(importlib.metadata.version(package)) not in COMPROMISED_RELEASES[package]
+
+
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_manifest_excludes_compromised_releases(package: str) -> None:
+    specifier = Requirement(f"{package}{_specifiers(BACKEND_MANIFEST)[package]}").specifier
+    for release in COMPROMISED_RELEASES[package]:
+        assert not specifier.contains(release, prereleases=True), f"{BACKEND_MANIFEST} admits {package} {release}"
+
+
+def test_no_compromised_file_in_site_packages() -> None:
+    directories = {Path(p) for p in [*site.getsitepackages(), site.getusersitepackages(), *sys.path] if p}
+    found = [str(d / name) for d in directories for name in COMPROMISED_FILES if (d / name).exists()]
+    assert not found, f"remove the environment and rebuild it: {found}"

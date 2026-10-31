@@ -293,6 +293,8 @@ dependencies = [
     "onnxruntime==1.31.0",
     "opencv-python-headless==5.0.0.93",
     "openpyxl==3.1.5",
+    # litellm arrives through opik; 1.107.0 shipped a credential stealer (cook.pth), so keep below it.
+    "litellm>=1.79.2,<1.107",
     "opik==2.2.119",
     "pagerduty>=5.0.0",
     "pandas==3.1.0",
