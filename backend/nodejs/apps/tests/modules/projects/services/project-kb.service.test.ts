@@ -224,6 +224,42 @@ describe('ProjectKnowledgeBaseService', () => {
       ]);
     });
 
+    it(
+      'grants the caller as WRITER even when their member row is viewer',
+      async () => {
+      const viewerCaller = userMember('viewer');
+      const otherViewer = userMember('viewer');
+      sinon.stub(Project, 'findOne').resolves(
+        makeProject({
+          members: [viewerCaller.member, otherViewer.member],
+        }),
+      );
+      sinon
+        .stub(Project, 'findOneAndUpdate')
+        .resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
+      exec
+        .withArgs(`${KB_URL}/`, HttpMethod.POST)
+        .resolves(respond(200, { id: 'kb-new' }));
+
+      await ProjectKnowledgeBaseService.ensureLinkedKb(
+        appConfig,
+        HEADERS,
+        ORG_ID,
+        PROJECT_ID,
+        viewerCaller.id,
+      );
+
+      expect(bodiesSentTo(exec, `${KB_URL}/`, HttpMethod.POST)).to.deep.equal([
+        {
+          name: `project:${PROJECT_ID}`,
+          isHidden: true,
+          ownerUserId: OWNER_ID,
+          writerUserIds: [viewerCaller.id],
+          readerUserIds: [otherViewer.id],
+        },
+      ]);
+    });
+
     it('repairs an already-linked KB when the caller is still OWNER, and ignores a failed repair', async () => {
       sinon.stub(Project, 'findOne').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-1' }));
       exec.withArgs(`${KB_URL}/kb-1`, HttpMethod.GET).resolves(respond(200, { id: 'kb-1', userRole: 'OWNER' }));

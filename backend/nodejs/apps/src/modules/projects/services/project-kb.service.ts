@@ -25,7 +25,10 @@ function allOrgTeamId(orgId: string): string {
 }
 
 /** Hidden-collection grants. The project owner is skipped — they stay KB OWNER. */
-function memberGrantBuckets(project: ProjectDto): {
+function memberGrantBuckets(
+  project: ProjectDto,
+  asEditorUserIds: readonly string[] = [],
+): {
   editorUserIds: string[];
   viewerUserIds: string[];
   teamIds: string[];
@@ -41,7 +44,9 @@ function memberGrantBuckets(project: ProjectDto): {
     if (member.principalId === project.userId) {
       continue;
     }
-    const bucket = member.role === 'editor' ? editorUserIds : viewerUserIds;
+    const asEditor =
+      member.role === 'editor' || asEditorUserIds.includes(member.principalId);
+    const bucket = asEditor ? editorUserIds : viewerUserIds;
     bucket.push(member.principalId);
   }
   return { editorUserIds, viewerUserIds, teamIds };
@@ -51,8 +56,16 @@ function memberGrantBuckets(project: ProjectDto): {
 function hiddenKbCreateBody(
   project: ProjectDto,
   projectId: string,
+  callerUserId?: string,
 ): Record<string, unknown> {
-  const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(project);
+  // ensureLinkedKb is editor-or-above. A direct viewer who is an editor
+  // through a team must stay WRITER — their member row alone says viewer.
+  const asEditorUserIds =
+    callerUserId && callerUserId !== project.userId ? [callerUserId] : [];
+  const { editorUserIds, viewerUserIds, teamIds } = memberGrantBuckets(
+    project,
+    asEditorUserIds,
+  );
   const teams =
     project.visibility === 'org'
       ? [...teamIds, allOrgTeamId(project.orgId)]
@@ -154,6 +167,7 @@ export class ProjectKnowledgeBaseService {
     headers: Record<string, string>,
     orgId: string,
     projectId: string,
+    callerUserId?: string,
   ): Promise<string> {
     const project = await getProjectRepository().getLive(projectId);
     // Tenant isolation defense-in-depth — callers normally reach this only
@@ -192,7 +206,7 @@ export class ProjectKnowledgeBaseService {
       `${appConfig.connectorBackend}/api/v1/kb/`,
       HttpMethod.POST,
       headers,
-      hiddenKbCreateBody(project, projectId),
+      hiddenKbCreateBody(project, projectId, callerUserId),
     );
     if (
       createResponse.statusCode !== 200 &&

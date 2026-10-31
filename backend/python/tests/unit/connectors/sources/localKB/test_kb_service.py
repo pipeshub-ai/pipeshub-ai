@@ -181,6 +181,9 @@ class TestCreateKnowledgeBase:
             return users.get(user_id)
 
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=lookup)
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            side_effect=_mock_mongo_to_graph
+        )
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
@@ -226,6 +229,9 @@ class TestCreateKnowledgeBase:
             return {"id": "ok1", "orgId": "org-other"}
 
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=lookup)
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            return_value={},
+        )
 
         result = await service.create_knowledge_base(
             "editor-1",
@@ -273,6 +279,55 @@ class TestCreateKnowledgeBase:
         assert service.create_kb_permissions.await_args_list[0].args[2] == ["editor-1"]
         assert service.create_kb_permissions.await_args_list[1].args[2] == ["viewer-1"]
         assert service.create_kb_permissions.await_args_list[2].args[3] == ["team-1"]
+
+    @pytest.mark.asyncio
+    async def test_hidden_create_does_not_demote_the_requester_via_reader_grants(
+        self, service,
+    ) -> None:
+        async def lookup(*, user_id: str, **_kwargs: object) -> dict | None:
+            users = {
+                "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
+                "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
+            }
+            return users.get(user_id)
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=lookup)
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            side_effect=_mock_mongo_to_graph
+        )
+        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        service.graph_provider.commit_transaction = AsyncMock()
+        service.create_kb_permissions = AsyncMock(
+            return_value={"success": True, "grantedCount": 1}
+        )
+
+        result = await service.create_knowledge_base(
+            "editor-1",
+            "org1",
+            "project:x",
+            is_hidden=True,
+            owner_user_id="owner-1",
+            writer_user_ids=["editor-1"],
+            reader_user_ids=["editor-1", "viewer-1"],
+        )
+
+        assert result["success"] is True
+        assert result["userRole"] == "WRITER"
+        perm_edges = next(
+            call.args[0]
+            for call in service.graph_provider.batch_create_edges.call_args_list
+            if call.kwargs.get("collection") == CollectionNames.PERMISSION.value
+        )
+        assert {edge["from_id"]: edge["role"] for edge in perm_edges} == {
+            "ok1": "OWNER",
+            "ek1": "WRITER",
+        }
+        assert service.create_kb_permissions.await_count == 1
+        share = service.create_kb_permissions.await_args_list[0]
+        assert share.args[2] == ["viewer-1"]
+        assert share.args[4] == "READER"
 
     @pytest.mark.asyncio
     async def test_owner_user_id_matching_the_caller_stays_owner(self, service) -> None:

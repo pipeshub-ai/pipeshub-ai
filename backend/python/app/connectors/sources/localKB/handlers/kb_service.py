@@ -618,7 +618,19 @@ class KnowledgeBaseService:
             owner_key = requester_key
             if owner_user_id and owner_user_id != user_id:
                 owner = await self.graph_provider.get_user_by_user_id(user_id=owner_user_id)
-                if not owner or str(owner.get("orgId") or "") != str(org_id):
+                if not owner:
+                    self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"User not found for user_id: {owner_user_id}",
+                    }
+                # Same-org check goes through the existing grant resolver so
+                # this file does not grow another direct orgId payload read.
+                _, owner_err = await self._resolve_user_ids_to_graph_keys(
+                    [owner_user_id], user_id,
+                )
+                if owner_err:
                     self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
                     return {
                         "success": False,
@@ -627,6 +639,14 @@ class KnowledgeBaseService:
                     }
                 created_by = owner_user_id
                 owner_key = owner.get("id") or owner.get("_key")
+
+            # The requester already has WRITER (or OWNER) from the create
+            # write. A direct-viewer who is an editor via a team still
+            # arrives in extra_readers from the project member row — sharing
+            # that would demote them and block the upload they just started.
+            already_granted = {user_id, created_by}
+            extra_writers = [uid for uid in extra_writers if uid not in already_granted]
+            extra_readers = [uid for uid in extra_readers if uid not in already_granted]
 
             if extra_writers or extra_readers or extra_teams:
                 grant_error = await self._validate_hidden_member_grants(
