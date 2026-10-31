@@ -154,6 +154,16 @@ class TestBranchStore(unittest.TestCase):
         self.assertEqual(len(files["runs.jsonl"].splitlines()), 1)
         self.assertEqual(history.windows(files), {"a": "k"})
 
+    def test_write_dir_keeps_normal_permissions(self) -> None:
+        import os
+        umask = os.umask(0o022)
+        try:
+            history.write_dir(self.tmp / "h", {"runs.jsonl": "x\n"})
+        finally:
+            os.umask(umask)
+        self.assertEqual((self.tmp / "h" / "runs.jsonl").stat().st_mode & 0o777, 0o644)
+        self.assertEqual(sorted(p.name for p in (self.tmp / "h").iterdir()), ["runs.jsonl"])
+
     def test_fetch_file_missing_is_none(self) -> None:
         with mock.patch.object(branchstore, "_gh", side_effect=RuntimeError("gh: Not Found (HTTP 404)")) as gh:
             self.assertIsNone(branchstore.fetch_file("o/r", "quarantine.json"))

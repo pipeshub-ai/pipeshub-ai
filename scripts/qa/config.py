@@ -69,9 +69,10 @@ class Config:
             raise KeyError(f"unknown profile {name!r}; known: {sorted(profiles)}")
         return profiles[name]
 
-    def quarantined_ids(self, today: dt.date | None = None) -> set[str]:
+    def quarantined_ids(self, today: dt.date | None = None, auto: bool = True) -> set[str]:
+        """auto=False leaves out the automatic entries, so the committed catalog never depends on them."""
         today = today or dt.date.today()
-        return {q["id"] for q in self.quarantine if _as_date(q.get("expires")) >= today}
+        return {q["id"] for q in self.quarantine if _as_date(q.get("expires")) >= today and (auto or not q.get("auto"))}
 
 
 def _as_date(value: Any) -> dt.date:
@@ -163,7 +164,7 @@ def _auto_quarantine() -> list[dict[str, Any]]:
     if not path:
         return []
     try:
-        entries = [e for e in json.loads(Path(path).read_text(encoding="utf-8"))["tests"] if not e.get("expired")]
+        entries = [{**e, "auto": True} for e in json.loads(Path(path).read_text(encoding="utf-8"))["tests"] if not e.get("expired")]
         for e in entries:  # a malformed entry would otherwise fail later, inside the gate
             dt.date.fromisoformat(str(e["expires"]))
             str(e["id"])

@@ -35,12 +35,15 @@ def read_dir(path: Path) -> dict[str, str]:
 
 def write_dir(path: Path, files: dict[str, str]) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    umask = os.umask(0)
+    os.umask(umask)
     for name, text in files.items():
         # A crash mid-write must not leave a truncated file: write aside, then rename over it.
         fd, tmp = tempfile.mkstemp(dir=path, prefix=f".{name}.")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(text)
+            os.chmod(tmp, 0o666 & ~umask)  # mkstemp makes 0600; keep the mode a plain write would give
             os.replace(tmp, path / name)
         except BaseException:
             os.unlink(tmp)

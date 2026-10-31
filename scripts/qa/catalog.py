@@ -330,7 +330,7 @@ def build(cfg: Config, suites: Iterable[str] | None = None) -> list[dict[str, An
     wanted = set(suites) if suites else None
     rows: list[dict[str, Any]] = []
     needs_cache: dict[str, _ConftestNeeds] = {}
-    quarantined = cfg.quarantined_ids()
+    quarantined = cfg.quarantined_ids(auto=False)
     for path in list_files(cfg.root):
         suite = suite_of(path, cfg)
         if not suite or (wanted and suite["id"] not in wanted):

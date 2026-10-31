@@ -511,6 +511,18 @@ class TestReportGate(RunCase):
         errors, _ = catalog.lint(cfg, catalog.build(cfg))
         self.assertFalse([e for e in errors if "quarantine" in e], errors)
 
+    def test_auto_quarantine_never_changes_the_committed_catalog(self) -> None:
+        import datetime as dt
+        rows = catalog.build(self.cfg)
+        target = next(r["id"] for r in rows if r.get("status") != "planned")
+        expires = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+        auto = self._auto_file(json.dumps({"tests": [{"id": target, "owner": "qa-auto", "issue": "u", "expires": expires, "auto": True}]}))
+        with mock.patch.dict(os.environ, {"QA_QUARANTINE_AUTO": auto}):
+            cfg = config.load(self.root)
+        self.assertIn(target, cfg.quarantined_ids())
+        self.assertEqual(catalog.build(cfg), rows)
+        self.assertEqual(catalog.stale(cfg), catalog.stale(self.cfg))
+
     def test_unreadable_auto_file_is_ignored(self) -> None:
         auto = self._auto_file("not json")
         err = io.StringIO()

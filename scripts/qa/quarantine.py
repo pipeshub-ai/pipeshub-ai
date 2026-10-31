@@ -80,6 +80,7 @@ def ensure_issue(repo: str, test_id: str, letters: str) -> str | None:
             _labelled = True
             _gh(["label", "create", LABEL, "--force", "--repo", repo, "--color", "fbca04",
                  "--description", "Quarantined automatically as flaky"])
+        # shortcut: at most 1000 open qa-flaky issues are checked; past that a duplicate is possible, so page with --paginate via gh api then.
         # A plain label listing, not search: the search index lags, and a missed issue would be duplicated.
         listed = json.loads(_gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                                  "--limit", "1000", "--json", "title,url"]) or "[]")
