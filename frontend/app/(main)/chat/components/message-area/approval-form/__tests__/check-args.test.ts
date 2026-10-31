@@ -18,7 +18,7 @@ describe('checkArgs', () => {
     expect(checkArgs(fields, { mail_to: 'a@b.co', priority: 'low', count: 2, code: 'AB' })).toEqual([]);
   });
   it('flags a missing required field', () => {
-    expect(checkArgs(fields, {}).map((e) => e.path)).toEqual(['/mail_to']);
+    expect(checkArgs(fields, {})).toMatchObject([{ path: '/mail_to', code: 'required' }]);
     expect(checkArgs(fields, { mail_to: '' }).map((e) => e.path)).toEqual(['/mail_to']);
   });
   it('flags values outside enum, type, length, pattern and email format', () => {
@@ -30,6 +30,16 @@ describe('checkArgs', () => {
     expect(paths({ code: 'ABCDE' })).toEqual(['/code']);
     expect(paths({ code: 'ab' })).toEqual(['/code']);
     expect(checkArgs(fields, { mail_to: 'nope' }).map((e) => e.path)).toEqual(['/mail_to']);
+  });
+  it('gives codes and params to translate', () => {
+    const one = (v: Record<string, unknown>) => checkArgs(fields, { mail_to: 'a@b.co', ...v })[0];
+    expect(one({ priority: 'urgent' })).toMatchObject({ code: 'enum' });
+    expect(one({ count: 'two' })).toMatchObject({ code: 'type', params: { type: 'integer' } });
+    expect(one({ code: 'A' })).toMatchObject({ code: 'minLength', params: { min: 2 } });
+    expect(one({ code: 'ABCDE' })).toMatchObject({ code: 'maxLength', params: { max: 4 } });
+    expect(one({ code: 'ab' })).toMatchObject({ code: 'pattern' });
+    expect(checkArgs(fields, { mail_to: 'nope' })[0]).toMatchObject({ code: 'email' });
+    expect(one({ priority: 'urgent' }).message).toBeTruthy();
   });
   it('skips optional fields that are empty', () => {
     expect(checkArgs(fields, { mail_to: 'a@b.co', priority: undefined, code: '' })).toEqual([]);

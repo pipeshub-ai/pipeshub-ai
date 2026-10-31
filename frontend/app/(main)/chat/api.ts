@@ -978,7 +978,7 @@ export async function validateApprovalEdits(
   );
   if (res.status === 200) return res.data.errors ?? [];
   const message = typeof res.data?.message === 'string' && res.data.message ? res.data.message : 'This request is no longer available.';
-  return [{ path: '', message }];
+  return [{ path: '', code: 'requestChanged', message }];
 }
 
 // ============================================

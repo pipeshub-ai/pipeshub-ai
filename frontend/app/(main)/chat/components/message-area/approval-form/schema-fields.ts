@@ -8,18 +8,28 @@ export type FieldSpec = {
   label: string;
   required: boolean;
   control: FieldControl;
-  options?: string[];
+  /** Original enum values, so a numeric enum is sent back as a number. */
+  options?: { value: unknown; label: string }[];
   schema: JsonSchema;
 };
 
-const LONG_TEXT_NAME = /body|description|content|message|comment|text/;
+const LONG_TEXT_NAME = /body|description|content|message|comment|text/i;
 
-/** The schema's type, ignoring a `null` alternative. */
-export function schemaType(schema: JsonSchema): string | undefined {
-  return Array.isArray(schema.type) ? schema.type.find((t) => t !== 'null') : schema.type;
+/** `anyOf`/`oneOf` of one schema plus null is that schema, nullable; any other union stays as is. */
+export function unwrapNullable(schema: JsonSchema): JsonSchema {
+  const union = schema.anyOf ?? schema.oneOf;
+  const rest = union?.filter((s) => s.type !== 'null');
+  return union && rest?.length === 1 && union.length === 2 ? { ...rest[0], title: schema.title ?? rest[0].title } : schema;
 }
 
-function controlFor(name: string, schema: JsonSchema): FieldControl {
+/** The schema's type, ignoring a `null` alternative; undefined for a union, `$ref` or untyped schema. */
+export function schemaType(schema: JsonSchema): string | undefined {
+  const s = unwrapNullable(schema);
+  return Array.isArray(s.type) ? s.type.find((t) => t !== 'null') : s.type;
+}
+
+function controlFor(name: string, raw: JsonSchema): FieldControl {
+  const schema = unwrapNullable(raw);
   if (schema.enum?.length) return 'select';
   switch (schemaType(schema)) {
     case 'string':
@@ -35,10 +45,8 @@ function controlFor(name: string, schema: JsonSchema): FieldControl {
       return 'switch';
     case 'array':
       return schemaType(schema.items ?? {}) === 'string' ? 'chips' : 'json';
-    case undefined:
-      return 'text';
     default:
-      return 'json'; // objects and anything the form has no input for stay read-only
+      return 'json'; // objects, unions, `$ref` and untyped schemas have no input, so stay read-only
   }
 }
 
@@ -52,8 +60,8 @@ export function schemaFields(schema: JsonSchema): FieldSpec[] {
       label: prop.title?.trim() || toolDisplayName(name),
       required: required.has(name),
       control,
-      ...(control === 'select' ? { options: (prop.enum ?? []).map(String) } : {}),
-      schema: prop,
+      ...(control === 'select' ? { options: (unwrapNullable(prop).enum ?? []).map((value) => ({ value, label: String(value) })) } : {}),
+      schema: unwrapNullable(prop),
     };
   });
   return [...fields.filter((f) => f.required), ...fields.filter((f) => !f.required)];

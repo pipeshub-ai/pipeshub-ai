@@ -116,6 +116,15 @@ describe('buildStreamChatRequestForSlot with an edited answer', () => {
   });
 });
 
+describe('buildStreamChatRequestForSlot with a plain answer', () => {
+  it('leaves unset edit fields out of the body', () => {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    const sent = buildStreamChatRequestForSlot(slotId, 'x', undefined, { approvalId: 'ap-1', decision: 'allow' })?.toolApproval;
+    expect(sent).toEqual({ approvalId: 'ap-1', decision: 'allow' });
+    for (const key of ['argsHash', 'arguments', 'feedback', 'rememberForConversation']) expect(sent).not.toHaveProperty(key);
+  });
+});
+
 describe('validateApprovalEdits', () => {
   it('posts to the validate route and returns the errors', async () => {
     const { apiClient } = await import('@/lib/api');
@@ -133,9 +142,9 @@ describe('validateApprovalEdits', () => {
     const { apiClient } = await import('@/lib/api');
     const { validateApprovalEdits } = await import('../api');
     vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 410, data: { message: 'Expired' } });
-    await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([{ path: '', message: 'Expired' }]);
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toEqual([{ path: '', code: 'requestChanged', message: 'Expired' }]);
     vi.mocked(apiClient.post).mockResolvedValueOnce({ status: 404, data: {} });
-    await expect(validateApprovalEdits('a', 'h', {})).resolves.toMatchObject([{ path: '' }]);
+    await expect(validateApprovalEdits('a', 'h', {})).resolves.toMatchObject([{ path: '', code: 'requestChanged' }]);
     vi.mocked(apiClient.post).mockRejectedValueOnce(new Error('network'));
     await expect(validateApprovalEdits('a', 'h', {})).rejects.toThrow('network');
   });
