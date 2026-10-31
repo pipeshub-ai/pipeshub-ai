@@ -198,6 +198,8 @@ class Outcome(MCPCamelModel):
     ran: bool = False
     # The person's edit of the arguments, when that is what ran.
     edited_arguments: dict[str, Any] | None = None
+    # The note the person declined with, for the card's receipt.
+    note: str | None = None
 
 
 def enabled(source: Source = "mcp") -> bool:
@@ -787,7 +789,7 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
             await next_fn()
             return
         if refused is not None:
-            await _keep_card_open(context, ctx.scope, history, *refused)
+            await _keep_card_open(context, ctx.scope, history, *refused, edited=answer.arguments)
             await next_fn()
             return
         settled = await _settle(context, ctx.scope, answer)
@@ -839,7 +841,7 @@ async def _refused_edit(
 
 async def _keep_card_open(
     context: "AgentContext", run: "RunScope", history: "ContextManager",
-    target: ApprovalTarget, pending: PendingCall, errors: list[EditError],
+    target: ApprovalTarget, pending: PendingCall, errors: list[EditError], *, edited: dict[str, Any],
 ) -> None:
     """A refused edit: the card is shown again with what's wrong, nothing is claimed or run, and the
     turn still waits on the call. The run goes on only so the reply can point the person at the card;
@@ -847,6 +849,9 @@ async def _keep_card_open(
     call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
     message = f"{WAITING_PREFIX} {pending.tool_name} on {pending.server_name}."
     details = {**_card_details(target, pending), "editErrors": [e.model_dump(by_alias=True) for e in errors]}
+    # The card reopens on the person's edit; one too large to show reopens on the call as asked.
+    if _card_arguments(edited)["arguments"] is not None:
+        details["editedArguments"] = edited
     await _emit(run, EventType.TOOL_BLOCKED, {
         "tool": target.tool.name, "reason": message, "tool_call_id": call_id,
         "status": ToolCallStatus.AWAITING_APPROVAL, "approval": details,
@@ -942,7 +947,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             )
         elif answer.decision == "deny" and answer.feedback:
             outcome = Outcome(
-                answer="declined", status="blocked", preview=f"Declined: {answer.feedback}",
+                answer="declined", status="blocked", preview=f"Declined: {answer.feedback}", note=answer.feedback,
                 result=f"The user declined this call and said: {answer.feedback}. Follow their instruction; "
                 "don't repeat the same call.",
             )
@@ -1063,6 +1068,8 @@ def _start_payload(
 async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome: Outcome) -> None:  # noqa: ANN401
     """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
     start = _start_payload(call_id, tool_name, pending, target, outcome.answer, outcome.edited_arguments)
+    if outcome.note:
+        start["approval_note"] = outcome.note
     if outcome.ran:
         # Kept on the reply's part: regenerating that reply could run the action again.
         start["approved"] = True

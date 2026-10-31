@@ -37,7 +37,10 @@ interface ToolApprovalCardProps {
 
 const MAX_FEEDBACK_CHARS = 2000;
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const blank = (v: unknown) => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+// An optional field the call didn't set stays unchanged while it is left empty.
+const same = (value: unknown, asked: unknown) =>
+  asked === undefined ? blank(value) : JSON.stringify(value) === JSON.stringify(asked);
 
 /** The top-level field a JSON pointer names (`/labels/0` is `labels`); "" for the whole call. */
 function pointerField(path: string): string {
@@ -55,7 +58,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [remember, setRemember] = useState(false);
   const [forConversation, setForConversation] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...(original ?? {}) }));
+  const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...(approval.editedArguments ?? original ?? {}) }));
   const [errors, setErrors] = useState<EditError[]>(() => approval.editErrors ?? []);
   const [editing, setEditing] = useState(() => Boolean(approval.editErrors?.length));
   const [noteOpen, setNoteOpen] = useState(false);
@@ -76,7 +79,9 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const showForm = editing && canEdit;
 
   useEffect(() => {
-    if (focusTick) cardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    const invalid = focusTick ? cardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') : null;
+    // A list field marks its group; the input inside takes the focus.
+    (invalid?.matches('input, textarea, button') ? invalid : invalid?.querySelector<HTMLElement>('input, textarea, button'))?.focus();
   }, [focusTick]);
 
   const tool = approvalToolLabel(approval);
@@ -113,7 +118,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
     if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
     const query = toolApprovalResumeQuery(decision);
     // An edit or a note is about this one call, so it never sets a lasting rule.
-    const plain = !extra.arguments && !extra.feedback;
+    const plain = !edited && !extra.arguments && !extra.feedback;
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {
       approvalId: approval.approvalId,
       decision,
@@ -239,6 +244,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             changed={changed}
             onChange={(name, value) => {
               setValues((prev) => ({ ...prev, [name]: value }));
+              setRemember(false);
+              setForConversation(false);
               setErrors((prev) => prev.filter((e) => pointerField(e.path) !== name));
             }}
           />
@@ -278,8 +285,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
       {(hasFieldErrors || cardErrors.length > 0) && (
         <Flex direction="column" gap="1" mt="2" role="alert">
           {hasFieldErrors && <Text size="1" style={{ color: 'var(--red-11)' }}>{t('chat.toolApproval.editRejected')}</Text>}
-          {cardErrors.map((message) => (
-            <Text key={message} size="1" style={{ color: 'var(--red-11)' }}>{message}</Text>
+          {cardErrors.map((message, i) => (
+            <Text key={i} size="1" style={{ color: 'var(--red-11)' }}>{message}</Text>
           ))}
         </Flex>
       )}
@@ -400,7 +407,7 @@ function Receipt({ item }: { item: SettledToolApproval }) {
   const text = item.note
     ? t('chat.toolApproval.receipt.declinedWithNote', { note: item.note })
     : item.changedFields
-      ? t('chat.toolApproval.receipt.allowedWithChanges', { tool: item.tool })
+      ? t('chat.toolApproval.receipt.allowedWithChanges')
       : t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.tool });
   return (
     <Box>

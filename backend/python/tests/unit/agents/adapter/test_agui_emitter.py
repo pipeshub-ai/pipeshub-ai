@@ -210,7 +210,7 @@ class TestToolCallTranslation:
     async def test_an_edited_calls_start_names_the_changed_fields(self) -> None:
         start = _event(EventType.TOOL_CALL_START, {
             "tool": "x", "args": {"title": "b"}, "tool_call_id": "approved_2", "approval_answer": "allowed",
-            "changed_fields": ["title"],
+            "changed_fields": ["title"], "approval_note": "Use the team list",
         })
         emitter, sink = _make_emitter()
         collector = TranscriptCollector()
@@ -222,6 +222,7 @@ class TestToolCallTranslation:
         start_frame = sink.write.await_args_list[0].args[0]
         assert start_frame["data"]["changedFields"] == ["title"]
         assert collector.parts[0]["changedFields"] == ["title"]
+        assert start_frame["data"]["approvalNote"] == collector.parts[0]["approvalNote"] == "Use the team list"
 
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()

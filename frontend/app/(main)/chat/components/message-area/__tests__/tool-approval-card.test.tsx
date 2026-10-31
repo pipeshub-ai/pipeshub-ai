@@ -212,6 +212,48 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(screen.getByRole('checkbox', { name: "Don't ask again for this tool" })).toBeTruthy();
   });
 
+  it('drops a ticked "ask again" choice once the call is edited', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('checkbox', { name: "Don't ask again for this tool" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'deny', argsHash: 'h1' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(screen.getByRole('checkbox', { name: "Don't ask again for this tool" }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('treats an emptied optional field that had no value as unchanged', () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({
+          arguments: { title: 'Login fails' },
+          inputSchema: { type: 'object', properties: { title: { type: 'string' }, note: { type: 'string' } } },
+        })}
+        isLatest
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const noteField = screen.getByRole('textbox', { name: 'Note' });
+    fireEvent.change(noteField, { target: { value: 'x' } });
+    fireEvent.change(noteField, { target: { value: '' } });
+    expect(screen.queryByText('Changed')).toBeNull();
+  });
+
+  it('reopens a refused edit on what the person sent, with the errors', () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({ editedArguments: { title: 'Bug', labels: ['bug'], meta: { a: 1 } }, editErrors: [{ path: '/title', message: 'Title is too vague' }] })}
+        isLatest
+      />,
+    );
+    expect(titleField().value).toBe('Bug');
+    expect(screen.getByText('Changed')).toBeTruthy();
+    expect(screen.getByText('Title is too vague')).toBeTruthy();
+  });
+
   it('shows nested values read-only', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
@@ -244,6 +286,17 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(await screen.findByText('Title is too vague')).toBeTruthy();
     expect(chat.validate).toHaveBeenCalledWith('ap-1', 'h1', { title: 'Bug', labels: ['bug'], meta: { a: 1 } });
     expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+  });
+
+  it('moves focus into a list field that has the error', async () => {
+    chat.validate.mockResolvedValueOnce([{ path: '/labels/0', message: 'Unknown label' }]);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Bug' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('Unknown label')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('group', { name: 'Labels' }).querySelector('input'));
   });
 
   it('says when the request changed under the card', async () => {
@@ -481,6 +534,30 @@ describe('ChatResponse with a call waiting for approval', () => {
     expect(screen.queryByText('Changed: title, labels')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Allowed with changes' }));
     expect(screen.getByText('Changed: title, labels')).toBeTruthy();
+  });
+
+  it('says an edited call that was stopped did not run', () => {
+    const stopped = [
+      {
+        type: 'tool_call' as const, toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked' as const,
+        approvalAnswer: 'allowed' as const, changedFields: ['title'], approval: approval(),
+      },
+      { type: 'text' as const, content: 'It was blocked.', isFinal: true },
+    ];
+    renderInTheme(<ChatResponse question="Q" answer="It was blocked." persistedParts={stopped} isLastMessage />);
+    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe("You allowed Create an issue, but it didn't runJira");
+  });
+
+  it('prefers the note the server saved over the shortened preview', () => {
+    const declined = [
+      {
+        type: 'tool_call' as const, toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked' as const,
+        approvalAnswer: 'declined' as const, approvalNote: 'Use the full note', resultPreview: 'Declined: Use the', approval: approval(),
+      },
+      { type: 'text' as const, content: 'OK.', isFinal: true },
+    ];
+    renderInTheme(<ChatResponse question="Q" answer="OK." persistedParts={declined} isLastMessage />);
+    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe('Declined: Use the full noteJira');
   });
 
   it('says when an allowed call was stopped before it ran', () => {

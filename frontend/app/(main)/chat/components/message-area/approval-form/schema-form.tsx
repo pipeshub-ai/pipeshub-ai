@@ -65,6 +65,7 @@ function Field({ id, field, value, error, changed, onChange }: FieldProps) {
     id,
     'aria-invalid': error ? true : undefined,
     'aria-describedby': error ? errorId : undefined,
+    'aria-required': field.required || undefined,
   } as const;
 
   let control: React.ReactNode;
@@ -83,7 +84,7 @@ function Field({ id, field, value, error, changed, onChange }: FieldProps) {
       const index = options.findIndex((o) => o.value === value);
       control = (
         // Items are keyed by position so a numeric option is written back as the number it was.
-        <Select.Root value={index >= 0 ? String(index) : undefined} onValueChange={(i) => onChange(options[Number(i)]?.value)}>
+        <Select.Root value={index >= 0 ? String(index) : ''} onValueChange={(i) => onChange(options[Number(i)]?.value)}>
           <Select.Trigger {...a11y} aria-labelledby={labelId} />
           <Select.Content>
             {options.map((option, i) => (
@@ -96,7 +97,7 @@ function Field({ id, field, value, error, changed, onChange }: FieldProps) {
     }
     case 'chips':
       control = (
-        <Box role="group" aria-labelledby={labelId} aria-describedby={a11y['aria-describedby']}>
+        <Box role="group" aria-labelledby={labelId} aria-describedby={a11y['aria-describedby']} aria-invalid={a11y['aria-invalid']}>
           <TagInput compact freeText tags={toTags(value)} onTagsChange={(tags) => onChange(tags.map((tag) => tag.value))} />
         </Box>
       );

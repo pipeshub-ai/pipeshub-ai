@@ -25,6 +25,7 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
   if (!approvalId || !serverName || !toolName || typeof raw.expiresAt !== 'number') return null;
   const args = raw.arguments;
   const schema = raw.inputSchema;
+  const edited = raw.editedArguments;
   const editErrors = Array.isArray(raw.editErrors)
     ? raw.editErrors.filter((e): e is EditError => !!e && typeof e.path === 'string' && typeof e.message === 'string')
     : [];
@@ -49,6 +50,7 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     ...(text('argsSummary') ? { argsSummary: text('argsSummary') as string } : {}),
     ...(text('displayName') ? { displayName: text('displayName') as string } : {}),
     ...(editErrors.length ? { editErrors } : {}),
+    ...(edited && typeof edited === 'object' && !Array.isArray(edited) ? { editedArguments: edited as Record<string, unknown> } : {}),
   };
 }
 
@@ -98,13 +100,15 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
-        const note = part.approvalAnswer === 'declined' ? DECLINED_NOTE.exec(part.resultPreview ?? '')?.[1] : undefined;
+        // The preview is cut at the saved size; parts saved before the note was sent have only it.
+        const note = part.approvalAnswer === 'declined' ? part.approvalNote || DECLINED_NOTE.exec(part.resultPreview ?? '')?.[1] : undefined;
+        const answer = part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer;
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
           server: details?.serverName ?? '',
-          answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
-          ...(part.approvalAnswer === 'allowed' && part.changedFields?.length ? { changedFields: part.changedFields } : {}),
+          answer,
+          ...(answer === 'allowed' && part.changedFields?.length ? { changedFields: part.changedFields } : {}),
           ...(note ? { note } : {}),
         });
       }

@@ -139,6 +139,8 @@ class AGUIEventEmitter(EventEmitter):
                 start_kwargs["approvalAnswer"] = payload["approval_answer"]
             if isinstance(payload.get("changed_fields"), list):
                 start_kwargs["changedFields"] = payload["changed_fields"]
+            if isinstance(payload.get("approval_note"), str):
+                start_kwargs["approvalNote"] = payload["approval_note"]
             args = payload.get("args", {})
             return [
                 frame(AGUIEventType.TOOL_CALL_START, **start_kwargs),

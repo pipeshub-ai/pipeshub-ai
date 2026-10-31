@@ -202,6 +202,8 @@ async def test_refused_edit_keeps_card_open_and_runs_nothing() -> None:
     assert card["status"] == ToolCallStatus.AWAITING_APPROVAL
     assert card["approval"]["approvalId"] == approval_id
     assert card["approval"]["editErrors"][0]["path"] == "/title"
+    # The card reopens on the person's edit, not on the call as asked.
+    assert card["approval"]["editedArguments"] == {"title": 5}
     assert answered.events.of(EventType.TOOL_CALL_START, "c1") == []
     # The model is only told to point the person at the card; the call keeps waiting for them.
     assert any("highlighted" in c for c in answered.goal.constraints)
@@ -298,6 +300,8 @@ async def test_deny_with_feedback_tells_the_model() -> None:
     )
     (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
     assert ended["content"] == "Declined: Use the team list"
+    (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
+    assert started["approval_note"] == "Use the team list"
 
 
 def test_answer_rejects_arguments_with_deny() -> None:

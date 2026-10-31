@@ -63,4 +63,41 @@ describe('SchemaForm', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Urgent' }));
     expect(onChange).toHaveBeenLastCalledWith('urgent', true);
   });
+
+  it('writes a select back as the original enum value, a number staying a number', () => {
+    Object.assign(Element.prototype, { hasPointerCapture: () => false, releasePointerCapture: () => {}, scrollIntoView: () => {} });
+    const onChange = vi.fn();
+    const select = schemaFields({ type: 'object', properties: { priority: { type: 'integer', enum: [1, 2, 3] } } });
+    renderInTheme(<SchemaForm fields={select} values={{ priority: 2 }} errors={{}} onChange={onChange} />);
+    const trigger = screen.getByRole('combobox', { name: 'Priority' });
+    expect(trigger.textContent).toBe('2');
+
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    fireEvent.keyDown(screen.getByRole('option', { name: '3' }), { key: 'Enter' });
+    expect(onChange).toHaveBeenLastCalledWith('priority', 3);
+  });
+
+  it('shows a value outside the list as no choice', () => {
+    const select = schemaFields({ type: 'object', properties: { priority: { type: 'string', enum: ['low', 'high'] } } });
+    renderInTheme(<SchemaForm fields={select} values={{ priority: 'urgent' }} errors={{}} onChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Priority' }).textContent).toBe('');
+  });
+
+  it('keeps a list of text as a list, adding and removing items', () => {
+    const onChange = vi.fn();
+    const chips = schemaFields({ type: 'object', properties: { labels: { type: 'array', items: { type: 'string' } } } });
+    renderInTheme(<SchemaForm fields={chips} values={{ labels: ['bug', 'auth'] }} errors={{}} onChange={onChange} />);
+    const group = screen.getByRole('group', { name: 'Labels' });
+    const input = group.querySelector('input') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'login, web' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenLastCalledWith('labels', ['bug', 'auth', 'login, web']);
+  });
+
+  it('marks required fields for assistive technology', () => {
+    renderInTheme(<SchemaForm fields={fields} values={values} errors={{}} onChange={vi.fn()} />);
+    expect(screen.getByRole('textbox', { name: /Title/ }).getAttribute('aria-required')).toBe('true');
+    expect(screen.getByRole('spinbutton', { name: 'Count' }).getAttribute('aria-required')).toBeNull();
+  });
 });

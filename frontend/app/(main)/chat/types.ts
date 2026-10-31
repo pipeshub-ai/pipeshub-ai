@@ -827,6 +827,8 @@ export interface MessagePart {
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
   /** The top-level arguments the person changed before allowing the call. */
   changedFields?: string[];
+  /** The note the person declined the call with. */
+  approvalNote?: string;
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
   runId?: string;
@@ -1070,6 +1072,8 @@ export interface ToolApprovalDetails {
   argsSummary?: string;
   displayName?: string;
   editErrors?: EditError[];
+  /** On a card reopened after a refused edit: what the person sent, for the form to start from. */
+  editedArguments?: Record<string, unknown>;
 }
 
 /**

@@ -197,6 +197,9 @@ class LivePartsBuilder {
     if (Array.isArray(data.changedFields)) {
       part.changedFields = data.changedFields.filter((f): f is string => typeof f === 'string');
     }
+    if (typeof data.approvalNote === 'string' && data.approvalNote) {
+      part.approvalNote = data.approvalNote;
+    }
     this.containerFor(runId).push(part);
     this.openToolCalls.set(toolCallId, part);
   }
