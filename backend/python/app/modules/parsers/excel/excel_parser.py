@@ -528,12 +528,7 @@ class ExcelParser:
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
-            try:
-                await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
-            except zipfile.BadZipFile:
-                # A damaged file, or another format named .xlsx. As a 500 the indexer retried it as
-                # an outage, and every copy of the same bytes waited for the one before it to give up.
-                raise ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE) from None
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
             blocks_containers = await document_parser.create_blocks(llm)
 
             return ParseResult(
@@ -585,6 +580,11 @@ class ExcelParser:
             raise
         except LoaderFailure as failure:
             raise _loader_error(failure) from None
+        except zipfile.BadZipFile:
+            # A damaged file, or another format named .xlsx, which the worker hands back as is.
+            # As a 500 the indexer retried it as an outage, and every copy of the same bytes
+            # waited for the one before it to give up.
+            raise ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE) from None
         self.workbook = model
         self.logger.info(
             "Workbook loaded with %d sheets: %s (worker peak %d MB)",

@@ -470,7 +470,7 @@ def test_text_repeated_by_shared_strings_is_counted_per_use(monkeypatch: pytest.
     assert load(data).workbook.text_bytes >= 4_000_000  # the same workbook loads under a larger allowance
 
 
-def test_a_corrupt_workbook_keeps_the_loaders_own_error() -> None:
+def test_a_corrupt_workbook_keeps_the_loaders_own_error_and_a_non_zip_is_unreadable() -> None:
     from lxml import etree
 
     out = io.BytesIO()
@@ -478,8 +478,10 @@ def test_a_corrupt_workbook_keeps_the_loaders_own_error() -> None:
         archive.writestr("[Content_Types].xml", "<broken")
     with pytest.raises(etree.XMLSyntaxError):  # as before the worker: not a stand-in RuntimeError
         load(out.getvalue())
-    with pytest.raises(zipfile.BadZipFile):
+    # Not a zip at all is the file's fault, not an outage: a 422, never a retried 500.
+    with pytest.raises(ParseError) as raised:
         load(b"not a zip")
+    assert raised.value.message == user_errors.UNREADABLE_FILE
 
 
 # -- the running output budget: what the parent produces, charged as it is created ----------------------
