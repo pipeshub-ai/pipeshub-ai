@@ -9,7 +9,7 @@ export interface ToolApprovalDetails {
   instanceId: string;
   serverName: string;
   toolName: string;
-  toolTitle: string;
+  toolTitle?: string | null;
   readOnly: boolean;
   kind: 'read' | 'write' | 'destructive';
   canRemember: boolean;
@@ -33,10 +33,11 @@ export const APPROVAL_DENY_ACTION = 'approval_deny';
 
 const HEADER_MAX_CHARS = 150;
 const SECTION_MAX_CHARS = 3000;
-const MAX_ARGUMENT_LINES = 5;
-// Five lines of these stay well under Slack's 3000-character section limit.
 const ARGUMENT_KEY_MAX_CHARS = 100;
 const ARGUMENT_VALUE_MAX_CHARS = 200;
+const SEE_EVERYTHING = 'Open in PipesHub to see everything.';
+// Room kept in the section for the "+N more" line.
+const MORE_LINE_RESERVE = 80;
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -101,14 +102,36 @@ export function parseApprovalButtonValue(
   }
 }
 
-function argumentLines(args: Record<string, unknown> | null): string {
-  return Object.entries(args ?? {})
-    .slice(0, MAX_ARGUMENT_LINES)
-    .map(([key, value]) => {
-      const shown = typeof value === 'string' ? value : JSON.stringify(value);
-      return `*${plain(key, ARGUMENT_KEY_MAX_CHARS)}:* ${plain(shown, ARGUMENT_VALUE_MAX_CHARS)}`;
-    })
-    .join('\n');
+/**
+ * Every argument the call will run with, as many as fit in one section; the
+ * card never hides what is being approved without saying so.
+ */
+function argumentDetails(approval: ToolApprovalDetails): string {
+  if (approval.arguments === null) {
+    const preview = approval.argumentsPreview ?? '';
+    if (preview === '') return '';
+    const shown = plain(preview, SECTION_MAX_CHARS - MORE_LINE_RESERVE);
+    return shown.length < plain(preview).length
+      ? `${shown}\n_${SEE_EVERYTHING}_`
+      : shown;
+  }
+  const entries = Object.entries(approval.arguments);
+  const lines: string[] = [];
+  let used = 0;
+  let valueCut = false;
+  for (const [key, value] of entries) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    const shownValue = plain(text, ARGUMENT_VALUE_MAX_CHARS);
+    const line = `*${plain(key, ARGUMENT_KEY_MAX_CHARS)}:* ${shownValue}`;
+    if (used + line.length + 1 > SECTION_MAX_CHARS - MORE_LINE_RESERVE) break;
+    if (shownValue.length < plain(text).length) valueCut = true;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  const hidden = entries.length - lines.length;
+  if (hidden > 0) lines.push(`_+${String(hidden)} more. ${SEE_EVERYTHING}_`);
+  else if (valueCut) lines.push(`_${SEE_EVERYTHING}_`);
+  return lines.join('\n');
 }
 
 export function buildApprovalCard(
@@ -116,15 +139,12 @@ export function buildApprovalCard(
   requesterSlackId: string,
   teamId: string,
 ): { text: string; blocks: KnownBlock[] } {
-  const name =
-    approval.displayName !== undefined && approval.displayName !== ''
-      ? approval.displayName
-      : approval.toolName;
+  // The tool's own title, as the web card shows it; displayName is past tense.
+  const toolTitle = approval.toolTitle?.trim() ?? '';
+  const name = toolTitle !== '' ? toolTitle : approval.toolName;
   const title = `${name} on ${approval.serverName}`;
-  const details =
-    approval.argsSummary !== undefined && approval.argsSummary !== ''
-      ? plain(approval.argsSummary, SECTION_MAX_CHARS)
-      : argumentLines(approval.arguments);
+  const subtitle = approval.argsSummary?.trim() ?? '';
+  const details = argumentDetails(approval);
   const expiresAtSeconds = Math.floor(approval.expiresAt / 1000);
   const notes = [
     `Waiting on <@${requesterSlackId}>`,
@@ -169,6 +189,19 @@ export function buildApprovalCard(
         type: 'header',
         text: { type: 'plain_text', text: truncate(title, HEADER_MAX_CHARS) },
       },
+      ...(subtitle !== ''
+        ? [
+            {
+              type: 'context' as const,
+              elements: [
+                {
+                  type: 'mrkdwn' as const,
+                  text: plain(subtitle, SECTION_MAX_CHARS),
+                },
+              ],
+            },
+          ]
+        : []),
       ...(details !== ''
         ? [
             {
@@ -196,13 +229,15 @@ const RECEIPTS = {
 };
 
 export function buildApprovalReceipt(
-  kind: 'allowed' | 'declined' | keyof typeof RECEIPTS,
+  kind: 'allowed' | 'allowedNotRun' | 'declined' | keyof typeof RECEIPTS,
   actorSlackId: string,
   note?: string,
 ): KnownBlock[] {
   let text: string;
   if (kind === 'allowed') text = `Approved by <@${actorSlackId}>`;
-  else if (kind !== 'declined') text = RECEIPTS[kind];
+  else if (kind === 'allowedNotRun') {
+    text = `Approved by <@${actorSlackId}>, but it didn't run`;
+  } else if (kind !== 'declined') text = RECEIPTS[kind];
   else {
     text = `Declined by <@${actorSlackId}>`;
     // The feedback is capped at 2000, so the line stays under the 3000 limit.
