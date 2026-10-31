@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import zipfile
 from datetime import datetime, time
 from typing import Any
 
@@ -527,7 +528,12 @@ class ExcelParser:
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
-            await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
+            try:
+                await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
+            except zipfile.BadZipFile:
+                # A damaged file, or another format named .xlsx. As a 500 the indexer retried it as
+                # an outage, and every copy of the same bytes waited for the one before it to give up.
+                raise ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE) from None
             blocks_containers = await document_parser.create_blocks(llm)
 
             return ParseResult(
