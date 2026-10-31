@@ -22,6 +22,7 @@ MAX_INPUT_BYTES = 200_000
 # Read from the engine checkout (the base branch in CI), so a PR cannot rewrite the prompt that plans it.
 PROMPT = "scripts/qa/prompts/planner.md"
 # Every task gets READ_ONLY_TOOLS: the model never writes files; the engine writes what a task returns.
+# No Bash: `git diff --output=<path>` writes a file. The engine writes changeset.diff for tasks that need it.
 TASKS: dict[str, dict[str, Any]] = {
     "plan": {
         "prompt": PROMPT,
@@ -48,7 +49,7 @@ TASKS: dict[str, dict[str, Any]] = {
         "empty": {"content": ""},
     },
 }
-READ_ONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(grep:*)"
+READ_ONLY_TOOLS = "Read,Glob,Grep"
 FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
@@ -96,7 +97,9 @@ def _claude_code(root: Path, input_path: Path, timeout: int, task: str = "plan")
     if not exe:
         raise RuntimeError("claude CLI not found")
     cmd = [exe, "-p", _instructions(root, input_path, task), "--output-format", "json",
-           "--max-turns", os.environ.get("QA_PLANNER_MAX_TURNS", "15"), "--allowedTools", READ_ONLY_TOOLS]
+           "--max-turns", os.environ.get("QA_PLANNER_MAX_TURNS", "15"), "--allowedTools", READ_ONLY_TOOLS,
+           # User settings only: cwd is the tree under test, whose .claude/settings*.json could add hooks or tools.
+           "--setting-sources", "user"]
     if os.environ.get("QA_PLANNER_MODEL"):
         cmd += ["--model", os.environ["QA_PLANNER_MODEL"]]
     out = subprocess.run(cmd, check=False, cwd=root, capture_output=True, text=True, timeout=timeout)

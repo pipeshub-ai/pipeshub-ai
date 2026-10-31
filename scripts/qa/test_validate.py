@@ -216,12 +216,18 @@ class TestModelTasks(ValidateCase):
             seen.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": '{"schema": "qa-plan-llm/v1"}'}), "")
 
+        tasks = sorted(set(planner.TASKS) - set(PROBE))
+        self.assertEqual(tasks, ["implement", "plan", "review", "scenarios"])
         with mock.patch.object(planner.subprocess, "run", fake_run), \
                 mock.patch.object(planner.shutil, "which", return_value="/bin/claude"):
-            status = planner.ask(self.root, "claude_code", "probe", self.inp, self.out, timeout=5)
-        self.assertEqual(status["status"], "ok")
-        cmd = seen[0]
-        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], planner.READ_ONLY_TOOLS)
+            for task in tasks:
+                planner.ask(self.root, "claude_code", task, self.inp, self.out, timeout=5)
+        self.assertEqual(len(seen), len(tasks))
+        for cmd in seen:
+            # Security: no Bash at all (git diff --output writes files), and only the user's settings, so the
+            # tree under test cannot add hooks or tools through its .claude/settings*.json.
+            self.assertEqual(cmd[cmd.index("--allowedTools") + 1], "Read,Glob,Grep")
+            self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
 
     def test_invalid_task_reply_is_the_empty_result(self) -> None:
         with mock.patch.dict(planner.ADAPTERS, {"fake": lambda *a, **kw: {"bogus": 1}}):

@@ -170,7 +170,10 @@ a PR.
 | Claude via the API | `litellm` | `anthropic/<model>` | `ANTHROPIC_API_KEY` |
 | Any agent CLI (Codex, Gemini CLI, ...) | `command` | - | `QA_PLANNER_CMD`; install the CLI in the plan job |
 
-`claude_code` and agent CLIs can grep the catalogs and read code. `litellm` sends
+`claude_code` can search the catalogs and read code with the Read, Glob and Grep
+tools only; it cannot run commands or write files, and it loads only your user
+settings (`--setting-sources user`), never the `.claude/` settings of the tree it
+plans. A `command` CLI gets whatever tools you give it in `QA_PLANNER_CMD`. `litellm` sends
 one request with `plan-input.json` and the diff, so it can add only tests listed
 in `candidates`, which are ranked by how closely they relate to the change.
 
