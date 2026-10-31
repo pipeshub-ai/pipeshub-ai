@@ -216,3 +216,66 @@ def test_another_listing_failure_is_not_access_denied() -> None:
             client.list_directory("share", "slow")
 
     assert not isinstance(raised.value, AccessDeniedError)
+
+
+def test_an_unsuccessful_listing_is_the_folders_own_failure() -> None:
+    # The walk stops on a sign-in refusal, so one folder's STATUS_UNSUCCESSFUL must not become one.
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_UNSUCCESSFUL, r"\\10.0.0.5\share\odd"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(DirectoryListingError) as raised:
+            client.list_directory("share", "odd")
+
+    assert "unsuccessful" in str(raised.value).lower()
+
+
+def test_a_folder_named_logon_is_not_a_refused_sign_in() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_UNSUCCESSFUL, r"\\10.0.0.5\share\logon"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(DirectoryListingError):
+            client.list_directory("share", "logon")
+
+
+class _Refused(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"Received unexpected status from the server: 0x{status:08x}")
+        self.status = status
+
+
+def test_a_refused_sign_in_at_registration_is_an_auth_error_in_plain_words() -> None:
+    client = SmbClient(server="files.example", username="u", password="p", share="dept")
+    fake = MagicMock()
+    fake.register_session.side_effect = _Refused(0xC000006D)
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(NetworkShareAuthError) as raised:
+            client.register()
+    assert str(raised.value) == "files.example refused the user name or password. Check them in the connector settings."
+    assert not client._registered
+
+
+def test_a_refused_sign_in_while_listing_is_an_auth_error() -> None:
+    # smbclient reconnects a dropped session inside scandir; a changed password is refused there.
+    from smbprotocol.exceptions import SMBOSError
+
+    client = SmbClient(server="files.example", username="u", password="p", share="dept")
+    fake = MagicMock()
+    fake.scandir.side_effect = SMBOSError(0xC000006D, r"\\10.0.0.5\dept")
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(NetworkShareAuthError):
+            client.list_directory("dept", "")
+
+
+def test_other_registration_errors_are_left_alone() -> None:
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = MagicMock()
+    fake.register_session.side_effect = ValueError("Failed to connect to '10.0.0.5:445'")
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(ValueError):
+            client.register()

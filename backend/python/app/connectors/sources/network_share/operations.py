@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
+    map_source_status,
     not_downloadable,
     not_found_at_source,
     to_stream_error,
@@ -19,6 +21,8 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.network_share.errors import NetworkShareAuthError
 from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
@@ -192,6 +196,24 @@ async def _save_share_checkpoint(
     await record_sync_point.update_sync_point(key, {"last_sync_time": watermark})
 
 
+@dataclass(frozen=True)
+class ShareWalkReport:
+    """What a walk of the shares could not read."""
+
+    # Shares where nothing at all could be listed.
+    unreadable: list[str] = field(default_factory=list)
+    # Ids of the folders and files that failed to be read; what was stored under them was kept.
+    unread: frozenset[str] = frozenset()
+
+    @property
+    def complete(self) -> bool:
+        return not self.unreadable and not self.unread
+
+    def coverage(self) -> FullSyncCoverage:
+        """For the full-sync unlink: a walk that skipped something must unlink nothing."""
+        return FullSyncCoverage(complete=self.complete)
+
+
 async def walk_shares(
     *,
     data_source: INetworkShareDataSource,
@@ -209,8 +231,11 @@ async def walk_shares(
     indexing_filters: FilterCollection,
     record_sync_point: SyncPoint,
     prune: bool,
-) -> list[str]:
-    """Walk and reconcile ``shares``. Returns the shares where nothing could be listed."""
+) -> ShareWalkReport:
+    """Walk and reconcile ``shares``. Returns what could not be read.
+
+    Raises NetworkShareAuthError, before anything is removed, when the server refuses the account.
+    """
     walker = make_walker(
         data_source=data_source,
         processor=processor,
@@ -253,6 +278,8 @@ async def walk_shares(
                 await _save_share_checkpoint(
                     record_sync_point, share_name, result.max_timestamp_ms
                 )
+        except NetworkShareAuthError:
+            raise
         except Exception:
             # Nothing tells which of its records the walk got to, so all of them stay.
             unread.add(share_name)
@@ -268,7 +295,7 @@ async def walk_shares(
         # A folder that failed to list keeps its own records only, so one
         # unreadable folder does not stop removals everywhere else on the share.
         await prune_unseen(processor, connector_id, seen, logger, unread)
-    return unreadable
+    return ShareWalkReport(unreadable=unreadable, unread=frozenset(unread))
 
 
 def io_share_and_path(record: Record) -> tuple[str, str] | None:
@@ -327,6 +354,9 @@ async def stream_file(
         )
     except HTTPException:
         raise
+    except NetworkShareAuthError as exc:
+        # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
+        raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
     except Exception as exc:
         raise to_stream_error(exc, connector=display_name) from exc
 

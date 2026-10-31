@@ -38,6 +38,7 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.cifs.common.apps import CifsApp
 from app.connectors.sources.network_share.entities_processor import (
     NetworkShareEntitiesProcessor,
@@ -298,7 +299,12 @@ class CifsConnector(BaseConnector):
         )
 
     async def run_sync(self) -> None:
-        await self._sync(prune=True)
+        try:
+            await self._sync(prune=True)
+        except NetworkShareAuthError as exc:
+            # The walk stops on a refused sign-in and removes nothing; say so, then fail the run.
+            await self._auth_error("Sign-in refused", str(exc))
+            raise
 
     async def run_incremental_sync(self) -> None:
         # The scheduler calls run_sync. There is no change journal, and a
@@ -326,7 +332,8 @@ class CifsConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="CIFS share",
         )
-        unreadable = await walk_shares(
+        self._last_walk = None
+        report = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
             mapper=self.mapper,
@@ -343,6 +350,8 @@ class CifsConnector(BaseConnector):
             record_sync_point=self.record_sync_point,
             prune=prune,
         )
+        self._last_walk = report
+        unreadable = report.unreadable
         if unreadable:
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
@@ -354,6 +363,11 @@ class CifsConnector(BaseConnector):
                 ),
                 payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
             )
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Only a walk that read everything may let a full sync unlink what it did not see."""
+        report = getattr(self, "_last_walk", None)
+        return report.coverage() if report is not None else FullSyncCoverage(complete=False)
 
     def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError("CIFS change notify is not a webhook strategy")

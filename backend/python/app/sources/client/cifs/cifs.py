@@ -209,7 +209,13 @@ class CifsClient(IClient):
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(path) from exc
-            if "logon" in message or "access denied" in message:
+            # The walk stops on an auth error, so a folder the account may not list stays a
+            # listing error. pysmb's text names the share and path, which may contain "logon".
+            reason = message
+            for name in (_smb1_path(path), path, share):
+                if name:
+                    reason = reason.replace(name.lower(), "")
+            if "logon" in reason:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
 
