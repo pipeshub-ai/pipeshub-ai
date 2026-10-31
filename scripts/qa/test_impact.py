@@ -56,7 +56,6 @@ class TestSelectionSources(ImpactCase):
     def test_covers_tag_selects_the_integration_test(self) -> None:
         p = self.change({"backend/python/app/services/retrieval.py": "def search():\n    return []\n"})
         self.assertIn("covers backend/python/app/services/retrieval.py", self.why(p, "it:retrieval/test_search.py::test_acl_filter"))
-        self.assertNotIn("it:retrieval/test_search.py::test_ranking", p["floor"]["tests"])
 
     def test_typescript_mirror_and_import_graph(self) -> None:
         p = self.change({"backend/nodejs/apps/src/modules/auth/auth.service.ts": "export const check = () => false;\n"})
@@ -90,6 +89,34 @@ class TestFullRunsAndProfiles(ImpactCase):
 
     def test_fast_profile_defers_integration_tests(self) -> None:
         p = self.change({"backend/python/app/connectors/sources/jira/sync.py": "X = 1\n"}, profile="fast")
+        self.assertFalse([t for t in p["floor"]["tests"] if t.startswith("it:")])
+        self.assertTrue(p["deferred"])
+
+
+class TestFlows(ImpactCase):
+    def test_flow_trigger_adds_flow_tests(self) -> None:
+        p = self.change({"backend/python/app/services/retrieval.py": "def search():\n    return []\n"})
+        rows = [t for t in p["floor"]["tests"] if t.startswith("it:retrieval/test_search.py")]
+        self.assertEqual(len(rows), 2)
+        for t in rows:
+            self.assertIn("flow search", self.why(p, t))
+        self.assertEqual(p["flows"]["search"], "trigger backend/python/app/services/retrieval.py")
+
+    def test_critical_flow_runs_on_a_docs_change(self) -> None:
+        p = self.change({"README.md": "hi\n"})
+        self.assertEqual(p["flows"], {"search": "critical"})
+        for t in p["floor"]["tests"]:
+            self.assertEqual(self.why(p, t), ["critical flow search"])
+        self.assertTrue(p["floor"]["tests"])
+
+    def test_deleted_file_triggers_its_flow(self) -> None:
+        (self.root / "backend/nodejs/apps/src/modules/auth/auth.service.ts").unlink()
+        p = self.change({})
+        self.assertIn("login", p["flows"])
+        self.assertTrue(any(t.startswith("e2e:") and "login" in t for t in p["floor"]["tests"]), p["floor"]["tests"])
+
+    def test_fast_profile_defers_critical_stack_tests(self) -> None:
+        p = self.change({"README.md": "hi\n"}, profile="fast")
         self.assertFalse([t for t in p["floor"]["tests"] if t.startswith("it:")])
         self.assertTrue(p["deferred"])
 

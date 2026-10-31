@@ -186,6 +186,21 @@ def compute(
         if rule.get("broker"):
             stack["broker"] = rule["broker"]
 
+    # Module paths never trigger a flow; only its own triggers do. Critical flows run on every change.
+    flows: dict[str, str] = {}
+    for fl in cfg.flows:
+        hit = next((f for f in files if globs.match_any(f, fl.get("triggers", []))), None)
+        if hit:
+            flows[fl["id"]] = f"trigger {hit}"
+        elif fl.get("critical"):
+            flows[fl["id"]] = "critical"
+        else:
+            continue
+        why = f"flow {fl['id']}" if hit else f"critical flow {fl['id']}"
+        for r in rows:
+            if fl["id"] in r.get("flows", []):
+                floor.add(r, why, hit)
+
     for r in rows:
         if r["covers"]:
             src = next((f for f in files if globs.match_any(f, r["covers"])), None)
@@ -278,6 +293,7 @@ def compute(
         "floor": {"tests": sorted(floor.items), "items": floor.items},
         "full_suites": full_suites,
         "matched_rules": matched_rules,
+        "flows": flows,
         "deferred": sorted(deferred),
         "stack": stack,
         "matrix": sorted(matrix),

@@ -72,6 +72,12 @@
               "string",
               "null"
             ]
+          },
+          "flows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -120,6 +126,12 @@
     "unmapped": {
       "type": "array",
       "items": {
+        "type": "string"
+      }
+    },
+    "flows": {
+      "type": "object",
+      "additionalProperties": {
         "type": "string"
       }
     }

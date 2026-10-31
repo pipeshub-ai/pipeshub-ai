@@ -16,6 +16,7 @@ from qa import catalog, collect, config, impact, paths, planner, schema, testing
 
 SEARCH = "it:retrieval/test_search.py::test_ranking"
 ACL = "it:retrieval/test_search.py::test_acl_filter"
+OFF_FLOOR = "py:tests/unit/test_patch_only.py"
 PLUS_TEST = "it:plus/test_ai_usage.py::test_budget"
 
 
@@ -32,6 +33,11 @@ class ValidateCase(unittest.TestCase):
         self.plan_input = impact.compute(self.cfg, changeset, list(self.rows.values()), scope="oss")
         self.floor = set(self.plan_input["floor"]["tests"])
 
+    def test_plan_tests_carry_flows(self) -> None:
+        plan = validate.merge(self.cfg, self.plan_input, None, self.rows)
+        self.assertEqual(next(t for t in plan["tests"] if t["id"] == SEARCH)["flows"], ["search"])
+        self.assertEqual(plan["flows"], self.plan_input["flows"])
+
     def llm(self, **kw) -> dict:
         out = {"schema": "qa-plan-llm/v1", "add": [], "add_matrix": [], "missing": [], "risk": {"level": "low", "reasons": []},
                "_planner": {"adapter": "test", "status": "ok"}}
@@ -44,9 +50,9 @@ class ValidateCase(unittest.TestCase):
 
 class TestInvariants(ValidateCase):
     def test_floor_survives_a_model_that_ignores_it(self) -> None:
-        plan = self.merge(self.llm(add=[{"id": SEARCH, "reason": "ranking uses search", "confidence": 0.9}]))
+        plan = self.merge(self.llm(add=[{"id": OFF_FLOOR, "reason": "ranking uses search", "confidence": 0.9}]))
         self.assertTrue(self.floor <= {t["id"] for t in plan["tests"]})
-        self.assertIn(SEARCH, {t["id"] for t in plan["tests"] if t["source"] == "model"})
+        self.assertIn(OFF_FLOOR, {t["id"] for t in plan["tests"] if t["source"] == "model"})
 
     def test_model_failure_means_floor_only(self) -> None:
         plan = self.merge({"_planner": {"adapter": "claude_code", "status": "failed", "error": "timeout"}, "add": [{"id": SEARCH}]})
@@ -71,10 +77,10 @@ class TestInvariants(ValidateCase):
         self.assertEqual(schema.check({**self.plan_input, "edition": "custom"}, "plan-input.v1.json"), [])
 
     def test_budget_trims_low_confidence_additions_not_the_floor(self) -> None:
-        # The fixture's standard budget is 4 minutes and an integration test is assumed to take 90 s.
+        # A 2 minute budget fits one integration test (assumed 90 s).
+        self.plan_input["budget"]["extra_minutes"] = 2
         adds = [
-            {"id": SEARCH, "reason": "a", "confidence": 0.9},
-            {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync", "reason": "b", "confidence": 0.8},
+                        {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync", "reason": "b", "confidence": 0.8},
             {"id": "it:connectors/jira/test_jira.py::TestJira::test_tc_incr_001_incremental", "reason": "c", "confidence": 0.8},
             {"id": "py:tests/unit/test_patch_only.py", "reason": "d", "confidence": 0.1},
         ]

@@ -55,7 +55,7 @@ def merge(
     quarantined = cfg.quarantined_ids()
     floor_items = plan_input["floor"]["items"]
     tests: dict[str, dict[str, Any]] = {
-        tid: {"id": tid, "source": "floor", "why": item["why"], "grep": item.get("grep")}
+        tid: {"id": tid, "source": "floor", "why": item["why"], "grep": item.get("grep"), "flows": list(rows[tid].get("flows", []))}
         for tid, item in floor_items.items()
     }
 
@@ -79,7 +79,7 @@ def merge(
                 conf = max(0.0, min(1.0, float(a.get("confidence", 0.5))))
             except (TypeError, ValueError):
                 conf = 0.5
-            additions.append((conf, {"id": tid, "source": "model", "why": [clean_text(a.get("reason"))], "grep": None, "confidence": conf}))
+            additions.append((conf, {"id": tid, "source": "model", "why": [clean_text(a.get("reason"))], "grep": None, "confidence": conf, "flows": list(row.get("flows", []))}))
 
     budget = float(plan_input.get("budget", {}).get("extra_minutes", 0)) * 60
     trimmed: list[dict[str, Any]] = []
@@ -133,6 +133,7 @@ def merge(
         "deferred": plan_input.get("deferred", []),
         "full_suites": plan_input.get("full_suites", {}),
         "matched_rules": plan_input.get("matched_rules", []),
+        "flows": plan_input.get("flows", {}),
         "stack": stack,
         "matrix": sorted(matrix),
         "dropped": dropped,
