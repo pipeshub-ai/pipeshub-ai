@@ -110,6 +110,13 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
         lines += [f"| {o} | {counts[o]} |" for o in ORDER if counts.get(o)]
         if results.get("fatal"):
             lines += ["", "**Infrastructure problem:** " + "; ".join(results["fatal"])]
+        env = results.get("environment")
+        if env:
+            digests = sorted({d for d in env.get("image_digests") or [env.get("image_digest")] if d})
+            lines += ["", "### Environment", "", f"- Image `{env.get('image', '?')}`" + (": " + ", ".join(f"`{d}`" for d in digests) if digests else "")]
+            lines += [f"- Base `{name}`: `{ref}`" for name, ref in sorted((env.get("base_images") or {}).items())]
+            if env.get("unpinned"):
+                lines.append("- Not pinned: " + ", ".join(f"`{r}`" for r in env["unpinned"]))
         failing = [t for t in results["tests"] if t["outcome"] in BLOCKING]
         if failing:
             lines += ["", "### Failures", ""]
@@ -211,7 +218,10 @@ def merge_results(parts: list[dict[str, Any]], planned: list[str] = ()) -> dict[
                 by_id[t["id"]] = t
     for test_id in planned:
         by_id.setdefault(test_id, {"id": test_id, "outcome": "not_run", "kind": "no_result", "details": "no result: no run covered it", "seconds": 0.0})
+    envs = [p["environment"] for p in parts if p.get("environment")]
     return {
+        # Every stack job builds its own image from the same commit; the digests show whether the builds matched.
+        **({"environment": {**envs[0], "image_digests": [e.get("image_digest") for e in envs]}} if envs else {}),
         "schema": "qa-results/v1",
         "tests": sorted(by_id.values(), key=lambda t: t["id"]),
         "fatal": [f for p in parts for f in p.get("fatal", [])],

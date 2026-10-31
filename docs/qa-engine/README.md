@@ -48,6 +48,8 @@ python3 scripts/qa go --adapter claude_code --plan-only
 
 A managed stack generates `PIPESHUB_TEST_USER_PASSWORD` for each run and replaces any value in the environment.
 
+Before a managed stack starts, preflight checks the host ports its compose files publish (`docker compose config`, with every override applied), so a port another stack holds stops the run before the build. `--dry-run` runs the stack hooks too, so it lists every compose file and the image tag, but it builds and starts nothing. Two runs of the same commit share the image tag `pipeshub-ai:qa-<sha12>`: the second build replaces the first's tag, and the first run to finish removes it unless `QA_KEEP_IMAGE=1`. Run one build of a commit at a time. If the image build fails, every graph DB's stack tests are `error`, and the results carry no `environment` block. `results.json` records the image digest, the pinned base images and the lockfile hashes under `environment`; the report shows them, with one digest per stack job.
+
 Everything lands in `qa-out/` (git-ignored). Use `--out DIR` for a different run
 directory.
 
@@ -82,8 +84,10 @@ directory.
 against the PR's tree. A change to the engine's CLI flags or artifact schema
 rolls out in two steps: the engine first accepts both forms, then the workflow
 uses the new one. The stack matrix needs no such step: when the base engine
-emits no `shards` output, it falls back to one shard. The `["neo4j"]` graph
-fallback applies only when the plan job exports no `graph_db`.
+emits no `shards` output, it falls back to one shard, and with one shard the
+run job passes no `--shard`, so a PR tree whose engine predates sharding still
+runs. More than one shard needs a PR tree whose engine accepts `--shard`. The
+`["neo4j"]` graph fallback applies only when the plan job exports no `graph_db`.
 
 The engine comes from the base branch, but the `pull_request` workflow file
 comes from the PR, so a PR can edit the workflow to skip the gate. The gate is
@@ -223,7 +227,8 @@ Each one usually becomes one of the edits above.
 | `QA_STACK`, `PIPESHUB_BASE_URL`, `QA_COMPOSE_PROJECT` | `none`, `http://localhost:3000`, `qa-<sha12>-<run>` | Integration stack. Each managed project is `<prefix>-<graph>`, and the image is `pipeshub-ai:qa-<sha12>` |
 | `QA_RUN_ID` | `GITHUB_RUN_ID`, else the process id | The `<run>` in managed compose project names, so concurrent runs of one commit never share a stack |
 | `QA_KEEP_IMAGE` | unset | `1` keeps the image a `--build` run made; otherwise it is removed after the last stack is torn down |
-| `QA_COMPOSE_OVERRIDES` | unset | Extra compose files (`:`-separated, `{graph}` expands) applied over the CI stack, e.g. to remap host ports on a shared machine |
+| `QA_COMPOSE_OVERRIDES` | unset | Extra compose files (`:`-separated, `{graph}` expands) applied over the CI stack |
+| `QA_PORT_OFFSET` | unset | Moves every host port a managed stack publishes by this number, so it can run beside other stacks on a shared machine. The tests get the moved addresses from `integration-tests/stack/ports.py`; settings that point at another host are left alone. Values in `integration-tests/.env*` still win, because the tests load them over the environment |
 | `QA_STACK_GRAPH_DB` | `TEST_GRAPH_DB_TYPE`, else the plan's first | Graph DB an external stack runs; the other DB's pass is `not_run` |
 | `QA_IT_WORKERS` | unset | `pytest -n` for integration tests |
 | `QA_MIN_DISK_GB` | 20 | Preflight before a managed stack |

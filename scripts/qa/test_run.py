@@ -99,7 +99,7 @@ class TestExternalStack(RunCase):
 
 class TestGraphRuns(RunCase):
     def _run(self, execute_outcomes, **kw):
-        stacks = [mock.Mock(graph_db=g, events=[], env=mock.Mock(return_value={"G": g})) for g in ("neo4j", "arango")]
+        stacks = [mock.Mock(graph_db=g, events=[], environment={}, build=False, env=mock.Mock(return_value={"G": g})) for g in ("neo4j", "arango")]
         outs = iter(execute_outcomes)
         with mock.patch.object(run, "preflight", return_value=({}, [])), \
              mock.patch.object(run, "_stacks", return_value=stacks), \
@@ -829,6 +829,164 @@ class TestPinnedBases(unittest.TestCase):
         after = stack.file_hashes(root, stack.LOCKFILES)
         self.assertNotEqual(before["package-lock.json"], after["package-lock.json"])
         self.assertEqual(before["sub/uv.lock"], after["sub/uv.lock"])
+
+
+REPO = Path(__file__).resolve().parents[2]
+COMPOSE_CONFIG = {"services": {
+    "pipeshub-ai": {"ports": [{"target": 3000, "published": "3000"}, {"target": 8088, "published": "8088"}, {"target": 8000, "published": "8001", "protocol": "tcp"}]},
+    "web-fixtures": {"ports": [{"host_ip": "127.0.0.1", "target": 8080, "published": "8089"}]},
+    "worker": {},
+}}
+
+
+class TestStackPorts(RunCase):
+    def stack(self, root=REPO):
+        from qa import stack
+        return stack.Stack(root, "managed", "neo4j", "redis", [], "p", "http://localhost:3000", self.out)
+
+    def fake_config(self, rc=0):
+        calls = []
+
+        def run_(cmd, **kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=rc, stdout=json.dumps(COMPOSE_CONFIG) if rc == 0 else "")
+        return run_, calls
+
+    def test_ports_come_from_compose_config_over_every_file_the_run_uses(self) -> None:
+        from qa import stack
+        s = self.stack()
+        s.overrides.append("/w/license.json")
+        fake, calls = self.fake_config()
+        with mock.patch.dict(os.environ, {"QA_COMPOSE_OVERRIDES": "/o/extra.yml"}), mock.patch.object(stack.subprocess, "run", fake):
+            self.assertEqual(s.host_ports(), [3000, 8001, 8088, 8089])
+        self.assertEqual(calls[0][-3:], ["config", "--format", "json"])
+        self.assertIn("/w/license.json", calls[0])
+        self.assertIn("/o/extra.yml", calls[0])
+
+    def test_without_docker_the_ci_file_is_parsed(self) -> None:
+        from qa import stack
+        s = self.stack()
+        with mock.patch.object(stack.subprocess, "run", side_effect=FileNotFoundError("docker")):
+            ports = s.host_ports()
+        self.assertIn(8001, ports)
+        self.assertNotIn(8000, ports)
+        self.assertLessEqual({3000, 8088, 8091, 6334, 1025, 8025, 27017}, set(ports))
+
+    def test_preflight_reports_the_stacks_busy_ports_only(self) -> None:
+        stacks = [mock.Mock(host_ports=mock.Mock(return_value=[3000, 8001, 8089]))]
+        invs, _ = run.resolve(self.cfg, plan_for([ACL]), self.rows, self.out)
+        with mock.patch.object(run, "_probe", return_value=True), mock.patch.object(run.shutil, "which", return_value="/bin/docker"), \
+             mock.patch.object(run, "_port_free", lambda p: p not in (8000, 8001)):
+            _, fatal = run.preflight(self.cfg, invs, self.rows, "managed", stacks)
+        self.assertEqual([f for f in fatal if f.startswith("ports")], ["ports in use: 8001 (use --stack external for a running stack, or QA_PORT_OFFSET to move this one)"])
+
+    def test_offset_remaps_every_published_port_and_points_the_tests_at_them(self) -> None:
+        from qa import stack
+        s = self.stack()
+        fake, _ = self.fake_config()
+        with mock.patch.dict(os.environ, {"QA_COMPOSE_OVERRIDES": "", "WEB_FIXTURES_TEST_URL": "http://localhost:8089"}), \
+             mock.patch.object(stack.subprocess, "run", fake):
+            s.remap(20000, self.out / "stack")
+        override = (self.out / "stack/ports-neo4j.yml").read_text(encoding="utf-8")
+        self.assertIn("  pipeshub-ai:\n    ports: !override\n", override)
+        self.assertIn('- "23000:3000/tcp"', override)
+        self.assertIn('- "28001:8000/tcp"', override)
+        self.assertIn('- "127.0.0.1:28089:8080/tcp"', override)
+        self.assertNotIn("worker", override)
+        self.assertEqual(s.overrides, [str(self.out / "stack/ports-neo4j.yml")])
+        self.assertEqual(s.host_ports(), [23000, 28001, 28088, 28089])
+        self.assertEqual(s.base_url, "http://localhost:23000")
+        self.assertEqual(s.env()["PIPESHUB_BASE_URL"], "http://localhost:23000")
+        self.assertEqual(s.extra_env["PIPESHUB_CONNECTOR_URL"], "http://localhost:28088")
+        self.assertEqual(s.extra_env["WEB_FIXTURES_TEST_URL"], "http://localhost:28089")
+        self.assertEqual(s.events, ["ports moved by 20000; no test setting names [8001]"])
+
+    def test_bad_offset_and_a_tree_without_the_ports_hook_fail_setup(self) -> None:
+        from qa import stack
+        fake, _ = self.fake_config()
+        with mock.patch.object(stack.subprocess, "run", fake):
+            with self.assertRaisesRegex(RuntimeError, "out of range"):
+                self.stack().remap(60000, self.out)
+            with self.assertRaisesRegex(RuntimeError, "ports.py is missing"):
+                self.stack(root=self.root).remap(10, self.out)
+
+    def test_ports_hook_moves_local_settings_and_keeps_remote_ones(self) -> None:
+        from qa import stack
+        hook = stack._load(REPO, "ports")
+        got = hook.env(lambda p: p + 1, {
+            "TEST_MONGO_URI": "mongodb://u:p@localhost:27017/?authSource=admin",
+            "SMB_HOST": "files.example.com", "TEST_OLLAMA_ENDPOINT": "https://ollama.example.com",
+            "JIRA_TEST_BASE_URL": "http://127.0.0.1:8102/rest",
+        })
+        self.assertEqual(got["TEST_MONGO_URI"], "mongodb://u:p@localhost:27018/?authSource=admin")
+        self.assertEqual(got["KAFKA_BOOTSTRAP_SERVERS"], "localhost:29093")
+        self.assertEqual(got["JIRA_TEST_BASE_URL"], "http://127.0.0.1:8103/rest")
+        self.assertEqual(got["REDIS_PORT"], "6380")
+        self.assertNotIn("SMB_PORT", got)
+        self.assertNotIn("TEST_OLLAMA_ENDPOINT", got)
+        self.assertNotIn("TEST_NEO4J_URI", got)
+
+    def test_dry_run_lists_hook_files_and_the_image_tag_and_starts_nothing(self) -> None:
+        from qa import stack
+        plan = plan_for([JIRA_SYNC])
+        plan["head"] = HEAD
+        with mock.patch.object(stack.subprocess, "run") as sp, mock.patch("qa.run.subprocess.run") as rp:
+            dry = run.run(self.cfg, plan, self.rows, self.out, stack_mode="managed", build=True, dry_run=True)
+        text = run.describe_dry_run(dry)
+        self.assertIn(str(self.out / "stack/plus.json"), text)
+        self.assertIn("image pipeshub-ai:qa-0123456789ab (built here)", text)
+        self.assertFalse(sp.called or rp.called)
+
+    def test_missing_compose_file_means_no_base_args(self) -> None:
+        from qa import stack
+        s = self.stack(root=self.root)
+        with mock.patch.object(stack.subprocess, "run") as sp:
+            s.pin_bases()
+        self.assertEqual(s.environment["base_images"], {})
+        self.assertFalse(sp.called)
+
+
+class TestBuildFailure(RunCase):
+    def test_a_failed_build_errors_every_stack_and_records_no_environment(self) -> None:
+        import subprocess as sp_mod
+        from qa import stack
+        plan = plan_for([JIRA_SYNC], graph=("neo4j", "arango"))
+        plan["head"] = HEAD
+        commands = []
+
+        def fake_run(self_, cmd, log, timeout=1800):
+            commands.append(cmd)
+            if "build" in cmd:
+                raise sp_mod.CalledProcessError(1, cmd)
+
+        def fake_pin(self_):
+            self_.environment["base_images"] = {"PYTHON_DEPS_IMAGE": "x@sha256:1"}
+        with mock.patch.object(run, "preflight", return_value=({}, [])), \
+             mock.patch.object(stack.Stack, "_run", fake_run), mock.patch.object(stack.Stack, "pin_bases", fake_pin), \
+             mock.patch("qa.run.subprocess.run"):
+            result = run.run(self.cfg, plan, self.rows, self.out, stack_mode="managed", build=True, retry=False)
+        self.assertFalse([c for c in commands if "up" in c])
+        self.assertEqual(len([c for c in commands if "build" in c]), 1)
+        self.assertEqual(result["tests"][0]["outcome"], "error")
+        self.assertNotIn("environment", result)
+
+
+class TestEnvironmentReport(RunCase):
+    def test_merged_results_keep_the_environment_and_every_digest(self) -> None:
+        env = {"image": "pipeshub-ai:qa-0123456789ab", "image_digest": "sha256:a", "base_images": {"PYTHON_DEPS_IMAGE": "b@sha256:1"}, "unpinned": ["node:20"]}
+        merged = report.merge_results([
+            {"tests": [{"id": ACL, "outcome": "pass"}], "environment": env},
+            {"tests": [{"id": ACL, "outcome": "pass"}]},
+            {"tests": [{"id": ACL, "outcome": "pass"}], "environment": {**env, "image_digest": "sha256:b"}},
+        ])
+        self.assertEqual(merged["environment"]["image_digests"], ["sha256:a", "sha256:b"])
+        self.assertEqual(merged["environment"]["base_images"], env["base_images"])
+        body = report.render(self.cfg, plan_for([ACL]), merged)
+        self.assertIn("### Environment", body)
+        self.assertIn("- Image `pipeshub-ai:qa-0123456789ab`: `sha256:a`, `sha256:b`", body)
+        self.assertIn("- Base `PYTHON_DEPS_IMAGE`: `b@sha256:1`", body)
+        self.assertIn("- Not pinned: `node:20`", body)
+        self.assertNotIn("environment", report.merge_results([{"tests": []}]))
 
 
 if __name__ == "__main__":

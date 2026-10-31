@@ -7,6 +7,7 @@ import contextlib
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,11 +51,16 @@ def worktree(root: Path, sha: str) -> Iterator[Path]:
         config.clear_cache()
         yield tmp
     finally:
-        removed = subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True, text=True)
-        if removed.returncode:
-            print(f"warning: could not remove worktree {tmp}: {removed.stderr.strip()}", file=sys.stderr)
-        shutil.rmtree(tmp, ignore_errors=True)
-        config.clear_cache()
+        # A second SIGTERM must not interrupt the cleanup the first one started.
+        previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            removed = subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True, text=True)
+            if removed.returncode:
+                print(f"warning: could not remove worktree {tmp}: {removed.stderr.strip()}", file=sys.stderr)
+            shutil.rmtree(tmp, ignore_errors=True)
+            config.clear_cache()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
 
 
 def parent_or_empty(root: Path, sha: str) -> str:

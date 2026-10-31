@@ -507,7 +507,11 @@ jobs:
           GRAPH: ${{ matrix.graph }}
           SHARD: ${{ matrix.shard }}
           SHARD_TOTAL: ${{ needs.plan.outputs.shard_total || '1' }}
-        run: python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" --shard "$SHARD/$SHARD_TOTAL"
+        # One shard passes no --shard, so a PR tree whose engine predates sharding still runs.
+        run: |
+          shard=()
+          if [ "$SHARD_TOTAL" -gt 1 ]; then shard=(--shard "$SHARD/$SHARD_TOTAL"); fi
+          python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" "${shard[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -28,7 +28,6 @@ from qa.config import Config
 from qa import stack as stack_mod
 from qa.stack import Stack
 
-STACK_PORTS = (3000, 8000, 8088, 8091)
 # One broken test file must not stop every other selected file from running.
 PYTEST_FLAGS = ["-p", "no:cacheprovider", "--continue-on-collection-errors"]
 DEFAULT_TIMEOUT = {"it-pytest": 4 * 3600, "playwright": 3600}
@@ -235,8 +234,9 @@ def _unset_env(need: str) -> str | None:
     return "one of " + " | ".join("+".join(o) for o in options)
 
 
-def preflight(cfg: Config, invs: list[Invocation], rows: dict[str, dict[str, Any]], stack_mode: str) -> tuple[dict[str, tuple[str, str]], list[str]]:
-    """Per-test not_run (kind, reason), plus fatal infra problems for the stack."""
+def preflight(cfg: Config, invs: list[Invocation], rows: dict[str, dict[str, Any]], stack_mode: str, stacks: list[Stack] = ()) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Per-test not_run (kind, reason), plus fatal infra problems for the stack.
+    The port check covers what the stacks' compose files publish, after any remap."""
     not_run: dict[str, tuple[str, str]] = {}
     fatal: list[str] = []
     cache: dict[tuple, bool] = {}
@@ -271,9 +271,9 @@ def preflight(cfg: Config, invs: list[Invocation], rows: dict[str, dict[str, Any
         min_gb = float(os.environ.get("QA_MIN_DISK_GB", "20"))
         if free_gb < min_gb:
             fatal.append(f"only {free_gb:.0f} GB free disk, need {min_gb:.0f}")
-        busy = [p for p in STACK_PORTS if not _port_free(p)]
+        busy = [p for p in sorted({p for s in stacks for p in s.host_ports()}) if not _port_free(p)]
         if busy:
-            fatal.append(f"ports in use: {', '.join(map(str, busy))} (use --stack external for a running stack)")
+            fatal.append(f"ports in use: {', '.join(map(str, busy))} (use --stack external for a running stack, or QA_PORT_OFFSET to move this one)")
     return not_run, fatal
 
 
@@ -381,11 +381,14 @@ def run(
         kept_ids = {t for i in keep for t in i.ids}
         _mark(not_run, [t["id"] for t in plan["tests"] if t["id"] not in kept_ids], "scope", f"outside --scope {scope}")
         invs = keep
+    stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)
+    # Hooks and port remaps come first, so the dry run lists their files and preflight checks the ports the run will bind.
+    setup_error = _prepare(cfg, stacks, out) if stack_mode == "managed" and stacks and any(i.needs_stack for i in invs) else None
     if dry_run:
-        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)}
+        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": stacks, "setup_error": setup_error}
 
     started = time.time()
-    pre_not_run, fatal = preflight(cfg, invs, rows, stack_mode)
+    pre_not_run, fatal = preflight(cfg, invs, rows, stack_mode, [] if setup_error else stacks)
     for k, (kind, why) in pre_not_run.items():
         _mark(not_run, [k], kind, why)
     results: dict[str, dict[str, Any]] = {}
@@ -404,8 +407,6 @@ def run(
                     for i in inv.ids:
                         _mark(not_run, [i], "infra", "infra: " + "; ".join(fatal))
             else:
-                stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out, shard)
-                setup_error = _prepare(cfg, stacks, out) if stack_mode == "managed" and stacks else None
                 if setup_error:
                     for inv in stacked:
                         for i in inv.ids:
@@ -422,19 +423,29 @@ def run(
                                 _mark(not_run, [i], "scope", f"the external stack runs {', '.join(sorted(served))}, not {inv.graph_db}")
                     for g in sorted(set(plan["stack"].get("graph_db", [])) - served):
                         stack_events.append({"graph_db": g, "events": [f"skipped: the external stack runs {', '.join(sorted(served))}"]})
+                    if stack_mode == "managed":
+                        os.environ.update(stack_mod.run_credentials(os.environ))
+                    build_error = None
                     try:
                         for stack in stacks:
                             these = [i for i in stacked if i.graph_db in (None, stack.graph_db)]
                             try:
+                                if build_error:
+                                    # compose up would build the missing image itself, from unpinned bases.
+                                    raise RuntimeError(build_error)
                                 stack.start()
                                 for inv in these:
                                     _run_one(cfg, inv, rows, log_dir, stack.env(), not_run, results, invocation_log, retry)
                             except (RuntimeError, subprocess.SubprocessError) as exc:
+                                if stack.build and not stack.up:
+                                    build_error = f"the image build on the {stack.graph_db} stack failed: {exc}"
                                 for inv in these:
                                     for i in inv.ids:
                                         _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": f"stack {stack.graph_db}: {exc}"})
                             finally:
-                                environment = environment or stack.environment
+                                if not build_error:
+                                    for k, v in stack.environment.items():
+                                        environment.setdefault(k, v)
                                 stack.collect_logs()
                                 stack.stop()
                                 stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
@@ -527,15 +538,21 @@ def run_id(shard: tuple[int, int] | None) -> str:
 
 
 def _prepare(cfg: Config, stacks: list[Stack], out: Path) -> str | None:
-    """Overlay hooks and a fresh admin for a managed stack; the error text when a hook fails."""
+    """Overlay hooks, then the QA_PORT_OFFSET remap, for a managed stack; the error text when one fails."""
     try:
         env, files = cfg.prepare_stack(out / "stack")
     except RuntimeError as exc:
         return f"stack setup: {exc}"
-    os.environ.update(stack_mod.run_credentials(os.environ))
     for s in stacks:
         s.extra_env.update(env)
         s.overrides += files
+    offset = os.environ.get("QA_PORT_OFFSET")
+    if offset:
+        try:
+            for s in stacks:
+                s.remap(int(offset), out / "stack")
+        except (ValueError, RuntimeError) as exc:
+            return f"stack setup: QA_PORT_OFFSET: {exc}"
     return None
 
 
@@ -575,6 +592,8 @@ def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, 
 
 def describe_dry_run(dry: dict[str, Any]) -> str:
     lines = ["# qa run --dry-run", ""]
+    if dry.get("setup_error"):
+        lines += [f"## {dry['setup_error']}", ""]
     for stack in dry["stack"]:
         lines += ["## stack", *[f"    {line}" for line in stack.describe()], ""]
     for inv in dry["invocations"]:

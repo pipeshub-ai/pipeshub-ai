@@ -15,12 +15,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import urlsplit
 
 COMPOSE_FILE = "deployment/docker-compose/docker-compose.integration.{graph}.yml"
 STACK_DIR = "integration-tests/stack"
 APP_SERVICE = "pipeshub-ai"
 LOCKFILES = ["*package-lock.json", "*uv.lock", "*pyproject.toml"]
 _BASE_ARG = re.compile(r"^\s*(\w+_IMAGE):\s*\$\{\1:-([^}]+)\}\s*$", re.M)
+_SERVICE_LINE = re.compile(r"^  ([\w.-]+):\s*$")
+_PORT_LINE = re.compile(r"""^\s+-\s+["']?(?:([\d.]+):)?(\d+):(\d+)(?:/(\w+))?["']?\s*$""")
+
+
+def ports_from_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Published host ports per service, from `docker compose config --format json`."""
+    return [
+        {"service": name, "host_ip": p.get("host_ip") or "", "published": int(p["published"]), "target": int(p["target"]), "protocol": p.get("protocol") or "tcp"}
+        for name, svc in sorted((config.get("services") or {}).items())
+        for p in svc.get("ports") or []
+        if str(p.get("published", "")).isdigit()
+    ]
+
+
+def ports_from_text(text: str) -> list[dict[str, Any]]:
+    """The same from a compose file's short-syntax port lines, for a host without docker; every profile counts."""
+    out: list[dict[str, Any]] = []
+    service = None
+    for line in text.splitlines():
+        if m := _SERVICE_LINE.match(line):
+            service = m.group(1)
+        elif (m := _PORT_LINE.match(line)) and service:
+            out.append({"service": service, "host_ip": m.group(1) or "", "published": int(m.group(2)), "target": int(m.group(3)), "protocol": m.group(4) or "tcp"})
+    return out
 
 
 def base_image_args(compose_text: str) -> dict[str, str]:
@@ -84,6 +109,8 @@ class Stack:
     extra_env: dict[str, str] = field(default_factory=dict)
     overrides: list[str] = field(default_factory=list)
     environment: dict[str, Any] = field(default_factory=dict)
+    port_map: dict[int, int] = field(default_factory=dict)
+    _published: list[dict[str, Any]] | None = field(default=None, repr=False)
 
     @property
     def compose_file(self) -> str:
@@ -111,6 +138,7 @@ class Stack:
             return ["no stack"]
         lines = [f"stack mode {self.mode}, graph DB {self.graph_db}, broker {self.broker}, profiles {self.compose_profiles or '-'}"]
         if self.mode == "managed":
+            lines.append(f"image {image_tag(self.extra_env.get('GIT_COMMIT'))}" + (" (built here)" if self.build else ""))
             if self.build:
                 lines.append(" ".join(self.compose("build")))
             lines.append(" ".join(self.compose("up", "-d")))
@@ -131,7 +159,11 @@ class Stack:
         """Build from the digests the base tags point at now; a base with none keeps its tag and is recorded as unpinned."""
         bases: dict[str, str] = {}
         unpinned: list[str] = []
-        for name, ref in base_image_args((self.root / self.compose_file).read_text(encoding="utf-8")).items():
+        try:
+            compose_text = (self.root / self.compose_file).read_text(encoding="utf-8")
+        except OSError:
+            compose_text = ""  # no compose file means no base build args, not a crashed run
+        for name, ref in base_image_args(compose_text).items():
             digest = None
             try:
                 if "@sha256:" not in ref:
@@ -157,6 +189,56 @@ class Stack:
             if len(parts) > 2 and parts[-2].upper() == "AS":
                 stages.add(parts[-1])
         self.environment.update({"base_images": bases, "unpinned": unpinned})
+
+    def published(self) -> list[dict[str, Any]]:
+        """Host ports the compose files publish before any remap: base, QA_COMPOSE_OVERRIDES and hook files."""
+        if self._published is None:
+            try:
+                out = subprocess.run(self.compose("config", "--format", "json"), cwd=self.root, env=self.env(), capture_output=True, text=True, timeout=120)
+                self._published = ports_from_config(json.loads(out.stdout)) if out.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError, ValueError):
+                self._published = None
+            if self._published is None:
+                # shortcut: without docker only the base file's short-syntax ports are read; enough for the CI file.
+                try:
+                    self._published = ports_from_text((self.root / self.compose_file).read_text(encoding="utf-8"))
+                except OSError:
+                    self._published = []
+        return self._published
+
+    def host_ports(self) -> list[int]:
+        return sorted({self.port_map.get(p["published"], p["published"]) for p in self.published()})
+
+    def remap(self, offset: int, work_dir: Path) -> None:
+        """Move every published host port by offset, and point the tests at the moved ports."""
+        ports = self.published()
+        self.port_map = {p["published"]: p["published"] + offset for p in ports}
+        bad = sorted(p for p, q in self.port_map.items() if not 0 < q < 65536)
+        if bad:
+            raise RuntimeError(f"offset {offset} moves ports {bad} out of range")
+        hook_file = self.root / STACK_DIR / "ports.py"
+        if not hook_file.is_file():
+            raise RuntimeError(f"{STACK_DIR}/ports.py is missing, so the tests cannot find remapped ports")
+        # JSON cannot carry the !override tag; without it compose appends to a service's ports instead of replacing them.
+        lines = ["services:"]
+        for svc in sorted({p["service"] for p in ports}):
+            lines += [f"  {svc}:", "    ports: !override"]
+            lines += [f'      - "{p["host_ip"] + ":" if p["host_ip"] else ""}{self.port_map[p["published"]]}:{p["target"]}/{p["protocol"]}"' for p in ports if p["service"] == svc]
+        work_dir.mkdir(parents=True, exist_ok=True)
+        path = work_dir / f"ports-{self.graph_db}.yml"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.overrides.append(str(path))
+        url = urlsplit(self.base_url)
+        if url.hostname in ("localhost", "127.0.0.1") and url.port in self.port_map:
+            self.base_url = url._replace(netloc=f"{url.hostname}:{self.port_map[url.port]}").geturl()
+        asked: set[int] = set()
+
+        def port(default: int) -> int:
+            asked.add(default)
+            return self.port_map.get(default, default)
+        self.extra_env.update(_load(self.root, "ports").env(port, self.env()))
+        unread = sorted(set(self.port_map) - asked - {url.port})
+        self.events.append(f"ports moved by {offset}" + (f"; no test setting names {unread}" if unread else ""))
 
     def record_environment(self) -> None:
         """Image id, lockfile and compose hashes; best effort, never fails the run."""

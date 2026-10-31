@@ -263,6 +263,27 @@ class TestGoCommit(unittest.TestCase):
 
 
 class TestWorktree(unittest.TestCase):
+    def test_a_second_sigterm_does_not_stop_the_cleanup(self) -> None:
+        root, tmp = testing.make_repo()
+        self.addCleanup(tmp.cleanup)
+        sha = testing.git(root, "rev-parse", "HEAD")
+        real = subprocess.run
+
+        def run_(cmd, *a, **kw):
+            if cmd[:3] == ["git", "worktree", "remove"]:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(cmd, *a, **kw)
+
+        def handler(*_):
+            raise RuntimeError("second SIGTERM")
+        previous = signal.signal(signal.SIGTERM, handler)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with mock.patch.object(qa_main.collect.subprocess, "run", run_), qa_main.collect.worktree(root, sha) as tree:
+            pass
+        self.assertFalse(tree.exists())
+        self.assertEqual(len(testing.git(root, "worktree", "list").splitlines()), 1)
+        self.assertIs(signal.getsignal(signal.SIGTERM), handler)
+
     def test_worktree_is_removed_after_use(self) -> None:
         root, tmp = testing.make_repo()
         self.addCleanup(tmp.cleanup)
