@@ -628,6 +628,13 @@ class KnowledgeBaseService:
                 created_by = owner_user_id
                 owner_key = owner.get("id") or owner.get("_key")
 
+            if extra_writers or extra_readers or extra_teams:
+                grant_error = await self._validate_hidden_member_grants(
+                    created_by, extra_writers, extra_readers, extra_teams,
+                )
+                if grant_error:
+                    return grant_error
+
             timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid.uuid4())
 
@@ -762,6 +769,23 @@ class KnowledgeBaseService:
                 "code": 500,
                 "reason": action_failed("create this knowledge base")
             }
+
+    async def _validate_hidden_member_grants(
+        self,
+        owner_user_id: str,
+        writer_user_ids: list[str],
+        reader_user_ids: list[str],
+        team_ids: list[str],
+    ) -> dict | None:
+        """Refuse create before the write when a grant principal is gone."""
+        grant_users = list(dict.fromkeys([*writer_user_ids, *reader_user_ids]))
+        if grant_users:
+            _, resolve_err = await self._resolve_user_ids_to_graph_keys(
+                grant_users, owner_user_id,
+            )
+            if resolve_err:
+                return resolve_err
+        return await self._teams_not_in_requester_org(team_ids, owner_user_id)
 
     async def _share_hidden_kb_as_owner(
         self,

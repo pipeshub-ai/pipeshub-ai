@@ -242,6 +242,12 @@ class TestCreateKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
         )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            side_effect=_mock_mongo_to_graph
+        )
+        service.graph_provider.get_nodes_by_field_in = AsyncMock(
+            side_effect=_teams_in_org({"org1": ["team-1"]})
+        )
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
@@ -302,6 +308,9 @@ class TestCreateKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(
             return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
         )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            side_effect=_mock_mongo_to_graph
+        )
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
@@ -321,6 +330,31 @@ class TestCreateKnowledgeBase:
 
         assert result["success"] is False
         assert result["code"] == 403
+
+    @pytest.mark.asyncio
+    async def test_a_missing_grant_user_is_refused_before_the_kb_is_written(
+        self, service,
+    ) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "ok1", "orgId": "org1", "fullName": "Ow"}
+        )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            return_value={}
+        )
+        service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+
+        result = await service.create_knowledge_base(
+            "owner-1",
+            "org1",
+            "project:x",
+            is_hidden=True,
+            owner_user_id="owner-1",
+            writer_user_ids=["gone-1"],
+        )
+
+        assert result["success"] is False
+        assert result["code"] == 400
+        service.graph_provider.batch_upsert_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_initial_grants_are_rejected_unless_hidden(self, service) -> None:
