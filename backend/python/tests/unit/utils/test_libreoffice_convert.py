@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -114,9 +115,13 @@ def test_other_errors_propagate_unchanged() -> None:
 
 
 def _run_libreoffice_as(
-    monkeypatch: pytest.MonkeyPatch, script: str
+    monkeypatch: pytest.MonkeyPatch, script: str, ready_file: Path | None = None
 ) -> tuple[list[asyncio.subprocess.Process], asyncio.Event]:
-    """Answer ``which`` as installed and run ``script`` in place of LibreOffice."""
+    """Answer ``which`` as installed and run ``script`` in place of LibreOffice.
+
+    With ``ready_file``, the process is handed back only once the script has
+    written it, so the conversion timeout starts after the worker is up.
+    """
     started: list[asyncio.subprocess.Process] = []
     running = asyncio.Event()
     real_exec = asyncio.create_subprocess_exec
@@ -125,6 +130,8 @@ def _run_libreoffice_as(
         if args[:2] == ("which", "libreoffice"):
             return _fake_proc(returncode=0)
         process = await real_exec("/bin/sh", "-c", script, **kwargs)
+        if ready_file is not None:
+            await _read_pid(ready_file)
         started.append(process)
         running.set()
         return process
@@ -158,6 +165,61 @@ async def test_a_timed_out_conversion_that_ignores_terminate_is_killed(monkeypat
     assert started[0].returncode is not None
     # The indexer runs this conversion in-process: a timeout must not be retried forever.
     assert MessageErrorClassifier.classify_by_exception(caught.value) == MessageErrorType.TERMINAL
+
+
+def _alive(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] != "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+
+
+def _tree_script(pid_file: Path) -> str:
+    # Like oosplash -> soffice.bin: the launcher forks a worker that ignores TERM.
+    return (
+        f"sh -c \"trap '' TERM; echo \\$\\$ > {shlex.quote(str(pid_file))}; exec sleep 60\" & wait"
+    )
+
+
+async def _read_pid(pid_file: Path) -> int:
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text().strip():
+            return int(pid_file.read_text())
+        await asyncio.sleep(0.05)
+    raise AssertionError("worker never started")
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="reads process state from /proc")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
+) -> None:
+    pid_file = tmp_path / "worker.pid"
+    started, running = _run_libreoffice_as(monkeypatch, _tree_script(pid_file), ready_file=pid_file)
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 0.3)
+    monkeypatch.setattr(
+        libreoffice_convert, "LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", 1.0 if how == "timeout" else 60
+    )
+
+    task = asyncio.create_task(convert_with_libreoffice(b"doc data", "doc", "docx"))
+    await asyncio.wait_for(running.wait(), timeout=10)
+    worker = int(pid_file.read_text())
+    assert _alive(worker)
+    if how == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(DocumentProcessingError, match="timed out"):
+            await task
+
+    assert started[0].returncode is not None  # reaped, not a zombie
+    for _ in range(100):  # the kernel reaps the killed worker asynchronously
+        if not _alive(worker):
+            break
+        await asyncio.sleep(0.05)
+    assert not _alive(worker)
 
 
 @pytest.mark.asyncio
