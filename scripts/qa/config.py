@@ -30,10 +30,26 @@ class Config:
 
     def edition(self, path: str) -> str:
         for hook in self.hooks:
-            ed = hook.edition(path)
+            ed = hook.edition(path) if hasattr(hook, "edition") else None
             if ed is not None:
                 return ed
         return paths.BASE_EDITION
+
+    def prepare_stack(self, work_dir: Path) -> tuple[dict[str, str], list[str]]:
+        """Let each overlay prepare a managed stack: extra env and compose files to add."""
+        env: dict[str, str] = {}
+        files: list[str] = []
+        work_dir.mkdir(parents=True, exist_ok=True)
+        for hook in self.hooks:
+            if not hasattr(hook, "prepare_stack"):
+                continue
+            try:
+                got = hook.prepare_stack(work_dir) or {}
+            except Exception as err:
+                raise RuntimeError(f"{hook.__file__}: {err}") from err
+            env.update(got.get("env", {}))
+            files.extend(got.get("compose_files", []))
+        return env, files
 
     def editions(self) -> list[str]:
         return ["all", paths.BASE_EDITION, *sorted({s["edition"] for s in self.suites if "edition" in s} - {paths.BASE_EDITION})]
@@ -125,7 +141,7 @@ def expand_rules(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _load_hook(overlay: Path) -> ModuleType | None:
-    """An overlay's optional qa_hooks.py, which classifies paths into its editions."""
+    """An overlay's optional qa_hooks.py: edition(path) classifies paths, prepare_stack(work_dir) readies a managed stack."""
     file = overlay / "qa_hooks.py"
     if not file.is_file():
         return None

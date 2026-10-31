@@ -220,6 +220,7 @@ catalog = "integration-tests/plus/catalog"
 """
 
 PLUS_HOOKS = """\
+import os
 import re
 
 PLUS = re.compile(r"(^|/)plus(/|$)")
@@ -231,6 +232,13 @@ def edition(path):
     if path == "backend/python/app/edition.py":
         return "switch"
     return None
+
+
+def prepare_stack(work_dir):
+    if os.environ.get("PLUS_FAIL"):
+        raise RuntimeError("boom")
+    (work_dir / "plus.json").write_text("{}", encoding="utf-8")
+    return {"env": {"PLUS_STACK": "1"}, "compose_files": [str(work_dir / "plus.json")]}
 """
 
 FILES = {

@@ -24,6 +24,7 @@ from typing import Any
 from qa import junit
 from qa.catalog import rel_to
 from qa.config import Config
+from qa import stack as stack_mod
 from qa.stack import Stack
 
 STACK_PORTS = (3000, 8000, 8088, 8091)
@@ -372,7 +373,7 @@ def run(
         _mark(not_run, [t["id"] for t in plan["tests"] if t["id"] not in kept_ids], "scope", f"outside --scope {scope}")
         invs = keep
     if dry_run:
-        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": _stacks(cfg, plan, stack_mode, base_url, log_dir, build)}
+        return {"dry_run": True, "invocations": invs, "not_run": not_run, "stack": _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out)}
 
     started = time.time()
     pre_not_run, fatal = preflight(cfg, invs, rows, stack_mode)
@@ -393,31 +394,42 @@ def run(
                     for i in inv.ids:
                         _mark(not_run, [i], "infra", "infra: " + "; ".join(fatal))
             else:
-                stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build)
-                served = {s.graph_db for s in stacks}
-                carried = {i for inv in stacked if inv.graph_db in (None, *served) for i in inv.ids}
-                for inv in stacked:
-                    if inv.graph_db not in (None, *served):
+                stacks = _stacks(cfg, plan, stack_mode, base_url, log_dir, build, out)
+                setup_error = _prepare(cfg, stacks, out) if stack_mode == "managed" and stacks else None
+                if setup_error:
+                    for inv in stacked:
                         for i in inv.ids:
-                            if i in carried:
-                                continue
-                            _mark(not_run, [i], "scope", f"the external stack runs {', '.join(sorted(served))}, not {inv.graph_db}")
-                for g in sorted(set(plan["stack"].get("graph_db", [])) - served):
-                    stack_events.append({"graph_db": g, "events": [f"skipped: the external stack runs {', '.join(sorted(served))}"]})
-                for stack in stacks:
-                    these = [i for i in stacked if i.graph_db in (None, stack.graph_db)]
-                    try:
-                        stack.start()
-                        for inv in these:
-                            _run_one(cfg, inv, rows, log_dir, stack.env(), not_run, results, invocation_log, retry)
-                    except (RuntimeError, subprocess.SubprocessError) as exc:
-                        for inv in these:
+                            _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": setup_error})
+                    stack_events += [{"graph_db": s.graph_db, "events": [setup_error]} for s in stacks]
+                else:
+                    served = {s.graph_db for s in stacks}
+                    carried = {i for inv in stacked if inv.graph_db in (None, *served) for i in inv.ids}
+                    for inv in stacked:
+                        if inv.graph_db not in (None, *served):
                             for i in inv.ids:
-                                _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": f"stack {stack.graph_db}: {exc}"})
+                                if i in carried:
+                                    continue
+                                _mark(not_run, [i], "scope", f"the external stack runs {', '.join(sorted(served))}, not {inv.graph_db}")
+                    for g in sorted(set(plan["stack"].get("graph_db", [])) - served):
+                        stack_events.append({"graph_db": g, "events": [f"skipped: the external stack runs {', '.join(sorted(served))}"]})
+                    try:
+                        for stack in stacks:
+                            these = [i for i in stacked if i.graph_db in (None, stack.graph_db)]
+                            try:
+                                stack.start()
+                                for inv in these:
+                                    _run_one(cfg, inv, rows, log_dir, stack.env(), not_run, results, invocation_log, retry)
+                            except (RuntimeError, subprocess.SubprocessError) as exc:
+                                for inv in these:
+                                    for i in inv.ids:
+                                        _merge_outcome(results, i, {"outcome": "error", "seconds": None, "details": f"stack {stack.graph_db}: {exc}"})
+                            finally:
+                                stack.collect_logs()
+                                stack.stop()
+                                stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
                     finally:
-                        stack.collect_logs()
-                        stack.stop()
-                        stack_events.append({"graph_db": stack.graph_db, "events": stack.events})
+                        if stacks and build and stack_mode == "managed" and os.environ.get("QA_KEEP_IMAGE") != "1":
+                            _remove_image(stack_mod.image_tag(plan.get("head")), stacks[-1].events)
     except (_Cancelled, KeyboardInterrupt):
         for t in plan["tests"]:
             if t["id"] not in results:
@@ -497,19 +509,56 @@ def _retry_invocation(inv: Invocation, ids: list[str]) -> Invocation:
     return Invocation(inv.label + "-retry", inv.suite, inv.family, inv.cwd, head + targets + rest + [f"--junitxml={jx}"], ids, jx, env=inv.env, needs_stack=inv.needs_stack, graph_db=inv.graph_db, modules=inv.modules)
 
 
-def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, log_dir: Path, build: bool) -> list[Stack]:
+def run_id(shard: tuple[int, int] | None) -> str:
+    base = os.environ.get("QA_RUN_ID") or os.environ.get("GITHUB_RUN_ID") or str(os.getpid())
+    return f"{base}s{shard[0]}" if shard else base
+
+
+def _prepare(cfg: Config, stacks: list[Stack], out: Path) -> str | None:
+    """Overlay hooks and a fresh admin for a managed stack; the error text when a hook fails."""
+    try:
+        env, files = cfg.prepare_stack(out / "stack")
+    except RuntimeError as exc:
+        return f"stack setup: {exc}"
+    os.environ.update(stack_mod.run_credentials(os.environ))
+    for s in stacks:
+        s.extra_env.update(env)
+        s.overrides += files
+    return None
+
+
+def _remove_image(tag: str, events: list[str]) -> None:
+    try:
+        subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=300)
+        events.append(f"image {tag} removed")
+    except (subprocess.SubprocessError, OSError) as exc:
+        events.append(f"image removal failed: {exc}")
+
+
+def _stacks(cfg: Config, plan: dict[str, Any], mode: str, base_url: str | None, log_dir: Path, build: bool, out: Path, shard: tuple[int, int] | None = None) -> list[Stack]:
     if mode == "none" or not plan["stack"].get("needed"):
         return []
-    project = os.environ.get("QA_COMPOSE_PROJECT", f"qa-{(plan.get('head') or 'local')[:8]}")
+    head = plan.get("head")
+    rid = run_id(shard)
     url = base_url or os.environ.get("PIPESHUB_BASE_URL", "http://localhost:3000")
     graphs = plan["stack"]["graph_db"]
     if mode == "external":
         # Someone else's stack has one graph DB; running the other pass against it would mislabel the results.
         graphs = [os.environ.get("QA_STACK_GRAPH_DB") or os.environ.get("TEST_GRAPH_DB_TYPE") or graphs[0]]
-    return [
-        Stack(cfg.root, mode, g, plan["stack"]["broker"], plan["stack"]["compose_profiles"], f"{project}-{g}", url, log_dir, build)
-        for g in graphs
+    stacks = [
+        Stack(cfg.root, mode, g, plan["stack"]["broker"], plan["stack"]["compose_profiles"], stack_mod.project_name(head, rid, g), url, log_dir, build and i == 0)
+        for i, g in enumerate(graphs)
     ]
+    if mode == "managed":
+        # Tag the image with the commit so a stale pipeshub-ai:latest from another branch is never reused.
+        image = out / "stack" / "image.json"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_text(json.dumps({"services": {stack_mod.APP_SERVICE: {"image": stack_mod.image_tag(head)}}}), encoding="utf-8")
+        for s in stacks:
+            s.overrides.append(str(image))
+            if head:
+                s.extra_env["GIT_COMMIT"] = head
+    return stacks
 
 
 def describe_dry_run(dry: dict[str, Any]) -> str:

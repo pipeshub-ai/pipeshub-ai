@@ -185,6 +185,88 @@ class TestComposeOverrides(unittest.TestCase):
         self.assertEqual(cmd[4:8], ["-f", s.compose_file, "-f", "/o/ports.arango.yml"])
 
 
+HEAD = "0123456789abcdef" + "0" * 24
+
+
+class TestManagedStack(RunCase):
+    def managed_plan(self, ids=(JIRA_SYNC,), graph=("neo4j", "arango")):
+        plan = plan_for(list(ids), graph=graph)
+        plan["head"] = HEAD
+        return plan
+
+    def test_managed_stack_is_named_after_the_commit(self) -> None:
+        with mock.patch.dict(os.environ, {"QA_RUN_ID": "77"}):
+            os.environ.pop("QA_COMPOSE_PROJECT", None)
+            stacks = run._stacks(self.cfg, self.managed_plan(), "managed", None, self.out / "logs", True, self.out)
+            sharded = run._stacks(self.cfg, self.managed_plan(), "managed", None, self.out / "logs", True, self.out, shard=(2, 4))
+        self.assertEqual([s.project for s in stacks], ["qa-0123456789ab-77-neo4j", "qa-0123456789ab-77-arango"])
+        image = json.loads((self.out / "stack/image.json").read_text(encoding="utf-8"))
+        self.assertEqual(image["services"]["pipeshub-ai"]["image"], "pipeshub-ai:qa-0123456789ab")
+        self.assertEqual(stacks[0].extra_env["GIT_COMMIT"], HEAD)
+        self.assertEqual([s.build for s in stacks], [True, False])
+        self.assertIn(str(self.out / "stack/image.json"), stacks[0].compose("up"))
+        self.assertEqual(sharded[0].project, "qa-0123456789ab-77s2-neo4j")
+
+    def test_overlay_stack_hook_adds_env_and_compose_files(self) -> None:
+        from qa import stack
+        tmp = Path(tempfile.mkdtemp(dir=self.out))
+        env, files = self.cfg.prepare_stack(tmp)
+        self.assertEqual((env, files), ({"PLUS_STACK": "1"}, [str(tmp / "plus.json")]))
+        s = stack.Stack(Path("."), "managed", "neo4j", "redis", [], "p", "http://x", Path("."), overrides=files, extra_env=env)
+        with mock.patch.dict(os.environ, {"QA_COMPOSE_OVERRIDES": ""}):
+            self.assertEqual(s.compose("up")[-3:], ["-f", files[0], "up"])
+            self.assertEqual(s.env()["PLUS_STACK"], "1")
+
+    def test_stack_setup_failure_errors_the_stack_tests_and_never_starts_compose(self) -> None:
+        from qa import stack
+        with mock.patch.dict(os.environ, {"PLUS_FAIL": "1"}), \
+             mock.patch.object(run, "preflight", return_value=({}, [])), \
+             mock.patch.object(stack.subprocess, "run") as sp:
+            result = run.run(self.cfg, self.managed_plan(), self.rows, self.out, stack_mode="managed", build=True, retry=False)
+        test = result["tests"][0]
+        self.assertEqual(test["outcome"], "error")
+        self.assertIn("stack setup:", test["details"])
+        self.assertIn("qa_hooks.py", test["details"])
+        self.assertFalse([c for c in sp.call_args_list if "up" in c.args[0]])
+        self.assertFalse(sp.called)
+
+    def test_managed_stack_password_is_accepted_and_redacted(self) -> None:
+        import re
+        from qa import stack
+        validator = re.compile(r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$")
+        first, second = stack.run_credentials({}), stack.run_credentials({})
+        self.assertNotEqual(first["PIPESHUB_TEST_USER_PASSWORD"], second["PIPESHUB_TEST_USER_PASSWORD"])
+        self.assertEqual(first["PIPESHUB_TEST_USER_EMAIL"], "qa-admin@example.com")
+        for creds in (first, second):
+            pw = creds["PIPESHUB_TEST_USER_PASSWORD"]
+            self.assertRegex(pw, validator)
+            self.assertLessEqual(len(pw.encode("utf-8")), 72)
+            with mock.patch.dict(os.environ, {"PIPESHUB_TEST_USER_PASSWORD": pw}):
+                self.assertNotIn(pw, report.redact(f"pw={pw}"))
+        self.assertEqual(stack.run_credentials({"PIPESHUB_TEST_USER_EMAIL": "a@b.test"})["PIPESHUB_TEST_USER_EMAIL"], "a@b.test")
+
+    def test_built_image_is_removed_once_after_the_last_graph(self) -> None:
+        def go(env):
+            calls = []
+            with mock.patch.dict(os.environ, env), \
+                 mock.patch.object(run, "preflight", return_value=({}, [])), \
+                 mock.patch.object(run.Stack, "start", lambda s: calls.append(("start", s.graph_db))), \
+                 mock.patch.object(run.Stack, "stop", lambda s: calls.append(("stop", s.graph_db))), \
+                 mock.patch.object(run.Stack, "collect_logs", lambda s: None), \
+                 mock.patch.object(run, "_execute", return_value={"exit": 0, "label": "x"}), \
+                 mock.patch.object(run, "_outcomes", return_value={ACL: {"outcome": "pass", "seconds": 1, "details": ""}}), \
+                 mock.patch("qa.run.subprocess.run", side_effect=lambda cmd, **kw: calls.append(("sh", cmd))):
+                run.run(self.cfg, self.managed_plan([ACL]), self.rows, self.out, stack_mode="managed", build=True, retry=False)
+            return calls
+
+        calls = go({"QA_KEEP_IMAGE": "0"})
+        removals = [c for c in calls if c[0] == "sh" and c[1][:3] == ["docker", "image", "rm"]]
+        self.assertEqual(removals, [("sh", ["docker", "image", "rm", "pipeshub-ai:qa-0123456789ab"])])
+        self.assertEqual(calls[-1], removals[0])
+        self.assertEqual([c for c in calls if c[0] == "stop"], [("stop", "neo4j"), ("stop", "arango")])
+        self.assertFalse([c for c in go({"QA_KEEP_IMAGE": "1"}) if c[0] == "sh"])
+
+
 class TestHealth(unittest.TestCase):
     def test_a_200_that_is_still_starting_is_not_healthy(self) -> None:
         import importlib.util

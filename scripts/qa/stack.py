@@ -4,14 +4,38 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
+import secrets
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 COMPOSE_FILE = "deployment/docker-compose/docker-compose.integration.{graph}.yml"
 STACK_DIR = "integration-tests/stack"
+APP_SERVICE = "pipeshub-ai"
+
+
+def image_tag(head: str | None) -> str:
+    return f"pipeshub-ai:qa-{(head or 'local')[:12]}"
+
+
+def project_name(head: str | None, run_id: str, graph: str) -> str:
+    """One compose project per commit, run and graph DB, so concurrent runs never share a stack."""
+    prefix = os.environ.get("QA_COMPOSE_PROJECT") or f"qa-{(head or 'local')[:12]}-{run_id}"
+    return re.sub(r"[^a-z0-9_-]", "-", f"{prefix}-{graph}".lower())
+
+
+def run_credentials(env: Mapping[str, str]) -> dict[str, str]:
+    """A fresh admin per managed stack. The prefix meets the product's password rule
+    (an upper, a lower, a digit and a symbol); the whole stays well under bcrypt's 72 bytes."""
+    return {
+        "PIPESHUB_TEST_USER_EMAIL": env.get("PIPESHUB_TEST_USER_EMAIL") or "qa-admin@example.com",
+        "PIPESHUB_TEST_USER_PASSWORD": "Qa1!" + secrets.token_urlsafe(18),
+    }
 
 
 def _load(root: Path, name: str) -> ModuleType:
@@ -36,6 +60,9 @@ class Stack:
     build: bool = False
     up: bool = False
     events: list[str] = field(default_factory=list)
+    extra_env: dict[str, str] = field(default_factory=dict)
+    overrides: list[str] = field(default_factory=list)
+    environment: dict[str, Any] = field(default_factory=dict)
 
     @property
     def compose_file(self) -> str:
@@ -49,12 +76,13 @@ class Stack:
             "PIPESHUB_BASE_URL": self.base_url,
             "TEST_GRAPH_DB_TYPE": self.graph_db,
         })
+        env.update(self.extra_env)
         return env
 
     def compose(self, *args: str) -> list[str]:
         # Overrides let a shared host remap the CI file's fixed host ports without editing it.
         extra = [f for f in os.environ.get("QA_COMPOSE_OVERRIDES", "").split(os.pathsep) if f]
-        files = [x for f in [self.compose_file, *extra] for x in ("-f", f.replace("{graph}", self.graph_db))]
+        files = [x for f in [self.compose_file, *extra, *self.overrides] for x in ("-f", f.replace("{graph}", self.graph_db))]
         return ["docker", "compose", "-p", self.project, *files, *args]
 
     def describe(self) -> list[str]:
