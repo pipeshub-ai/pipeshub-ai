@@ -335,6 +335,14 @@ class EventProcessor:
             else:
                 if not docling_failed:
                     return
+                if yielded:
+                    # Docling failed after its parse completed (building blocks or
+                    # indexing): the file is released, and parsing it again would
+                    # index the record twice. Retry the record instead.
+                    raise IndexingError(
+                        "Docling failed after parsing completed",
+                        details={"record_id": record_id},
+                    )
                 self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
