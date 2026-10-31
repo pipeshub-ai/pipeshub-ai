@@ -38,13 +38,13 @@ function actionsOf(blocks: AnyBlock[]): AnyBlock[] {
 
 describe('slack-bot/utils/approval-card', () => {
   it('builds a write card: header, argument lines, expiry and three buttons', () => {
-    const { text, blocks } = buildApprovalCard(approval({ displayName: 'Create a Jira issue' }), 'U1', 'T1') as {
+    const { text, blocks } = buildApprovalCard(approval({ displayName: 'Created a Jira issue' }), 'U1', 'T1') as {
       text: string;
       blocks: AnyBlock[];
     };
-    expect(text).to.contain('Create a Jira issue on Jira');
+    expect(text).to.contain('Create issue on Jira');
     expect(blocks[0]).to.deep.include({ type: 'header' });
-    expect(blocks[0].text.text).to.equal('Create a Jira issue on Jira');
+    expect(blocks[0].text.text).to.equal('Create issue on Jira');
     const section = blocks.find((b) => b.type === 'section');
     expect(section.text.text).to.equal('*project:* OPS\n*summary:* Fix login');
     const context = blocks.find((b) => b.type === 'context').elements[0].text as string;
@@ -68,34 +68,73 @@ describe('slack-bot/utils/approval-card', () => {
   });
 
   it('marks a destructive card: danger approve and "Can\'t be undone"', () => {
-    const { blocks } = buildApprovalCard(approval({ kind: 'destructive', argsSummary: 'Delete OPS-1' }), 'U1', 'T1') as {
-      blocks: AnyBlock[];
-    };
-    expect(blocks[0].text.text).to.equal('create_issue on Jira');
-    expect(blocks.find((b) => b.type === 'section').text.text).to.equal('Delete OPS-1');
-    expect(blocks.find((b) => b.type === 'context').elements[0].text).to.contain("Can't be undone");
+    const { blocks } = buildApprovalCard(approval({ kind: 'destructive' }), 'U1', 'T1') as { blocks: AnyBlock[] };
+    expect(blocks.find((b) => b.type === 'context' && b.elements[0].text.includes('Expires')).elements[0].text).to.contain(
+      "Can't be undone",
+    );
     expect(actionsOf(blocks)[0].style).to.equal('danger');
   });
 
-  it('shows at most five arguments, each value capped, and keeps them plain text', () => {
+  it("titles the card with the tool's title, else its name, never the past-tense display name", () => {
+    const titleOf = (fields: Partial<ToolApprovalDetails>) =>
+      (buildApprovalCard(approval(fields), 'U1', 'T1').blocks[0] as AnyBlock).text.text as string;
+    expect(titleOf({ displayName: 'Created an issue' })).to.equal('Create issue on Jira');
+    expect(titleOf({ toolTitle: null, displayName: 'Created an issue' })).to.equal('create_issue on Jira');
+    expect(titleOf({ toolTitle: '  ' })).to.equal('create_issue on Jira');
+  });
+
+  it('shows the summary as a subtitle and still every argument', () => {
+    const { blocks } = buildApprovalCard(approval({ argsSummary: 'Fix login in OPS' }), 'U1', 'T1') as {
+      blocks: AnyBlock[];
+    };
+    expect(blocks[1]).to.deep.equal({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Fix login in OPS' }] });
+    expect(blocks.find((b) => b.type === 'section').text.text).to.equal('*project:* OPS\n*summary:* Fix login');
+  });
+
+  it('shows every argument that fits, keeps them plain, caps each value and says what it left out', () => {
     const args: Record<string, unknown> = { a: 'x'.repeat(500), b: { n: 1 }, c: '<!channel>', d: 4, e: 5, f: 6 };
     const { blocks } = buildApprovalCard(approval({ arguments: args }), 'U1', 'T1') as { blocks: AnyBlock[] };
     const lines = (blocks.find((b) => b.type === 'section').text.text as string).split('\n');
-    expect(lines).to.have.length(5);
+    expect(lines.slice(1, 6)).to.deep.equal(['*b:* {"n":1}', '*c:* &lt;!channel&gt;', '*d:* 4', '*e:* 5', '*f:* 6']);
     expect(lines[0]!.length).to.be.at.most('*a:* '.length + 200);
-    expect(lines[1]).to.equal('*b:* {"n":1}');
-    expect(lines[2]).to.equal('*c:* &lt;!channel&gt;');
+    expect(lines[6]).to.equal('_Open in PipesHub to see everything._');
+  });
+
+  it('cuts many long arguments at the section limit with a "+N more" line', () => {
+    const args = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`field${String(i)}`, 'v'.repeat(300)]));
+    const { blocks } = buildApprovalCard(approval({ arguments: args }), 'U1', 'T1') as { blocks: AnyBlock[] };
+    const text = blocks.find((b) => b.type === 'section').text.text as string;
+    expect(text.length).to.be.at.most(3000);
+    const lines = text.split('\n');
+    const shown = lines.length - 1;
+    expect(shown).to.be.greaterThan(5);
+    expect(lines.at(-1)).to.equal(`_+${String(40 - shown)} more. Open in PipesHub to see everything._`);
+  });
+
+  it('shows the preview, escaped and capped, when the arguments were too large to send', () => {
+    const short = buildApprovalCard(
+      approval({ arguments: null, argumentsPreview: '{"q": "<!here>"}' }),
+      'U1',
+      'T1',
+    ) as { blocks: AnyBlock[] };
+    expect(short.blocks.find((b: AnyBlock) => b.type === 'section').text.text).to.equal('{"q": "&lt;!here&gt;"}');
+    const long = buildApprovalCard(approval({ arguments: null, argumentsPreview: 'y'.repeat(5000) }), 'U1', 'T1') as {
+      blocks: AnyBlock[];
+    };
+    const text = long.blocks.find((b: AnyBlock) => b.type === 'section').text.text as string;
+    expect(text.length).to.be.at.most(3000);
+    expect(text.endsWith('\n_Open in PipesHub to see everything._')).to.equal(true);
   });
 
   it('keeps the notification text and a long summary plain, without cutting an entity in half', () => {
     const summary = `${'a'.repeat(2996)}&&&&`;
     const { text, blocks } = buildApprovalCard(
-      approval({ displayName: '<!channel> & co', argsSummary: summary }),
+      approval({ toolTitle: '<!channel> & co', argsSummary: summary }),
       'U1',
       'T1',
     ) as { text: string; blocks: AnyBlock[] };
     expect(text).to.contain('&lt;!channel&gt; &amp; co on Jira');
-    const shown = blocks.find((b) => b.type === 'section').text.text as string;
+    const shown = blocks[1].elements[0].text as string;
     expect(shown.length).to.be.at.most(3000);
     expect(shown.replace(/&amp;/g, '').includes('&')).to.equal(false);
   });
@@ -108,6 +147,7 @@ describe('slack-bot/utils/approval-card', () => {
   it('writes receipts', () => {
     const textOf = (blocks: AnyBlock[]) => blocks[0].elements[0].text;
     expect(textOf(buildApprovalReceipt('allowed', 'U1'))).to.equal('Approved by <@U1>');
+    expect(textOf(buildApprovalReceipt('allowedNotRun', 'U1'))).to.equal("Approved by <@U1>, but it didn't run");
     expect(textOf(buildApprovalReceipt('declined', 'U1'))).to.equal('Declined by <@U1>');
     expect(textOf(buildApprovalReceipt('declined', 'U1', 'use OPS-2'))).to.equal('Declined by <@U1>: use OPS-2');
     expect(textOf(buildApprovalReceipt('expired', 'U1'))).to.equal('Expired');
