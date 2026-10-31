@@ -20,7 +20,7 @@ from app.api.routes.mcp_servers import (
     get_my_tool_rules,
     update_my_tool_rules,
 )
-from app.core.org_context import OrgContext, bind
+from app.core.org_context import MissingOrgContext, OrgContext, bind
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 _ORG = "/services/mcp/instances/inst-1"
@@ -91,11 +91,11 @@ class TestValidateEdit:
         }
         return FakeConfigService({get_mcp_tool_approval_path(self._ID): record})
 
-    async def _validate(self, store: FakeConfigService, arguments: dict[str, Any], *, user_id: str = "user-1", approval_id: str = "ap-1", extra_user: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
+    async def _validate(self, store: FakeConfigService, arguments: dict[str, Any], *, user_id: str = "user-1", approval_id: str = "ap-1", extra_user: dict[str, Any] | None = None, org_id: str = "org-1") -> Any:  # noqa: ANN401
         request = route_request(store, user_id=user_id)
         request.state.user.update(extra_user or {})
         body = mcp_servers.ToolApprovalValidateBody(args_hash=args_hash({"q": "a"}), arguments=arguments)
-        with bind(OrgContext("org-1", user_id, "user", "jwt", "req-test")):
+        with bind(OrgContext(org_id, user_id, "user", "jwt", "req-test")):
             return await mcp_servers.validate_tool_approval_edit(request, body, approval_id)
 
     async def test_valid_edit_has_no_errors_and_is_not_claimed(self) -> None:
@@ -112,6 +112,22 @@ class TestValidateEdit:
             with pytest.raises(HTTPException) as caught:
                 await self._validate(store, {"q": "b"}, **kw)
             assert caught.value.status_code == 404
+
+    async def test_another_orgs_approval_for_the_same_user_id_is_not_found(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._validate(self._store(), {"q": "b"}, org_id="org-2")
+        assert caught.value.status_code == 404
+
+    async def test_with_no_org_bound_it_fails_closed(self) -> None:
+        request = route_request(self._store(), user_id="user-1")
+        body = mcp_servers.ToolApprovalValidateBody(args_hash=args_hash({"q": "a"}), arguments={"q": "b"})
+        with pytest.raises(MissingOrgContext):
+            await mcp_servers.validate_tool_approval_edit(request, body, self._ID)
+
+    async def test_with_edits_turned_off_nothing_can_be_edited(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TOOL_APPROVAL_EDITS", "false")
+        out = await self._validate(self._store(), {"q": "b"})
+        assert [(e.path, e.message) for e in out["errors"]] == [("", "This action can't be edited.")]
 
     async def test_expired_or_answered_is_gone(self) -> None:
         answered = self._store()
