@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestHealthCheck:
     async def test_governor_stats_failure_is_not_echoed(self) -> None:
@@ -38,7 +40,7 @@ class TestHealthCheck:
             "Resource governor stats failed: %s", error
         )
 
-    async def test_health_reports_lanes(self) -> None:
+    async def test_health_reports_lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.parsing_main import app as parsing_main_app
         from app.parsing_main import health_check
 
@@ -47,6 +49,8 @@ class TestHealthCheck:
         governor = MagicMock()
         governor.fleet_ceilings.heavy = 6
         governor.stats.return_value = {}
+        # An explicit thread count in the environment would make the plan "explicit_threads".
+        monkeypatch.delenv("PDF_TABLE_MODEL_THREADS", raising=False)
         with (
             patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
             patch.object(parsing_main_app.state, "governor", governor, create=True),
