@@ -119,6 +119,7 @@ playwright = 30
 IMPACT = """
 [[rule]]
 id = "graph-db"
+module = "graph-db"
 paths = ["backend/python/app/services/graph_db/**"]
 it_all = true
 graph_db = "both"
@@ -127,8 +128,71 @@ matrix = ["neo4j", "arangodb"]
 [[rule]]
 id = "connector-{name}"
 names = ["jira"]
+module = "connectors"
 paths = ["backend/python/app/connectors/sources/{name}/**"]
 markers = ["{name}"]
+"""
+
+MODULES = """
+[[module]]
+id = "graph-db"
+title = "Graph database"
+paths = ["backend/python/app/services/graph_db/**", "backend/python/tests/unit/services/graph_db/**"]
+
+[[module]]
+id = "retrieval"
+title = "Retrieval"
+paths = [
+  "backend/python/app/services/retrieval.py",
+  "backend/python/tests/unit/services/test_retrieval.py",
+  "integration-tests/retrieval/**",
+]
+
+[[module]]
+id = "connectors"
+title = "Connectors"
+paths = ["backend/python/app/connectors/**"]
+
+[[module]]
+id = "auth"
+title = "Authentication"
+paths = ["backend/nodejs/apps/src/modules/auth/**"]
+
+[[module]]
+id = "frontend"
+title = "Frontend"
+paths = ["frontend/app/**"]
+"""
+
+FLOWS = """
+[[flow]]
+id = "search"
+title = "Search"
+priority = "P0"
+critical = true
+modules = ["retrieval", "graph-db"]
+triggers = ["backend/python/app/services/retrieval.py"]
+tests = ["integration-tests/retrieval/**"]
+
+[[flow]]
+id = "login"
+title = "Log in"
+priority = "P1"
+modules = ["auth", "frontend"]
+triggers = ["backend/nodejs/apps/src/modules/auth/**"]
+tests = ["frontend/tests/e2e/login.spec.ts"]
+"""
+
+PLUS_FLOWS = """
+[[flow]]
+id = "usage"
+title = "Usage"
+priority = "P0"
+tests = ["integration-tests/plus/**"]
+
+[[flow]]
+id = "search"
+triggers = ["backend/python/app/plus/**"]
 """
 
 PLUS_SUITES = """
@@ -245,9 +309,12 @@ def make_repo(overlay: bool = True) -> tuple[Path, tempfile.TemporaryDirectory]:
     files["scripts/qa/rules/suites.toml"] = SUITES
     files["scripts/qa/rules/always.toml"] = ALWAYS
     files["scripts/qa/rules/impact.toml"] = IMPACT
+    files["scripts/qa/rules/modules.toml"] = MODULES
+    files["scripts/qa/rules/flows.toml"] = FLOWS
     if overlay:
         files["scripts/plus/qa/rules/suites.toml"] = PLUS_SUITES
         files["scripts/plus/qa/qa_hooks.py"] = PLUS_HOOKS
+        files["scripts/plus/qa/rules/flows.toml"] = PLUS_FLOWS
     else:
         files = {k: v for k, v in files.items() if "/plus/" not in k}
     for rel, body in files.items():

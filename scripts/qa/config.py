@@ -23,6 +23,8 @@ class Config:
     compose_profiles: dict[str, list[str]] = field(default_factory=dict)
     always: dict[str, Any] = field(default_factory=dict)
     quarantine: list[dict[str, Any]] = field(default_factory=list)
+    modules: list[dict[str, Any]] = field(default_factory=list)
+    flows: list[dict[str, Any]] = field(default_factory=list)
     overlays: list[Path] = field(default_factory=list)
     hooks: list[ModuleType] = field(default_factory=list)
 
@@ -38,6 +40,9 @@ class Config:
 
     def suite(self, suite_id: str) -> dict[str, Any] | None:
         return next((s for s in self.suites if s["id"] == suite_id), None)
+
+    def flow(self, flow_id: str) -> dict[str, Any] | None:
+        return next((f for f in self.flows if f["id"] == flow_id), None)
 
     def profile(self, name: str) -> dict[str, Any]:
         profiles = self.always.get("profiles", {})
@@ -73,6 +78,28 @@ def _merge_always(base: dict[str, Any], extra: dict[str, Any]) -> None:
             base.setdefault(key, {}).update(value)
         else:
             base[key] = value
+
+
+LIST_KEYS = ("paths", "modules", "triggers", "tests", "markers")
+
+
+def merge_by_id(base: list[dict[str, Any]], extra: list[dict[str, Any]], kind: str) -> None:
+    """Add entries from extra to base; a repeated id may only extend list keys."""
+    ids = [e["id"] for e in extra]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise ValueError(f"duplicate {kind} ids: {dupes}")
+    for entry in extra:
+        match = next((b for b in base if b["id"] == entry["id"]), None)
+        if match is None:
+            base.append(dict(entry))
+            continue
+        for key, value in entry.items():
+            if key == "id":
+                continue
+            if key not in LIST_KEYS:
+                raise ValueError(f"{kind} {entry['id']}: an overlay may only extend {', '.join(LIST_KEYS)}, not {key}")
+            match[key] = [*match.get(key, []), *value]
 
 
 def _substitute(value: Any, name: str) -> Any:
@@ -124,6 +151,8 @@ def load(root: Path | None = None, engine_root: Path | None = None) -> Config:
         cfg.compose_profiles.update(suites.get("compose_profiles", {}))
         cfg.rules.extend(expand_rules(_read(d / "impact.toml").get("rule", [])))
         _merge_always(cfg.always, _read(d / "always.toml"))
+        merge_by_id(cfg.modules, _read(d / "modules.toml").get("module", []), "module")
+        merge_by_id(cfg.flows, _read(d / "flows.toml").get("flow", []), "flow")
         cfg.quarantine.extend(_read(d.parent / "quarantine.toml").get("test", []))
     ids = [s["id"] for s in cfg.suites]
     dupes = {i for i in ids if ids.count(i) > 1}

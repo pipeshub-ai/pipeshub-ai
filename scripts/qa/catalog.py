@@ -462,7 +462,28 @@ def lint(cfg: Config, rows: list[dict[str, Any]], strict: bool = False) -> tuple
                 errors.append(f"{r['id']}: covers: {pattern!r} matches no file")
         if r["family"] == "it-pytest" and r["suite"] != "it-helpers" and not r["tc"]:
             warnings.append(f"{r['id']}: first docstring line has no TC id")
+    module_ids = {m["id"] for m in cfg.modules}
+    for m in cfg.modules:
+        for pattern in m.get("paths", []):
+            if not any(globs.match(f, pattern) for f in files):
+                warnings.append(f"module {m['id']}: path {pattern!r} matches no file")
+    for fl in cfg.flows:
+        for mod in fl.get("modules", []):
+            if mod not in module_ids:
+                errors.append(f"flow {fl['id']}: unknown module {mod}")
+        if fl.get("priority") not in ("P0", "P1", "P2"):
+            errors.append(f"flow {fl['id']}: priority must be P0, P1 or P2")
+        elif fl.get("critical") and fl["priority"] != "P0":
+            errors.append(f"flow {fl['id']}: only a P0 flow can be critical")
+        for pattern in fl.get("triggers", []):
+            if not any(globs.match(f, pattern) for f in files):
+                warnings.append(f"flow {fl['id']}: trigger {pattern!r} matches no file")
+        for pattern in fl.get("tests", []):
+            if not any(globs.match(r["path"], pattern) for r in rows):
+                warnings.append(f"flow {fl['id']}: tests {pattern!r} matches no catalogued test")
     for rule in cfg.rules:
+        if rule.get("module") and rule["module"] not in module_ids:
+            errors.append(f"impact rule {rule['id']}: unknown module {rule['module']}")
         for pattern in rule.get("paths", []):
             if not any(globs.match(f, pattern) for f in files):
                 warnings.append(f"impact rule {rule['id']}: path {pattern!r} matches no file")
