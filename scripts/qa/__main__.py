@@ -23,6 +23,7 @@ from qa import (
     command,
     config,
     culprit,
+    generate,
     history,
     impact,
     paths,
@@ -592,6 +593,34 @@ def cmd_review(args) -> int:
     return 0
 
 
+def cmd_generate(args) -> int:
+    """Stage 1: ask for scenarios for one module and write them as planned stubs."""
+    cfg = config.load()
+    out = _out(args)
+    if not any(m["id"] == args.module for m in cfg.modules):
+        print(f"unknown module {args.module!r}; known: {', '.join(m['id'] for m in cfg.modules)}", file=sys.stderr)
+        return 2
+    plan = None
+    if args.from_plan:
+        if not (out / "plan.json").is_file():
+            print(f"no plan.json in {out}: run python3 scripts/qa go --plan-only first", file=sys.stderr)
+            return 2
+        plan = _load(out / "plan.json")
+    limit = max(1, min(args.max, generate.MAX_SCENARIOS))
+    rows = catalog.build(cfg)
+    _dump(out / "scenarios-input.json", generate.scenario_input(cfg, rows, args.module, plan, limit))
+    status = planner.ask(cfg.root, args.adapter or planner.default_adapter(), "scenarios",
+                         out / "scenarios-input.json", out / "scenarios-llm.json", timeout=args.timeout)
+    llm = _load(out / "scenarios-llm.json")
+    result = generate.write_scenarios(cfg, rows, args.module, {"scenarios": llm.get("scenarios", [])[:limit]})
+    config.clear_cache()  # the new stubs are untracked files the cached listing has not seen
+    catalog.write(cfg)
+    body = generate.render(result, args.module, status)
+    (out / "generate.md").write_text(body, encoding="utf-8")
+    print(body)
+    return 0
+
+
 def cmd_command(args) -> int:
     try:
         parsed = command.parse(args.body, args.permission, args.admin_team)
@@ -795,6 +824,14 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--comment", action="store_true", help="post the review as its own sticky PR comment")
     s.add_argument("--run-url")
     s.set_defaults(fn=cmd_review)
+
+    s = sub.add_parser("generate", help="propose planned scenarios for a module and write them as stub tests")
+    s.add_argument("--module", required=True)
+    s.add_argument("--from-plan", action="store_true", help="also send plan.json's missing tests for this module")
+    s.add_argument("--max", type=int, default=5, help="scenarios to ask for (at most 20)")
+    s.add_argument("--adapter", choices=sorted(planner.ADAPTERS))
+    s.add_argument("--timeout", type=int, default=600)
+    s.set_defaults(fn=cmd_generate)
     p.subcommands = sub.choices
     return p
 

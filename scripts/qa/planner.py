@@ -35,6 +35,12 @@ TASKS: dict[str, dict[str, Any]] = {
         "diff": True,
         "empty": {"requirements": [], "checklist": [], "risks": []},
     },
+    "scenarios": {
+        "prompt": "scripts/qa/prompts/scenarios.md",
+        "schema": "scenarios-llm.v1.json",
+        "diff": False,
+        "empty": {"scenarios": []},
+    },
 }
 READ_ONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(grep:*)"
 FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
