@@ -15,6 +15,7 @@ referenced from tests and reviews.
 | I6 | Teardown runs on success, failure, timeout and SIGTERM | `run.run` `finally`, `stack.Stack.stop` |
 | I7 | A PR cannot weaken its own selection: rules come from the target branch, and an engine or rules change runs everything | `qa-pipeline.yml` "Pick the engine" (the target branch's engine and rules, checked out into `qa-engine/`); `always.toml` `[[full_run]]` |
 | I10 | The committed catalog matches the tests | `catalog check` in `main.yml` |
+| I13 | Every test file belongs to a suite or an `[[unowned]]` entry | `catalog.lint`; `test_orphan_test_file_is_a_lint_error` |
 | I11 | Model text in PR comments has no mentions, markup or links, and is at most 200 characters per reason | `validate.clean_text`; `test_model_text_cannot_inject_markup_or_mentions` |
 | I12 | `/qa` arguments match fixed patterns; permission comes from the GitHub API; fork code runs with secrets only through an admin's `--trusted` | `command.parse`, `qa-command.yml`; `test_untrusted_arguments_are_rejected` |
 
@@ -31,11 +32,11 @@ producer against them, and `validate` checks model output against
 
 | File | Schema | Key fields |
 | --- | --- | --- |
-| `tests.jsonl` rows | `catalog-row.v1.json` | `id` = `<prefix>:<path relative to the suite cwd>[::Class::test]`; prefixes `py`, `it`, `node`, `fe`, `e2e`, `scripts`, `suite`; `edition`; `tc`, `title`, `covers`, `needs`, `markers`; `status` active / planned / quarantined; `ordered` |
+| `tests.jsonl` rows | `catalog-row.v1.json` | `id` = `<prefix>:<path relative to the suite cwd>[::Class::test]`; prefixes `py`, `it`, `node`, `fe`, `e2e`, `scripts`, `suite`; `edition`; `tc`, `title`, `covers`, `needs`, `markers`; `status` active / planned / quarantined; `ordered`; `module`, `flows`, `priority` (stamped by `catalog.stamp`, see section 4a) |
 | `changeset.json` | `changeset.v1.json` | base, head, first-parent commits, files with status / edition / kind, zero-context hunks |
 | `plan-input.json` | `plan-input.v1.json` | `floor.items[id].why` (up to 3 reasons) and `grep`; `full_suites`; `stack`; `matrix`; `deferred`; `unmapped`; `missing`; `candidates` (up to 300); `catalogs`; `budget` |
 | `plan-llm.json` | `plan-llm.v1.json` | `add[{id, reason, confidence}]`, `add_matrix`, `missing`, `risk`; `_planner` status added by the adapter runner |
-| `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep}]`; `planner`; `stack{needed, graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
+| `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep, flows}]`; `flows{id: why}`; `planner`; `stack{needed, graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
 | `results*.json` | `results.v1.json` | `tests[{id, outcome, seconds, details}]`, `invocations[{label, cmd, exit, log}]`, `fatal`, `scope` |
 
 ## 3. Selection algorithm (the floor)
@@ -49,22 +50,28 @@ For a change set and profile, the floor is the union of:
 3. **Rules.** Each `[[rule]]` whose `paths` match adds its `tests` globs,
    integration `markers`, `it_all`, `suites`, `matrix`, `graph_db` and
    `broker`. `names` expands one rule per name with `{name}` substituted.
-4. **Covers.** Rows whose `covers:` globs match a changed file.
-5. **Mirrors.**
+4. **Flows.**
+   - A flow whose `triggers` match a changed file (deleted files included)
+     adds the flow's tests, with the reason `flow <id>`.
+   - A `critical` flow adds its tests on every run, with the reason
+     `critical flow <id>`.
+   - Module paths never trigger a flow; only its own `triggers` do.
+5. **Covers.** Rows whose `covers:` globs match a changed file.
+6. **Mirrors.**
    - `src/x/y.py` maps to `tests/unit/x/test_y.py`, and `src/x/y.ts` to
      `tests/x/y.test.ts`. The suite whose edition matches the file wins.
    - With no mirror test, tests in the mirror directory run as a safety net.
      The file stays unmapped and becomes a missing unit test, unless it only
      declares things (types, constants, `__init__`, `index`).
-6. **Import graphs.**
+7. **Import graphs.**
    - Python: an `ast` walk over `backend/python/app`, plus test files. It
      counts `mock.patch("app....")` strings as imports.
    - TypeScript: relative imports and the frontend's `@/` aliases.
    - Tests within `import_depth` hops of a changed module are selected:
      fast 1, standard 2, conservative 4.
-7. **Always.** Each `[[always]]` selector whose `when` matches; e2e smoke is
+8. **Always.** Each `[[always]]` selector whose `when` matches; e2e smoke is
    passed as `--grep @smoke`.
-8. **History.** Tests failing on `main` in the last three runs.
+9. **History.** Tests failing on `main` in the last three runs.
 
 After the union:
 
@@ -91,6 +98,33 @@ After the union:
   edition outside the run are dropped before the model sees them.
 - **Catalogs.** `integration-tests/catalog/` holds the base rows; an overlay
   keeps its own rows in a separate catalog directory.
+
+## 4a. Registry
+
+`rules/modules.toml` and `rules/flows.toml` name the product areas and the user
+journeys the tests protect.
+
+- **Modules.** `[[module]]` has `id`, `title` and `paths`. A path belongs to the
+  first module, in load order (shared file, then overlays), whose `paths`
+  match, so a specific module goes before a broad one. Every impact rule names
+  a `module`.
+- **Flows.** `[[flow]]` has `id`, `title`, `priority` (`P0`, `P1` or `P2`),
+  `critical` (P0 only), `modules`, `triggers` (globs over source files),
+  `tests` (globs over test paths, any suite) and `markers` (integration-tests
+  markers). `catalog.stamp` writes `module`, `flows` and `priority` onto each
+  catalog row.
+- **Overlays.** An overlay may repeat a module or flow id to extend its list
+  keys (`paths`, `modules`, `triggers`, `tests`, `markers`); it cannot change
+  `title`, `priority` or `critical` (`config.merge_by_id`). A repeated id
+  inside one file is an error.
+- **Report.** `report.md` has a "By flow" table (priority, tests, failed, not
+  run) and the line "Affected flows with no planned test".
+- **Unowned test files.** `catalog lint` reads the `test_files` globs in
+  `always.toml`. A matching file that no suite owns is an error unless an
+  `[[unowned]]` entry lists it with a `reason` saying what runs it instead.
+- **Lint.** `catalog lint` also errors on an unknown module, a bad priority, a
+  `critical` flow that is not P0, and an impact rule without a valid `module`.
+  A glob that matches nothing is a warning.
 
 ## 5. Runner
 
