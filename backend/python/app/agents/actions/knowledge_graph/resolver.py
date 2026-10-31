@@ -13,8 +13,9 @@ Resolution order for each identifier:
 3. If the input was a URL and canonical strategies all missed, fall back to
    ``get_record_by_weburl(normalized)`` then ``(raw)`` — so connectors with
    no dedicated extractor still resolve via their indexed ``webUrl``.
-4. Bare non-URL inputs that miss every strategy fall back to
-   ``get_record_by_external_id`` across the full catalog.
+4. Bare non-URL inputs that miss every strategy fall back to a name match
+   over the catalog's knowledge bases: a KB upload has no source key, so the
+   ticket key or title it is about is only in its name.
 5. Every candidate passes ``get_knowledge_hub_node_access`` (org + user ACL).
 
 Lookup scope is the **org-wide user-accessible catalog** (not restricted to
@@ -28,12 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
+    Connectors,
+)
+from app.connectors.sources.localKB.api.knowledge_hub_models import NodeType
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
 )
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -117,6 +124,22 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
     ],
 }
 
+# The name search matches substrings, so a key inside longer ones (HELP-3307 in
+# HELP-33071, HELP-33072, ...) can push its own record past the first page. Pages
+# are read by number, each walking from the first, so the walk is capped.
+_KB_NAME_SEARCH_LIMIT = 200
+_KB_NAME_SEARCH_PAGES = 5
+# Matches read per identifier: each costs a record read and an ACL check.
+_KB_NAME_MATCH_LIMIT = 10
+
+
+def _holds_token(name: str, token: str) -> bool:
+    """Whether ``token`` is in ``name`` with no letter or digit run into it.
+
+    Underscores separate too: upload names join their parts with them.
+    """
+    return re.search(rf"(?<![^\W_]){re.escape(token)}(?![^\W_])", name, re.IGNORECASE) is not None
+
 
 # ---------------------------------------------------------------------------
 # Match building
@@ -197,6 +220,11 @@ class RecordResolver:
     ) -> None:
         self._graph = graph_provider
         self._excluded_app_ids = excluded_app_ids
+        self._hub = KnowledgeHubService(
+            logger=logger,
+            graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids,
+        )
         self._catalog = catalog
         self._org_id = org_id
         self._user_id = user_id
@@ -342,10 +370,11 @@ class RecordResolver:
             url_matches = await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
             all_matches.extend(url_matches)
 
-        # Bare external-id fallback: if non-URL input missed its canonical path
-        if not is_url and not all_matches and ref.kind == RefKind.EXTERNAL_ID:
-            # Already covered by the strategy table; this is a no-op guard
-            pass
+        # A KB upload has no source key: the key or title it is about is in its name.
+        kbs = [c for c in self._catalog.connectors if c.type == Connectors.KNOWLEDGE_BASE.value]
+        if kbs and not is_url and not all_matches:
+            searched_types.append(Connectors.KNOWLEDGE_BASE.value)
+            all_matches.extend(await self._by_kb_name(ref.value, kbs, raw))
 
         return all_matches, searched_types
 
@@ -408,6 +437,31 @@ class RecordResolver:
             return []
         m = _record_to_match(rec, raw, self._frontend_url)
         return [m] if m and m.id else []
+
+    async def _by_kb_name(
+        self, name_part: str, kbs: list[ConnectorInfo], raw: str,
+    ) -> list[LookupMatch]:
+        """Records of ``kbs`` the user can open whose name holds ``name_part``
+        as a whole token (``2019-04-02_HELP-3307-printer-jam.md`` for HELP-3307)."""
+        ids: list[str] = []
+        for page_number in range(1, _KB_NAME_SEARCH_PAGES + 1):
+            page = await self._hub.get_nodes(
+                user_id=self._user_id,
+                org_id=self._org_id,
+                q=name_part,
+                connector_ids=[kb.id for kb in kbs],
+                node_types=[NodeType.RECORD.value],
+                page=page_number,
+                limit=_KB_NAME_SEARCH_LIMIT,
+                sort_by="name",
+                sort_order="asc",
+                flattened=True,
+            )
+            ids += [item.id for item in page.items if _holds_token(item.name, name_part)]
+            if len(ids) >= _KB_NAME_MATCH_LIMIT or not (page.pagination and page.pagination.hasNext):
+                break
+        found = await asyncio.gather(*(self._by_record_id(i, raw) for i in ids[:_KB_NAME_MATCH_LIMIT]))
+        return [m for matches in found for m in matches]
 
     async def _typed(self, rec: Record) -> Record:
         """Swap a base ``Record`` for its typed subclass when it has one.

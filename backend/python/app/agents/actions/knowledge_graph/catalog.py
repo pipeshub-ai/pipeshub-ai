@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from app.config.constants.arangodb import Connectors
 from app.modules.demo_data.chat import excluded_app_ids
 
 if TYPE_CHECKING:
@@ -143,6 +144,34 @@ class ConnectorCatalog:
         catalog = cls(infos)
         state[_STATE_KEY] = catalog
         return catalog
+
+    @classmethod
+    async def knowledge_bases(
+        cls,
+        state: dict[str, Any],
+        *,
+        graph_provider: "IGraphDBProvider",
+        user_key: str,
+        org_id: str,
+    ) -> "ConnectorCatalog":
+        """The knowledge bases the user passes the connector gate for, which
+        ``build`` never lists: the filter options leave KB apps out.
+
+        A failure returns an empty catalog, as ``build`` does.
+        """
+        kb_type = Connectors.KNOWLEDGE_BASE.value
+        excluded = excluded_app_ids(state)
+        try:
+            apps = await graph_provider.get_gated_apps(user_key, org_id)
+        except Exception as exc:
+            logger.warning("ConnectorCatalog: knowledge bases unreadable: %s", exc)
+            return cls([])
+        infos: list[ConnectorInfo] = []
+        for app in apps or []:
+            app_id = app.get("_key") or app.get("id")
+            if app_id and app_id not in excluded and app.get("type") == kb_type:
+                infos.append(ConnectorInfo(id=app_id, name=app.get("name") or kb_type, type=kb_type))
+        return cls(infos)
 
     # ------------------------------------------------------------------
     # Query helpers
