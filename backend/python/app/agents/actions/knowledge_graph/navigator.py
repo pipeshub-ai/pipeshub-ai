@@ -23,6 +23,15 @@ from .models import NavigationView, NodeRef, NodeRow, PaginationInfo
 
 logger = logging.getLogger(__name__)
 
+
+class ListingFailedError(RuntimeError):
+    """The listing under a node did not complete. Rendered as an empty listing, it read as "(no children)"."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 # All RecordRelations that represent containment (excluded from "Related" section)
 _CONTAINMENT_RELATIONS = frozenset({
     RecordRelations.PARENT_CHILD.value,
@@ -340,6 +349,8 @@ class GraphNavigator:
             response, context_block = await asyncio.gather(nodes, self._context_block(node_id))
         else:
             response = await nodes
+        if not response.success:
+            raise ListingFailedError(response.error or "The listing did not complete.", response.errorCode)
         if crumbs_wanted:
             breadcrumbs = [
                 _node_ref(crumb.id, crumb.name, crumb.nodeType, crumb.subType)

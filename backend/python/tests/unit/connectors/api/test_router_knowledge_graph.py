@@ -21,6 +21,7 @@ from app.agents.actions.knowledge_graph.models import (
     NodeRow,
     PaginationInfo,
 )
+from app.agents.actions.knowledge_graph.navigator import ListingFailedError
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import (
     knowledge_graph_lookup,
@@ -272,6 +273,18 @@ class TestKnowledgeGraphNavigate:
 
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
         assert "arango down" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_keeps_its_status_and_reason(self) -> None:
+        busy = "The listing is busy right now. Please try again in a few seconds."
+        with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=_mock_catalog())), \
+             patch(f"{ROUTER}.GraphNavigator") as nav_cls:
+            nav_cls.return_value.navigate = AsyncMock(side_effect=ListingFailedError(busy, 503))
+            with pytest.raises(HTTPException) as exc:
+                await _call_navigate(graph_provider=_mock_graph_provider())
+
+        assert exc.value.status_code == 503
+        assert exc.value.detail == busy
 
 
 # ============================================================================

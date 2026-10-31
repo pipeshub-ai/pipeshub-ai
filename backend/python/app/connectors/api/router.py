@@ -39,7 +39,7 @@ from app.agents.actions.knowledge_graph.models import (
     NodeRow,
     PaginationInfo,
 )
-from app.agents.actions.knowledge_graph.navigator import GraphNavigator
+from app.agents.actions.knowledge_graph.navigator import GraphNavigator, ListingFailedError
 from app.agents.actions.knowledge_graph.ops.time_range import (
     parse_time_range,
     time_range_to_kh_filters,
@@ -2139,6 +2139,12 @@ async def knowledge_graph_navigate(
             node_types=node_types,
             app_names={c.id: c.name for c in catalog.connectors},
         )
+    except ListingFailedError as e:
+        logger.warning("Knowledge graph listing failed for node_id=%s: %s", node_id, e)
+        raise HTTPException(
+            status_code=e.status_code or HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=str(e),  # user-written message
+        ) from e
     except Exception as e:
         logger.error(f"Error navigating knowledge graph for node_id={node_id}: {str(e)}", exc_info=True)
         raise HTTPException(

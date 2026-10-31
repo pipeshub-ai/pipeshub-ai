@@ -46,7 +46,7 @@ from app.utils.chat_helpers import (
 from .catalog import ConnectorCatalog
 from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
-from .navigator import GraphNavigator
+from .navigator import GraphNavigator, ListingFailedError
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     NODE_NOT_FOUND_MESSAGE,
@@ -579,6 +579,12 @@ class KnowledgeGraph:
             )
             await keep_row_summaries_inside_connection(
                 [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+            )
+        except ListingFailedError as exc:
+            logger.warning("navigate listing failed for node_id=%s: %s", node_id, exc)
+            return False, (
+                f"Listing failed: {exc} This place may hold too many items to list at once; "
+                "knowledgegraph__list_files with a name query, or search, can reach its records instead."
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)

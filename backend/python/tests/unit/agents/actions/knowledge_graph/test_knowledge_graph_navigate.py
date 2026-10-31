@@ -1842,3 +1842,29 @@ class TestNavigateTimestampRendering:
             success, text = await tool.navigate()
         assert success
         assert "created:" not in text
+
+
+class TestNavigateFailedListing:
+    """A listing that failed (a busy or out-of-memory graph on a huge app) read as "(no children)"."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_is_reported_not_shown_as_empty(self) -> None:
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        failed = _make_knowledge_hub_response(items=[])
+        failed.success = False
+        failed.error = "The listing is busy right now. Please try again in a few seconds."
+        failed.errorCode = 503
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=failed),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert not success
+        assert text.startswith("Listing failed: The listing is busy right now.")
+        assert "knowledgegraph__list_files" in text
+        assert "no children" not in text
