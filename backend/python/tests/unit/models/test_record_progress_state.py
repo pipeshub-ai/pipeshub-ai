@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 import inspect
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.models import entities
 from app.models.entities import FileRecord, Record, RecordType, SQLColumnRecord
@@ -56,8 +58,28 @@ def test_a_column_keeps_its_stored_status_and_its_own_default() -> None:
     assert typed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
     assert typed.extraction_status == ProgressStatus.NOT_STARTED.value
 
+_CONVERTERS = sorted(
+    (cls for cls in vars(entities).values()
+     if isinstance(cls, type) and issubclass(cls, Record) and "from_arango_record" in vars(cls)),
+    key=lambda cls: cls.__name__,
+)
+# The fields a converter indexes directly in its own document.
+_TYPE_DOCS: dict[type, dict] = {entities.LinkRecord: {"url": "https://wiki.example.com/onboarding"}}
+
+
+@pytest.mark.parametrize("converter", _CONVERTERS, ids=lambda cls: cls.__name__)
+def test_every_typed_record_carries_its_stored_status(converter: type) -> None:
+    # Neither value is any converter's default, so a default cannot pass for it.
+    base = _base(indexingStatus=ProgressStatus.FAILED.value, extractionStatus=ProgressStatus.COMPLETED.value)
+    typed = converter.from_arango_record({"_key": "r1", **_TYPE_DOCS.get(converter, {})}, base)
+    assert (typed.indexing_status, typed.extraction_status) == (
+        ProgressStatus.FAILED.value, ProgressStatus.COMPLETED.value,
+    )
+
+
 def test_every_typed_converter_reads_the_stored_status() -> None:
     """A converter that forgot reports every record of its type as not indexed."""
+    assert len(_CONVERTERS) >= 17
     tree = ast.parse(inspect.getsource(entities))
     missing = []
     converters = 0
