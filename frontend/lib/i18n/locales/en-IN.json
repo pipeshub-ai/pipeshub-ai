@@ -1470,6 +1470,7 @@
         "changedFields": "Changed: {{fields}}"
       },
       "edit": "Edit",
+      "doneEditing": "Done editing",
       "reset": "Reset",
       "changeSomethingElse": "Change something else",
       "feedbackPlaceholder": "Tell the agent what to change",

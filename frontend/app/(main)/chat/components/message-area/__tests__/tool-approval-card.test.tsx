@@ -254,6 +254,25 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(screen.getByText('Title is too vague')).toBeTruthy();
   });
 
+  it('reads "Done editing" while editing, and that leaves edit mode keeping the edit', () => {
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done editing' }));
+    expect(screen.queryByRole('textbox', { name: /Title/ })).toBeNull();
+    expect(screen.getByText('Login broken')).toBeTruthy();
+  });
+
+  it('brings its actions into view when it opens in edit mode', async () => {
+    const scrollIntoView = vi.fn();
+    Object.assign(Element.prototype, { scrollIntoView });
+    renderInTheme(<ToolApprovalCard approval={editable({ editErrors: [{ path: '/title', message: 'Title is too vague' }] })} isLatest />);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' }));
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(screen.getByRole('button', { name: 'Allow' }).parentElement);
+  });
+
   it('shows nested values read-only', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
