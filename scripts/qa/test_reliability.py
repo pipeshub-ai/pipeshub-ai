@@ -729,6 +729,17 @@ class TestPublish(unittest.TestCase):
         self.assertEqual(len(git(self.root, "show", "qa-history:shadow.jsonl").splitlines()), 1)
         self.assertEqual(json.loads(git(self.root, "show", "qa-history:metrics.json"))["enforcement"]["failures"], 1)
 
+    def test_publish_rejects_bad_input_with_one_line(self) -> None:
+        cases = {"missing shadow": ["--shadow", str(self.tmp / "absent.jsonl")],
+                 "malformed start": ["--started-at", "yesterday"],
+                 "naive start": ["--started-at", "2026-10-31T01:02:03"]}
+        for name, extra in cases.items():
+            with self.subTest(name):
+                code, _, err = self._main(["--out", str(self._run_dir(name, "pass")), "history", "publish", *extra], self.env)
+                self.assertEqual(code, 2)
+                self.assertRegex(err, r"^history publish: [^\n]+\n$")
+        self.assertEqual(git(self.root, "branch", "--list", "qa-history"), "")
+
     def test_publish_conflict_exits_4(self) -> None:
         with mock.patch.object(branchstore, "update", side_effect=branchstore.Conflict("moved")):
             code, _, err = self._main(["--out", str(self._run_dir("r", "pass")), "history", "publish"], self.env)

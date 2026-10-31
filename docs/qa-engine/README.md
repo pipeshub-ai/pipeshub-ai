@@ -258,6 +258,9 @@ To switch:
 python3 scripts/qa history pull --to h && python3 scripts/qa shadow verdict --store h
 ```
 
+If there is no `qa-history` branch yet, `history pull` says so, writes an empty
+directory and exits 0, and `shadow verdict` then reports `insufficient` (exit 2).
+
 If it exits 0, a maintainer sets the repository variable `QA_ENFORCE=true`.
 Nothing sets it automatically.
 

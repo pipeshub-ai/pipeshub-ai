@@ -364,11 +364,23 @@ def _publish(args) -> int:
     today = shadow._today()
     wall = None
     if args.started_at:
-        started = dt.datetime.fromisoformat(args.started_at.replace("Z", "+00:00"))
+        try:
+            started = dt.datetime.fromisoformat(args.started_at.replace("Z", "+00:00"))
+        except ValueError:
+            started = None
+        if started is None or started.tzinfo is None:
+            print(f"history publish: --started-at {args.started_at!r} needs an ISO time with a zone, e.g. 2026-01-01T00:00:00Z",
+                  file=sys.stderr)
+            return 2
         wall = round((dt.datetime.now(dt.timezone.utc) - started).total_seconds(), 1)
     trig = args.trigger or history.trigger(os.environ)
     entry = history.entry(plan, results, trigger=trig, wall_seconds=wall, run_url=args.run_url) if results else None
-    shadow_lines = history._jsonl(Path(args.shadow).read_text(encoding="utf-8")) if args.shadow else []
+    # A missing --shadow file is an error, not "no records": the nightly passes --shadow only when shadow fetch wrote one.
+    try:
+        shadow_lines = history._jsonl(Path(args.shadow).read_text(encoding="utf-8")) if args.shadow else []
+    except OSError as err:
+        print(f"history publish: cannot read --shadow {args.shadow}: {err.strerror or err}", file=sys.stderr)
+        return 2
     coverage = {}
     for item in args.coverage:
         suite, sep, path = item.partition("=")
@@ -421,6 +433,7 @@ def cmd_history(args) -> int:
     if args.action == "publish":
         return _publish(args)
     if args.action == "pull":
+        # The same checkout publish writes from (config.load resolves cfg.root from paths.tree_root()); pull skips loading the config.
         sha, files = branchstore.read(paths.tree_root(), args.remote)
         if sha is None:
             print(f"history pull: no {branchstore.BRANCH} branch yet", file=sys.stderr)
