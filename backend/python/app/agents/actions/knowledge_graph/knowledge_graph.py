@@ -708,20 +708,15 @@ class KnowledgeGraph:
             connector_name_hint=connector_name,
             frontend_url=await resolve_frontend_url(state.get("config_service")),
             excluded_app_ids=excluded_app_ids(state),
+            # A match outside what the turn is limited to is not a match, and must not end the search.
+            within_scope=lambda ids: ids_within_scope(state, graph_provider, user_key, org_id, ids),
         )
 
         try:
             result = await resolver.resolve_many(idents)
-            # A match outside what the turn is limited to is not a match.
-            inside = await ids_within_scope(
-                state, graph_provider, user_key, org_id, [m.id for m in result.matches],
-            )
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        if len(inside) < len(result.matches):
-            kept = [m for m in result.matches if m.id in inside]
-            result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
         await keep_context_blocks_inside_connection(
             [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
             connection_sources_of(state.get("filters")),

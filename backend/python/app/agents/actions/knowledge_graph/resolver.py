@@ -9,20 +9,20 @@ connector needs a special lookup method, one row in the table.
 Resolution order for each identifier:
 1. ``resolve_canonical_ref`` → ``RefKind`` + optional connector hint.
 2. Walk ``STRATEGY_TABLE[kind]`` in order; execute each strategy over the
-   catalog-filtered connector set; stop on first non-empty result.
+   catalog-filtered connector set; stop on the first that yields a match the
+   user may open and the turn may read (step 5), so a ticket denied or out of
+   the turn's scope does not end the search.
 3. If the input was a URL and canonical strategies all missed, fall back to
    ``get_record_by_weburl(normalized)`` then ``(raw)`` — so connectors with
    no dedicated extractor still resolve via their indexed ``webUrl``.
 4. Bare non-URL inputs that miss every strategy fall back to a name match
    over the catalog's knowledge bases: a KB upload has no source key, so the
    ticket key or title it is about is only in its name.
-5. Every candidate passes ``get_knowledge_hub_node_access`` (org + user ACL).
+5. Every candidate passes ``get_knowledge_hub_node_access`` (org + user ACL)
+   and the caller's ``within_scope`` (what the turn is limited to).
 
-Lookup scope is the **org-wide user-accessible catalog** (not restricted to
-the agent/filter scope) so a Jira key found inside a Confluence page can
-resolve even when the session filter is scoped to Confluence only.
-Agent-scoped connectors are sorted first for performance; out-of-scope
-matches are labelled by connector name in the output.
+Lookup searches the **org-wide user-accessible catalog**; agent-scoped
+connectors are sorted first for performance.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -49,6 +49,9 @@ from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurre
 from .catalog import ConnectorCatalog, ConnectorInfo
 from .identifiers import CanonicalRef, RefKind, normalize_weburl, resolve_canonical_ref
 from .models import LookupMatch, LookupResult
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -217,8 +220,10 @@ class RecordResolver:
         connector_name_hint: str | None = None,
         frontend_url: str | None = None,
         excluded_app_ids: frozenset[str] = frozenset(),
+        within_scope: Callable[[list[str]], Awaitable[set[str]]] | None = None,
     ) -> None:
         self._graph = graph_provider
+        self._within_scope = within_scope
         self._excluded_app_ids = excluded_app_ids
         self._hub = KnowledgeHubService(
             logger=logger,
@@ -297,9 +302,24 @@ class RecordResolver:
             return [], []
 
         logger.debug("resolve_one(%r): ref=%s/%s hint=%s", raw, ref.kind, ref.value, ref.connector_hint)
-        candidates, searched = await self._fetch_candidates(raw, ref)
-        logger.debug("resolve_one(%r): %d candidate(s), searched=%s", raw, len(candidates), searched)
+        matches, searched = await self._fetch_candidates(raw, ref)
+        logger.debug("resolve_one(%r): %d match(es), searched=%s", raw, len(matches), searched)
+        return matches, searched
 
+    async def _admitted(self, raw: str, candidates: list[LookupMatch]) -> list[LookupMatch]:
+        """The candidates the user may open and the turn may read."""
+        gated = await self._gated(raw, candidates)
+        inside = set(await self._in_scope([m.id for m in gated]))
+        return [m for m in gated if m.id in inside]
+
+    async def _in_scope(self, ids: list[str]) -> list[str]:
+        if self._within_scope is None or not ids:
+            return ids
+        inside = await self._within_scope(ids)
+        return [i for i in ids if i in inside]
+
+    async def _gated(self, raw: str, candidates: list[LookupMatch]) -> list[LookupMatch]:
+        """The candidates the user may open (``get_knowledge_hub_node_access``), with gaps filled from the node."""
         gated: list[LookupMatch] = []
         for match in candidates:
             node = await self._graph.get_knowledge_hub_node_access(
@@ -325,7 +345,7 @@ class RecordResolver:
                     "resolve_one(%r): candidate %s denied/missing by ACL", raw, match.id,
                 )
 
-        return gated, searched
+        return gated
 
     async def _in_excluded_app(self, record_id: str) -> bool:
         if not self._excluded_app_ids:
@@ -336,7 +356,7 @@ class RecordResolver:
     async def _fetch_candidates(
         self, raw: str, ref: CanonicalRef
     ) -> tuple[list[LookupMatch], list[str]]:
-        """Walk the strategy table for *ref*; return (matches, searched-type-names)."""
+        """Walk the strategy table for *ref*; return (admitted matches, searched-type-names)."""
         is_url = raw.startswith(("http://", "https://"))
         strategies = STRATEGY_TABLE.get(ref.kind, [])
 
@@ -360,7 +380,7 @@ class RecordResolver:
             searched_types.append(type_label)
 
             matches = await self._execute_strategy(strategy.method, connectors, ref, raw)
-            all_matches.extend(matches)
+            all_matches.extend(await self._admitted(raw, matches))
             if all_matches:
                 break  # first successful strategy wins
 
@@ -368,13 +388,14 @@ class RecordResolver:
         if is_url and not all_matches and ref.kind != RefKind.WEB_URL:
             searched_types.append("weburl-fallback")
             url_matches = await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
-            all_matches.extend(url_matches)
+            all_matches.extend(await self._admitted(raw, url_matches))
 
         # A KB upload has no source key: the key or title it is about is in its name.
         kbs = [c for c in self._catalog.connectors if c.type == Connectors.KNOWLEDGE_BASE.value]
         if kbs and not is_url and not all_matches:
             searched_types.append(Connectors.KNOWLEDGE_BASE.value)
-            all_matches.extend(await self._by_kb_name(ref.value, kbs, raw))
+            # Already limited to the turn's scope, before the match cap.
+            all_matches.extend(await self._gated(raw, await self._by_kb_name(ref.value, kbs, raw)))
 
         return all_matches, searched_types
 
@@ -457,7 +478,7 @@ class RecordResolver:
                 sort_order="asc",
                 flattened=True,
             )
-            ids += [item.id for item in page.items if _holds_token(item.name, name_part)]
+            ids += await self._in_scope([item.id for item in page.items if _holds_token(item.name, name_part)])
             if len(ids) >= _KB_NAME_MATCH_LIMIT or not (page.pagination and page.pagination.hasNext):
                 break
         found = await asyncio.gather(*(self._by_record_id(i, raw) for i in ids[:_KB_NAME_MATCH_LIMIT]))

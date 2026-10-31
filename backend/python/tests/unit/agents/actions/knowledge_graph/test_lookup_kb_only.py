@@ -194,6 +194,99 @@ class TestKbNameSearchPages:
         assert "Not found" in text
         assert pages == [1, 2, 3, 4, 5]
 
+HELP_3307_TICKET = Record(
+    id="jira-2",
+    record_name="HELP-3307 Printer jams on the second floor",
+    record_type=RecordType.TICKET,
+    external_record_id="HELP-3307",
+    version=1,
+    origin=OriginTypes.CONNECTOR,
+    connector_name=Connectors.JIRA,
+    connector_id="conn-jira",
+    weburl="https://acme.atlassian.net/browse/HELP-3307",
+    indexing_status="COMPLETED",
+)
+
+
+def _only(kept: set[str]):  # noqa: ANN202
+    """A turn scope that admits only ``kept``."""
+    async def within(state: Any, graph: Any, user_key: str, org_id: str, ids: list[str]) -> set[str]:  # noqa: ANN401
+        return set(ids) & kept
+    return patch("app.agents.actions.knowledge_graph.knowledge_graph.ids_within_scope", within)
+
+
+class TestAMatchThatIsDroppedDoesNotEndTheSearch:
+    """A candidate the user cannot open, or one outside the turn's scope, is dropped; it must not
+    stop the search before the knowledge base that holds the record is tried."""
+
+    @staticmethod
+    def _agent_with_jira_and_kb(readable: set[str]) -> dict[str, Any]:
+        graph = _graph(readable=readable)
+        graph.get_record_by_issue_key.side_effect = (
+            lambda connector_id, key, *_, **__: HELP_3307_TICKET if key == "HELP-3307" else None
+        )
+        return {
+            "org_id": ORG_ID,
+            "user_id": "user-1",
+            "graph_provider": graph,
+            "has_knowledge": True,
+            "agent_knowledge": [
+                {"connectorId": "conn-jira", "type": "JIRA", "name": "Jira Cloud"},
+                {"connectorId": KB_ID, "type": "KB", "name": "Support"},
+            ],
+        }
+
+    async def test_a_ticket_the_user_cannot_open(self) -> None:
+        state = self._agent_with_jira_and_kb(readable={f.id for f in FILES})
+
+        ok, text = await _lookup(state, "HELP-3307")
+
+        assert ok
+        assert HELP_3307.record_name in text
+        assert HELP_3307_TICKET.record_name not in text
+
+    async def test_a_ticket_outside_the_turns_scope(self) -> None:
+        state = self._agent_with_jira_and_kb(readable={HELP_3307_TICKET.id, *(f.id for f in FILES)})
+
+        with _only({f.id for f in FILES}):
+            ok, text = await _lookup(state, "HELP-3307")
+
+        assert ok
+        assert HELP_3307.record_name in text
+        assert HELP_3307_TICKET.record_name not in text
+
+    async def test_an_accessible_ticket_still_ends_it(self) -> None:
+        state = self._agent_with_jira_and_kb(readable={HELP_3307_TICKET.id, *(f.id for f in FILES)})
+
+        ok, text = await _lookup(state, "HELP-3307")
+
+        assert ok
+        assert HELP_3307_TICKET.record_name in text
+        assert HELP_3307.record_name not in text
+
+    async def test_matches_outside_the_turns_scope_do_not_fill_the_cap(self) -> None:
+        archive = [
+            _kb_file(f"archive-{n:02d}", f"2019-03-{n + 1:02d}_HELP-3307-copy.md") for n in range(12)
+        ]
+        graph = _graph(readable={f.id for f in [*FILES, *archive]})
+        graph.get_gated_apps.return_value = [
+            {"_key": KB_ID, "name": "Support", "type": "KB"},
+            {"_key": "kb-archive", "name": "Archive", "type": "KB"},
+        ]
+        stub_listing(graph, USER_KEY, {
+            KB_ID: [node(f.id, f.record_name, origin="COLLECTION") for f in FILES],
+            "kb-archive": [node(f.id, f.record_name, origin="COLLECTION") for f in archive],
+        })
+        by_id = {r.id: r for r in [*FILES, *archive]}
+        graph.get_record_by_id.side_effect = lambda record_id, *_, **__: by_id.get(record_id)
+
+        with _only({f.id for f in FILES}):
+            ok, text = await _lookup(_kb_only_chat(graph), "HELP-3307")
+
+        assert ok
+        assert HELP_3307.record_name in text
+        assert "HELP-3307-copy" not in text
+
 class TestKbOnlyChatAccess:
     async def test_a_record_the_user_cannot_read_stays_not_found(self) -> None:
         graph = _graph(readable=set())
