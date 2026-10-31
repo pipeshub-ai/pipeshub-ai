@@ -4,6 +4,7 @@ import {
   isAskUserQuestionToolName,
   type AskUserQuestionEvent,
 } from "./ask-user-format";
+import type { ToolApprovalDetails } from './approval-card';
 
 export interface AGUIJsonPatchOp {
   op: string;
@@ -78,6 +79,7 @@ export interface SlackAGUICallbacks {
   /** A model call failed mid-stream and is retried: drop what it streamed. */
   onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
+  onApprovalRequested?: (approval: ToolApprovalDetails) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
@@ -378,6 +380,13 @@ export function createSlackAGUIEventHandler(
         const displayName = meta?.displayName;
         const status = typeof data?.status === "string" ? data.status : "completed";
         callbacks.onToolResult?.(toolCallName, displayName, status);
+        if (
+          status === 'awaiting_approval' &&
+          typeof data?.approval === 'object' &&
+          data.approval !== null
+        ) {
+          callbacks.onApprovalRequested?.(data.approval as ToolApprovalDetails);
+        }
 
         if (isAskUserQuestionToolName(toolCallName)) {
           // Prefer full args; content is a 200-char preview and usually invalid JSON.

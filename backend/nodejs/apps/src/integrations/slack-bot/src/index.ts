@@ -38,6 +38,16 @@ import {
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
 import {
+  buildApprovalCard,
+  type ToolApprovalDetails,
+} from './utils/approval-card';
+import {
+  registerApprovalActions,
+  rememberApprovalCard,
+  type ApprovalDeps,
+  type ResumeApprovalRequest,
+} from './approvalActions';
+import {
   rewriteCitationsForSlack,
   stripFragmentDirective,
   stripTinyRefCitationLinks,
@@ -57,6 +67,7 @@ import {
   type AttachmentRef,
   type SlackAttachmentUploadResult,
   type SlackFile,
+  type SlackBlock,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -383,6 +394,10 @@ async function processSlackMessage(
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
   threadFiles: SlackFile[] = [],
+  toolApproval?: Omit<
+    ResumeApprovalRequest,
+    'channel' | 'threadTs' | 'clickerSlackId'
+  >,
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -654,6 +669,7 @@ async function processSlackMessage(
         ...(callerDisplayName ? { callerDisplayName } : {}),
         callerEmail: email,
         ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+        ...(toolApproval ? { toolApproval } : {}),
       },
       {
         headers: {
@@ -975,6 +991,34 @@ async function processSlackMessage(
         });
     };
 
+    const handleApprovalRequested = (approval: ToolApprovalDetails): void => {
+      const { user: requesterSlackId, channel } = typedMessage;
+      if (requesterSlackId === undefined || channel === undefined) return;
+      const card = buildApprovalCard(approval, requesterSlackId);
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => {
+          const posted = await typedClient.chat.postMessage({
+            channel,
+            thread_ts: threadId,
+            text: card.text,
+            blocks: card.blocks as unknown as SlackBlock[],
+            ...NO_UNFURL_OPTIONS,
+          });
+          if (posted.ts !== undefined && posted.ts !== '') {
+            rememberApprovalCard(approval, card, {
+              requesterSlackId,
+              requesterEmail: email,
+              channel,
+              threadTs: threadId,
+              cardTs: posted.ts,
+            });
+          }
+        })
+        .catch((error: unknown) => {
+          console.error('Error posting Slack approval card:', error);
+        });
+    };
+
     const resetAnswerStream = (): void => {
       clearAnswerFlushTimer();
       pendingAppendText = '';
@@ -1051,6 +1095,7 @@ async function processSlackMessage(
       onAnswerAccumulated: handleAnswerAccumulated,
       onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
+      onApprovalRequested: handleApprovalRequested,
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
@@ -1536,6 +1581,27 @@ async function processSlackMessage(
     }
   }
 }
+
+// An approval answer is a stream turn for the clicker in the card's thread.
+const resumeApproval: ApprovalDeps['resumeApproval'] = async (
+  { channel, threadTs, clickerSlackId, ...toolApproval },
+  { client, context },
+) => {
+  const resolvedSlackBot = await resolveSlackBotForEvent(
+    getCurrentMatchedSlackBot,
+  );
+  await processSlackMessage(
+    { user: clickerSlackId, channel, ts: threadTs, thread_ts: threadTs },
+    client as unknown as TypedSlackClient,
+    context,
+    `Tool approval: ${toolApproval.decision}`,
+    resolvedSlackBot,
+    [],
+    toolApproval,
+  );
+};
+
+registerApprovalActions(app, { resumeApproval });
 
 // Handle DMs via message.im events.
 app.message(async ({ message, client, context }) => {
