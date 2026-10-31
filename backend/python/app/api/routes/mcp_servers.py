@@ -21,8 +21,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal, NamedTuple, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.agents.agent_loop import tool_approvals
 from app.agents.constants.mcp_server_constants import (
@@ -34,7 +34,6 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_oauth_state_path,
     get_mcp_shared_dcr_client_path,
     get_mcp_tool_approval_claim_path,
-    get_mcp_tool_approval_path,
     get_mcp_unhashed_oauth_state_claim_path,
     get_mcp_unhashed_oauth_state_path,
 )
@@ -2271,22 +2270,24 @@ class ToolApprovalValidateBody(BaseModel):
         return value
 
 
-@router.post("/tool-approvals/{approval_id}/validate")
-async def validate_tool_approval_edit(request: Request, approval_id: str, payload: ToolApprovalValidateBody) -> dict[str, Any]:
+@router.post("/tool-approvals/{approval_id}/validate", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
+async def validate_tool_approval_edit(
+    request: Request, payload: ToolApprovalValidateBody, approval_id: Annotated[str, Path(max_length=64)],
+) -> dict[str, Any]:
     """Checks edited arguments for a waiting call without answering it: the approval stays open."""
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    try:
-        raw = await tool_approvals._read(config_service, get_mcp_tool_approval_path(approval_id))
-        pending = tool_approvals.PendingCall.model_validate(raw) if isinstance(raw, dict) else None
-    except ValidationError:
-        pending = None
+    # Only a web sign-in answers a card; an OAuth or personal access token never does.
+    if (getattr(request.state, "user", None) or {}).get("isOAuth"):
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Tool approvals can only be answered from the PipesHub app.")
+    pending = await tool_approvals.read_pending(config_service, approval_id)
     if pending is None or (pending.org_id, pending.user_id) != (user_context["org_id"], user_context["user_id"]):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="This approval request was not found.")
-    claim = await tool_approvals._read(config_service, get_mcp_tool_approval_claim_path(approval_id))
+    claim = await config_service.get_config(get_mcp_tool_approval_claim_path(approval_id), default=None, use_cache=False, raise_on_error=True, keep_in_cache=False)
     if isinstance(claim, dict) or pending.expires_at <= time.time():
         raise HTTPException(status_code=HttpStatusCode.GONE.value, detail="This approval request has already been answered or has expired.")
     errors = tool_approvals.check_edit(
         pending, payload.arguments, shown_hash=payload.args_hash, own_rule=await tool_approvals.own_rule_for(config_service, pending),
+        enabled_on_project=pending.enabled_on_project,
     )
     return {"errors": errors}

@@ -141,6 +141,8 @@ class PendingCall(MCPCamelModel):
     tool_path: str = ""
     kind: ToolKind = "write"
     input_schema: dict[str, Any] | None = None
+    # Whether the call was asked in a project chat, where an unset Block asks instead.
+    enabled_on_project: bool = False
     created_at: float
     expires_at: float
 
@@ -375,16 +377,21 @@ class Claim:
     outcome: Optional[Outcome] = None
 
 
+async def read_pending(config_service: "ConfigurationService", approval_id: str) -> PendingCall | None:
+    """The saved call, without claiming it. A store failure raises."""
+    raw = await _read(config_service, get_mcp_tool_approval_path(approval_id))
+    try:
+        return PendingCall.model_validate(raw) if isinstance(raw, dict) else None
+    except ValidationError:
+        return None
+
+
 async def claim_pending(
     config_service: "ConfigurationService", approval_id: str, *, org_id: str, user_id: str, conversation_id: Optional[str],
 ) -> Claim:
     """Claims the saved call for this answer. Claiming makes it used: two answers to the same card
     settle it once. A store failure raises, and nothing is claimed."""
-    raw = await _read(config_service, get_mcp_tool_approval_path(approval_id))
-    try:
-        pending = PendingCall.model_validate(raw) if isinstance(raw, dict) else None
-    except ValidationError:
-        pending = None
+    pending = await read_pending(config_service, approval_id)
     if pending is None:
         return Claim("unknown")
     if (pending.org_id, pending.user_id, pending.conversation_id) != (org_id, user_id, conversation_id or ""):
@@ -523,8 +530,14 @@ def check_edit(
     if pending.input_schema is None or not pending.tool_path:
         return [EditError(path="", message="This action can't be edited.")]
     schema = pending.input_schema
-    validator = validator_for(schema, default=Draft202012Validator)(schema)
-    if errors := [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator.iter_errors(edited)]:
+    try:
+        validator_class = validator_for(schema, default=Draft202012Validator)
+        validator_class.check_schema(schema)
+        errors = [EditError(path=_pointer(e.absolute_path), message=e.message) for e in validator_class(schema).iter_errors(edited)]
+    except Exception as e:  # a server's schema can be malformed: bad types, a $ref that can't be resolved
+        logger.warning(f"The schema of {pending.tool_name} can't be used to check an edit: {e}")
+        return [EditError(path="", message="This action can't be edited.")]
+    if errors:
         return errors
     kind = kind_of_call(pending.kind, pending.tool_path, edited)
     if _KIND_RANK[kind] > _KIND_RANK[pending.kind]:
@@ -616,7 +629,7 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
-        tool_path=ctx.tool_path, kind=target.kind, input_schema=schema,
+        tool_path=ctx.tool_path, kind=target.kind, input_schema=schema, enabled_on_project=context.project_tools_selected,
         created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
