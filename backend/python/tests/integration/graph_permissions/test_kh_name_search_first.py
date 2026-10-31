@@ -23,6 +23,7 @@ import aiohttp
 import pytest
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
+from app.services.graph_db.common.name_match import name_query_key
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from . import test_hidden_above_declared as hidden
@@ -149,6 +150,23 @@ async def test_a_name_search_is_the_full_listing_filtered(arms_graph, provider, 
         assert [r["id"] for r in got["rows"]] == expected_ids, term
         assert _without_parent(got["rows"], multi) == _without_parent(want["rows"], multi), term
         assert (got["total"], got.get("counts")) == (want["total"], want.get("counts")), term
+
+
+async def test_a_name_search_reads_separators_as_spaces(load_graph, provider, full_listing) -> None:
+    """Names join words with "-", "_" or "." and a query may too: on both sides each reads as a space,
+    so "group granted" finds "group-granted", and the hyphenated query still finds it as before."""
+    await load_graph("synced")
+    app_id = "pl-app"
+    everything = await _connector_page(provider, app_id)
+    for term in ("group granted", "group-granted", "group_granted", "granted.group", "in group granted"):
+        filters = {"search_query": term}
+        got = await _connector_page(provider, app_id, filters=filters)
+        want = await full_listing(lambda f=filters: _connector_page(provider, app_id, filters=f))
+        expected_ids = [r["id"] for r in everything["rows"]
+                        if name_query_key(term) in name_query_key(r["name"] or "")]
+        assert expected_ids, term
+        assert [r["id"] for r in got["rows"]] == expected_ids, term
+        assert [r["id"] for r in want["rows"]] == expected_ids, term
 
 
 async def test_a_hidden_group_hides_its_declared_group_from_a_name_search(load_graph, provider, full_listing) -> None:
