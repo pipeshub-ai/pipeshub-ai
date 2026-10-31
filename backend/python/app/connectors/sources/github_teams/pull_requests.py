@@ -46,7 +46,16 @@ from app.models.entities import (
     Status,
 )
 
-from .common.utils import epoch_ms_or_now, listing_payload, listing_since, sync_window_start
+from .common.utils import (
+    STALE_RESUME_STATUSES,
+    epoch_ms_or_now,
+    listing_payload,
+    listing_since,
+    relative_window,
+    resume_fields_to_clear,
+    resume_point,
+    sync_window_start,
+)
 from .constants import PR_PAGE_SIZE
 from .models import GitHubLiterals, RecordUpdate
 
@@ -106,6 +115,10 @@ class PullRequestsSync:
         The checkpoint itself is read again (``>=``): timestamps have one-second
         resolution, so a PR changed in the same second as the newest one seen,
         after the listing was read, carries the checkpoint's exact value.
+
+        A failure past the first page saves the page it stopped at, and the
+        next sync reads on from the page before it, which it reads again in
+        case a pull request removed meanwhile moved one onto it.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -113,10 +126,42 @@ class PullRequestsSync:
         checkpoint_dt = await self._checkpoint_datetime(group_id)
         window_dt = sync_window_start(c.sync_filters)
         since_dt = listing_since(checkpoint_dt, window_dt)
+        since_ms = datetime_to_epoch_ms(since_dt) if since_dt else None
+        from_window = since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
+        rolling = relative_window(c.sync_filters) if from_window else None
 
         page = 1
         watermark = 0
         processed = 0
+        stored_page = 0  # the place this listing reads on from, if any
+        saved = await c.issues._read_checkpoint(group_id)
+        resume = resume_point(saved, since_ms, rolling)
+        if resume is not None:
+            if resume.get(GitHubLiterals.RESUME_SINCE.value) != since_ms:
+                # A rolling window has moved on since the stop: keep the start the listing
+                # began with, so it stops at the same pull request.
+                since_ms = resume.get(GitHubLiterals.RESUME_SINCE.value)
+                since_dt = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
+            stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
+            # A page number is an offset: a pull request removed from a page already
+            # read moves a later one onto it. Reading the page before again covers that.
+            page = max(1, stored_page - 1)
+            watermark = resume.get(GitHubLiterals.RESUME_WATERMARK.value) or 0
+            self.logger.info("Reading on with the pull requests of %s from page %s, where the last "
+                             "sync stopped", repo.full_name, page)
+        resumed_page = page if resume is not None else None
+
+        async def save_place() -> None:
+            # Never behind the stored place: a failure while re-reading the page before it
+            # would otherwise step the next sync back a page each time, towards page 1.
+            if (place := max(page, stored_page)) > 1:
+                await c.issues._write_checkpoint(group_id, {
+                    GitHubLiterals.RESUME_PAGE.value: place,
+                    GitHubLiterals.RESUME_SINCE.value: since_ms,
+                    GitHubLiterals.RESUME_WATERMARK.value: watermark or None,
+                    GitHubLiterals.RESUME_WINDOW.value: rolling,
+                })
+
         while True:
             res = await c.runtime.ds_call(
                 c.data_source.list_pulls, owner, repo_name,
@@ -129,6 +174,12 @@ class PullRequestsSync:
                     "checkpoint so this page is retried next sync.",
                     repo.full_name, page, res.error,
                 )
+                if page == resumed_page and res.status_code in STALE_RESUME_STATUSES:
+                    self.logger.warning("GitHub no longer reads the saved place in the pull requests of "
+                                        "%s; the next sync lists them from the start.", repo.full_name)
+                    await c.issues._write_checkpoint(group_id, resume_fields_to_clear(saved))
+                else:
+                    await save_place()
                 return False
             prs = res.data or []
             if not prs:
@@ -143,6 +194,7 @@ class PullRequestsSync:
                         "checkpoint stays behind the failure rather than skipping past it.",
                         repo.full_name, page,
                     )
+                    await save_place()
                     return False
                 processed += len(fresh)
                 watermark = max(watermark, *(epoch_ms_or_now(p.updated_at) for p in fresh))
@@ -159,7 +211,12 @@ class PullRequestsSync:
             self.logger.info(
                 "Synced %s pull request(s) for %s across %s page(s)", processed, repo.full_name, page,
             )
+        if watermark:
+            # Also when the pages read since a saved place held nothing new:
+            # the watermark then comes from the pages read before it.
             await c.issues._update_sync_checkpoint(group_id, watermark)
+        if cleared := resume_fields_to_clear(saved):
+            await c.issues._write_checkpoint(group_id, cleared)
         return True
 
     def _is_after(self, pr: Any, since_dt: datetime | None) -> bool:

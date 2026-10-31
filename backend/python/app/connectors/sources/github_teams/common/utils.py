@@ -15,6 +15,8 @@ from app.connectors.core.registry.filters import (
 )
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
+from ..models import GitHubLiterals
+
 # Operators the "updated since" filter offers. The connector UI turns the
 # rolling ones into an absolute start when the filter is saved; a config written
 # through the API can still carry one with no value, so they are resolved here
@@ -99,6 +101,14 @@ def sync_window_start(sync_filters: FilterCollection | None) -> datetime | None:
     return None
 
 
+def relative_window(sync_filters: FilterCollection | None) -> str | None:
+    """The rolling window ("last 90 days") the listing start counts back from, or ``None``."""
+    window = sync_filters.get(SyncFilterKey.MODIFIED) if sync_filters else None
+    if window is None or window.get_datetime_start() is not None:
+        return None
+    return window.operator_value if window.operator_value in _RELATIVE_WINDOW_DAYS else None
+
+
 def listing_since(checkpoint: datetime | None, window: datetime | None) -> datetime | None:
     """Where a listing starts: the later of the checkpoint and the window start.
 
@@ -111,3 +121,42 @@ def listing_since(checkpoint: datetime | None, window: datetime | None) -> datet
     if window is None:
         return checkpoint
     return max(checkpoint, window)
+
+
+_RESUME_FIELDS = (
+    GitHubLiterals.RESUME_PAGE.value, GitHubLiterals.RESUME_CURSOR.value,
+    GitHubLiterals.RESUME_SINCE.value, GitHubLiterals.RESUME_WATERMARK.value,
+    GitHubLiterals.RESUME_CREATED.value, GitHubLiterals.RESUME_WINDOW.value,
+)
+# GitHub's answers when a saved listing place no longer reads: a cursor it has
+# forgotten, or a page number past what it will page to.
+STALE_RESUME_STATUSES = frozenset({400, 404, 410, 422})
+
+
+def resume_point(
+    checkpoint: dict[str, Any], since_ms: int | None, window: str | None = None,
+) -> dict[str, Any] | None:
+    """Where an interrupted listing of the same window stopped, or ``None``.
+
+    A listing asked with another ``since`` lists other items, so its saved
+    place is not used. The exception is a rolling ``window`` (see
+    ``relative_window``): its start moves on with the clock, so the same window
+    reads on with the start the interrupted listing used, which the caller
+    takes from the returned checkpoint. Read with ``.get``: a Neo4j property set
+    to null is gone.
+    """
+    if checkpoint.get(GitHubLiterals.RESUME_PAGE.value) is None:
+        return None
+    saved_since = checkpoint.get(GitHubLiterals.RESUME_SINCE.value)
+    if saved_since == since_ms:
+        return checkpoint
+    if window is not None and saved_since is not None and checkpoint.get(GitHubLiterals.RESUME_WINDOW.value) == window:
+        return checkpoint
+    return None
+
+
+def resume_fields_to_clear(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Nulls for a saved place the checkpoint still holds. Sync-point writes merge."""
+    if all(checkpoint.get(field) is None for field in _RESUME_FIELDS):
+        return {}
+    return dict.fromkeys(_RESUME_FIELDS)
