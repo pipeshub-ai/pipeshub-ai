@@ -261,24 +261,28 @@ export class SlackActivityBuilder {
    * attachment: Slack folds attachment text longer than a few lines behind its
    * own "Show more", so the answer below is not pushed down by the thinking.
    */
-  collapsed(): { text: string; attachments: { text: string; mrkdwn_in: ["text"] }[] } {
-    const count = (kind: TimelineEntry["kind"]) =>
+  collapsed(): {
+    text: string;
+    attachments: { text: string; mrkdwn_in: ['text'] }[];
+  } {
+    const count = (kind: TimelineEntry['kind']): number =>
       this.timeline.filter((e) => e.kind === kind).length;
-    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-    const tools = count("tool");
-    const agents = count("subagent");
+    const plural = (n: number, word: string): string =>
+      `${n} ${word}${n === 1 ? '' : 's'}`;
+    const tools = count('tool');
+    const agents = count('subagent');
     const parts = [
-      count("reasoning") ? "thought" : "",
-      tools ? `used ${plural(tools, "tool")}` : "",
-      agents ? `delegated to ${plural(agents, "agent")}` : "",
+      count('reasoning') ? 'thought' : '',
+      tools ? `used ${plural(tools, 'tool')}` : '',
+      agents ? `delegated to ${plural(agents, 'agent')}` : '',
     ].filter(Boolean);
     const line = parts.length
-      ? parts.join(", ").replace(/, ([^,]*)$/, " and $1")
-      : "worked through it";
-    this.statusMessage = "";
+      ? parts.join(', ').replace(/, ([^,]*)$/, ' and $1')
+      : 'worked through it';
+    this.statusMessage = '';
     return {
       text: `:thought_balloon: _${line.charAt(0).toUpperCase()}${line.slice(1)}_`,
-      attachments: [{ text: this.format(), mrkdwn_in: ["text"] }],
+      attachments: [{ text: this.format(), mrkdwn_in: ['text'] }],
     };
   }
 

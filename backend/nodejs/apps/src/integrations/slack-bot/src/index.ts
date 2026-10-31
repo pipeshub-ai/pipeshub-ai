@@ -1371,16 +1371,17 @@ async function processSlackMessage(
 
     // Collapse the tools/thinking timeline above the answer; remove a bare Thinking placeholder.
     if (activityBuilder.hasTimeline()) {
-      if (waitingMessageTs) {
+      const channel = typedMessage.channel;
+      if (waitingMessageTs && channel) {
         try {
           await typedClient.chat.update({
-            channel: typedMessage.channel!,
+            channel,
             ts: waitingMessageTs,
             ...activityBuilder.collapsed(),
             ...NO_UNFURL_OPTIONS,
           });
         } catch (error) {
-          console.error("Error collapsing Slack activity message:", error);
+          console.error('Error collapsing Slack activity message:', error);
         }
       }
     } else if (waitingMessageTs) {
