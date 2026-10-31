@@ -624,23 +624,42 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 os.unlink(path)
 
     async def _open_pdf_off_loop(self, content: bytes) -> "tuple[str, Any, int]":
-        """Run ``_open_pdf_sync`` in a thread without leaking its file on cancellation."""
-        fut = asyncio.get_running_loop().run_in_executor(None, self._open_pdf_sync, content)
-        try:
-            return await asyncio.shield(fut)
-        except asyncio.CancelledError:
-            # The thread cannot be interrupted; release what it produces once done.
-            # Done-callbacks run on the loop, and closing or unlinking can be slow.
-            def _release(done: "asyncio.Future") -> None:
-                if not done.cancelled() and done.exception() is None:
-                    path, doc, _ = done.result()
-                    try:
-                        done.get_loop().run_in_executor(None, self._release_pdf_sync, path, doc)
-                    except RuntimeError:  # the executor is already shut down
-                        self._release_pdf_sync(path, doc)
+        """Run ``_open_pdf_sync`` in a thread without leaking its file on cancellation.
 
-            fut.add_done_callback(_release)
+        The side that finishes second releases the file: the thread when the caller has
+        already given up, the caller when the thread handed it over first. Neither relies
+        on a loop callback, so the file is released even if the loop closes mid-open.
+        """
+        lock = threading.Lock()
+        abandoned = False
+        handed_over: "Optional[tuple[str, Any, int]]" = None
+
+        def open_and_hand_over() -> "Optional[tuple[str, Any, int]]":
+            nonlocal handed_over
+            opened = self._open_pdf_sync(content)
+            with lock:
+                if not abandoned:
+                    handed_over = opened
+                    return opened
+            self._release_pdf_sync(opened[0], opened[1])
+            return None
+
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, open_and_hand_over)
+        try:
+            opened = await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            with lock:
+                abandoned = True
+                orphan, handed_over = handed_over, None
+            if orphan is not None:
+                # Closing and unlinking can be slow; keep them off the loop.
+                try:
+                    loop.run_in_executor(None, self._release_pdf_sync, orphan[0], orphan[1])
+                except RuntimeError:  # the executor is already shut down
+                    self._release_pdf_sync(orphan[0], orphan[1])
             raise
+        return cast("tuple[str, Any, int]", opened)
 
     async def load_document(self, content: bytes) -> None:
         """

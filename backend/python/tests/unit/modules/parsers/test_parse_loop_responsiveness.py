@@ -124,47 +124,72 @@ class TestVlmLoadDocument:
             await _strategy().load_document(b"%PDF-broken")
         assert paths and not os.path.exists(paths[0])
 
-    async def test_cancellation_while_opening_leaves_no_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @staticmethod
+    def _signalling_open_and_release(monkeypatch: pytest.MonkeyPatch) -> "tuple[threading.Event, threading.Event, list[str], list[int]]":
+        """Make the open slow and signal when it starts; record which thread runs each release."""
+        started, released = threading.Event(), threading.Event()
         paths: list[str] = []
-        real = pdfplumber.open
-
-        def slow(path: str, *a: object, **k: object) -> object:
-            paths.append(path)
-            time.sleep(0.3)
-            return real(path, *a, **k)
-
-        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
-        task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
-        await asyncio.sleep(0.1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.sleep(0.6)  # the thread finishes and releases its file
-        assert paths and not os.path.exists(paths[0])
-
-    async def test_cancelled_open_is_released_off_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         release_threads: list[int] = []
+        real_open = pdfplumber.open
         real_release = VLMOCRStrategy._release_pdf_sync
+
+        def slow(path: str, *args: object, **kwargs: object) -> object:
+            paths.append(path)
+            started.set()
+            time.sleep(0.3)
+            return real_open(path, *args, **kwargs)
 
         def recording_release(path: str | None, doc: object) -> None:
             release_threads.append(threading.get_ident())
             real_release(path, doc)
-
-        monkeypatch.setattr(VLMOCRStrategy, "_release_pdf_sync", staticmethod(recording_release))
-        real_open = pdfplumber.open
-
-        def slow(*args: object, **kwargs: object) -> object:
-            time.sleep(0.3)
-            return real_open(*args, **kwargs)
+            released.set()
 
         monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
+        monkeypatch.setattr(VLMOCRStrategy, "_release_pdf_sync", staticmethod(recording_release))
+        return started, released, paths, release_threads
+
+    async def test_cancellation_while_opening_releases_the_file_off_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, release_threads = self._signalling_open_and_release(monkeypatch)
         task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
-        await asyncio.sleep(0.1)
+        assert await asyncio.to_thread(started.wait, 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.6)
-        assert release_threads and threading.get_ident() not in release_threads
+        assert await asyncio.to_thread(released.wait, 5)
+        assert paths and not os.path.exists(paths[0])
+        assert threading.get_ident() not in release_threads
+
+    async def test_a_file_handed_over_just_before_the_cancel_is_released(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, release_threads = self._signalling_open_and_release(monkeypatch)
+        task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+        assert await asyncio.to_thread(started.wait, 5)
+        time.sleep(1.0)  # block the loop: the thread finishes and hands the file over first
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(released.wait, 5)
+        assert paths and not os.path.exists(paths[0])
+        assert threading.get_ident() not in release_threads
+
+    def test_the_file_is_released_when_the_loop_closes_during_the_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, _ = self._signalling_open_and_release(monkeypatch)
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+            loop.run_until_complete(asyncio.wait_for(asyncio.to_thread(started.wait, 5), 6))
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                loop.run_until_complete(task)
+        finally:
+            loop.close()  # a worker loop shutting down: pending callbacks never run
+        assert released.wait(5)
+        assert paths and not os.path.exists(paths[0])
 
 
 def _table_region(rows: int, cols: int = 6) -> LayoutRegion:
