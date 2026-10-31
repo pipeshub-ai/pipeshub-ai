@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from tests.perf.parse_bench import golden, report
+from tests.perf.parse_bench import golden, proc_cpu, report
 from tests.perf.parse_bench.corpus import Entry, load_manifest
 
 MIXES: dict[str, dict[str, int]] = {
@@ -50,6 +50,12 @@ MIXES: dict[str, dict[str, int]] = {
     "cpu-heavy": {"tables": 1, "figures": 1, "digital": 1, "docx": 1, "damaged": 1, "large": 1},
     "io-heavy": {"md": 4, "json": 4, "txt": 4, "scanned": 1},
     "laptop-typical": {"digital": 1, "docx": 1, "tables": 1, "scanned": 1, "md": 2, "json": 1, "txt": 2},
+    # One kind, for the cost of a single conversion or a single large scan.
+    "docx": {"docx": 1},
+    "digital": {"digital": 1},
+    "scanned": {"scanned": 1},
+    "tables": {"tables": 1},
+    "figures": {"figures": 1},
     "all": {"tables": 1, "figures": 1, "digital": 1, "docx": 1, "damaged": 1, "large": 1,
             "scanned": 1, "md": 1, "json": 1, "txt": 1},
 }
@@ -62,10 +68,13 @@ RETRY_SECONDS = 1.0
 log = logging.getLogger("parse_bench")
 
 
-def select(entries: list[Entry], mix: str, passes: int, seed: int) -> list[Entry]:
-    """The files of one run: *passes* of the mix's kinds, in a seeded order."""
+def select(entries: list[Entry], mix: str, passes: int, seed: int, only_path: str = "") -> list[Entry]:
+    """The files of one run: *passes* of the mix's kinds, in a seeded order.
+
+    *only_path* keeps the entries whose path contains it (one named file out of a kind).
+    """
     kinds = MIXES[mix]
-    picked = [e for e in entries for _ in range(kinds.get(e.kind, 0))]
+    picked = [e for e in entries if only_path in e.path for _ in range(kinds.get(e.kind, 0))]
     out: list[Entry] = []
     for n in range(passes):
         batch = list(picked)
@@ -123,11 +132,25 @@ class TreeSampler(threading.Thread):
             return "other"
         if "app.modules.parsers.parse_worker" in cmd:
             return "parse_worker"
-        if parent_roles.get(proc.ppid()) == "parse_worker":
+        if self._parent_role(proc, parent_roles) == "parse_worker":
             return "raster"
         if "multiprocessing" in cmd:
             return "docling_or_pool"
         return "other"
+
+    def _parent_role(self, proc: Any, parent_roles: dict[int, str]) -> str | None:  # noqa: ANN401
+        """The parent's role, from this sample when it was seen, else from its command line.
+
+        The process list is not ordered parent first, so a child can be met before its parent.
+        """
+        known = parent_roles.get(proc.ppid())
+        if known is not None:
+            return known
+        try:
+            cmd = " ".join(self._ps.Process(proc.ppid()).cmdline())
+        except self._ps.Error:
+            return None
+        return "parse_worker" if "app.modules.parsers.parse_worker" in cmd else None
 
     def sample(self) -> None:
         self._tick += 1
@@ -152,12 +175,17 @@ class TreeSampler(threading.Thread):
             threads += nthreads
             cpu += times.user + times.system
             workers += role == "parse_worker"
+            now = time.time()
             rec = self.procs.setdefault(proc.pid, {
-                "role": role, "first_rss": rss, "peak_rss": 0, "peak_threads": 0, "first_seen": time.time(),
+                "role": role, "first_rss": rss, "peak_rss": 0, "peak_threads": 0, "first_seen": now,
+                "cpu_s": 0.0, "series": [],
             })
             rec["peak_rss"] = max(rec["peak_rss"], rss)
             rec["peak_threads"] = max(rec["peak_threads"], nthreads)
-            rec["last_seen"] = time.time()
+            rec["cpu_s"] = max(rec["cpu_s"], times.user + times.system)
+            rec["last_seen"] = now
+            if role in ("parse_worker", "raster", "docling_or_pool", "parent"):
+                rec["series"].append((now - rec["first_seen"], rss))
         self.latest_tree_rss = total_rss
         self.peak_tree_rss = max(self.peak_tree_rss, total_rss)
         self.peak_tree_pss = max(self.peak_tree_pss, total_pss)
@@ -177,11 +205,40 @@ class TreeSampler(threading.Thread):
                 f"{self.mem_limit / report.MIB:.0f} MiB limit"
             )
 
+    def live_parse_workers(self) -> int:
+        """Parse workers seen in the latest sample (those still running)."""
+        cutoff = time.time() - 2 * SAMPLE_SECONDS - 1.0
+        return sum(1 for r in self.procs.values() if r["role"] == "parse_worker" and r.get("last_seen", 0) >= cutoff)
+
     def per_worker(self) -> list[dict[str, Any]]:
         return [
-            {"pid": pid, **{k: v for k, v in rec.items() if k in ("role", "first_rss", "peak_rss", "peak_threads")}}
+            {"pid": pid, **{k: v for k, v in rec.items()
+                            if k in ("role", "first_rss", "peak_rss", "peak_threads", "cpu_s", "series")}}
             for pid, rec in sorted(self.procs.items()) if rec["role"] != "parent"
         ]
+
+
+def rss_profile(series: list[tuple[float, int]], after: float = 20.0) -> dict[str, float]:
+    """RSS of one process over its life, in MiB, from ``(seconds since first seen, rss)`` samples.
+
+    ``at_<n>s`` is the last sample at or before n seconds; ``growth_after_<after>s`` is the peak
+    from *after* seconds on, less the RSS at *after* (what a memory charge that stops at *after*
+    seconds misses). Zero when the process was seen for less than *after* seconds.
+    """
+    if not series:
+        return {}
+    out: dict[str, float] = {}
+    for mark in (0, 10, 20, 30):
+        seen = [rss for dt, rss in series if dt <= mark]
+        if seen and series[-1][0] >= mark:
+            out[f"at_{mark}s"] = round(seen[-1] / report.MIB, 1)
+    out["peak"] = round(max(rss for _, rss in series) / report.MIB, 1)
+    out["lifetime_s"] = round(series[-1][0], 1)
+    at = [rss for dt, rss in series if dt <= after]
+    later = [rss for dt, rss in series if dt >= after]
+    grown = max(0, max(later) - at[-1]) if at and later else 0
+    out[f"growth_after_{int(after)}s"] = round(grown / report.MIB, 1)
+    return out
 
 
 class StackCollector(logging.Handler):
@@ -232,7 +289,18 @@ def _build_ocr(latency: float):  # noqa: ANN202
     return StubHandler(log, OCRProvider.VLM_OCR.value)
 
 
-def build_registry(pdf_parser: str, ocr_latency: float) -> Any:  # noqa: ANN401
+def scan_handler(route: str, plumber: Any, ocr: Any) -> Any:  # noqa: ANN401
+    """What a scanned PDF is sent to: the OCR path (as shipped), or the layout analyzer in a parse worker.
+
+    ``layout`` is not a deployed route. It measures the largest thing a parse worker could be given,
+    a page-image-only document, for sizing the working set of a lane.
+    """
+    if route not in ("ocr", "layout"):
+        raise ValueError(f"unknown scan route {route!r}")
+    return plumber if route == "layout" else ocr
+
+
+def build_registry(pdf_parser: str, ocr_latency: float, scan_route: str = "ocr") -> Any:  # noqa: ANN401
     from app.modules.parsers.json.json_parser import JSONParser
     from app.modules.parsers.markdown.docling_markdown_parser import (
         DoclingMarkdownParser,
@@ -255,6 +323,7 @@ def build_registry(pdf_parser: str, ocr_latency: float) -> Any:  # noqa: ANN401
     plumber = PdfPlumberParser(PDFPlumberOpenCVProcessor(log, None))  # type: ignore[arg-type]
     # As parsing_main.py:151: each OCR page goes through the Docling markdown parser, not markdown-it.
     ocr = OCRParser(_build_ocr(ocr_latency), DoclingMarkdownParser(log, None))
+    ocr = scan_handler(scan_route, plumber, ocr)
     if pdf_parser == "pdfplumber":
         pdf = SmartPDFParser(plumber, ocr)
     else:
@@ -304,6 +373,25 @@ def summarize_payload(payload: Any) -> dict[str, Any]:  # noqa: ANN401
     return golden.summarize(payload, len(payload.get("blocks") or []), len(payload.get("block_groups") or []))
 
 
+async def probe_workers(count: int, hold_seconds: float = 1.0) -> list[dict[str, Any]]:
+    """Ask *count* parse workers what OpenCV decided about threads.
+
+    The jobs hold their worker for *hold_seconds*, so concurrent ones land on different workers.
+    Returns one record per answer; fewer than *count* when the pool has fewer workers than that
+    and the extra jobs wait their turn behind the first.
+    """
+    from app.modules.parsers import parse_pool
+    from tests.perf.parse_bench import worker_probe
+
+    if count <= 0:
+        return []
+    answers = await asyncio.gather(
+        *(parse_pool.submit(worker_probe.probe, hold_seconds, label="probe") for _ in range(count)),
+        return_exceptions=True,
+    )
+    return [a for a in answers if isinstance(a, dict)]
+
+
 async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sampler: TreeSampler) -> dict[str, Any]:
     from app.modules.parsers import parse_pool
     from app.modules.parsers.pdf import docling_processor, pdf_rasterizer
@@ -327,12 +415,13 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
             self.lags.append(lag)
             super().observe(lag, now)
 
-    registry = build_registry(args.pdf_parser, args.ocr_latency)
+    registry = build_registry(args.pdf_parser, args.ocr_latency, args.scan_route)
     mem_limit = int(args.mem_limit_gb * 1024**3) if args.mem_limit_gb else None
     governor = ResourceGovernor(
         logger=log,
         env_parse=None,
         worker_count=1,
+        reserve_embedding_cpus=args.reserve_embedding,
         probe=TierProbe(build_probe(), args.cpus, mem_limit, sampler),
     )
     parse_pool.set_resource_governor(governor)
@@ -402,6 +491,10 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     peak = report.PeakReader(cg_path) if cg_path else None
     ru0 = resource.getrusage(resource.RUSAGE_SELF)
     rc0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = proc_cpu.DescendantCpu()
+    cpu.start()
+    cpu.sample()
+    cpu0 = cpu.total_seconds()
     t0 = time.monotonic()
     tasks = [asyncio.create_task(one(e)) for e in files]
 
@@ -415,6 +508,8 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
     await asyncio.gather(*tasks, return_exceptions=True)
     window_end = time.monotonic()
     wall = window_end - t0
+    cpu.sample()
+    cpu_window = cpu.total_seconds() - cpu0
     guard.cancel()
     cg_after = report.read_cgroup(cg_path) if cg_path else None
     if peak is not None and cg_after is not None:
@@ -423,6 +518,9 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         cg_after["memory_peak_scope"] = "run" if peak.scoped else "container lifetime"
         peak.close()
     gov_stats = governor.stats()
+    probes = [] if args.no_probe else await probe_workers(sampler.live_parse_workers() or args.probe_only)
+    cpu_run_total = cpu.total_seconds()
+    cpu.stop()
     monitor.stop()
     governor.stop()
     governor_task.cancel()
@@ -453,6 +551,12 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         "idle_rss": idle_rss,
         "stall_stacks": stacks.stacks,
         "cpu_seconds": cpu_seconds,
+        "cpu_seconds_proc": cpu_window,
+        "cpu_seconds_run_total": cpu_run_total,
+        "cores_used": proc_cpu.cores_used(cpu_window, wall),
+        "cores_busy_mean": cpu.mean_busy(),
+        "cores_busy_peak": cpu.busy_peak,
+        "worker_probes": probes,
         "ceilings": gov_stats.get("ceilings"),
         "limits": gov_stats.get("limits"),
         "cpu_quota": gov_stats.get("cpu_quota"),
@@ -474,18 +578,40 @@ def host_load() -> dict[str, float]:
             "mem_pct": psutil.virtual_memory().percent}
 
 
+def worker_report(workers: list[dict[str, Any]], probes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One record per parse worker: threads, OpenCV threads (when the probe reached it), RSS over time."""
+    by_pid = {p["pid"]: p for p in probes}
+    return [
+        {
+            "pid": w["pid"],
+            "peak_threads": w["peak_threads"],
+            "cv2_threads": by_pid.get(w["pid"], {}).get("cv2_threads"),
+            "cv2_cpus": by_pid.get(w["pid"], {}).get("cv2_cpus"),
+            "peak_rss_mib": round(w["peak_rss"] / report.MIB, 1),
+            "cpu_s": round(w["cpu_s"], 1),
+            "rss": rss_profile(w["series"]),
+        }
+        for w in workers
+    ]
+
+
 def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler, load: dict[str, float],
              manifest_id: str) -> dict[str, Any]:
     workers = [w for w in sampler.per_worker() if w["role"] == "parse_worker"]
     peaks = [w["peak_rss"] for w in workers]
     onnx_threads = int(os.environ.get("PDF_TABLE_MODEL_THREADS", "4"))
+    parse_workers = [w for w in sampler.per_worker() if w["role"] == "parse_worker"]
+    rasters = [w for w in sampler.per_worker() if w["role"] == "raster"]
+    parent_series = sampler.procs[sampler._me.pid]["series"]
+    pool_children = [w for w in sampler.per_worker() if w["role"] == "docling_or_pool"]
     return {
         "config": {
             "label": args.label, "mix": args.mix, "passes": args.passes, "cpus": args.cpus,
             "mem_limit_gb": args.mem_limit_gb, "pdf_parser": args.pdf_parser, "arm": report.ARM_LABELS[args.pdf_parser], "concurrency": raw["concurrency"],
             "ocr_latency_s": args.ocr_latency, "corpus_id": manifest_id, "seed": args.seed,
             "emulated": not raw["cgroup"], "table_model": os.environ.get("PDF_TABLE_MODEL", "heron"),
-            "onnx_threads_per_worker": onnx_threads,
+            "onnx_threads_per_worker": onnx_threads, "reserve_embedding": args.reserve_embedding,
+            "only_path": args.only_path, "scan_route": args.scan_route,
             "env": {k: os.environ[k] for k in sorted(os.environ) if k.startswith(
                 ("PARSE_POOL", "PDF_", "LOCAL_DOCLING", "MAX_CONCURRENT", "GOVERNOR_", "ENABLE_PDFPLUMBER"))},
         },
@@ -507,6 +633,12 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
             "gate_wait_mean_s": round(sum(o["gate_wait_s"] for o in raw["outcomes"]) / max(1, len(raw["outcomes"])), 3),
             "cpu_seconds": round(raw["cpu_seconds"], 1),
             "cpu_seconds_sampled_max": round(sampler.cpu_sampled, 1),
+            "cores": {
+                "used": round(raw["cores_used"], 2), "busy_mean": round(raw["cores_busy_mean"], 2),
+                "busy_peak": raw["cores_busy_peak"], "cpu_seconds_descendants": round(raw["cpu_seconds_proc"], 1),
+                "cpu_seconds_run_total": round(raw["cpu_seconds_run_total"], 1),
+            },
+            "parent_rss": rss_profile(parent_series),
             "memory": {
                 "parent_idle_rss_mib": round(raw["idle_rss"] / report.MIB, 1),
                 "peak_parent_rss_mib": round(sampler.peak_parent_rss / report.MIB, 1),
@@ -521,6 +653,18 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
                 "parse_worker_peak_rss_median_mib": round(report.median(peaks) / report.MIB, 1),
                 "parse_worker_first_rss_mib": [round(w["first_rss"] / report.MIB, 1) for w in workers],
                 "parse_worker_peak_threads": [w["peak_threads"] for w in workers],
+                "per_worker": worker_report(parse_workers, raw["worker_probes"]),
+                "pool_children": [
+                    {"pid": w["pid"], "peak_rss_mib": round(w["peak_rss"] / report.MIB, 1), "cpu_s": round(w["cpu_s"], 1),
+                     "rss": rss_profile(w["series"])}
+                    for w in pool_children
+                ],
+                "raster_children": [
+                    {"pid": w["pid"], "peak_rss_mib": round(w["peak_rss"] / report.MIB, 1),
+                     "peak_threads": w["peak_threads"], "cpu_s": round(w["cpu_s"], 1),
+                     "rss": rss_profile(w["series"])}
+                    for w in rasters
+                ],
             },
             "backpressure_429": raw["stats"].get("backpressure_429", 0),
         },
@@ -546,11 +690,27 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--require-cgroup", action="store_true",
                     help="exit 6 unless the cgroup counters (memory.peak, cpu.stat, memory.events) can be read")
     ap.add_argument("--max-host-pct", type=float, default=HOST_LIMIT_PCT, help="refuse to start above this host CPU/memory %%")
+    ap.add_argument("--onnx-threads", type=int, default=None, choices=range(1, 65), metavar="N",
+                    help="ONNX intra-op threads per parse worker (sets PDF_TABLE_MODEL_THREADS for the workers)")
+    ap.add_argument("--reserve-embedding", action="store_true",
+                    help="size the governor as a deployment with local embedding does: its CPU reservation comes off the quota")
+    ap.add_argument("--scan-route", choices=("ocr", "layout"), default="ocr",
+                    help="where scanned PDFs go: the OCR path (shipped) or the layout analyzer in a parse worker (worst case for a worker)")
+    ap.add_argument("--only-path", default="", help="keep only the corpus files whose path contains this text")
+    ap.add_argument("--probe-only", type=int, default=0, metavar="K",
+                    help="parse nothing: start parse workers and report what K of them decided about threads")
+    ap.add_argument("--no-probe", action="store_true", help="skip the end-of-run question to the workers about their OpenCV threads")
     ap.add_argument("--verbose", action="store_true", help="show the services' own INFO logs")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--golden-write", type=Path, default=None)
     ap.add_argument("--golden-check", type=Path, default=None)
     return ap
+
+
+def apply_onnx_threads(threads: int | None) -> None:
+    """Set the ONNX thread count the workers read at import (``table_detector.py``); they inherit the environment."""
+    if threads is not None:
+        os.environ["PDF_TABLE_MODEL_THREADS"] = str(threads)
 
 
 def pin_cpus(count: int) -> None:
@@ -565,6 +725,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.CRITICAL)
     if args.cpus:
         pin_cpus(args.cpus)
+    apply_onnx_threads(args.onnx_threads)
     # The default of the code under test is "on"; make the setting explicit either way.
     os.environ["ENABLE_PDFPLUMBER_PROCESSOR"] = "true" if args.pdf_parser == "pdfplumber" else "false"
     os.environ.setdefault("SECRET_KEY", "bench-only-not-a-secret-0123456789abcdef")
@@ -584,8 +745,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"host busy (cpu {load['cpu_pct']:.0f} %, mem {load['mem_pct']:.0f} %); not starting", file=sys.stderr)
         return 3
     manifest = load_manifest(args.corpus)
-    files = select(manifest.entries, args.mix, args.passes, args.seed)
-    if not files:
+    files = [] if args.probe_only else select(manifest.entries, args.mix, args.passes, args.seed, args.only_path)
+    if not files and not args.probe_only:
         print(f"mix {args.mix} selects no file from this corpus", file=sys.stderr)
         return 2
     mem_limit = int(args.mem_limit_gb * 1024**3) if args.mem_limit_gb else None
@@ -603,6 +764,9 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(result, indent=1, sort_keys=True)
     if args.out:
         args.out.write_text(text)
+    if args.probe_only:
+        print(json.dumps(raw["worker_probes"], indent=1))
+        return 0
     print(report.markdown_report([result]))
     print(f"arm: {result['config']['arm']}")
     print(f"status: {result['status']}; failed {result['files']['failed']}; corpus {manifest.corpus_id}")

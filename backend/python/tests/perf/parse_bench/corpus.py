@@ -58,6 +58,17 @@ PROFILES: dict[str, dict[str, Any]] = {
         "damaged": (3, 6), "docx": (4, 12), "md": 20, "json": 6, "txt": 10,
         "large_mb": 105, "scanned_boundary_pages": 60,
     },
+    # One long file of each page-heavy kind: the working set of a parse worker on a big document.
+    "workset60": {
+        "digital": (1, 60), "scanned": (1, 60), "tables": (1, 60), "figures": (1, 60),
+        "damaged": (1, 2), "docx": (1, 2), "md": 1, "json": 1, "txt": 1,
+        "large_mb": 0, "scanned_boundary_pages": 0,
+    },
+    "workset300": {
+        "digital": (1, 300), "scanned": (1, 300), "tables": (1, 300), "figures": (1, 300),
+        "damaged": (1, 2), "docx": (1, 2), "md": 1, "json": 1, "txt": 1,
+        "large_mb": 0, "scanned_boundary_pages": 0,
+    },
 }
 
 
