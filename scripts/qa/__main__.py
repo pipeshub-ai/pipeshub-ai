@@ -639,6 +639,10 @@ def _implement(args) -> int:
         print(f"generate: git failed: {' '.join(map(str, exc.cmd))}", file=sys.stderr)
         return 2
     print((out / "generate.md").read_text(encoding="utf-8"))
+    broken = [e["id"] for e in result["removed"] if e["reason"].startswith(generate.RESTORE_FAILED)]
+    if broken:
+        print(f"generate: could not restore the stub of {', '.join(broken)}; run git checkout on it", file=sys.stderr)
+        return 1
     return 0 if result["kept"] else 1
 
 

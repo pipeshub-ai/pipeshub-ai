@@ -332,6 +332,40 @@ class TestImplement(GenerateCase):
                       "\ndef test_second():\n    assert 1 == 1\n", "\nprint('boom')\n"):
             self.assertTrue(any("module level" in p for p in generate.check_content(stub, GOOD + extra)), extra)
 
+    def test_check_content_rejects_dynamic_code_and_io(self) -> None:
+        stub = self.stub.decode()
+        cases = {
+            "__import__": "    __import__('o' + 's').system('x')\n",
+            "importlib": "    importlib.import_module('os')\n",
+            "ev" "al": "    ev" "al('1')\n",  # spelled in two parts: a repo text check reserves the word
+            "exec": "    exec('x = 1')\n",
+            "getattr": "    getattr(__builtins__, 'open')\n",
+            "__subclasses__": "    ().__class__.__bases__[0].__subclasses__()\n",
+            "open": "    open('/etc/passwd').read()\n",
+            "imports pathlib": None, "imports shutil": None, "imports requests": None,
+        }
+        for word, line in cases.items():
+            if line is None:
+                content = f"import {word.split()[1]}\n" + GOOD
+            else:
+                content = GOOD.replace("    assert", line + "    assert")
+            problems = generate.check_content(stub, content)
+            self.assertTrue(any(word in p for p in problems), (word, problems))
+        self.assertEqual(generate.check_content(stub, GOOD.replace("    assert", "    assert __name__\n    assert")), [])
+
+    def test_failed_restore_is_loud(self) -> None:
+        real = generate._git
+
+        def git(root, *args):
+            if args[0] == "checkout":
+                return generate.subprocess.CompletedProcess(args, 1, "", "error: pathspec locked\nmore")
+            return real(root, *args)
+
+        with mock.patch.object(generate, "_git", git):
+            self.assertEqual(self.implement(verdict="unproven", reason="no kill"), 1)
+        self.assertEqual(self.result["removed"], [{"id": UNIT_ID, "reason": "restore failed: error: pathspec locked"}])
+        self.assertIn("could not restore the stub", self.err)
+
     def test_implement_rejects_extra_imports_and_functions(self) -> None:
         self.assertEqual(self.implement("import subprocess\n" + GOOD + "\ndef test_two():\n    assert 1 == 1\n"), 1)
         reason = self.result["removed"][0]["reason"]

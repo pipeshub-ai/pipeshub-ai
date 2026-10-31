@@ -31,9 +31,12 @@ Write the whole file for the row's scenario:
   errors, records a caller can read. A test that only calls the code and
   checks that nothing raised is rejected.
 - Use the fixtures and import style the neighbours use.
-- Change nothing else. Do not import `os`, `subprocess` or `socket`, and put
-  nothing at module level but imports, assignments, the docstring and the
-  test function. A reply that breaks these rules is rejected.
+- Change nothing else. Do not touch files, processes or the network: no
+  `os`, `sys`, `subprocess`, `pathlib`, `shutil`, `socket` or HTTP clients,
+  no `open`, `exec`, `compile`, `getattr` or `__import__`, and no dunder names
+  except `__name__`. Put nothing at module level but imports, assignments,
+  the docstring and the test function. A reply that breaks these rules is
+  rejected.
 
 ## Output
 

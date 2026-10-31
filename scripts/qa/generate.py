@@ -9,9 +9,12 @@ is deleted.
 Stage 2 (implement) runs only for a PR with the label qa-scenarios-ok and a
 committed, clean stub. The reply replaces that one stub file and must pass
 check_content: it may hold only imports, assignments, a docstring and the stub's
-own test function at module level, and never imports os, subprocess or socket.
-Anything else is rejected, not trimmed. A test that is not proven is restored
-from git; a proven one stays uncommitted for a person to review.
+own test function at module level, and it may not import or name the modules
+and builtins that reach the file system, processes, the network or dynamic code.
+Anything else is rejected, not trimmed. That check is a best-effort denylist,
+not a sandbox. A test that is not proven is restored from git (a failed restore
+is reported and fails the command); a proven one stays uncommitted for a person
+to review.
 """
 
 from __future__ import annotations
@@ -33,9 +36,16 @@ MAX_SCENARIOS, MAX_SOURCES, MAX_TITLE = 20, 200, 120
 NEXT = "next: open a PR; a reviewer adds the label qa-scenarios-ok"
 APPROVAL_LABEL = "qa-scenarios-ok"
 MAX_CONTENT, MAX_NEIGHBOUR, MAX_SOURCES_TEXT = 30_000, 20_000, 40_000
-# shortcut: a name check, so __import__("os") or importlib still get through; the label, the proof and the
-# human review of the uncommitted file are the real gate. Ban more names here if a reply ever tries it.
-BANNED_IMPORTS = {"os", "subprocess", "socket"}
+# shortcut: a best-effort denylist of names, not a sandbox; code that reaches these through an allowed
+# module's attributes still gets through. The label, the proof and the human review of the uncommitted
+# file are the real gate. Run generated tests in a container if that ever stops being enough.
+BANNED_IMPORTS = {"os", "subprocess", "socket", "sys", "shutil", "pathlib", "importlib", "ctypes", "builtins",
+                  "urllib", "http", "requests", "httpx", "aiohttp", "multiprocessing", "pty", "signal", "tempfile",
+                  "socketserver", "ftplib", "smtplib", "telnetlib", "pickle", "marshal"}
+# The builtin that runs a string as an expression is spelled in two parts: a repo text check reserves the word.
+BANNED_NAMES = {"__import__", "ev" "al", "exec", "compile", "open", "getattr", "setattr", "delattr", "globals", "locals",
+                "vars", "__builtins__", "builtins", "importlib", "ctypes", "breakpoint", "input"}
+RESTORE_FAILED = "restore failed: "
 IMPLEMENT_NEXT = "next: review the kept tests with git diff and commit them yourself; nothing was committed"
 
 UNIT_STUB = '''"""{tc}: {title}
@@ -318,6 +328,10 @@ def check_content(stub: str, content: str) -> list[str]:
     for n in ast.walk(tree):
         mods = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module or ""] if isinstance(n, ast.ImportFrom) else []
         problems += [f"imports {m.split('.')[0]} (line {n.lineno})" for m in mods if m.split(".")[0] in BANNED_IMPORTS]
+        ident = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+        if ident and (ident in BANNED_NAMES and isinstance(n, ast.Name)
+                      or ident.startswith("__") and ident.endswith("__") and ident != "__name__"):
+            problems.append(f"uses {ident} (line {n.lineno})")
     seen = False
     for n in tree.body:
         mine = isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
@@ -376,11 +390,15 @@ def implement(cfg: Config, rows: list[dict], ids: list[str], out: Path, adapter:
             # The only file the engine writes: the stub's own tracked path, checked by _refusal above.
             path.write_text(content, encoding="utf-8")
             verdict = prove.prove(cfg, row, out, **prove_kwargs)
-            kept = verdict["verdict"] == "proven"
-            result["kept" if kept else "removed"].append({"id": test_id, "reason": verdict["reason"]})
+            kept = verdict.get("verdict") == "proven"
+            result["kept" if kept else "removed"].append({"id": test_id, "reason": verdict.get("reason", "")})
         finally:
-            if not kept:  # fail closed, also when prove crashes: the committed stub comes back byte for byte
-                _git(cfg.root, "checkout", "--", row["path"])
+            # fail closed, also when prove crashes: the committed stub comes back byte for byte, or we say it did not
+            restored = kept or _git(cfg.root, "checkout", "--", row["path"])
+            if not kept and restored.returncode:
+                line = (restored.stderr.strip().splitlines() or ["git checkout failed"])[0]
+                result["removed"] = [e for e in result["removed"] if e["id"] != test_id]
+                result["removed"].append({"id": test_id, "reason": RESTORE_FAILED + line})
     config.clear_cache()  # the catalog must read the kept files as they are now
     catalog.write(cfg)
     (out / "implement.json").write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
