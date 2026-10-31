@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -166,6 +167,28 @@ class TestGoCommit(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("unknown commit", err)
         self.assertEqual(len(testing.git(self.root, "worktree", "list").splitlines()), 1)
+
+    def test_go_commit_on_main_tests_its_own_change(self) -> None:
+        second = testing.git(self.root, "rev-parse", "HEAD")
+        code, _ = self.go("--commit", second)
+        self.assertEqual(code, 0)
+        changeset = json.loads((self.root / "qa-out" / "changeset.json").read_text(encoding="utf-8"))
+        self.assertEqual((changeset["base"], changeset["head"]), (self.first, second))
+        self.assertEqual([f["path"] for f in changeset["files"]], ["backend/python/app/services/retrieval.py"])
+
+    def test_go_commit_on_a_root_commit_runs_the_full_profile(self) -> None:
+        code, err = self.go("--commit", self.first)
+        self.assertEqual(code, 0)
+        self.assertIn("root commit", err)
+        plan = json.loads((self.root / "qa-out" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["profile"], "full")
+
+    def test_go_commit_and_head_are_exclusive(self) -> None:
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(err):
+            qa_main.main(["go", "--commit", self.first, "--head", self.first])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--commit and --head cannot be used together", err.getvalue())
 
     def test_go_commit_defaults_to_a_managed_build(self) -> None:
         self.go("--commit", self.first)

@@ -280,6 +280,14 @@ def cmd_go(args) -> int:
     return rc
 
 
+def _on_base_branch(root: Path, sha: str, target: str | None) -> bool:
+    branch = target or os.environ.get("GITHUB_BASE_REF") or "main"
+    return any(
+        subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref], cwd=root, capture_output=True).returncode == 0
+        for ref in (f"origin/{branch}", branch)
+    )
+
+
 def _go_at_commit(args) -> int:
     """Run go against a detached worktree at --commit. Rules and hooks stay the
     invoking engine's; results land in the caller's run directory."""
@@ -292,6 +300,13 @@ def _go_at_commit(args) -> int:
         return 2
     args.commit = None
     args.head, args.build, args.stack = sha, True, args.stack or "managed"
+    if not (args.since or args.range or args.base) and _on_base_branch(root, sha, args.target):
+        # A merge-base default would be the commit itself: test the commit's own change instead.
+        try:
+            args.base = collect.rev(root, f"{sha}^")
+        except subprocess.CalledProcessError:
+            print(f"note: {sha[:12]} is a root commit with no parent; running the full profile", file=sys.stderr)
+            args.profile = "full"
     saved = os.environ.get("QA_ROOT")
     with collect.worktree(root, sha) as tree:
         os.environ["QA_ROOT"] = str(tree)
@@ -443,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--run-url")
     s.add_argument("--gate", action="store_true")
     s.set_defaults(fn=cmd_go, emit_gh_outputs=False, pr=None, repo=None)
+    go_parser = s
 
     s = sub.add_parser("history", help="run history")
     s.add_argument("action", choices=["record", "failing", "flaky"])
@@ -471,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_score)
 
     args = p.parse_args(argv)
+    if getattr(args, "commit", None) and args.head:
+        go_parser.error("--commit and --head cannot be used together (--commit sets the head)")
     return args.fn(args)
 
 
