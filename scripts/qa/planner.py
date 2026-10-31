@@ -29,6 +29,12 @@ TASKS: dict[str, dict[str, Any]] = {
         "diff": True,
         "empty": {"schema": "qa-plan-llm/v1", "add": [], "add_matrix": [], "missing": [], "risk": {"level": "low", "reasons": []}},
     },
+    "review": {
+        "prompt": "scripts/qa/prompts/review.md",
+        "schema": "review-llm.v1.json",
+        "diff": True,
+        "empty": {"requirements": [], "checklist": [], "risks": []},
+    },
 }
 READ_ONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(grep:*)"
 FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -100,9 +106,10 @@ def _command(root: Path, input_path: Path, timeout: int, task: str = "plan") -> 
     template = os.environ.get("QA_PLANNER_CMD")
     if not template:
         raise RuntimeError("QA_PLANNER_CMD is not set")
-    prompt_file = input_path.parent / "planner-prompt.md"
+    # Per task, so a review never overwrites the plan's debug files; plan keeps its historical names.
+    prompt_file = input_path.parent / f"{'planner' if task == 'plan' else task}-prompt.md"
     prompt_file.write_text(_instructions(root, input_path, task), encoding="utf-8")
-    output = input_path.parent / "plan-llm.raw"
+    output = input_path.parent / f"{task}-llm.raw"
     output.unlink(missing_ok=True)
     cmd = (template.replace("{prompt_file}", shlex.quote(str(prompt_file)))
            .replace("{input}", shlex.quote(str(input_path)))
@@ -189,6 +196,8 @@ def ask(root: Path, adapter: str, task: str, input_path: Path, output_path: Path
         if task != "plan" and input_path.stat().st_size > MAX_INPUT_BYTES:
             raise RuntimeError(f"{input_path.name} is over {MAX_INPUT_BYTES} bytes")
         result = ADAPTERS[adapter](root, input_path, timeout, task)
+        # Like validate.shape_problems: engine-owned "_" keys are not part of the reply.
+        result = {k: v for k, v in result.items() if not k.startswith("_")}
         problems = schema.check(result, TASKS[task]["schema"])
         if problems:
             raise ValueError(f"reply does not match {TASKS[task]['schema']}: {'; '.join(problems[:3])}")

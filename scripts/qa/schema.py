@@ -48,6 +48,8 @@ def errors(doc: Any, schema: dict[str, Any], where: str = "$") -> list[str]:
         if isinstance(extra, dict):
             for key in sorted(doc.keys() - schema.get("properties", {}).keys()):
                 out += errors(doc[key], extra, f"{where}.{key}")
+        elif extra is False:
+            out += [f"{where}: unexpected {k!r}" for k in sorted(doc.keys() - schema.get("properties", {}).keys())]
     if isinstance(doc, list) and "items" in schema:
         for i, item in enumerate(doc):
             out += errors(item, schema["items"], f"{where}[{i}]")

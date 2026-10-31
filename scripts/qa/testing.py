@@ -112,6 +112,16 @@ suite = "e2e"
 grep = "@smoke"
 when = ["frontend/**"]
 
+[[review_risk]]
+id = "migrations"
+title = "Database or config migrations"
+paths = ["backend/python/app/**/migrations/**"]
+
+[[review_risk]]
+id = "auth"
+title = "Authentication and permission paths"
+modules = ["auth"]
+
 [default_seconds]
 pytest = 3
 it-pytest = 90

@@ -188,6 +188,7 @@ class TestPlannerAdapters(ValidateCase):
         text = planner._instructions(self.root, self.root / "plan-input.json")
         self.assertNotIn("PR-WRITTEN NOTES", text)
 
+
 PROBE = {"probe": {"prompt": "scripts/qa/prompts/planner.md", "schema": "plan-llm.v1.json", "diff": False, "empty": {"x": 1}}}
 
 

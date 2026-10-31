@@ -94,6 +94,17 @@ npm-script = 120
 playwright = 30
 it-pytest = 90
 
+# Paths or modules a reviewer must look at twice. Overlays add entries.
+[[review_risk]]
+id = "migrations"
+title = "Database or config migrations"
+paths = ["backend/python/app/**/migrations/**", "backend/nodejs/apps/src/**/migrations/**"]
+
+[[review_risk]]
+id = "auth"
+title = "Authentication and permission paths"
+modules = ["auth", "oauth", "user-management"]
+
 # Test files no suite runs, with what runs them instead ("not run" is a valid answer).
 [[unowned]]
 paths = ["backend/db/tests/**"]

@@ -62,6 +62,9 @@ class TestContracts(unittest.TestCase):
     def test_validator_catches_a_wrong_shape(self) -> None:
         self.assertTrue(schema.check({"schema": "qa-plan-llm/v1", "add": [{"reason": "no id"}]}, "plan-llm.v1.json"))
 
+    def test_review_llm_schema_rejects_extra_keys(self) -> None:
+        self.assertTrue(schema.check({"requirements": [], "checklist": [], "risks": [], "x": 1}, "review-llm.v1.json"))
+
 
 if __name__ == "__main__":
     unittest.main()
