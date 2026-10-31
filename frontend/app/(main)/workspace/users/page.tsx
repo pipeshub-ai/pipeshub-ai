@@ -5,7 +5,7 @@ import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore, UsersPageHeaderActions } from '@/config';
+import { useAuthStore, UsersPageHeaderActions, usersDirectoryReadOnlyForMembers } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -74,6 +74,9 @@ function UsersPageContent() {
   const searchParams = useSearchParams();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  // Flag off: members keep invite and resend. Flag on: those actions stay closed.
+  const directoryReadOnly =
+    usersDirectoryReadOnlyForMembers && isProfileInitialized && isAdmin !== true;
 
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
@@ -233,7 +236,9 @@ function UsersPageContent() {
     const store = useUsersStore.getState();
 
     if (panel === 'invite') {
-      if (!store.isInvitePanelOpen) openInvitePanel();
+      if (directoryReadOnly) {
+        if (store.isInvitePanelOpen) closeInvitePanel();
+      } else if (!store.isInvitePanelOpen) openInvitePanel();
       if (store.isProfilePanelOpen) closeProfilePanel();
     } else if (panel === 'profile') {
       if (store.isInvitePanelOpen) closeInvitePanel();
@@ -250,7 +255,7 @@ function UsersPageContent() {
     }
 
     initialUrlProcessed.current = true;
-  }, [searchParams]);
+  }, [searchParams, directoryReadOnly, openInvitePanel, closeInvitePanel, openProfilePanel, closeProfilePanel]);
 
   // Store → URL
   useEffect(() => {
@@ -531,6 +536,7 @@ function UsersPageContent() {
   );
 
   const bulkActions = useMemo<BulkAction[]>(() => {
+    if (directoryReadOnly) return [];
     if (allSelectedArePending) {
       const actions: BulkAction[] = [
         {
@@ -576,7 +582,7 @@ function UsersPageContent() {
         onClick: handleBulkRemove,
       },
     ];
-  }, [allSelectedArePending, hasAdminSelected, isAdmin, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
+  }, [allSelectedArePending, hasAdminSelected, isAdmin, directoryReadOnly, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
 
   // ── Column definitions ──────────────────
 
@@ -900,9 +906,9 @@ function UsersPageContent() {
           },
         ];
       } else if (isPending) {
-        // Pending invite — members can resend; edit/cancel stay admin-only
+        // Resend follows the directory write gate. Edit, cancel, and role stay admin-only.
         actions = [
-          {
+          !directoryReadOnly && {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
@@ -932,7 +938,7 @@ function UsersPageContent() {
         ];
       } else if (isPendingExpired) {
         actions = [
-          {
+          !directoryReadOnly && {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
@@ -1030,6 +1036,7 @@ function UsersPageContent() {
     [
       t,
       isAdmin,
+      directoryReadOnly,
       addToast,
       navigateToProfilePanel,
       requestChangeRole,
@@ -1065,18 +1072,20 @@ function UsersPageContent() {
         searchPlaceholder={t('workspace.users.searchPlaceholder')}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
-        ctaLabel={t('workspace.users.inviteButton')}
-        ctaIcon="person_add_alt"
-        onCtaClick={navigateToInvitePanel}
-        ctaDisabled={smtpBlocksInvite}
-        ctaTooltip={
-          smtpBlocksInvite
-            ? t(
-                'workspace.users.inviteDisabledSmtp',
-                'SMTP is not configured. Set up email settings before inviting users.'
-              )
-            : undefined
-        }
+        {...(directoryReadOnly
+          ? {}
+          : {
+              ctaLabel: t('workspace.users.inviteButton'),
+              ctaIcon: 'person_add_alt',
+              onCtaClick: navigateToInvitePanel,
+              ctaDisabled: smtpBlocksInvite,
+              ctaTooltip: smtpBlocksInvite
+                ? t(
+                    'workspace.users.inviteDisabledSmtp',
+                    'SMTP is not configured. Set up email settings before inviting users.'
+                  )
+                : undefined,
+            })}
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 
@@ -1119,6 +1128,7 @@ function UsersPageContent() {
               getItemId={(u) => u.id}
               selectedIds={selectedUsers}
               onSelectionChange={setSelectedUsers}
+              selectable={!directoryReadOnly}
               renderRowActions={renderRowActions}
               isLoading={isLoading}
               onRowClick={(user) => navigateToProfilePanel(user)}

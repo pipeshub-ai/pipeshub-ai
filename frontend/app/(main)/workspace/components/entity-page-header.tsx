@@ -18,12 +18,12 @@ export interface EntityPageHeaderProps {
   searchValue: string;
   /** Callback when search input changes */
   onSearchChange: (value: string) => void;
-  /** CTA button label */
-  ctaLabel: string;
+  /** CTA button label. Omit, with onCtaClick, to hide the button. */
+  ctaLabel?: string;
   /** CTA button Material icon name */
-  ctaIcon: string;
-  /** Callback when CTA is clicked */
-  onCtaClick: () => void;
+  ctaIcon?: string;
+  /** Callback when CTA is clicked. Omit, with ctaLabel, to hide the button. */
+  onCtaClick?: () => void;
   /** Optional extra actions rendered to the left of the primary CTA button */
   additionalActions?: React.ReactNode;
   /** When true, the CTA button is disabled (e.g. a prerequisite isn't met) */
@@ -58,7 +58,7 @@ export function EntityPageHeader({
   const isMobile = useIsMobile();
   const paddingTop = paddingTopProp ?? (isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP);
   const canHover = useCanHover();
-  const ctaButton = (
+  const ctaButton = ctaLabel && onCtaClick ? (
     <Button
       size="2"
       className="touch-hit"
@@ -66,10 +66,11 @@ export function EntityPageHeader({
       disabled={ctaDisabled}
       style={{ cursor: ctaDisabled ? 'not-allowed' : 'pointer' }}
     >
-      <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
+      <MaterialIcon name={ctaIcon ?? 'add'} size={16} color="currentColor" />
       {ctaLabel}
     </Button>
-  );
+  ) : null;
+  const showCta = ctaButton !== null;
 
   return (
     <Flex
@@ -109,14 +110,14 @@ export function EntityPageHeader({
 
         {additionalActions}
 
-        {ctaTooltip ? (
+        {showCta && ctaTooltip ? (
           <Tooltip content={ctaTooltip}>
             <span style={{ display: 'inline-flex' }}>{ctaButton}</span>
           </Tooltip>
         ) : (
           ctaButton
         )}
-        {ctaTooltip && !canHover && (
+        {showCta && ctaTooltip && !canHover && (
           <Text size="1" style={{ color: 'var(--slate-11)', width: '100%' }}>
             {ctaTooltip}
           </Text>

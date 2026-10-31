@@ -104,6 +104,24 @@ describe('EntityDataTable', () => {
     expect(screen.getByTestId('entity-data-table').style.overflowY).toBe('auto');
   });
 
+  it('omits the checkbox column when selection is off', () => {
+    mobile.value = true;
+    mobile.belowDesktop = true;
+    render(
+      <Theme>
+        <EntityDataTable
+          columns={columns}
+          data={[{ id: '1' }]}
+          getItemId={(i) => i.id}
+          selectedIds={new Set()}
+          onSelectionChange={() => {}}
+          selectable={false}
+        />
+      </Theme>,
+    );
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
   it('keeps every column on desktop', () => {
     mobile.value = false;
     mobile.belowDesktop = false;
