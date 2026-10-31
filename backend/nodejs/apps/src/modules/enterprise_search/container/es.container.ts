@@ -11,6 +11,7 @@ const loggerConfig = {
   service: 'Enterprise Search Service',
 };
 
+// A saved change reaches this process within this window: the config is saved elsewhere and the read is cached to spare the store on every bot request.
 const SLACK_BOT_APPROVAL_TTL_MS = 60_000;
 
 /** configId -> whether the bot allows Slack to answer approvals, cached like the bot registry. A failed read throws and is not cached. */

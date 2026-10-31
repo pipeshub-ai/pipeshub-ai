@@ -592,7 +592,7 @@ class TestTypedReplyInTheKeptTurn:
 
 class TestWhoCanSeeTheTool:
     @pytest.mark.parametrize(("client_name", "can_answer"), [
-        ("pipeshub-ai", True), ("slack", True), ("api", False), (None, False), ("desktop", False),
+        ("pipeshub-ai", True), ("slack", True), ("slack-approvals", True), ("api", False), (None, False), ("desktop", False),
     ])
     def test_only_clients_that_show_cards_get_the_tool(self, client_name: str | None, can_answer: bool) -> None:
         from app.modules.agents.qna.chat_state import build_initial_state
