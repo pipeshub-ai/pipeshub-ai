@@ -411,20 +411,20 @@ class TestGetRecord:
     async def test_success(self):
         sf = _build_salesforce()
         sf.client.sobject_get = AsyncMock(
-            return_value=_success_response({"Id": "001ABC", "Name": "Acme", "attributes": {"type": "Account"}})
+            return_value=_success_response({"Id": "001000000000ABCAAA", "Name": "Acme", "attributes": {"type": "Account"}})
         )
-        ok, body = await sf.get_record(sobject="Account", record_id="001ABC")
+        ok, body = await sf.get_record(sobject="Account", record_id="001000000000ABCAAA")
         assert ok is True
         parsed = json.loads(body)
-        assert parsed["data"]["Id"] == "001ABC"
+        assert parsed["data"]["Id"] == "001000000000ABCAAA"
 
     @pytest.mark.asyncio
     async def test_with_fields(self):
         sf = _build_salesforce()
-        sf.client.sobject_get = AsyncMock(return_value=_success_response({"Id": "001ABC"}))
-        await sf.get_record(sobject="Account", record_id="001ABC", fields="Id,Name")
+        sf.client.sobject_get = AsyncMock(return_value=_success_response({"Id": "001000000000ABCAAA"}))
+        await sf.get_record(sobject="Account", record_id="001000000000ABCAAA", fields="Id,Name")
         sf.client.sobject_get.assert_awaited_once_with(
-            api_version="59.0", sobject="Account", record_id="001ABC", fields="Id,Name"
+            api_version="59.0", sobject="Account", record_id="001000000000ABCAAA", fields="Id,Name"
         )
 
     @pytest.mark.asyncio
@@ -461,10 +461,10 @@ class TestUpdateRecord:
     async def test_success(self):
         sf = _build_salesforce()
         sf.client.sobject_update = AsyncMock(return_value=_success_response({}))
-        ok, _ = await sf.update_record(sobject="Account", record_id="001", data={"Name": "Updated"})
+        ok, _ = await sf.update_record(sobject="Account", record_id="001000000000001AAA", data={"Name": "Updated"})
         assert ok is True
         sf.client.sobject_update.assert_awaited_once_with(
-            api_version="59.0", sobject="Account", record_id="001", data={"Name": "Updated"}
+            api_version="59.0", sobject="Account", record_id="001000000000001AAA", data={"Name": "Updated"}
         )
 
     @pytest.mark.asyncio
@@ -1384,10 +1384,10 @@ class TestGetRecordChatter:
         sf.client.record_feed_elements = AsyncMock(
             return_value=_success_response({"elements": []})
         )
-        ok, _ = await sf.get_record_chatter(record_id="001ABC")
+        ok, _ = await sf.get_record_chatter(record_id="001000000000ABCAAA")
         assert ok is True
         sf.client.record_feed_elements.assert_awaited_once_with(
-            record_group_id="001ABC", version=sf.api_version
+            record_group_id="001000000000ABCAAA", version=sf.api_version
         )
 
     @pytest.mark.asyncio
@@ -1406,7 +1406,7 @@ class TestPostChatterComment:
             return_value=_success_response({"id": "0D7"})
         )
         ok, _ = await sf.post_chatter_comment(
-            feed_element_id="0D5ABC", text="Nice work!"
+            feed_element_id="0D5000000000ABCAAA", text="Nice work!"
         )
         assert ok is True
         call_kwargs = sf.client.feed_elements_capability_comments_items.call_args.kwargs
@@ -1420,7 +1420,7 @@ class TestPostChatterComment:
             return_value=_success_response({"id": "0D7"})
         )
         ok, _ = await sf.post_chatter_comment(
-            feed_element_id="0D5ABC", text="**bold** text", is_rich_text=True
+            feed_element_id="0D5000000000ABCAAA", text="**bold** text", is_rich_text=True
         )
         assert ok is True
         call_kwargs = sf.client.feed_elements_capability_comments_items.call_args.kwargs
@@ -1756,7 +1756,7 @@ class TestUpdateRecordValidation:
         sf = _build_salesforce()
         sf.client.sobject_update = AsyncMock(side_effect=RuntimeError("fail"))
         ok, body = await sf.update_record(
-            sobject="Account", record_id="001", data={"Name": "X"},
+            sobject="Account", record_id="001000000000001AAA", data={"Name": "X"},
         )
         assert ok is False
         assert "fail" in body

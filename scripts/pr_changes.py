@@ -213,7 +213,7 @@ CONNECTOR_SHARDS = {
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
     ),
-    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres"),
+    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear"),
     "connectors-5": ("google_drive_workspace", "s3"),
 }
@@ -286,7 +286,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
-            "lumos", "monday", "pagerduty", "posthog", "redshift", "salesforce", "trello", "workday",
+            "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",
         )
     },
@@ -311,6 +311,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "network_share": ("smb",),
     "nextcloud": ("nextcloud",),
     "rss": ("rss",),
+    "salesforce": ("salesforce",),
     "servicenow": ("servicenow",),
     "smb": ("smb",),
     "zammad": ("zammad",),
@@ -333,11 +334,12 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
 # Teams' (which, like GitLab's, uses Jira's block parser), Gmail and the individual
-# Google Drive suite on the workspace Drive suite's helpers, and the cleanup tests
-# on core create MinIO, Postgres and S3 connectors.
+# Google Drive suite on the workspace Drive suite's helpers, Salesforce on Gmail's
+# user helper, and the cleanup tests on core create MinIO, Postgres and S3 connectors.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
+    "gmail": ("connectors-3",),
     "google_drive_workspace": ("connectors-2", "connectors-4"),
     "jira": ("connectors-1", "connectors-4"),
     "minio": ("core",),

@@ -3234,6 +3234,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get documents by status failed: {str(e)}")
             return []
 
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See IGraphDBProvider.filter_linked_record_ids."""
+        if not record_ids:
+            return []
+        belongs = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.BELONGS_TO.value]
+        relations = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.NODE_RELATIONS.value]
+        query = f"""
+        MATCH (r:{collection_to_label(CollectionNames.RECORDS.value)})
+        WHERE r.id IN $ids
+          AND (EXISTS {{ MATCH (r)-[:{belongs}]->(:{collection_to_label(CollectionNames.RECORD_GROUPS.value)}) }}
+               OR EXISTS {{ MATCH ()-[rel:{relations}]->(r)
+                            WHERE rel.relationshipType IN $parent_types }})
+        RETURN r.id AS id
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"ids": record_ids, "parent_types": list(CANONICAL_PARENT_RELATION_TYPES)},
+            txn_id=transaction,
+        )
+        return [row["id"] for row in results]
+
     async def get_nodes_by_field_in(
         self,
         collection: str,

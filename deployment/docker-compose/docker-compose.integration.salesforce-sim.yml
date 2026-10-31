@@ -1,0 +1,27 @@
+# Salesforce simulator for the salesforce suite (integration-tests/connectors/salesforce).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.salesforce-sim.yml up -d
+#
+# The image is pipeshub-ai/connectors-simulator (connsim/sources/salesforce). It holds no data until the suite
+# loads its org (PUT /_sim/salesforce/scenario), so it needs no content pack and no secret. The connector reaches
+# it inside the compose network by its alias, the instance URL the simulator hands out in OAuth replies; the
+# test process drives its control API on the published port (integration-tests/connectors/salesforce_sim.env).
+services:
+  salesforce-sim:
+    image: ${SALESFORCE_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["salesforce"]
+    environment:
+      CONNSIM_SOURCES: salesforce
+      CONNSIM_SALESFORCE_PUBLIC_URL: http://salesforce-sim.internal
+      # The org lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # 8118, the simulator's own port: 8101-8103 and 8106-8110 are the other simulators'.
+    ports:
+      - "127.0.0.1:8118:80"
+    networks:
+      default:
+        aliases:
+          - salesforce-sim.internal
+    mem_limit: 512m

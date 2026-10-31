@@ -1217,6 +1217,10 @@ class GraphTransactionStore(TransactionStore):
         self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
+    async def filter_linked_record_ids(self, record_ids: list[str]) -> list[str]:
+        """The ids among ``record_ids`` still in the hierarchy (see the graph provider)."""
+        return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
+
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list, return_fields: list[str] = None
     ) -> list[dict]:
