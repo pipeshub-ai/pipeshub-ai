@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from qa import __main__ as qa_main
-from qa import catalog, config, generate, paths, planner, testing
+from qa import catalog, config, generate, paths, planner, prove, testing
 
 PROVIDER = "backend/python/app/services/graph_db/provider.py"
 GRAPH_DIR = "backend/python/tests/unit/services/graph_db"
@@ -195,6 +195,187 @@ class TestGenerate(GenerateCase):
         self.assertIn("stub did not parse as planned", self.report())
         self.assertFalse((self.root / GRAPH_DIR / "test_broken_template.py").exists())
 
+
+UNIT_STUB_PATH = f"{GRAPH_DIR}/test_lists_nothing.py"
+UNIT_ID = f"py:{UNIT_STUB_PATH.removeprefix('backend/python/')}"
+GOOD = (
+    '"""TC-GRAPH-DB-001: Lists nothing"""\n\n'
+    "from app.services.graph_db import provider\n\n\n"
+    "def test_lists_nothing() -> None:\n"
+    "    assert provider.get_records() == []\n"
+)
+
+
+class TestImplement(GenerateCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.generate("graph-db", [scenario("Lists nothing")])
+        testing.commit(self.root, "stub")
+        self.stub = (self.root / UNIT_STUB_PATH).read_bytes()
+        self.asked: list[dict] = []
+        self.proved: list[str] = []
+
+    def implement(self, content=GOOD, approved=True, verdict="proven", reason="fails under mutation", ids=UNIT_ID, *extra):
+        def fake_ask(root, adapter, task, input_path, output_path, timeout=600):
+            self.assertEqual(task, "implement")
+            self.asked.append(json.loads(input_path.read_text(encoding="utf-8")))
+            status = {"adapter": "test", "status": "ok"}
+            output_path.write_text(json.dumps({"content": content, "_planner": status}), encoding="utf-8")
+            return status
+
+        def fake_prove(cfg, row, out, **kw):
+            self.proved.append(row["id"])
+            if getattr(self, "prove_error", None):
+                raise self.prove_error
+            self.assertEqual((cfg.root / row["path"]).read_text(encoding="utf-8"), content)
+            return {"verdict": verdict, "reason": reason}
+
+        out = self.out.parent.parent / f"{self.root.name}-out"  # outside the repo, so git status shows only the repo
+        self.addCleanup(lambda: __import__("shutil").rmtree(out, ignore_errors=True))
+        with mock.patch.object(paths, "REPO", self.root), mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), \
+                mock.patch.object(planner, "ask", fake_ask), mock.patch.object(prove, "prove", fake_prove), \
+                mock.patch.object(generate, "approved", return_value=approved) as gate, \
+                contextlib.redirect_stdout(io.StringIO()) as so, contextlib.redirect_stderr(io.StringIO()) as err:
+            config.clear_cache()
+            argv = ["--out", str(out), "generate", "--implement", ids, *extra]
+            if "--no-pr" not in extra:
+                argv += ["--pr", "7"]
+            else:
+                argv.remove("--no-pr")
+            code = qa_main.main(argv)
+        config.clear_cache()
+        self.gate, self.stdout, self.err = gate, so.getvalue(), err.getvalue()
+        self.result = json.loads((out / "implement.json").read_text(encoding="utf-8")) if (out / "implement.json").is_file() else None
+        return code
+
+    def changed(self) -> set:
+        """Modified and untracked paths (testing.git strips the porcelain status column)."""
+        return set((testing.git(self.root, "diff", "--name-only", "HEAD") + "\n"
+                    + testing.git(self.root, "ls-files", "--others", "--exclude-standard")).split())
+
+    def assert_stub_unchanged(self) -> None:
+        self.assertEqual((self.root / UNIT_STUB_PATH).read_bytes(), self.stub)
+
+    def test_implement_refuses_without_the_label(self) -> None:
+        self.assertEqual(self.implement(approved=False), 1)
+        self.assertIn("PR 7 does not have the label qa-scenarios-ok", self.stdout + self.err)
+        self.assertEqual(self.asked, [])
+        self.assert_stub_unchanged()
+
+    def test_implement_without_pr_explains(self) -> None:
+        self.assertEqual(self.implement(UNIT_ID, True, "proven", "", UNIT_ID, "--no-pr"), 2)
+        self.assertIn("--implement needs --pr: the scenarios are approved with the label qa-scenarios-ok", self.err)
+        self.assertEqual(self.asked, [])
+
+    def test_approved_reads_the_label_with_gh(self) -> None:
+        def reply(stdout="", exc=None):
+            def run(cmd, **kw):
+                self.cmds.append(cmd)
+                if exc:
+                    raise exc
+                return mock.Mock(stdout=stdout)
+            return run
+        self.cmds = []
+        with mock.patch.object(generate.subprocess, "run", reply('{"labels": [{"name": "qa-scenarios-ok"}]}')):
+            self.assertTrue(generate.approved(7, "o/r"))
+        self.assertEqual(self.cmds[0], ["gh", "pr", "view", "7", "--json", "labels", "--repo", "o/r"])
+        for run in (reply('{"labels": [{"name": "bug"}]}'), reply("not json"), reply("[]"),
+                    reply(exc=FileNotFoundError("gh")), reply(exc=generate.subprocess.CalledProcessError(1, "gh"))):
+            with mock.patch.object(generate.subprocess, "run", run):
+                self.assertFalse(generate.approved(7, None))
+
+    def test_empty_model_reply_is_removed(self) -> None:
+        self.assertEqual(self.implement(""), 1)
+        self.assertIn("no test from the model", self.result["removed"][0]["reason"])
+        self.assert_stub_unchanged()
+
+    def test_module_and_implement_are_exclusive(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            qa_main.main(["generate", "--module", "graph-db", "--implement", UNIT_ID, "--pr", "7"])
+
+    def test_implement_refuses_an_uncommitted_stub(self) -> None:
+        (self.root / UNIT_STUB_PATH).write_text(self.stub.decode() + "\n# edited\n", encoding="utf-8")
+        self.assertEqual(self.implement(), 1)
+        self.assertEqual([r["id"] for r in self.result["refused"]], [UNIT_ID])
+        self.assertEqual(self.asked, [])
+
+    def test_implement_refuses_rows_that_are_not_planned(self) -> None:
+        self.assertEqual(self.implement(ids="py:tests/unit/services/graph_db/test_provider.py,py:nope.py"), 1)
+        self.assertEqual(len(self.result["refused"]), 2)
+        self.assertEqual(self.asked, [])
+
+    def test_implement_rejects_content_that_keeps_the_planned_marker(self) -> None:
+        self.assertEqual(self.implement(GOOD + "\nimport pytest\npytestmark = [pytest.mark.planned]\n"), 1)
+        self.assertEqual(self.result["removed"][0]["id"], UNIT_ID)
+        self.assertIn("still marked planned", self.result["removed"][0]["reason"])
+        self.assert_stub_unchanged()
+        self.assertEqual(self.proved, [])
+
+    def test_implement_rejects_content_that_only_checks_no_raise(self) -> None:
+        self.assertEqual(self.implement(GOOD.replace("assert provider.get_records() == []", "provider.get_records()")), 1)
+        self.assertIn("asserts nothing about behavior", self.result["removed"][0]["reason"])
+        self.assert_stub_unchanged()
+
+    def test_check_content(self) -> None:
+        stub = self.stub.decode()
+        self.assertEqual(generate.check_content(stub, GOOD), [])
+        self.assertTrue(generate.check_content(stub, "def test_lists_nothing(:\n")[0].startswith("does not parse: "))
+        self.assertIn("missing test_lists_nothing", generate.check_content(stub, GOOD.replace("test_lists_nothing", "test_other")))
+        self.assertIn("larger than 30000 bytes", generate.check_content(stub, GOOD + "#" * 30000))
+        # Security: no os/subprocess/socket imports anywhere, and nothing at module level but imports,
+        # assignments, a docstring and the stub's own test function.
+        for bad in ("import os\n", "import subprocess as sp\n", "from socket import socket\n", "import os.path\n"):
+            self.assertTrue(any("imports" in p for p in generate.check_content(stub, bad + GOOD)), bad)
+        inner = GOOD.replace("    assert", "    import subprocess\n    assert")
+        self.assertTrue(any("imports subprocess" in p for p in generate.check_content(stub, inner)))
+        for extra in ("\ndef helper():\n    return 1\n", "\nclass TestMore:\n    def test_x(self):\n        assert 1 == 1\n",
+                      "\ndef test_second():\n    assert 1 == 1\n", "\nprint('boom')\n"):
+            self.assertTrue(any("module level" in p for p in generate.check_content(stub, GOOD + extra)), extra)
+
+    def test_implement_rejects_extra_imports_and_functions(self) -> None:
+        self.assertEqual(self.implement("import subprocess\n" + GOOD + "\ndef test_two():\n    assert 1 == 1\n"), 1)
+        reason = self.result["removed"][0]["reason"]
+        self.assertIn("imports subprocess", reason)
+        self.assertIn("module level", reason)
+        self.assert_stub_unchanged()
+        self.assertEqual(self.proved, [])
+
+    def test_implement_writes_only_the_stub_file(self) -> None:
+        self.assertEqual(self.implement(), 0)
+        self.assertEqual(self.result["kept"], [{"id": UNIT_ID, "reason": "fails under mutation"}])
+        self.assertEqual(self.proved, [UNIT_ID])
+        self.assertEqual(self.changed(), {UNIT_STUB_PATH})
+        self.assertEqual((self.root / UNIT_STUB_PATH).read_text(encoding="utf-8"), GOOD)
+        asked = self.asked[0]
+        self.assertEqual(asked["row"]["id"], UNIT_ID)
+        self.assertEqual(asked["stub"], self.stub.decode())
+        self.assertEqual([n["path"] for n in asked["neighbours"]], [f"{GRAPH_DIR}/test_provider.py"])
+        self.assertEqual([s["path"] for s in asked["sources"]], [PROVIDER])
+        self.gate.assert_called_once_with(7, None)
+
+    def test_implement_writes_only_the_stub_file_for_an_it_row(self) -> None:
+        self.generate("retrieval", [scenario("Search is empty", level="integration",
+                                             covers=["backend/python/app/services/retrieval.py"])])
+        testing.commit(self.root, "it stub")
+        path = "integration-tests/retrieval/test_search_is_empty.py"
+        rid = "it:retrieval/test_search_is_empty.py::test_search_is_empty"
+        body = "import pytest\n\n\n@pytest.mark.integration\ndef test_search_is_empty(client) -> None:\n    assert client.search() == []\n"
+        self.assertEqual(self.implement(body, ids=rid), 0)
+        changed = self.changed()
+        self.assertIn(path, changed)
+        self.assertTrue(all(c == path or c.startswith("integration-tests/catalog/") for c in changed), changed)
+
+    def test_unproven_test_is_removed_and_the_stub_restored(self) -> None:
+        self.assertEqual(self.implement(verdict="unproven", reason="no revert or mutation made it fail"), 1)
+        self.assertEqual(self.result["removed"], [{"id": UNIT_ID, "reason": "no revert or mutation made it fail"}])
+        self.assert_stub_unchanged()
+        self.assertEqual(self.changed(), set())
+
+    def test_prove_crash_restores_the_stub(self) -> None:
+        self.prove_error = RuntimeError("boom")
+        with self.assertRaises(RuntimeError):
+            self.implement()
+        self.assert_stub_unchanged()
 
 if __name__ == "__main__":
     unittest.main()

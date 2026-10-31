@@ -585,7 +585,10 @@ def cmd_review(args) -> int:
 
 
 def cmd_generate(args) -> int:
-    """Stage 1: ask for scenarios for one module and write them as planned stubs."""
+    """Stage 1: ask for scenarios for one module and write them as planned stubs.
+    Stage 2 (--implement): replace approved stubs with tests, keeping only proven ones."""
+    if args.implement:
+        return _implement(args)
     cfg = config.load()
     out = _out(args)
     if not any(m["id"] == args.module for m in cfg.modules):
@@ -610,6 +613,33 @@ def cmd_generate(args) -> int:
     (out / "generate.md").write_text(body, encoding="utf-8")
     print(body)
     return 0
+
+
+def _implement(args) -> int:
+    if not args.pr:
+        print(f"--implement needs --pr: the scenarios are approved with the label {generate.APPROVAL_LABEL}", file=sys.stderr)
+        return 2
+    repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
+    # No local override: the label on the PR is the human approval, checked before any model call.
+    if not generate.approved(args.pr, repo):
+        print(f"PR {args.pr} does not have the label {generate.APPROVAL_LABEL}", file=sys.stderr)
+        return 1
+    cfg = config.load()
+    out = _out(args)
+    ids = [i.strip() for i in args.implement.split(",") if i.strip()]
+    kwargs = {"base": args.base, "repeat": args.repeat, "max_mutants": args.max_mutants,
+              "stack_mode": args.stack or os.environ.get("QA_STACK", "none"), "base_url": args.base_url}
+    try:
+        result = generate.implement(cfg, catalog.build(cfg), ids, out, args.adapter or planner.default_adapter(),
+                                    args.timeout, kwargs)
+    except run._Cancelled:
+        print("generate: cancelled by SIGTERM", file=sys.stderr)
+        return 143
+    except subprocess.CalledProcessError as exc:
+        print(f"generate: git failed: {' '.join(map(str, exc.cmd))}", file=sys.stderr)
+        return 2
+    print((out / "generate.md").read_text(encoding="utf-8"))
+    return 0 if result["kept"] else 1
 
 
 def cmd_prove(args) -> int:
@@ -837,8 +867,19 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--run-url")
     s.set_defaults(fn=cmd_review)
 
-    s = sub.add_parser("generate", help="propose planned scenarios for a module and write them as stub tests")
-    s.add_argument("--module", required=True)
+    s = sub.add_parser("generate", help="propose planned scenarios for a module and write them as stub tests, "
+                                         "or implement approved stubs")
+    which = s.add_mutually_exclusive_group(required=True)
+    which.add_argument("--module")
+    which.add_argument("--implement", metavar="ID[,ID...]",
+                       help="replace these committed planned stubs with tests; keeps only proven ones, uncommitted")
+    s.add_argument("--pr", type=int, help="--implement: the PR whose label qa-scenarios-ok approves the scenarios")
+    s.add_argument("--repo")
+    s.add_argument("--base", help="--implement: passed to prove")
+    s.add_argument("--repeat", type=int, help="--implement: passed to prove")
+    s.add_argument("--max-mutants", type=int, help="--implement: passed to prove")
+    s.add_argument("--stack", default=None, choices=["none", "managed", "external"])
+    s.add_argument("--base-url", default=None)
     s.add_argument("--from-plan", action="store_true", help="also send plan.json's missing tests for this module")
     s.add_argument("--max", type=int, default=5, help="scenarios to ask for (at most 20)")
     s.add_argument("--adapter", choices=sorted(planner.ADAPTERS))

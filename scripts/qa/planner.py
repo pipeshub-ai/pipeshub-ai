@@ -41,6 +41,12 @@ TASKS: dict[str, dict[str, Any]] = {
         "diff": False,
         "empty": {"scenarios": []},
     },
+    "implement": {
+        "prompt": "scripts/qa/prompts/implement.md",
+        "schema": "implement-llm.v1.json",
+        "diff": False,
+        "empty": {"content": ""},
+    },
 }
 READ_ONLY_TOOLS = "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(grep:*)"
 FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
