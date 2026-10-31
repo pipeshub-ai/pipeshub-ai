@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -41,13 +42,17 @@ def rev(root: Path, ref: str) -> str:
 @contextlib.contextmanager
 def worktree(root: Path, sha: str) -> Iterator[Path]:
     """A throwaway detached worktree at sha; the caller's checkout is never touched."""
+    # Drops entries left by a run that was killed before its cleanup.
+    subprocess.run(["git", "worktree", "prune"], cwd=root, check=False, capture_output=True)
     tmp = Path(tempfile.mkdtemp(prefix="qa-worktree-"))
     try:
         subprocess.run(["git", "worktree", "add", "--detach", str(tmp), sha], cwd=root, check=True, capture_output=True)
         config.clear_cache()
         yield tmp
     finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True)
+        removed = subprocess.run(["git", "worktree", "remove", "--force", str(tmp)], check=False, cwd=root, capture_output=True, text=True)
+        if removed.returncode:
+            print(f"warning: could not remove worktree {tmp}: {removed.stderr.strip()}", file=sys.stderr)
         shutil.rmtree(tmp, ignore_errors=True)
         config.clear_cache()
 

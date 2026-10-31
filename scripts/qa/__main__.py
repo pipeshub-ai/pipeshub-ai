@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -308,15 +309,23 @@ def _go_at_commit(args) -> int:
             print(f"note: {sha[:12]} is a root commit with no parent; running the full profile", file=sys.stderr)
             args.profile = "full"
     saved = os.environ.get("QA_ROOT")
-    with collect.worktree(root, sha) as tree:
-        os.environ["QA_ROOT"] = str(tree)
-        try:
-            return cmd_go(args)
-        finally:
-            if saved is None:
-                os.environ.pop("QA_ROOT", None)
-            else:
-                os.environ["QA_ROOT"] = saved
+    # SIGTERM would skip the worktree's cleanup; turn it into an exception (run.run does the same).
+    previous = signal.signal(signal.SIGTERM, run._on_term)
+    try:
+        with collect.worktree(root, sha) as tree:
+            os.environ["QA_ROOT"] = str(tree)
+            try:
+                return cmd_go(args)
+            finally:
+                if saved is None:
+                    os.environ.pop("QA_ROOT", None)
+                else:
+                    os.environ["QA_ROOT"] = saved
+    except run._Cancelled:
+        print("go --commit: cancelled by SIGTERM", file=sys.stderr)
+        return 143
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def cmd_history(args) -> int:

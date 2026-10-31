@@ -7,7 +7,12 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -189,6 +194,46 @@ class TestGoCommit(unittest.TestCase):
             qa_main.main(["go", "--commit", self.first, "--head", self.first])
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--commit and --head cannot be used together", err.getvalue())
+
+    def test_go_commit_without_a_base_branch_exits_with_a_message(self) -> None:
+        testing.git(self.root, "branch", "-m", "main", "trunk")
+        with self.assertRaises(SystemExit) as ctx:
+            self.go("--commit", self.first)
+        self.assertIn("cannot find a merge-base", str(ctx.exception.code))
+        self.assertEqual(len(testing.git(self.root, "worktree", "list").splitlines()), 1)
+
+    def test_go_commit_cleans_up_on_sigterm(self) -> None:
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        ready = Path(scratch.name) / "started"
+        script = textwrap.dedent(f"""
+            import sys, time
+            from pathlib import Path
+            from unittest import mock
+            from qa import __main__ as qa_main, run
+
+            def slow(cfg, *a, **kw):
+                Path({str(ready)!r}).write_text(str(cfg.root))
+                time.sleep(60)
+
+            with mock.patch.object(run, "run", side_effect=slow):
+                sys.exit(qa_main.main(["--out", "qa-out", "go", "--commit", {self.first!r}, "--adapter", "none", "--scope", "unit"]))
+        """)
+        env = {**os.environ, "QA_ROOT": str(self.root), "PYTHONPATH": str(Path(qa_main.__file__).resolve().parents[1])}
+        proc = subprocess.Popen([sys.executable, "-c", script], env=env, cwd=self.root,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.time() + 30
+        while not ready.exists() and proc.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(ready.exists(), proc.stderr.read().decode() if proc.poll() is not None else "run never started")
+        tree = Path(ready.read_text())
+        proc.send_signal(signal.SIGTERM)
+        rc = proc.wait(timeout=30)
+        self.assertEqual(rc, 143, proc.stderr.read().decode())
+        proc.stderr.close()
+        self.assertFalse(tree.exists())
+        self.assertEqual(len(testing.git(self.root, "worktree", "list").splitlines()), 1)
 
     def test_go_commit_defaults_to_a_managed_build(self) -> None:
         self.go("--commit", self.first)
