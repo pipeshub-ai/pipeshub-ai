@@ -818,11 +818,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async pruneEmptyAncestors(relativePath: string): Promise<void> {
     let current = path.dirname(relativePath);
     while (current && current !== '.' && current !== '/') {
-      const full = path.join(this.mountPath, current);
       try {
-        const entries = await fs.readdir(full);
-        if (entries.length > 0) break;
-        await fs.rmdir(full);
+        // rmdir removes only an empty directory, so a non-empty one ends the walk without listing it: a knowledge
+        // base's root can hold hundreds of thousands of entries, and listing it made every move take seconds.
+        await fs.rmdir(path.join(this.mountPath, current));
       } catch {
         break;
       }
