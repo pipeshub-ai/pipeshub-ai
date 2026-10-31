@@ -83,6 +83,27 @@ async def test_recheck_picks_up_a_new_comment_and_prunes_a_deleted_one() -> None
 
 
 @pytest.mark.asyncio
+async def test_recheck_leaves_a_page_whose_comments_did_not_change_unsaved() -> None:
+    stored_rev = _with_comment_digest(OLD, {"p1": [(_comment("c1"), "p1")]})
+    conn = _connector_with(MagicMock())
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=_stored("p1", revision=stored_rev))
+    conn.data_entities_processor.on_new_records = AsyncMock()
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {"p1": [(_comment("c1"), "p1")]}))
+    conn._extract_comment_attachment_file_records = AsyncMock(return_value=[])
+
+    await conn._recheck_page_comments({"p1": _page("p1")}, {"p1"})
+    conn._fetch_page_attachments_and_comments.assert_awaited_once()
+    conn.data_entities_processor.on_new_records.assert_not_awaited()
+    assert conn.pages_sync_point.update_sync_point.await_args.args[1] == {"after": "p1"}
+    assert not conn._sync_incomplete
+
+    conn._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+    conn._walked_pages = set()
+    await conn._recheck_page_comments({"p1": _page("p1")}, {"p1"})
+    assert [r.external_revision_id for r in _saved(conn)] == [OLD]
+
+
+@pytest.mark.asyncio
 async def test_recheck_rotates_through_the_stored_pages() -> None:
     conn = _connector_with(MagicMock())
     conn._COMMENT_RECHECK_PAGES_PER_SYNC = 2

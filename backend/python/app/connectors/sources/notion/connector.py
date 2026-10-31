@@ -2536,7 +2536,8 @@ class NotionConnector(BaseConnector):
         """The records one search result becomes: the page or data source, then (pages) its
         attachment and comment-attachment files.
 
-        None: nothing to sync (its database is gone). ``[]``: it failed this run (transform, its
+        None: nothing to sync (its database is gone, or a rechecked page whose comments did not
+        change). ``[]``: it failed this run (transform, its
         database, attachments or comments) and is not saved, so its stored revision stays old and
         the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
         revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
@@ -2657,6 +2658,13 @@ class NotionConnector(BaseConnector):
         )
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
+        if recheck_comments and same_edit and existing.external_revision_id == record.external_revision_id:
+            # Saving it again would change nothing but its timestamps, on every page the
+            # rotation reaches.
+            if self.data_entities_processor.full_sync_running(self.connector_id):
+                self.data_entities_processor.note_kept_records(self.connector_id, [existing.id])
+            await self._note_stored_files_kept(obj_id)
+            return None
         # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
         # whose revision did not change. Full: keep the oldest, which indexing streams first.
         will_stream = indexing_enabled and not (
