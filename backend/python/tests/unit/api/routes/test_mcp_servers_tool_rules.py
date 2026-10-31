@@ -90,9 +90,11 @@ class TestValidateEdit:
         }
         return FakeConfigService({get_mcp_tool_approval_path(self._ID): record})
 
-    async def _validate(self, store: FakeConfigService, arguments: dict[str, Any], *, user_id: str = "user-1", approval_id: str = "ap-1") -> Any:  # noqa: ANN401
+    async def _validate(self, store: FakeConfigService, arguments: dict[str, Any], *, user_id: str = "user-1", approval_id: str = "ap-1", extra_user: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
+        request = route_request(store, user_id=user_id)
+        request.state.user.update(extra_user or {})
         body = mcp_servers.ToolApprovalValidateBody(args_hash=args_hash({"q": "a"}), arguments=arguments)
-        return await mcp_servers.validate_tool_approval_edit(route_request(store, user_id=user_id), approval_id, body)
+        return await mcp_servers.validate_tool_approval_edit(request, body, approval_id)
 
     async def test_valid_edit_has_no_errors_and_is_not_claimed(self) -> None:
         store = self._store()
@@ -116,3 +118,14 @@ class TestValidateEdit:
             with pytest.raises(HTTPException) as caught:
                 await self._validate(store, {"q": "b"})
             assert caught.value.status_code == 410
+
+    async def test_an_oauth_or_pat_caller_is_refused(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._validate(self._store(), {"q": "b"}, extra_user={"isOAuth": True})
+        assert caught.value.status_code == 403
+
+    async def test_project_chat_call_with_no_rule_validates_unchanged_arguments(self) -> None:
+        store = self._store(kind="destructive", enabledOnProject=True)
+        assert await self._validate(store, {"q": "a"}) == {"errors": []}
+        blocked = self._store(kind="destructive")
+        assert (await self._validate(blocked, {"q": "a"}))["errors"][0].message == "A rule blocks this action with these details."

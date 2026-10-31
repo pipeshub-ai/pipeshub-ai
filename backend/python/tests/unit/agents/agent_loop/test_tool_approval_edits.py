@@ -60,10 +60,26 @@ def test_ref_and_anyof_schema_followed() -> None:
     assert _check(p, {"v": "x"}) != []
 
 
-def test_sql_edited_to_drop_refused() -> None:
+def _sql_call(query: str) -> approvals.PendingCall:
     schema = {"type": "object", "properties": {"query": {"type": "string"}}}
-    p = _pending(tool_path="/tools/mariadb/execute_query", arguments={"query": "UPDATE t SET a=1"}, input_schema=schema)
-    assert "riskier" in _check(p, {"query": "DROP TABLE t"})[0].message
+    return _pending(tool_path="/tools/mariadb/execute_query", arguments={"query": query}, input_schema=schema)
+
+
+def test_sql_edited_to_drop_refused() -> None:
+    assert "riskier" in _check(_sql_call("SELECT 1"), {"query": "DROP TABLE t"})[0].message
+
+
+def test_edit_within_the_same_kind_passes() -> None:
+    assert _check(_sql_call("SELECT 1"), {"query": "SELECT 2"}) == []
+
+
+def test_unresolvable_ref_in_schema_is_not_editable() -> None:
+    p = _pending(input_schema={"type": "object", "properties": {"a": {"$ref": "#/$defs/missing"}}}, arguments={"a": 1})
+    assert _check(p, {"a": 2})[0].message == "This action can't be edited."
+
+
+def test_malformed_schema_is_not_editable() -> None:
+    assert _check(_pending(input_schema={"type": "nonsense"}), dict(_ARGS))[0].message == "This action can't be edited."
 
 
 def test_rule_that_now_blocks_refused() -> None:

@@ -351,13 +351,7 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
   })
 
   describe('validateMcpToolApproval', () => {
-    it('refuses an OAuth token and forwards a session to the encoded path', async () => {
-      const next = sinon.stub()
-      await validateMcpToolApproval(createMockAppConfig())(
-        createMockRequest({ user: { userId: 'u', isOAuth: true }, params: { approvalId: 'a' } }), createMockResponse(), next)
-      expect(next.firstCall.args[0].statusCode).to.equal(403)
-      expect(executeStub.called).to.be.false
-
+    it('forwards to the encoded approval path', async () => {
       executeStub.resolves({ statusCode: 200, data: {} })
       await validateMcpToolApproval(createMockAppConfig())(
         createMockRequest({ params: { approvalId: 'a/b' }, body: { x: 1 } }), createMockResponse(), sinon.stub())
