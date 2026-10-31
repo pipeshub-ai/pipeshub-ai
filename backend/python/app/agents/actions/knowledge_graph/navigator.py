@@ -13,6 +13,7 @@ from typing import Any
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
 from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    MAX_PAGE_WALK,
     KnowledgeHubService,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
@@ -262,6 +263,14 @@ class GraphNavigator:
         limit = min(max(_MIN_LIMIT, limit), _MAX_LIMIT)
         page = max(1, page)
         depth = min(max(1, depth), _MAX_DEPTH)
+        if page > MAX_PAGE_WALK:
+            # The listing's own refusal names a cursor, which navigate neither takes nor returns.
+            raise ListingFailedError(
+                f"Page {page} is past the last page a listing reaches ({MAX_PAGE_WALK}). A larger limit "
+                f"(up to {_MAX_LIMIT}) reaches the same children in fewer pages, and a created or modified "
+                "date range narrows them.",
+                400,
+            )
 
         current: NodeRef | None = None
         breadcrumbs: list[NodeRef] = []

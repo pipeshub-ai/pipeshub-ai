@@ -76,7 +76,7 @@ class BrowseRequestError(Exception):
 
 # A page number re-traverses: every page walked is one listing query, however
 # few rows it holds, so the bound counts pages. Cursors have no such cost.
-_MAX_PAGE_WALK = 50
+MAX_PAGE_WALK = 50
 
 # Filter options list the user's sources, and a tenant with more Apps and
 # collections than this has a filter dropdown nobody can use anyway.
@@ -288,9 +288,9 @@ class KnowledgeHubService:
         """One page, by cursor if given, otherwise by walking forward to `page`."""
         if cursor_token:
             return await fetch_page(cursor_token)
-        if page > _MAX_PAGE_WALK:
+        if page > MAX_PAGE_WALK:
             raise BrowseRequestError(
-                f"Invalid page: page must not exceed {_MAX_PAGE_WALK}. "
+                f"Invalid page: page must not exceed {MAX_PAGE_WALK}. "
                 f"Use the cursor from a previous response.",
                 400,
             )
