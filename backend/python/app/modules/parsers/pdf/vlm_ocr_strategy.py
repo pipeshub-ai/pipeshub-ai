@@ -630,10 +630,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             return await asyncio.shield(fut)
         except asyncio.CancelledError:
             # The thread cannot be interrupted; release what it produces once done.
+            # Done-callbacks run on the loop, and closing or unlinking can be slow.
             def _release(done: "asyncio.Future") -> None:
                 if not done.cancelled() and done.exception() is None:
                     path, doc, _ = done.result()
-                    self._release_pdf_sync(path, doc)
+                    try:
+                        done.get_loop().run_in_executor(None, self._release_pdf_sync, path, doc)
+                    except RuntimeError:  # the executor is already shut down
+                        self._release_pdf_sync(path, doc)
 
             fut.add_done_callback(_release)
             raise

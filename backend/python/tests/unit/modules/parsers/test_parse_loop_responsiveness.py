@@ -9,6 +9,7 @@ import asyncio
 import gc
 import logging
 import os
+import threading
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -112,7 +113,7 @@ class TestVlmLoadDocument:
             await strategy.load_document(blank_pdf(pages=1))
         assert not os.path.exists(seen[0])
 
-    async def test_the_temp_file_is_removed_when_the_pdf_cannot_be_opened(self, monkeypatch) -> None:
+    async def test_the_temp_file_is_removed_when_the_pdf_cannot_be_opened(self, monkeypatch: pytest.MonkeyPatch) -> None:
         paths: list[str] = []
         def failing(path: str, *a: object, **k: object) -> object:
             paths.append(path)
@@ -123,7 +124,7 @@ class TestVlmLoadDocument:
             await _strategy().load_document(b"%PDF-broken")
         assert paths and not os.path.exists(paths[0])
 
-    async def test_cancellation_while_opening_leaves_no_file(self, monkeypatch) -> None:
+    async def test_cancellation_while_opening_leaves_no_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
         paths: list[str] = []
         real = pdfplumber.open
 
@@ -140,6 +141,30 @@ class TestVlmLoadDocument:
             await task
         await asyncio.sleep(0.6)  # the thread finishes and releases its file
         assert paths and not os.path.exists(paths[0])
+
+    async def test_cancelled_open_is_released_off_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        release_threads: list[int] = []
+        real_release = VLMOCRStrategy._release_pdf_sync
+
+        def recording_release(path: str | None, doc: object) -> None:
+            release_threads.append(threading.get_ident())
+            real_release(path, doc)
+
+        monkeypatch.setattr(VLMOCRStrategy, "_release_pdf_sync", staticmethod(recording_release))
+        real_open = pdfplumber.open
+
+        def slow(*args: object, **kwargs: object) -> object:
+            time.sleep(0.3)
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
+        task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.6)
+        assert release_threads and threading.get_ident() not in release_threads
 
 
 def _table_region(rows: int, cols: int = 6) -> LayoutRegion:
