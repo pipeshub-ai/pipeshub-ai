@@ -31,7 +31,7 @@ vi.mock('@/lib/hooks/use-secret-reveal-available', () => ({
 
 vi.mock('@/config', async () => {
   const { OAuthAppSelector } = await import('../authenticate-tab/oauth-app-selector');
-  return { OAuthAppSelector, PermissionLockIcon: () => null };
+  return { OAuthAppSelector, PermissionLockIcon: () => null, ConnectorConfigureExtras: () => null };
 });
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => null }));

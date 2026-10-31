@@ -12,7 +12,7 @@ vi.mock('@/lib/store/toast-store', () => ({ toast: toastMock }));
 vi.mock('@/config', async () => ({ useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { id: 'me' } }) }));
 
 import { ShareSidebar } from '../share-sidebar';
-import type { ShareAdapter, SharedMember } from '../types';
+import { ShareFeedbackShownError, type ShareAdapter, type SharedMember } from '../types';
 
 const MEMBERS: SharedMember[] = [
   { id: 'me', type: 'user', name: 'Me Owner', role: 'OWNER', isOwner: true, isCurrentUser: true },
@@ -69,6 +69,24 @@ describe('share sidebar member removal', () => {
     await chooseRemove('Walter Writer');
     await waitFor(() => expect(toastMock.info).toHaveBeenCalledWith('Already removed', expect.anything()));
     expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('adds no toast when the adapter has already shown why removal failed', async () => {
+    const a = adapter({ removeMember: vi.fn().mockRejectedValue(new ShareFeedbackShownError('shown')) });
+    renderInTheme(<ShareSidebar open onOpenChange={() => undefined} adapter={a} />);
+
+    await chooseRemove('Walter Writer');
+    await waitFor(() => expect(a.removeMember).toHaveBeenCalled());
+    expect(toastMock.error).not.toHaveBeenCalled();
+    expect(screen.getByText('Walter Writer')).toBeTruthy();
+  });
+
+  it('toasts a removal failure the adapter did not handle', async () => {
+    const a = adapter({ removeMember: vi.fn().mockRejectedValue(new Error('boom')) });
+    renderInTheme(<ShareSidebar open onOpenChange={() => undefined} adapter={a} />);
+
+    await chooseRemove('Walter Writer');
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Failed to revoke access', { description: 'boom' }));
   });
 
   it('only mentions teams in the search placeholder when teams can be picked', async () => {

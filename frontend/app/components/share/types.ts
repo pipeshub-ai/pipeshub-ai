@@ -79,6 +79,9 @@ export interface SharedAvatarMember {
 }
 
 /** The adapter interface — each entity page implements this */
+/** Thrown by an adapter that has already shown why an action failed, so the sidebar adds no toast. */
+export class ShareFeedbackShownError extends Error {}
+
 export interface ShareAdapter {
   entityType: ShareEntityType;
   entityId: string;
