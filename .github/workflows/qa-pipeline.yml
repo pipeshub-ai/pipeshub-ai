@@ -235,8 +235,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        graph: ${{ fromJSON(needs.plan.outputs.graph_db) }}
-        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+        # The fallbacks are what a base engine that emits no such output implies:
+        # one shard, on the standard profile's graph DB.
+        graph: ${{ fromJSON(needs.plan.outputs.graph_db || '["neo4j"]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[1]') }}
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     timeout-minutes: 300
@@ -501,7 +503,11 @@ jobs:
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
       - name: Run the selected integration and e2e tests
-        run: python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "${{ matrix.graph }}" --shard "${{ matrix.shard }}/${{ needs.plan.outputs.shard_total }}"
+        env:
+          GRAPH: ${{ matrix.graph }}
+          SHARD: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ needs.plan.outputs.shard_total || '1' }}
+        run: python3 scripts/qa run --plan qa-out/plan.json --scope stack --stack managed --build --graph-db "$GRAPH" --shard "$SHARD/$SHARD_TOTAL"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

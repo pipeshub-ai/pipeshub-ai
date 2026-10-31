@@ -81,7 +81,8 @@ directory.
 **Engine version.** The plan, report and gate jobs run the base branch's engine
 against the PR's tree. A change to the engine's CLI flags or artifact schema
 rolls out in two steps: the engine first accepts both forms, then the workflow
-uses the new one.
+uses the new one. The stack matrix needs no such step: when the base engine
+emits no `shards` output, it falls back to one shard.
 
 The engine comes from the base branch, but the `pull_request` workflow file
 comes from the PR, so a PR can edit the workflow to skip the gate. The gate is
@@ -99,7 +100,9 @@ first (`scripts/qa/shard.py`). Each job runs `qa run --graph-db G --shard K/N`,
 writes `results-stack-G-KofN.json`, and lists the other shards' stack tests as
 `not_run` `scope`. The report merges the parts: an executed outcome beats
 `not_run`, and the worst executed outcome wins, so a pass on one graph DB never
-hides a fail on the other.
+hides a fail on the other. Shard jobs' logs and JUnit files share names, so in
+the report job's merged download one shard's can overwrite another's; each job's
+own artifact keeps its full set.
 
 The run jobs call `scripts/qa` from the PR's tree. Once `QA_ENFORCE` is on, a PR
 branch created before the engine landed has no `scripts/qa` and must be rebased.
