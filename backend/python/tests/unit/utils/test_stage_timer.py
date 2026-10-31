@@ -8,32 +8,32 @@ from app.utils.stage_timer import StageTimer, timing_enabled
 
 
 class TestTimingEnabled:
-    def test_defaults_to_enabled_when_unset(self, monkeypatch):
+    def test_defaults_to_enabled_when_unset(self, monkeypatch) -> None:
         monkeypatch.delenv("PIPESHUB_CHAT_TIMING", raising=False)
 
         assert timing_enabled() is True
 
     @pytest.mark.parametrize("value", ["false", "FALSE", "0", "no"])
-    def test_recognizes_disabled_values(self, monkeypatch, value):
+    def test_recognizes_disabled_values(self, monkeypatch, value) -> None:
         monkeypatch.setenv("PIPESHUB_CHAT_TIMING", value)
 
         assert timing_enabled() is False
 
-    def test_empty_value_remains_enabled(self, monkeypatch):
+    def test_empty_value_remains_enabled(self, monkeypatch) -> None:
         monkeypatch.setenv("PIPESHUB_CHAT_TIMING", "")
 
         assert timing_enabled() is True
 
 
 class TestStageTimer:
-    def test_disabled_mark_does_not_record_a_stage(self):
+    def test_disabled_mark_does_not_record_a_stage(self) -> None:
         timer = StageTimer(enabled=False)
 
         timer.mark("parse")
 
         assert timer._marks == []
 
-    def test_mark_records_elapsed_milliseconds(self, monkeypatch):
+    def test_mark_records_elapsed_milliseconds(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "app.utils.stage_timer.time.perf_counter",
             MagicMock(side_effect=[100.0, 100.25, 100.5]),
@@ -45,14 +45,14 @@ class TestStageTimer:
 
         assert timer._marks == [("parse", 250.0), ("render", 250.0)]
 
-    def test_disabled_emit_does_not_log(self):
+    def test_disabled_emit_does_not_log(self) -> None:
         logger = MagicMock()
 
         StageTimer(enabled=False).emit(logger, "chat")
 
         logger.info.assert_not_called()
 
-    def test_emit_logs_once_with_stages_and_total(self, monkeypatch):
+    def test_emit_logs_once_with_stages_and_total(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "app.utils.stage_timer.time.perf_counter",
             MagicMock(side_effect=[100.0, 100.25, 100.5]),
