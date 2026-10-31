@@ -9,6 +9,8 @@ const ACTIVITY_TOOL_LINE = /^•\s+(?:[✓✗]\s+\S.*|.+\.\.\.)$/;
 /** Live status line, e.g. `_Thinking..._` / `_Load Skill..._`. */
 const ACTIVITY_STATUS_LINE = /^_.+\.\.\._$/;
 const ACTIVITY_THINKING_HEADER = /^\*Thinking\*$/;
+/** One-line summary of a finished run, from {@link SlackActivityBuilder.collapsed}. */
+const ACTIVITY_SUMMARY_LINE = /^:thought_balloon: _.+_$/;
 
 function hasActivityMarkers(text: string): boolean {
   return text.split("\n").some((line) => {
@@ -16,7 +18,8 @@ function hasActivityMarkers(text: string): boolean {
     return (
       ACTIVITY_TOOL_LINE.test(trimmed) ||
       ACTIVITY_STATUS_LINE.test(trimmed) ||
-      ACTIVITY_THINKING_HEADER.test(trimmed)
+      ACTIVITY_THINKING_HEADER.test(trimmed) ||
+      ACTIVITY_SUMMARY_LINE.test(trimmed)
     );
   });
 }
@@ -251,6 +254,32 @@ export class SlackActivityBuilder {
   /** True when there is a tools/thinking/narration/sub-agent timeline worth keeping. */
   hasTimeline(): boolean {
     return this.timeline.length > 0;
+  }
+
+  /**
+   * The finished run as a one-line summary, with the timeline in an
+   * attachment: Slack folds attachment text longer than a few lines behind its
+   * own "Show more", so the answer below is not pushed down by the thinking.
+   */
+  collapsed(): { text: string; attachments: { text: string; mrkdwn_in: ["text"] }[] } {
+    const count = (kind: TimelineEntry["kind"]) =>
+      this.timeline.filter((e) => e.kind === kind).length;
+    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const tools = count("tool");
+    const agents = count("subagent");
+    const parts = [
+      count("reasoning") ? "thought" : "",
+      tools ? `used ${plural(tools, "tool")}` : "",
+      agents ? `delegated to ${plural(agents, "agent")}` : "",
+    ].filter(Boolean);
+    const line = parts.length
+      ? parts.join(", ").replace(/, ([^,]*)$/, " and $1")
+      : "worked through it";
+    this.statusMessage = "";
+    return {
+      text: `:thought_balloon: _${line.charAt(0).toUpperCase()}${line.slice(1)}_`,
+      attachments: [{ text: this.format(), mrkdwn_in: ["text"] }],
+    };
   }
 
   format(): string {

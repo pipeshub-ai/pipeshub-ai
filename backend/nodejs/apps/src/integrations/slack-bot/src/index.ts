@@ -1369,10 +1369,20 @@ async function processSlackMessage(
       return;
     }
 
-    // Keep tools/thinking timeline above the answer; remove a bare Thinking placeholder.
+    // Collapse the tools/thinking timeline above the answer; remove a bare Thinking placeholder.
     if (activityBuilder.hasTimeline()) {
-      activityBuilder.setStatus("");
-      await updateActivityMessage(activityBuilder.format());
+      if (waitingMessageTs) {
+        try {
+          await typedClient.chat.update({
+            channel: typedMessage.channel!,
+            ts: waitingMessageTs,
+            ...activityBuilder.collapsed(),
+            ...NO_UNFURL_OPTIONS,
+          });
+        } catch (error) {
+          console.error("Error collapsing Slack activity message:", error);
+        }
+      }
     } else if (waitingMessageTs) {
       try {
         await typedClient.apiCall("chat.delete", {
