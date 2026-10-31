@@ -2305,7 +2305,8 @@ components:
         what the call does to data before anything runs; an edit that fails a check runs nothing,
         leaves the card open with `editErrors`, and the card can be answered again. A deny may
         carry a note (`feedback`) for the model to follow. `arguments` goes only with `allow` and
-        not with `remember`; `feedback` goes only with `deny`.
+        not with `remember`; `feedback` goes only with `deny`; `rememberForConversation` goes only
+        with `allow`, and not with `remember` or `arguments`.
       required: [approvalId, decision]
       properties:
         approvalId:
@@ -2319,6 +2320,13 @@ components:
           description: |
             "Don't ask again for this tool": the answer becomes the person's own rule for the
             tool (Pre-approved for allow, Deny for deny).
+        rememberForConversation:
+          type: boolean
+          description: |
+            "Allow for this conversation": the tool runs without a card for the rest of the
+            conversation. It lapses if the tool's input schema changes, and does not cover a call
+            that does more to data than this one or a tool a rule blocks. Goes only with `allow`,
+            and not with `remember` or `arguments`.
         argsHash:
           type: string
           maxLength: 64

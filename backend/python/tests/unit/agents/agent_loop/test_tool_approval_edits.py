@@ -9,15 +9,24 @@ from pydantic import ValidationError
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
+from app.agent_loop_lib.hooks.middleware.context import ToolCallContext
+from app.agent_loop_lib.hooks.middleware.decisions import PreDecision
 from app.agents.agent_loop import tool_approvals as approvals
 from app.agents.agent_loop.tool_approvals import ToolRules, args_hash, check_edit
+from app.agents.constants.mcp_server_constants import get_conversation_allow_path
 from tests.unit.agents.agent_loop.test_tool_approvals import (
     _DONE,
+    _FILE_IT,
+    _adapter,
     _answer,
     _ask,
+    _context,
+    _gate,
+    _request,
     _result_of,
     _Server,
     _Store,
+    _ToolsetTool,
 )
 
 _SCHEMA: dict[str, Any] = {
@@ -320,3 +329,120 @@ def test_answer_reads_the_wire_names() -> None:
         {"approvalId": "a", "decision": "allow", "argsHash": _HASH, "arguments": {"title": "x"}},
     )
     assert (answer.args_hash, answer.arguments) == (_HASH, {"title": "x"})
+
+
+# ---------------------------------------------------------------------------
+# Allow for this conversation
+# ---------------------------------------------------------------------------
+
+_SQL_PATH = "/tools/mariadb/execute_query"
+_SQL_SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+
+async def _allowed_in_conversation(store: _Store, mcp: _Server) -> None:
+    approval_id = await _ask(store, mcp)
+    await _answer(store, mcp, approval_id, "allow", answer_fields={"remember_for_conversation": True})
+    assert len(mcp.calls) == 1
+
+
+async def test_allowed_for_conversation_runs_the_next_call_without_a_card() -> None:
+    store, mcp = _Store(), _Server()
+    await _allowed_in_conversation(store, mcp)
+    path = get_conversation_allow_path("conv-1", "mcp", "inst-1", "create_issue")
+    assert set(store.values[path]) == {"userId", "schemaHash", "kind"} and store.ttls[path] == approvals._RECORD_TTL_SECONDS
+    again = await _request(_context(store), mcp, _FILE_IT, _DONE)
+    assert len(mcp.calls) == 2 and again.events.of(EventType.TOOL_BLOCKED) == []
+
+
+async def test_a_declined_or_blocked_run_saves_no_allow() -> None:
+    store, mcp = _Store(), _Server()
+    approval_id = await _ask(store, mcp)
+    await _answer(store, mcp, approval_id, "deny")
+    assert not [k for k in store.values if "conversation-allows" in k]
+
+
+async def test_another_conversation_still_asks() -> None:
+    store, mcp = _Store(), _Server()
+    await _allowed_in_conversation(store, mcp)
+    await _request(_context(store, conversation_id="conv-2"), mcp, _FILE_IT, _DONE)
+    assert len(mcp.calls) == 1
+
+
+async def test_another_user_in_the_conversation_still_asks() -> None:
+    store, mcp = _Store(), _Server()
+    await _allowed_in_conversation(store, mcp)
+    await _request(_context(store, user_id="user-2"), mcp, _FILE_IT, _DONE)
+    assert len(mcp.calls) == 1
+
+
+async def test_a_changed_schema_asks_again() -> None:
+    store = _Store()
+    adapter = _adapter(read_only=False)
+    path = get_conversation_allow_path("conv-1", "mcp", "inst-1", "create_issue")
+    store.values[path] = {"userId": "user-1", "schemaHash": args_hash({"type": "object"}), "kind": "write"}
+    assert (await _gate(_context(store), adapter)).decision == PreDecision.ALLOW
+    store.values[path]["schemaHash"] = args_hash({"type": "object", "properties": {}})
+    assert (await _gate(_context(store), adapter)).decision == PreDecision.ASK
+
+
+async def test_an_unreadable_allow_asks() -> None:
+    store = _Store()
+    store.values[get_conversation_allow_path("conv-1", "mcp", "inst-1", "create_issue")] = {
+        "userId": "user-1", "schemaHash": args_hash({"type": "object"}), "kind": "write",
+    }
+    context = _context(store)
+    real_get = store.get_config
+
+    async def _get(key: str, *a: Any, **k: Any) -> Any:  # noqa: ANN401
+        if "conversation-allows" in key:
+            raise ConnectionError("the store is down")
+        return await real_get(key, *a, **k)
+
+    store.get_config = _get  # type: ignore[method-assign]
+    assert (await _gate(context, _adapter(read_only=False))).decision == PreDecision.ASK
+
+
+async def _sql_gate(store: _Store, query: str, *, rule: Any = None) -> Any:  # noqa: ANN401
+    context = _context(store)
+    target = approvals.ApprovalTarget(
+        source="toolset", instance_id="db-1", tool_name="execute_query", owner="MariaDB", kind="write",
+        tool=_ToolsetTool(_SQL_SCHEMA), defaults="mcp", personal=True,  # type: ignore[arg-type]
+    )
+    context.tool_state.setdefault(approvals.TOOLSET_TOOLS_BY_PATH, {})[_SQL_PATH] = target
+    if rule:
+        await approvals.save_instance_rules(store, ToolRules(tools={"execute_query": rule}), instance_id="db-1")  # type: ignore[arg-type]
+    ctx = ToolCallContext(tool_path=_SQL_PATH, tool_input={"query": query})
+
+    async def _next() -> None:
+        return None
+
+    await approvals.approval_gate(context)(ctx, _next)
+    return ctx
+
+
+async def test_a_riskier_call_asks_again() -> None:
+    store = _Store()
+    store.values[get_conversation_allow_path("conv-1", "toolset", "db-1", "execute_query")] = {
+        "userId": "user-1", "schemaHash": args_hash(_SQL_SCHEMA), "kind": "write",
+    }
+    assert (await _sql_gate(store, "SELECT 1", rule="ask")).decision == PreDecision.ALLOW
+    assert (await _sql_gate(store, "DROP TABLE t", rule="ask")).decision == PreDecision.ASK
+
+
+async def test_a_block_rule_still_blocks() -> None:
+    store = _Store()
+    store.values[get_conversation_allow_path("conv-1", "toolset", "db-1", "execute_query")] = {
+        "userId": "user-1", "schemaHash": args_hash(_SQL_SCHEMA), "kind": "write",
+    }
+    assert (await _sql_gate(store, "SELECT 1", rule="block")).decision == PreDecision.DENY
+
+
+def test_answer_rejects_conversation_allow_with_deny_remember_or_arguments() -> None:
+    for extra in ({"decision": "deny"}, {"remember": True}, {"arguments": {}}):
+        with pytest.raises(ValidationError):
+            approvals.ToolApprovalAnswer(**{"approval_id": "a", "decision": "allow", "remember_for_conversation": True, **extra})
+
+
+def test_answer_reads_remember_for_conversation_from_the_wire() -> None:
+    answer = approvals.ToolApprovalAnswer.model_validate({"approvalId": "a", "decision": "allow", "rememberForConversation": True})
+    assert answer.remember_for_conversation is True

@@ -51,6 +51,7 @@ from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
+    get_conversation_allow_path,
     get_mcp_tool_approval_claim_path,
     get_mcp_tool_approval_path,
     get_mcp_user_tool_rules_path,
@@ -162,6 +163,8 @@ class ToolApprovalAnswer(MCPCamelModel):
     decision: Decision
     # "Don't ask again for this tool": the answer becomes the person's rule for it.
     remember: bool = False
+    # "Allow for this conversation": no more cards for this tool in this conversation.
+    remember_for_conversation: bool = False
     # The arguments the card showed (`args_hash`), and the person's edit of them, to run instead.
     args_hash: str = Field(default="", max_length=64)
     arguments: dict[str, Any] | None = None
@@ -176,6 +179,8 @@ class ToolApprovalAnswer(MCPCamelModel):
             text = json.dumps(self.arguments, separators=(",", ":"), default=str, ensure_ascii=False)
             if len(text) > _MAX_EDITED_ARGUMENT_CHARS:
                 raise ValueError("The edited arguments are too large")
+        if self.remember_for_conversation and (self.decision != "allow" or self.remember or self.arguments is not None):
+            raise ValueError("Allowing for the conversation goes only with a plain allow")
         if self.feedback is not None and self.decision != "deny":
             raise ValueError("Feedback goes only with deny")
         return self
@@ -634,11 +639,43 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target))
-        elif verdict.rule == "ask":
+        elif verdict.rule == "ask" and not await _allowed_for_conversation(context, target):
             await _ask(context, ctx, target)
         await next_fn()
 
     return _gate
+
+
+async def _allowed_for_conversation(context: "AgentContext", target: ApprovalTarget) -> bool:
+    """Whether this person already allowed this tool, as it is now, for this conversation."""
+    schema = _input_schema(target.tool)
+    if schema is None or not context.conversation_id:
+        return False
+    path = get_conversation_allow_path(context.conversation_id, target.source, target.instance_id, target.tool_name)
+    try:
+        raw = await _read(context.config_service, path)
+    except Exception as e:
+        # Asking again is the safe answer to a store that can't be read.
+        logger.warning(f"Couldn't read the conversation allow for {target.tool_name}: {e}")
+        return False
+    return (
+        isinstance(raw, dict) and raw.get("userId") == context.user_id and raw.get("schemaHash") == args_hash(schema)
+        and raw.get("kind") in _KIND_RANK and _KIND_RANK[target.kind] <= _KIND_RANK[raw["kind"]]
+    )
+
+
+async def _allow_for_conversation(context: "AgentContext", pending: PendingCall, target: ApprovalTarget) -> None:
+    schema = _input_schema(target.tool)
+    if schema is None or not pending.conversation_id:
+        return
+    path = get_conversation_allow_path(pending.conversation_id, pending.source, pending.instance_id, pending.tool_name)
+    try:
+        await _write(
+            context.config_service, path,
+            {"userId": pending.user_id, "schemaHash": args_hash(schema), "kind": pending.kind}, ttl_seconds=_RECORD_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Couldn't save the conversation allow for {pending.tool_name}: {e}")
 
 
 async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget) -> None:
@@ -927,6 +964,8 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             outcome = await _run(context, run, target, pending, call_id, edited)
             if answer.remember and outcome.status != "blocked":
                 await _remember(context, pending, "allow")
+            if answer.remember_for_conversation and outcome.status != "blocked":
+                await _allow_for_conversation(context, pending, target)
     finally:
         if claim.status == "claimed":
             # Kept even when the run is stopped mid-call, so a later answer says what may have happened.

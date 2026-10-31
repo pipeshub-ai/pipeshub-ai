@@ -166,5 +166,9 @@ def get_mcp_tool_approval_path(approval_id: str) -> str:
     return f"{MCP_ROOT}/tool-approvals/pending/{approval_id}"
 
 
+def get_conversation_allow_path(conversation_id: str, source: str, instance_id: str, tool_name: str) -> str:
+    return f"{MCP_ROOT}/tool-approvals/conversation-allows/{conversation_id}/{source}:{instance_id}:{tool_name}"
+
+
 def get_mcp_tool_approval_claim_path(approval_id: str) -> str:
     return f"{MCP_ROOT}/tool-approvals/claims/{approval_id}"
