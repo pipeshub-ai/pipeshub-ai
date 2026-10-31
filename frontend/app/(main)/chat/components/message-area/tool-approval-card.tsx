@@ -90,7 +90,12 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   useEffect(() => {
     const invalid = focusTick ? cardRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') : null;
     // A list field marks its group; the input inside takes the focus.
-    (invalid?.matches('input, textarea, button') ? invalid : invalid?.querySelector<HTMLElement>('input, textarea, button'))?.focus();
+    const target = invalid?.matches('input, textarea, button') ? invalid : invalid?.querySelector<HTMLElement>('input, textarea, button');
+    if (!target) return;
+    // The errors grew the card under the composer: bring back the actions, which sit below every field.
+    // One scroll only: a second call would cancel the scroller's smooth scroll.
+    target.focus({ preventScroll: true });
+    actionsRef.current?.scrollIntoView?.({ block: 'nearest' });
   }, [focusTick]);
 
   const tool = approvalToolLabel(approval);
@@ -320,8 +325,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
         </Flex>
       )}
 
-      {/* The margin clears the ghost buttons, which reach past the row. */}
-      <Flex ref={actionsRef} mt="3" align="center" gap="2" wrap="wrap" style={{ scrollMarginBottom: 'var(--space-4)' }}>
+      {/* The margin clears the sticky composer and the ghost buttons, which reach past the row. */}
+      <Flex ref={actionsRef} mt="3" align="center" gap="2" wrap="wrap" style={{ scrollMarginBottom: 'calc(var(--composer-dock-height, 0px) + var(--space-4))' }}>
         <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} loading={sending} onClick={() => void allow()}>
           {t('chat.toolApproval.allow')}
         </Button>

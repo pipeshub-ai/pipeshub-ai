@@ -273,6 +273,27 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(scrollIntoView.mock.contexts.at(-1)).toBe(screen.getByRole('button', { name: 'Allow' }).parentElement);
   });
 
+  it('brings its actions back into view when the server refuses an edit, and focuses the field without scrolling', async () => {
+    const scrollIntoView = vi.fn();
+    Object.assign(Element.prototype, { scrollIntoView });
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    chat.validate.mockResolvedValueOnce([{ path: '/title', message: 'Title is too vague' }]);
+    renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Bug' } });
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    scrollIntoView.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('Title is too vague')).toBeTruthy();
+    const actions = screen.getByRole('button', { name: 'Allow' }).parentElement;
+    await waitFor(() => expect(scrollIntoView.mock.contexts).toContain(actions));
+    expect(focus.mock.contexts.at(-1)).toBe(titleField());
+    expect(focus.mock.calls.at(-1)).toEqual([{ preventScroll: true }]);
+    focus.mockRestore();
+  });
+
   it('shows nested values read-only', () => {
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
