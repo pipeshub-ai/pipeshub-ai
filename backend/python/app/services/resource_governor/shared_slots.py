@@ -28,6 +28,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -43,9 +44,17 @@ _MUTEX_FILE = "mutex"
 class SlotHold:
     """Slots taken by one ``try_acquire``; ``release`` gives them back once."""
 
-    def __init__(self, owner: SharedSlots | None = None, indices: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        owner: SharedSlots | None = None,
+        indices: list[int] | None = None,
+        held_before: int = 0,
+    ) -> None:
         self._owner = owner
         self._indices = indices or []
+        # Slots held by anyone when these were taken, counted under the same
+        # mutex: lets a caller tell "mine is the only one" without a second look.
+        self.held_before = held_before
 
     def release(self) -> None:
         indices, self._indices = self._indices, []
@@ -127,7 +136,7 @@ class SharedSlots:
                         _unlock(fd)
                 if len(taken) == count and (held == 0 or held + count <= limit):
                     self._held_here.update(taken)
-                    return SlotHold(self, taken)
+                    return SlotHold(self, taken, held)
                 for index in taken:
                     _unlock(self._slot_fds[index])
                 return None
@@ -137,6 +146,32 @@ class SharedSlots:
                 raise
             finally:
                 _unlock(self._mutex_fd)
+
+    def held_count(self, budget: float = 1.0) -> int:
+        """Slots held now, by any process. Read-only: takes the mutex, then
+        probes each slot and puts it straight back.
+
+        Raises ``TimeoutError`` if the mutex stays taken for *budget* seconds.
+        """
+        deadline = time.monotonic() + budget
+        while True:
+            with self._lock:
+                if self._closed:
+                    return 0
+                if _try_lock(self._mutex_fd):
+                    try:
+                        held = 0
+                        for index, fd in enumerate(self._slot_fds):
+                            if index in self._held_here or not _try_lock(fd):
+                                held += 1
+                            else:
+                                _unlock(fd)
+                        return held
+                    finally:
+                        _unlock(self._mutex_fd)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("shared slot mutex stayed busy")
+            time.sleep(0.001)
 
     def close(self) -> None:
         """Close every file, which drops this process's locks with them."""
