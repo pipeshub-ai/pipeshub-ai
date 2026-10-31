@@ -25,6 +25,7 @@ COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(\S.*?)\s*$")
 RUN_URL = re.compile(r"https://\S+/actions/runs/\d+")
 MAX_PROBES = 10
+MAX_INPUT_TESTS = 300  # ~250 bytes each, so far under planner.MAX_INPUT_BYTES
 
 
 def gather(pr: int, repo: str | None) -> dict[str, Any]:
@@ -63,6 +64,20 @@ def build_input(plan: dict[str, Any], results: dict[str, Any] | None, changeset:
     cfg = cfg or config_mod.load()
     files = [f["path"] for f in changeset["files"]]
     outcome = {t["id"]: t["outcome"] for t in results["tests"]} if results is not None else {}
+    def state(t: dict[str, Any]) -> str | None:
+        return outcome.get(t["id"], "not_run") if results is not None else None
+
+    def keep(t: dict[str, Any]) -> bool:
+        # A full run's bulk "full run: ..." reasons say nothing about this change.
+        return (any(not w.startswith("full run:") for w in t.get("why", []))
+                or any(f in plan.get("flows", {}) for f in t.get("flows", []))
+                or state(t) not in (None, "pass", "flaky"))
+
+    def rank(t: dict[str, Any]) -> int:
+        return 0 if state(t) in BLOCKING else 1 if state(t) == "not_run" else 2
+
+    tests = [{"id": t["id"], "why": t.get("why", []), "flows": t.get("flows", []), "outcome": state(t)}
+             for t in sorted(filter(keep, plan["tests"]), key=rank)[:MAX_INPUT_TESTS]]
     return {
         "pr": {
             "number": pr.get("number"),
@@ -72,8 +87,9 @@ def build_input(plan: dict[str, Any], results: dict[str, Any] | None, changeset:
                        for i in (pr.get("issues") or [])[:MAX_ISSUES]],
             "commits": list(pr.get("commits") or []),
         },
-        "tests": [{"id": t["id"], "why": t.get("why", []), "flows": t.get("flows", []),
-                   "outcome": outcome.get(t["id"], "not_run") if results is not None else None} for t in plan["tests"]],
+        "tests": tests,
+        "tests_total": len(plan["tests"]),
+        "tests_omitted": len(plan["tests"]) - len(tests),
         "files": files,
         "modules": _modules(cfg, files),
         "flows": sorted(plan.get("flows", {})),

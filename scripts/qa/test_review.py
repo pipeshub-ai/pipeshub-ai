@@ -68,6 +68,37 @@ class TestReview(ReviewCase):
         self.assertEqual(rv["requirements"][0]["result"], "fail")
         self.assertEqual(rv["dropped"], [{"id": "py:nope.py", "why": "not in this plan"}])
 
+    def big_plan(self) -> tuple[dict, dict]:
+        bulk = [{"id": f"e2e:t/{i}.spec.ts", "flows": [], "why": ["full run: tracked file x"]} for i in range(6000)]
+        plan = {**self.plan, "tests": self.plan["tests"] + bulk}
+        res = {"tests": [{"id": t["id"], "outcome": "fail" if i % 1000 == 7 else "pass"} for i, t in enumerate(plan["tests"])]}
+        return plan, res
+
+    def test_review_input_stays_bounded_and_keeps_failures(self) -> None:
+        plan, res = self.big_plan()
+        failed = {t["id"] for t in res["tests"] if t["outcome"] == "fail"}
+        rv_input = review.build_input(plan, res, self.changeset, {"title": "t"}, cfg=self.cfg)
+        self.assertLess(len(json.dumps(rv_input)), planner.MAX_INPUT_BYTES)
+        self.assertLessEqual(len(rv_input["tests"]), review.MAX_INPUT_TESTS)
+        self.assertLessEqual(failed, {t["id"] for t in rv_input["tests"]})
+        self.assertEqual(rv_input["tests_total"], len(plan["tests"]))
+        self.assertEqual(rv_input["tests_omitted"], len(plan["tests"]) - len(rv_input["tests"]))
+
+    def test_adapter_none_on_a_big_plan_is_skipped(self) -> None:
+        plan, res = self.big_plan()
+        src = self.root / "qa-out" / "big-input.json"
+        src.write_text(json.dumps({"filler": "x" * (planner.MAX_INPUT_BYTES + 1)}), encoding="utf-8")
+        status = planner.ask(self.root, "none", "review", src, self.root / "qa-out" / "big-out.json")
+        self.assertEqual(status["status"], "skipped")
+
+    def test_an_omitted_but_planned_id_cited_by_the_model_is_kept(self) -> None:
+        plan, res = self.big_plan()
+        omitted = "e2e:t/5.spec.ts"
+        rv_input = review.build_input(plan, res, self.changeset, {"title": "t"}, cfg=self.cfg)
+        self.assertNotIn(omitted, {t["id"] for t in rv_input["tests"]})
+        rv = review.merge(self.cfg, plan, res, rv_input, self.llm([{"text": "r", "tests": [omitted]}]), self.rows)
+        self.assertEqual(rv["requirements"][0]["tests"], [{"id": omitted, "outcome": "pass"}])
+
     def test_model_failure_falls_back_to_the_pr_bullets(self) -> None:
         llm = self.llm([{"text": "ignored", "tests": [ACL]}], [{"area": "a", "probe": "p", "test": ACL}], status="failed")
         rv = self.review(llm, self.results(), body="- Users can rename a KB\n- Rename is audited")

@@ -193,7 +193,7 @@ def ask(root: Path, adapter: str, task: str, input_path: Path, output_path: Path
         if adapter not in ADAPTERS:
             raise RuntimeError(f"unknown adapter {adapter!r}; known: {sorted(ADAPTERS)}")
         # plan caps its own input (_capped); other tasks send theirs whole, so they are refused before any call.
-        if task != "plan" and input_path.stat().st_size > MAX_INPUT_BYTES:
+        if task != "plan" and adapter != "none" and input_path.stat().st_size > MAX_INPUT_BYTES:
             raise RuntimeError(f"{input_path.name} is over {MAX_INPUT_BYTES} bytes")
         result = ADAPTERS[adapter](root, input_path, timeout, task)
         # Like validate.shape_problems: engine-owned "_" keys are not part of the reply.
