@@ -350,7 +350,21 @@ def build(cfg: Config, suites: Iterable[str] | None = None) -> list[dict[str, An
                 r["status"] = "quarantined"
         rows.extend(new)
     rows.sort(key=lambda r: r["id"])
+    stamp(cfg, rows)
     return rows
+
+
+def stamp(cfg: Config, rows: list[dict[str, Any]]) -> None:
+    """Set module (first match in load order), flows (load order) and best priority on each row."""
+    rank = ("P0", "P1", "P2").index
+    for r in rows:
+        r["module"] = next((m["id"] for m in cfg.modules if globs.match_any(r["path"], m.get("paths", []))), None)
+        mine = [
+            f for f in cfg.flows
+            if globs.match_any(r["path"], f.get("tests", [])) or set(f.get("markers", [])) & set(r["markers"])
+        ]
+        r["flows"] = [f["id"] for f in mine]
+        r["priority"] = min((f["priority"] for f in mine), key=rank, default=None)
 
 
 def _is_planned(cfg: Config, row: dict[str, Any]) -> bool:

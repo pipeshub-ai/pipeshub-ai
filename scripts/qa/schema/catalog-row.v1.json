@@ -81,6 +81,26 @@
     "tests": {
       "type": "integer"
     },
+    "module": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        null
+      ]
+    },
     "tags": {
       "type": "array",
       "items": {

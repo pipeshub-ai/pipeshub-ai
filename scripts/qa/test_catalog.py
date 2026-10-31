@@ -64,6 +64,25 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(row["markers"], ["integration", "jira"])
         self.assertTrue(row["ordered"])
 
+    def test_rows_get_module_flows_priority(self) -> None:
+        r = self.rows["it:retrieval/test_search.py::test_acl_filter"]
+        self.assertEqual((r["module"], r["flows"], r["priority"]), ("retrieval", ["search"], "P0"))
+        r = self.rows["e2e:tests/e2e/login.spec.ts"]
+        self.assertEqual((r["flows"], r["priority"]), (["login"], "P1"))
+        r = self.rows["py:tests/unit/test_patch_only.py"]
+        self.assertEqual((r["module"], r["flows"], r["priority"]), (None, [], None))
+
+    def test_first_module_wins(self) -> None:
+        self.cfg.modules[-1]["paths"] = self.cfg.modules[-1]["paths"] + ["integration-tests/**"]
+        rows = catalog.index(catalog.build(self.cfg))
+        self.assertEqual(rows["it:retrieval/test_search.py::test_acl_filter"]["module"], "retrieval")
+
+    def test_overlay_flow_absent_without_overlay(self) -> None:
+        root, tmp = testing.make_repo(overlay=False)
+        self.addCleanup(tmp.cleanup)
+        rows = catalog.build(config.load(root))
+        self.assertFalse([r for r in rows if "usage" in r["flows"]])
+
     def test_needs_include_conftest_secrets_and_the_stack(self) -> None:
         row = self.rows["it:connectors/jira/test_jira.py::TestJira::test_tc_incr_001_incremental"]
         self.assertIn("env:JIRA_TOKEN", row["needs"])
