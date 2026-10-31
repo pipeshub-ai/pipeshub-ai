@@ -9,7 +9,7 @@ import os
 import unittest
 from unittest import mock
 
-from qa import catalog, classify, config, globs, paths, testing
+from qa import catalog, classify, config, globs, paths, schema, testing
 
 
 class TestGlobs(unittest.TestCase):
@@ -56,6 +56,26 @@ class TestBuild(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.cfg = config.load(self.root)
         self.rows = catalog.index(catalog.build(self.cfg))
+
+    def test_planned_row_carries_steps_expected_and_data(self) -> None:
+        path = "backend/python/tests/unit/services/graph_db/test_lists_nothing_when_empty.py"
+        doc = (
+            '"""TC-GRAPH-DB-001: Lists nothing when empty\nsteps: start with no records\nsteps: list records\n'
+            'expected: an empty list\ndata: none\ncovers: backend/python/app/services/graph_db/provider.py\n"""\n'
+        )
+        body = "import pytest\n\npytestmark = [pytest.mark.planned]\n\n\ndef test_lists_nothing_when_empty() -> None: ...\n"
+        testing.write(self.root, path, doc + body)
+        config.clear_cache()
+        row = catalog.index(catalog.build(self.cfg))[f"py:{path.removeprefix('backend/python/')}"]
+        self.assertEqual(row["status"], "planned")
+        self.assertEqual(row["steps"], ["start with no records", "list records"])
+        self.assertEqual(row["expected"], ["an empty list"])
+        self.assertEqual(row["data"], ["none"])
+        self.assertEqual(schema.check(row, "catalog-row.v1.json"), [])
+        testing.write(self.root, path, doc + body.replace("pytestmark = [pytest.mark.planned]\n\n", ""))
+        row = catalog.index(catalog.build(self.cfg))[row["id"]]
+        self.assertEqual(row["status"], "active")
+        self.assertNotIn("steps", row)
 
     def test_integration_tests_are_listed_one_per_test_with_spec(self) -> None:
         row = self.rows["it:connectors/jira/test_jira.py::TestJira::test_tc_sync_001_full_sync"]

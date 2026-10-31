@@ -13,7 +13,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ PREFIX = {
 }
 
 TC_LINE = re.compile(r"^\s*(TC-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d{3})\s*:\s*(.+?)\s*$")
-TAG_LINE = re.compile(r"^\s*(covers|needs)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+TAG_LINE = re.compile(r"^\s*(covers|needs|steps|expected|data)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 PATHISH = re.compile(r"^[\w.*?/-]+/[\w.*?/-]*$")
 
 # Plugin and execution markers that say nothing about what a test covers.
@@ -52,6 +52,9 @@ class Spec:
     title: str
     covers: list[str]
     needs: list[str]
+    steps: list[str] = field(default_factory=list)
+    expected: list[str] = field(default_factory=list)
+    data: list[str] = field(default_factory=list)
 
 
 def parse_docstring(doc: str | None) -> Spec:
@@ -63,9 +66,13 @@ def parse_docstring(doc: str | None) -> Spec:
     tc, title = (m.group(1), m.group(2)) if m else (None, first)
     covers: list[str] = []
     needs: list[str] = []
+    prose: dict[str, list[str]] = {"steps": [], "expected": [], "data": []}
     for line in lines[1:]:
         t = TAG_LINE.match(line)
         if not t:
+            continue
+        if t.group(1).lower() in prose:
+            prose[t.group(1).lower()].append(t.group(2))
             continue
         items = [i.strip() for i in t.group(2).split(",") if i.strip()]
         # Prose like "covers: the retry path" is not a tag: values must look like paths / kinds.
@@ -73,7 +80,7 @@ def parse_docstring(doc: str | None) -> Spec:
             covers.extend(items)
         elif t.group(1).lower() == "needs" and all(":" in i for i in items):
             needs.extend(items)
-    return Spec(tc, title, covers, needs)
+    return Spec(tc, title, covers, needs, **prose)
 
 
 def suite_of(path: str, cfg: Config) -> dict[str, Any] | None:
@@ -323,6 +330,9 @@ def _row(
         "status": "active",
     }
     row.update(extra)
+    for k in ("steps", "expected", "data"):
+        if getattr(spec, k):
+            row[k] = getattr(spec, k)
     return row
 
 
@@ -346,8 +356,11 @@ def build(cfg: Config, suites: Iterable[str] | None = None) -> list[dict[str, An
         for r in new:
             if _is_planned(cfg, r):
                 r["status"] = "planned"
-            elif r["id"] in quarantined:
-                r["status"] = "quarantined"
+            else:
+                for k in ("steps", "expected", "data"):
+                    r.pop(k, None)
+                if r["id"] in quarantined:
+                    r["status"] = "quarantined"
         rows.extend(new)
     rows.sort(key=lambda r: r["id"])
     stamp(cfg, rows)

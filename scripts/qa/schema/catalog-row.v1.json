@@ -106,6 +106,24 @@
       "items": {
         "type": "string"
       }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   }
 }

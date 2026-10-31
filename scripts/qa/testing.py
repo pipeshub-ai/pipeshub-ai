@@ -19,6 +19,7 @@ family = "pytest"
 edition = "oss"
 cwd = "backend/python"
 grain = "file"
+planned = true
 tests = ["backend/python/tests/unit/**/test_*.py"]
 mirror = [{ src = "backend/python/app/", test = "backend/python/tests/unit/", style = "py" }]
 import_graph = "python"
@@ -49,6 +50,7 @@ edition = "oss"
 marker_rules = true
 cwd = "integration-tests"
 grain = "test"
+planned = true
 stack = true
 tests = ["integration-tests/**/test_*.py"]
 exclude = ["integration-tests/unit/**"]
