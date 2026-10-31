@@ -364,6 +364,28 @@ describe('ToolApprovalCard: editing and notes', () => {
     });
   });
 
+  it('leaves out a field the call never set when the person emptied it again', async () => {
+    renderInTheme(
+      <ToolApprovalCard
+        approval={editable({
+          arguments: { title: 'Login fails' },
+          inputSchema: { type: 'object', properties: { title: { type: 'string' }, assignee: { type: 'string' } } },
+        })}
+        isLatest
+        rowId="row-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(titleField(), { target: { value: 'Login broken' } });
+    const assignee = screen.getByRole('textbox', { name: /Assignee/ });
+    fireEvent.change(assignee, { target: { value: 'sam' } });
+    fireEvent.change(assignee, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+
+    await waitFor(() => expect(chat.streamMessageForSlot).toHaveBeenCalled());
+    expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', arguments: { title: 'Login broken' } });
+  });
+
   it('still sends when the check itself fails, for the server to decide', async () => {
     chat.validate.mockRejectedValueOnce(new Error('offline'));
     renderInTheme(<ToolApprovalCard approval={editable()} isLatest rowId="row-1" />);
@@ -427,10 +449,10 @@ describe('ToolApprovalCard: editing and notes', () => {
     expect(sent()).toEqual({ approvalId: 'ap-1', decision: 'allow', argsHash: 'h1', remember: true });
   });
 
-  it('offers "Allow for this conversation" on a card that can\'t set a rule', () => {
+  it('offers neither "ask again" choice on a card whose rule an admin owns', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ canRemember: false })} isLatest />);
     expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
-    expect(screen.getByRole('checkbox', { name: 'Allow for this conversation' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Allow for this conversation' })).toBeNull();
   });
 
   it('Esc leaves edit mode and keeps the edit; Enter in a field sends nothing', () => {
