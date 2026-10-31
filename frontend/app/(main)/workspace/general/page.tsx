@@ -25,6 +25,7 @@ import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
+import { GeneralPageExtras } from '@/config';
 
 // ========================================
 // Read-only view for non-admin users
@@ -496,6 +497,8 @@ export default function GeneralPage() {
             </SettingsRow>
           </SettingsSection>
         </Box>
+
+        <GeneralPageExtras />
 
         {/* ── Data Collection Settings Section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}
