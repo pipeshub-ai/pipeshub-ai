@@ -19,14 +19,17 @@ deletes data at Block. A toolset tool: reads and changes at Allow, one that dele
   follow. The model carries on from there in the same reply; it never re-creates the call.
   "Don't ask again" also saves the answer as the person's rule for an MCP tool or a personal
   toolset; an org toolset's rules change only in its rules editor.
-- Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
-  service account): there, Ask is Block. Only a pre-approved tool runs there.
+- A card is answered in the PipesHub web app, or in Slack when the bot's "Approve actions from
+  Slack" setting is on (client `slack-approvals`). Nobody can answer one anywhere else (Slack
+  without that setting, the API, the MCP gateway, a service account): there, Ask is Block. Only a
+  pre-approved tool runs there.
 
 Enforced at the tool executor's one checkpoint (PreToolUse). `MCP_TOOL_APPROVALS=false` turns it
 off for MCP tools, `TOOLSET_TOOL_APPROVALS=false` for toolset tools. Approvals are bound to the
 signed-in user and the conversation they were asked in, and are answered only from a run someone
 is watching. Whether a run is watched rests on the `client-name` header, which Node sets to `api`
-for OAuth and personal access tokens, so only a web sign-in can claim the web app's name.
+for OAuth and personal access tokens, so only a web sign-in can claim the web app's name. Node sets
+`slack-approvals` itself, only for the Slack bot's own token when that setting is on.
 """
 from __future__ import annotations
 
@@ -1096,7 +1099,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 f"The user already answered the approval for {pending.tool_name} on {pending.server_name}; "
                 "it may still be running. Don't run it again."
             ), True)
-        await _show(run, call_id, tool_name, pending, target, outcome)
+        await _show(run, call_id, tool_name, pending, target, outcome, replayed=True)
         return _settled(call_id, tool_name, pending, outcome)
     tool, server = pending.tool_name, pending.server_name
     # Checked before the claim (`_refused_edit`); the arguments as asked are a plain allow.
@@ -1229,14 +1232,20 @@ def _start_payload(
     return payload
 
 
-async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome: Outcome) -> None:  # noqa: ANN401
-    """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
+async def _show(
+    run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget],  # noqa: ANN401
+    outcome: Outcome, *, replayed: bool = False,
+) -> None:
+    """The stopped call's row, settled: the same id, so it replaces the card's row in the reply.
+    `replayed`: the outcome of an earlier answer, shown again; this answer ran nothing."""
     start = _start_payload(call_id, tool_name, pending, target, outcome.answer, outcome.edited_arguments)
     if outcome.note:
         start["approval_note"] = outcome.note
     if outcome.ran:
         # Kept on the reply's part: regenerating that reply could run the action again.
         start["approved"] = True
+    if replayed:
+        start["approval_replayed"] = True
     await _emit(run, EventType.TOOL_CALL_START, start)
     await _emit(run, EventType.TOOL_CALL_END, {
         "tool": tool_name, "tool_call_id": call_id, "is_error": outcome.status == "failed",

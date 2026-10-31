@@ -42,9 +42,10 @@ import {
   type ToolApprovalDetails,
 } from './utils/approval-card';
 import {
+  approvalTurnResult,
   registerApprovalActions,
-  rememberApprovalCard,
   type ApprovalDeps,
+  type ApprovalSettled,
   type ResumeApprovalRequest,
 } from './approvalActions';
 import {
@@ -394,10 +395,14 @@ async function processSlackMessage(
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
   threadFiles: SlackFile[] = [],
-  toolApproval?: Omit<
-    ResumeApprovalRequest,
-    'channel' | 'threadTs' | 'clickerSlackId'
-  >,
+  approvalTurn?: {
+    answer: Omit<
+      ResumeApprovalRequest,
+      'channel' | 'threadTs' | 'clickerSlackId'
+    >;
+    /** Set from the stream: how the backend settled the answered call. */
+    settled?: ApprovalSettled;
+  },
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
@@ -669,7 +674,7 @@ async function processSlackMessage(
         ...(callerDisplayName ? { callerDisplayName } : {}),
         callerEmail: email,
         ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
-        ...(toolApproval ? { toolApproval } : {}),
+        ...(approvalTurn ? { toolApproval: approvalTurn.answer } : {}),
       },
       {
         headers: {
@@ -994,25 +999,20 @@ async function processSlackMessage(
     const handleApprovalRequested = (approval: ToolApprovalDetails): void => {
       const { user: requesterSlackId, channel } = typedMessage;
       if (requesterSlackId === undefined || channel === undefined) return;
-      const card = buildApprovalCard(approval, requesterSlackId);
+      const card = buildApprovalCard(
+        approval,
+        requesterSlackId,
+        typedContext.teamId ?? '',
+      );
       queuedStreamAppend = queuedStreamAppend
         .then(async () => {
-          const posted = await typedClient.chat.postMessage({
+          await typedClient.chat.postMessage({
             channel,
             thread_ts: threadId,
             text: card.text,
             blocks: card.blocks as unknown as SlackBlock[],
             ...NO_UNFURL_OPTIONS,
           });
-          if (posted.ts !== undefined && posted.ts !== '') {
-            rememberApprovalCard(approval, card, {
-              requesterSlackId,
-              requesterEmail: email,
-              channel,
-              threadTs: threadId,
-              cardTs: posted.ts,
-            });
-          }
         })
         .catch((error: unknown) => {
           console.error('Error posting Slack approval card:', error);
@@ -1096,6 +1096,12 @@ async function processSlackMessage(
       onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
       onApprovalRequested: handleApprovalRequested,
+      onApprovalSettled: (answer, replayed) => {
+        // The answered call settles first; later rows are other calls.
+        if (approvalTurn && !approvalTurn.settled) {
+          approvalTurn.settled = { answer, replayed };
+        }
+      },
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
@@ -1590,6 +1596,13 @@ const resumeApproval: ApprovalDeps['resumeApproval'] = async (
   const resolvedSlackBot = await resolveSlackBotForEvent(
     getCurrentMatchedSlackBot,
   );
+  const approvalTurn: {
+    answer: typeof toolApproval;
+    settled?: ApprovalSettled;
+  } = {
+    answer: toolApproval,
+  };
+  // Its errors are posted in the thread; the result only says whether the answer landed.
   await processSlackMessage(
     { user: clickerSlackId, channel, ts: threadTs, thread_ts: threadTs },
     client as unknown as TypedSlackClient,
@@ -1597,8 +1610,9 @@ const resumeApproval: ApprovalDeps['resumeApproval'] = async (
     `Tool approval: ${toolApproval.decision}`,
     resolvedSlackBot,
     [],
-    toolApproval,
+    approvalTurn,
   );
+  return approvalTurnResult(toolApproval.decision, approvalTurn.settled);
 };
 
 registerApprovalActions(app, { resumeApproval });

@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import {
   buildApprovalCard,
   buildApprovalReceipt,
+  parseApprovalButtonValue,
   type ToolApprovalDetails,
 } from '../../../src/integrations/slack-bot/src/utils/approval-card';
 
@@ -37,7 +38,7 @@ function actionsOf(blocks: AnyBlock[]): AnyBlock[] {
 
 describe('slack-bot/utils/approval-card', () => {
   it('builds a write card: header, argument lines, expiry and three buttons', () => {
-    const { text, blocks } = buildApprovalCard(approval({ displayName: 'Create a Jira issue' }), 'U1') as {
+    const { text, blocks } = buildApprovalCard(approval({ displayName: 'Create a Jira issue' }), 'U1', 'T1') as {
       text: string;
       blocks: AnyBlock[];
     };
@@ -59,13 +60,15 @@ describe('slack-bot/utils/approval-card', () => {
     ]);
     expect(buttons.map((b: AnyBlock) => b.text.text)).to.deep.equal(['Approve', 'Change something else', 'Deny']);
     expect(buttons[0].style).to.equal('primary');
+    const value = { approvalId: 'ap-1', argsHash: 'h1', requesterSlackId: 'U1', expiresAt: EXPIRES_AT, teamId: 'T1' };
     for (const button of buttons) {
-      expect(JSON.parse(button.value)).to.deep.equal({ approvalId: 'ap-1', argsHash: 'h1' });
+      expect(JSON.parse(button.value)).to.deep.equal(value);
+      expect(parseApprovalButtonValue(button.value)).to.deep.equal(value);
     }
   });
 
   it('marks a destructive card: danger approve and "Can\'t be undone"', () => {
-    const { blocks } = buildApprovalCard(approval({ kind: 'destructive', argsSummary: 'Delete OPS-1' }), 'U1') as {
+    const { blocks } = buildApprovalCard(approval({ kind: 'destructive', argsSummary: 'Delete OPS-1' }), 'U1', 'T1') as {
       blocks: AnyBlock[];
     };
     expect(blocks[0].text.text).to.equal('create_issue on Jira');
@@ -76,12 +79,30 @@ describe('slack-bot/utils/approval-card', () => {
 
   it('shows at most five arguments, each value capped, and keeps them plain text', () => {
     const args: Record<string, unknown> = { a: 'x'.repeat(500), b: { n: 1 }, c: '<!channel>', d: 4, e: 5, f: 6 };
-    const { blocks } = buildApprovalCard(approval({ arguments: args }), 'U1') as { blocks: AnyBlock[] };
+    const { blocks } = buildApprovalCard(approval({ arguments: args }), 'U1', 'T1') as { blocks: AnyBlock[] };
     const lines = (blocks.find((b) => b.type === 'section').text.text as string).split('\n');
     expect(lines).to.have.length(5);
     expect(lines[0]!.length).to.be.at.most('*a:* '.length + 200);
     expect(lines[1]).to.equal('*b:* {"n":1}');
     expect(lines[2]).to.equal('*c:* &lt;!channel&gt;');
+  });
+
+  it('keeps the notification text and a long summary plain, without cutting an entity in half', () => {
+    const summary = `${'a'.repeat(2996)}&&&&`;
+    const { text, blocks } = buildApprovalCard(
+      approval({ displayName: '<!channel> & co', argsSummary: summary }),
+      'U1',
+      'T1',
+    ) as { text: string; blocks: AnyBlock[] };
+    expect(text).to.contain('&lt;!channel&gt; &amp; co on Jira');
+    const shown = blocks.find((b) => b.type === 'section').text.text as string;
+    expect(shown.length).to.be.at.most(3000);
+    expect(shown.replace(/&amp;/g, '').includes('&')).to.equal(false);
+  });
+
+  it('reads back only a well-formed button value', () => {
+    expect(parseApprovalButtonValue('not json')).to.equal(null);
+    expect(parseApprovalButtonValue(JSON.stringify({ approvalId: 'ap-1', argsHash: 'h1' }))).to.equal(null);
   });
 
   it('writes receipts', () => {
@@ -90,5 +111,7 @@ describe('slack-bot/utils/approval-card', () => {
     expect(textOf(buildApprovalReceipt('declined', 'U1'))).to.equal('Declined by <@U1>');
     expect(textOf(buildApprovalReceipt('declined', 'U1', 'use OPS-2'))).to.equal('Declined by <@U1>: use OPS-2');
     expect(textOf(buildApprovalReceipt('expired', 'U1'))).to.equal('Expired');
+    expect(textOf(buildApprovalReceipt('answered', 'U1'))).to.equal('Already answered');
+    expect(textOf(buildApprovalReceipt('sending', 'U1'))).to.equal('Sending your answer…');
   });
 });

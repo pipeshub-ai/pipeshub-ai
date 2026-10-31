@@ -106,5 +106,27 @@ describe('slack-bot/utils/agui-stream', () => {
 
       expect(onApprovalRequested.calledOnceWithExactly(approval)).to.equal(true);
     });
+
+    it('ignores an approval that is not an object', () => {
+      const onApprovalRequested = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalRequested });
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c1', status: 'awaiting_approval', approval: 'ap-1' }));
+      handle(frame('TOOL_CALL_RESULT', { toolCallId: 'c2', status: 'awaiting_approval', approval: null }));
+      expect(onApprovalRequested.called).to.equal(false);
+    });
+
+    it('reports how the answered approval settled, and whether it was an earlier answer', () => {
+      const onApprovalSettled = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onApprovalSettled });
+
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c0', toolCallName: 'jira_search' }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'jira_create_issue', approvalAnswer: 'allowed' }));
+      handle(frame('TOOL_CALL_START', {
+        toolCallId: 'c2', toolCallName: 'jira_create_issue', approvalAnswer: 'declined', approvalReplayed: true,
+      }));
+      handle(frame('TOOL_CALL_START', { toolCallId: 'c3', toolCallName: 'jira_create_issue', approvalAnswer: 'maybe' }));
+
+      expect(onApprovalSettled.args).to.deep.equal([['allowed', false], ['declined', true]]);
+    });
   });
 });

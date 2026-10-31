@@ -137,6 +137,8 @@ class AGUIEventEmitter(EventEmitter):
                 start_kwargs["approved"] = True
             if payload.get("approval_answer") in _APPROVAL_ANSWERS:
                 start_kwargs["approvalAnswer"] = payload["approval_answer"]
+                if payload.get("approval_replayed") is True:
+                    start_kwargs["approvalReplayed"] = True
             if isinstance(payload.get("changed_fields"), list):
                 start_kwargs["changedFields"] = payload["changed_fields"]
             if isinstance(payload.get("approval_note"), str):

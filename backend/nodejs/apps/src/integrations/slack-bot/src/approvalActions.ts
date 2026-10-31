@@ -12,7 +12,8 @@ import {
   APPROVAL_CHANGE_ACTION,
   APPROVAL_DENY_ACTION,
   buildApprovalReceipt,
-  type ToolApprovalDetails,
+  parseApprovalButtonValue,
+  type ApprovalButtonValue,
 } from './utils/approval-card';
 
 type WebClient = AllMiddlewareArgs['client'];
@@ -21,6 +22,7 @@ type KnownBlock = types.KnownBlock;
 export const APPROVAL_FEEDBACK_VIEW = 'approval_feedback';
 const FEEDBACK_BLOCK = 'feedback';
 const FEEDBACK_MAX_CHARS = 2000;
+const SOMETHING_WENT_WRONG = 'Something went wrong, try again';
 
 export interface ResumeApprovalRequest {
   channel: string;
@@ -32,197 +34,243 @@ export interface ResumeApprovalRequest {
   feedback?: string;
 }
 
+/** How the backend settled the answered call, from the answer turn's stream. */
+export interface ApprovalSettled {
+  answer: string;
+  /** The backend replayed an earlier answer (from the web app, say) and ran nothing. */
+  replayed: boolean;
+}
+
+/** `failed`: the answer never reached the backend, so the card can be answered again. */
+export type ApprovalTurnResult =
+  'allowed' | 'declined' | 'expired' | 'answered' | 'failed';
+
 export interface ApprovalDeps {
   resumeApproval: (
     request: ResumeApprovalRequest,
     slack: { client: WebClient; context: Context },
-  ) => Promise<void>;
+  ) => Promise<ApprovalTurnResult>;
 }
 
-interface ApprovalCardEntry {
-  requesterSlackId: string;
-  requesterEmail: string;
+/**
+ * The receipt for an answer turn. Once the backend settled the call, its row
+ * decides, even if the turn failed later: answering again would only replay it.
+ */
+export function approvalTurnResult(
+  decision: 'allow' | 'deny',
+  settled: ApprovalSettled | undefined,
+): ApprovalTurnResult {
+  if (settled === undefined) return 'failed';
+  if (settled.replayed) return 'answered';
+  if (settled.answer === 'expired') return 'expired';
+  const expected = decision === 'allow' ? 'allowed' : 'declined';
+  return settled.answer === expected ? expected : 'answered';
+}
+
+interface CardLocation {
   channel: string;
-  threadTs: string;
   cardTs: string;
-  expiresAt: number;
+  threadTs: string;
+}
+
+interface CardMessage {
   text: string;
   blocks: KnownBlock[];
-  answered: boolean;
 }
 
-// shortcut: in-process, so a click after a restart or on another replica reads as expired; upgrade by fetching the approval from the backend.
-const cards = new Map<string, ApprovalCardEntry>();
+// Best-effort guard against a double click on this replica; the backend's claim is what counts.
+const answering = new Map<string, number>();
 
-/** The card's header and details; its waiting line and buttons give way to the receipt. */
-function withoutButtons(blocks: KnownBlock[]): KnownBlock[] {
+function startAnswering(value: ApprovalButtonValue): boolean {
+  const now = Date.now();
+  for (const [id, expiresAt] of answering) {
+    if (expiresAt < now) answering.delete(id);
+  }
+  if (answering.has(value.approvalId)) return false;
+  answering.set(value.approvalId, value.expiresAt);
+  return true;
+}
+
+export function resetApprovalGuardForTests(): void {
+  answering.clear();
+}
+
+/** The card's header and details; its waiting line and buttons give way to a receipt. */
+function cardDetails(blocks: KnownBlock[]): KnownBlock[] {
   return blocks.filter(
     (block) => block.type !== 'actions' && block.type !== 'context',
   );
 }
 
-export function rememberApprovalCard(
-  approval: ToolApprovalDetails,
-  card: { text: string; blocks: KnownBlock[] },
-  posted: Pick<
-    ApprovalCardEntry,
-    'requesterSlackId' | 'requesterEmail' | 'channel' | 'threadTs' | 'cardTs'
-  >,
-): void {
-  const now = Date.now();
-  for (const [id, entry] of cards) {
-    if (entry.expiresAt < now) cards.delete(id);
-  }
-  cards.set(approval.approvalId, {
-    ...posted,
-    expiresAt: approval.expiresAt,
-    text: card.text,
-    blocks: withoutButtons(card.blocks),
-    answered: false,
-  });
-}
-
-export function resetApprovalCardsForTests(): void {
-  cards.clear();
-}
-
-function parseButtonValue(
-  value: string | undefined,
-): { approvalId: string; argsHash: string } | null {
-  try {
-    const parsed: unknown = JSON.parse(value ?? '');
-    const { approvalId, argsHash } = (parsed ?? {}) as Record<string, unknown>;
-    return typeof approvalId === 'string' && typeof argsHash === 'string'
-      ? { approvalId, argsHash }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-async function isRequester(
+async function tell(
   client: WebClient,
-  entry: ApprovalCardEntry,
-  clickerSlackId: string,
-): Promise<boolean> {
-  if (clickerSlackId === entry.requesterSlackId) return true;
-  const email = (await client.users.info({ user: clickerSlackId })).user
-    ?.profile?.email;
-  return (
-    email !== undefined &&
-    email !== '' &&
-    email.toLowerCase() === entry.requesterEmail.toLowerCase()
-  );
-}
-
-async function showReceipt(
-  client: WebClient,
-  channel: string,
-  ts: string,
+  where: CardLocation,
+  user: string,
   text: string,
-  blocks: KnownBlock[],
-  receipt: KnownBlock[],
 ): Promise<void> {
   try {
-    await client.chat.update({
-      channel,
-      ts,
+    await client.chat.postEphemeral({
+      channel: where.channel,
+      thread_ts: where.threadTs,
+      user,
       text,
-      blocks: [...blocks, ...receipt],
+    });
+  } catch (error) {
+    console.error('Error posting Slack approval notice:', error);
+  }
+}
+
+async function updateCard(
+  client: WebClient,
+  where: CardLocation,
+  card: CardMessage,
+  blocks: KnownBlock[],
+): Promise<void> {
+  // Without the card's own blocks (it couldn't be read), leave it as it is.
+  if (card.blocks.length === 0) return;
+  try {
+    await client.chat.update({
+      channel: where.channel,
+      ts: where.cardTs,
+      text: card.text,
+      blocks,
     });
   } catch (error) {
     console.error('Error updating Slack approval card:', error);
   }
 }
 
+async function emailOf(client: WebClient, user: string): Promise<string> {
+  const email = (await client.users.info({ user })).user?.profile?.email;
+  return email?.toLowerCase() ?? '';
+}
+
 /**
- * The live card for a click, or null when the click must do nothing more:
- * already answered, expired (the card then says so) or not the requester's
- * (who then gets an ephemeral notice). `claim` marks the card answered.
+ * Whether the clicker asked for this call (the same workspace and email as
+ * the requester). Anyone else is told who can answer; nothing else changes.
  */
-async function cardForClick(
+async function mayAnswer(
   client: WebClient,
-  approvalId: string,
+  where: CardLocation,
+  value: ApprovalButtonValue,
   clickerSlackId: string,
-  fallback: { channel?: string; ts?: string; blocks?: KnownBlock[] },
-  claim: boolean,
-): Promise<ApprovalCardEntry | null> {
-  const entry = cards.get(approvalId);
-  if (entry?.answered) return null;
-  if (!entry || entry.expiresAt <= Date.now()) {
-    cards.delete(approvalId);
-    const channel = entry?.channel ?? fallback.channel;
-    const ts = entry?.cardTs ?? fallback.ts;
-    if (channel !== undefined && ts !== undefined) {
-      await showReceipt(
-        client,
-        channel,
-        ts,
-        'Expired',
-        entry?.blocks ?? withoutButtons(fallback.blocks ?? []),
-        buildApprovalReceipt('expired', clickerSlackId),
-      );
+  clickerTeamId: string | undefined,
+): Promise<boolean> {
+  let allowed = false;
+  try {
+    if (clickerTeamId === value.teamId) {
+      if (clickerSlackId === value.requesterSlackId) {
+        allowed = true;
+      } else {
+        const [clicker, requester] = await Promise.all([
+          emailOf(client, clickerSlackId),
+          emailOf(client, value.requesterSlackId),
+        ]);
+        allowed = clicker !== '' && clicker === requester;
+      }
     }
-    return null;
+  } catch (error) {
+    console.error('Error looking up a Slack approval clicker:', error);
+    await tell(client, where, clickerSlackId, SOMETHING_WENT_WRONG);
+    return false;
   }
-  if (!(await isRequester(client, entry, clickerSlackId))) {
-    await client.chat.postEphemeral({
-      channel: entry.channel,
-      thread_ts: entry.threadTs,
-      user: clickerSlackId,
-      text: `Only <@${entry.requesterSlackId}> can approve this`,
-    });
-    return null;
+  if (!allowed) {
+    await tell(
+      client,
+      where,
+      clickerSlackId,
+      `Only <@${value.requesterSlackId}> can approve this`,
+    );
   }
-  // Checked and claimed with no await between, so a second click cannot also answer.
-  if (entry.answered) return null;
-  if (claim) entry.answered = true;
-  return entry;
+  return allowed;
 }
 
 async function settle(
   deps: ApprovalDeps,
   slack: { client: WebClient; context: Context },
-  entry: ApprovalCardEntry,
-  request: Omit<ResumeApprovalRequest, 'channel' | 'threadTs'>,
+  where: CardLocation,
+  card: CardMessage,
+  value: ApprovalButtonValue,
+  answer: Pick<
+    ResumeApprovalRequest,
+    'clickerSlackId' | 'decision' | 'feedback'
+  >,
 ): Promise<void> {
-  const receipt =
-    request.decision === 'allow'
-      ? buildApprovalReceipt('allowed', request.clickerSlackId)
-      : buildApprovalReceipt(
-          'declined',
-          request.clickerSlackId,
-          request.feedback,
-        );
-  await showReceipt(
-    slack.client,
-    entry.channel,
-    entry.cardTs,
-    entry.text,
-    entry.blocks,
-    receipt,
-  );
-  await deps.resumeApproval(
-    { channel: entry.channel, threadTs: entry.threadTs, ...request },
-    slack,
-  );
+  if (!startAnswering(value)) return;
+  const { client } = slack;
+  const details = cardDetails(card.blocks);
+  await updateCard(client, where, card, [
+    ...details,
+    ...buildApprovalReceipt('sending', answer.clickerSlackId),
+  ]);
+  let result: ApprovalTurnResult;
+  try {
+    result = await deps.resumeApproval(
+      {
+        channel: where.channel,
+        threadTs: where.threadTs,
+        approvalId: value.approvalId,
+        argsHash: value.argsHash,
+        ...answer,
+      },
+      slack,
+    );
+  } catch (error) {
+    console.error('Error sending a Slack approval answer:', error);
+    result = 'failed';
+  }
+  if (result === 'failed') {
+    answering.delete(value.approvalId);
+    await updateCard(client, where, card, card.blocks);
+    await tell(client, where, answer.clickerSlackId, SOMETHING_WENT_WRONG);
+    return;
+  }
+  await updateCard(client, where, card, [
+    ...details,
+    ...buildApprovalReceipt(result, answer.clickerSlackId, answer.feedback),
+  ]);
+}
+
+/** The card message, for a modal submission, which doesn't carry it. */
+async function readCard(
+  client: WebClient,
+  where: CardLocation,
+): Promise<CardMessage> {
+  try {
+    const { messages } = await client.conversations.replies({
+      channel: where.channel,
+      ts: where.threadTs,
+      oldest: where.cardTs,
+      latest: where.cardTs,
+      inclusive: true,
+      limit: 2,
+    });
+    const message = messages?.find((m) => m.ts === where.cardTs);
+    return {
+      text: message?.text ?? '',
+      blocks: (message?.blocks ?? []) as KnownBlock[],
+    };
+  } catch (error) {
+    console.error('Error reading a Slack approval card:', error);
+    return { text: '', blocks: [] };
+  }
 }
 
 function feedbackModal(privateMetadata: string): types.ModalView {
   return {
-    type: 'modal' as const,
+    type: 'modal',
     callback_id: APPROVAL_FEEDBACK_VIEW,
     private_metadata: privateMetadata,
-    title: { type: 'plain_text' as const, text: 'Change something else' },
-    submit: { type: 'plain_text' as const, text: 'Send' },
-    close: { type: 'plain_text' as const, text: 'Cancel' },
+    title: { type: 'plain_text', text: 'Change something else' },
+    submit: { type: 'plain_text', text: 'Send' },
+    close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
       {
-        type: 'input' as const,
+        type: 'input',
         block_id: FEEDBACK_BLOCK,
-        label: { type: 'plain_text' as const, text: 'What should change?' },
+        label: { type: 'plain_text', text: 'What should change?' },
         element: {
-          type: 'plain_text_input' as const,
+          type: 'plain_text_input',
           action_id: FEEDBACK_BLOCK,
           multiline: true,
           max_length: FEEDBACK_MAX_CHARS,
@@ -230,6 +278,30 @@ function feedbackModal(privateMetadata: string): types.ModalView {
       },
     ],
   };
+}
+
+function parseModalMetadata(
+  raw: string,
+): { value: ApprovalButtonValue; where: CardLocation } | null {
+  try {
+    const parsed = JSON.parse(raw) as {
+      value?: unknown;
+      where?: Partial<CardLocation>;
+    };
+    const value = parseApprovalButtonValue(JSON.stringify(parsed.value));
+    const { channel, cardTs, threadTs } = parsed.where ?? {};
+    if (
+      value === null ||
+      typeof channel !== 'string' ||
+      typeof cardTs !== 'string' ||
+      typeof threadTs !== 'string'
+    ) {
+      return null;
+    }
+    return { value, where: { channel, cardTs, threadTs } };
+  } catch {
+    return null;
+  }
 }
 
 export function registerApprovalActions(app: App, deps: ApprovalDeps): void {
@@ -247,33 +319,51 @@ export function registerApprovalActions(app: App, deps: ApprovalDeps): void {
       context: Context;
     }): Promise<void> => {
       await ack();
-      const target = parseButtonValue(body.actions[0]?.value);
-      if (!target) return;
+      const value = parseApprovalButtonValue(body.actions[0]?.value);
+      const channel = body.channel?.id;
+      const cardTs = body.message?.ts;
+      if (value === null || channel === undefined || cardTs === undefined)
+        return;
+      const threadTs =
+        (body.message?.thread_ts as string | undefined) ?? cardTs;
+      const where = { channel, cardTs, threadTs };
       const clickerSlackId = body.user.id;
-      const entry = await cardForClick(
-        client,
-        target.approvalId,
-        clickerSlackId,
-        {
-          channel: body.channel?.id,
-          ts: body.message?.ts,
-          blocks: body.message?.blocks as KnownBlock[] | undefined,
-        },
-        decision !== 'change',
-      );
-      if (!entry) return;
-      if (decision === 'change') {
-        await client.views.open({
-          trigger_id: body.trigger_id,
-          view: feedbackModal(JSON.stringify(target)),
+      if (
+        !(await mayAnswer(client, where, value, clickerSlackId, body.team?.id))
+      )
+        return;
+
+      const card: CardMessage = {
+        text: body.message?.text ?? '',
+        blocks: (body.message?.blocks ?? []) as KnownBlock[],
+      };
+      if (value.expiresAt <= Date.now()) {
+        await updateCard(client, where, card, [
+          ...cardDetails(card.blocks),
+          ...buildApprovalReceipt('expired', clickerSlackId),
+        ]);
+        return;
+      }
+      if (answering.has(value.approvalId)) return;
+      if (decision !== 'change') {
+        await settle(deps, { client, context }, where, card, value, {
+          clickerSlackId,
+          decision,
         });
         return;
       }
-      await settle(deps, { client, context }, entry, {
-        clickerSlackId,
-        decision,
-        ...target,
-      });
+      try {
+        await client.views.open({
+          trigger_id: body.trigger_id,
+          view: feedbackModal(JSON.stringify({ value, where })),
+        });
+      } catch (error) {
+        console.error(
+          'Error opening the Slack approval feedback modal:',
+          error,
+        );
+        await tell(client, where, clickerSlackId, SOMETHING_WENT_WRONG);
+      }
     };
 
   app.action<BlockAction<ButtonAction>>(
@@ -290,26 +380,30 @@ export function registerApprovalActions(app: App, deps: ApprovalDeps): void {
     APPROVAL_FEEDBACK_VIEW,
     async ({ ack, body, view, client, context }) => {
       await ack();
-      const target = parseButtonValue(view.private_metadata);
-      if (!target) return;
+      const metadata = parseModalMetadata(view.private_metadata);
+      if (metadata === null) return;
+      const { value, where } = metadata;
       const clickerSlackId = body.user.id;
-      const entry = await cardForClick(
-        client,
-        target.approvalId,
-        clickerSlackId,
-        {},
-        true,
-      );
-      if (!entry) return;
+      if (
+        !(await mayAnswer(client, where, value, clickerSlackId, body.team?.id))
+      )
+        return;
+      const card = await readCard(client, where);
+      if (value.expiresAt <= Date.now()) {
+        await updateCard(client, where, card, [
+          ...cardDetails(card.blocks),
+          ...buildApprovalReceipt('expired', clickerSlackId),
+        ]);
+        return;
+      }
       const feedback = (
         view.state.values[FEEDBACK_BLOCK]?.[FEEDBACK_BLOCK]?.value ?? ''
       )
         .trim()
         .slice(0, FEEDBACK_MAX_CHARS);
-      await settle(deps, { client, context }, entry, {
+      await settle(deps, { client, context }, where, card, value, {
         clickerSlackId,
         decision: 'deny',
-        ...target,
         ...(feedback !== '' ? { feedback } : {}),
       });
     },

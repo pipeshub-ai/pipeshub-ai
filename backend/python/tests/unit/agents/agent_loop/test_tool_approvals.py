@@ -957,6 +957,7 @@ class TestAnsweringTheCard:
 
         (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
         assert (started["approved"], started["approval_answer"], started["args"]) == (True, "allowed", {"title": "Login is broken"})
+        assert "approval_replayed" not in started
         (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
         assert (ended["status"], ended["content"]) == (ToolCallStatus.SUCCESS, "created Login is broken")
 
@@ -1004,7 +1005,8 @@ class TestAnsweringTheCard:
         assert len(mcp.calls) == 1
         assert _result_of(again.sent[0]).content == "created Login is broken"
         (started,) = again.events.of(EventType.TOOL_CALL_START, "c1")
-        assert started["approved"] is True
+        # Slack tells this apart from its own answer, so the card says it was answered already.
+        assert (started["approved"], started["approval_replayed"]) == (True, True)
         (ended,) = again.events.of(EventType.TOOL_CALL_END, "c1")
         assert ended["status"] == ToolCallStatus.SUCCESS
 
@@ -1042,6 +1044,7 @@ class TestAnsweringTheCard:
         assert "declined" in result.content and result.is_error
         (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
         assert started["approval_answer"] == "declined" and "approved" not in started
+        assert "approval_replayed" not in started
         (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
         assert ended["status"] == ToolCallStatus.BLOCKED
         assert await approvals.load_own_rules(store, user_id="user-1", instance_id="inst-1") == ToolRules()  # type: ignore[arg-type]
