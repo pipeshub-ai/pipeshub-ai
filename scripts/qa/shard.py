@@ -37,12 +37,16 @@ def stack_ids(cfg: Config, plan: dict[str, Any], rows: dict[str, dict[str, Any]]
 
 
 def groups(rows: dict[str, dict[str, Any]], ids: list[str], mins: dict[str, float]) -> dict[str, tuple[float, list[str]]]:
-    out: dict[str, tuple[float, list[str]]] = {}
+    by_file: dict[str, list[str]] = {}
     for i in ids:
-        row = rows[i]
-        key = next((m for m in row.get("markers") or [] if m in mins), row["path"])
-        weight = mins.get(key, DEFAULT_MINUTES)
-        out.setdefault(key, (weight, []))[1].append(i)
+        by_file.setdefault(rows[i]["path"], []).append(i)
+    out: dict[str, tuple[float, list[str]]] = {}
+    for path, file_ids in by_file.items():
+        # A file never splits, so it joins a marker group only when every row carries that marker.
+        shared = set.intersection(*(set(rows[i].get("markers") or []) for i in file_ids))
+        first = rows[file_ids[0]].get("markers") or []
+        key = next((m for m in first if m in mins and m in shared), path)
+        out.setdefault(key, (mins.get(key, DEFAULT_MINUTES), []))[1].extend(file_ids)
     return out
 
 

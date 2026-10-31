@@ -82,7 +82,8 @@ directory.
 against the PR's tree. A change to the engine's CLI flags or artifact schema
 rolls out in two steps: the engine first accepts both forms, then the workflow
 uses the new one. The stack matrix needs no such step: when the base engine
-emits no `shards` output, it falls back to one shard.
+emits no `shards` output, it falls back to one shard. The `["neo4j"]` graph
+fallback applies only when the plan job exports no `graph_db`.
 
 The engine comes from the base branch, but the `pull_request` workflow file
 comes from the PR, so a PR can edit the workflow to skip the gate. The gate is

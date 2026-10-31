@@ -635,6 +635,20 @@ class TestShard(RunCase):
             self.assertEqual(where["a"], where["b"])
             self.assertEqual(where["c"], where["d"])
 
+    def test_an_ordered_file_with_mixed_markers_is_one_group(self) -> None:
+        from qa import shard
+        rows = {
+            "f1": {"path": "x/test_life.py", "markers": ["jira"], "ordered": True},
+            "f2": {"path": "x/test_life.py", "markers": ["confluence"], "ordered": True},
+            "f3": {"path": "x/test_life.py", "markers": ["jira", "confluence"], "ordered": True},
+            "j": {"path": "x/test_jira.py", "markers": ["jira"]},
+        }
+        g = shard.groups(rows, list(rows), {"jira": 9.0, "confluence": 8.0})
+        self.assertEqual(g["x/test_life.py"], (shard.DEFAULT_MINUTES, ["f1", "f2", "f3"]))
+        self.assertEqual(g["jira"], (9.0, ["j"]))
+        for n in range(1, 4):
+            self.assertEqual(sum(1 for s in shard.assign(g, n) if {"f1", "f2", "f3"} & set(s)), 1, n)
+
     def test_shard_run_leaves_other_shards_tests_not_run_scope(self) -> None:
         from qa import shard
         plan = plan_for([JIRA_SYNC, ACL, RANKING, "e2e:tests/e2e/login.spec.ts", "py:tests/unit/test_patch_only.py"])
@@ -681,6 +695,11 @@ class TestShard(RunCase):
         self.assertEqual(merged("pass", "fail"), "fail")
         self.assertEqual(merged("fail", "pass"), "fail")
         self.assertEqual(merged("pass", "flaky"), "flaky")
+        self.assertEqual(merged("fail", "error"), "error")
+        self.assertEqual(merged("error", "pass"), "error")
+        self.assertEqual(merged("skip", "pass"), "pass")
+        self.assertEqual(merged("pass", "skip"), "pass")
+        self.assertEqual(merged("pass", "not_run", "fail"), "fail")
 
     def test_emit_gh_outputs_names_the_shards(self) -> None:
         from qa import validate
