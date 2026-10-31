@@ -65,6 +65,7 @@ directory.
 | `run` | Execute `plan.json`, or `--tests FILE` / `--ids ...`. `--stack none\|managed\|external`, `--scope unit\|stack`, `--dry-run` |
 | `report` | Render `report.md`; `--summary`, `--comment --pr N`, `--gate`. `--allow-not-run KINDS` lists the `not_run` kinds that do not block (default `profile,scope,secret`); `--strict` or `--allow-not-run ""` makes every `not_run` block |
 | `go` | collect → impact → plan → validate → run → report; takes `--gate`, `--allow-not-run` and `--strict` like `report`. `--commit SHA` runs it in a detached worktree at SHA with `--build`, and defaults to a managed stack unless `--stack` is given. For a commit already on the base branch it tests that commit's own change (a root commit runs the full profile). It cannot be combined with `--head`; results land in your `--out` |
+| `review --pr N \| --body-file F` | Trace the PR's stated requirements to this run's tests (`pass`, `fail`, `not_run`, `untested`), list risks and exploratory probes. Writes `review-input.json`, `review-llm.json`, `review.json` and `review.md`. `--run` executes the probes locally (they write under `review/` and never gate). `--comment` posts its own sticky comment, separate from the gate report. PR text is untrusted and sanitised |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
 | `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and the failed, errored and flaky ids; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
 | `stuck --runs DIR...` | Print the tests that failed in each of the last 3 runs with distinct heads, oldest run directory first; exits 3 when there are any |
@@ -141,6 +142,7 @@ recall of 98% or better; see [Enforcement](#enforcement).
 /qa range <a>..<b>       an explicit range
 /qa full                 every suite, both graph DBs (admin)
 /qa run --profile conservative
+/qa review                QA review comment: requirements traced to tests, risks, probes (write access, never gates)
 /qa commit <sha>          run this PR's plan at an earlier commit of the PR (full sha)
 /qa run --trusted <sha>  fork PRs only: run with secrets at the reviewed head; <sha> must be the full 40 characters, refused if the PR moved (admin)
 ```
@@ -319,6 +321,11 @@ async def test_tc_jira_004_issue_properties(...):
 
 After changing tests, run `python3 scripts/qa catalog build` and commit the
 catalog. CI fails when it is stale.
+
+## Claude Code skills
+
+`.claude/skills/qa-pr`, `qa-commit` and `qa-review` walk an agent through
+`go`, `go --commit` and `review`, next to `qa-planner`.
 
 ## Teaching the engine about a new area
 

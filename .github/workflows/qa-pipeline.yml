@@ -604,6 +604,7 @@ jobs:
       # permission, fork code only via --trusted) sets inputs.review, so the
       # model keys reach this step and no other step of this job.
       - name: QA review
+        id: review
         if: inputs.review && inputs.pr != ''
         continue-on-error: true
         env:
@@ -629,6 +630,11 @@ jobs:
             adapter=none
           fi
           QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" review --pr "$PR" --adapter "$adapter" --comment --run-url "$RUN_URL"
+      - name: QA review failed
+        if: steps.review.outcome == 'failure'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: echo "::warning::QA review step failed; no review comment was posted. See $RUN_URL"
       - uses: actions/upload-artifact@v4
         with:
           name: qa-report-${{ inputs.edition }}

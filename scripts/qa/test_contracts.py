@@ -3,10 +3,12 @@
 Run: python3 -m unittest discover -s scripts -p 'test_*.py'
 """
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
+from qa import __main__ as qa_main
 from qa import catalog, collect, config, impact, run, schema, testing, validate
 
 
@@ -115,6 +117,22 @@ class TestReviewInput(unittest.TestCase):
         pipeline = read("qa-pipeline.yml")
         self.assertIn('"$ENGINE" review --pr', pipeline)
         self.assertIn("inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY", pipeline)
+
+
+class TestSkills(unittest.TestCase):
+    def test_qa_skills_name_real_commands(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        skills = sorted(root.glob(".claude/skills/qa-*/SKILL.md"))
+        names = {p.parent.name for p in skills}
+        self.assertTrue({"qa-pr", "qa-commit", "qa-review"} <= names, names)
+        sub = next(a for a in qa_main.parser()._actions if getattr(a, "choices", None))
+        for path in skills:
+            text = path.read_text(encoding="utf-8")
+            front = text.split("---")[1]
+            self.assertRegex(front, rf"(?m)^name: {path.parent.name}$")
+            self.assertRegex(front, r"(?m)^description: \S")
+            for word in re.findall(r"python3 scripts/qa (?:--out \S+ )?([a-z][\w-]*)", text):
+                self.assertIn(word, sub.choices, f"{path}: {word}")
 
 
 class TestReportAndGate(unittest.TestCase):

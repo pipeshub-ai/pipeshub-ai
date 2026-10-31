@@ -40,6 +40,7 @@ producer against them, and `validate` checks model output against
 | `plan-input.json` | `plan-input.v1.json` | `floor.items[id].why` (up to 3 reasons) and `grep`; `full_suites`; `stack`; `matrix`; `deferred`; `unmapped`; `missing`; `candidates` (up to 300); `catalogs`; `budget` |
 | `plan-llm.json` | `plan-llm.v1.json` | `add[{id, reason, confidence}]`, `add_matrix`, `missing`, `risk`; `_planner` status added by the adapter runner |
 | `plan.json` | `plan.v1.json` | `tests[{id, source floor\|model, why, grep, flows}]`; `flows{id: why}`; `planner`; `stack{needed, graph_db[], broker, compose_profiles[]}`; `dropped`, `budget_trimmed` |
+| `review-input.json`, `review-llm.json`, `review.json` | `review-llm.v1.json` for the model reply | `requirements[{id, text, tests[], result}]` (`pass`, `fail`, `not_run`, `untested`), `risks`, `probes`; written by `qa review`, never read by the gate |
 | `results*.json` | `results.v1.json` | `tests[{id, outcome, seconds, details}]`, `invocations[{label, cmd, exit, log}]`, `fatal`, `scope`, `environment` (image digest, pinned and unpinned bases, lockfile and compose hashes) |
 
 ## 3. Selection algorithm (the floor)
