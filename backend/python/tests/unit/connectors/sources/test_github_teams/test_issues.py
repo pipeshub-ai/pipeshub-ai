@@ -467,6 +467,20 @@ class TestResumeInterruptedListing:
         (_, written), _ = sync._write_checkpoint.await_args
         assert written == _RESUME
 
+    async def test_a_rate_limit_on_the_page_before_keeps_the_saved_place(self) -> None:
+        """Reading on without a cursor starts a page early. A failure there must not store
+        that earlier page, or each failed sync would step the place back towards page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        place = {**_RESUME, "listing_resume_page": 4, "listing_resume_cursor": None}
+        sync = self._sync(c, place)
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 3
+        (_, written), _ = sync._write_checkpoint.await_args
+        assert written == place
+
 
 class TestProcessIssueToTicket:
     async def test_maps_fields_and_marks_new(self) -> None:

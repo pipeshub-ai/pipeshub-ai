@@ -267,9 +267,10 @@ class IssuesSync:
         created_before = 0  # counted by the interrupted listing this one reads on from
         processed = 0
         watermarks: dict[str, int] = {}
+        stored_page = 0  # the place this listing reads on from, if any
         resume = resume_point(checkpoint, since_ms)
         if resume is not None:
-            page = resume[GitHubLiterals.RESUME_PAGE.value]
+            page = stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
             cursor = resume.get(GitHubLiterals.RESUME_CURSOR.value)
             if cursor is None and page > 1:
                 # A page number is an offset: an issue removed from a page already read
@@ -283,9 +284,11 @@ class IssuesSync:
         resumed_page = page if resume is not None else None
 
         async def save_place() -> None:
-            if page > 1:
+            # Never behind the stored place: a failure while re-reading the page before it
+            # would otherwise step the next sync back a page each time, towards page 1.
+            if (place := max(page, stored_page)) > 1:
                 await self._write_checkpoint(group_id, {
-                    GitHubLiterals.RESUME_PAGE.value: page,
+                    GitHubLiterals.RESUME_PAGE.value: place,
                     GitHubLiterals.RESUME_CURSOR.value: cursor,
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
                     GitHubLiterals.RESUME_WATERMARK.value: watermarks.get(group_id),

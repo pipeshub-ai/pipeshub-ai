@@ -130,21 +130,25 @@ class PullRequestsSync:
         page = 1
         watermark = 0
         processed = 0
+        stored_page = 0  # the place this listing reads on from, if any
         saved = await c.issues._read_checkpoint(group_id)
         resume = resume_point(saved, since_ms)
         if resume is not None:
+            stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
             # A page number is an offset: a pull request removed from a page already
             # read moves a later one onto it. Reading the page before again covers that.
-            page = max(1, resume[GitHubLiterals.RESUME_PAGE.value] - 1)
+            page = max(1, stored_page - 1)
             watermark = resume.get(GitHubLiterals.RESUME_WATERMARK.value) or 0
             self.logger.info("Reading on with the pull requests of %s from page %s, where the last "
                              "sync stopped", repo.full_name, page)
         resumed_page = page if resume is not None else None
 
         async def save_place() -> None:
-            if page > 1:
+            # Never behind the stored place: a failure while re-reading the page before it
+            # would otherwise step the next sync back a page each time, towards page 1.
+            if (place := max(page, stored_page)) > 1:
                 await c.issues._write_checkpoint(group_id, {
-                    GitHubLiterals.RESUME_PAGE.value: page,
+                    GitHubLiterals.RESUME_PAGE.value: place,
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
                     GitHubLiterals.RESUME_WATERMARK.value: watermark or None,
                 })

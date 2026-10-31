@@ -138,6 +138,22 @@ class TestFetchPrsBatched:
         _, cleared = c.issues._write_checkpoint.await_args.args
         assert set(cleared) >= set(saved) and all(v is None for v in cleared.values())
 
+    async def test_a_rate_limit_on_the_page_before_keeps_the_saved_place(self) -> None:
+        """Reading on starts a page early. A failure there must not store that earlier
+        page, or each failed sync would step the place back towards page 1."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("rate limited", status_code=429))
+        sync = self._sync(c)
+        c.issues._read_checkpoint = AsyncMock(return_value={
+            "listing_resume_page": 3, "listing_resume_since": None,
+            "listing_resume_watermark": 9_999_999_999_999})
+
+        assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is False
+
+        assert c.runtime.ds_call.await_args.kwargs["page"] == 2
+        _, written = c.issues._write_checkpoint.await_args.args
+        assert written["listing_resume_page"] == 3
+
     async def test_pages_until_short_page_and_never_fetches_a_single_pr(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=10)
