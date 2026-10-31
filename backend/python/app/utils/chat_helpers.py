@@ -1469,8 +1469,9 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
+                # Only metadata and the summary are used: the blocks need not be decoded.
                 blob_record = await record_artifact_reader(blob_store).read_record(
-                    vrid, org_id, lookup=lookup_result
+                    vrid, org_id, lookup=lookup_result, head_only=True
                 )
             except Exception as e:
                 logger.debug(
@@ -1609,7 +1610,7 @@ async def resolve_frontend_url(
         return None
     try:
         endpoints_config = await config_service.get_config(
-            config_node_constants.ENDPOINTS.value, default={},
+            config_node_constants.ENDPOINTS.value, default={}, use_cache=True,
         )
         if isinstance(endpoints_config, dict):
             return endpoints_config.get("frontend", {}).get("publicEndpoint")
@@ -1748,22 +1749,16 @@ async def _resolve_target_metadata(
             })
         return resolved
 
-    doc_results, vrid_result = await asyncio.gather(
-        _fetch_docs(),
-        graph_provider.get_virtual_record_ids_for_record_ids(list(context_ids)),
-        return_exceptions=True,
-    )
+    try:
+        doc_results = await _fetch_docs()
+    except Exception as e:
+        doc_results = e
 
     # Populate doc_index from fetched docs
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in doc_results.items():
             if doc and isinstance(doc, dict):
                 doc_index[rid] = doc  # noqa: PERF403
-
-    # Build id -> vrid mapping
-    id_to_vrid: dict[str, str] = {}
-    if not isinstance(vrid_result, Exception) and isinstance(vrid_result, dict):
-        id_to_vrid = vrid_result
 
     # Build context for out-of-context, non-deleted IDs
     out_of_context_ids = [
@@ -1774,6 +1769,22 @@ async def _resolve_target_metadata(
 
     context_map: dict[str, str] = {}
     if out_of_context_ids:
+        # Each of these has its graph record doc in hand, and that doc carries
+        # the virtual record id the lookup query would return; only docs
+        # without one (e.g. a projection that left it out) are asked for.
+        id_to_vrid: dict[str, str] = {
+            rid: vrid for rid in out_of_context_ids
+            if (vrid := doc_index[rid].get("virtualRecordId"))
+        }
+        unresolved = [rid for rid in out_of_context_ids if rid not in id_to_vrid]
+        if unresolved:
+            try:
+                vrid_result = await graph_provider.get_virtual_record_ids_for_record_ids(unresolved)
+                if isinstance(vrid_result, dict):
+                    id_to_vrid.update(vrid_result)
+            except Exception as e:
+                logger.warning("Linked record context: virtual record id lookup failed: %s", e)
+
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
         # read_record, plus its own type-specific get_document.

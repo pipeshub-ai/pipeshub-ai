@@ -5875,7 +5875,7 @@ class TestEnrichRecordsWithGraphContext:
         blob_store.get_record_from_storage.assert_awaited_once()
         args, kwargs = blob_store.get_record_from_storage.await_args
         assert args == ("vr-parent-1", "org-1")
-        assert set(kwargs) <= {"lookup_result"}
+        assert set(kwargs) <= {"lookup_result", "head_only"}
 
     @pytest.mark.asyncio
     async def test_falls_back_to_graph_when_not_indexed(self):
@@ -7742,3 +7742,18 @@ class TestLinkedContextNamesTheGraphRecord:
         own = _merge_graph_into_blob_record({"id": "y", "hide_weburl": True}, {"_key": "y", "webUrl": "https://y/9"})
         graph = _merge_graph_into_blob_record({"id": "x"}, {"_key": "y", "webUrl": "https://y/9", "hideWeburl": True})
         assert own["hide_weburl"] is True and graph["hide_weburl"] is True
+
+
+class TestResolveFrontendUrl:
+    @pytest.mark.asyncio
+    async def test_reads_endpoints_through_config_cache(self) -> None:
+        from app.utils.chat_helpers import resolve_frontend_url
+
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(
+            return_value={"frontend": {"publicEndpoint": "https://app.example.com"}}
+        )
+        assert await resolve_frontend_url(config_service) == "https://app.example.com"
+        config_service.get_config.assert_awaited_once_with(
+            "/services/endpoints", default={}, use_cache=True,
+        )

@@ -62,7 +62,7 @@ import {
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { ANSWER_FAILED, ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
@@ -1604,7 +1604,7 @@ export async function streamMessageForSlot(
           // A failed answer to a card leaves the card as it was, to answer again.
           messages: resumeAskUserQuestion || reuseRowId
             ? currentMessages
-            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error)),
+            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error) ?? { code: ANSWER_FAILED }),
         });
         if (resumeAskUserQuestion) {
           notifyAskUserQuestionResumeFailed(err);
@@ -1678,7 +1678,7 @@ export async function streamMessageForSlot(
       pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
       messages: resumeAskUserQuestion || reuseRowId
         ? currentMessages
-        : withStreamingErrorMessage(currentMessages, errorMessage),
+        : withStreamingErrorMessage(currentMessages, errorMessage, { code: ANSWER_FAILED }),
     });
     if (resumeAskUserQuestion) {
       notifyAskUserQuestionResumeFailed(errorMessage);

@@ -202,7 +202,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
+        paths = query.count("RETURN collect([r.virtualRecordId, r.id]) AS pairs")
         assert paths == 1
         assert query.count(cypher_searchable_record("r")) == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths

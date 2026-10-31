@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -653,6 +654,26 @@ def _unique_id_constraint(label: str) -> str:
 
 
 _EXISTING_KEYS_CHUNK = 20000
+
+
+def _virtual_id_map(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """virtualRecordId -> recordId from a ``collect([vid, rid]) AS pairs`` row,
+    first seen winning. One row, not one per record: the driver builds and
+    converts a record object per row, which dominated these maps' cost."""
+    out: dict[str, str] = {}
+    for vid, rid in (rows[0].get("pairs") or []) if rows else ():
+        if vid and rid and vid not in out:
+            out[vid] = rid
+    return out
+
+
+class _TransientContainers(Exception):
+    """Carries a query_failed result out of the turn memo so it is not kept."""
+
+    def __init__(self, result: AccessibleContainers) -> None:
+        super().__init__("accessible containers query failed")
+        self.result = result
+
 
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -1662,18 +1683,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return neo4j_node
 
-    def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str) -> dict:
+    def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str, *, in_place: bool = False) -> dict:
         """
         Convert Neo4j node format to ArangoDB-compatible format.
 
         Args:
             neo4j_node: Node from Neo4j (has id, label)
             collection: Collection name
+            in_place: Convert ``neo4j_node`` itself instead of a copy, for a
+                dict the caller built for this call and holds no other use of.
 
         Returns:
             Node in ArangoDB format (with _key, _id)
         """
-        arango_node = {k: v for k, v in neo4j_node.items() if k not in _KH_INTERNAL_PROPERTIES}
+        if in_place:
+            arango_node = neo4j_node
+            for k in _KH_INTERNAL_PROPERTIES:
+                arango_node.pop(k, None)
+        else:
+            arango_node = {k: v for k, v in neo4j_node.items() if k not in _KH_INTERNAL_PROPERTIES}
 
         # Convert id to _key
         if "id" in arango_node:
@@ -3255,7 +3283,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     for field in return_fields
                 )
             else:
-                return_expr = "n"
+                return_expr = "n {.*} AS n"
 
             query = f"""
             MATCH (n:{label})
@@ -3263,10 +3291,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN {return_expr}
             """
 
+            # Property maps only: Record.data() would hand back the same values.
             results = await self.client.execute_query(
                 query,
                 parameters={"values": field_values},
-                txn_id=transaction
+                txn_id=transaction,
+                plain=True,
             )
 
             nodes = []
@@ -3274,8 +3304,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if return_fields:
                     node = {field: record.get(field) for field in return_fields}
                 else:
-                    node = dict(record.get("n", {}))
-                nodes.append(self._neo4j_to_arango_node(node, collection))
+                    node = record.get("n") or {}
+                nodes.append(self._neo4j_to_arango_node(node, collection, in_place=True))
 
             return nodes
 
@@ -5833,30 +5863,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         raise_on_error: bool = False,
     ) -> dict | None:
-        """Get user by user ID"""
+        """Get user by user ID. Memoized for the current chat turn (see
+        `app.utils.turn_memo`): a turn looked the same user up about twenty
+        times. Each caller gets its own copy, so one caller's edits stay its own."""
+        from app.utils.turn_memo import memo
+
         try:
-            query = """
-            MATCH (u:User {userId: $user_id})
-            RETURN u
-            LIMIT 1
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"user_id": user_id}
-            )
-
-            if results:
-                user_dict = dict(results[0]["u"])
-                return self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
-
-            return None
-
+            user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
         except Exception as e:
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             if raise_on_error:
                 raise
             return None
+        return copy.deepcopy(user)
+
+    async def _get_user_by_user_id(self, user_id: str) -> dict | None:
+        query = """
+        MATCH (u:User {userId: $user_id})
+        RETURN u {.*} AS u
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"user_id": user_id},
+            plain=True,
+        )
+        if results:
+            return self._neo4j_to_arango_node(results[0]["u"], CollectionNames.USERS.value, in_place=True)
+        return None
 
     async def apply_verified_user_email(
         self,
@@ -6401,20 +6435,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             MATCH (o:Organization {{id: $org_id}})-[:ORG_APP_RELATION]->(app:App)
             {where}
-            RETURN app
+            RETURN app {{.*}} AS app
             """
 
+            # A map, not the node: plain rows skip the driver's per-node conversion,
+            # which was most of this query's CPU in a chat turn.
             results = await self.client.execute_query(
                 query,
-                parameters={"org_id": org_id, "app_type": app_type}
+                parameters={"org_id": org_id, "app_type": app_type},
+                plain=True,
             )
 
-            apps = []
-            for record in results:
-                app_dict = dict(record["app"])
-                apps.append(self._neo4j_to_arango_node(app_dict, CollectionNames.APPS.value))
-
-            return apps
+            return [
+                self._neo4j_to_arango_node(record["app"], CollectionNames.APPS.value, in_place=True)
+                for record in results
+            ]
 
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
@@ -7904,23 +7939,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND {live_record}
               AND r.virtualRecordId IS NOT NULL AND r.id IS NOT NULL
               {metadata_filter_clause}{time_range_filter_clause}
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId{_DATED_COLUMNS if with_dates else ""}
+            RETURN {"r.virtualRecordId AS virtualId, r.id AS recordId" + _DATED_COLUMNS if with_dates else "collect([r.virtualRecordId, r.id]) AS pairs"}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
-            results = await self.client.execute_query(query, parameters=parameters)
             if with_dates:
-                return _dated_rows(results)
+                return _dated_rows(await self.client.execute_query(query, parameters=parameters))
+            results = await self.client.execute_query(query, parameters=parameters, plain=True)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
-            virtual_id_to_record_id: dict[str, str] = {}
-            for r in results:
-                vid = r.get("virtualId")
-                rid = r.get("recordId")
-                if vid and rid and vid not in virtual_id_to_record_id:
-                    virtual_id_to_record_id[vid] = rid
+            virtual_id_to_record_id = _virtual_id_map(results)
 
             elapsed_time = time.time() - start_time
             self.logger.debug(
@@ -8026,23 +8056,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND allPairs AS pair
             WITH pair
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
-            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId{_DATED_PAIR_COLUMNS if with_dates else ""}
+            RETURN {"pair.virtualId AS virtualId, pair.recordId AS recordId" + _DATED_PAIR_COLUMNS if with_dates else "collect([pair.virtualId, pair.recordId]) AS pairs"}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
-            results = await self.client.execute_query(query, parameters=parameters)
             if with_dates:
-                return _dated_rows(results)
+                return _dated_rows(await self.client.execute_query(query, parameters=parameters))
+            results = await self.client.execute_query(query, parameters=parameters, plain=True)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
-            virtual_id_to_record_id: dict[str, str] = {}
-            for r in results:
-                vid = r.get("virtualId")
-                rid = r.get("recordId")
-                if vid and rid and vid not in virtual_id_to_record_id:
-                    virtual_id_to_record_id[vid] = rid
+            virtual_id_to_record_id = _virtual_id_map(results)
 
             elapsed_time = time.time() - start_time
             kb_filter_info = f" (filtered: {len(kb_ids)} KBs)" if kb_ids else " (all KBs)"
@@ -8287,7 +8312,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
           AND r.origin = $uploadOrigin
           AND r.virtualRecordId IS NOT NULL
           AND r.id IS NOT NULL
-        RETURN DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
+        WITH DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
+        RETURN collect([virtualId, recordId]) AS pairs
         """
         results = await self.client.execute_query(
             query,
@@ -8296,15 +8322,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "completedStatus": ProgressStatus.COMPLETED.value,
                 "uploadOrigin": OriginTypes.UPLOAD.value,
             },
+            plain=True,
         )
 
-        virtual_id_to_record_id: dict[str, str] = {}
-        for r in results:
-            vid = r.get("virtualId")
-            rid = r.get("recordId")
-            if vid and rid and vid not in virtual_id_to_record_id:
-                virtual_id_to_record_id[vid] = rid
-        return virtual_id_to_record_id
+        return _virtual_id_map(results)
 
     async def _get_all_virtual_ids_for_connector(self, connector_id: str) -> dict[str, str]:
         """Every completed record of an app-level-permission connector.
@@ -8320,7 +8341,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
           AND (r.isDeleted IS NULL OR r.isDeleted = false)
           AND r.virtualRecordId IS NOT NULL
           AND r.id IS NOT NULL
-        RETURN DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
+        WITH DISTINCT r.virtualRecordId AS virtualId, r.id AS recordId
+        RETURN collect([virtualId, recordId]) AS pairs
         """
         results = await self.client.execute_query(
             query,
@@ -8328,15 +8350,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "connectorId": connector_id,
                 "completedStatus": ProgressStatus.COMPLETED.value,
             },
+            plain=True,
         )
 
-        virtual_id_to_record_id: dict[str, str] = {}
-        for r in results:
-            vid = r.get("virtualId")
-            rid = r.get("recordId")
-            if vid and rid and vid not in virtual_id_to_record_id:
-                virtual_id_to_record_id[vid] = rid
-        return virtual_id_to_record_id
+        return _virtual_id_map(results)
 
     async def _get_connector_virtual_ids_cached(
         self,
@@ -8470,7 +8487,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hit with the batch access check. Enumerating what the user may read
         instead cost 0.5-1.2 s at 50k-150k records; the check of the top hits
         costs 10-90 ms.
+
+        Memoized for the current chat turn (see `app.utils.turn_memo`): pattern
+        match asks twice per run. The result is frozen, so callers share it.
         """
+        from app.utils.turn_memo import memo
+
+        key = (
+            "accessible_containers", user_id, org_id,
+            json.dumps(filters, sort_keys=True, default=str),
+            json.dumps(time_range, sort_keys=True, default=str),
+        )
+        async def compute() -> AccessibleContainers:
+            found = await self._get_accessible_containers(user_id, org_id, filters, time_range)
+            if found.fallback_reason == "query_failed":
+                raise _TransientContainers(found)  # memo keeps no failure: retried next ask
+            return found
+
+        try:
+            return await memo(key, compute)
+        except _TransientContainers as e:
+            return e.result
+
+    async def _get_accessible_containers(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None,
+        time_range: dict[str, int] | None,
+    ) -> AccessibleContainers:
         unsupported = _unsupported_container_filters(filters, time_range)
         if unsupported:
             return AccessibleContainers(fallback_reason=unsupported)
@@ -8485,7 +8530,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not user_id or not self.client:
             return AccessibleContainers(fallback_reason="no_user_or_client")
         try:
-            user = await self.get_user_by_user_id(user_id)
+            # A failed lookup raises into query_failed below, which the turn memo does not keep.
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             if not user_key:
                 return AccessibleContainers(fallback_reason="user_not_found")
@@ -8792,7 +8838,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE r.id IN $record_ids
               AND r.orgId = $org_id
               AND {cypher_record_visibility("r", visibility)}
-            RETURN r
+            RETURN r {{.*}} AS r
             """
 
             parameters = {
@@ -8800,14 +8846,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "org_id": org_id
             }
 
-            results = await self.client.execute_query(query, parameters=parameters)
+            results = await self.client.execute_query(query, parameters=parameters, plain=True)
 
-            records = []
-            if results:
-                for result in results:
-                    if result.get("r"):
-                        record_dict = dict(result["r"])
-                        records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
+            records = [
+                self._neo4j_to_arango_node(result["r"], CollectionNames.RECORDS.value, in_place=True)
+                for result in results or []
+                if result.get("r")
+            ]
 
             self.logger.debug(f"✅ Fetched {len(records)} records by record IDs")
             return records
@@ -9130,7 +9175,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={"record_ids": list(record_ids)},
-                txn_id=transaction
+                txn_id=transaction,
+                plain=True,
             )
             return {row["record_id"]: row["virtualRecordId"] for row in (results or [])}
         except Exception as e:
@@ -21714,7 +21760,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             closure_rows = await self.client.execute_query(
                 closure_query,
                 {"record_ids": list(record_ids), "org_id": org_id},
-                txn_id=transaction,
+                txn_id=transaction, plain=True,
             )
             all_keys: list[str] = []
             if closure_rows:
@@ -21764,7 +21810,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             detail_rows = await self.client.execute_query(
                 detail_query,
                 {"ids": all_keys, "org_id": org_id},
-                txn_id=transaction,
+                txn_id=transaction, plain=True,
             )
             nodes: dict[str, Any] = {}
             parents: dict[str, Any] = {}

@@ -70,7 +70,10 @@ _REQUEST_TOO_LARGE_HINTS = (
     "error code: 413",
     "reduce your message size",
     "context length exceeded",
+    "context_length_exceeded",
     "maximum context length",
+    # Azure OpenAI: "Your input exceeds the context window of this model."
+    "exceeds the context window",
     # `Agent.step` ends the run with this when the shapers cannot fit the
     # context into the model's window (see agent_loop_lib/context/errors.py).
     "context could not be shaped",
@@ -98,6 +101,13 @@ _SERVER_ERROR_HINTS = (
     "connection error",
     "connection refused",
     "apiconnectionerror",
+    # A failure inside an open stream arrives without its HTTP status, only the
+    # provider's wording (Azure OpenAI 503 / 500, Anthropic overloaded_error).
+    "high demand",
+    "server had an error",
+    "server_error",
+    "service_unavailable",
+    "overloaded",
 )
 _TIMEOUT_HINTS = ("timeout", "timed out")
 

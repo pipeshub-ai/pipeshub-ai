@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Flex, Text } from '@radix-ui/themes';
+import { Box, Callout, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
@@ -201,6 +201,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
   const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
+  // The reply failed (the provider was rate limiting, overloaded, ...): its text says why,
+  // shown as an error so it doesn't read like an answer.
+  const answerFailed = !isStreaming && !!streamError && !mcpConnectDetails;
   const isMobile = useIsMobile();
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
@@ -858,12 +861,23 @@ export const ChatResponse = React.memo(function ChatResponse({
                       : undefined,
                 }}
               >
-                <AnswerContent
-                  content={answerShown}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                  isStreaming={isStreaming}
-                />
+                {answerFailed ? (
+                  <Callout.Root color="red" variant="soft" size="1" role="status" data-testid="answer-failed">
+                    <Callout.Icon aria-hidden>
+                      <MaterialIcon name="error" size={16} />
+                    </Callout.Icon>
+                    <Callout.Text size="2" style={{ lineHeight: 1.45 }}>
+                      {answerShown}
+                    </Callout.Text>
+                  </Callout.Root>
+                ) : (
+                  <AnswerContent
+                    content={answerShown}
+                    citationMaps={effectiveCitationMaps}
+                    citationCallbacks={wrappedCallbacks}
+                    isStreaming={isStreaming}
+                  />
+                )}
               </Box>
             )}
 

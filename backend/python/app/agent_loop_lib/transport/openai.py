@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import threading
+import weakref
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
+
+import orjson
 
 # Private SDK symbol, imported deliberately rather than reimplemented: SSE
 # framing is fiddly (multi-line data, chunk boundaries) and the SDK's decoder is
@@ -204,6 +210,38 @@ def client_timeout(timeout: float | None) -> Any:
     return httpx.Timeout(timeout, connect=min(15.0, stall), read=stall, write=stall, pool=stall)
 
 
+_CLIENT_CACHE_MAX = 32
+_client_cache: weakref.WeakKeyDictionary[Any, OrderedDict[tuple, Any]] = weakref.WeakKeyDictionary()
+_client_cache_lock = threading.Lock()
+
+
+def shared_client(factory: Callable[..., Any], **client_kwargs: Any) -> Any:
+    """An SDK client shared by every transport with the same settings.
+
+    Transports are built per answer; a fresh client per answer meant a new
+    connection pool and a new TLS handshake to the provider every time. The
+    httpx pool binds to the event loop it is first used on, so clients are
+    kept per loop, and built fresh outside one. Evicted clients are not
+    closed: an in-flight request may still hold one.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return factory(**client_kwargs)
+    # repr: httpx.Timeout is unhashable, and its repr carries every phase.
+    key = (factory, tuple(sorted((k, repr(v)) for k, v in client_kwargs.items())))
+    with _client_cache_lock:
+        clients = _client_cache.setdefault(loop, OrderedDict())
+        client = clients.get(key)
+        if client is not None:
+            clients.move_to_end(key)
+            return client
+        client = clients[key] = factory(**client_kwargs)
+        if len(clients) > _CLIENT_CACHE_MAX:
+            clients.popitem(last=False)
+        return client
+
+
 class OpenAITransport(LLMTransport):
     """OpenAI Chat Completions API via the official SDK.
 
@@ -256,7 +294,7 @@ class OpenAITransport(LLMTransport):
         # (an egress guard, request hooks); the SDK does not close it.
         if http_client is not None:
             client_kwargs["http_client"] = http_client
-        self._client = _openai.AsyncOpenAI(**client_kwargs)
+        self._client = shared_client(_openai.AsyncOpenAI, **client_kwargs)
         self._init_prompt_cache(cache_plan, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
@@ -544,7 +582,7 @@ class OpenAITransport(LLMTransport):
             messages, tools, system, system_blocks, stream=False, tool_choice=tool_choice,
         )
         try:
-            response = await self._client.responses.create(**kwargs)
+            response = await self._create_response(kwargs)
         except Exception as exc:
             raise self._wrap_error(exc, "complete") from exc
 
@@ -558,6 +596,63 @@ class OpenAITransport(LLMTransport):
             message=message, usage=usage, stop_reason=stop_reason,
             model=self._responses_model_id(),
         )
+
+    async def _create_response(self, kwargs: dict[str, Any]) -> Any:
+        """One non-streaming Responses call. Split out so a transport with a
+        different client (`litellm.py`) swaps only the wire call."""
+        body = self._encoded_body(kwargs)
+        if body is None:
+            return await self._client.responses.create(**kwargs)
+        from openai._base_client import make_request_options
+        from openai.types.responses import Response
+
+        return await self._client.post(
+            "/responses", content=body, cast_to=Response,
+            options=make_request_options(security={"bearer_auth": True}),
+        )
+
+    def _open_responses_stream(self, kwargs: dict[str, Any]) -> Any:
+        """`responses.with_streaming_response.create(**kwargs)`, sending
+        `kwargs` pre-encoded when it can be."""
+        body = self._encoded_body(kwargs)
+        if body is None:
+            return self._client.responses.with_streaming_response.create(**kwargs)
+        from openai import AsyncStream
+        from openai._base_client import make_request_options
+        from openai._constants import RAW_RESPONSE_HEADER
+        from openai._response import AsyncResponseContextManager
+        from openai.types.responses import Response, ResponseStreamEvent
+
+        # Same options `with_streaming_response.create` builds; only the body
+        # differs, so auth, retries, timeouts and status errors are the SDK's.
+        return AsyncResponseContextManager(self._client.post(
+            "/responses", content=body, cast_to=Response, stream=True,
+            stream_cls=AsyncStream[ResponseStreamEvent],
+            options=make_request_options(
+                extra_headers={RAW_RESPONSE_HEADER: "stream"}, security={"bearer_auth": True},
+            ),
+        ))
+
+    def _encoded_body(self, kwargs: dict[str, Any]) -> bytes | None:
+        """The request body as JSON bytes, or None to let the SDK build it.
+
+        `responses.create` walks the whole input through its type transform and
+        then encodes it with stdlib json; on a long agent turn that is ~23 ms of
+        CPU per answer. The kwargs here are already plain JSON data (no aliased
+        or base64-formatted fields on the Responses params), so the transform is
+        a no-op for them. None for a client that is not the SDK's (test stubs)
+        and for data orjson refuses (non-str keys, ints over 64 bits). One
+        difference: orjson writes NaN as null, where json wrote a NaN token the
+        API rejects.
+        """
+        if not isinstance(self._client, self._openai.AsyncOpenAI):
+            return None
+        import orjson
+
+        try:
+            return orjson.dumps(kwargs)
+        except TypeError:
+            return None
 
     async def _raw_response_events(self, kwargs: dict[str, Any]) -> AsyncIterator[Any]:
         """Responses stream events as `RawEvent`, skipping the SDK's per-event
@@ -578,11 +673,15 @@ class OpenAITransport(LLMTransport):
           mid-stream failure would look like a short answer.
         """
         decoder = SSEDecoder()
-        async with self._client.responses.with_streaming_response.create(**kwargs) as response:
+        async with self._open_responses_stream(kwargs) as response:
             async for sse in decoder.aiter_bytes(response.iter_bytes()):
                 if sse.data.startswith("[DONE]"):
                     break
-                data = json.loads(sse.data)
+                try:
+                    data = orjson.loads(sse.data)
+                except orjson.JSONDecodeError:
+                    # json also accepts NaN/Infinity tokens and lone surrogates
+                    data = json.loads(sse.data)
                 if isinstance(data, dict) and data.get("error"):
                     error = data["error"]
                     message = error.get("message") if isinstance(error, dict) else None

@@ -55,6 +55,7 @@ from app.utils.exact_text_index import (
 )
 from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
+from app.utils.turn_memo import memo
 from app.utils.chat_helpers import (
     _build_record_dict_from_graph_base,
     create_record_instance_from_dict,
@@ -68,6 +69,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PATTERN_MATCH_TIMEOUT = 30
+# A batched grep (one run for every connector) slower than this falls back to
+# one run per connector, which bounds each connector on its own.
+_BATCH_GREP_TIMEOUT = 10
 # Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
 _LLM_GREP_ATTEMPT_TIMEOUT = 10.0
@@ -890,9 +894,19 @@ async def resolve_connector_ids_for_search(
         return list(scope)
     if filters and filters.get(STRICT_SCOPE_FILTER_KEY):
         return []
-    try:
+    async def org_app_ids() -> list[str]:
         org_apps = await graph_provider.get_org_apps(org_id, active_only=False)
-        return [app["_key"] for app in org_apps if app.get("_key")]
+        ids = [app["_key"] for app in org_apps if app.get("_key")]
+        if not ids:
+            # A failed listing also answers []: not remembered, asked again.
+            raise LookupError("no org apps")
+        return ids
+
+    try:
+        # Once per chat turn: each grep command of each search resolves this.
+        return list(await memo(("pattern_match_org_app_ids", org_id), org_app_ids))
+    except LookupError:
+        return []
     except Exception:
         logger.warning("pattern_match: org app lookup failed, grep searches nothing", exc_info=True)
         return []
@@ -984,7 +998,7 @@ async def _resolve_search_paths(
     for rg, chain in zip(accessible_rgs, chains):
         if isinstance(chain, BaseException) or not chain:
             # Unknown ancestry: a flat guess could name a different group's directory.
-            logger_instance.info(
+            logger_instance.debug(
                 "pattern_match: no path for record group %s, not scoping: %s",
                 rg.get("id"), chain,
             )
@@ -996,7 +1010,7 @@ async def _resolve_search_paths(
         if await asyncio.to_thread(os.path.isdir, os.path.join(connector_dir, rel)):
             rel_paths.add(rel)
         else:
-            logger_instance.info(
+            logger_instance.debug(
                 "pattern_match: no directory for record group %s at %r, skipping",
                 rg.get("id"), rel,
             )
@@ -1155,7 +1169,10 @@ def _cap_grep_output(command: str) -> str:
 
     ``grep -c`` prints a line for every file it reads, matching or not. Unless
     those are dropped first, they fill the output caps in directory-walk order
-    and real matches later in the walk are never seen.
+    and real matches later in the walk are never seen. A final grep stage that
+    counts or lists files gets ``-l`` instead, which GNU grep lets override
+    ``-c``: it prints matching files only, without a second filtering process.
+    Each record file is one line, so the count was 0 or 1 and ranked nothing.
 
     find_records refuses a head/tail cut (records the user cannot read could
     fill it and push readable ones out) and bounds the output itself, ranking
@@ -1163,6 +1180,16 @@ def _cap_grep_output(command: str) -> str:
     """
     stages = [s.strip() for s in _split_pipeline(command)]
     stages = [s for i, s in enumerate(stages) if i == 0 or not re.match(r"(head|tail)\b", s)]
+    last = _grep_stage_flags(stages[-1])
+    if (
+        last and last[0] != "rg"
+        and ({"c", "l"} & last[1] or {"--count", "--files-with-matches"} & last[2])
+        and not ({"L", "Z"} & last[1] or {"--files-without-match", "--null"} & last[2])
+    ):
+        listed = _add_grep_flag(stages[-1], "l", "--files-with-matches")
+        parsed = _grep_stage_flags(listed)
+        if parsed and ("l" in parsed[1] or "--files-with-matches" in parsed[2]):
+            return " | ".join([*stages[:-1], listed])
     return " | ".join(stages + [_ZERO_COUNT_FILTER])
 
 
@@ -1578,6 +1605,10 @@ async def run_pattern_match(
       the ones they can.
     - Anything else (RECORD_LEVEL, or groups needing verification) → grep
       the whole connector directory.
+
+    One run of the command searches every connector's directories
+    (``find_records_batch``) whenever that gives what a run per connector
+    would; otherwise each connector with a records directory gets its own run.
     """
     if not connector_ids or not command:
         return []
@@ -1625,6 +1656,17 @@ async def run_pattern_match(
     # Per connector, the outcome of its last grep; read once into *coverage*.
     outcomes: dict[str, str] = {}
 
+    # The same rows serve every connector, so they are fetched once, and only
+    # when some connector could be narrowed to its groups.
+    group_rows: list[dict[str, Any]] | None = None
+    if containers is not None and rg_ids_trusted and not has_direct_grants and any(
+        cid not in app_level_ids for cid in connector_ids
+    ):
+        try:
+            group_rows = await _fetch_container_group_rows(graph_provider, containers)
+        except Exception:
+            logger_instance.debug("RG lookup failed, falling back to full grep", exc_info=True)
+
     async def _run_grep(connector_id: str, cmd: str) -> list[dict] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
@@ -1666,96 +1708,69 @@ async def run_pattern_match(
         outcomes[connector_id] = "capped" if capped else "ok"
         return records
 
-    async def _search_connector(connector_id: str) -> list[dict]:
-        # APP_LEVEL: full grep, all records accessible
-        if connector_id in app_level_ids:
-            logger_instance.info(
-                "pattern_match _search_connector: cid=%s APP_LEVEL, full grep",
-                connector_id,
+    async def _scoped_paths(connector_id: str, connector_dir: str | None) -> list[str] | None:
+        """The directories of the record groups of *connector_id* the user
+        reaches (the grants semantic search uses), or None to grep all of it:
+        an APP_LEVEL connector, or groups that are not all trusted."""
+        if connector_id in app_level_ids or group_rows is None:
+            return None
+        try:
+            accessible_rgs = _accessible_groups_for_connector(
+                containers, group_rows, org_id=org_id, connector_id=connector_id,
             )
-            records = await _run_grep(connector_id, command) or []
-            logger_instance.info(
-                "pattern_match _search_connector: cid=%s records=%d",
-                connector_id, len(records),
-            )
-            return records
-
-        # Record groups of this connector the user reaches: the grants semantic
-        # search uses. Looked up only when scoping could use them.
-        accessible_rgs: list[dict[str, str]] = []
-        if containers is not None and rg_ids_trusted and not has_direct_grants:
-            try:
-                group_rows = await _fetch_container_group_rows(graph_provider, containers)
-                accessible_rgs = _accessible_groups_for_connector(
-                    containers, group_rows, org_id=org_id, connector_id=connector_id,
-                )
-            except Exception:
-                logger_instance.debug(
-                    "RG lookup failed for connector %s, falling back to full grep",
-                    connector_id, exc_info=True,
-                )
-
-        if accessible_rgs:
             rg_ids = {rg["id"] for rg in accessible_rgs if "id" in rg}
-            all_rgs_trusted = bool(rg_ids) and rg_ids <= rg_ids_trusted
+            if not rg_ids or not rg_ids <= rg_ids_trusted:
+                return None
+            if connector_dir is None:
+                connector_dir, _ = await storage_tool._resolve_connector_path(connector_id)
+            if not connector_dir:
+                return None
+            return await _resolve_search_paths(
+                graph_provider=graph_provider,
+                connector_id=connector_id,
+                connector_dir=connector_dir,
+                accessible_rgs=accessible_rgs,
+                logger_instance=logger_instance,
+            )
+        except Exception:
+            logger_instance.warning(
+                "pattern_match: resolving group paths failed for cid=%s, "
+                "falling back to full grep", connector_id, exc_info=True,
+            )
+            return None
 
-            search_paths: list[str] | None = None
-            if all_rgs_trusted and not has_direct_grants:
-                try:
-                    connector_dir, _ = await storage_tool._resolve_connector_path(connector_id)
-                    if connector_dir:
-                        search_paths = await _resolve_search_paths(
-                            graph_provider=graph_provider,
-                            connector_id=connector_id,
-                            connector_dir=connector_dir,
-                            accessible_rgs=accessible_rgs,
-                            logger_instance=logger_instance,
-                        )
-                except Exception:
-                    logger_instance.warning(
-                        "pattern_match: resolving group paths failed for cid=%s, "
-                        "falling back to full grep", connector_id, exc_info=True,
-                    )
-            if search_paths:
-                scoped_cmd = _scope_grep_to_paths(command, search_paths)
-                # Unchanged means the rewrite did not apply; the full grep below runs.
-                if scoped_cmd != command:
-                    logger_instance.info(
-                        "pattern_match _search_connector: cid=%s RECORD_GROUP_LEVEL, "
-                        "scoped grep paths=%d cmd=%r",
-                        connector_id, len(search_paths), scoped_cmd[:200],
-                    )
-                    scoped_records = await _run_grep(connector_id, scoped_cmd)
-                    if scoped_records is not None:
-                        logger_instance.info(
-                            "pattern_match _search_connector: cid=%s records=%d",
-                            connector_id, len(scoped_records),
-                        )
-                        return scoped_records
-                    # e.g. a group name the command validator rejects; the full
-                    # grep below searches more but is adjudicated the same way.
-                    logger_instance.info(
-                        "pattern_match _search_connector: cid=%s scoped grep failed, "
-                        "falling back to full grep",
-                        connector_id,
-                    )
-
-        # RECORD_LEVEL (or scoping unavailable): full grep
-        logger_instance.info(
-            "pattern_match _search_connector: cid=%s RECORD_LEVEL, full grep",
-            connector_id,
-        )
+    async def _search_connector(connector_id: str, connector_dir: str | None) -> list[dict]:
+        search_paths = await _scoped_paths(connector_id, connector_dir)
+        if search_paths:
+            scoped_cmd = _scope_grep_to_paths(command, search_paths)
+            # Unchanged means the rewrite did not apply; the full grep below runs.
+            if scoped_cmd != command:
+                logger_instance.debug(
+                    "pattern_match _search_connector: cid=%s RECORD_GROUP_LEVEL, "
+                    "scoped grep paths=%d cmd=%r",
+                    connector_id, len(search_paths), scoped_cmd[:200],
+                )
+                scoped_records = await _run_grep(connector_id, scoped_cmd)
+                if scoped_records is not None:
+                    return scoped_records
+                # e.g. a group name the command validator rejects; the full
+                # grep below searches more but is adjudicated the same way.
+                logger_instance.debug(
+                    "pattern_match _search_connector: cid=%s scoped grep failed, "
+                    "falling back to full grep",
+                    connector_id,
+                )
         records = await _run_grep(connector_id, command) or []
-        logger_instance.info(
-            "pattern_match _search_connector: cid=%s records=%d",
+        logger_instance.debug(
+            "pattern_match _search_connector: cid=%s full grep, records=%d",
             connector_id, len(records),
         )
         return records
 
     # Per connector, so one slow connector cannot discard everyone else's results.
-    async def _search_connector_bounded(connector_id: str) -> list[dict]:
+    async def _search_connector_bounded(connector_id: str, connector_dir: str | None, budget: float) -> list[dict]:
         try:
-            return await asyncio.wait_for(_search_connector(connector_id), timeout=timeout)
+            return await asyncio.wait_for(_search_connector(connector_id, connector_dir), timeout=budget)
         except asyncio.TimeoutError:
             logger_instance.warning(
                 "Pattern match timed out after %ds for cid=%s", timeout, connector_id,
@@ -1763,26 +1778,67 @@ async def run_pattern_match(
             outcomes[connector_id] = "timed_out"
             return []
 
-    try:
-        results = await asyncio.gather(
-            *(_search_connector_bounded(cid) for cid in connector_ids),
-            return_exceptions=True,
+    async def _search_batched(dirs: dict[str, str]) -> list[dict] | None:
+        """Every connector in one run of the command, or None to run it per connector."""
+        plans = await asyncio.gather(*(_scoped_paths(cid, d) for cid, d in dirs.items()))
+        capped: set[str] = set()
+        found = await storage_tool.find_records_batch(
+            {cid: (d, paths or ["."]) for (cid, d), paths in zip(dirs.items(), plans)},
+            command,
+            max_results=_MAX_RECORDS_PER_CONNECTOR,
+            max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
+            max_output_chars=_MAX_GREP_OUTPUT_CHARS,
+            timeout=min(timeout, _BATCH_GREP_TIMEOUT),
+            capped=capped,
         )
+        # Anything but a result map means the batch did not run.
+        if not isinstance(found, dict):
+            return None
+        for cid in dirs:
+            outcomes[cid] = "capped" if cid in capped else "ok"
+        return [rec for cid in dirs for rec in found.get(cid) or []]
+
+    # A connector without a records directory has nothing to grep.
+    # A batch that gave up leaves the per-connector runs only the time that remains.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    dirs: dict[str, str | None] = dict.fromkeys(connector_ids)
+    batched: list[dict] | None = None
+    try:
+        try:
+            resolved = await asyncio.gather(*(storage_tool._resolve_connector_path(cid) for cid in connector_ids))
+            dirs = {cid: d for cid, (d, _err) in zip(connector_ids, resolved) if d}
+            for cid in connector_ids:
+                if cid not in dirs:
+                    outcomes[cid] = "failed"
+            if dirs:
+                batched = await asyncio.wait_for(_search_batched(dirs), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger_instance.warning("Pattern match timed out after %ds", timeout)
+            return []
+        except Exception:
+            logger_instance.debug("pattern_match: batched grep unavailable", exc_info=True)
+
+        if batched is not None:
+            all_records = batched
+        else:
+            results = await asyncio.gather(
+                *(_search_connector_bounded(cid, d, max(1.0, deadline - loop.time())) for cid, d in dirs.items()),
+                return_exceptions=True,
+            )
+            all_records = []
+            for cid, result in zip(dirs, results):
+                if isinstance(result, Exception):
+                    logger_instance.info("Pattern match connector %s error: %s", cid, result)
+                    outcomes[cid] = "failed"
+                    continue
+                logger_instance.debug(
+                    "Pattern match connector %s returned %d records", cid, len(result),
+                )
+                all_records.extend(result)
     finally:
         if coverage is not None:
             _record_outcomes(coverage, connector_ids, outcomes)
-
-    all_records: list[dict] = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger_instance.info("Pattern match connector %d error: %s", i, result)
-            if coverage is not None:
-                coverage.failed.add(connector_ids[i])
-            continue
-        logger_instance.info(
-            "Pattern match connector %d returned %d records", i, len(result),
-        )
-        all_records.extend(result)
     logger_instance.info("Pattern match total raw records: %d", len(all_records))
     return all_records
 
