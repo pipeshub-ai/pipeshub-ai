@@ -125,9 +125,10 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
 }
 
 # The name search matches substrings, so a key inside longer ones (HELP-3307 in
-# HELP-33071, HELP-33072, ...) needs the listing's widest page to keep its own
-# record on it.
+# HELP-33071, HELP-33072, ...) can push its own record past the first page. Pages
+# are read by number, each walking from the first, so the walk is capped.
 _KB_NAME_SEARCH_LIMIT = 200
+_KB_NAME_SEARCH_PAGES = 5
 # Matches read per identifier: each costs a record read and an ACL check.
 _KB_NAME_MATCH_LIMIT = 10
 
@@ -442,18 +443,23 @@ class RecordResolver:
     ) -> list[LookupMatch]:
         """Records of ``kbs`` the user can open whose name holds ``name_part``
         as a whole token (``2019-04-02_HELP-3307-printer-jam.md`` for HELP-3307)."""
-        page = await self._hub.get_nodes(
-            user_id=self._user_id,
-            org_id=self._org_id,
-            q=name_part,
-            connector_ids=[kb.id for kb in kbs],
-            node_types=[NodeType.RECORD.value],
-            limit=_KB_NAME_SEARCH_LIMIT,
-            sort_by="name",
-            sort_order="asc",
-            flattened=True,
-        )
-        ids = [item.id for item in page.items if _holds_token(item.name, name_part)]
+        ids: list[str] = []
+        for page_number in range(1, _KB_NAME_SEARCH_PAGES + 1):
+            page = await self._hub.get_nodes(
+                user_id=self._user_id,
+                org_id=self._org_id,
+                q=name_part,
+                connector_ids=[kb.id for kb in kbs],
+                node_types=[NodeType.RECORD.value],
+                page=page_number,
+                limit=_KB_NAME_SEARCH_LIMIT,
+                sort_by="name",
+                sort_order="asc",
+                flattened=True,
+            )
+            ids += [item.id for item in page.items if _holds_token(item.name, name_part)]
+            if len(ids) >= _KB_NAME_MATCH_LIMIT or not (page.pagination and page.pagination.hasNext):
+                break
         found = await asyncio.gather(*(self._by_record_id(i, raw) for i in ids[:_KB_NAME_MATCH_LIMIT]))
         return [m for matches in found for m in matches]
 

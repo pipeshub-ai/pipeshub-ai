@@ -13,10 +13,13 @@ autospec of ArangoHTTPProvider whose knowledge hub listing is stubbed.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import MagicMock, create_autospec, patch
 
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
 from app.models.entities import FileRecord, Record, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
@@ -156,6 +159,40 @@ class TestKbOnlyChatResolves:
         assert HELP_3307.record_name in text
         assert HELP_33071.record_name not in text
 
+
+class TestKbNameSearchPages:
+    @staticmethod
+    def _crowded(count: int) -> MagicMock:
+        """FILES behind ``count`` longer keys that hold HELP-3307 and sort ahead of its file."""
+        graph = _graph(readable={f.id for f in FILES})
+        crowd = [node(f"crowd-{n}", f"2019-04-01_HELP-3307{n}-note.md", origin="COLLECTION") for n in range(count)]
+        stub_listing(graph, USER_KEY, {KB_ID: [*crowd, *(node(f.id, f.record_name, origin="COLLECTION") for f in FILES)]})
+        return graph
+
+    async def test_a_key_whose_file_sorts_past_the_first_page(self) -> None:
+        graph = self._crowded(250)
+
+        ok, text = await _lookup(_kb_only_chat(graph), "HELP-3307")
+
+        assert ok
+        assert HELP_3307.record_name in text
+        assert HELP_33071.record_name not in text
+
+    async def test_the_walk_stops_at_its_page_cap(self) -> None:
+        graph = self._crowded(5 * 200)
+        pages: list[int] = []
+        get_nodes = KnowledgeHubService.get_nodes
+
+        async def counted(hub: KnowledgeHubService, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            pages.append(kwargs["page"])
+            return await get_nodes(hub, *args, **kwargs)
+
+        with patch.object(KnowledgeHubService, "get_nodes", counted):
+            ok, text = await _lookup(_kb_only_chat(graph), "HELP-3307")
+
+        assert ok
+        assert "Not found" in text
+        assert pages == [1, 2, 3, 4, 5]
 
 class TestKbOnlyChatAccess:
     async def test_a_record_the_user_cannot_read_stays_not_found(self) -> None:
