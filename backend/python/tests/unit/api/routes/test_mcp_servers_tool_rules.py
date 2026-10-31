@@ -20,6 +20,7 @@ from app.api.routes.mcp_servers import (
     get_my_tool_rules,
     update_my_tool_rules,
 )
+from app.core.org_context import OrgContext, bind
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 _ORG = "/services/mcp/instances/inst-1"
@@ -94,7 +95,8 @@ class TestValidateEdit:
         request = route_request(store, user_id=user_id)
         request.state.user.update(extra_user or {})
         body = mcp_servers.ToolApprovalValidateBody(args_hash=args_hash({"q": "a"}), arguments=arguments)
-        return await mcp_servers.validate_tool_approval_edit(request, body, approval_id)
+        with bind(OrgContext("org-1", user_id, "user", "jwt", "req-test")):
+            return await mcp_servers.validate_tool_approval_edit(request, body, approval_id)
 
     async def test_valid_edit_has_no_errors_and_is_not_claimed(self) -> None:
         store = self._store()
