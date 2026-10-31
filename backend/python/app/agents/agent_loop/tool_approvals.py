@@ -561,7 +561,7 @@ def check_edit(
     if shown_hash != args_hash(pending.arguments):
         return [EditError(path="", message="This request changed. Reload.")]
     # A call saved before edits existed has no tool path, and its kind is a default, not the tool's.
-    if pending.input_schema is None or not pending.tool_path:
+    if not edits_enabled() or pending.input_schema is None or not pending.tool_path:
         return [EditError(path="", message="This action can't be edited.")]
     schema = pending.input_schema
     try:
@@ -667,6 +667,9 @@ async def _allowed_for_conversation(context: "AgentContext", target: ApprovalTar
 
 
 async def _allow_for_conversation(context: "AgentContext", pending: PendingCall, target: ApprovalTarget) -> None:
+    # An org toolset's rules are the admin's: the card doesn't offer this there, and a request that sends it saves nothing.
+    if not target.own_rules:
+        return
     schema = _input_schema(target.tool)
     if schema is None or not pending.conversation_id:
         return
@@ -829,13 +832,10 @@ async def _refused_edit(
     target = _target_for(context, pending)
     if target is None:
         return None
-    if not edits_enabled():
-        errors = [EditError(path="", message="This action can't be edited.")]
-    else:
-        errors = check_edit(
-            pending, answer.arguments, shown_hash=answer.args_hash,
-            own_rule=await own_rule_for(context.config_service, pending), enabled_on_project=pending.enabled_on_project,
-        )
+    errors = check_edit(
+        pending, answer.arguments, shown_hash=answer.args_hash,
+        own_rule=await own_rule_for(context.config_service, pending), enabled_on_project=pending.enabled_on_project,
+    )
     return (target, pending, errors) if errors else None
 
 
