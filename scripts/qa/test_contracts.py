@@ -106,6 +106,17 @@ class TestTrustedDispatch(unittest.TestCase):
         self.assertRegex(text, r'"\$head" != "\$trusted_head" \]\]')
 
 
+class TestReviewInput(unittest.TestCase):
+    def test_qa_workflows_pass_the_review_input(self) -> None:
+        def read(name: str) -> str:
+            return (WORKFLOWS / name).read_text(encoding="utf-8")
+        self.assertIn('-f review="$review"', read("qa-command.yml"))
+        self.assertIn("review: ${{ inputs.review || false }}", read("qa.yml"))
+        pipeline = read("qa-pipeline.yml")
+        self.assertIn('"$ENGINE" review --pr', pipeline)
+        self.assertIn("inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY", pipeline)
+
+
 class TestReportAndGate(unittest.TestCase):
     def test_report_and_gate_use_one_allow_list(self) -> None:
         text = (WORKFLOWS / "qa-pipeline.yml").read_text(encoding="utf-8")

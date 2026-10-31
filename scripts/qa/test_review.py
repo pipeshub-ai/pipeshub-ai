@@ -11,10 +11,12 @@ import unittest
 from unittest import mock
 
 from qa import __main__ as qa_main
-from qa import catalog, collect, config, paths, review, testing
+from qa import catalog, collect, config, paths, planner, report, review, run, testing
 
 ACL = "it:retrieval/test_search.py::test_acl_filter"
 UNIT = "py:tests/unit/services/test_retrieval.py"
+PROBE = "node:tests/modules/health.test.ts"
+RUN_URL = "https://github.com/o/r/actions/runs/42"
 
 
 class ReviewCase(unittest.TestCase):
@@ -99,10 +101,105 @@ class TestReview(ReviewCase):
     def test_every_not_run_is_listed_with_kind_and_reason(self) -> None:
         results = self.results(**{ACL: {"outcome": "not_run", "kind": "secret", "details": "secret: JIRA_TOKEN"}})
         rv = self.review(self.llm(), results)
-        body = review.render(rv, "oss", run_url="https://example.invalid/run/1")
+        body = review.render(rv, "oss", run_url=RUN_URL)
         not_tested = body.split("### Not tested", 1)[1]
         self.assertIn(f"{ACL} (secret): secret: JIRA_TOKEN", not_tested)
-        self.assertTrue(body.rstrip().endswith("Screenshots, traces and logs: https://example.invalid/run/1"))
+        self.assertTrue(body.rstrip().endswith(f"Screenshots, traces and logs: {RUN_URL}"))
+
+    def test_run_url_outside_actions_runs_is_dropped(self) -> None:
+        rv = self.review(self.llm(), self.results())
+        for url in ("https://evil.example/x", f"{RUN_URL} @admin", "http://github.com/o/r/actions/runs/1"):
+            self.assertNotIn("Screenshots", review.render(rv, "oss", run_url=url), url)
+
+    def test_not_run_kind_is_sanitised(self) -> None:
+        results = self.results(**{ACL: {"outcome": "not_run", "kind": "@admin|x", "details": "d"}})
+        body = review.render(self.review(self.llm(), results), "oss")
+        self.assertNotIn("@admin", body)
+
+    def test_gather_reads_the_pr_and_its_first_three_issues(self) -> None:
+        pr = {"title": "T", "body": "B", "commits": [{"messageHeadline": "one", "oid": "a"}],
+              "closingIssuesReferences": [{"number": n} for n in (1, 2, 3, 4)]}
+        calls = []
+
+        def gh(cmd, **_):
+            calls.append(cmd)
+            data = pr if cmd[1] == "pr" else {"title": f"I{cmd[3]}", "body": "x"}
+            return mock.Mock(stdout=json.dumps(data))
+        with mock.patch.object(review.subprocess, "run", side_effect=gh):
+            got = review.gather(7, "o/r")
+        self.assertEqual(got["commits"], ["one"])
+        self.assertEqual([i["number"] for i in got["issues"]], [1, 2, 3])
+        self.assertEqual((got["number"], got["title"], got["body"]), (7, "T", "B"))
+        self.assertEqual(calls[0][:4], ["gh", "pr", "view", "7"])
+        self.assertTrue(all(c[-2:] == ["--repo", "o/r"] for c in calls))
+
+
+REPLY = {"requirements": [{"text": "ACL hides records", "tests": [ACL]}],
+         "checklist": [{"area": "search", "probe": "ranking still sorted", "test": ACL},
+                       {"area": "health", "probe": "health stays up", "test": PROBE}],
+         "risks": []}
+
+
+class TestReviewCommand(ReviewCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.out = self.root / "qa-out"
+        (self.out / "plan.json").write_text(json.dumps({**self.plan, "edition": "oss"}), encoding="utf-8")
+
+    def main(self, *argv: str) -> tuple[int, str]:
+        def ask(root, adapter, task, input_path, output_path, timeout=600):
+            self.assertEqual(task, "review")
+            output_path.write_text(json.dumps({**REPLY, "_planner": {"adapter": adapter, "status": "ok"}}), encoding="utf-8")
+            return {"adapter": adapter, "status": "ok"}
+        err = io.StringIO()
+        with mock.patch.object(paths, "REPO", self.root), mock.patch.dict(os.environ, {"QA_ROOT": str(self.root)}), \
+                mock.patch.object(planner, "ask", side_effect=ask), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = qa_main.main(["--out", str(self.out), "review", *argv])
+        return code, err.getvalue()
+
+    def test_cmd_review_writes_files_and_posts_one_sticky_comment(self) -> None:
+        pr = {"number": 7, "title": "T", "body": "- ACL hides records", "issues": [], "commits": ["c"]}
+        with mock.patch.object(review, "gather", return_value=pr) as gather, \
+                mock.patch.object(report, "post_comment", return_value="url") as post:
+            code, _ = self.main("--pr", "7", "--repo", "o/r", "--comment", "--run-url", RUN_URL)
+        self.assertEqual(code, 0)
+        gather.assert_called_once_with(7, "o/r")
+        self.assertTrue((self.out / "review.json").is_file())
+        md = (self.out / "review.md").read_text(encoding="utf-8")
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["tag"], "<!-- qa-review:oss -->")
+        self.assertEqual(post.call_args.args[:3], ("o/r", 7, md))
+        # CI does not run probes: it lists the command that does.
+        probes = next(line for line in md.splitlines() if "python3 scripts/qa run --ids" in line)
+        self.assertIn(PROBE, probes)
+
+    def test_review_probes_run_once_and_failures_become_bugs(self) -> None:
+        results = {"schema": "qa-results/v1", "fatal": [],
+                   "tests": [{"id": t["id"], "outcome": "pass", "seconds": 1.0} for t in self.plan["tests"]]}
+        (self.out / "results.json").write_text(json.dumps(results), encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in self.out.glob("results*.json")}
+        probe = {"schema": "qa-results/v1", "fatal": [],
+                 "tests": [{"id": PROBE, "outcome": "fail", "details": "boom", "seconds": 1.0}]}
+        with mock.patch.object(run, "run", return_value=probe) as runner:
+            code, _ = self.main("--run")
+        self.assertEqual(code, 0)
+        runner.assert_called_once()
+        self.assertEqual([t["id"] for t in runner.call_args.args[1]["tests"]], [PROBE])
+        self.assertEqual(runner.call_args.args[3], self.out / "review")
+        self.assertIs(runner.call_args.kwargs["retry"], False)
+        rv = json.loads((self.out / "review.json").read_text(encoding="utf-8"))
+        self.assertEqual(rv["bugs"][0]["id"], PROBE)
+        self.assertEqual(rv["bugs"][0]["details"], "boom")
+        self.assertEqual(rv["bugs"][0]["repro"][-1], f"python3 scripts/qa run --ids {PROBE}")
+        self.assertTrue((self.out / "review" / "results.json").is_file())
+        self.assertEqual({p.name: p.read_bytes() for p in self.out.glob("results*.json")}, before)
+
+    def test_cmd_review_without_a_plan_explains(self) -> None:
+        (self.out / "plan.json").unlink()
+        code, err = self.main()
+        self.assertEqual(code, 2)
+        self.assertIn("go --plan-only", err)
 
 
 if __name__ == "__main__":

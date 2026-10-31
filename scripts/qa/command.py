@@ -16,6 +16,7 @@ LEVEL_NAME = {k: k for k in LEVEL}
 COMMANDS: dict[str, dict[str, Any]] = {
     "plan": {"min": "write", "mode": "plan", "args": r""},
     "run": {"min": "write", "mode": "pr", "args": r""},
+    "review": {"min": "write", "mode": "pr", "args": r""},
     "commit": {"min": "write", "mode": "pr", "args": r"(?P<head>[0-9a-f]{40})"},
     "missing": {"min": "write", "mode": "missing", "args": r""},
     "since": {"min": "write", "mode": "since", "args": rf"(?P<base>{SHA})"},
@@ -58,7 +59,7 @@ def parse(body: str, permission: str, is_admin_team: bool = False) -> dict[str, 
     if level < LEVEL[needed] and not (needed == "admin" and is_admin_team and level >= LEVEL["write"]):
         raise CommandError(f"/qa {name}{' --trusted' if trusted else ''} needs {needed} permission; you have {LEVEL_NAME.get(permission, 'none')}")
     out = {"command": name, "mode": spec["mode"], "profile": profile or ("full" if name == "full" else "standard"), "trusted": trusted,
-           "plan_only": name in ("plan", "missing")}
+           "plan_only": name in ("plan", "missing"), "review": name == "review"}
     out.update({k: v for k, v in m.groupdict().items() if v})
     if tm:
         out["trusted_head"] = tm.group("sha")

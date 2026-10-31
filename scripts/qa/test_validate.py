@@ -99,6 +99,11 @@ class TestInvariants(ValidateCase):
         for bad in ("@", "<", "](", "https://", "`"):
             self.assertNotIn(bad, reason)
 
+    def test_clean_text_drops_bare_www_and_ftp_links(self) -> None:
+        text = validate.clean_text("see www.evil.example, WWW.Evil.example or ftp://evil.example and FTP://x")
+        for bad in ("www.", "WWW.", "ftp://", "FTP://"):
+            self.assertNotIn(bad, text)
+
     def test_unknown_matrix_entry_is_dropped(self) -> None:
         plan = self.merge(self.llm(add_matrix=[{"entry": "mysql", "reason": "x"}, {"entry": "qdrant", "reason": "y"}]))
         self.assertIn("qdrant", plan["matrix"])

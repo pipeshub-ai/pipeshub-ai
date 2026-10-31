@@ -9,6 +9,7 @@ Invariants (each has a unit test in test_validate.py):
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from qa import schema
@@ -17,13 +18,16 @@ from qa.impact import PROFILE_ORDER
 
 LEVELS = {"unit", "integration", "e2e"}
 MAX_REASON = 200
+# Everything GitHub autolinks: schemes and bare www. hosts, in any case.
+LINK = re.compile(r"(?i)(?:https?|ftp)://|www\.")
 
 
 def clean_text(value: Any, limit: int = MAX_REASON) -> str:
     """Model text goes into a PR comment: no mentions, markup or links."""
     text = str(value or "")
-    for bad in ("@", "<", ">", "](", "http://", "https://", "`"):
+    for bad in ("@", "<", ">", "](", "`"):
         text = text.replace(bad, " ")
+    text = LINK.sub(" ", text)
     return " ".join(text.split())[:limit]
 
 

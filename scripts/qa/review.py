@@ -7,20 +7,39 @@ through validate.clean_text, and every traced id must be in this run's plan.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from typing import Any
 
 from qa import config as config_mod
 from qa import globs
 from qa.config import Config
 from qa.report import BLOCKING, merge_results, redact
-from qa.validate import clean_text
+from qa.validate import MAX_REASON, clean_text
 
 MAX_BODY, MAX_ISSUE_BODY, MAX_ISSUES = 20_000, 5_000, 3
 MAX_REQUIREMENTS, MAX_CHECKLIST, MAX_MODEL_RISKS = 30, 15, 5
 PASSED = {"pass", "flaky"}
 COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(\S.*?)\s*$")
+RUN_URL = re.compile(r"https://\S+/actions/runs/\d+")
+MAX_PROBES = 10
+
+
+def gather(pr: int, repo: str | None) -> dict[str, Any]:
+    """The PR's title, body, commit headlines and first linked issues, read with gh."""
+    def gh(*args: str) -> dict[str, Any]:
+        cmd = ["gh", *args] + (["--repo", repo] if repo else [])
+        return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+
+    data = gh("pr", "view", str(pr), "--json", "title,body,commits,closingIssuesReferences")
+    issues = []
+    for ref in (data.get("closingIssuesReferences") or [])[:MAX_ISSUES]:
+        issue = gh("issue", "view", str(ref["number"]), "--json", "title,body")
+        issues.append({"number": ref["number"], "title": issue.get("title") or "", "body": issue.get("body") or ""})
+    return {"number": pr, "title": data.get("title") or "", "body": data.get("body") or "", "issues": issues,
+            "commits": [c.get("messageHeadline") or "" for c in data.get("commits") or []]}
 
 
 def requirements_from_text(text: str, limit: int = 20) -> list[str]:
@@ -92,8 +111,8 @@ def merge(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, rev
           llm: dict[str, Any] | None, rows: dict[str, Any]) -> dict[str, Any]:
     status = dict((llm or {}).get("_planner") or {"adapter": "none", "status": "skipped"})
     usable = llm if llm is not None and status.get("status") == "ok" else None
-    plan_ids = [t["id"] for t in plan["tests"]]
-    merged = merge_results([results], plan_ids) if results is not None else None
+    plan_ids = {t["id"] for t in plan["tests"]}
+    merged = merge_results([results], sorted(plan_ids)) if results is not None else None
     outcome = {t["id"]: t["outcome"] for t in merged["tests"]} if merged else {}
 
     dropped: list[dict[str, str]] = []
@@ -123,7 +142,7 @@ def merge(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, rev
     found += [{"id": "model", "why": clean_text(r.get("reason"))} for r in (usable or {}).get("risks", [])[:MAX_MODEL_RISKS]]
 
     if merged is None:
-        not_run = [{"id": t, "kind": "plan only", "reason": "plan only, nothing executed"} for t in plan_ids]
+        not_run = [{"id": t["id"], "kind": "plan only", "reason": "plan only, nothing executed"} for t in plan["tests"]]
     else:
         not_run = [{"id": t["id"], "kind": t.get("kind", "no_result"), "reason": clean_text(redact(t.get("details") or "unknown"))}
                    for t in merged["tests"] if t["outcome"] == "not_run"]
@@ -131,12 +150,25 @@ def merge(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, rev
             "not_run": not_run, "model": status}
 
 
+def probe_ids(rv: dict[str, Any], results: dict[str, Any] | None) -> list[str]:
+    """Checklist tests this run did not execute, the ones `qa review --run` probes."""
+    ran = {t["id"] for t in (results or {}).get("tests", []) if t["outcome"] != "not_run"}
+    ids = dict.fromkeys(c["test"] for c in rv["checklist"] if c["test"] and c["test"] not in ran)
+    return list(ids)[:MAX_PROBES]
+
+
+def bugs(results: dict[str, Any], rows: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"id": t["id"], "details": redact(t.get("details") or "")[:300],
+             "repro": [*rows.get(t["id"], {}).get("steps", []), f"python3 scripts/qa run --ids {t['id']}"]}
+            for t in results.get("tests", []) if t["outcome"] in ("fail", "error")]
+
+
 def marker(edition: str) -> str:
     return f"<!-- qa-review:{edition} -->"
 
 
-def _cell(value: Any) -> str:
-    return clean_text(value).replace("|", "/")
+def _cell(value: Any, limit: int = MAX_REASON) -> str:
+    return clean_text(value, limit).replace("|", "/")
 
 
 def render(rv: dict[str, Any], edition: str, run_url: str | None = None) -> str:
@@ -168,17 +200,20 @@ def render(rv: dict[str, Any], edition: str, run_url: str | None = None) -> str:
         lines += [f"| {_cell(c['area'])} | {_cell(c['probe'])} | {_cell(c['test'] or 'manual')} |" for c in rv["checklist"]]
     else:
         lines.append("No probes proposed.")
+    if rv.get("probes"):
+        lines += ["", "Probes not run here. Run them with: " + clean_text("python3 scripts/qa run --ids " + " ".join(rv["probes"]), 2000)]
 
     lines += ["", "### Bugs found", ""]
-    bugs = rv.get("bugs", [])
-    lines += [f"- {_cell(b if isinstance(b, str) else b.get('title') or b.get('id'))}" for b in bugs] or ["None found."]
+    lines += [f"- {_cell(b['id'])}: {_cell(b['details']) or 'no details'}. Repro: {_cell('; '.join(b['repro']), 1000)}"
+              for b in rv.get("bugs", [])] or ["None found."]
 
     lines += ["", "### Not tested", ""]
-    lines += [f"- {_cell(n['id'])} ({n['kind']}): {_cell(n['reason'])}" for n in rv["not_run"]]
+    lines += [f"- {_cell(n['id'])} ({_cell(n['kind'])}): {_cell(n['reason'])}" for n in rv["not_run"]]
     lines += [f"- No test checks: {_cell(r['text'])}" for r in rv["requirements"] if r["result"] == "untested"]
     lines += [f"- Manual probe, {_cell(c['area'])}: {_cell(c['probe'])}" for c in rv["checklist"] if not c["test"]]
     if lines[-1] == "":
         lines.append("Everything planned ran.")
-    if run_url:
+    # Only a workflow run link from the trusted Actions context, never free text.
+    if run_url and RUN_URL.fullmatch(run_url):
         lines += ["", f"Screenshots, traces and logs: {run_url}"]
     return redact("\n".join(lines) + "\n")

@@ -28,6 +28,7 @@ from qa import (
     paths,
     planner,
     report,
+    review,
     run,
     score,
     shadow,
@@ -539,6 +540,58 @@ def cmd_shadow(args) -> int:
     return 0
 
 
+def cmd_review(args) -> int:
+    """Review a planned run: never gates, so it returns 0 once it has written the review."""
+    cfg = config.load()
+    out = _out(args)
+    if not (out / "plan.json").is_file():
+        print(f"no plan.json in {out}: run python3 scripts/qa go --plan-only first", file=sys.stderr)
+        return 2
+    repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
+    if args.comment and not (repo and args.pr):
+        print("--comment needs --pr and --repo (or GITHUB_REPOSITORY)", file=sys.stderr)
+        return 2
+    plan, results = _merged(out)
+    changeset = _load(out / "changeset.json")
+    if args.pr:
+        pr = review.gather(args.pr, repo)
+    elif args.body_file:
+        pr = {"body": Path(args.body_file).read_text(encoding="utf-8")}
+    else:
+        pr = {"commits": [c["subject"] for c in changeset.get("commits", [])]}
+    rows = catalog.index(_rows(cfg, out))
+    rv_input = review.build_input(plan, results, changeset, pr, cfg=cfg)
+    _dump(out / "review-input.json", rv_input)
+    status = planner.ask(cfg.root, args.adapter or planner.default_adapter(), "review",
+                         out / "review-input.json", out / "review-llm.json", timeout=args.timeout)
+    print(f"review model {status['adapter']}: {status['status']}" + (f" ({status.get('error')})" if status.get("error") else ""))
+    rv = review.merge(cfg, plan, results, rv_input, _load(out / "review-llm.json"), rows)
+    rv["bugs"] = review.bugs(results, rows) if results else []
+    ids = review.probe_ids(rv, results)
+    if args.run and ids:
+        probe_out = out / "review"
+        probe_out.mkdir(exist_ok=True)
+        try:
+            # Probes write under review/ only: results*.json and the gate never see them.
+            probed = run.run(cfg, _plan_from_tests(cfg, ids, rows), rows, probe_out,
+                             stack_mode=args.stack or os.environ.get("QA_STACK", "none"), base_url=args.base_url, retry=False)
+        finally:
+            report.redact_files(probe_out)
+        report.redact_results(probed)
+        _dump(probe_out / "results.json", probed)
+        rv["bugs"] += review.bugs(probed, rows)
+    else:
+        rv["probes"] = ids
+    body = review.render(rv, plan["edition"], args.run_url)
+    _dump(out / "review.json", rv)
+    (out / "review.md").write_text(body, encoding="utf-8")
+    if args.comment:
+        print(report.post_comment(repo, args.pr, body, plan["edition"], tag=review.marker(plan["edition"])))
+    else:
+        print(body)
+    return 0
+
+
 def cmd_command(args) -> int:
     try:
         parsed = command.parse(args.body, args.permission, args.admin_team)
@@ -582,7 +635,7 @@ def _shard_arg(text: str) -> tuple[int, int]:
     return int(m.group(1)), int(m.group(2))
 
 
-def main(argv: list[str] | None = None) -> int:
+def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qa", description="Select, run and report the tests a change needs.")
     p.add_argument("--out", default=os.environ.get("QA_OUT", paths.DEFAULT_OUT), help="run directory (default qa-out)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -675,7 +728,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--run-url")
     s.add_argument("--gate", action="store_true")
     s.set_defaults(fn=cmd_go, emit_gh_outputs=False, pr=None, repo=None)
-    go_parser = s
 
     s = sub.add_parser("history", help="run history")
     s.add_argument("action", choices=["record", "failing", "flaky", "publish", "pull", "fetch-quarantine"])
@@ -691,7 +743,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--coverage", action="append", default=[], metavar="SUITE=PATH", help="publish: line coverage report")
     s.add_argument("--to", metavar="PATH", help="pull: directory; fetch-quarantine: file")
     s.set_defaults(fn=cmd_history)
-    history_parser = s
 
     s = sub.add_parser("stuck", help="tests that failed in each of the last 3 runs with distinct heads (exit 3)")
     s.add_argument("--runs", nargs="+", required=True, metavar="DIR", help="run directories, oldest first")
@@ -711,7 +762,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--to", metavar="FILE", help="shadow.jsonl to append to")
     s.add_argument("--store", default=os.environ.get("QA_HISTORY", "qa-out/history"), metavar="DIR")
     s.set_defaults(fn=cmd_shadow)
-    shadow_parser = s
 
     s = sub.add_parser("command", help="parse a /qa PR comment")
     s.add_argument("--body", required=True)
@@ -733,6 +783,25 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--profile", default="standard", choices=impact.PROFILE_ORDER)
     s.set_defaults(fn=cmd_score)
 
+    s = sub.add_parser("review", help="trace requirements to this run's tests, list risks and probes, and post a review comment")
+    s.add_argument("--pr", type=int, help="read the PR title, body, commits and linked issues with gh")
+    s.add_argument("--repo")
+    s.add_argument("--body-file", help="PR text from a file instead of --pr")
+    s.add_argument("--adapter", choices=sorted(planner.ADAPTERS))
+    s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--run", action="store_true", help="run the checklist probes this run did not execute (never gates)")
+    s.add_argument("--stack", default=None, choices=["none", "managed", "external"])
+    s.add_argument("--base-url", default=None)
+    s.add_argument("--comment", action="store_true", help="post the review as its own sticky PR comment")
+    s.add_argument("--run-url")
+    s.set_defaults(fn=cmd_review)
+    p.subcommands = sub.choices
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = parser()
+    shadow_parser, history_parser, go_parser = (p.subcommands[n] for n in ("shadow", "history", "go"))
     args = p.parse_args(argv)
     if args.cmd == "shadow":
         need = {"compare": ("base", "head", "junit", "workflow", "to"), "fetch": ("repo", "to"), "verdict": ()}[args.action]

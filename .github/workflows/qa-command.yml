@@ -1,6 +1,6 @@
 name: QA command
 
-# `/qa` comments on a PR: plan | run | missing | since <sha> | range <a>[..<b>] | full.
+# `/qa` comments on a PR: plan | run | review | missing | since <sha> | range <a>[..<b>] | full.
 # The comment is untrusted: permission comes from the GitHub API and the
 # arguments are parsed by scripts/qa/command.py against fixed patterns. This
 # workflow never checks out PR code and holds no model or test secrets; it
@@ -87,6 +87,7 @@ jobs:
           head_arg=$(jq -r --arg h "$head" '.head // $h' <<<"$PARSED")
           profile=$(jq -r .profile <<<"$PARSED")
           plan_only=$(jq -r .plan_only <<<"$PARSED")
+          review=$(jq -r '.review // false' <<<"$PARSED")
           [[ "$mode" == range || "$mode" == since || "$mode" == full ]] || mode=pr
           [[ "$profile" == full ]] && profile=standard
           # Every QA workflow in this checkout that accepts these inputs; the
@@ -97,7 +98,7 @@ jobs:
             grep -q '^  workflow_dispatch:' "$wf" || continue
             gh workflow run "$name" --repo "$REPO" --ref "${{ github.event.repository.default_branch }}" \
               -f mode="$mode" -f pr="$PR" -f base_sha="$base" -f head_sha="$head_arg" \
-              -f profile="$profile" -f plan_only="$plan_only" -f requested_by="$ACTOR"
+              -f profile="$profile" -f plan_only="$plan_only" -f review="$review" -f requested_by="$ACTOR"
             echo "dispatched $name"
           done
           gh api "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null

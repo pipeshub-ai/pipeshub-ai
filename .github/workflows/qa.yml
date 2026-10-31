@@ -31,6 +31,10 @@ on:
         description: 'plan and report without running tests (/qa plan)'
         type: boolean
         default: false
+      review:
+        description: 'post a QA review comment (/qa review)'
+        type: boolean
+        default: false
       requested_by:
         type: string
         default: ''
@@ -57,6 +61,7 @@ jobs:
       profile: ${{ inputs.profile }}
       pr: ${{ inputs.pr }}
       plan_only: ${{ inputs.plan_only || false }}
+      review: ${{ inputs.review || false }}
     secrets: inherit
 
   # The only job that writes qa-history: run history, shadow recall, the

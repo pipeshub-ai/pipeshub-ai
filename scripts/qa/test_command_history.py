@@ -85,6 +85,14 @@ class TestCommand(unittest.TestCase):
         with self.assertRaises(command.CommandError):
             command.parse("/qa", "read")
 
+    def test_review_command_parses_and_needs_write(self) -> None:
+        out = command.parse("/qa review", "write")
+        self.assertEqual((out["command"], out["review"], out["mode"]), ("review", True, "pr"))
+        for body, perm in (("/qa review", "read"), ("/qa review now", "write")):
+            with self.assertRaises(command.CommandError, msg=body):
+                command.parse(body, perm)
+        self.assertIs(command.parse("/qa run", "write")["review"], False)
+
     def test_profile_flag(self) -> None:
         self.assertEqual(command.parse("/qa run --profile conservative", "write")["profile"], "conservative")
 

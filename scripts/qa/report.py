@@ -252,8 +252,8 @@ def write_summary(text: str) -> None:
             fh.write(text + "\n")
 
 
-def post_comment(repo: str, pr: int, body: str, edition: str) -> str:
-    """Create or update the sticky comment for this edition; returns its URL."""
+def post_comment(repo: str, pr: int, body: str, edition: str, tag: str | None = None) -> str:
+    """Create or update the sticky comment for this edition (or for tag); returns its URL."""
     def gh(*args: str, data: dict[str, Any] | None = None) -> str:
         cmd = ["gh", "api", *args] + (["--input", "-"] if data is not None else [])
         return subprocess.run(
@@ -262,7 +262,7 @@ def post_comment(repo: str, pr: int, body: str, edition: str) -> str:
         ).stdout
 
     body = redact(body)
-    tag = marker(edition)
+    tag = tag or marker(edition)
     found = gh(
         f"repos/{repo}/issues/{pr}/comments", "--paginate",
         "--jq", f'.[] | select(.body | startswith("{tag}")) | .id',

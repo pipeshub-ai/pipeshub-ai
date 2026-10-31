@@ -37,6 +37,10 @@ on:
       plan_only:
         type: boolean
         default: false
+      review:
+        description: 'post a QA review comment on inputs.pr (never gates)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -590,6 +594,41 @@ jobs:
             args+=(--comment --pr "$PR_NUMBER")
           fi
           QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" report "${args[@]}"
+      - name: Install the planner CLI for the review
+        if: inputs.review && inputs.pr != '' && inputs.use_model && (vars.QA_PLANNER || 'claude_code') == 'claude_code'
+        run: npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || echo "planner CLI unavailable; the review runs without the model"
+      - name: Install LiteLLM for the review
+        if: inputs.review && inputs.pr != '' && inputs.use_model && vars.QA_PLANNER == 'litellm'
+        run: pip install litellm >/dev/null 2>&1 || echo "litellm unavailable; the review runs without the model"
+      # A second sticky comment that never gates. Only /qa review (write
+      # permission, fork code only via --trusted) sets inputs.review, so the
+      # model keys reach this step and no other step of this job.
+      - name: QA review
+        if: inputs.review && inputs.pr != ''
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ inputs.review && inputs.use_model && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ inputs.review && inputs.use_model && secrets.OPENAI_API_KEY || '' }}
+          AZURE_API_KEY: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_KEY || '' }}
+          AZURE_API_BASE: ${{ inputs.review && inputs.use_model && secrets.AZURE_API_BASE || '' }}
+          AZURE_API_VERSION: ${{ vars.AZURE_API_VERSION }}
+          GEMINI_API_KEY: ${{ inputs.review && inputs.use_model && secrets.GEMINI_API_KEY || '' }}
+          QA_PLANNER: ${{ vars.QA_PLANNER || 'claude_code' }}
+          QA_PLANNER_MODEL: ${{ vars.QA_PLANNER_MODEL }}
+          QA_PLANNER_CMD: ${{ vars.QA_PLANNER_CMD }}
+          USE_MODEL: ${{ inputs.use_model }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          adapter="$QA_PLANNER"
+          if [[ "$USE_MODEL" != true \
+                || ( "$adapter" == claude_code && -z "$ANTHROPIC_API_KEY" ) \
+                || ( "$adapter" == litellm && -z "$QA_PLANNER_MODEL" ) \
+                || ( "$adapter" == command && -z "$QA_PLANNER_CMD" ) ]]; then
+            adapter=none
+          fi
+          QA_ROOT="$GITHUB_WORKSPACE" python3 "$ENGINE" review --pr "$PR" --adapter "$adapter" --comment --run-url "$RUN_URL"
       - uses: actions/upload-artifact@v4
         with:
           name: qa-report-${{ inputs.edition }}
