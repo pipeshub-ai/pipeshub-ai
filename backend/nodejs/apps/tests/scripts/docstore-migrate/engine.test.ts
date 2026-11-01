@@ -9,10 +9,20 @@ import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
 import type { CollectionMapping } from '../../../src/scripts/docstore-migrate/mapping/types';
 import { SourceReport, prepareSource } from '../../../src/scripts/docstore-migrate/source';
 import { loadConfig, redact } from '../../../src/scripts/docstore-migrate/config';
+import { importLoginShut } from '../../../src/scripts/docstore-migrate/preflight';
 import { docHash } from '../../../src/scripts/docstore-migrate/canonical';
 import { readDecoded, readDecodedPage } from '../../../src/scripts/docstore-migrate/pg-read';
 import { MigrationRuntime, createMigratePool } from '../../../src/scripts/docstore-migrate/runtime';
 import { JobState } from '../../../src/scripts/docstore-migrate/state';
+
+describe('import login state', () => {
+  it('an empty password means the login is shut; a password or a non-URL does not', () => {
+    expect(importLoginShut('postgresql://pipeshub_import:@postgres:5432/pipeshub')).to.equal(true);
+    expect(importLoginShut('postgresql://pipeshub_import@postgres:5432/pipeshub')).to.equal(true);
+    expect(importLoginShut('postgresql://pipeshub_import:abc@postgres:5432/pipeshub')).to.equal(false);
+    expect(importLoginShut('not a url')).to.equal(false);
+  });
+});
 
 const M: CollectionMapping = {
   collection: 'things',
