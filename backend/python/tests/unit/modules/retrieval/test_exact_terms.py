@@ -31,6 +31,8 @@ from app.modules.retrieval.exact_terms import (
     "MAX_WORKERS for the importer",
     "error 429 from the proxy",
     "invoice 553201",
+    "find 984321.",
+    "find 984321, then the refund",
     "p95 response time",
     "ISO27001 certificate",
     "outage in eu-west-2",
@@ -76,6 +78,7 @@ def test_identifier_like_queries_ask_for_exact_matching(query: str) -> None:
     "who owns the client/server.",
     "who owns the client/server...",
     "CI/CD owners",
+    "1,234,567 users",
 ])
 def test_plain_language_queries_do_not(query: str | None) -> None:
     assert not has_exact_terms(query)

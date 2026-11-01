@@ -80,8 +80,10 @@ _IDENTIFIER_PATTERNS = (
     re.compile(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b"),
     # A number tied to an id-like noun: "error 503", "PR 18421", "order no. 77".
     re.compile(rf"\b(?:{_ID_KEYWORDS})\s*[#:]?\s*\d{{2,}}\b", re.IGNORECASE),
-    # Long bare numbers. Four digits are mostly years, so five or more.
-    re.compile(r"(?<![\d.,])\d{5,}(?![\d.,])"),
+    # Long bare numbers. Four digits are mostly years, so five or more. Not
+    # part of a formatted number (1,234,567 or 3.14159), but a sentence's
+    # period or comma may follow.
+    re.compile(r"(?<![\d.,])\d{5,}(?!\d|[.,]\d)"),
     # A measured value: "150 ms", "99%", "16 GB", "$20k". Days and longer are
     # left out: "the last 2 weeks" is a time window, not a value to match.
     re.compile(rf"(?<![\w.])\d+(?:[.,]\d+)?\s?(?:{_SUB_DAY_UNITS}|{_MEASURE_UNITS})(?![\w])", re.IGNORECASE),
