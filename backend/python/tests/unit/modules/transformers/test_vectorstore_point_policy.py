@@ -425,3 +425,70 @@ async def test_a_window_with_no_tokenize_still_fits_the_limit(monkeypatch: pytes
     docs = _points("C", monkeypatch, text=RUSSIAN, window=window)
     assert len(docs) > 1
     assert max(_heavy_count([d.page_content for d in docs])) <= 128
+
+
+def _recording_window(limit: int = 1000) -> "tuple[vs._Window, list[int]]":
+    calls: list[int] = []
+
+    def count(texts: list[str]) -> list[int]:
+        calls.append(len(texts))
+        return [len(t.split()) for t in texts]
+
+    return vs._Window(limit, count), calls
+
+
+def test_a_table_asks_the_server_once_for_all_its_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    window, calls = _recording_window()
+    out = vs._group_table_row_documents(_rows(1000), window)
+    assert len(out) == 200
+    assert calls == [200]
+
+
+def test_a_group_that_must_be_cut_costs_one_request_per_attempt_not_per_piece(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "C")
+    window, calls = _recording_window(limit=8)
+    rows = [
+        Document(page_content=" ".join(["w"] * 30), metadata={"blockId": f"r{i}", "blockType": "table_row", **vs._row_group_meta(0)})
+        for i in range(5)
+    ]
+    out = vs._group_table_row_documents(rows, window)
+    assert len(out) > 1
+    assert len(calls) <= 1 + vs._MAX_SPLIT_ATTEMPTS + 1
+
+
+def test_blocks_of_a_record_are_counted_in_one_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBED_POINT_POLICY", "B")
+    window, calls = _recording_window()
+    blocks = [NS(id=f"b{i}", index=i, data=f"block {i} " + "word " * 20) for i in range(50)]
+    docs = vs._build_text_documents(blocks, "v", "o", "en", window)
+    assert len(docs) == 50
+    assert calls == [50]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("policy_c")
+async def test_counting_tokens_does_not_block_the_event_loop() -> None:
+    import asyncio
+    import time
+
+    store = _Store()
+
+    def slow_count(texts: list[str]) -> list[int]:
+        time.sleep(0.4)  # a blocking request to the embedding server
+        return [1 for _ in texts]
+
+    store.vs.model_window = vs._Window(512, slow_count)
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    await store.vs.index_documents(_table({}, 12)[0], "o", "rec", "vr")
+    task.cancel()
+    assert ticks >= 20  # the loop kept turning during the 0.4 s of counting
+    assert store.rows()

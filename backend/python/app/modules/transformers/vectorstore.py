@@ -651,6 +651,28 @@ def _with_title(title: str | None, text: str) -> str:
     return f"{title}: {text}" if title else text
 
 
+def _prefetched(window: _Window | None, texts: list[str]) -> _Window | None:
+    """*window* with its counts for *texts* fetched in one batch and remembered.
+
+    Without it every group or block would ask the embedding server on its own;
+    this way a record costs one request for all its texts, plus one per attempt
+    to cut a text that is too long.
+    """
+    if window is None or window.count is None:
+        return window
+    cache: dict[str, int] = {}
+    count = window.count
+
+    def cached(batch: list[str]) -> list[int]:
+        missing = list(dict.fromkeys(t for t in batch if t not in cache))
+        if missing:
+            cache.update(zip(missing, count(missing), strict=True))
+        return [cache[t] for t in batch]
+
+    cached(texts)
+    return _Window(window.limit, cached)
+
+
 def _window_pieces(text: str, window: _Window | None) -> list[str]:
     """*text* cut into the fewest pieces that fit one point."""
     if window is None:
@@ -691,15 +713,15 @@ def _group_table_row_documents(documents: list, window: _Window | None = None) -
     groups (a group longer than the model's window is cut further, see
     ``_row_group_points``). A point lists its rows' ids in ``rowBlockIds``, which
     readers use to cite the rows."""
-    out: list = []
+    # Documents passed through, and lists of rows that become one group each.
+    items: list = []
     run: list[Document] = []
 
     def flush() -> None:
         if not run:
             return
         size = max(_rows_per_point(), -(-len(run) // _max_row_points_per_table()))
-        for i in range(0, len(run), size):
-            out.extend(_row_group_points(run[i:i + size], window))
+        items.extend(run[i:i + size] for i in range(0, len(run), size))
         run.clear()
 
     for d in documents:
@@ -710,8 +732,13 @@ def _group_table_row_documents(documents: list, window: _Window | None = None) -
             run.append(d)
         else:
             flush()
-            out.append(d)
+            items.append(d)
     flush()
+    groups = [g for g in items if isinstance(g, list)]
+    window = _prefetched(window, ["\n".join(d.page_content for d in g) for g in groups])
+    out: list = []
+    for item in items:
+        out.extend(_row_group_points(item, window) if isinstance(item, list) else [item])
     return out
 
 
@@ -746,16 +773,18 @@ def _build_text_documents(
     """
     documents: List[Document] = []
     policy = _point_policy()
-    for block in text_blocks:
+    # Links stay in the stored block for citations; only the embedded
+    # text loses their targets.
+    block_texts = [anchor_text_only(b.data or "") for b in text_blocks]
+    if policy != "A":
+        window = _prefetched(window, [t for t in block_texts if t.strip()])
+    for block, block_text in zip(text_blocks, block_texts, strict=True):
         # A text block can legitimately carry no text. Blob storage strips keys
         # whose value is "" (_clean_top_level_empty_values), so a block that was
         # empty at parse time re-hydrates with data=None — which is why this only
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        # Links stay in the stored block for citations; only the embedded
-        # text loses their targets.
-        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -2383,8 +2412,9 @@ class VectorStore(Transformer):
                             ))
 
             if _point_policy() == "C":
-                documents_to_embed = _group_table_row_documents(
-                    documents_to_embed, self.model_window
+                # Counting tokens is a blocking request to the embedding server.
+                documents_to_embed = await asyncio.to_thread(
+                    _group_table_row_documents, documents_to_embed, self.model_window
                 )
 
             # Record summary (only on fresh full index, not reconciliation/partial update)

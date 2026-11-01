@@ -398,6 +398,11 @@ services:
       # Vector points per record: A (default), B (one per text block) or C (B plus
       # 5 table rows per point). See docs/indexing-service.md.
       - EMBED_POINT_POLICY=${EMBED_POINT_POLICY:-A}
+      - EMBED_TABLE_ROWS_PER_POINT=${EMBED_TABLE_ROWS_PER_POINT:-5}
+      - EMBED_MAX_TABLE_POINTS=${EMBED_MAX_TABLE_POINTS:-200}
+      # Longest input of a hosted embedding model, in tokens (default 8191); the
+      # bundled embedding server reports its own.
+      - PIPESHUB_EMBED_TOKEN_LIMIT=${PIPESHUB_EMBED_TOKEN_LIMIT:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
