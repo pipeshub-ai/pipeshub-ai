@@ -13,7 +13,7 @@ _PARTS = ("COVERAGE_LOOP_FACETS", "COVERAGE_LOOP_GATE", "COVERAGE_LOOP_ADJUDICAT
 def _clean(monkeypatch) -> None:
     for name in ("HIGH_ACCURACY_MODE", "COVERAGE_LOOP", *_PARTS, "COVERAGE_LOOP_FACET_SEARCHES",
                  "COVERAGE_LOOP_GATE_ROUNDS", "COVERAGE_LOOP_GATE_SEARCHES", "COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S",
-                 "ANSWER_OPENING_CHECK"):
+                 "ANSWER_OPENING_CHECK", "ANSWER_OPENING_CHECK_DISPUTE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -67,3 +67,12 @@ def test_the_answer_opening_check_is_on_only_when_set(monkeypatch) -> None:
     assert not switches.answer_opening_check_enabled()
     monkeypatch.setenv("ANSWER_OPENING_CHECK", "true")
     assert switches.answer_opening_check_enabled()
+
+
+def test_the_dispute_checker_needs_both_switches(monkeypatch) -> None:
+    monkeypatch.setenv("ANSWER_OPENING_CHECK", "true")
+    assert not switches.answer_dispute_checker_enabled()
+    monkeypatch.setenv("ANSWER_OPENING_CHECK_DISPUTE", "true")
+    assert switches.answer_dispute_checker_enabled()
+    monkeypatch.setenv("ANSWER_OPENING_CHECK", "false")
+    assert not switches.answer_dispute_checker_enabled()

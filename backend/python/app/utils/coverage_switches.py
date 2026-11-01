@@ -16,9 +16,11 @@ itself.
   different scope as rival versions.
 
 ``ANSWER_OPENING_CHECK`` is off unless set "true": in the gate, a cited draft
-that opens with what the assistant cannot do or with the status of what was
-asked for goes back once to lead with the substance. It runs inside the gate,
-so it needs the loop too.
+that opens with a limitation or a status ahead of its substance, or disputes
+wording the question uses, goes back once to lead with the answer. It runs
+inside the gate, so it needs the loop too. ``ANSWER_OPENING_CHECK_DISPUTE``,
+also off unless "true", adds a small-model read of the question and draft for
+disputed wording the patterns miss.
 
 Lives under `app/utils` because the chat bridge and the agent factory both
 read it, and neither may import the other's modules for a switch.
@@ -34,6 +36,7 @@ COVERAGE_LOOP_GATE_ENV_VAR = "COVERAGE_LOOP_GATE"
 COVERAGE_LOOP_ADJUDICATION_ENV_VAR = "COVERAGE_LOOP_ADJUDICATION"
 COVERAGE_LOOP_PROMPT_ENV_VAR = "COVERAGE_LOOP_PROMPT"
 ANSWER_OPENING_CHECK_ENV_VAR = "ANSWER_OPENING_CHECK"
+ANSWER_OPENING_CHECK_DISPUTE_ENV_VAR = "ANSWER_OPENING_CHECK_DISPUTE"
 
 COVERAGE_LOOP_FACET_SEARCHES_ENV_VAR = "COVERAGE_LOOP_FACET_SEARCHES"
 COVERAGE_LOOP_GATE_ROUNDS_ENV_VAR = "COVERAGE_LOOP_GATE_ROUNDS"
@@ -74,6 +77,10 @@ def answer_opening_check_enabled() -> bool:
     return env_bool(ANSWER_OPENING_CHECK_ENV_VAR, False)
 
 
+def answer_dispute_checker_enabled() -> bool:
+    return answer_opening_check_enabled() and env_bool(ANSWER_OPENING_CHECK_DISPUTE_ENV_VAR, False)
+
+
 def facet_search_budget() -> int:
     """Searches run in code for parts the prefetch does not cover."""
     return env_int(COVERAGE_LOOP_FACET_SEARCHES_ENV_VAR, _DEFAULT_FACET_SEARCHES, lo=0, hi=4) or 0
@@ -98,8 +105,10 @@ def gate_search_timeout_seconds() -> float:
 
 
 __all__ = [
+    "ANSWER_OPENING_CHECK_DISPUTE_ENV_VAR",
     "ANSWER_OPENING_CHECK_ENV_VAR",
     "COVERAGE_LOOP_ENV_VAR",
+    "answer_dispute_checker_enabled",
     "answer_opening_check_enabled",
     "coverage_adjudication_enabled",
     "coverage_facets_enabled",

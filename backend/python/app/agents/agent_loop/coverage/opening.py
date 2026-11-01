@@ -170,9 +170,10 @@ _DISPUTE_CONTEXT_CHARS = 80
 
 @dataclass(frozen=True)
 class FramingHit:
-    """``opening``: the draft leads with it; ``dispute``: the draft says it."""
+    """``opening``: the draft leads with it; ``dispute``: the draft says it;
+    ``checker``: the dispute checker reads it as disputing a stated detail."""
 
-    kind: Literal["opening", "dispute"]
+    kind: Literal["opening", "dispute", "checker"]
     quote: str
 
 
