@@ -175,17 +175,11 @@ export const isValidId = (id: string): boolean =>
 export const toDriverId = (id: string): mongoose.Types.ObjectId =>
   new mongoose.Types.ObjectId(id);
 
-export const DRAIN_CACHE_MS = 3_000;
-let drainSeen: { at: number; draining: boolean } | undefined;
-
 /**
- * Whether the cutover tooling asked for no new chat turns (fence mode `draining`). Cached for a few seconds, so a chat turn pays
- * one read per few seconds; an unreadable fence is not a reason to refuse a turn (the write fence has its own answer).
+ * Whether the cutover tooling asked for no new chat turns (fence mode `draining`). Read afresh at each turn's admission (one `_id` read of a one-document
+ * collection), so a change is seen by the very next turn; an unreadable fence is not a reason to refuse a turn (the write fence has its own answer).
  */
 export async function mongoDrainRequested(): Promise<boolean> {
-  const now = Date.now();
-  if (drainSeen && now - drainSeen.at < DRAIN_CACHE_MS)
-    return drainSeen.draining;
   let draining: boolean;
   try {
     const doc = await mongoose.connection.db
@@ -199,6 +193,5 @@ export async function mongoDrainRequested(): Promise<boolean> {
   } catch {
     draining = false;
   }
-  drainSeen = { at: now, draining };
   return draining;
 }

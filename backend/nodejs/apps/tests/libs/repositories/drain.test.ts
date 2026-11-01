@@ -1,15 +1,12 @@
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
-import { DRAIN_CACHE_MS, commitWithin, mongoDrainRequested } from '../../../src/libs/repositories/mongo'
+import { commitWithin, mongoDrainRequested } from '../../../src/libs/repositories/mongo'
 
 const withDb = (db: unknown) => Object.defineProperty(mongoose.connection, 'db', { value: db, configurable: true })
 
 describe('mongoDrainRequested', () => {
-  let clock: sinon.SinonFakeTimers
-  let t = 1_000_000 // each test starts past the previous answer's cache window
-  beforeEach(() => { t += 10 * DRAIN_CACHE_MS; clock = sinon.useFakeTimers({ now: t, toFake: ['Date'] }) })
-  afterEach(() => { clock.restore(); delete (mongoose.connection as any).db })
+  afterEach(() => { delete (mongoose.connection as any).db })
 
   // `draining` stops new turns so those in flight can finish; `readonly` and `retired` refuse the turn's writes, so the turn must be refused up front too
   for (const [mode, expected] of [['active', false], ['draining', true], ['readonly', true], ['retired', true], [undefined, false]] as const)
@@ -17,6 +14,14 @@ describe('mongoDrainRequested', () => {
       withDb({ collection: () => ({ findOne: async () => (mode ? { _id: 'fence', mode } : null) }) })
       expect(await mongoDrainRequested()).to.equal(expected)
     })
+
+  it('sees a fence that left active a moment ago: the very next admission is refused', async () => {
+    let mode = 'active'
+    withDb({ collection: () => ({ findOne: async () => ({ _id: 'fence', mode }) }) })
+    expect(await mongoDrainRequested()).to.equal(false)
+    mode = 'draining'
+    expect(await mongoDrainRequested()).to.equal(true)
+  })
 })
 
 describe('commitWithin', () => {
