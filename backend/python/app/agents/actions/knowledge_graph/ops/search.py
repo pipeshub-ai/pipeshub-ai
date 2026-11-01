@@ -44,6 +44,10 @@ from app.agents.actions.knowledge_graph.ops.results import (
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.agent_loop.candidate_reading import (
+    candidate_reading_enabled,
+    note_search_ranks,
+)
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
@@ -1283,6 +1287,8 @@ async def _execute_search(
         state["fetch_plan"] = result_frame.plan
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
+        if candidate_reading_enabled():
+            note_search_ranks(state, final_results, shown_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
         if targeted:
             remember_shown(state, final_results)

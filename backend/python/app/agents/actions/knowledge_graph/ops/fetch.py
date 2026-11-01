@@ -14,6 +14,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
+from app.agents.agent_loop.candidate_reading import candidate_reading_enabled
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.coverage_switches import coverage_gate_enabled
 
@@ -554,10 +555,15 @@ async def execute_fetch_record(
             if complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
-            if getattr(context, "include_retrieval_context", False) or coverage_gate_enabled():
+            if (
+                getattr(context, "include_retrieval_context", False)
+                or coverage_gate_enabled()
+                or candidate_reading_enabled()
+            ):
                 # The record lands in `virtual_record_id_to_result` whole, but
-                # only the budgeted blocks reach the model; the ledger and the
-                # coverage gate read that difference, which nothing else records.
+                # only the budgeted blocks reach the model; the ledger, the
+                # coverage gate and candidate reading read that difference,
+                # which nothing else records.
                 context.tool_state.setdefault(FETCH_RENDER_OUTCOMES_KEY, {}).setdefault(
                     str(rid), [],
                 ).append({

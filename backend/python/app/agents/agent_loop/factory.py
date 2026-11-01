@@ -86,6 +86,7 @@ from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
+from app.agents.agent_loop.candidate_reading import candidate_reading_enabled
 from app.agents.agent_loop.completeness_pass import completeness_pass_enabled
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
@@ -137,6 +138,7 @@ from app.agents.agent_loop.hooks import (
     sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
+from app.agents.agent_loop.hooks.candidate_reading import read_top_candidates
 from app.agents.agent_loop.hooks.completeness_pass import record_completeness_pass
 from app.agents.agent_loop.hooks.coverage_gate import coverage_gate
 from app.agents.agent_loop.hooks.progressive_tools import (
@@ -1183,6 +1185,9 @@ class PipesHubAgentFactory:
         # Outermost of the send-backs, so it checks only a draft every other check has let stand.
         if completeness_pass_enabled() and _answers_from_knowledge_only(context):
             hooks.on(HookEvent.POST_MODEL).use(record_completeness_pass(context))
+        # Inside the completeness pass: the draft written after reading the top candidates is the one it checks.
+        if candidate_reading_enabled() and _answers_from_knowledge_only(context):
+            hooks.on(HookEvent.POST_MODEL).use(read_top_candidates(context))
         # Before `completion_gate`, so it checks only a draft the hooks after it let stand.
         if coverage_gate_enabled() and _answers_from_knowledge_only(context):
             hooks.on(HookEvent.POST_MODEL).use(coverage_gate(context))

@@ -134,6 +134,19 @@ class TestFitsTheToolResultCap:
         assert "v0 xxx" in result
 
     @pytest.mark.asyncio
+    async def test_record_ranks_are_kept_only_for_candidate_reading(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        records, units = _five_records()
+        monkeypatch.delenv("ANSWER_CANDIDATE_READING", raising=False)
+        state = _state()
+        await _search(state, records, units)
+        assert "search_record_ranks" not in state
+
+        monkeypatch.setenv("ANSWER_CANDIDATE_READING", "true")
+        state = _state()
+        await _search(state, records, units)
+        assert state["search_record_ranks"]["rec-v0"] == {"rank": 1, "name": "Doc v0"}
+
+    @pytest.mark.asyncio
     async def test_state_and_trace_hold_exactly_what_was_shown(self) -> None:
         records, units = _five_records()
         state = _state(include_retrieval_context=True)
