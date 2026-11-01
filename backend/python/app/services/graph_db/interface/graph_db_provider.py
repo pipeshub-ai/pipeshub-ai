@@ -7238,6 +7238,38 @@ class IGraphDBProvider(ABC):
             ),
         )
 
+    async def _kh_v3_child_ids(
+        self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        """Each record's live hierarchy children of ``org_id`` by id, ``limit`` from ``skip``."""
+        raise NotImplementedError
+
+    async def _with_readable_children(
+        self, items: list[dict[str, Any]], user_key: str, org_id: str, transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Set each item's ``hasChildren``: true only for a child the user may open (a bare
+        "has a child" tells a viewer about ones they cannot read). Children are read in pages,
+        batch-checked, and an item stops at its first readable one."""
+        pending = {item["id"]: item for item in items}
+        for item in items:
+            item["hasChildren"] = False
+        skip, page = 0, 500
+        while pending:
+            kids = await self._kh_v3_child_ids(list(pending), org_id, skip, page, transaction)
+            asked = {c for ids in kids.values() for c in ids}
+            readable = (
+                (await self.check_access(user_key, org_id, node_ids=asked, transaction=transaction)).node_ids
+                if asked else frozenset()
+            )
+            for pid, ids in kids.items():
+                if any(c in readable for c in ids):
+                    pending.pop(pid).update(hasChildren=True)
+                elif len(ids) < page:
+                    pending.pop(pid)
+            pending = {pid: item for pid, item in pending.items() if kids.get(pid)}
+            skip += page
+        return items
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
