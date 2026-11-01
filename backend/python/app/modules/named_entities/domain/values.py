@@ -17,7 +17,7 @@ class DateRangeValue(_Value):
     start_ms: int | None = None
     end_ms: int | None = None
     timex: str = ""
-    granularity: Literal["year", "quarter", "month", "week", "day", "hour", "minute"] = "day"
+    granularity: Literal["year", "half", "quarter", "month", "week", "day", "hour", "minute"] = "day"
     anchored: bool = False
     anchor_source: str = ""
     ambiguous: bool = False

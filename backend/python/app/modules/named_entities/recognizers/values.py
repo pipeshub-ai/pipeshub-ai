@@ -39,11 +39,31 @@ _DATE_RANGE = (
     rf"|{_RANGE_MONTH}\s+\d{{1,2}}{_ORDINAL}(?:{_RANGE_YEAR})?{_TO}(?:{_RANGE_MONTH}\s+)?{_LAST_DAY}(?:{_RANGE_YEAR})?"
     rf"|\d{{1,2}}{_ORDINAL}(?:\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?)?{_TO}\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?"
     rf"|{_RANGE_MONTH}(?:\s+\d{{4}})?{_TO}{_RANGE_MONTH}\s+\d{{4}}"
+    # "between … and …" with the year stated: months ("between March and May 2026"), days
+    # ("between March 5 and May 10, 2026", "between Jan 5 and 10, 2026", "between 5 March
+    # and 10 May 2026") or ISO dates. The normalizer reads each end the way a range's ends read.
+    rf"|between\s+{_RANGE_MONTH}(?:\s+\d{{4}})?\s+and\s+{_RANGE_MONTH}\s+\d{{4}}"
+    rf"|between\s+{_RANGE_MONTH}\s+\d{{1,2}}{_ORDINAL}(?:{_RANGE_YEAR})?\s+and\s+(?:{_RANGE_MONTH}\s+)?{_LAST_DAY}{_RANGE_YEAR}"
+    rf"|between\s+\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}(?:{_RANGE_YEAR})?\s+and\s+\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?{_RANGE_MONTH}{_RANGE_YEAR}"
+    rf"|between\s+{_ISO}\s+and\s+{_ISO}(?![:.]\d)"
 )
+# Numeric dates whose digits carry the year: year first (2026/09/10, 2026.09.10) and
+# dotted day first (10.09.2026). The guards keep version strings ("2024.1.3",
+# "1.2.2026.4") and addresses out; a dotted year-first date needs two-digit parts.
+_NUMERIC_DATE = (
+    r"(?<![\d.])\d{4}\.\d{2}\.\d{2}(?!\.?\d)"
+    r"|(?<![\d/])\d{4}/\d{1,2}/\d{1,2}(?![/\d])"
+    r"|(?<![\d.])\d{1,2}\.\d{1,2}\.\d{4}(?!\.?\d)"
+)
+# Half-years: "H1 2026", "H2 FY26", "H1'26", "1H26". The H is a capital so "1h 30 min"
+# is a duration. After "H1" a year needs a space, an apostrophe or FY: "H100" and
+# "H200" are GPUs, and "H2 20 units" is no year. "1H00" is a time.
+_HALF = r"(?-i:H)[12](?:[ ]?FY[ ]?(?:\d{4}|\d{2})|['’]\d{2}|[ ]\d{4})|(?-i:[12]H)(?:(?!00)\d{2}|[ ]?\d{4})"
 _ONE_DATE = (
     rf"Q[1-4]\s*(?:FY\s*)?\d{{2,4}}|FY\s?(?:\d{{4}}|\d{{2}})|(?:{_MONTH})\.?\s+\d{{1,2}}{_ORDINAL}(?:(?:,\s*|\s+)\d{{4}})?|"
     rf"\d{{1,2}}{_ORDINAL}\s+(?:of\s+)?(?:{_MONTH})\b(?:(?:,\s*|\s+)\d{{4}})?|"
     rf"(?:{_MONTH})\.?\s+\d{{4}}|{_ISO}|"
+    rf"{_NUMERIC_DATE}|{_HALF}|\d{{1,2}}-(?:{_MONTH})-(?:\d{{4}}|\d{{2}})|"
     rf"\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}|(?:next|last|this)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|week|month|quarter|year)|"
     rf"\d+\s+(?:days?|weeks?|months?|years?|hours?|minutes?)|"
     # Short time units; bare "s" and "h" stay out ("1990s", "10s of thousands").
@@ -220,7 +240,9 @@ def _date_kind(surface: str) -> EntityKind:
         r"\d+(?:\.\d+)?\s?(?:ms|msecs?|milliseconds?|secs?|seconds?|mins?|hrs?)", lowered,
     ):
         return EntityKind.DURATION
-    if lowered.startswith(("q", "fy")) or " to " in lowered or "/" in lowered and "fy" in lowered:
+    if lowered.startswith(("q", "fy", "between")) or " to " in lowered or "/" in lowered and "fy" in lowered:
+        return EntityKind.DATE_RANGE
+    if re.fullmatch(r"h[12].*|[12]h.*", lowered):
         return EntityKind.DATE_RANGE
     if re.fullmatch(r"(?:next|last|this)\s+(?:week|month|quarter|year)", lowered):
         return EntityKind.DATE_RANGE
