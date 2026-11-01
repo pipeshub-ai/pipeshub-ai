@@ -47,6 +47,7 @@ from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.manifest import ManifestSource, manifest_registry
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
 from app.modules.retrieval.context.targeted import (
@@ -72,6 +73,7 @@ from app.modules.retrieval.result_merging import (
     search_hit_identity,
 )
 from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.switches import duplicate_block_elision_enabled
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -1207,6 +1209,7 @@ async def _execute_search(
             record_id_shortener=record_id_shortener,
             image_budget=image_budget,
             image_admission=image_admission,
+            manifest_source=ManifestSource.SEARCH if duplicate_block_elision_enabled() else None,
         )
 
         def frame(selection: Selection) -> _ResultFrame:
@@ -1284,6 +1287,8 @@ async def _execute_search(
             + pm_hint
             + outside_dates_text
         )
+        if rendered.manifest is not None:
+            manifest_registry(state).register(text, rendered.manifest.shifted(len(result_frame.summary)))
         return tool_output(text, rendered.images, state)
 
     except Exception as exc:

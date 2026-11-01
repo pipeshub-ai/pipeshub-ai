@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.manifest import ContentManifest, ManifestSource
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import render_knowledge
 from app.modules.retrieval.context.targeted import (
@@ -30,6 +31,7 @@ from app.modules.retrieval.context.targeted import (
 )
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.switches import duplicate_block_elision_enabled
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
 if TYPE_CHECKING:
@@ -98,6 +100,9 @@ class PrefetchResult:
     failure_notice: str | None = field(default=None)
     # The search ran, but part of the index did not answer.
     incomplete_notice: str | None = field(default=None)
+    # Which blocks the context shows (DUPLICATE_BLOCK_ELISION); the bridge
+    # registers it so a search can leave out its copies of them.
+    manifest: ContentManifest | None = None
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -271,6 +276,7 @@ async def prefetch_retrieval(
         image_budget=image_budget if image_budget is not None else ImageBudget(),
         image_admission=image_admission,
         max_chars=max_chars,
+        manifest_source=ManifestSource.PREFETCH if duplicate_block_elision_enabled() else None,
     )
     flat_parts = [item for sublist in rendered.parts for item in sublist]
     formatted_context = "\n".join(
@@ -297,6 +303,7 @@ async def prefetch_retrieval(
         ranked_results=rendered.ranked,
         incomplete_notice=incomplete_notice,
         failure_notice=None if formatted_context.strip() else incomplete_notice,
+        manifest=rendered.manifest,
     )
 
 

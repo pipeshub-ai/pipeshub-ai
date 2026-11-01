@@ -5978,9 +5978,16 @@ def build_message_content_array(
     collected_images: list[dict[str, Any]] | None = None,
     image_budget: "ImageBudget | None" = None,
     image_admission: "ImageAdmission | None" = None,
+    item_units: dict[int, tuple[int, int]] | None = None,
 ) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
     """
     Args (new):
+        item_units: When provided, filled with ``id(item) -> (position,
+            framing)`` for every content item that renders a unit:
+            ``position`` in ``flattened_results``, and how many leading
+            characters of the item are record framing ("Record blocks
+            (sorted):"). Items that are only framing (record header, summary
+            citation, closing tag) are left out.
         collected_images: When `from_tool=True` and provided, IMAGE blocks
             (standalone and inline table/group images) are routed into
             this list instead of being silently dropped or embedded
@@ -6042,16 +6049,36 @@ def build_message_content_array(
         current_record_has_blocks = False
 
     def prepend_record_blocks_sorted_header(text: str) -> str:
-        nonlocal pending_record_blocks_sorted_header
+        nonlocal pending_record_blocks_sorted_header, unit_framing_chars
         if pending_record_blocks_sorted_header:
             pending_record_blocks_sorted_header = False
-            return f"Record blocks (sorted):\n{text}"
+            header = "Record blocks (sorted):\n"
+            unit_framing_chars = len(header)
+            return f"{header}{text}"
         return text
+
+    unit_start: tuple[int, list[dict[str, Any]], int] | None = None
+    # The header above lands on the first text item of whichever unit renders first.
+    unit_framing_chars = 0
+
+    def attribute_items_to_unit() -> None:
+        nonlocal unit_framing_chars
+        if item_units is not None and unit_start is not None:
+            position, unit_content, first = unit_start
+            framing = unit_framing_chars
+            for item in unit_content[first:]:
+                is_text = item.get("type") == "text"
+                item_units[id(item)] = (position, framing if is_text else 0)
+                if is_text:
+                    framing = 0
+        unit_framing_chars = 0
 
     # Records that are gone or were never fetched. Their later hits must be skipped
     # too: rendering them would cite the previous record's URL.
     unavailable_vrids: set = set()
-    for result in flattened_results:
+    for i, result in enumerate(flattened_results):
+        attribute_items_to_unit()
+        unit_start = None
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id in unavailable_vrids:
             continue
@@ -6101,6 +6128,7 @@ def build_message_content_array(
             summary_citation_insert_index = len(content)
             current_record_has_blocks = False
 
+        unit_start = (i, content, len(content))
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
@@ -6283,6 +6311,7 @@ def build_message_content_array(
         else:
             continue
 
+    attribute_items_to_unit()
     if content:
         insert_summary_citation_if_needed()
         content.append({

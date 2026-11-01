@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
+from app.modules.retrieval.context.manifest import ManifestSource
 from app.utils.chat_helpers import ImageBudget
 
 LOGGER = logging.getLogger("test")
@@ -153,6 +154,24 @@ class TestSuccessfulPrefetch:
         assert result.final_results == flattened
         assert result.citation_ref_mapper is captured_ref_mapper["mapper"]
         graph_enrich.assert_awaited_once()
+        assert result.manifest is None
+
+    async def test_with_duplicate_block_elision_it_says_which_blocks_it_shows(self, monkeypatch) -> None:
+        monkeypatch.setenv("DUPLICATE_BLOCK_ELISION", "true")
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [{"metadata": {"recordId": "r1"}}],
+            "virtual_to_record_map": {},
+        }
+
+        def _build(final_results, vr_map, **kwargs) -> tuple:
+            return [[{"type": "text", "text": "Relevant excerpt from r1"}]], kwargs["ref_mapper"]
+
+        with _pipeline([{"virtual_record_id": "vr1", "recordId": "r1"}], build=_build):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.manifest is not None and result.manifest.source is ManifestSource.PREFETCH
 
 
     async def test_ranked_results_keep_the_search_order(self) -> None:

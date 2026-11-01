@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
 from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.switches import duplicate_block_elision_enabled
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
     from app.utils.chat_helpers import RecordIdShortener
+    from app.utils.render_budget import RenderBudget
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +216,30 @@ def _focused_read_note(query: str) -> str:
         f'\n[Focused read for "{echo}": a record too long to read whole shows its '
         "blocks most relevant to that query, with the gaps marked. For another part, "
         "call again with a different query; for the whole record, call without one.]\n"
+    )
+
+
+def _register_shown_blocks(
+    tool_state: dict[str, Any], text: str, records: list[dict[str, Any]], budget: RenderBudget,
+) -> None:
+    """Record which blocks this result shows, so a later search can drop its copies."""
+    from app.modules.retrieval.context.manifest import (
+        BlockKey,
+        ContentManifest,
+        ManifestSource,
+        manifest_registry,
+    )
+
+    shown = frozenset(
+        BlockKey(str(record["virtual_record_id"]), index)
+        for record in records
+        if record.get("virtual_record_id")
+        for index in budget.outcome(
+            str(record.get("id") or record.get("virtual_record_id") or ""),
+        ).shown_blocks
+    )
+    manifest_registry(tool_state).register(
+        text, ContentManifest(ManifestSource.FETCH, segments=(), records=(), shown_blocks=shown),
     )
 
 
@@ -577,6 +603,9 @@ async def execute_fetch_record(
                         if outcome.table_truncation is not None else None
                     ),
                 })
+
+        if duplicate_block_elision_enabled():
+            _register_shown_blocks(context.tool_state, text, result["records"], budget)
 
         if collected_images and context.is_multimodal_llm:
             # Mirrors `retrieval.py`'s matching branch: multipart `data`

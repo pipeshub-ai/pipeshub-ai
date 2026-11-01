@@ -19,6 +19,11 @@ from app.agents.actions.knowledge_graph.ops.search import (
     resolve_record_scoped_entities,
     unresolved_entity_ids,
 )
+from app.modules.retrieval.context.manifest import (
+    BlockKey,
+    ManifestSource,
+    manifest_registry,
+)
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
 if TYPE_CHECKING:
@@ -657,6 +662,55 @@ class TestExecuteSearchFullPath:
 
         assert state["virtual_record_id_to_result"] is live
         assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
+    @patch("app.modules.agents.record_escalation.build_candidates")
+    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_registers_which_characters_of_its_result_show_which_blocks(
+        self, mock_parse, mock_shortener, mock_blob, mock_flatten, mock_enrich,
+        mock_analyze, mock_build_cands, mock_render_cand, mock_render_note, mock_compose,
+        monkeypatch,
+    ) -> None:
+        """Spans are for the text the model gets, header included, so a later
+        step can find each block's copy in the ToolMessage."""
+        monkeypatch.setenv("DUPLICATE_BLOCK_ELISION", "true")
+        unit = {"virtual_record_id": "vr1", "block_index": 0, "block_type": "text",
+                "content": "the only hit", "metadata": {}}
+        record = {"id": "r1", "virtual_record_id": "vr1", "context_metadata": "Record ID: r1",
+                  "frontend_url": "", "block_containers": {"blocks": [], "block_groups": []}}
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [unit],
+            "virtual_to_record_map": {"vr1": {"id": "r1"}},
+        }
+        mock_flatten.side_effect = _flatten_into({"vr1": record}, [unit])
+        mock_build_cands.return_value = MagicMock(has_candidates=False)
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "final_results": [],
+        }
+        result = await execute_search(state, "test query")
+
+        manifest = manifest_registry(state).lookup(result)
+        assert manifest is not None and manifest.source is ManifestSource.SEARCH
+        (segment,) = manifest.segments
+        assert "the only hit" in result[segment.start:segment.end]
+        assert segment.blocks == {BlockKey("vr1", 0)}
 
 
 class TestExecuteSearchException:

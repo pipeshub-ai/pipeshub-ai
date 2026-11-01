@@ -511,6 +511,26 @@ class TestSandboxUnavailableFailsClosed:
         assert "SANDBOX_MODE" in skipped[0].getMessage()
 
 
+class TestDuplicateBlockElisionWiring:
+    def test_runs_on_the_final_view_before_the_invariant_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It must see what clearing, compaction and the synthesis guard left,
+        and the invariant guard must still see its output."""
+        monkeypatch.setenv("DUPLICATE_BLOCK_ELISION", "true")
+        names = _pre_model_qualnames(PipesHubAgentFactory._build_hooks(make_context(llm=FakeChatModel())))
+
+        position = next(i for i, n in enumerate(names) if "shape_duplicate_block_elision" in n)
+        assert position > next(i for i, n in enumerate(names) if "shape_synthesis_guard" in n)
+        assert position > next(i for i, n in enumerate(names) if "shape_deterministic_compact" in n)
+        assert position < next(i for i, n in enumerate(names) if "shape_context_invariants" in n)
+
+    def test_not_registered_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DUPLICATE_BLOCK_ELISION", raising=False)
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        names = _pre_model_qualnames(PipesHubAgentFactory._build_hooks(make_context(llm=FakeChatModel())))
+
+        assert not any("shape_duplicate_block_elision" in n for n in names)
+
+
 class TestRetrievedImagesHaveOneDeliveryPath:
     """Images a tool returns reach a provider that rejects them in a tool
     result through the transport alone (CE-17): no model gets a PRE_MODEL

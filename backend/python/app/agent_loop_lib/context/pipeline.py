@@ -17,6 +17,7 @@ Order, least lossy first:
     L7  auto_compact           LLM summary, one instance per tail ratio
     L5  sliding_window         evict what the layers above could not shrink
     L8  synthesis_guard        last-resort clearing and truncation
+        view_shapers           (optional) the caller's edits of the final view
     L9  context_invariants     pairing, current request, model window
 
 Every layer protects what ``context/protection.py`` protects, with the
@@ -91,6 +92,9 @@ class ContextProfile:
     summarizer: Summarizer | None = None
     #: PRE_MODEL middleware that put images on the current request, run first.
     image_injectors: tuple[Middleware[ModelCallContext], ...] = ()
+    #: PRE_MODEL middleware that edit the view every layer above left, run
+    #: just before the invariant guard.
+    view_shapers: tuple[Middleware[ModelCallContext], ...] = ()
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
     #: Per-tool caps that replace ``max_result_chars`` for that tool.
     tool_caps: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
@@ -175,6 +179,7 @@ def build_context_pipeline(profile: ContextProfile) -> list[Middleware[ModelCall
         layers.append(shape_synthesis_guard(
             keep_last_n_tool_results=profile.synthesis_guard_keep_last_n, protected_tools=protected,
         ))
+    layers.extend(profile.view_shapers)
     layers.append(shape_context_invariants())
     return layers
 
