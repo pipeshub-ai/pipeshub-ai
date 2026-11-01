@@ -442,7 +442,16 @@ class KnowledgeGraph:
         # rejects a future created_after, so navigate() gets identical
         # (and identically-worded) validation instead of a second,
         # looser ISO-parsing implementation.
-        from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+        from app.agents.actions.knowledge_graph.ops.time_range import (
+            agent_today_start,
+            parse_time_range,
+            upper_bounds_before_today,
+        )
+        created_before, modified_before = upper_bounds_before_today(
+            agent_today_start(state),
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+        )
         time_range, time_error = parse_time_range(
             created_after=created_after,
             created_before=created_before,

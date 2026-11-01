@@ -16,10 +16,23 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
 import re
 from datetime import MINYEAR, datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-__all__ = ["parse_time_range", "time_range_to_kh_filters"]
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+__all__ = [
+    "agent_today_start",
+    "parse_time_range",
+    "time_range_to_kh_filters",
+    "upper_bounds_before_today",
+]
+
+logger = logging.getLogger(__name__)
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -200,6 +213,77 @@ def parse_time_range(
         _TIME_RANGE_KEYS[field]: epoch_ms for field, epoch_ms in epoch_values.items()
     }
     return time_range, None
+
+
+def agent_today_start(state: Mapping[str, Any], *, now: datetime | None = None) -> datetime:
+    """Midnight of the day the agent is told it is, in the user's zone: the
+    request's ``current_time`` (a naive value read in its ``timezone``), else
+    this server's clock. UTC when the request has no known zone."""
+    current_time, time_zone = state.get("current_time"), state.get("timezone")
+    try:
+        zone = ZoneInfo(time_zone.strip()) if isinstance(time_zone, str) and time_zone.strip() else timezone.utc
+    except (ZoneInfoNotFoundError, OSError, ValueError):
+        zone = timezone.utc
+    moment: datetime | None = None
+    if isinstance(current_time, str) and current_time.strip():
+        text = current_time.strip()
+        try:
+            moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
+        except ValueError:
+            moment = None
+    if moment is None:
+        moment = now or datetime.now(timezone.utc)
+    local = moment.replace(tzinfo=zone) if moment.tzinfo is None else moment.astimezone(zone)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _reaches_today(value: str | None, today_start: datetime) -> bool:
+    text = (value or "").strip()
+    # A datetime is a cutoff someone chose ("before 2 PM today") and is kept.
+    # A calendar date names the user's day, so it is compared as a day: its
+    # UTC end-of-day reaches into the next local day east of UTC.
+    return bool(_DATE_ONLY_RE.match(text)) and text >= today_start.date().isoformat()
+
+
+def upper_bounds_before_today(
+    today_start: datetime,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
+) -> tuple[str | None, str | None]:
+    """``created_before`` and ``modified_before`` as an agent's search applies
+    them: each None when it is a calendar date of the agent's today or later
+    (``agent_today_start``).
+
+    The model is told the current time and often writes that date as the
+    upper bound of a search the question never limited in time. No record is
+    created or modified after now, so such a bound can only drop records: the
+    ones written today after the bound's UTC day ended, and, where the store
+    holds records dated after the model's clock, every one of those. A date
+    before today came from the question and is kept, and so is any datetime.
+    Dates that do not parse are returned as given, so the search reports them
+    as before.
+    """
+    _, error = parse_time_range(
+        created_after=created_after,
+        created_before=created_before,
+        modified_after=modified_after,
+        modified_before=modified_before,
+    )
+    if error is not None:
+        return created_before, modified_before
+    dropped = [
+        label for label, value in (("created_before", created_before), ("modified_before", modified_before))
+        if _reaches_today(value, today_start)
+    ]
+    if dropped:
+        logger.info("time range: %s reaches the agent's today, not applied", ", ".join(dropped))
+    return (
+        None if "created_before" in dropped else created_before,
+        None if "modified_before" in dropped else modified_before,
+    )
 
 
 def time_range_to_kh_filters(
