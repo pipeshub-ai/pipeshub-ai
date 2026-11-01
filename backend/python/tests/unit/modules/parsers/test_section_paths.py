@@ -157,3 +157,27 @@ class TestPathHelpers:
         assign_section_paths(container, {0: SectionOpener(1, "Top")})
         assert block_heading_path(container.block_groups[0]) == ["Top"]
         assert block_heading_path(container.blocks[0]) == []
+
+
+class TestHeadingTextKeepsWhatIsNotMarkup:
+    @pytest.mark.parametrize(("text", "label"), [
+        ("Using get_user_id", "Using get_user_id"),
+        ("Learning C#", "Learning C#"),
+        ("Using _private_ names", "Using private names"),
+        ("## Steps ##", "Steps"),
+    ])
+    def test_markdown_markup_goes_and_names_stay(self, text: str, label: str) -> None:
+        assert clean_heading_text(text) == label
+
+    def test_html_heading_text_is_taken_as_written(self) -> None:
+        assert clean_heading_text("__init__ in C# *now*", markdown=False) == "__init__ in C# *now*"
+
+    @pytest.mark.usefixtures("section_paths_on")
+    def test_parsed_paths_keep_identifiers_and_trailing_hashes(self) -> None:
+        html = HtmlToBlocksConverter().convert(
+            "<h2>Hooks: __init__ in C#</h2><ul><li>first</li></ul>"
+        )
+        markdown = MarkdownToBlocksConverter().convert("## Using get_user_id\n\n- second\n")
+
+        assert block_heading_path(_by_text(html)["first"]) == ["Hooks: __init__ in C#"]
+        assert block_heading_path(_by_text(markdown)["second"]) == ["Using get_user_id"]

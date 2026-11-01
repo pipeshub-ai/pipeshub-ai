@@ -17,7 +17,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from app.models.blocks import Block, BlocksContainer, BlockSubType, CitationMetadata
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlocksContainer,
+    BlockSubType,
+    CitationMetadata,
+)
 from app.modules.parsers.link_text import anchor_text_only
 from app.utils.env_utils import env_bool
 
@@ -29,7 +35,10 @@ _ELLIPSIS = "…"
 
 _HEADING_NAME_RE = re.compile(r"^H([1-6])$")
 _ATX_PREFIX_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
-_EMPHASIS_RE = re.compile(r"(\*\*|__|\*|_|~~|`)(?=\S)(.+?)(?<=\S)\1")
+_ATX_CLOSING_RE = re.compile(r"\s+#+\s*$")
+_EMPHASIS_RE = re.compile(r"(\*\*|\*|~~|`)(?=\S)(.+?)(?<=\S)\1")
+# Underscores mark emphasis only at word boundaries: get_user_id is a name.
+_UNDERSCORE_EMPHASIS_RE = re.compile(r"(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\1(?!\w)")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -55,15 +64,21 @@ def heading_level(block: Block) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def clean_heading_text(text: str) -> str:
-    """A heading as a one-line label: no markup, link targets or excess length."""
+def clean_heading_text(text: str, *, markdown: bool = True) -> str:
+    """A heading as a one-line label: no markup, link targets or excess length.
+
+    ``markdown=False`` is for text read from HTML, which has no markup to remove.
+    """
     if not text:
         return ""
-    first_line = text.strip().split("\n", 1)[0]
-    label = _ATX_PREFIX_RE.sub("", first_line)
-    label = anchor_text_only(label)
-    label = _EMPHASIS_RE.sub(r"\2", label)
-    label = _WHITESPACE_RE.sub(" ", label).strip().rstrip("#").strip()
+    label = text.strip().split("\n", 1)[0]
+    if markdown:
+        if _ATX_PREFIX_RE.match(label):
+            label = _ATX_CLOSING_RE.sub("", _ATX_PREFIX_RE.sub("", label))
+        label = anchor_text_only(label)
+        label = _EMPHASIS_RE.sub(r"\2", label)
+        label = _UNDERSCORE_EMPHASIS_RE.sub(r"\2", label)
+    label = _WHITESPACE_RE.sub(" ", label).strip()
     if len(label) > MAX_HEADING_CHARS:
         label = label[: MAX_HEADING_CHARS - 1].rstrip() + _ELLIPSIS
     return label
@@ -111,6 +126,8 @@ def note_section_opener(
     level: int | None,
     heading_text: str,
     openers: dict[int, SectionOpener],
+    *,
+    markdown: bool = True,
 ) -> None:
     """Record the section opened by a heading that was emitted as ``blocks[start:]``.
 
@@ -125,7 +142,7 @@ def note_section_opener(
         for block in blocks[start:]:
             if block is opener or block.sub_type == BlockSubType.HEADING:
                 block.name = f"H{level}"
-    openers[opener.index] = SectionOpener(level, clean_heading_text(heading_text))
+    openers[opener.index] = SectionOpener(level, clean_heading_text(heading_text, markdown=markdown))
 
 
 def assign_section_paths(container: BlocksContainer, openers: Mapping[int, SectionOpener]) -> None:
@@ -156,7 +173,7 @@ def assign_section_paths(container: BlocksContainer, openers: Mapping[int, Secti
             _set_heading_path(group, path)
 
 
-def _set_heading_path(item: object, path: list[str]) -> None:
+def _set_heading_path(item: Block | BlockGroup, path: list[str]) -> None:
     if item.citation_metadata is None:
         item.citation_metadata = CitationMetadata(heading_path=path)
     else:

@@ -1610,6 +1610,7 @@ class _DomWalker:
         if self.section_openers is not None:
             note_section_opener(
                 self.blocks, start, level, _node_text(heading_node), self.section_openers,
+                markdown=False,
             )
 
     def _walk_children(self, parent: LexborNode, depth: int = 0) -> None:
