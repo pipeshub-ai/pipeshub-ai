@@ -198,7 +198,8 @@ class _World:
 
     async def remove(self) -> None:
         nodes, _ = _graph()
-        ids = [self.sid(n["id"]) for n in nodes]
+        # xc-nc is upserted by one test, not seeded, so _graph() does not name it.
+        ids = [self.sid(n["id"]) for n in [*nodes, {"id": "xc-nc"}]]
         if hasattr(self.graph, "client"):
             await self.graph.client.execute_query(
                 "MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": ids},
