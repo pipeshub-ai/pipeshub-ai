@@ -1,5 +1,4 @@
 """platform data: pg_search and pg_stat_statements may be installed (the kernel's allow-list of extensions)"""
-from alembic import op
 from db.lib.run_sql import run_sql
 
 revision = "platform_data_0004"
@@ -14,4 +13,4 @@ def upgrade():
 
 
 def downgrade():
-    op.execute("UPDATE kernel.settings SET extensions = ARRAY(SELECT n FROM unnest(extensions) n WHERE n NOT IN ('pg_search', 'pg_stat_statements'))")
+    pass          # both names are also in kernel_0003, which this file only repeats: the list keeps them

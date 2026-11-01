@@ -3,7 +3,8 @@ changed the row; the copy and a restore are not logged; the log is invisible to 
 import psycopg
 import pytest
 
-from .test_integration import connect
+from .conftest import run_migrate
+from .test_integration import MIGRATE, connect
 
 A, B = "a" * 24, "b" * 24
 DOC = ("INSERT INTO content.documents (org_id, id, document_name, storage_vendor, created_at, updated_at) "
@@ -91,3 +92,12 @@ def test_every_role_that_can_write_a_triggered_table_can_write_the_log(rdb):
                                      "has_table_privilege(oid, %s, 'INSERT') OR has_table_privilege(oid, %s, 'UPDATE') OR has_table_privilege(oid, %s, 'DELETE'))",
                                      (sorted(skipped), t, t, t)).fetchall():
                 assert c.execute("SELECT has_table_privilege(%s, 'platform.docstore_changes', 'INSERT')", (role,)).fetchone()[0], f"{role} writes {t}"
+
+
+def test_downgrade_takes_the_trigger_exemption_with_the_function(rdb):
+    cluster, name = rdb
+    r = run_migrate(cluster.url(name, MIGRATE), "downgrade", "platform_data_0002", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM kernel.trigger_exemptions WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = proc::oid)").fetchone()[0] == 0
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0

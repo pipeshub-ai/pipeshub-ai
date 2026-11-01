@@ -97,3 +97,12 @@ def test_the_import_login_is_allowed_only_while_a_migration_job_runs(rdb):
     with connect(cluster, name) as c:
         c.execute("ALTER ROLE pipeshub_import NOLOGIN")
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+
+
+def test_downgrade_of_the_extension_list_keeps_the_names_the_kernel_allows(rdb):
+    cluster, name = rdb
+    r = run_migrate(cluster.url(name, MIGRATE), "downgrade", "platform_data_0003", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert {"pg_search", "pg_stat_statements"} <= set(c.execute("SELECT extensions FROM kernel.settings").fetchone()[0])
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []

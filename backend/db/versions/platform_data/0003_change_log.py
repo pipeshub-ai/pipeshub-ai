@@ -32,6 +32,7 @@ def upgrade():
 def downgrade():
     for table, _ in TABLES:
         op.execute(f"DROP TRIGGER IF EXISTS docstore_change_log ON {table}")
+    op.execute("DELETE FROM kernel.trigger_exemptions WHERE proc = 'platform.docstore_log_change()'::regprocedure")
     op.execute("DROP FUNCTION platform.docstore_log_change()")
     op.execute("DROP TABLE platform.docstore_changes")
     op.execute("DELETE FROM kernel.rls_registry WHERE rel::oid NOT IN (SELECT oid FROM pg_class)")
