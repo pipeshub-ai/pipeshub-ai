@@ -191,6 +191,8 @@ services:
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - PROJECT_TIMELINE=${PROJECT_TIMELINE:-}
+      # history: only for questions about where the work stands or what was decided.
+      - PROJECT_TIMELINE_TRIGGER=${PROJECT_TIMELINE_TRIGGER:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

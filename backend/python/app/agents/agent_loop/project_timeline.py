@@ -1,16 +1,19 @@
-"""A project's or policy's records, each dated, newest first (PROJECT_TIMELINE).
+"""A project's or policy's records, each with its date (PROJECT_TIMELINE).
 
 Records about one project or policy are written over weeks or months and
 disagree where a decision changed, but an uploaded export is stored with its
 upload time, so the model cannot tell the later record from the earlier one.
 Before the first turn of an enterprise-search chat, one call on the
 organisation's ``query``-role model (``entity_search.verifier_model``) names
-the question's subject when it is a project or a policy. One search on that
-name, with the user's permissions and the turn's filters, collects up to
-``MAX_RECORDS`` of its records. Each is dated by its source system, by the date
-its content states, or by what its own text states
-(``named_entities.stated_dates``), and the first turn gets them newest first
-with a rule for reconciling versions.
+the question's subject when it is a project or a policy; with
+PROJECT_TIMELINE_TRIGGER=history, only when the question asks for something
+that history can change (where the work stands, what was decided, the rule in
+force), not what one record states. One search on that name, with the user's
+permissions and the turn's filters, collects up to ``MAX_RECORDS`` of its
+records. Each is dated by its source system, by the date its content states, or
+by what its own text states (``named_entities.stated_dates``), and the first
+turn gets them in the search's order with a rule for reconciling versions
+within one scope.
 
 ``knowledgegraph__search_timeline`` (``ops/timeline``) is a different thing: a
 tool the model calls to search a span of time period by period, placing records
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -57,6 +61,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PROJECT_TIMELINE_ENV_VAR = "PROJECT_TIMELINE"
+# "history": the subject call names a subject only when the question asks for something its history can change.
+PROJECT_TIMELINE_TRIGGER_ENV_VAR = "PROJECT_TIMELINE_TRIGGER"
 MAX_RECORDS = 30
 # The subject call, the search and the reads together; past it the turn goes on without a timeline.
 BUILD_TIMEOUT_S = 30.0
@@ -89,13 +95,33 @@ _SUBJECT_PROMPT = (
     "definition, or a count or comparison across unrelated things.\n"
     f"{_SUBJECT_REPLY}"
 )
+# On a question one guide answers, the list's look-alike records (another product's or tier's guide) took the answer.
+_SUBJECT_PROMPT_HISTORY = (
+    "You are given one question about a company's internal records. Say whether a good answer needs the history "
+    "of one project or one policy: several records about it, written at different times, where a later record "
+    "can change what an earlier one said.\n"
+    f"{_SUBJECT_KINDS}"
+    "Pick project or policy only when the question asks for something that history can change: where the work "
+    "stands now, what was finally decided, agreed or signed off, the rule or value in force after revisions, what "
+    "changed and when, or an account of the work as a whole.\n"
+    "- none: everything else, including a question about what one guide, release note, ticket, page or message "
+    "says (one limit, setting, list of steps, name, date, owner or figure) even if that record is part of a "
+    "project or policy, and questions about a person, a definition, or a count or comparison across unrelated "
+    "things.\n"
+    f"{_SUBJECT_REPLY}"
+)
 
+# "The later record governs" on its own picked a newer record over the older one the question meant, and another
+# product's or customer's record over the question's own, so it holds only within one scope and one document line.
 _RECONCILE_RULE = (
-    "These records come from different times and can disagree. When two of them give different values for "
-    "something the question asks about, the later record that settles it governs: an approved or published "
-    "document, a merged change or a recorded decision. Call the earlier value superseded and give both dates. A "
-    "later discussion, draft or proposal does not replace an approved document unless it records that the "
-    "decision changed. Treat the list as leads: read a record before you rely on it."
+    "These records come from different times and can disagree. Two records conflict only when they cover the same "
+    "thing in the same scope, meaning the product, component, version, customer, region or tier the question is "
+    "about. A record about something else that happens to share words with it is not another version; keep it "
+    "out of the answer. Within one scope, a later record replaces what an earlier one said only when it is a "
+    "newer version of the same document or it records that the decision changed; then call the earlier value "
+    "superseded and give both dates. An implementation note, an update for one customer, a discussion, a draft or "
+    "a proposal does not override a published specification, standard, policy or decision record. Treat the list "
+    "as leads: read a record before you rely on it."
 )
 
 _BASIS_LABELS = {
@@ -111,6 +137,12 @@ _BASIS_LABELS = {
 
 def project_timeline_enabled() -> bool:
     return env_bool(PROJECT_TIMELINE_ENV_VAR, False)
+
+
+def subject_prompt() -> str:
+    if os.getenv(PROJECT_TIMELINE_TRIGGER_ENV_VAR, "").strip().lower() == "history":
+        return _SUBJECT_PROMPT_HISTORY
+    return _SUBJECT_PROMPT
 
 
 @dataclass(frozen=True)
@@ -159,7 +191,7 @@ async def detect_subject(context: AgentContext, question: str) -> TimelineSubjec
     llm, _model = await verifier_model(context.tool_state)
     if llm is None:
         return None
-    reply = await llm.ainvoke([SystemMessage(content=_SUBJECT_PROMPT), HumanMessage(content=f"Question: {question}")])
+    reply = await llm.ainvoke([SystemMessage(content=subject_prompt()), HumanMessage(content=f"Question: {question}")])
     if not isinstance(reply, BaseMessage):
         return None
     report_usage = llm_usage_reporter(context.tool_state, PROJECT_TIMELINE_SOURCE)
@@ -220,12 +252,6 @@ def date_entry(
     return TimelineEntry(virtual_record_id, str(record_id), name, first_line[:_FIRST_LINE_CHARS], day, basis)
 
 
-def order_entries(entries: list[TimelineEntry]) -> list[TimelineEntry]:
-    """Dated newest first, then the undated in the order the search ranked them."""
-    dated = sorted((entry for entry in entries if entry.day), key=lambda entry: entry.day or "", reverse=True)
-    return dated + [entry for entry in entries if not entry.day]
-
-
 async def collect_timeline(state: Mapping[str, Any], subject: TimelineSubject) -> Timeline | None:
     """The subject's records from one search with the user's permissions and the turn's filters, dated; None
     when the search finds nothing or fails."""
@@ -271,28 +297,26 @@ async def collect_timeline(state: Mapping[str, Any], subject: TimelineSubject) -
             return await asyncio.to_thread(date_entry, vrid, graph_records[vrid], stored)
 
     entries = [entry for entry in await asyncio.gather(*map(_dated, order)) if entry is not None]
-    return Timeline(subject, tuple(order_entries(entries))) if entries else None
+    return Timeline(subject, tuple(entries)) if entries else None
 
 
 def render_timeline(timeline: Timeline, shortener: RecordIdShortener | None = None) -> str:
     def _id(record_id: str) -> str:
         return shortener.get_or_create_short_id(record_id) if shortener is not None else record_id
 
+    # Search order, not newest first: sorted by date, the undated records and the older record a question meant
+    # fell below newer ones.
     def _line(entry: TimelineEntry) -> str:
-        head = f"{entry.day} ({_BASIS_LABELS.get(entry.basis or '', entry.basis)}) | " if entry.day else ""
+        head = f"{entry.day} ({_BASIS_LABELS.get(entry.basis or '', entry.basis)})" if entry.day else "no date stated"
         tail = f" | {entry.first_line}" if entry.first_line else ""
-        return f"- {head}{entry.name[:_NAME_CHARS]} | record_id={_id(entry.record_id)}{tail}"
+        return f"- {head} | {entry.name[:_NAME_CHARS]} | record_id={_id(entry.record_id)}{tail}"
 
-    dated = [entry for entry in timeline.entries if entry.day]
-    undated = [entry for entry in timeline.entries if not entry.day]
     lines = [
-        f'Records about the {timeline.subject.kind} "{timeline.subject.name}", newest first '
-        f"({len(timeline.entries)} found by searching for it). Each date is the record's own, read as shown; "
-        "records that state no date come after the dated ones.",
-        *(_line(entry) for entry in dated),
+        f'Records found by searching for the {timeline.subject.kind} "{timeline.subject.name}" '
+        f"({len(timeline.entries)}), in the order the search ranked them. Some may be about something else that "
+        "shares its words. Each date is the record's own, read as shown.",
+        *(_line(entry) for entry in timeline.entries),
     ]
-    if undated:
-        lines += ["No date stated:", *(_line(entry) for entry in undated)]
     ids = ", ".join(f'"{_id(entry.record_id)}"' for entry in timeline.entries[:_FETCH_IDS_SHOWN])
     lines += [f"Read them with {FETCH_RECORD_TOOL_NAME}(record_ids=[{ids}]).", "", _RECONCILE_RULE]
     return "\n".join(lines)
@@ -353,6 +377,7 @@ __all__ = [
     "BUILD_TIMEOUT_S",
     "MAX_RECORDS",
     "PROJECT_TIMELINE_ENV_VAR",
+    "PROJECT_TIMELINE_TRIGGER_ENV_VAR",
     "Timeline",
     "TimelineEntry",
     "TimelineSubject",
@@ -360,9 +385,9 @@ __all__ = [
     "date_entry",
     "detect_subject",
     "finish_project_timeline",
-    "order_entries",
     "parse_subject",
     "project_timeline_enabled",
     "render_timeline",
     "start_project_timeline",
+    "subject_prompt",
 ]

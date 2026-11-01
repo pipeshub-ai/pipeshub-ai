@@ -1,4 +1,4 @@
-"""PROJECT_TIMELINE: a project's or policy's records, each dated, for the first turn."""
+"""PROJECT_TIMELINE: a project's or policy's records, each with its date, in the search's order."""
 
 import asyncio
 from types import SimpleNamespace
@@ -16,7 +16,6 @@ from app.agents.agent_loop.project_timeline import (
     collect_timeline,
     date_entry,
     finish_project_timeline,
-    order_entries,
     parse_subject,
     render_timeline,
     start_project_timeline,
@@ -93,6 +92,16 @@ def _use_model(monkeypatch: pytest.MonkeyPatch, llm: object) -> None:
         return llm, "m"
 
     monkeypatch.setattr(pt, "verifier_model", _model)
+
+
+def test_the_trigger_switch_picks_the_history_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(pt.PROJECT_TIMELINE_TRIGGER_ENV_VAR, raising=False)
+    assert pt.subject_prompt() is pt._SUBJECT_PROMPT
+    monkeypatch.setenv(pt.PROJECT_TIMELINE_TRIGGER_ENV_VAR, " History ")
+    assert pt.subject_prompt() is pt._SUBJECT_PROMPT_HISTORY
+    assert "something that history can change" in pt.subject_prompt()
+    monkeypatch.setenv(pt.PROJECT_TIMELINE_TRIGGER_ENV_VAR, "always")
+    assert pt.subject_prompt() is pt._SUBJECT_PROMPT
 
 
 async def test_the_subject_call_reads_a_fenced_reply_and_reports_its_usage(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,11 +191,6 @@ def test_a_record_without_an_id_is_dropped() -> None:
     assert date_entry("v-x", {"recordName": "x"}, _stored("2025-01-01 - a: b")) is None
 
 
-def test_dated_records_come_newest_first_and_the_undated_keep_search_order() -> None:
-    entries = [_entry("a", None), _entry("b", "2024-12-01"), _entry("c", None), _entry("d", "2025-02-01")]
-    assert [e.record_id for e in order_entries(entries)] == ["d", "b", "a", "c"]
-
-
 # --- rendering ---------------------------------------------------------------------------------------------------
 
 
@@ -195,17 +199,19 @@ class _Shortener:
         return f"s{record_id}"
 
 
-def test_render_lists_dated_then_undated_with_ids_a_read_call_and_the_rule() -> None:
-    timeline = Timeline(
-        TimelineSubject("policy", "Travel booking standard"), (_entry("d", "2025-02-01"), _entry("a", None)),
-    )
-    text = render_timeline(timeline, _Shortener())
+def test_render_keeps_the_search_order_with_each_date_ids_a_read_call_and_the_rule() -> None:
+    entries = (_entry("a", None), _entry("d", "2025-02-01"), _entry("b", "2024-12-01"))
+    text = render_timeline(Timeline(TimelineSubject("policy", "Travel booking standard"), entries), _Shortener())
     lines = text.splitlines()
-    assert lines[0].startswith('Records about the policy "Travel booking standard", newest first (2 found')
-    assert lines[1] == "- 2025-02-01 (last log entry) | name-d | record_id=sd | opening d"
-    assert lines[2:4] == ["No date stated:", "- name-a | record_id=sa | opening a"]
-    assert 'knowledgegraph__fetch_record(record_ids=["sd", "sa"])' in text
+    assert lines[0].startswith('Records found by searching for the policy "Travel booking standard" (3), in the order')
+    assert lines[1:4] == [
+        "- no date stated | name-a | record_id=sa | opening a",
+        "- 2025-02-01 (last log entry) | name-d | record_id=sd | opening d",
+        "- 2024-12-01 (last log entry) | name-b | record_id=sb | opening b",
+    ]
+    assert 'knowledgegraph__fetch_record(record_ids=["sa", "sd", "sb"])' in text
     assert "superseded and give both dates" in text
+    assert "is not another version" in text
 
 
 # --- collecting --------------------------------------------------------------------------------------------------
@@ -251,7 +257,7 @@ def _state(retrieval: _Retrieval, **extra: object) -> dict[str, Any]:
     }
 
 
-async def test_collect_dates_the_found_records_once_each_and_orders_them(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_collect_dates_the_found_records_once_each_in_search_order(monkeypatch: pytest.MonkeyPatch) -> None:
     graph = {
         "v1": _graph("r1", "old ticket", **_KB, sourceTimestampOrigin="upload"),
         "v2": _graph("r2", "new spec", connectorName="CONFLUENCE", sourceLastModifiedTimestamp=_JUN_02_MS),
@@ -270,8 +276,8 @@ async def test_collect_dates_the_found_records_once_each_and_orders_them(monkeyp
         timeline = await collect_timeline(_state(retrieval), subject)
 
     assert timeline is not None
-    assert [e.record_id for e in timeline.entries] == ["r2", "r1", "r3", "r4"]
-    assert [e.day for e in timeline.entries] == ["2025-06-02", "2024-11-02", None, None]
+    assert [e.record_id for e in timeline.entries] == ["r1", "r3", "r4", "r2"]
+    assert [e.day for e in timeline.entries] == ["2024-11-02", None, None, "2025-06-02"]
     assert lookups == [["v1", "v3", "boom", "v2"]]
     call = retrieval.calls[0]
     assert call["queries"] == ["Badge reader rollout", "door access upgrade"]
@@ -352,7 +358,7 @@ async def test_finish_makes_the_listed_records_readable_and_renders_them() -> No
     text = await finish_project_timeline(context, await _done(timeline))
 
     assert text is not None
-    assert text.startswith('Records about the project "Rollout"')
+    assert text.startswith('Records found by searching for the project "Rollout"')
     assert context.tool_state["known_record_ids"] == {"d", "a"}
 
 
