@@ -239,15 +239,10 @@ def agent_today_start(state: Mapping[str, Any], *, now: datetime | None = None) 
 
 def _reaches_today(value: str | None, today_start: datetime) -> bool:
     text = (value or "").strip()
-    if not text:
-        return False
-    if _DATE_ONLY_RE.match(text):
-        # A calendar date names the user's day, so it is compared as a day:
-        # its UTC end-of-day reaches into the next local day east of UTC.
-        return text >= today_start.date().isoformat()
-    epoch_ms, error = _parse_iso_to_epoch_ms(text, is_upper_bound=True, field_label="")
-    # Today's midnight itself is how "before today" is written.
-    return error is None and epoch_ms is not None and epoch_ms > int(today_start.timestamp() * 1000)
+    # A datetime is a cutoff someone chose ("before 2 PM today") and is kept.
+    # A calendar date names the user's day, so it is compared as a day: its
+    # UTC end-of-day reaches into the next local day east of UTC.
+    return bool(_DATE_ONLY_RE.match(text)) and text >= today_start.date().isoformat()
 
 
 def upper_bounds_before_today(
@@ -259,17 +254,17 @@ def upper_bounds_before_today(
     modified_before: str | None = None,
 ) -> tuple[str | None, str | None]:
     """``created_before`` and ``modified_before`` as an agent's search applies
-    them: each None when it reaches into the agent's today
-    (``agent_today_start``): a calendar date of today or later, or a moment
-    after today's midnight.
+    them: each None when it is a calendar date of the agent's today or later
+    (``agent_today_start``).
 
     The model is told the current time and often writes that date as the
     upper bound of a search the question never limited in time. No record is
     created or modified after now, so such a bound can only drop records: the
     ones written today after the bound's UTC day ended, and, where the store
-    holds records dated after the model's clock, every one of those. A bound
-    before today came from the question and is kept. Dates that do not parse
-    are returned as given, so the search reports them as before.
+    holds records dated after the model's clock, every one of those. A date
+    before today came from the question and is kept, and so is any datetime.
+    Dates that do not parse are returned as given, so the search reports them
+    as before.
     """
     _, error = parse_time_range(
         created_after=created_after,

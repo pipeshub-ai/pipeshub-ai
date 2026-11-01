@@ -249,8 +249,10 @@ class TestUpperBoundsBeforeToday:
             self.TODAY, created_before="2026-03-28", modified_before="2026-03-29T00:00:00Z",
         ) == ("2026-03-28", "2026-03-29T00:00:00Z")
 
-    def test_a_moment_later_today_is_not_applied(self) -> None:
-        assert upper_bounds_before_today(self.TODAY, created_before="2026-03-29T08:15:00Z") == (None, None)
+    @pytest.mark.parametrize("cutoff", ["2026-03-29T08:15:00Z", "2026-03-29T14:00:00-07:00", "2026-04-30T00:00:00Z"])
+    def test_a_datetime_is_a_cutoff_the_caller_chose_and_stays(self, cutoff: str) -> None:
+        """"Before 2 PM today" is written as a datetime; only a calendar date reads as the clock's day."""
+        assert upper_bounds_before_today(self.TODAY, created_before=cutoff) == (cutoff, None)
 
     def test_east_of_utc_yesterday_stays_although_its_utc_day_ends_after_local_midnight(self) -> None:
         """Kolkata's 29 March starts at 18:30 UTC on the 28th, before the 28th's UTC end of day."""

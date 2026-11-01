@@ -506,8 +506,9 @@ async def execute_search(
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
-    (``ops/outside_dates``). An upper bound that reaches into the agent's own
-    today is not applied (``ops/time_range.upper_bounds_before_today``).
+    (``ops/outside_dates``). An upper bound that is a calendar date of the
+    agent's own today or later is not applied
+    (``ops/time_range.upper_bounds_before_today``).
     """
     if state:
         from app.agents.actions.knowledge_graph.ops.time_range import (
