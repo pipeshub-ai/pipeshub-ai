@@ -59,6 +59,24 @@ def is_reasoning_mandatory_conflict(exc: Exception) -> bool:
     return any(marker in message for marker in REASONING_MANDATORY_CONFLICT_MARKERS)
 
 
+# A provider refusing "none" for the reasoning parameter, e.g. OpenAI's 400
+# "Unsupported value: 'reasoning_effort' does not support 'none' with this
+# model." The parameter's name and "none" must both appear in a 400, so a 400
+# about anything else is not mistaken for it.
+REASONING_OFF_PARAMETER_MARKERS = ("reasoning_effort", "reasoning.effort", "reasoning effort")
+_BAD_REQUEST = 400
+
+
+def is_reasoning_off_rejection(exc: Exception) -> bool:
+    """True when a provider refused a request that turned reasoning off."""
+    if is_reasoning_mandatory_conflict(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    message = str(exc).lower()
+    is_bad_request = status == _BAD_REQUEST or (status is None and str(_BAD_REQUEST) in message)
+    return is_bad_request and "none" in message and any(m in message for m in REASONING_OFF_PARAMETER_MARKERS)
+
+
 def is_tool_result_image_conflict(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(marker in message for marker in TOOL_RESULT_IMAGE_MARKERS)

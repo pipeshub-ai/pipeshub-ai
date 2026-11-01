@@ -195,6 +195,35 @@ class LLMApiModeStore:
                 )
 
 
+# (model_key, model_name) pairs whose provider refused reasoning "none" in this
+# process. Kept beside the store's REASONING_MANDATORY fact because the store
+# may be absent (a service that never initialised it) or unwritable.
+_reasoning_off_rejected: set[tuple[str, str]] = set()
+
+
+def reasoning_off_rejected(model_key: str | None, model_name: str | None) -> bool:
+    return (model_key or "", model_name or "") in _reasoning_off_rejected
+
+
+def remember_reasoning_off_rejected(model_key: str | None, model_name: str | None) -> None:
+    _reasoning_off_rejected.add((model_key or "", model_name or ""))
+
+
+def floor_disabled_reasoning(llm: Any) -> Any:  # noqa: ANN401 - any LangChain chat model
+    """A copy of ``llm`` with reasoning raised from disabled ("none" or
+    ``False``) to ``REASONING_MANDATORY_FALLBACK_EFFORT``, or None when its
+    reasoning was not disabled."""
+    updates: dict[str, Any] = {}
+    if getattr(llm, "reasoning_effort", None) == "none":
+        updates["reasoning_effort"] = REASONING_MANDATORY_FALLBACK_EFFORT
+    current_reasoning = getattr(llm, "reasoning", None)
+    if current_reasoning is False:
+        updates["reasoning"] = REASONING_MANDATORY_FALLBACK_EFFORT
+    elif isinstance(current_reasoning, dict) and current_reasoning.get("effort") == "none":
+        updates["reasoning"] = {**current_reasoning, "effort": REASONING_MANDATORY_FALLBACK_EFFORT}
+    return llm.model_copy(update=updates) if updates else None
+
+
 _default_store: LLMApiModeStore | None = None
 
 
@@ -222,5 +251,8 @@ __all__ = [
     "REASONING_MANDATORY_FALLBACK_EFFORT",
     "LLMApiMode",
     "LLMApiModeStore",
+    "floor_disabled_reasoning",
     "get_llm_api_mode_store",
+    "reasoning_off_rejected",
+    "remember_reasoning_off_rejected",
 ]

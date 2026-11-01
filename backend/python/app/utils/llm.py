@@ -4,6 +4,7 @@ from typing import Any, Tuple, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.agent_loop_lib.transport.provider_conflicts import is_reasoning_off_rejection
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
@@ -15,7 +16,18 @@ from app.utils.aimodels import (
     get_stt_model,
     get_tts_model,
     is_local_cpu_embedding_provider,
+    iter_model_names,
 )
+from app.utils.llm_api_mode_store import (
+    REASONING_MANDATORY_FALLBACK_EFFORT,
+    LLMApiMode,
+    floor_disabled_reasoning,
+    get_llm_api_mode_store,
+    reasoning_off_rejected,
+    remember_reasoning_off_rejected,
+)
+
+logger = logging.getLogger(__name__)
 
 # Users read these as a file's failure reason or a chat error, so each says what to do next.
 LLM_MISSING_FOR_FILE = (
@@ -133,10 +145,44 @@ def _select_default_config(configs: list) -> dict | None:
     return next((c for c in configs if c.get("isDefault")), configs[0])
 
 
+def _first_model_name(config: dict[str, Any]) -> str | None:
+    names = iter_model_names(config.get("configuration"))
+    return names[0] if names else None
+
+
+def _refused_reasoning_off(model_key: str | None, model_name: str | None) -> bool:
+    if reasoning_off_rejected(model_key, model_name):
+        return True
+    store = get_llm_api_mode_store()
+    return (
+        store is not None
+        and bool(model_name)
+        and store.get(model_key, model_name or "") == LLMApiMode.REASONING_MANDATORY.value
+    )
+
+
+def _tool_free_config(
+    config: dict[str, Any], model_name: str | None, reasoning_effort: str | None,
+) -> dict[str, Any]:
+    """``config`` for a model that never has tools bound: an explicit "none"
+    reaches the provider (``allowDisabledReasoning``) unless this model has
+    refused it before, in which case it is floored as for any other call."""
+    if reasoning_effort != "none":
+        return config
+    if _refused_reasoning_off(config.get("modelKey"), model_name or _first_model_name(config)):
+        return config
+    return {**config, "allowDisabledReasoning": True}
+
+
+def _build_config(config: dict[str, Any], reasoning_effort: str | None, tool_free: bool) -> dict[str, Any]:  # noqa: FBT001
+    return _tool_free_config(config, None, reasoning_effort) if tool_free else config
+
+
 async def _instantiate_llm_from_configs(
     llm_configs: list | None,
     *,
     reasoning_effort: str | None = None,
+    tool_free: bool = False,
 ) -> Tuple[BaseChatModel, dict[str, Any]]:
     """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
@@ -145,14 +191,16 @@ async def _instantiate_llm_from_configs(
     for config in llm_configs:
         if config.get("isDefault", False):
             llm = await asyncio.to_thread(
-                get_generator_model, config["provider"], config, None, reasoning_effort,
+                get_generator_model, config["provider"], _build_config(config, reasoning_effort, tool_free),
+                None, reasoning_effort,
             )
             if llm:
                 return llm, config
 
     for config in llm_configs:
         llm = await asyncio.to_thread(
-            get_generator_model, config["provider"], config, None, reasoning_effort,
+            get_generator_model, config["provider"], _build_config(config, reasoning_effort, tool_free),
+            None, reasoning_effort,
         )
         if llm:
             return llm, config
@@ -165,6 +213,7 @@ async def _try_resolve_role_llm(
     role: str,
     *,
     reasoning_effort: str | None = None,
+    tool_free: bool = False,
 ) -> Tuple[BaseChatModel, dict[str, Any]] | None:
     """Resolve modelRoles assignment to an instantiated LLM, or None."""
     model_roles: dict = (ai_models or {}).get("modelRoles") or {}
@@ -182,7 +231,8 @@ async def _try_resolve_role_llm(
         return None
 
     llm = await asyncio.to_thread(
-        get_generator_model, matched["provider"], matched, None, reasoning_effort,
+        get_generator_model, matched["provider"], _build_config(matched, reasoning_effort, tool_free),
+        None, reasoning_effort,
     )
     if llm:
         return llm, matched
@@ -231,6 +281,108 @@ async def get_llm_for_role(
         pass
 
     return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
+
+
+class ToolFreeChatModel:
+    """A chat model for calls that never bind tools: it offers ``ainvoke`` and
+    ``invoke`` and nothing to bind tools with.
+
+    Built at ``reasoning_effort="none"``, it sends "none" (disabling reasoning
+    garbles tool-call names, which cannot happen without tools). If the
+    provider refuses "none" for this model, the call is retried once at
+    ``REASONING_MANDATORY_FALLBACK_EFFORT`` and the refusal is remembered, so
+    later calls and later builds use that effort from the start.
+    """
+
+    def __init__(self, llm: BaseChatModel, config: dict[str, Any], *, model_name: str | None = None) -> None:
+        self.llm = llm
+        self.config = config
+        self._model_key = config.get("modelKey")
+        self._model_name = model_name or _first_model_name(config)
+
+    def _floor(self, exc: Exception) -> BaseChatModel | None:
+        floored = floor_disabled_reasoning(self.llm) if is_reasoning_off_rejection(exc) else None
+        if floored is None:
+            return None
+        logger.warning(
+            "Reasoning effort 'none' refused for model %s; using '%s' from now on",
+            self._model_name, REASONING_MANDATORY_FALLBACK_EFFORT,
+        )
+        remember_reasoning_off_rejected(self._model_key, self._model_name)
+        self.llm = floored
+        return floored
+
+    async def ainvoke(self, messages: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
+        try:
+            return await self.llm.ainvoke(messages, config, **kwargs)
+        except Exception as exc:
+            floored = self._floor(exc)
+            if floored is None:
+                raise
+            store = get_llm_api_mode_store()
+            if store is not None and self._model_key and self._model_name:
+                await store.record(self._model_key, self._model_name, LLMApiMode.REASONING_MANDATORY.value)
+            return await floored.ainvoke(messages, config, **kwargs)
+
+    def invoke(self, messages: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
+        try:
+            return self.llm.invoke(messages, config, **kwargs)
+        except Exception as exc:
+            floored = self._floor(exc)
+            if floored is None:
+                raise
+            return floored.invoke(messages, config, **kwargs)
+
+
+async def build_tool_free_llm(
+    config: dict[str, Any],
+    *,
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
+) -> ToolFreeChatModel:
+    """The model of one configured LLM entry (``model_name``, else its first
+    model) for calls that never bind tools. Only on this path does
+    ``reasoning_effort="none"`` reach a reasoning model; elsewhere it is
+    raised to ``REASONING_MANDATORY_FALLBACK_EFFORT``."""
+    llm = await asyncio.to_thread(
+        get_generator_model, config["provider"], _tool_free_config(config, model_name, reasoning_effort),
+        model_name, reasoning_effort,
+    )
+    return ToolFreeChatModel(llm, config, model_name=model_name)
+
+
+async def get_tool_free_llm(
+    config_service: ConfigurationService,
+    *,
+    reasoning_effort: str | None = None,
+) -> ToolFreeChatModel:
+    """The org's default LLM, as :func:`get_llm` picks it, for calls that
+    never bind tools (see :func:`build_tool_free_llm`)."""
+    ai_models = await load_ai_models(config_service)
+    llm, config = await _instantiate_llm_from_configs(
+        ai_models.get("llm"), reasoning_effort=reasoning_effort, tool_free=True,
+    )
+    return ToolFreeChatModel(llm, config)
+
+
+async def get_tool_free_llm_for_role(
+    config_service: ConfigurationService,
+    role: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> ToolFreeChatModel:
+    """The model for *role*, as :func:`get_llm_for_role` picks it, for calls
+    that never bind tools (see :func:`build_tool_free_llm`)."""
+    try:
+        resolved = await _try_resolve_role_llm(
+            await load_ai_models(config_service), role, reasoning_effort=reasoning_effort, tool_free=True,
+        )
+    except Exception:
+        logger.debug("Could not resolve the %s role; using the default LLM", role, exc_info=True)
+        resolved = None
+    if resolved is None:
+        return await get_tool_free_llm(config_service, reasoning_effort=reasoning_effort or "low")
+    return ToolFreeChatModel(*resolved)
 
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict | None:

@@ -83,8 +83,8 @@ from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
-    REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
+    floor_disabled_reasoning,
     get_llm_api_mode_store,
 )
 from app.utils.message_chunks import merge_message_chunks_off_loop
@@ -646,18 +646,10 @@ class LangChainTransport(LLMTransport):
         """
         if not _is_reasoning_mandatory_conflict(exc):
             return None
-        llm = self._llm
-        updates: dict[str, Any] = {}
-        if getattr(llm, "reasoning_effort", None) == "none":
-            updates["reasoning_effort"] = REASONING_MANDATORY_FALLBACK_EFFORT
-        current_reasoning = getattr(llm, "reasoning", None)
-        if current_reasoning is False:
-            updates["reasoning"] = REASONING_MANDATORY_FALLBACK_EFFORT
-        elif isinstance(current_reasoning, dict) and current_reasoning.get("effort") == "none":
-            updates["reasoning"] = {**current_reasoning, "effort": REASONING_MANDATORY_FALLBACK_EFFORT}
-        if not updates:
+        floored = floor_disabled_reasoning(self._llm)
+        if floored is None:
             return None
-        return llm.model_copy(update=updates), LLMApiMode.REASONING_MANDATORY.value
+        return floored, LLMApiMode.REASONING_MANDATORY.value
 
     def _conflict_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
         """Tries each known provider-conflict fallback in turn against
