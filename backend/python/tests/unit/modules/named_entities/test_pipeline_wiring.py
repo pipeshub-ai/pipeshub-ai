@@ -575,3 +575,37 @@ async def test_a_retry_that_fails_again_keeps_its_count() -> None:
         await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction(), retry_due=100, retry_attempts=3)
     graph.schedule_named_entity_persist_retry.assert_awaited_once_with("org-1", "rec-1", "persist_failed", 3)
 
+
+
+async def test_writing_a_kept_extraction_again_folds_its_short_forms_and_learns_them() -> None:
+    # Stored before "Hospitality" was a designator: the short form is its own entity.
+    def org(name: str, block: int) -> NamedEntity:
+        return NamedEntity(
+            kind=EntityKind.ORGANIZATION, display_name=name, norm_key=f"name:organization:{name.casefold()}",
+            mentions=[Mention(block_index=block, char_start=0, char_end=len(name), surface=name, extractor="agent")],
+        )
+
+    kept = NamedEntityExtraction(
+        strategy="agent", termination_reason="finish_ok", status="COMPLETED",
+        entities=[org("Pinecrest Hospitality", 0), org("Pinecrest", 1)],
+    )
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        add_named_entity_aliases=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        assert await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        ) == "written"
+
+    (docs,) = graph.create_named_entities_if_absent.await_args.args
+    assert [doc["name"] for doc in docs] == ["Pinecrest Hospitality"]
+    _org, kind, _key, displays, keys = graph.add_named_entity_aliases.await_args.args
+    assert (kind, displays, keys) == ("organization", ["Pinecrest"], ["name:organization:pinecrest"])
+    # The stored extraction itself is left as it was.
+    assert [e.display_name for e in kept.entities] == ["Pinecrest Hospitality", "Pinecrest"]

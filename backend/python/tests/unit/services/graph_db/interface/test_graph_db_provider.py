@@ -508,6 +508,8 @@ class TestAbstractMethodInventory:
         "create_named_entities_if_absent",
         "find_named_entities",
         "get_named_entities_by_ids",
+        "find_named_entities_by_alias",
+        "schedule_named_entity_reproject",
         "find_named_entities_by_key_prefix",
         "get_named_entity_mentions_in_records",
         "get_named_entity_values_in_records",
