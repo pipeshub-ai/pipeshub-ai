@@ -17,9 +17,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
-    _EXEC_TIMEOUT_SECS,
     _GREP_SHORT_VALUE_LETTERS,
     _SHORT_VALUE_LETTERS,
+    PIPELINE_TIMEOUT_SECS,
     StoragePatternMatch,
     _validate_command,
     is_local_storage,
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Per source; PATTERN_MATCH_TIMEOUT_SECS sets it with one grep pipeline's run time.
-_PATTERN_MATCH_TIMEOUT = _EXEC_TIMEOUT_SECS
+_PATTERN_MATCH_TIMEOUT = PIPELINE_TIMEOUT_SECS
 # Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
 _LLM_GREP_ATTEMPT_TIMEOUT = 10.0

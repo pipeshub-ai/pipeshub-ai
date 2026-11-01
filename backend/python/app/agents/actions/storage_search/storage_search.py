@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT_CHARS = 8_000
 # One pipeline's run time; also each source's time in a pattern match.
-_EXEC_TIMEOUT_SECS = env_int("PATTERN_MATCH_TIMEOUT_SECS", 30, lo=5, hi=300) or 30
+PIPELINE_TIMEOUT_SECS = env_int("PATTERN_MATCH_TIMEOUT_SECS", 30, lo=5, hi=300) or 30
 # Per pipeline stage, whatever the caller asks for; bounds worker memory.
 _MAX_STAGE_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_STDERR_BYTES = 64 * 1024
@@ -1076,7 +1076,10 @@ def _ripgrep_stage(
         sub = _find_xargs_sub_binary(argv, 0)
         tail = grep_to_ripgrep(argv[sub:], rg, walk=False, threads=threads) if sub is not None else None
         if tail is not None:
-            translated = argv[:sub] + tail
+            # On empty input xargs still runs its command once, and rg given no
+            # file searches the whole directory where grep reads nothing.
+            run_if_empty = not {"-r", "--no-run-if-empty"} & set(_own_args(argv, 0))
+            translated = [argv[0], *(["-r"] if run_if_empty else []), *argv[1:sub], *tail]
     return (argv, 1) if translated is None else (translated, threads)
 
 
@@ -1084,7 +1087,7 @@ async def _run_subprocess(
     command: str,
     *,
     cwd: str,
-    timeout: int = _EXEC_TIMEOUT_SECS,
+    timeout: int = PIPELINE_TIMEOUT_SECS,
     max_stdout_bytes: int = 0,
     max_output_chars: int = _MAX_OUTPUT_CHARS,
     confine_to: str | None = None,

@@ -160,13 +160,24 @@ def test_xargs_stage_runs_on_rg_only_when_handed_files() -> None:
     argv = ["xargs", "-0", "grep", "-Hci", r"north\|south"]
     translated, threads = _ripgrep_stage(argv, RG, first=False, previous=["grep", "-rliZ", "east", "."])
     assert threads == min(4, ripgrep.effective_cpu_count())
-    assert translated[:3] == ["xargs", "-0", RG]
+    assert translated[:4] == ["xargs", "-r", "-0", RG]
     assert translated[-4:] == ["--include-zero", "--regexp", "north|south", "--"]
     # "find ." lists directories too, which grep refuses and rg would search.
     assert _ripgrep_stage(argv, RG, first=False, previous=["find", "."]) == (argv, 1)
     assert _ripgrep_stage(argv, RG, first=False, previous=["grep", "-rcZ", "east", "."]) == (argv, 1)
     line_filter = ["grep", "-v", ":0$"]
     assert _ripgrep_stage(line_filter, RG, first=False, previous=argv) == (line_filter, 1)
+
+
+def test_xargs_never_runs_rg_without_files() -> None:
+    # xargs runs its command once on empty input; rg with no file searches "./".
+    previous = ["find", ".", "-type", "f", "-print0"]
+    assert _ripgrep_stage(["xargs", "-0", "-r", "grep", "-l", "x"], RG, first=False, previous=previous)[0][:4] == [
+        "xargs", "-0", "-r", RG,
+    ]
+    assert _ripgrep_stage(["xargs", "-0", "grep", "-l", "x"], RG, first=False, previous=previous)[0][:4] == [
+        "xargs", "-r", "-0", RG,
+    ]
 
 
 @pytest.mark.parametrize(("tokens", "expected"), [
@@ -324,6 +335,16 @@ def test_an_xargs_stage_matches_gnu_grep_on_the_files_it_is_handed(tree: Path) -
 
 
 @needs_both
+@pytest.mark.parametrize("engine", ["grep", "ripgrep"])
+def test_an_and_stage_after_no_match_finds_nothing(tree: Path, monkeypatch: pytest.MonkeyPatch, engine: str) -> None:
+    monkeypatch.setenv("PATTERN_MATCH_ENGINE", engine)
+
+    ok, out = asyncio.run(_run_subprocess('grep -rlZ "absentword" . | xargs -0 grep -l "latency"', cwd=str(tree)))
+
+    assert (ok, out) == (True, "No matches found.")
+
+
+@needs_both
 def test_run_subprocess_runs_the_file_stages_on_rg(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[list[str]] = []
     real_exec = asyncio.create_subprocess_exec
@@ -339,6 +360,6 @@ def test_run_subprocess_runs_the_file_stages_on_rg(tree: Path, monkeypatch: pyte
     monkeypatch.setenv("PATTERN_MATCH_ENGINE", "ripgrep")
     on_ok, on_out = asyncio.run(_run_subprocess(command, cwd=str(tree)))
     assert [argv[0] for argv in seen] == ["grep", "xargs", "grep", REAL_RG, "xargs", "grep"]
-    assert seen[4][2] == REAL_RG
+    assert seen[4][:4] == ["xargs", "-r", "-0", REAL_RG]
     assert off_ok and on_ok
     assert sorted(off_out.split("\n")) == sorted(on_out.split("\n"))
