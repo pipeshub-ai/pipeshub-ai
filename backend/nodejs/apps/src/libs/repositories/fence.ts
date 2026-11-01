@@ -11,9 +11,8 @@ import { docstoreMetrics } from './metrics';
  * Every collection write method of the driver is wrapped here, whichever Mongoose model or raw collection issued it
  * (bulk-operation builders, `db.command`, `$merge`/`$out`, `client.bulkWrite` are not: a lint bans them in `src`):
  *  1. it first reads the fence from the primary, with a 2 s deadline for the read, and refuses unless `active`;
- *  2. while the store is being moved (`draining`) it carries `timeoutMS: 5000`, so a write blocked on the server fails (and is not
- *     retried) instead of landing after the fence moved. An `active` store puts no deadline on a write: a long multi-document
- *     write cut off by a client timeout could be left half applied.
+ *  2. it carries `timeoutMS: 5000` (unless the caller set one, or it runs inside a transaction, whose commit has its own
+ *     deadline), so a write blocked on the server fails (and is not retried) instead of landing after the fence moved.
  * The server-side revoke of the app user's write role (a later step) is the layer that does not trust this process.
  */
 export const FENCE_COLLECTION = 'docstore_fence';
@@ -57,28 +56,35 @@ interface FenceReader {
 /** Throws unless the fence says writes may proceed. Reads the primary, never a cache: a cache would be the gap. */
 /**
  * An `active` answer is trusted for this long, so a burst of writes pays for one read. A freeze or retirement then reaches a writer
- * at most this much later than the 2 s check-to-write deadline allows for: far inside the 10 s grace the cutover waits (2 s + 5 s
- * write timeout + this). Every other answer is read afresh each time. The cutover tool must therefore stay in `draining` for at least this long (plus the read deadline) before it sets `readonly` or `retired`.
+ * at most this much later. Every other answer is read afresh each time. A write that passed on an `active` answer is sent at most
+ * FENCE_READ_DEADLINE_MS + trust after the fence was last seen `active`, and then ends within WRITE_TIMEOUT_MS. So no write
+ * lands later than `FENCE_DWELL_MS` (2 s + 0.5 s + 5 s = 7.5 s) after the fence leaves `active`: the cutover tool must wait that
+ * long after setting `draining` before it sets `readonly` or `retired`.
  */
 export const ACTIVE_FENCE_TRUST_MS = 500;
 const trustMs = (): number =>
   Number(process.env.DOC_STORE_FENCE_TRUST_MS ?? ACTIVE_FENCE_TRUST_MS);
+export const FENCE_DWELL_MS =
+  FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS + WRITE_TIMEOUT_MS;
 let activeUntil = 0;
+// reads can finish out of order: a read that started before the last non-`active` answer must not re-trust `active`
+let readSeq = 0;
+let lastNotActiveSeq = 0;
 
 /** Tests: forget a trusted `active` answer. */
 export const forgetFenceCache = (): void => {
   activeUntil = 0;
+  lastNotActiveSeq = 0;
 };
 
 /**
- * Throws unless writes may proceed; otherwise says which mode allowed it. Only a store that is being moved (`draining`) puts a
- * deadline on a write: an `active` store never does, because a long multi-document write (a backfill, a bulk delete) cut off by a
- * client timeout can be left half applied.
+ * Throws unless writes may proceed; otherwise says which mode allowed it.
  */
 export async function assertMongoWritable(
   db: FenceDb,
 ): Promise<'active' | 'draining'> {
   if (Date.now() < activeUntil) return 'active';
+  const seq = ++readSeq;
   const t0 = process.hrtime.bigint();
   let doc: Awaited<ReturnType<FenceReader['findOne']>>;
   try {
@@ -107,7 +113,10 @@ export async function assertMongoWritable(
   }
   const mode = doc?.mode ?? 'active';
   // only `active` is trusted: `draining` still allows writes, so a cached one would let a write through after a move to `readonly`
-  activeUntil = mode === 'active' ? Date.now() + trustMs() : 0;
+  if (mode !== 'active') {
+    lastNotActiveSeq = Math.max(lastNotActiveSeq, seq);
+    activeUntil = 0;
+  } else if (seq > lastNotActiveSeq) activeUntil = Date.now() + trustMs();
   if (mode === 'readonly') {
     docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'readonly' });
     throw new DocStoreReadOnlyError();
@@ -157,19 +166,15 @@ export function installMongoFence(collectionClass: {
     ) {
       if (this.collectionName === FENCE_COLLECTION)
         return original.apply(this, args);
-      const mode = await assertMongoWritable(this.s.db);
+      await assertMongoWritable(this.s.db);
       // shortcut: filter/doc may be omitted by callers of deleteOne()/deleteMany(); pad so options land at optsAt
       while (args.length < optsAt) args.push(undefined);
       const opts = (args[optsAt] ?? {}) as {
         timeoutMS?: number;
         session?: { inTransaction(): boolean };
       };
-      // inside a transaction the deadline belongs to the transaction, not to a statement; and only a store that is being moved has one
-      if (
-        mode === 'draining' &&
-        opts.timeoutMS === undefined &&
-        !opts.session?.inTransaction()
-      )
+      // inside a transaction the deadline belongs to the transaction, not to a statement
+      if (opts.timeoutMS === undefined && !opts.session?.inTransaction())
         args[optsAt] = { ...opts, timeoutMS: WRITE_TIMEOUT_MS };
       return original.apply(this, args);
     };

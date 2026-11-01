@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import {
-  FENCE_COLLECTION, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
+  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCE_DWELL_MS, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
 } from '../../../src/libs/repositories/fence'
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../src/libs/repositories/errors'
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors'
@@ -57,21 +57,46 @@ describe('Mongo store fence', () => {
     expect(WRITE_TIMEOUT_MS).to.equal(5000)
   })
 
-  it('an active store puts no deadline on any write: a long updateMany is not cut short; a store being moved does', async () => {
+  it('an active store also bounds every write with the write timeout', async () => {
     const active = setup({ mode: 'active' })
     await active.c.updateMany({}, { $set: { b: 1 } })
     await active.c.deleteMany({})
     await active.c.bulkWrite([])
-    expect(active.state.log.filter((l) => l[0] !== 'fence-read')).to.deep.equal([['updateMany', {}, { $set: { b: 1 } }], ['deleteMany', {}], ['bulkWrite', []]])
-    const moving = setup({ mode: 'draining' })
-    await moving.c.updateMany({}, { $set: { b: 1 } })
-    expect(moving.state.log[1]).to.deep.equal(['updateMany', {}, { $set: { b: 1 } }, { timeoutMS: 5000 }])
+    expect(active.state.log.filter((l) => l[0] !== 'fence-read')).to.deep.equal([
+      ['updateMany', {}, { $set: { b: 1 } }, { timeoutMS: 5000 }], ['deleteMany', {}, { timeoutMS: 5000 }], ['bulkWrite', [], { timeoutMS: 5000 }],
+    ])
+  })
+
+  it('the dwell the cutover must wait is the read deadline + trust window + write timeout', () => {
+    expect(FENCE_DWELL_MS).to.equal(FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS + WRITE_TIMEOUT_MS)
+    expect(FENCE_DWELL_MS).to.equal(7500)
+  })
+
+  it('an older read that finishes late with active does not re-trust active after a newer draining one', async () => {
+    process.env.DOC_STORE_FENCE_TRUST_MS = '60000'
+    try {
+      const resolvers: Array<(d: { mode: string }) => void> = []
+      let reads = 0
+      const db = { collection: () => ({ findOne: () => new Promise((res) => { reads += 1; resolvers.push(res as never) }) }) }
+      const older = assertMongoWritable(db as never)
+      const newer = assertMongoWritable(db as never)
+      resolvers[1]!({ mode: 'draining' })
+      await newer
+      resolvers[0]!({ mode: 'active' })
+      await older
+      await Promise.resolve(); const third = assertMongoWritable(db as never)
+      resolvers[2]!({ mode: 'draining' })
+      await third
+      expect(reads).to.equal(3) // the stale active was not trusted: the next write read the fence again
+    } finally {
+      process.env.DOC_STORE_FENCE_TRUST_MS = '0'
+    }
   })
 
   it('a missing fence document means active', async () => {
     const { state, c } = setup(null)
     await c.updateOne({ a: 1 }, { $set: { b: 1 } })
-    expect(state.log[1]).to.deep.equal(['updateOne', { a: 1 }, { $set: { b: 1 } }])
+    expect(state.log[1]).to.deep.equal(['updateOne', { a: 1 }, { $set: { b: 1 } }, { timeoutMS: 5000 }])
   })
 
   it('keeps the options the caller passed and a timeout it set; skips the deadline inside a transaction (while the store is being moved)', async () => {
