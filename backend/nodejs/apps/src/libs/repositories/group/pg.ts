@@ -22,6 +22,10 @@ import type {
   GroupSummaryDto,
   GroupType,
 } from './types';
+import type { Tx } from '../uow';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importGroupDocs } from './pg-import';
 
 interface GroupRow {
   id: string;
@@ -68,7 +72,15 @@ const ADD_MEMBERS = `INSERT INTO identity.user_group_members (org_id, group_id, 
     FROM unnest($2::text[]) AS g(id) CROSS JOIN unnest($3::text[]) WITH ORDINALITY AS u(uid, ord)
   ON CONFLICT DO NOTHING`;
 
-export class PgGroupRepository implements GroupRepository {
+export class PgGroupRepository implements GroupRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importGroupDocs(kernelTx(tx), collection, docs);
+  }
   async list(
     orgId: string,
     q: GroupListQuery,
