@@ -184,6 +184,7 @@ class TestVectorStoreApply:
             record=record,
             titles={},
             record_title=None,
+            rechunk_text=False,
         )
         assert result is True
 
@@ -237,6 +238,7 @@ class TestVectorStoreApply:
             record=record,
             titles={},
             record_title=None,
+            rechunk_text=False,
         )
 
 
@@ -1348,6 +1350,7 @@ class TestApply:
             record=mock_ctx.record,
             titles={},
             record_title=None,
+            rechunk_text=False,
         )
 
 

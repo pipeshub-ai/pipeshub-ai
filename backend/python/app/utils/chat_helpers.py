@@ -3089,6 +3089,31 @@ def section_path_note(result: dict[str, Any]) -> str:
     return f" (§ {path.strip()})"
 
 
+# On a unit found through a chunk point: the positions of every block the
+# chunk was embedded from. The unit is the chunk's first block; the rest are
+# added around it after ranking (``modules/retrieval/context/neighbours.py``).
+SPAN_BLOCK_INDICES_KEY = "span_block_indices"
+
+
+def _span_block_indices(meta: dict[str, Any], block_positions: Callable[[], dict[str, int]]) -> list[int]:
+    """Where the blocks of a chunk point sit now, or ``[]`` for any other point.
+
+    A reconciled update keeps an unchanged chunk's point, payload included, so
+    positions written at index time go stale once earlier blocks are added or
+    removed; the point's block ids are looked up in ``block_positions`` (block
+    id to position) instead, and its positions are used only without them.
+    """
+    if meta.get("isBlockGroup"):
+        return []
+    ids = meta.get("spanBlockIds")
+    if isinstance(ids, list) and ids and (positions := block_positions()):
+        return [positions[i] for i in ids if isinstance(i, str) and i in positions]
+    span = meta.get("spanBlockIndices")
+    if not isinstance(span, list):
+        return []
+    return [i for i in span if isinstance(i, int) and not isinstance(i, bool)]
+
+
 def _point_position(meta: dict[str, Any]) -> int | None:
     """Where a vector point's block sits, when the point says so itself.
 
@@ -3218,6 +3243,17 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     virtual_record_id_to_recon_metadata: dict[str, dict[str, Any] | None] = {}
     # Cache for fragment maps per virtual_record_id (container_index → fragment children)
     fragment_maps: dict[str, dict[int, list]] = {}
+    # Block id -> position per virtual_record_id, built for chunk points only.
+    block_positions: dict[str, dict[str, int]] = {}
+
+    def _block_positions(vrid: str) -> dict[str, int]:
+        if vrid not in block_positions:
+            blocks = ((virtual_record_id_to_result.get(vrid) or {}).get("block_containers") or {}).get("blocks") or []
+            block_positions[vrid] = {
+                block["id"]: position for position, block in enumerate(blocks)
+                if isinstance(block, dict) and block.get("id")
+            }
+        return block_positions[vrid]
     if from_retrieval_service:
         new_type_results = result_set
     else:
@@ -3382,6 +3418,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 f"full metadata: {meta}"
             )
             continue
+
+        if span := _span_block_indices(meta, functools.partial(_block_positions, virtual_record_id)):
+            result[SPAN_BLOCK_INDICES_KEY] = span
 
         if is_block_group:
             chunk_id = f"{virtual_record_id}-{index}-block_group"

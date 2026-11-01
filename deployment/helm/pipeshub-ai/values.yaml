@@ -376,6 +376,11 @@ config:
   # store the headings each block sits under and an HTML page keeps its own
   # title; text is embedded under them, and search results show them. Records
   # indexed before keep their vectors until they are reindexed.
+  # INDEXING_TEXT_CHUNKS is opt-in the same way: with "true" a record's text is
+  # embedded in chunks of consecutive blocks of one section (about 150 words,
+  # EMBED_CHUNK_TARGET_WORDS / EMBED_CHUNK_MAX_WORDS) instead of block by block,
+  # and a search hit shows its whole chunk. Records indexed before keep their
+  # points until they are reindexed.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

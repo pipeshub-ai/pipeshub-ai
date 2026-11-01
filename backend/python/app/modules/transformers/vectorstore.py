@@ -15,11 +15,13 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import codecs
+import functools
 import json
 import logging
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, List, Optional, Tuple
 
 from langchain_core.documents import Document
@@ -40,6 +42,7 @@ from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.section_paths import (
     SECTION_PATH_SEPARATOR,
     block_heading_path,
+    opens_section,
     section_paths_enabled,
 )
 from app.modules.parsers.table_titles import table_titles
@@ -79,6 +82,7 @@ from app.utils.embedding_retry import (
     retry_delay_seconds,
     signal_backpressure_if_rate_limited,
 )
+from app.utils.env_utils import env_bool, env_int
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
@@ -205,6 +209,13 @@ _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
 _TEXT_BLOCK_TYPES = frozenset({"text", "paragraph", "textsection", "heading", "quote"})
 _MAX_OPENING_TITLE_CHARS = 120
+# Retrieval chunks: consecutive text blocks of one section are embedded
+# together until a chunk reaches the target. A paragraph or list item alone is
+# often a heading or a few words, a weak vector that still takes a search slot,
+# while the chunk it sits in carries its meaning.
+_DEFAULT_CHUNK_TARGET_WORDS = 150
+_DEFAULT_CHUNK_MAX_WORDS = 350
+_STORED_POINTS_PAGE = 1000
 
 
 def _block_type_name(block: object) -> str:
@@ -326,6 +337,18 @@ def _detect_record_language(text_blocks: List) -> str:
     if not sample_parts:
         return "en"
     return detect_language(" ".join(sample_parts))
+
+
+def text_chunks_enabled() -> bool:
+    return env_bool("INDEXING_TEXT_CHUNKS", False)
+
+
+def _chunk_sizes() -> tuple[int, int]:
+    """Target and maximum words per chunk: ``EMBED_CHUNK_TARGET_WORDS``
+    (default 150) and ``EMBED_CHUNK_MAX_WORDS`` (default 350, never below the
+    target)."""
+    target = env_int("EMBED_CHUNK_TARGET_WORDS", _DEFAULT_CHUNK_TARGET_WORDS, lo=1)
+    return target, env_int("EMBED_CHUNK_MAX_WORDS", _DEFAULT_CHUNK_MAX_WORDS, lo=target)
 
 
 def _min_words_for_sentence_embeddings() -> int:
@@ -726,6 +749,139 @@ def _build_text_documents(
     return documents
 
 
+def _pack_windows(text: str, language: str, target_words: int) -> list[str]:
+    """Windows of about ``target_words`` over one long block, each starting
+    with the last line or sentence of the one before.
+
+    Lines come first: in a chat thread or a transcript each line is one
+    message, and the answer to a question is often one of them. A line longer
+    than the target is split into sentences. Windows the size of a chunk keep
+    such a message findable, where larger character windows dilute it into
+    everything around it.
+    """
+    units: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if _word_count(line) > target_words:
+            units.extend(s.strip() for s in split_into_sentences(line, language=language) if s.strip())
+        else:
+            units.append(line.strip())
+    windows: list[str] = []
+    current: list[str] = []
+    words = 0
+    for unit in units:
+        size = _word_count(unit)
+        if current and words + size > target_words:
+            windows.append("\n".join(current))
+            carry = current[-1] if _word_count(current[-1]) <= target_words // 2 else None
+            current, words = ([carry], _word_count(carry)) if carry else ([], 0)
+        current.append(unit)
+        words += size
+    if current:
+        windows.append("\n".join(current))
+    return windows or [text]
+
+
+def _block_sort_index(block: object) -> int:
+    index = getattr(block, "index", None)
+    return index if isinstance(index, int) else -1
+
+
+def _build_chunked_text_documents(
+    text_blocks: list,
+    virtual_record_id: str,
+    org_id: str,
+    language: str,
+    record_title: str | None = None,
+) -> list[Document]:
+    """Embeddable Documents over chunks of consecutive text blocks.
+
+    Blocks join a chunk in document order while they are adjacent (no table,
+    image or code block between them) and it stays within
+    ``EMBED_CHUNK_MAX_WORDS``; a chunk closes once it reaches
+    ``EMBED_CHUNK_TARGET_WORDS``. A heading always starts a chunk, which then
+    holds only blocks of the section it opens. A chunk's point names its first
+    block (``blockId``/``blockIndex``, which retrieval resolves) and, when it
+    covers more than one, every block in ``spanBlockIds``/``spanBlockIndices``
+    so retrieval can show and cite them all.
+
+    A block longer than the maximum is a chunk of its own, embedded whole and,
+    in place of one point per sentence, in overlapping windows the size of a
+    chunk; a block over the model's token limit is embedded in windows only.
+
+    CPU-bound, like ``_build_text_documents``.
+    """
+    target, maximum = _chunk_sizes()
+    documents: list[Document] = []
+    pending: list[tuple[object, str]] = []
+    pending_words = 0
+    # Headings of the chunk's blocks other than a heading that opened it.
+    section: list[str] | None = None
+
+    def base_metadata(block: object) -> dict:
+        return {
+            "virtualRecordId": virtual_record_id,
+            "blockId": block.id,
+            "blockIndex": block.index,
+            "orgId": org_id,
+            "isBlockGroup": False,
+            "blockType": BlockType.TEXT.value,
+        }
+
+    def add(block: object, block_documents: list[Document]) -> None:
+        if record_title is not None:
+            _embed_under(_embedding_context(record_title, block), block_documents)
+        documents.extend(block_documents)
+
+    def flush() -> None:
+        nonlocal pending_words, section
+        if not pending:
+            return
+        first = pending[0][0]
+        metadata = {**base_metadata(first), "isBlock": True}
+        if len(pending) > 1:
+            metadata["spanBlockIds"] = [block.id for block, _ in pending]
+            metadata["spanBlockIndices"] = [block.index for block, _ in pending]
+        add(first, _bounded_documents("\n".join(text for _, text in pending), metadata))
+        pending.clear()
+        pending_words, section = 0, None
+
+    for block in sorted(text_blocks, key=_block_sort_index):
+        block_text = anchor_text_only(block.data or "")
+        if not block_text.strip():
+            continue
+        words = _word_count(block_text)
+        opener = opens_section(block)
+        headings = block_heading_path(block)
+        if pending:
+            adjacent = _block_sort_index(block) == _block_sort_index(pending[-1][0]) + 1
+            same_section = not opener and (section is None or headings == section)
+            if not (adjacent and same_section) or pending_words + words > maximum:
+                flush()
+        if words > maximum:
+            metadata = base_metadata(block)
+            ceiling = _embed_token_ceiling()
+            block_documents: list[Document] = []
+            if len(block_text) <= _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT and not _exceeds_token_ceiling(block_text, ceiling):
+                block_documents.append(Document(page_content=block_text, metadata={**metadata, "isBlock": True}))
+            block_documents.extend(
+                Document(page_content=piece, metadata={**metadata, "isBlock": False})
+                for window in _pack_windows(block_text, language, target)
+                for piece in _split_to_token_ceiling(window, ceiling)
+            )
+            add(block, block_documents)
+            continue
+        pending.append((block, block_text))
+        pending_words += words
+        if section is None and not opener:
+            section = headings
+        if pending_words >= target:
+            flush()
+    flush()
+    return documents
+
+
 def _record_context_line(record: "Record | None") -> str:
     """``name — path`` for the record a block belongs to, or "".
 
@@ -793,6 +949,7 @@ def _process_text_blocks(
     virtual_record_id: str,
     org_id: str,
     record_title: str | None = None,
+    chunked: bool = False,  # noqa: FBT001, FBT002 - passed positionally through asyncio.to_thread
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -800,9 +957,8 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(
-        text_blocks, virtual_record_id, org_id, language, record_title
-    )
+    build = _build_chunked_text_documents if chunked else _build_text_documents
+    return build(text_blocks, virtual_record_id, org_id, language, record_title)
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -939,6 +1095,8 @@ class VectorStore(Transformer):
             _record_title(record, block_containers) if section_paths_enabled() else None
         )
 
+        rechunk_text = False
+
         if (
             ctx.reconciliation_context
             and ctx.reconciliation_context.blocks_to_index_ids is not None
@@ -952,6 +1110,15 @@ class VectorStore(Transformer):
                     f"Reconciliation: No changes detected for record {record_id}"
                 )
                 return True
+
+            if text_chunks_enabled():
+                # A chunk spans its neighbours, so a changed block changes their
+                # chunk too: the record's text is chunked again as a whole, and
+                # only chunks that differ are written (_replace_text_points).
+                rechunk_text = True
+                blocks_to_index_ids = set(blocks_to_index_ids) | {
+                    b.id for b in block_containers.blocks if _block_type_name(b) in _TEXT_BLOCK_TYPES
+                }
 
             # Shallow copy with only blocks/block_groups that need indexing
             block_containers = BlocksContainer(
@@ -972,6 +1139,7 @@ class VectorStore(Transformer):
             record=record,
             titles=titles,
             record_title=record_title,
+            rechunk_text=rechunk_text,
         )
 
     # ------------------------------------------------------------------
@@ -1510,6 +1678,133 @@ class VectorStore(Transformer):
                 "Failed to delete blocks by IDs", details={"error": str(e)}
             ) from e
 
+    async def _stored_text_points(
+        self, virtual_record_id: str, collection_name: str
+    ) -> dict[str, set[str]] | None:
+        """The ids of a record's stored text points, by the block each is filed
+        under, or ``None`` when they cannot all be read.
+
+        Filters on ``virtualRecordId`` only, the one field every provider
+        indexes; the kind of point is read from its payload.
+        """
+        try:
+            scroll_filter = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": virtual_record_id}
+            )
+            by_block: dict[str, set[str]] = {}
+            offset = None
+            while True:
+                page = await self.vector_db_service.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=scroll_filter,
+                    limit=_STORED_POINTS_PAGE,
+                    offset=offset,
+                    with_payload=["metadata.blockId", "metadata.blockType"],
+                )
+                for point in page.points:
+                    meta = (point.payload or {}).get("metadata") or {}
+                    if meta.get("blockType") == BlockType.TEXT.value and meta.get("blockId"):
+                        by_block.setdefault(meta["blockId"], set()).add(str(point.id))
+                if not page.points or page.next_offset is None or page.next_offset == offset:
+                    return by_block
+                offset = page.next_offset
+        except Exception as e:
+            self.logger.warning(
+                "Could not read the stored text points of %s; embedding its text again: %s",
+                virtual_record_id, e,
+            )
+            return None
+
+    async def _replace_text_points(
+        self,
+        documents: list[Document],
+        text_block_ids: set,
+        virtual_record_id: str,
+        record_id: str,
+        collection_name: str,
+    ) -> None:
+        """Bring a record's stored text points in line with ``documents``, its
+        text chunked again as a whole.
+
+        Point ids are derived from what a point embeds, so a chunk whose points
+        are all stored, with nothing else under its first block, is not
+        embedded again. A chunk under a block with no stored points is written
+        beside the old ones, and points under blocks that no longer start a
+        chunk are deleted afterwards. A changed chunk that keeps its first block
+        shares that ``blockId`` with its old points, the one key they can be
+        deleted by, so it is embedded first and its old points are deleted just
+        before it is written: a failed embedding deletes nothing.
+        """
+        stored = await self._stored_text_points(virtual_record_id, collection_name)
+        wanted: dict[str, list[Document]] = {}
+        for document in documents:
+            wanted.setdefault(document.metadata["blockId"], []).append(document)
+
+        fresh: list[list[Document]] = []
+        replaced: list[list[Document]] = []
+        for block_id, block_documents in wanted.items():
+            old = stored.get(block_id) if stored is not None else None
+            if stored is not None and not old:
+                fresh.append(block_documents)
+            elif old != {deterministic_point_id(d.metadata, d.page_content) for d in block_documents}:
+                replaced.append(block_documents)
+        self.logger.debug(
+            "Text of %s chunked again: %d chunk(s) new, %d replaced, %d unchanged",
+            virtual_record_id, len(fresh), len(replaced), len(wanted) - len(fresh) - len(replaced),
+        )
+        if fresh:
+            await self._process_document_chunks(
+                [d for group in fresh for d in group], record_id, collection_name
+            )
+        if replaced:
+            await self._replace_points_under_blocks(
+                replaced, virtual_record_id, record_id, collection_name
+            )
+        stale = (set(stored) if stored is not None else set(text_block_ids)) - set(wanted)
+        if stale:
+            with stage("vector.delete"):
+                await self.delete_blocks_by_ids(stale, virtual_record_id, collection_name)
+
+    async def _replace_points_under_blocks(
+        self,
+        groups: list[list[Document]],
+        virtual_record_id: str,
+        record_id: str,
+        collection_name: str,
+    ) -> None:
+        """Write each group's points in place of what is stored under its
+        block, batch by batch, deleting a batch's old points only once the
+        batch is embedded. A group is never split across batches."""
+        max_documents, max_chars = (
+            (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
+            if self._is_local_cpu_embedding()
+            else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
+        )
+        batches: list[list[Document]] = []
+        current: list[Document] = []
+        chars = 0
+        for group in groups:
+            size = sum(len(d.page_content) for d in group)
+            if current and (len(current) + len(group) > max_documents or chars + size > max_chars):
+                batches.append(current)
+                current, chars = [], 0
+            current.extend(group)
+            chars += size
+        if current:
+            batches.append(current)
+
+        presence = _RecordPresence(
+            self.graph_provider, record_id, max_age_s=_RECORD_PRESENCE_MAX_AGE_S
+        )
+        for batch in batches:
+            block_ids = {d.metadata["blockId"] for d in batch}
+            await self._embed_and_upsert_documents(
+                batch, record_id, collection_name, presence,
+                before_upsert=functools.partial(
+                    self.delete_blocks_by_ids, block_ids, virtual_record_id, collection_name
+                ),
+            )
+
     # ------------------------------------------------------------------
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
@@ -1761,12 +2056,14 @@ class VectorStore(Transformer):
         record_id: str,
         collection_name: str,
         presence: Optional["_RecordPresence"] = None,
+        before_upsert: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
         Guard: aborts if the record was deleted mid-flight (race condition fix
         restored from commit 839a29499). ``presence`` shares that check across
-        one record's batches.
+        one record's batches. ``before_upsert`` runs once the batch is
+        embedded, just before it is written.
         """
         if presence is None:
             presence = _RecordPresence(self.graph_provider, record_id, max_age_s=0.0)
@@ -1804,6 +2101,8 @@ class VectorStore(Transformer):
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
+        if before_upsert is not None:
+            await before_upsert()
         with stage("vector.upsert", detail=f"{len(points)} points"):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
@@ -1947,9 +2246,14 @@ class VectorStore(Transformer):
         record: Optional["Record"] = None,
         titles: dict[int, str] | None = None,
         record_title: str | None = None,
+        *,
+        rechunk_text: bool = False,
     ) -> bool | None:
         """``record_title`` names the record in what text and table rows embed
         under; left out, it is read from ``record`` while section paths are on.
+
+        ``rechunk_text`` (a reconciliation with chunks on): ``block_containers``
+        holds all of the record's text blocks, chunked again as a whole.
         """
         try:
             with stage("embed.setup"):
@@ -1973,6 +2277,7 @@ class VectorStore(Transformer):
             record_title = None
         elif record_title is None:
             record_title = _record_title(record, block_containers)
+        chunked = rechunk_text or (not is_reconciliation and text_chunks_enabled())
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
@@ -2065,7 +2370,7 @@ class VectorStore(Transformer):
                         text_documents = await asyncio.wait_for(
                             asyncio.to_thread(
                                 _process_text_blocks, text_blocks, virtual_record_id, org_id,
-                                record_title,
+                                record_title, chunked,
                             ),
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
@@ -2323,7 +2628,8 @@ class VectorStore(Transformer):
                 # under a block being re-embedded (written with random ids before point ids
                 # were derived from the block, or by an attempt that stopped part way) would
                 # sit beside their replacements, so they go first.
-                reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
+                text_block_ids = {b.id for b in text_blocks} if rechunk_text else set()
+                reindexed_ids = ({b.id for b in blocks} | {bg.id for bg in block_groups}) - text_block_ids
                 with stage("vector.delete"):
                     await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name)
                 if block_ids_to_delete:
@@ -2332,6 +2638,14 @@ class VectorStore(Transformer):
                     block_ids_to_delete = set(block_ids_to_delete) - reindexed_ids
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
+                if rechunk_text:
+                    await self._replace_text_points(
+                        [d for d in langchain_docs if d.metadata.get("blockId") in text_block_ids],
+                        text_block_ids, virtual_record_id, record_id, collection_name,
+                    )
+                    langchain_docs = [
+                        d for d in langchain_docs if d.metadata.get("blockId") not in text_block_ids
+                    ]
                 if langchain_docs:
                     await self._process_document_chunks(langchain_docs, record_id, collection_name)
                 if image_chunks:

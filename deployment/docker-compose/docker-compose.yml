@@ -342,6 +342,7 @@ services:
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
       # Opt-in only, read while indexing: HIGH_ACCURACY_MODE does not turn it on.
       - INDEXING_SECTION_PATHS=${INDEXING_SECTION_PATHS:-}
+      - INDEXING_TEXT_CHUNKS=${INDEXING_TEXT_CHUNKS:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
@@ -397,6 +398,10 @@ services:
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
       - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
+      # With INDEXING_TEXT_CHUNKS=true: words a text chunk aims for and never
+      # passes. Empty keeps 150 and 350.
+      - EMBED_CHUNK_TARGET_WORDS=${EMBED_CHUNK_TARGET_WORDS:-}
+      - EMBED_CHUNK_MAX_WORDS=${EMBED_CHUNK_MAX_WORDS:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}

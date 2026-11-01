@@ -64,6 +64,11 @@ def heading_level(block: Block) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def opens_section(block: Block) -> bool:
+    """A heading, or a block a parser marked as opening a section."""
+    return block.sub_type == BlockSubType.HEADING or heading_level(block) is not None
+
+
 def clean_heading_text(text: str, *, markdown: bool = True) -> str:
     """A heading as a one-line label: no markup, link targets or excess length.
 
