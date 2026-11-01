@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -109,6 +109,8 @@ from app.utils.pattern_match import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.agents.record_escalation.models import FetchPlan
@@ -320,6 +322,13 @@ def _result_frame(
     unshown = unshown_matches(
         matched_record_ids or [], shown_vrids | set(full_map), permitted_records or {},
     )
+    if unshown and not selection.ranked and not pm_shown:
+        # Nothing rendered, but the search matched records it can name.
+        summary = (
+            f"{preamble}No passage of the matched records could be shown, so they are only "
+            "named at the end. Open the ones that fit the question before answering.\n\n"
+            f"{entity_notes}"
+        )
     unshown_list = render_unshown_matches(unshown)
     shown_unshown = unshown_list
     if unshown_list and selection.record_id_shortener is not None:
@@ -338,6 +347,12 @@ def _result_frame(
         unshown=unshown,
         unshown_list=unshown_list,
     )
+
+
+def _held_virtual_record_ids(state: Mapping[str, Any]) -> set[str]:
+    """Virtual record ids of the records this request already holds."""
+    held = state.get("virtual_record_id_to_result")
+    return set(cast("dict[str, Any]", held)) if isinstance(held, dict) else set()
 
 
 def _note_provenance(
@@ -1078,6 +1093,15 @@ async def _execute_search(
         # Before the merge adds grep-only records to the map.
         loaded_grep_hits = grep_hits_on_loaded_records(raw_pattern_records, virtual_record_id_to_result)
 
+        def names_unshown_matches() -> bool:
+            """Whether a result with nothing to show still has matched records to
+            name (``UNSHOWN_MATCHES_LIST``): hits whose blocks no longer resolve
+            load their record but render no passage."""
+            if not unshown_matches_enabled():
+                return False
+            held = _held_virtual_record_ids(state)
+            return bool(unshown_matches(knowledge.matched_record_ids, held, virtual_to_record_map, limit=1))
+
         pm_record_entries: list[dict[str, Any]] = []
         if raw_pattern_records:
             try:
@@ -1120,7 +1144,7 @@ async def _execute_search(
 
         # Grep hits can all be dropped by the merge (permissions, time range);
         # that is still an empty search and must answer like one.
-        if not knowledge.ranked and not pm_record_entries:
+        if not knowledge.ranked and not pm_record_entries and not names_unshown_matches():
             return _empty_result()
 
         # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
@@ -1178,7 +1202,7 @@ async def _execute_search(
             return ([*entries, *grep_only_brief] if hint else []), hint + coverage_note
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
-        if not has_semantic_blocks and not pm_shown:
+        if not has_semantic_blocks and not pm_shown and not names_unshown_matches():
             return _empty_result()
         entity_notes = _search_gap_notes(
             failed_sources=failed_sources, search_incomplete=search_incomplete,

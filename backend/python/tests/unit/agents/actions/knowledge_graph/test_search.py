@@ -1625,14 +1625,15 @@ class TestRecordsTheResultDoesNotShow:
 
     async def _search(
         self, ranked: list[str], matched: list[str], *, permitted: tuple[str, ...],
-        held: tuple[str, ...] = (), grep: AsyncMock | None = None, **state_extra: Any,  # noqa: ANN401
+        held: tuple[str, ...] = (), grep: AsyncMock | None = None, hits: list[str] | None = None,
+        **state_extra: Any,  # noqa: ANN401
     ) -> tuple[str, dict[str, Any]]:
         from app.modules.retrieval.context.builder import KnowledgeContext
 
         retrieval = AsyncMock()
         retrieval.search_with_filters.return_value = {
             "status_code": 200,
-            "searchResults": [{"metadata": {"virtualRecordId": vrid}} for vrid in ranked],
+            "searchResults": [{"metadata": {"virtualRecordId": vrid}} for vrid in (ranked if hits is None else hits)],
             "virtual_to_record_map": {
                 vrid: {"_key": f"r-{vrid}", "recordName": f"Doc {vrid}"} for vrid in permitted
             },
@@ -1735,6 +1736,30 @@ class TestRecordsTheResultDoesNotShow:
         assert short != "r-vr2"
         assert f"- Record ID: {short} | Doc vr2" in result
         assert shortener.resolve(short) == "r-vr2"
+
+    @pytest.mark.asyncio
+    async def test_a_search_whose_hits_rendered_nothing_still_names_its_matches(self, monkeypatch) -> None:
+        """Hits whose block no longer resolves leave no passage to show, but their
+        records matched and loaded: name them rather than report nothing found."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, state = await self._search(
+            [], ["vr1", "vr2"], permitted=("vr1", "vr2"), hits=["vr1", "vr2"],
+        )
+
+        assert not result.startswith("{")
+        assert "found via keyword matching" not in result
+        assert "- Record ID: r-vr1 | Doc vr1\n- Record ID: r-vr2 | Doc vr2" in result
+        assert {"r-vr1", "r-vr2"} <= state["known_record_ids"]
+
+    @pytest.mark.asyncio
+    async def test_off_a_search_whose_hits_rendered_nothing_is_still_empty(self, monkeypatch) -> None:
+        monkeypatch.delenv("UNSHOWN_MATCHES_LIST", raising=False)
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+
+        result, _ = await self._search([], ["vr1", "vr2"], permitted=("vr1", "vr2"), hits=["vr1", "vr2"])
+
+        assert json.loads(result)["message"] == "No results found"
 
     @pytest.mark.asyncio
     async def test_a_record_the_keyword_hint_names_is_not_listed_again(self, monkeypatch) -> None:
