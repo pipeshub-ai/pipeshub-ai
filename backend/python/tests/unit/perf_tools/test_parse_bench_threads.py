@@ -216,12 +216,21 @@ class TestDescendantCpu:
 
     def test_sees_a_real_child_burning_cpu_after_it_exits(self) -> None:
         acct = proc_cpu.DescendantCpu()
-        child = subprocess.Popen([sys.executable, "-c", "import time\nt=time.process_time()\nwhile time.process_time()-t<0.4: pass"])
-        deadline = time.monotonic() + 10
-        while child.poll() is None and time.monotonic() < deadline:
-            acct.sample()
-            time.sleep(0.05)
-        child.wait()
+        # The child burns its CPU, then waits for the parent, so the parent's sample is not
+        # racing the child's exit.
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\nt=time.process_time()\nwhile time.process_time()-t<0.4: pass\n"
+             "print('done', flush=True)\nsys.stdin.readline()"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.readline().strip() == "done"
+        acct.sample()
+        child.stdin.write("\n")
+        child.stdin.close()
+        child.wait(timeout=10)
+        child.stdout.close()
         # The root is this process, whose own CPU already exceeds 0.3 s: assert on the child's entry.
         assert acct.seconds_for(child.pid) >= 0.3
 
@@ -232,16 +241,20 @@ class TestProbeAfterFreezing:
 
         class FakeSampler:
             def live_parse_workers(self) -> int:
+                events.append("count")
                 return 2
 
             def stop(self) -> None:
                 events.append("stop")
 
             def is_alive(self) -> bool:
-                return True
+                return not self.stopped
 
             def join(self, timeout: float | None = None) -> None:
                 events.append("join")
+                self.stopped = True
+
+            stopped = False
 
         async def fake_probe(count: int, hold_seconds: float = 1.0) -> list[dict[str, object]]:
             events.append(f"probe {count}")
@@ -249,7 +262,27 @@ class TestProbeAfterFreezing:
 
         monkeypatch.setattr(driver, "probe_workers", fake_probe)
         await driver.probe_after_freezing(FakeSampler(), 0)  # type: ignore[arg-type]
-        assert events == ["stop", "join", "probe 2"]
+        assert events == ["stop", "join", "count", "probe 2"]
+
+
+class TestProbeSkippedWhenSamplerHangs:
+    async def test_no_probe_while_the_sampler_is_still_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class StuckSampler:
+            def stop(self) -> None: ...
+
+            def is_alive(self) -> bool:
+                return True
+
+            def join(self, timeout: float | None = None) -> None: ...
+
+            def live_parse_workers(self) -> int:
+                return 2
+
+        async def fail_probe(count: int, hold_seconds: float = 1.0) -> list[dict[str, object]]:
+            raise AssertionError("probed while the sampler was still running")
+
+        monkeypatch.setattr(driver, "probe_workers", fail_probe)
+        assert await driver.probe_after_freezing(StuckSampler(), 0) == []  # type: ignore[arg-type]
 
 
 class TestScanRoute:

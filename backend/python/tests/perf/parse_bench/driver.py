@@ -380,11 +380,15 @@ async def probe_after_freezing(sampler: TreeSampler, probe_only: int) -> list[di
     threads after the measured window; the sampler must not count them as the run's peaks or
     abort a finished run on them.
     """
-    count = sampler.live_parse_workers() or probe_only
     sampler.stop()
     if sampler.is_alive():
-        sampler.join(timeout=5)
-    return await probe_workers(count)
+        # Off the loop: the lag monitor is still running and would report a blocking join.
+        await asyncio.to_thread(sampler.join, 5)
+        if sampler.is_alive():
+            print("sampler did not stop within 5 s; skipping the worker probe", file=sys.stderr)
+            return []
+    # Counted after the last sample, so a worker that sample recorded is probed too.
+    return await probe_workers(sampler.live_parse_workers() or probe_only)
 
 
 async def probe_workers(count: int, hold_seconds: float = 1.0) -> list[dict[str, Any]]:
