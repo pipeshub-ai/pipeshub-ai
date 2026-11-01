@@ -41,5 +41,6 @@ export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions 
   // revalidation matches on, and hooks still on screen write it back only on
   // remount. Overwriting every entry keeps that key, clears data and error, and
   // still drops answers in flight (a mutation newer than their start wins).
+  // shortcut: unlike unload, this skips useSWRInfinite/useSWRSubscription keys and keepPreviousData; clear those too once something uses them.
   void mutate(() => true, undefined, { revalidate: true });
 }
