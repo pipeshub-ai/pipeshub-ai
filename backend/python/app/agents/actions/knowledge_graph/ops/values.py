@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
+import math
+import re
 from dataclasses import replace
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
@@ -30,6 +33,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
     build_linker,
     unlinked_line,
 )
+from app.agents.actions.knowledge_graph.ops.time_range import parse_iso_to_epoch_ms
 from app.agents.actions.knowledge_graph.views import _read_hint
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
@@ -109,8 +113,8 @@ async def execute_find_records_by_value(
     kinds: list[str] | None = None,
     name: str | None = None,
     entity_ids: list[str] | None = None,
-    date_from: int | None = None,
-    date_to: int | None = None,
+    date_from: str | int | None = None,
+    date_to: str | int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     currency: str | None = None,
@@ -142,13 +146,22 @@ async def execute_find_records_by_value(
         given["entity_ids"] = asked_ids
     name = (name or "").strip()
     if _given(date_from, date_to):
-        start, end = date_from or None, date_to or None
-        if isinstance(start, int) and isinstance(end, int) and end <= start:
-            # One day asked as a point (date_to = date_from): the 24 hours from it. As a zero-width
-            # window it matched only the ranges around the day, never the day itself.
-            end = start + _DAY_MS
+        start, start_error = _date_bound(date_from, upper=False)
+        end, end_error = _date_bound(date_to, upper=True)
+        if start_error or end_error:
+            return False, start_error or end_error
+        if isinstance(date_from, int) and isinstance(date_to, int) and start is not None and end is not None and end <= start:
+            # One day asked as a point in epoch ms (date_to = date_from): the 24 hours from it.
+            # As a zero-width window it matched only the ranges around the day, never the day itself.
+            # Stated as applied, so the header shows the day the window covers.
+            date_to = end = start + _DAY_MS
+        if start is not None and end is not None and start > end:
+            return False, "date_from must be on or before date_to."
         raw["mentionedDate"] = {"from": start, "to": end}
-        given.update(_pair("date_from", start, "date_to", end))
+        # An unset end the schema sent as 0 or blank is not repeated.
+        given.update(_pair(
+            "date_from", date_from if start is not None else None, "date_to", date_to if end is not None else None,
+        ))
     if _given(amount_min, amount_max) or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
@@ -369,6 +382,47 @@ def _pair(low_name: str, low: object, high_name: str, high: object, **extra: obj
     """A range's ends, and its unit, as given (an unused end left out)."""
     ends = {low_name: low, high_name: high, **extra}
     return {key: value for key, value in ends.items() if value is not None and value != ""}
+
+
+_EXTENDED_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|[T ])")
+
+
+def _date_bound(value: str | float | None, *, upper: bool) -> tuple[int | None, str | None]:
+    """Epoch ms for a bound the model wrote as an ISO date or date-time; a date-only
+    end takes in its whole day. A number (a Python caller, or a call replayed from
+    before dates were ISO) is epoch ms. A strict schema sends an unused end as 0 or ""."""
+    label = "date_to" if upper else "date_from"
+    if not isinstance(value, str):
+        if not value:
+            return None, None
+        if not math.isfinite(value) or _written_as_digits(value):
+            return None, f"{label}: {value!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+        return int(value), None
+    text = value.strip()
+    if not text:
+        return None, None
+    if not _EXTENDED_DATE.match(text):
+        # "20260301" would otherwise read as a date-time with no timezone.
+        return None, f"{label}: {text!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+    return parse_iso_to_epoch_ms(text, is_upper_bound=upper, field_label=label)
+
+
+def _written_as_digits(value: float) -> bool:
+    """A year (2026) or a compact date (20260301) sent as a number: as epoch ms either
+    is a moment on 1 January 1970, never what was meant. Any other number is epoch ms,
+    including a date before 1970."""
+    if value != int(value):
+        return False
+    digits = str(int(value))
+    if len(digits) == 4:
+        return True
+    if len(digits) != 8:
+        return False
+    try:
+        date(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+    except ValueError:
+        return False
+    return True
 
 
 def _ordered(
