@@ -416,7 +416,9 @@ async def test_a_zero_date_bound_is_neither_applied_nor_stated(env: AsyncMock, m
     # A strict tool schema sends every parameter, so an unused bound arrives as 0.
     cite = AsyncMock(return_value={})
     monkeypatch.setattr(values, "cite_listed_records", cite)
-    ok, body = await values.execute_find_records_by_value(_state(_graph(_rows(1))), date_from=1_700_000_000_000, date_to=0)
+    graph = _graph(_rows(1))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={})
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_700_000_000_000, date_to=0)
     assert ok and "date_to" not in body.splitlines()[0]
     assert "date_to" not in cite.await_args.args[3]["r000"]
 
@@ -664,3 +666,90 @@ def test_entity_ids_with_a_value_kind_are_two_constraints_not_an_impossible_one(
     assert [[(part.source, part.binds.get("ids") or part.binds.get("kinds")) for part in c] for c in constraints] == [
         [("node", ["e-1"])], [("value", ["currency"])],
     ]
+
+
+# --- a date listing names the day before the ranges that only cover it ----------------
+
+async def test_records_stating_a_date_inside_the_window_come_before_wider_ranges(env: AsyncMock) -> None:
+    # r000 is the newest but only covers the day through a year-long range.
+    graph = _graph(_rows(4))
+    day, year = 86_400_000, 365 * 86_400_000
+    # r000: a year-long range; r001: its quarter; r002, r003: name the day.
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        "r000": (False, year), "r001": (False, 92 * day), "r002": (True, day), "r003": (True, day),
+    })
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert ok and _listed(body) == ["r002", "r003", "r001", "r000"]
+    assert "naming a date in the range first" in body.splitlines()[0]
+    org, ids, start, end = graph.get_named_entity_date_spans.await_args.args
+    assert (org, sorted(ids), start, end) == ("org", ["r000", "r001", "r002", "r003"], 1_000, 2_000)
+
+
+async def test_covering_dates_come_narrowest_span_first_whatever_their_age(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    day = 86_400_000
+    # r000 (newest) covers the day with a 30-day span, r001 with a 2-day trip; r002 names it.
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        "r000": (False, 30 * day), "r001": (False, 2 * day), "r002": (True, day),
+    })
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert ok and _listed(body) == ["r002", "r001", "r000"]
+
+
+async def test_a_failed_date_span_read_is_a_lookup_failure_not_a_crash(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    graph.get_named_entity_date_spans = AsyncMock(side_effect=RuntimeError("driver down"))
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=1_000, date_to=2_000)
+    assert (ok, body) == (False, values.LOOKUP_FAILED_MSG)
+
+
+async def test_pages_of_a_ranked_date_listing_run_across_tiers_without_repeats_or_gaps(env: AsyncMock) -> None:
+    graph = _graph(_rows(30))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={
+        f"r{i:03}": (i % 3 == 0, 86_400_000 if i % 3 == 0 else 400 * 86_400_000) for i in range(30)
+    })
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):
+        ok, body = await values.execute_find_records_by_value(
+            _state(graph), date_from=1_000, date_to=2_000, limit=7, cursor=cursor,
+        )
+        seen += _listed(body)
+        cursor = _cursor(body)
+        if cursor is None:
+            break
+    inside = [f"r{i:03}" for i in range(0, 30, 3)]
+    assert seen == inside + [f"r{i:03}" for i in range(30) if f"r{i:03}" not in inside]
+
+
+async def test_a_listing_without_a_date_window_is_not_ranked(env: AsyncMock) -> None:
+    graph = _graph(_rows(3))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={})
+    ok, body = await values.execute_find_records_by_value(_state(graph), amount_min=1)
+    assert ok and _listed(body) == ["r000", "r001", "r002"] and "in the range first" not in body
+    graph.get_named_entity_date_spans.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("cursor", "resume"), [
+    ("9981:r019", (0, -9981, "r019")),
+    ("r1:9981:r019", (1, -9981, "r019")),
+    # A record id holding a colon still reads as the first tier's two-part form,
+    # even when its first part is a number.
+    ("9981:a:b", (0, -9981, "a:b")),
+    ("9981:2:abc", (0, -9981, "2:abc")),
+    ("40", 40),
+])
+def test_a_cursor_resumes_in_its_tier(cursor: str, resume: object) -> None:
+    assert values._parse_resume(cursor) == resume
+
+
+async def test_one_day_asked_as_a_point_is_the_whole_day(env: AsyncMock) -> None:
+    graph = _graph(_rows(1))
+    graph.get_named_entity_date_spans = AsyncMock(return_value={"r000": (True, 86_400_000)})
+    day = 1_751_932_800_000  # 2025-07-08 00:00 UTC
+    ok, body = await values.execute_find_records_by_value(_state(graph), date_from=day, date_to=day)
+    query = graph.get_records_for_named_entities.await_args.args[2]
+    assert ok and (query.date_start_ms, query.date_end_ms) == (day, day + 86_400_000)
+    _, _, start, end = graph.get_named_entity_date_spans.await_args.args
+    assert (start, end) == (day, day + 86_400_000)
+    assert f"date_to={day + 86_400_000}" in body.splitlines()[0]
