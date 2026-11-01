@@ -130,7 +130,13 @@ limit:      rows per page (default 20, max 50); cursor
 - `unknown`: `{field: count}` of admitted candidates a condition could not judge;
   `classification` counts records not classified yet.
 - `rows`: a page, readable names first (title, type, source, status, people
-  by role, dates, amount), with record ids for fetch.
+  by role, dates, amount), with record ids for fetch. Each row gets a
+  record-level Citation ID through `cite_listed_records`, as navigate,
+  lookup_record and list_files rows do, quoting the row's own facts (type,
+  source, status, priority, dates, amount, outcome); totals and groups are
+  computed, not quoted, and are not cited.
+- Under a conversation selection or bound, the result says that every figure
+  counts only the sources the conversation is limited to (`LIMITED_SCOPE_NOTE`).
 - `applied`: the conditions as the engine read them (values as stored).
 - `next_cursor`, an opaque keyset cursor (see Paging), absent at the end.
 

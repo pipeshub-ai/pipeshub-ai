@@ -15,9 +15,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    limited_scope_note,
     load_entity_access_context,
 )
+from app.agents.actions.knowledge_graph.views import CITE_NOTE
 from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
@@ -38,6 +41,8 @@ from app.modules.retrieval.record_query.paging import NEWEST
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.retrieval.record_query.model import RecordQueryResult
 
@@ -49,6 +54,9 @@ PEOPLE_NOT_ALLOWED_MSG = (
     "People and organisation conditions are not available in this workspace; filter by the other fields."
 )
 _TOP_ROWS_SHOWN_AS_IDS = 50
+# Row facts a citation quotes (row_view names), in this order.
+_CITED_FACTS = ("type", "source", "status", "priority", "created", "updated", "resolved", "amount", "outcome",
+                "close_date")
 
 
 def field_guide() -> str:
@@ -122,7 +130,14 @@ async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str
     if keys:
         remember_record_ids(state, keys, names={r["record_id"]: r.get("title") or "" for r in result.rows})
         note_retrieved_by(state, "entity", graph_record_refs([{"_key": k} for k in keys]))
-    return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state))
+    # Each row is cited for the facts it shows, as navigate and list_files cite
+    # theirs; totals and groups are computed, not quoted, so they get none.
+    cite_refs = await cite_listed_records(
+        state, state["graph_provider"], context.org_id,
+        {r["record_id"]: row_facts(r) for r in result.rows if r.get("record_id")},
+    )
+    return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
+                        scope_note=limited_scope_note(context))
 
 
 def _applied(query: RecordQuery) -> str:
@@ -133,13 +148,26 @@ def _number(value: float) -> str:
     return f"{value:,.2f}".rstrip("0").rstrip(".")
 
 
-def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None) -> str:  # noqa: ANN401
+def row_facts(row: dict[str, Any]) -> str:
+    """What a row states about its record, as its citation quotes it."""
+    facts = [f"{name} {row[name]}" for name in _CITED_FACTS if row.get(name) not in (None, "")]
+    return " · ".join(facts)
+
+
+def render(
+    query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None,  # noqa: ANN401
+    cite_refs: Mapping[str, str] | None = None, scope_note: str = "",
+) -> str:
     """Totals first, then what was computed, then a page of rows to cite."""
+    cite_refs = cite_refs or {}
     total = f"at least {result.total}" if result.approximate else str(result.total)
     lines = [f"Total: {total} matching records you can open" + (
         " (approximate: the scan stopped at its limit; add a narrower condition such as a date window, "
         "a container or a person)" if result.approximate else " (exact)"
     )]
+    if scope_note:
+        # Every figure below counts only the sources the conversation is limited to.
+        lines.append(scope_note)
     if query.where:
         lines.append(f"Conditions as applied: {_applied(query)}")
     # A stopped scan saw only part of the matches: every figure from it is partial, not just the total.
@@ -169,8 +197,13 @@ def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = No
         start = result.offset
         order = "" if query.sort == NEWEST else f", {query.sort}"
         lines.append(f"Records {start + 1}-{start + len(result.rows)} of {total}{order}:")
+        cited = [cite_refs[r["record_id"]] for r in result.rows if r.get("record_id") in cite_refs]
+        if cited:
+            lines.append(CITE_NOTE.format(ref=cited[0]))
         for row in result.rows[:_TOP_ROWS_SHOWN_AS_IDS]:
             shown = dict(row)
+            if shown.get("record_id") in cite_refs:
+                shown["cite"] = cite_refs[shown["record_id"]]
             if shortener is not None and shown.get("record_id"):
                 shown["record_id"] = shortener.shorten_record_ids_in_text(shown["record_id"])
             lines.append("- " + json.dumps(shown, ensure_ascii=False, separators=(",", ":")))

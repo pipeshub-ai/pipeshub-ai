@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import record_query as op
+from app.agents.actions.knowledge_graph.ops.entity_filters import LIMITED_SCOPE_NOTE
 from app.agents.agent_loop.knowledge_graph_policy import (
     KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
     KnowledgeGraphMode,
@@ -29,7 +30,8 @@ def _state(mode: KnowledgeGraphMode = KnowledgeGraphMode.FULL, *, record_query: 
 def engine(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     run = AsyncMock(return_value=RecordQueryResult(total=0))
     monkeypatch.setattr(op, "run_record_query", run)
-    monkeypatch.setattr(op, "load_entity_access_context", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(op, "load_entity_access_context", AsyncMock(return_value=MagicMock(org_id="org", row_scopes=())))
+    monkeypatch.setattr(op, "cite_listed_records", AsyncMock(return_value={}))
     monkeypatch.setattr(op, "remember_record_ids", MagicMock())
     monkeypatch.setattr(op, "note_retrieved_by", MagicMock())
     return run
@@ -131,7 +133,6 @@ async def test_records_not_classified_are_reported_and_queued_for_classification
     engine.return_value = RecordQueryResult(total=2, unknown={"classification": 3, "status": 1},
                                             not_classified=waiting)
     state = {**_state(), "config_service": MagicMock(), "org_id": "org"}
-    op.load_entity_access_context.return_value = MagicMock(org_id="org", row_scopes=())
     _, text = await op.execute_find_records(state, where=[{"entity": {"type": "topic", "id": "t"}}])
     assert "3 records not classified yet" in text and "unknown" in text
     assert "1 lack status" in text and "lack classification" not in text
@@ -146,3 +147,34 @@ async def test_nothing_is_queued_when_every_record_is_classified(
     monkeypatch.setattr(op, "classify_on_first_use_later", queued)
     await op.execute_find_records({**_state(), "config_service": MagicMock()})
     queued.assert_not_called()
+
+
+async def test_each_row_is_cited_with_the_facts_it_shows_and_totals_are_not(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(total=7, groups=[Group(key="a", label="Ann", count=7)], rows=[
+        {"title": "Zendesk #1", "type": "TICKET", "status": "Open", "priority": "HIGH", "created": "2026-03-01",
+         "people": {"assignee": ["Ann"]}, "record_id": "r1"},
+        {"title": "Big deal", "type": "DEAL", "amount": 1000.0, "outcome": "WON", "close_date": "2026-01-15",
+         "record_id": "r2"},
+    ])
+    op.cite_listed_records.return_value = {"r1": "ref1", "r2": "ref2"}
+    _, text = await op.execute_find_records(_state(), group_by={"person_role": "assignee"})
+    facts = op.cite_listed_records.await_args.args[3]
+    assert facts == {"r1": "type TICKET · status Open · priority HIGH · created 2026-03-01",
+                     "r2": "type DEAL · amount 1000.0 · outcome WON · close_date 2026-01-15"}
+    rows = [line for line in text.splitlines() if line.startswith("- {")]
+    assert '"cite":"ref1"' in rows[0] and '"cite":"ref2"' in rows[1]
+    assert "ref1" in next(line for line in text.splitlines() if line.startswith("Cite a fact"))
+    head = text.split("Records 1-2")[0]
+    assert "ref" not in head
+
+
+async def test_under_a_selection_the_result_says_it_counts_only_the_selection(engine: AsyncMock) -> None:
+    op.load_entity_access_context.return_value = MagicMock(org_id="org", row_scopes=(MagicMock(),))
+    engine.return_value = RecordQueryResult(total=4)
+    _, text = await op.execute_find_records(_state(), limit=0)
+    assert text.splitlines()[1] == LIMITED_SCOPE_NOTE
+
+
+async def test_without_a_selection_there_is_no_scope_note(engine: AsyncMock) -> None:
+    _, text = await op.execute_find_records(_state(), limit=0)
+    assert LIMITED_SCOPE_NOTE not in text
