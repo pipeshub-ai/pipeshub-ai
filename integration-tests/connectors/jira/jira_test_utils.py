@@ -1241,9 +1241,9 @@ async def derive_jira_scope_counts(
       - ``parent_child``: one PARENT_CHILD edge per sub-task whose parent is in this project, and
         per story the connector files under its epic (``_story_filed_under``). An issue whose
         parent is in a project that does not sync hangs off its project. Attachments use ATTACHMENT.
-      - ``parent_child_by_level``: stories that share their epic's level, filed under it only
-        when that level grants the same people on every issue. That depends on the level's
-        members, so these are counted apart and may or may not have an edge.
+      - ``parent_child_by_level_pairs``: ``(epic_id, story_id)`` for each story that shares its
+        epic's level. It is filed under the epic only when that level grants the same people on
+        every issue, which depends on the level's members, so it may or may not have the edge.
       - ``parent_child_pairs``: ``(parent_id, child_id)`` for each edge in ``parent_child``.
 
     IT artifacts are skipped: this project is shared with any concurrently running leg,
@@ -1259,7 +1259,7 @@ async def derive_jira_scope_counts(
     ticket = 0
     files = 0
     parent_child = 0
-    parent_child_by_level = 0
+    parent_child_by_level_pairs: list[tuple[str, str]] = []
     parent_child_pairs: list[tuple[str, str]] = []
     for it in issues:
         if is_jira_it_artifact(it):
@@ -1280,12 +1280,12 @@ async def derive_jira_scope_counts(
             parent_child += 1
             parent_child_pairs.append(pair)
         elif filed is None:
-            parent_child_by_level += 1
+            parent_child_by_level_pairs.append(pair)
     return {
         "ticket": ticket,
         "file": files,
         "parent_child": parent_child,
-        "parent_child_by_level": parent_child_by_level,
+        "parent_child_by_level_pairs": parent_child_by_level_pairs,
         "parent_child_pairs": parent_child_pairs,
     }
 

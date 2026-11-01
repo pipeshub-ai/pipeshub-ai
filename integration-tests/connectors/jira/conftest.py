@@ -321,7 +321,7 @@ async def jira_connector(
     state["expected_ticket_count"] = scope["ticket"]
     state["expected_file_count"] = scope["file"]
     state["expected_parent_child_edges"] = scope["parent_child"]
-    state["parent_child_edges_by_level"] = scope["parent_child_by_level"]
+    state["parent_child_by_level_pairs"] = scope["parent_child_by_level_pairs"]
     state["expected_parent_child_pairs"] = scope["parent_child_pairs"]
     state["expected_attachment_edges"] = scope["file"]  # one ATTACHMENT edge per attachment/FILE
     state["expected_record_groups"] = 1  # only the primary project is in scope

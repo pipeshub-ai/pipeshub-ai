@@ -68,7 +68,7 @@ def test_a_story_counts_under_an_epic_with_no_level(monkeypatch: pytest.MonkeyPa
         "ticket": 3,
         "file": 0,
         "parent_child": 2,
-        "parent_child_by_level": 0,
+        "parent_child_by_level_pairs": [],
         "parent_child_pairs": [("QE-1", "QE-2"), ("QE-1", "QE-3")],
     }
 
@@ -94,7 +94,7 @@ def test_a_story_does_not_count_under_an_epic_with_a_level_it_does_not_share(mon
     ]
 
     counts = _counts(monkeypatch, issues)
-    assert (counts["parent_child"], counts["parent_child_by_level"]) == (0, 0)
+    assert (counts["parent_child"], counts["parent_child_by_level_pairs"]) == (0, [])
 
 
 def test_a_story_sharing_its_epics_level_is_counted_apart(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +102,11 @@ def test_a_story_sharing_its_epics_level_is_counted_apart(monkeypatch: pytest.Mo
     issues = [_issue("QE-1", level=1, security=_LEVEL), _issue("QE-2", "QE-1", security=_LEVEL)]
 
     counts = _counts(monkeypatch, issues)
-    assert (counts["parent_child"], counts["parent_child_by_level"], counts["parent_child_pairs"]) == (0, 1, [])
+    assert (counts["parent_child"], counts["parent_child_by_level_pairs"], counts["parent_child_pairs"]) == (
+        0,
+        [("QE-1", "QE-2")],
+        [],
+    )
 
 
 def _epic_pair(monkeypatch: pytest.MonkeyPatch, issues: list[dict]) -> tuple | None:

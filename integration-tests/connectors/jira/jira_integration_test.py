@@ -341,22 +341,28 @@ class TestJiraConnector:
             f"ATTACHMENT edges {attach} != synced Jira attachments "
             f"{jira_connector['expected_attachment_edges']}"
         )
-        # A story that shares its epic's level is filed under it only if the level grants the
-        # same people on every issue, which the live count cannot see; it may add an edge.
-        pc = await graph_provider.count_parent_child_edges(connector_id)
-        expected_pc = jira_connector["expected_parent_child_edges"]
-        by_level = jira_connector["parent_child_edges_by_level"]
-        assert expected_pc <= pc <= expected_pc + by_level, (
-            f"PARENT_CHILD {pc}: Jira has {expected_pc} sub-tasks and stories filed under their parent"
-            + (f", plus up to {by_level} stories that share their epic's level" if by_level else "")
-        )
-        # The range alone would let one of those stories stand in for a missing or a wrong edge.
         wrong = {}
         for parent_id, child_id in jira_connector["expected_parent_child_pairs"]:
             parents = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
             if parents != [parent_id]:
                 wrong[child_id] = {"expected": parent_id, "graph": parents}
+        # A story that shares its epic's level is filed under it only if the level grants the
+        # same people on every issue, which the live count cannot see: its epic or no parent.
+        filed_by_level = 0
+        for epic_id, story_id in jira_connector["parent_child_by_level_pairs"]:
+            parents = await graph_provider.get_record_incoming_relations(connector_id, story_id, "PARENT_CHILD")
+            if parents == [epic_id]:
+                filed_by_level += 1
+            elif parents:
+                wrong[story_id] = {"expected": f"{epic_id} or none", "graph": parents}
         assert not wrong, f"PARENT_CHILD parents differ from Jira for {len(wrong)} children: {dict(list(wrong.items())[:10])}"
+        # The children above account for every edge, so an edge on any other record fails here.
+        pc = await graph_provider.count_parent_child_edges(connector_id)
+        expected_pc = jira_connector["expected_parent_child_edges"] + filed_by_level
+        assert pc == expected_pc, (
+            f"PARENT_CHILD {pc} != Jira's {jira_connector['expected_parent_child_edges']} sub-tasks and stories "
+            f"filed under their parent, plus {filed_by_level} filed under an epic whose level they share"
+        )
 
         # Independent: record-group count from filter scope (primary only).
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
