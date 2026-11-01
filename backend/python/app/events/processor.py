@@ -135,6 +135,9 @@ def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
         md5_hash=record_dict.get("md5Checksum"),
         record_group_id=record_dict.get("recordGroupId"),
         external_record_group_id=record_dict.get("externalGroupId"),
+        # A named-entity persist retry rebuilds the record from its document and finds the
+        # stored extraction by this.
+        virtual_record_id=record_dict.get("virtualRecordId"),
     )
 
 class Processor:
