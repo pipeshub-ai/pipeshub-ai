@@ -412,7 +412,6 @@ class TestKnowledgeContextBuilder:
             {"metadata": {"virtualRecordId": "not-loaded"}, "score": 0.95},
             {"metadata": {"virtualRecordId": "c"}, "score": 0.05},
             {"metadata": {"virtualRecordId": "a"}, "score": "not a number"},
-            "not a hit",
         ]
         flatten, graph, fk = self._patches([_unit("b", 0, "b0", 0.9), _unit("a", 0, "a0", 0.1)], records)
         with flatten, graph, fk:

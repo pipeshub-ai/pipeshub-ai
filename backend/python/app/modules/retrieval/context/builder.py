@@ -37,7 +37,7 @@ class KnowledgeContext:
     """Chosen units, most relevant first; neighbours and FK tables after the hits."""
     virtual_record_id_to_result: dict[str, Any]
     """The records those units belong to, and nothing else."""
-    matched_record_ids: list[str] = field(default_factory=list)
+    matched_record_ids: list[str] = field(default_factory=list[str])
     """Virtual record ids of every loaded record the hits matched, best first,
     whether or not any of its units were kept."""
 
@@ -132,11 +132,8 @@ def _matched_record_ids(
 ) -> list[str]:
     """Records in the order their best unit ranks, then records with hits but
     no unit in retrieval-score order; only those whose content loaded."""
-    by_score = sorted(
-        (hit for hit in search_results if isinstance(hit, dict)),
-        key=lambda hit: -(unit_score(hit) or 0.0),
-    )
-    candidates = [unit.get("virtual_record_id") for unit in ranked_units] + [
-        (hit.get("metadata") or {}).get("virtualRecordId") for hit in by_score
-    ]
+    candidates: list[str | None] = [unit.get("virtual_record_id") for unit in ranked_units]
+    for hit in sorted(search_results, key=lambda hit: -(unit_score(hit) or 0.0)):
+        metadata: dict[str, Any] = hit.get("metadata") or {}
+        candidates.append(metadata.get("virtualRecordId"))
     return [vrid for vrid in dict.fromkeys(candidates) if vrid and records.get(vrid) is not None]

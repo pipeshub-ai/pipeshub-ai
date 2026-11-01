@@ -198,7 +198,7 @@ class _ResultFrame:
     final_results: list[dict[str, Any]]
     coverage: dict[str, tuple[int, int]]
     plan: FetchPlan
-    unshown: list[UnshownMatch] = field(default_factory=list)
+    unshown: list[UnshownMatch] = field(default_factory=list[UnshownMatch])
     """Matched records the result leaves out (``UNSHOWN_MATCHES_LIST``)."""
     unshown_list: str = ""
     """Their list, with full record ids (shortened when used)."""
