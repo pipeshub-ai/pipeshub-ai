@@ -78,6 +78,27 @@ def _collections() -> tuple[list, list]:
     return nodes, edges
 
 
+def _arrows() -> tuple[list, list]:
+    """dc: an app that opens everything, with a record of another connector as a direct hierarchy child, and a
+    record whose only child is of another connector (filed in it). rk: a collection holding only a record of
+    another connector; rk2: one holding its own."""
+    nodes = [
+        app("dc", "DC", connector=DRIVE, app_group="G", permissionModel="APP_LEVEL"),
+        app("rk", "RK", connector="KB", app_group="Local"),
+        app("rk2", "RK2", connector="KB", app_group="Local"),
+        rec("dc-own", "zz own", connector_id="dc"), rec("dc-foreign", "zz foreign", connector_id="dc-other"),
+        rec("dc-folder", "zz folder", connector_id="dc"), rec("dc-fch", "zz fch", connector_id="dc-other"),
+        rec("rk-foreign", "zz foreign", connector_id="rk-other"), rec("rk2-own", "zz own", connector_id="rk2"),
+    ]
+    edges = [
+        user_app(USER_U, "dc"), user_app(USER_U, "rk"), user_app(USER_U, "rk2"),
+        nr("dc", "dc-own"), bt("dc-own", "dc"), nr("dc", "dc-foreign"), bt("dc-foreign", "dc"),
+        nr("dc", "dc-folder"), bt("dc-folder", "dc"), bt("dc-fch", "dc-folder"),
+        bt("rk-foreign", "rk"), bt("rk2-own", "rk2"),
+    ]
+    return nodes, edges
+
+
 def _cross() -> tuple[list, list]:
     """c2: the other ways a record of another connector reaches a listing. M (declared group mb), D (an app
     that opens everything; group dg), KB (a collection; group kg). Viewer u reads mb, dg and kg, viewer w
@@ -155,7 +176,8 @@ def _graph() -> tuple[list, list]:
     n2, e2 = _nested()
     n3, e3 = _collections()
     n4, e4 = _cross()
-    return nodes + n2 + n3 + n4, edges + e2 + e3 + e4
+    n5, e5 = _arrows()
+    return nodes + n2 + n3 + n4 + n5, edges + e2 + e3 + e4 + e5
 
 
 class _World:
@@ -280,9 +302,13 @@ async def test_a_scoped_listing_holds_only_its_own_connectors_records(
 
 
 async def test_the_app_listing_counts_only_its_own_connectors_records(world: _World) -> None:
-    for app_id, foreign in (("na", {"nb-r5"}), ("pa", {"pb-x", "pb-y"})):
+    for app_id, foreign, own in (
+        ("na", {"nb-r5"}, {"na-r1", "na-r6"}), ("pa", {"pb-x", "pb-y"}, {"pa-f", "pa-y", "pa-g"}),
+    ):
         page = await _page(world, app_id, flatten=True)
-        assert not foreign & {row["id"] for row in page["rows"]}
+        ids = {row["id"] for row in page["rows"]}
+        assert not foreign & ids
+        assert own <= ids
         assert page["total"] == len(page["rows"])
 
 
@@ -304,6 +330,38 @@ _SURFACES = {
 }
 
 
+# What each surface must list, worked out from the seeded graph (containers included): the flatten holds every
+# own node under the app; search matches the "zz" names; the sidebar keeps containers and records with an own
+# child; depth 1 keeps what the hierarchy places one hop below the app plus records only a group files.
+_EXPECTED = {
+    (APP_A, "flatten"): {GROUP, "xc-ax"},
+    (APP_A, "search"): {"xc-ax"},
+    (APP_A, "sidebar"): {GROUP},
+    (APP_A, "depth1"): {GROUP},
+    (APP_A, "records"): {"xc-ax"},
+    ("na", "flatten"): {"na-D", "na-N", "na-r1", "na-r6"},
+    ("na", "search"): {"na-r1", "na-r6"},
+    ("na", "sidebar"): {"na-D", "na-N"},
+    ("na", "depth1"): {"na-D"},
+    ("na", "records"): {"na-r1", "na-r6"},
+    ("pa", "flatten"): {"pa-D", "pa-f", "pa-y", "pa-g"},
+    ("pa", "search"): {"pa-f", "pa-y", "pa-g"},
+    ("pa", "sidebar"): {"pa-D"},
+    ("pa", "depth1"): {"pa-D"},
+    ("pa", "records"): {"pa-f", "pa-y", "pa-g"},
+    ("la", "flatten"): {"la-own"},
+    ("la", "search"): {"la-own"},
+    ("la", "sidebar"): set(),
+    ("la", "depth1"): {"la-own"},
+    ("la", "records"): {"la-own"},
+    ("lk", "flatten"): {"lk-own"},
+    ("lk", "search"): {"lk-own"},
+    ("lk", "sidebar"): set(),
+    ("lk", "depth1"): {"lk-own"},
+    ("lk", "records"): {"lk-own"},
+}
+
+
 @pytest.mark.parametrize("surface", list(_SURFACES))
 @pytest.mark.parametrize("app_id", [APP_A, "na", "pa", "la", "lk"])
 async def test_no_surface_lists_or_counts_a_record_the_access_check_denies(
@@ -312,10 +370,12 @@ async def test_no_surface_lists_or_counts_a_record_the_access_check_denies(
     page = await _page(world, app_id, **_SURFACES[surface])
     ids = {row["id"] for row in page["rows"]}
     records = sorted(ids - {"na-N", "na-D", GROUP, "pa-D"})
+    expected = _EXPECTED[app_id, surface]
 
+    assert ids == expected
+    assert page["total"] == len(expected)
     assert not _FOREIGN & ids
     assert set(records) <= (await _admitted(world, records) if records else set())
-    assert page["total"] == len(page["rows"])
 
 
 @pytest.mark.parametrize("app_id", ["la", "lk"])
@@ -327,6 +387,7 @@ async def test_a_collection_lists_its_own_records_and_not_a_stale_filed_one(worl
 
 
 _C2_GROUPS = {"c2-mb", "c2-dg", "c2-kg"}
+_C2_OWN = {(USER_U, "c2-M"): "c2-m1", (USER_U, "c2-D"): "c2-y5"}
 _C2_SURFACES = {**_SURFACES, "failed": {"flatten": True, "filters": {"indexing_status": ["FAILED"]}}}
 
 
@@ -343,6 +404,8 @@ async def test_a_record_reached_by_another_connectors_group_or_app_is_not_listed
 
     assert set(records) <= (await _admitted(world, records, viewer) if records else set())
     assert page["total"] == len(page["rows"])
+    if surface == "flatten" and (viewer, app_id) in _C2_OWN:
+        assert _C2_OWN[viewer, app_id] in {row["id"] for row in page["rows"]}
 
 
 async def test_the_own_record_of_an_app_is_still_listed_beside_the_foreign_ones(world: _World) -> None:
@@ -366,3 +429,32 @@ async def test_a_record_without_a_connector_id_is_listed_as_the_access_check_say
     listed = "xc-nc" in {row["id"] for row in (await _page(world, APP_A, flatten=True))["rows"]}
 
     assert listed == admitted
+
+
+async def test_the_apps_direct_children_are_those_the_access_check_admits(world: _World) -> None:
+    page = await _page(world, "dc", flatten=False)
+    ids = {row["id"] for row in page["rows"]}
+
+    assert "dc-own" in ids
+    assert ids <= await _admitted(world, sorted(ids))
+    assert page["total"] == len(page["rows"])
+
+
+async def test_an_arrow_means_the_expansion_lists_something(world: _World) -> None:
+    page = await _page(world, "dc", flatten=False)
+    arrows = {row["id"]: row["hasChildren"] for row in page["rows"]}
+    expansions = {
+        i: await _page(world, "dc", flatten=False, start_id=i, start_type="record") for i in arrows if arrows[i]
+    }
+
+    assert arrows["dc-folder"] is False
+    assert all(p["rows"] for p in expansions.values())
+
+
+async def test_a_collection_arrow_is_on_only_for_a_record_of_its_own(world: _World) -> None:
+    roots = await world.graph.get_knowledge_hub_root_nodes_v2(
+        user_key=world.sid(USER_U), org_id=world.org, user_app_ids=[world.sid("rk"), world.sid("rk2")], limit=10,
+    )
+    arrows = {world.plain(row["id"]): row["hasChildren"] for row in roots["partitions"][0]["rows"]}
+
+    assert arrows == {"rk": False, "rk2": True}

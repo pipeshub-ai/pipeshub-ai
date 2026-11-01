@@ -406,7 +406,7 @@ def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container
         f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
         f"{extra} AND ({rule}) }} "
         f"OR ({filed} AND EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        "WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id })) END)"
+        f"WHERE NOT coalesce(kh_bc.isDeleted, false) AND kh_bc.orgId = $org_id AND {_cypher_read_by_app('kh_bc')} }})) END)"
     )
 
 
@@ -19300,7 +19300,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             children_and_role = f"""WITH app, u,
              CASE WHEN app.type = 'KB' THEN EXISTS {{ (kh_r:Record)-[:BELONGS_TO]->(app)
                        WHERE NOT coalesce(kh_r.isDeleted, false) AND NOT coalesce(kh_r.isPlaceholder, false)
-                         AND kh_r.orgId = $org_id }}
+                         AND kh_r.orgId = $org_id AND {_cypher_read_by_app("kh_r")} }}
                   WHEN app.type IS NULL THEN false
                   ELSE true
              END AS has_children
@@ -20759,7 +20759,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # empty $kh_placed adds nothing): one statement, one plan, for the view.
             scope = f"""
         {"OPTIONAL MATCH" if wants_chain_tops else "MATCH"} (app)-[kh_ra:NODE_RELATION]->(ca)
-        WHERE kh_ra.relationshipType {hierarchy} AND {direct_hop}
+        WHERE kh_ra.relationshipType {hierarchy} AND {direct_hop} AND {_cypher_read_by_app("ca")}
         WITH app, collect(DISTINCT ca) AS allNodes
             """
             if wants_chain_tops:

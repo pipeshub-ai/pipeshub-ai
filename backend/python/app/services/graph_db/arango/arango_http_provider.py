@@ -629,7 +629,7 @@ def _aql_kh_has_children(v: str) -> str:
         f" AND kh_ch.orgId == @org_id AND (@kh_placeholders OR kh_ch.isPlaceholder != true)"
         f" FILTER {rule} LIMIT 1 RETURN 1) > 0"
         f" OR (kh_opens AND LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
-        f" FILTER kh_ch.isDeleted != true AND kh_ch.orgId == @org_id LIMIT 1 RETURN 1) > 0)))"
+        f" FILTER kh_ch.isDeleted != true AND kh_ch.orgId == @org_id AND {_aql_read_by_app('kh_ch')} LIMIT 1 RETURN 1) > 0)))"
     )
 
 
@@ -18952,6 +18952,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         // A trashed, placeholder or other-org record is not a child the viewer can open.
                         LET kh_r = DOCUMENT(edge._from)
                         FILTER kh_r.isDeleted != true AND kh_r.isPlaceholder != true AND kh_r.orgId == @org_id
+                            AND kh_r.connectorId == app._key
                         LIMIT 1 RETURN 1
                 ) > 0) : true
                 {permission_role}
