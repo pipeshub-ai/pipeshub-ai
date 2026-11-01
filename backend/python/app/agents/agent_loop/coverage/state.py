@@ -23,6 +23,7 @@ class CoverageState:
     plan: FacetPlan | None = None
     planned: bool = False
     gate_rounds: int = 0
+    opening_rewrite_sent: bool = False
     searched: list[str] = field(default_factory=list)
     counters: dict[str, int] = field(default_factory=dict)
 

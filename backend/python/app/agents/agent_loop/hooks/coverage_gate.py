@@ -7,6 +7,11 @@ on the wrong record) it runs targeted searches in code and hands the results
 back with a request to revise, at most `gate_round_budget()` times. A draft the
 deterministic checks find covered passes without any model call.
 
+With `ANSWER_OPENING_CHECK`, a cited draft that opens with what the assistant
+cannot do or with the status of what was asked for is also sent back, once, to
+lead with its substance: in the same request as any gaps, or alone without a
+search when there are none.
+
 Registered before `completion_gate` and `ask_in_text_recovery`, so it acts
 after them and stays out of the way when one of them sends the reply back.
 """
@@ -28,6 +33,7 @@ from app.agents.agent_loop.coverage.gate import (
     assess_draft,
 )
 from app.agents.agent_loop.coverage.llm import coverage_llm
+from app.agents.agent_loop.coverage.opening import limitation_lead
 from app.agents.agent_loop.coverage.prefetch import COVERAGE_USAGE_SOURCE
 from app.agents.agent_loop.coverage.state import CoverageState, coverage_state
 from app.agents.agent_loop.coverage.targeted import (
@@ -39,6 +45,7 @@ from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 from app.utils.citations import cited_blocks, cited_record_ids
 from app.utils.coverage_switches import (
+    answer_opening_check_enabled,
     coverage_adjudication_enabled,
     gate_round_budget,
     gate_search_budget,
@@ -52,7 +59,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
 
-__all__ = ["RESTATE_THE_ANSWER", "coverage_gate", "render_gap_request"]
+__all__ = ["RESTATE_THE_ANSWER", "coverage_gate", "render_gap_request", "render_opening_request"]
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +84,26 @@ _GAP_LINES = {
 }
 
 
-def render_gap_request(decision: GateDecision, results_text: str) -> str:
+_OPENING_ASK = (
+    "lead with the substance the records give, and put that status or limitation in one neutral "
+    "sentence after it"
+)
+
+
+def render_opening_request(lead: str) -> str:
+    return (
+        f'Before you finalise: your draft opens with "{lead}" ahead of what the records give. '
+        f"Please rewrite only the opening: {_OPENING_ASK}. No new search is needed; keep every fact, "
+        f"value and citation as it is. {RESTATE_THE_ANSWER}"
+    )
+
+
+def render_gap_request(decision: GateDecision, results_text: str, opening_lead: str | None = None) -> str:
     lines = ["Before you finalise, check your draft against these points:"]
     lines += [f"- {_GAP_LINES[gap.kind].format(label=gap.label)}" for gap in decision.gaps]
     lines += [f"- {ruling}" for ruling in decision.rulings]
+    if opening_lead:
+        lines.append(f'- Your draft opens with "{opening_lead}": {_OPENING_ASK}.')
     if decision.gaps:
         lines.append(
             "Searches for them were run for you; the results follow. Use a record here to fill a point "
@@ -176,14 +199,41 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
             [(gap.kind, gap.query) for gap in decision.gaps], _short(decision.rulings),
             int((time.monotonic() - started) * 1000),
         )
+        lead = _opening_lead(context, text)
         if decision.covered:
+            if lead is not None:
+                state.gate_rounds += 1
+                _ask_for_opening(context, ctx, lead)
             return
         try:
-            await _send_back(context, ctx, draft, decision)
+            await _send_back(context, ctx, draft, decision, lead)
         except Exception:
             logger.warning("coverage_loop: gate send-back failed", exc_info=True)
 
     return _middleware
+
+
+def _opening_lead(context: "AgentContext", text: str) -> str | None:
+    if not answer_opening_check_enabled() or coverage_state(context.tool_state).opening_rewrite_sent:
+        return None
+    return limitation_lead(context.query, text)
+
+
+def _note_opening(context: "AgentContext", lead: str) -> None:
+    state = coverage_state(context.tool_state)
+    state.opening_rewrite_sent = True
+    state.bump("gate_opening_rewrites")
+    logger.info(
+        "coverage_loop: answer opening conversation=%s lead=%r",
+        context.conversation_id, lead[:_LOGGED_RULING_CHARS],
+    )
+
+
+def _ask_for_opening(context: "AgentContext", ctx: "ModelResponseContext", lead: str) -> None:
+    """A rewrite-only round: no search, and the draft's citations stand."""
+    _note_opening(context, lead)
+    coverage_state(context.tool_state).bump("gate_rounds_sent")
+    ctx.recovery_message = UserMessage(content=render_opening_request(lead), injected=True)
 
 
 def _record_label(context: "AgentContext") -> "Callable[[str | None, str], str]":
@@ -234,7 +284,11 @@ async def _adjudicate_found(context: "AgentContext", draft: _Draft, evidence: Ev
 
 
 async def _send_back(
-    context: "AgentContext", ctx: "ModelResponseContext", draft: _Draft, decision: GateDecision,
+    context: "AgentContext",
+    ctx: "ModelResponseContext",
+    draft: _Draft,
+    decision: GateDecision,
+    opening_lead: str | None = None,
 ) -> None:
     state = coverage_state(context.tool_state)
     queries = [gap.query for gap in decision.gaps]
@@ -266,12 +320,16 @@ async def _send_back(
         # Nothing the draft has not seen: another turn would restate it, or
         # trade a cited value for a lookalike's.
         state.bump("gate_nothing_new" if found else "gate_nothing_found")
+        if opening_lead is not None:
+            _ask_for_opening(context, ctx, opening_lead)
         return
     state.bump("gate_rounds_sent")
     state.bump("gate_rulings", len(rulings))
     request = GateDecision(gaps=decision.gaps if new else [], rulings=rulings, checked=decision.checked)
+    if opening_lead is not None:
+        _note_opening(context, opening_lead)
     ctx.recovery_message = UserMessage(
-        content=render_gap_request(request, render_results(found) if new else ""), injected=True,
+        content=render_gap_request(request, render_results(found) if new else "", opening_lead), injected=True,
     )
 
 

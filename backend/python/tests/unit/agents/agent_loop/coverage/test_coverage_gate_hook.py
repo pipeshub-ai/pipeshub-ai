@@ -27,6 +27,7 @@ from app.agents.agent_loop.hooks.coverage_gate import (
     RESTATE_THE_ANSWER,
     coverage_gate,
     render_gap_request,
+    render_opening_request,
 )
 from tests.unit.agents.adapter.support.hook_helpers import run_post_model
 
@@ -174,6 +175,83 @@ class TestCoverageGate:
         monkeypatch.setattr(gate_module, "assess_draft", assess)
         await run_post_model(coverage_gate(_context()), AssistantMessage(content="May 4."), scope=_scope())
         assess.assert_not_called()
+
+
+_ARCHIVE_QUESTION = "For the Orchard Lane clinic pilot, can you put together a signed audit archive for June?"
+_LEAD = "I can't export or sign the archive myself, and the ticket doesn't show it was sent."
+_STATUS_LED_DRAFT = (
+    f"The Orchard Lane ticket (HD-5521) describes this archive. {_LEAD}\n\n"
+    "- A notarised index for the June window [1](ref1).\n"
+)
+
+
+def _archive_context() -> AgentContext:
+    context = AgentContext(org_id="o", user_id="u", user_email="u@example.com", query=_ARCHIVE_QUESTION)
+    coverage_state(context.tool_state).plan = _PLAN
+    return context
+
+
+class TestAnswerOpening:
+    @pytest.fixture
+    def opening_on(self, stubs, monkeypatch) -> AsyncMock:
+        monkeypatch.setenv("ANSWER_OPENING_CHECK", "true")
+        return stubs
+
+    async def test_a_limitation_led_draft_is_sent_back_once_to_rewrite(self, opening_on, monkeypatch, caplog) -> None:
+        monkeypatch.setenv("COVERAGE_LOOP_GATE_ROUNDS", "3")
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+        context = _archive_context()
+        gate = coverage_gate(context)
+
+        with caplog.at_level(logging.INFO, logger=gate_module.__name__):
+            first = await run_post_model(gate, AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+        second = await run_post_model(gate, AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+
+        assert isinstance(first.recovery_message, UserMessage) and first.recovery_message.injected
+        assert first.recovery_message.content == render_opening_request(_LEAD)
+        assert "No new search is needed" in first.recovery_message.content
+        assert first.recovery_message.content.endswith(RESTATE_THE_ANSWER)
+        opening_on.assert_not_called()
+        assert second.recovery_message is None
+        state = coverage_state(context.tool_state)
+        assert state.gate_rounds == 1 and state.opening_rewrite_sent
+        assert state.counters["gate_opening_rewrites"] == 1 and state.counters["gate_rounds_sent"] == 1
+        assert any("coverage_loop: answer opening" in record.getMessage() for record in caplog.records)
+
+    async def test_switched_off_the_draft_stands(self, stubs, monkeypatch) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+        context = _archive_context()
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+        assert ctx.recovery_message is None
+        state = coverage_state(context.tool_state)
+        assert state.gate_rounds == 0 and "gate_opening_rewrites" not in state.counters
+
+    async def test_a_substance_led_draft_is_final(self, opening_on, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "assess_draft", AsyncMock(return_value=GateDecision()))
+        draft = f"The archive is a notarised index [1](ref1). {_LEAD}"
+        ctx = await run_post_model(coverage_gate(_archive_context()), AssistantMessage(content=draft), scope=_scope())
+        assert ctx.recovery_message is None
+
+    async def test_it_rides_along_with_a_gap_request(self, opening_on, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("facet", "EU region", "q")))
+        context = _archive_context()
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+        content = ctx.recovery_message.content
+        assert "- Your draft may lack: EU region" in content
+        assert f'- Your draft opens with "{_LEAD}": lead with the substance the records give' in content
+        state = coverage_state(context.tool_state)
+        assert state.gate_rounds == 1 and state.counters["gate_opening_rewrites"] == 1
+
+    async def test_searches_with_nothing_new_still_send_the_rewrite(self, opening_on, monkeypatch) -> None:
+        opening_on.side_effect = None
+        opening_on.return_value = [TargetedResult("q", None)]
+        monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("facet", "EU region", "q")))
+        context = _archive_context()
+        ctx = await run_post_model(coverage_gate(context), AssistantMessage(content=_STATUS_LED_DRAFT), scope=_scope())
+        assert ctx.recovery_message.content == render_opening_request(_LEAD)
+        state = coverage_state(context.tool_state)
+        assert state.gate_rounds == 1 and state.counters["gate_nothing_found"] == 1
 
 
 def test_the_request_fills_gaps_and_keeps_cited_values_unless_revised() -> None:
