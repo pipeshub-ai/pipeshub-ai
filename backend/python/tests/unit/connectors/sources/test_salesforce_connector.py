@@ -122,18 +122,18 @@ def _sf_response(
     )
 
 
-def _streaming_http_client(*outcomes: Any) -> MagicMock:
+def _streaming_http_client(*outcomes: MagicMock | BaseException) -> MagicMock:
     """An httpx-like client whose ``stream("GET", ...)`` context managers yield the given
     responses in order (an exception instance is raised instead). Each response is a
     MagicMock with ``status_code``, ``headers`` and ``content``; its body is streamed
     back through ``aiter_bytes`` the way the capped download reads it."""
 
-    def _open(*_args: Any, **_kwargs: Any) -> MagicMock:
+    def _open(*_args: object, **_kwargs: object) -> MagicMock:
         outcome = remaining.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
 
-        async def _aiter_bytes(_chunk_size: int = 0):
+        async def _aiter_bytes(_chunk_size: int = 0) -> AsyncIterator[bytes]:
             body = getattr(outcome, "content", b"")
             if isinstance(body, bytes) and body:
                 yield body
@@ -322,11 +322,11 @@ class TestAccumulateLatestFeedEpoch:
         )
         assert latest == {}
 
-    def test_an_edited_post_counts_from_its_edit(self):
+    def test_an_edited_post_counts_from_its_edit(self) -> None:
         """A reply or an edit moves the post's SystemModstamp, not its CreatedDate (seen live)."""
         parent = "006000000000001AAA"
         edited = "2024-06-01T12:00:00.000+0000"
-        latest: Dict[str, int] = {}
+        latest: dict[str, int] = {}
         _accumulate_latest_feed_epoch(
             [SalesforceFeedRecord.model_validate(
                 {"ParentId": parent, "CreatedDate": "2024-01-01T00:00:00.000+0000", "SystemModstamp": edited})],
@@ -2005,7 +2005,7 @@ class TestStreamRecord:
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_run_sync_fails_when_no_data_source(self):
+    async def test_run_sync_fails_when_no_data_source(self) -> None:
         connector = _make_connector()
         connector._reinitialize_token_if_needed = AsyncMock()
         connector.data_source = None
@@ -3030,12 +3030,12 @@ class TestGetUpdatedDeal:
         ("_get_updated_deal", "opportunities_last_ts_ms", "base_opportunities_soql"),
         ("_get_updated_case", "cases_last_ts_ms", "base_cases_soql"),
     ])
-    async def test_incremental_finds_edited_posts_and_replies(self, method, ts_arg, base_arg):
+    async def test_incremental_finds_edited_posts_and_replies(self, method, ts_arg, base_arg) -> None:
         """Edits and replies only move SystemModstamp, so the feed queries filter on it."""
         connector = _make_connector()
         queries: list[str] = []
 
-        async def pages(api_version: str, q: str):
+        async def pages(api_version: str, q: str) -> AsyncIterator[list[dict]]:
             queries.append(q)
             if False:
                 yield []
@@ -3672,7 +3672,7 @@ class TestSyncPermissionsEdges:
 class TestSyncPermissionsEdgesSkipsUnlinkedRecords:
 
     @pytest.mark.asyncio
-    async def test_a_record_a_full_sync_unlinked_gets_no_readers(self):
+    async def test_a_record_a_full_sync_unlinked_gets_no_readers(self) -> None:
         """Outside the sync filters, a full sync unlinks the record; the next incremental sync
         must not grant it again."""
         connector = _make_connector()
@@ -4133,7 +4133,7 @@ class TestReindexRecords:
         )
 
     @pytest.mark.asyncio
-    async def test_a_rebuilt_file_keeps_its_record_and_group(self):
+    async def test_a_rebuilt_file_keeps_its_record_and_group(self) -> None:
         """The one-row rebuild of a file knows neither its record nor its group: without them
         a reindexed file lost every reader."""
         connector = _make_connector()
@@ -4157,7 +4157,7 @@ class TestReindexRecords:
             "001000000000001AAA", "006000000000001AAA", RecordType.DEAL)
 
     @pytest.mark.asyncio
-    async def test_a_rebuilt_task_keeps_its_group_and_its_own_parent(self):
+    async def test_a_rebuilt_task_keeps_its_group_and_its_own_parent(self) -> None:
         """Rebuilt without its deal's account, a task fell into the unassigned group."""
         connector = _make_connector()
         connector._reinitialize_token_if_needed = AsyncMock()
@@ -5496,7 +5496,7 @@ class TestFetchAndBuildDiscussionBlockGroups:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [400, 404])
-    async def test_returns_empty_when_record_has_no_feed(self, status: int):
+    async def test_returns_empty_when_record_has_no_feed(self, status: int) -> None:
         """An object without a Chatter feed answers 400 or 404: the record has no discussion."""
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -5508,7 +5508,7 @@ class TestFetchAndBuildDiscussionBlockGroups:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_raises_when_feed_fetch_fails(self):
+    async def test_raises_when_feed_fetch_fails(self) -> None:
         """Any other failure of the first page (no status, a 5xx) fails the read."""
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -6598,7 +6598,7 @@ class TestDiscussionBlockGroupsRemaining:
         }
 
     @pytest.mark.asyncio
-    async def test_pagination_raises_on_failed_follow_up_request(self):
+    async def test_pagination_raises_on_failed_follow_up_request(self) -> None:
         """A feed page that did not come back is not the end of the feed: the read fails
         rather than storing the discussion as complete without it."""
         connector = _make_connector()
@@ -9509,7 +9509,7 @@ class TestRecordAccessBatching:
     UserRecordAccess query."""
 
     @pytest.mark.asyncio
-    async def test_composite_calls_carry_at_most_five_queries(self):
+    async def test_composite_calls_carry_at_most_five_queries(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.data_source.composite = AsyncMock(return_value=_sf_response(data={"compositeResponse": []}))
@@ -9526,12 +9526,12 @@ class TestRecordAccessBatching:
         assert len(unknown) == 1201
 
     @pytest.mark.asyncio
-    async def test_a_failed_query_marks_only_its_ids_unknown(self):
+    async def test_a_failed_query_marks_only_its_ids_unknown(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         ids = [f"006{i:012d}AAA" for i in range(400)]
 
-        async def composite(version, data):
+        async def composite(version, data) -> SalesforceResponse:
             parts = data["compositeRequest"]
             return _sf_response(data={"compositeResponse": [
                 {"referenceId": parts[0]["referenceId"], "httpStatusCode": 200,
@@ -9547,7 +9547,7 @@ class TestRecordAccessBatching:
 
 class TestCappedDownload:
     @pytest.mark.asyncio
-    async def test_a_body_without_content_length_stops_at_the_cap(self):
+    async def test_a_body_without_content_length_stops_at_the_cap(self) -> None:
         connector = _make_connector()
         body = b"x" * (connector._MAX_INLINE_IMAGE_BYTES + 1)
         response = MagicMock(status_code=200, headers={}, content=body)

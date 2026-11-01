@@ -15,19 +15,25 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from logging import Logger
-from typing import Any, AsyncIterator, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.sync_point.sync_point import SyncPoint
 from app.connectors.sources.salesforce.sync_window import checkpoint_for
 from app.models.entities import RecordGroupType, RecordType
-from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
 from app.utils.time_conversion import parse_timestamp
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Iterable
+    from logging import Logger
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    from app.connectors.core.base.sync_point.sync_point import SyncPoint
+    from app.sources.external.salesforce.salesforce_data_source import (
+        SalesforceDataSource,
+    )
 
 # Objects whose records PipesHub keeps, with the record type each becomes.
 TRACKED: dict[str, Optional[RecordType]] = {
@@ -54,8 +60,10 @@ class DeletedWindow:
     window_lost: bool           # the delete log no longer reaches back to our start
 
 
-# (SOQL, through queryAll) -> pages of rows; a page that fails raises.
-IdPages = Callable[[str, bool], AsyncIterator[list[dict[str, Any]]]]
+class IdPages(Protocol):
+    """(SOQL, through queryAll) -> pages of rows; a page that fails raises."""
+
+    def __call__(self, soql: str, *, query_all: bool) -> AsyncIterator[list[dict[str, Any]]]: ...
 
 _SF_ID = re.compile(r"^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$")
 _IN_BATCH = 300
@@ -194,7 +202,8 @@ class SalesforceDeletions:
 
     async def _reconcile(self, sobject: str) -> None:
         live: set[str] = set()
-        async for page in self._list_ids(*_live_ids_query(sobject)):
+        soql, query_all = _live_ids_query(sobject)
+        async for page in self._list_ids(soql, query_all=query_all):
             live.update(str(r["Id"])[:15] for r in page if r.get("Id"))
         record_type = TRACKED[sobject]
         gone: list[str] = []
@@ -225,7 +234,7 @@ class SalesforceDeletions:
         for start in range(0, len(valid), _IN_BATCH):
             batch = valid[start:start + _IN_BATCH]
             soql, query_all = _live_ids_query(sobject, "Id IN ('" + "','".join(batch) + "')")
-            async for page in self._list_ids(soql, query_all):
+            async for page in self._list_ids(soql, query_all=query_all):
                 live.update(str(r["Id"])[:15] for r in page if r.get("Id"))
         return [i for i in valid if i[:15] not in live]
 
@@ -275,7 +284,7 @@ def _iso(epoch_ms: int) -> str:
     return datetime.fromtimestamp(int(epoch_ms) // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
-def _ms(value: Any) -> Optional[int]:
+def _ms(value: object) -> Optional[int]:
     if not isinstance(value, str) or not value:
         return None
     try:

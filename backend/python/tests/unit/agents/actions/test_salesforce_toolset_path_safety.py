@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from app.agents.actions.salesforce.salesforce import Salesforce
-from app.sources.client.salesforce.salesforce import SalesforceConfig, SalesforceClient
+from app.sources.client.salesforce.salesforce import SalesforceClient, SalesforceConfig
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
 
 VALID_ID = "001000000000001AAA"
@@ -37,7 +37,7 @@ def _toolset(sent: list) -> Salesforce:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sobject", ["../composite", "../../../apexrest/X", "Account/External_Id__c", "Account?x=1"])
-async def test_create_record_rejects_an_object_name_that_is_a_path(sobject):
+async def test_create_record_rejects_an_object_name_that_is_a_path(sobject) -> None:
     sent: list = []
     ok, body = await _toolset(sent).create_record(sobject=sobject, data={"Name": "x"})
     assert ok is False
@@ -47,7 +47,7 @@ async def test_create_record_rejects_an_object_name_that_is_a_path(sobject):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("record_id", ["x/../../../composite/sobjects", "001000000000001AAA/..", "{x}", "001"])
-async def test_update_record_rejects_a_record_id_that_is_a_path(record_id):
+async def test_update_record_rejects_a_record_id_that_is_a_path(record_id) -> None:
     sent: list = []
     ok, _ = await _toolset(sent).update_record(sobject="Account", record_id=record_id, data={"Name": "x"})
     assert ok is False
@@ -55,7 +55,7 @@ async def test_update_record_rejects_a_record_id_that_is_a_path(record_id):
 
 
 @pytest.mark.asyncio
-async def test_valid_names_and_ids_still_reach_their_endpoint():
+async def test_valid_names_and_ids_still_reach_their_endpoint() -> None:
     sent: list = []
     sf = _toolset(sent)
     ok, _ = await sf.update_record(sobject="Account", record_id=VALID_ID, data={"Name": "x"})
@@ -71,28 +71,28 @@ async def test_valid_names_and_ids_still_reach_their_endpoint():
     lambda sf: sf.get_record_chatter(record_id="../../limits"),
     lambda sf: sf.post_chatter_comment(feed_element_id="../../limits", text="hi"),
 ])
-async def test_every_path_argument_is_checked(call):
+async def test_every_path_argument_is_checked(call) -> None:
     sent: list = []
     ok, _ = await call(_toolset(sent))
     assert ok is False
     assert sent == []
 
 
-def test_search_limit_is_clamped():
+def test_search_limit_is_clamped() -> None:
     assert Salesforce._search_limit(500) == 50
     assert Salesforce._search_limit("10 OFFSET 2000") == 10
     assert Salesforce._search_limit(0) == 1
     assert Salesforce._search_limit(7) == 7
 
 
-def test_like_wildcards_match_literally():
+def test_like_wildcards_match_literally() -> None:
     assert Salesforce._like_value("100%") == "100\\%"
     assert Salesforce._like_value("a_c") == "a\\_c"
     assert Salesforce._like_value("O'Brien\\") == "O\\'Brien\\\\"
 
 
 @pytest.mark.asyncio
-async def test_upload_whose_document_id_cannot_be_read_is_not_reported_as_attached():
+async def test_upload_whose_document_id_cannot_be_read_is_not_reported_as_attached() -> None:
     """The file was created but could not be linked to the record the user asked for."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

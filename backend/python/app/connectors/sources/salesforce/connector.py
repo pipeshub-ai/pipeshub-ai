@@ -118,6 +118,7 @@ from app.sources.client.http.address_guard import AddressNotAllowedError, guarde
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
     SalesforceConfig,
+    SalesforceResponse,
 )
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.utils.html_utils import embed_html_images_as_base64
@@ -886,8 +887,8 @@ class SalesforceConnector(BaseConnector):
         # On a full sync, the ids of the deals, cases, products and tasks this run wrote:
         # their tasks and files are kept, and nothing hangs under a parent the run left
         # out (the stored graph still links it until the run ends). None on incremental runs.
-        self._full_run_parents: Optional[Set[str]] = None
-        self._moved_parents: Set[str] = set()
+        self._full_run_parents: Optional[set[str]] = None
+        self._moved_parents: set[str] = set()
         # What this sync could not do (reported when it ends), and whether it read everything
         # it was asked to (a full sync that skipped a record must not unlink it).
         self._problems = SyncProblems()
@@ -948,7 +949,7 @@ class SalesforceConnector(BaseConnector):
                 self._raise_failed_request(response, "SOQL pagination", next_url)
             yield list(response.data.get("records") or [])
 
-    def _raise_failed_request(self, response: Any, what: str, where: str) -> None:
+    def _raise_failed_request(self, response: SalesforceResponse, what: str, where: str) -> None:
         """Log what Salesforce answered, then raise the stream error for its status from the
         answer itself, so a sync can still tell the API limit from a missing permission.
 
@@ -978,7 +979,7 @@ class SalesforceConnector(BaseConnector):
         except Exception as mapped:
             raise mapped from answer
 
-    async def _complete_child_list(self, child: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    async def _complete_child_list(self, child: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
         """A nested (parent-to-child) query result with every row: Salesforce returns a long
         child list with ``done: false`` and its own ``nextRecordsUrl``. A page that fails raises."""
         if not isinstance(child, dict) or child.get("done", True) or not child.get("nextRecordsUrl"):
@@ -1049,24 +1050,24 @@ class SalesforceConnector(BaseConnector):
             if kept:
                 yield kept
 
-    def _in_run_scope(self, parent_ids: Set[str]) -> Set[str]:
+    def _in_run_scope(self, parent_ids: set[str]) -> set[str]:
         """The parents a child may hang under this run (see ``_full_run_parents``)."""
         if self._full_run_parents is None:
             return parent_ids
         return {p for p in parent_ids if p in self._full_run_parents}
 
-    def _note_written(self, records: List[Record]) -> None:
+    def _note_written(self, records: list[Record]) -> None:
         if self._full_run_parents is not None:
             self._full_run_parents.update(r.external_record_id for r in records if r.external_record_id)
 
-    def _note_moves(self, stored_by_ext: Dict[str, Dict[str, Any]], records: List[Record]) -> None:
+    def _note_moves(self, stored_by_ext: dict[str, dict[str, Any]], records: list[Record]) -> None:
         """Remember the records whose group changed: their files are filed under them."""
         for record in records:
             stored = stored_by_ext.get(record.external_record_id)
             if stored and stored.get("externalGroupId") != record.external_record_group_id:
                 self._moved_parents.add(record.external_record_id)
 
-    def _unchanged(self, stored: Optional[Dict[str, Any]], record: Record) -> bool:
+    def _unchanged(self, stored: Optional[dict[str, Any]], record: Record) -> bool:
         """A record re-read inside the checkpoint overlap that Salesforce did not change.
 
         Only on incremental runs: a full sync must write every record it reads, or the
@@ -1375,7 +1376,7 @@ class SalesforceConnector(BaseConnector):
 
         return "".join(html_parts)
 
-    async def _get_next_page(self, next_url: str, pages_seen: Set[str], parent_id: str) -> Any:
+    async def _get_next_page(self, next_url: str, pages_seen: set[str], parent_id: str) -> SalesforceResponse:
         """GET a Connect API ``nextPageUrl``. Its page token is in the query string, which the
         HTTP client drops unless it is passed as params; a URL that comes back a second time
         would page forever, so it fails the read instead."""
@@ -1397,10 +1398,10 @@ class SalesforceConnector(BaseConnector):
             content_type="application/json",
         )
 
-    def _raise_feed_error(self, resp: Any, parent_id: str) -> None:
+    def _raise_feed_error(self, resp: SalesforceResponse, parent_id: str) -> None:
         self._raise_failed_request(resp, "Chatter feed read", parent_id)
 
-    def _raise_unless_no_feed(self, resp: Any, parent_id: str) -> None:
+    def _raise_unless_no_feed(self, resp: SalesforceResponse, parent_id: str) -> None:
         """A record whose object has no feed answers 400 or 404, and an org without Chatter
         answers 403: it has no discussion. Anything else (a 5xx, the API limit, which is also
         a 403, a dropped connection) fails the read."""
@@ -1421,7 +1422,7 @@ class SalesforceConnector(BaseConnector):
             return
         items = list(page.get("items") or [])
         seen = {c.get("id") for c in items if isinstance(c, dict)}
-        pages_seen: Set[str] = set()
+        pages_seen: set[str] = set()
         while next_url:
             more = await self._get_next_page(next_url, pages_seen, parent_id)
             if not more.success or not isinstance(more.data, dict):
@@ -1439,8 +1440,8 @@ class SalesforceConnector(BaseConnector):
     _MAX_INLINE_IMAGE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
     async def _get_capped(
-        self, http_client: httpx.AsyncClient, url: str, headers: Dict[str, str],
-    ) -> Tuple[Optional[bytes], int, httpx.Headers]:
+        self, http_client: httpx.AsyncClient, url: str, headers: dict[str, str],
+    ) -> tuple[Optional[bytes], int, httpx.Headers]:
         """GET ``url``, reading at most _MAX_INLINE_IMAGE_BYTES (body None when larger)."""
         limit = self._MAX_INLINE_IMAGE_BYTES
         async with http_client.stream("GET", url, headers=headers, follow_redirects=True) as response:
@@ -1449,7 +1450,7 @@ class SalesforceConnector(BaseConnector):
             declared = response.headers.get("Content-Length")
             if declared and declared.isdigit() and int(declared) > limit:
                 return None, response.status_code, response.headers
-            chunks: List[bytes] = []
+            chunks: list[bytes] = []
             total = 0
             async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                 total += len(chunk)
@@ -1558,7 +1559,7 @@ class SalesforceConnector(BaseConnector):
         )
 
         next_page_url = resp.data.get("nextPageUrl")
-        pages_seen: Set[str] = set()
+        pages_seen: set[str] = set()
         while next_page_url:
             paged_resp = await self._get_next_page(next_page_url, pages_seen, parent_id)
             if not paged_resp.success or not paged_resp.data:
@@ -2017,7 +2018,7 @@ class SalesforceConnector(BaseConnector):
                 )
     
     # Hosts Salesforce serves an org's files from, besides the org's own instance URL.
-    _SALESFORCE_FILE_HOST_SUFFIXES: Tuple[str, ...] = (
+    _SALESFORCE_FILE_HOST_SUFFIXES: tuple[str, ...] = (
         ".force.com", ".salesforce.com", ".documentforce.com", ".salesforce-sites.com",
     )
 
@@ -2490,8 +2491,8 @@ class SalesforceConnector(BaseConnector):
 
         base_query_url = f"/services/data/v{api_version}/query/"
 
-        sub_requests: List[Dict[str, Any]] = []
-        batch_ids: Dict[str, List[str]] = {}
+        sub_requests: list[dict[str, Any]] = []
+        batch_ids: dict[str, list[str]] = {}
         for i in range(0, len(unique_ids), self.URA_IDS_PER_QUERY):
             safe_ids = _sanitize_soql_ids_batch(
                 unique_ids[i : i + self.URA_IDS_PER_QUERY], self.logger, "access check",
@@ -3304,7 +3305,7 @@ class SalesforceConnector(BaseConnector):
 
     async def _sync_users(
         self, user_records_pages: SalesforceRawPageStream,
-    ) -> Set[str]:
+    ) -> set[str]:
         """Sync users from Salesforce, committing each Salesforce page in its own
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
         pages persisted; the sync point is only advanced if every page completes.
@@ -3313,7 +3314,7 @@ class SalesforceConnector(BaseConnector):
         so they are not linked to the connector (see ``_withdraw_ineligible_users``)."""
         try:
             total = 0
-            inactive: Set[str] = set()
+            inactive: set[str] = set()
             async for page in user_records_pages:
                 if not page:
                     continue
@@ -3330,7 +3331,7 @@ class SalesforceConnector(BaseConnector):
             raise
 
     def _deletions(self, api_version: str) -> SalesforceDeletions:
-        def list_ids(soql: str, query_all: bool) -> SalesforceRawPageStream:
+        def list_ids(soql: str, *, query_all: bool) -> SalesforceRawPageStream:
             return self._soql_query_paginated(api_version=api_version, q=soql, queryAll=query_all)
         return SalesforceDeletions(
             data_source=self.data_source,
@@ -3377,9 +3378,9 @@ class SalesforceConnector(BaseConnector):
         return SalesforceEligibility(rows, self.logger,
                                      on_unreadable=lambda what: self._problems.note(unreadable_list(what)))
 
-    async def _eligible_emails(self, api_version: str, frozen: Optional[Set[str]]) -> Optional[Set[str]]:
+    async def _eligible_emails(self, api_version: str, frozen: Optional[set[str]]) -> Optional[set[str]]:
         """Lower-cased emails of the Salesforce users who can sign in; None when unreadable."""
-        emails: Set[str] = set()
+        emails: set[str] = set()
         try:
             async for page in self._soql_query_paginated(
                 api_version=api_version, q="SELECT Id, Email FROM User WHERE IsActive = true",
@@ -3388,13 +3389,13 @@ class SalesforceConnector(BaseConnector):
                     u["Email"].lower() for u in page
                     if u.get("Email") and u.get("Id") not in (frozen or set())
                 )
-        except Exception as e:  # noqa: BLE001 - unknown, so nobody is withdrawn
+        except Exception as e:  # unknown, so nobody is withdrawn
             self.logger.warning("Could not list the active Salesforce users: %s", e)
             self._problems.note(unreadable_list("active users"))
             return None
         return emails
 
-    async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: Set[str]) -> None:
+    async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and
         frozen ones (both read in full every sync; freezing does not change the User row).
         A user unfrozen since the last sync is linked again. A list that cannot be read
@@ -4733,7 +4734,7 @@ class SalesforceConnector(BaseConnector):
 
             async for page in account_records_pages:
                 orgs_with_edges: List[Tuple[Org, RecordGroup, Dict, Optional[Dict]]] = []
-                record_groups_with_perms: List[Tuple[RecordGroup, Optional[List[Permission]]]] = []
+                record_groups_with_perms: list[tuple[RecordGroup, Optional[list[Permission]]]] = []
 
                 for acc in page:
                     # A long nested Opportunities list comes back in pages of its own.
@@ -6225,7 +6226,7 @@ class SalesforceConnector(BaseConnector):
                 synced_external_ids = self._in_run_scope(synced_external_ids)
                 # A file is filed in its parent's record group, so that it takes its audience
                 # from the parent record (a parent in another group lends it none).
-                parent_group_by_ext: Dict[str, Optional[str]] = {
+                parent_group_by_ext: dict[str, Optional[str]] = {
                     node["externalRecordId"]: node.get("externalGroupId")
                     for node in _synced_nodes
                     if node.get("externalRecordId")
@@ -6530,8 +6531,8 @@ class SalesforceConnector(BaseConnector):
             for n in salesforce_records + salesforce_record_groups
         }
         narrowed_orgs: set[str | None] = set()
-        record_edges: List[Dict] = []
-        rg_edges: List[Dict] = []
+        record_edges: list[dict] = []
+        rg_edges: list[dict] = []
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 kept_edges = await self._stored_edges_of(
@@ -6601,13 +6602,13 @@ class SalesforceConnector(BaseConnector):
     async def _stored_edges_of(
         tx_store: TransactionStore,
         unknown_users: set,
-        email_to_user_id: Dict[str, str],
-        record_ids: Set[str],
-        group_ids: Set[str],
-    ) -> List[Dict]:
+        email_to_user_id: dict[str, str],
+        record_ids: set[str],
+        group_ids: set[str],
+    ) -> list[dict]:
         """The stored permission edges of ``unknown_users`` to this connector's records and
         record groups, rebuilt to be written back after the rewrite."""
-        kept: List[Dict] = []
+        kept: list[dict] = []
         for email in unknown_users:
             user_id = email_to_user_id.get(email)
             if not user_id:
@@ -6648,7 +6649,7 @@ class SalesforceConnector(BaseConnector):
         )
 
     async def _sync_product_readers(
-        self, eligibility: SalesforceEligibility, sf_users: List[Dict[str, str]],
+        self, eligibility: SalesforceEligibility, sf_users: list[dict[str, str]],
     ) -> None:
         """Grant the product group to the users who may read Product2 in Salesforce: an
         exact list that replaces the stored one. When it cannot be read, the stored

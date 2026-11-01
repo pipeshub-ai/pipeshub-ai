@@ -13,15 +13,19 @@ Only a complete listing removes anything: a query that fails raises, and nothing
 from __future__ import annotations
 
 import re
-from logging import Logger
-from typing import Any, AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.models.entities import RecordType
+
+if TYPE_CHECKING:
+    from logging import Logger
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
 
 RowPages = Callable[[str], AsyncIterator[list[dict[str, Any]]]]
 

@@ -10,8 +10,11 @@ A query that fails returns None: the caller keeps what it stored, it does not gu
 
 from __future__ import annotations
 
-from logging import Logger
-from typing import Any, AsyncIterator, Callable, Optional
+from collections.abc import AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from logging import Logger
 
 RowPages = Callable[[str], AsyncIterator[list[dict[str, Any]]]]
 
@@ -51,7 +54,7 @@ class SalesforceEligibility:
         try:
             async for page in self._rows(soql):
                 out.update(str(r[field]) for r in page if r.get(field))
-        except Exception as e:  # noqa: BLE001 - any failure means "unknown"
+        except Exception as e:
             self._logger.warning("Could not read the Salesforce %s: %s", what, e)
             if self._on_unreadable is not None:
                 self._on_unreadable(what)

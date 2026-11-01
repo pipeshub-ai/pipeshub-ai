@@ -10,20 +10,20 @@ Salesforce's status and error code, and ``salesforce_error`` finds it again.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Optional
 
 _MAX_DETAIL = 300
 
 
 class SalesforceRequestFailed(RuntimeError):
-    def __init__(self, status: Optional[int], body: Any) -> None:
+    def __init__(self, status: Optional[int], body: object) -> None:
         self.status = status
         self.error_code, self.detail = _first_error(body)
         parts = (f"HTTP {status}" if status else None, self.error_code, self.detail)
         super().__init__(" ".join(part for part in parts if part) or "no answer")
 
 
-def _first_error(body: Any) -> tuple[Optional[str], str]:
+def _first_error(body: object) -> tuple[Optional[str], str]:
     """REST errors are a list of {"errorCode", "message"}; the OAuth endpoint answers one
     object with "error" and "error_description". Anything else is kept as text."""
     if isinstance(body, bytes):
