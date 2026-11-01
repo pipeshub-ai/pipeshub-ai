@@ -1,0 +1,668 @@
+"""Against real servers: ``get_record_query_candidates`` on Neo4j 5.26 and
+ArangoDB 3.12 returns exactly the seeded records a pushdown selects, in the
+entity candidate order, hydrated with their ticket, deal, people,
+organisations and links (``docs/record-query.md``).
+
+Each case compares a provider's rows, every window concatenated, with a
+Python reference: the seeded rows filtered by the pushdown's own semantics.
+
+Seeded per test: Zendesk and Jira tickets (one with no status, one with no
+created time), Salesforce deals, a Jira file with no type node; members and
+an outside person in several roles, one member linked user -> record as
+Slack writes it; accounts linked FOR_ACCOUNT and MENTIONS; a record link;
+record groups nested three deep; a topic. Never returned: a deleted record, a
+placeholder, another org's record, and another org's member, person and
+account linked to this org's records.
+
+The end-to-end case runs ``run_record_query`` with the real access check: a
+member who reads some records gets totals, sums, groups and rows over those
+only.
+
+  docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
+    up -d --wait neo4j-graph-it arango-graph-it
+  cd backend/python && pytest tests/integration/graph_db/test_record_query_real_backends.py -m integration
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.models.entities import (
+    DealRecord,
+    FileRecord,
+    Person,
+    Record,
+    RecordType,
+    TicketRecord,
+)
+from app.modules.retrieval.entity_permissions import EntityAccessContext
+from app.modules.retrieval.record_fields import PERSON_EDGES, ROLE_EDGES
+from app.modules.retrieval.record_query.engine import run_record_query
+from app.modules.retrieval.record_query.model import RecordQuery
+from app.modules.retrieval.record_query.pushdown import (
+    Pushdown,
+    PushedLinks,
+    PushedPeople,
+)
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
+
+ARANGO_DB = "record_query_it"
+logger = logging.getLogger("record-query-it")
+
+C = CollectionNames
+ZENDESK, JIRA, SALESFORCE = Connectors.ZENDESK, Connectors.JIRA, Connectors.SALESFORCE
+
+
+@dataclass
+class Spec:
+    """One seeded record and what the graph holds for it."""
+
+    kind: str  # ticket | deal | file
+    connector: Connectors
+    group: str | None
+    created: int | None
+    updated: int
+    ticket: dict[str, Any] | None = None
+    deal: dict[str, Any] | None = None
+    readable: bool = True
+    deleted: bool = False
+    placeholder: bool = False
+    other_org: bool = False
+    topic: bool = False
+
+
+# Groups: root > child > grandchild (Zendesk), jira, account (Salesforce).
+GROUP_PARENT = {"root": None, "child": "root", "grandchild": "child", "jira": None, "account": None}
+GROUP_APP = {"root": ZENDESK, "child": ZENDESK, "grandchild": ZENDESK, "jira": JIRA, "account": SALESFORCE}
+
+
+def _ticket(status: str | None, source_status: str | None, priority: str | None,
+            resolved: int | None = None, due: int | None = None) -> dict[str, Any]:
+    return {"status": status, "sourceStatus": source_status, "priority": priority,
+            "resolvedAt": resolved, "dueAt": due}
+
+
+SPECS: dict[str, Spec] = {
+    "t1": Spec("ticket", ZENDESK, "child", 1_000, 50_000, ticket=_ticket("OPEN", "Open", "HIGH", due=90_000),
+               topic=True),
+    "t2": Spec("ticket", ZENDESK, "root", 2_000, 60_000,
+               ticket=_ticket("RESOLVED", "Solved", "LOW", resolved=70_000), readable=False),
+    "t3": Spec("ticket", JIRA, "jira", 3_000, 40_000, ticket=_ticket(None, None, None), topic=True),
+    "t4": Spec("ticket", ZENDESK, "grandchild", 4_000, 80_000, ticket=_ticket("IN_PROGRESS", "Doing", "MEDIUM")),
+    "t5": Spec("ticket", ZENDESK, None, None, 30_000, ticket=_ticket("NEW", "New", "LOW")),
+    "d1": Spec("deal", SALESFORCE, "account", 5_000, 20_000,
+               deal={"amount": 1000.0, "closeDate": "2026-01-15", "isWon": True, "isClosed": True}),
+    "d2": Spec("deal", SALESFORCE, "account", 6_000, 10_000,
+               deal={"amount": 50000.0, "closeDate": None, "isWon": False, "isClosed": False}, readable=False),
+    # Same newest time as d1: the id breaks the tie.
+    "f1": Spec("file", JIRA, "jira", 7_000, 20_000),
+    "deleted": Spec("ticket", ZENDESK, "child", 1_500, 99_000, ticket=_ticket("OPEN", "Open", "HIGH"), deleted=True),
+    "placeholder": Spec("ticket", ZENDESK, "child", 1_600, 98_000, ticket=_ticket("OPEN", "Open", "HIGH"),
+                        placeholder=True),
+    "foreign": Spec("ticket", ZENDESK, "child", 1_700, 97_000, ticket=_ticket("OPEN", "Open", "HIGH"),
+                    other_org=True),
+}
+LIVE = [name for name, s in SPECS.items() if not (s.deleted or s.placeholder or s.other_org)]
+
+# (record, person, edge type); "ann" and "bob" are members, "pete" a Person
+# node, "zed" another org's member and "xena" another org's Person.
+PEOPLE = {"ann": "user", "bob": "user", "pete": "person", "zed": "user", "xena": "person"}
+FOREIGN_PEOPLE = {"zed", "xena"}
+RECORD_PEOPLE = [
+    ("t1", "ann", "ASSIGNED_TO"), ("t1", "pete", "REPORTED_BY"), ("t1", "zed", "ASSIGNED_TO"),
+    ("t2", "ann", "REPORTED_BY"), ("t2", "bob", "ASSIGNED_TO"),
+    ("t3", "bob", "ASSIGNED_TO"), ("t3", "xena", "REPORTED_BY"),
+    ("t4", "ann", "ASSIGNED_TO"), ("t4", "ann", "REPORTED_BY"),
+    ("d1", "ann", "OWNED_BY"), ("d2", "pete", "INVOLVED_IN"),
+    ("deleted", "ann", "ASSIGNED_TO"), ("placeholder", "ann", "ASSIGNED_TO"), ("foreign", "ann", "ASSIGNED_TO"),
+]
+# Written user -> record, as Slack mentions are.
+PEOPLE_TO_RECORD = [("f1", "bob", "MENTIONED_IN")]
+ACCOUNTS = {"acme": True, "globex": True, "foreignco": False}  # whether this org's
+RECORD_ORGS = [
+    ("t1", "acme", "FOR_ACCOUNT"), ("t2", "globex", "MENTIONS"), ("t2", "foreignco", "FOR_ACCOUNT"),
+    ("d1", "acme", "FOR_ACCOUNT"), ("d2", "acme", "MENTIONS"), ("d2", "globex", "FOR_ACCOUNT"),
+    ("deleted", "acme", "FOR_ACCOUNT"),
+]
+RECORD_LINKS = [("t3", "t1", "BLOCKS"), ("f1", "t4", "RELATED")]
+NAMES = {"ann": "Ann", "bob": "Bob", "pete": "Pete", "zed": "Zed", "xena": "Xena",
+         "acme": "Acme", "globex": "Globex", "foreignco": "Foreign Co"}
+
+
+@dataclass
+class Graph:
+    graph: IGraphDBProvider
+    org: str
+    other: str
+    connectors: dict[Connectors, str] = field(default_factory=dict)
+
+    def rid(self, name: str) -> str:
+        return f"{self.org}-{name}"
+
+    def nid(self, name: str) -> str:
+        return f"{self.org}-n-{name}"
+
+    def gid(self, name: str) -> str:
+        return f"{self.org}-g-{name}"
+
+    @property
+    def connector_ids(self) -> list[str]:
+        return sorted(self.connectors.values())
+
+    @property
+    def topic(self) -> str:
+        return f"{self.org}-topic"
+
+
+def _record(g: Graph, name: str, spec: Spec) -> Record:
+    org = g.other if spec.other_org else g.org
+    base: dict[str, Any] = {
+        "id": g.rid(name), "org_id": org, "external_record_id": g.rid(name), "record_name": f"{name} title",
+        "origin": OriginTypes.CONNECTOR, "connector_name": spec.connector, "connector_id": g.connectors[spec.connector],
+        "version": 1, "source_created_at": spec.created, "source_updated_at": spec.updated,
+        "weburl": f"https://example.test/{name}", "is_deleted": spec.deleted, "is_placeholder": spec.placeholder,
+        "indexing_status": ProgressStatus.QUEUED.value if spec.placeholder else ProgressStatus.COMPLETED.value,
+        "record_group_id": g.gid(spec.group) if spec.group else None,
+    }
+    if spec.kind == "ticket":
+        t = spec.ticket or {}
+        return TicketRecord(**base, record_type=RecordType.TICKET, status=t["status"], source_status=t["sourceStatus"],
+                            priority=t["priority"], resolved_at=t["resolvedAt"], due_date=t["dueAt"])
+    if spec.kind == "deal":
+        d = spec.deal or {}
+        return DealRecord(**base, record_type=RecordType.DEAL, amount=d["amount"], close_date=d["closeDate"],
+                          is_won=d["isWon"], is_closed=d["isClosed"])
+    return FileRecord(**base, record_type=RecordType.FILE, is_file=True)
+
+
+async def _seed(g: Graph) -> None:
+    graph = g.graph
+    await graph.batch_upsert_nodes([
+        {"id": key, "orgId": g.org, "name": connector.value, "type": connector.value, "appGroup": connector.value,
+         "scope": "team", "isActive": True, "createdAtTimestamp": 1, "updatedAtTimestamp": 1}
+        for connector, key in g.connectors.items()
+    ], C.APPS.value)
+    await graph.batch_upsert_nodes([
+        {"id": g.nid(n), "userId": g.nid(n), "orgId": g.other if n in FOREIGN_PEOPLE else g.org,
+         "email": f"{n}@{g.org}.test", "fullName": NAMES[n], "isActive": True}
+        for n, kind in PEOPLE.items() if kind == "user"
+    ], C.USERS.value)
+    await graph.batch_upsert_nodes([
+        Person(id=g.nid(n), org_id=g.other if n in FOREIGN_PEOPLE else g.org, email=f"{n}@outside.test",
+               full_name=NAMES[n]).to_arango_person()
+        for n, kind in PEOPLE.items() if kind == "person"
+    ], C.PEOPLE.value)
+    await graph.batch_upsert_nodes([
+        {"id": g.nid(n), "name": NAMES[n], "accountType": "enterprise", "isActive": True, "isExternal": True,
+         "parentOrgId": g.org if ours else g.other}
+        for n, ours in ACCOUNTS.items()
+    ], C.ORGS.value)
+    await graph.batch_upsert_nodes([
+        {"id": g.gid(name), "orgId": g.org, "groupName": name, "groupType": "PROJECT",
+         "connectorName": GROUP_APP[name].value, "connectorId": g.connectors[GROUP_APP[name]],
+         "externalGroupId": g.gid(name), "createdAtTimestamp": 1}
+        for name in GROUP_PARENT
+    ], C.RECORD_GROUPS.value)
+    await graph.create_taxonomy_node_if_absent(C.TOPICS.value, {
+        "id": g.topic, "name": "Billing", "normalizedName": "billing", "orgId": g.org,
+    })
+    await graph.batch_upsert_records([_record(g, name, spec) for name, spec in SPECS.items()])
+
+    def edge(from_id: str, from_col: str, to_id: str, to_col: str, **attrs: Any) -> dict[str, Any]:  # noqa: ANN401
+        return {"from_id": from_id, "from_collection": from_col, "to_id": to_id, "to_collection": to_col,
+                "createdAtTimestamp": 1, **attrs}
+
+    # The hierarchy the access check walks: app > group > nested group > record.
+    hierarchy: list[tuple[str, str, str, str]] = []  # (child, child collection, parent, parent collection)
+    for name, parent in GROUP_PARENT.items():
+        if parent is None:
+            hierarchy.append((g.gid(name), C.RECORD_GROUPS.value, g.connectors[GROUP_APP[name]], C.APPS.value))
+        else:
+            hierarchy.append((g.gid(name), C.RECORD_GROUPS.value, g.gid(parent), C.RECORD_GROUPS.value))
+    for name, spec in SPECS.items():
+        if spec.other_org:
+            continue
+        if spec.group:
+            hierarchy.append((g.rid(name), C.RECORDS.value, g.gid(spec.group), C.RECORD_GROUPS.value))
+        else:
+            hierarchy.append((g.rid(name), C.RECORDS.value, g.connectors[spec.connector], C.APPS.value))
+    await graph.batch_create_edges([
+        edge(parent, pcol, child, ccol, relationshipType="PARENT_CHILD") for child, ccol, parent, pcol in hierarchy
+    ], C.NODE_RELATIONS.value)
+    await graph.batch_create_edges([
+        edge(child, ccol, parent, pcol) for child, ccol, parent, pcol in hierarchy
+    ], C.BELONGS_TO.value)
+    await graph.batch_create_edges([
+        edge(child, ccol, parent, pcol) for child, ccol, parent, pcol in hierarchy if ccol == C.RECORDS.value
+    ], C.INHERIT_PERMISSIONS.value)
+
+    ann = g.nid("ann")
+    await graph.batch_create_edges([
+        edge(ann, C.USERS.value, key, C.APPS.value, syncState="COMPLETED", lastSyncUpdate=1)
+        for key in g.connectors.values()
+    ], C.USER_APP_RELATION.value)
+    await graph.batch_create_edges([
+        edge(ann, C.USERS.value, g.rid(name), C.RECORDS.value, type="USER", role="READER")
+        for name in LIVE if SPECS[name].readable
+    ], C.PERMISSION.value)
+
+    collection = {"user": C.USERS.value, "person": C.PEOPLE.value}
+    await graph.batch_create_entity_relations([
+        {"_from": f"{C.RECORDS.value}/{g.rid(r)}", "_to": f"{collection[PEOPLE[p]]}/{g.nid(p)}",
+         "edgeType": t, "createdAtTimestamp": 1}
+        for r, p, t in RECORD_PEOPLE
+    ] + [
+        {"_from": f"{C.RECORDS.value}/{g.rid(r)}", "_to": f"{C.ORGS.value}/{g.nid(o)}",
+         "edgeType": t, "createdAtTimestamp": 1}
+        for r, o, t in RECORD_ORGS
+    ])
+    await graph.batch_create_entity_relations([
+        {"_from": f"{collection[PEOPLE[p]]}/{g.nid(p)}", "_to": f"{C.RECORDS.value}/{g.rid(r)}",
+         "edgeType": t, "createdAtTimestamp": 1}
+        for r, p, t in PEOPLE_TO_RECORD
+    ])
+    await graph.batch_create_edges([
+        edge(g.rid(a), C.RECORDS.value, g.rid(b), C.RECORDS.value, relationshipType=rel)
+        for a, b, rel in RECORD_LINKS
+    ], C.RECORD_LINKS.value)
+    await graph.batch_create_edges([
+        edge(g.rid(name), C.RECORDS.value, g.topic, C.TOPICS.value)
+        for name, spec in SPECS.items() if spec.topic
+    ], C.BELONGS_TO_TOPIC.value)
+
+
+async def _cleanup(graph: IGraphDBProvider, org: str) -> None:
+    if isinstance(graph, Neo4jProvider):
+        await graph.client.execute_query(
+            "MATCH (n) WHERE n.id STARTS WITH $org OR n.orgId STARTS WITH $org DETACH DELETE n",
+            parameters={"org": org},
+        )
+        return
+    aql = graph.http_client.execute_aql
+    for edges in (
+        C.ENTITY_RELATIONS.value, C.IS_OF_TYPE.value, C.RECORD_LINKS.value, C.NODE_RELATIONS.value,
+        C.BELONGS_TO.value, C.INHERIT_PERMISSIONS.value, C.PERMISSION.value, C.USER_APP_RELATION.value,
+        C.BELONGS_TO_TOPIC.value,
+    ):
+        await aql(f"FOR e IN {edges} FILTER CONTAINS(e._from, @org) OR CONTAINS(e._to, @org) REMOVE e IN {edges}",
+                  {"org": org})
+    for docs in (
+        C.RECORDS.value, C.TICKETS.value, C.DEALS.value, C.USERS.value, C.PEOPLE.value, C.ORGS.value,
+        C.RECORD_GROUPS.value, C.APPS.value, C.TOPICS.value,
+    ):
+        await aql(f"FOR d IN {docs} FILTER STARTS_WITH(d._key, @org) REMOVE d IN {docs}", {"org": org})
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def seeded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Graph]:
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            graph = await (
+                connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, ARANGO_DB)
+            )
+        except Exception as exc:
+            backend_unavailable(request.param, exc)
+        disconnect = getattr(graph, "disconnect", None)
+        if disconnect is not None:
+            stack.push_async_callback(disconnect)
+        org = f"org-rq-{uuid.uuid4().hex[:10]}"
+        g = Graph(graph, org, f"{org}-x", {c: f"{org}-app-{c.value.lower()}" for c in (ZENDESK, JIRA, SALESFORCE)})
+        stack.push_async_callback(_cleanup, graph, org)
+        await _seed(g)
+        yield g
+
+
+# ---------------------------------------------------------------- reference
+
+
+def _expected_row(g: Graph, name: str) -> dict[str, Any]:
+    spec = SPECS[name]
+    people = [
+        {"role": t, "id": g.nid(p), "name": NAMES[p]}
+        for r, p, t in RECORD_PEOPLE + PEOPLE_TO_RECORD if r == name and p not in FOREIGN_PEOPLE
+    ]
+    orgs = [{"id": g.nid(o), "name": NAMES[o]} for r, o, _ in RECORD_ORGS if r == name and ACCOUNTS[o]]
+    links = [{"id": g.rid(b if a == name else a), "relation": rel}
+             for a, b, rel in RECORD_LINKS if name in (a, b)]
+    return {
+        "_key": g.rid(name), "recordName": f"{name} title",
+        "recordType": {"ticket": "TICKET", "deal": "DEAL", "file": "FILE"}[spec.kind],
+        "connectorName": spec.connector.value, "connectorId": g.connectors[spec.connector],
+        "recordGroupId": g.gid(spec.group) if spec.group else None, "webUrl": f"https://example.test/{name}",
+        "createdAt": spec.created, "updatedAt": spec.updated,
+        "ticket": dict(spec.ticket) if spec.ticket else None, "deal": dict(spec.deal) if spec.deal else None,
+        "people": people, "organizations": orgs, "links": links,
+    }
+
+
+def _descendants(groups: list[str]) -> set[str]:
+    out = set(groups)
+    changed = True
+    while changed:
+        more = {child for child, parent in GROUP_PARENT.items() if parent in out}
+        changed = not more <= out
+        out |= more
+    return out
+
+
+def _entity_holds(g: Graph, name: str, entity: dict[str, str]) -> bool:
+    kind, eid = entity["type"], entity["id"]
+    if kind == "record":
+        return eid == g.rid(name)
+    if kind == "record_group":
+        return SPECS[name].group is not None and eid == g.gid(SPECS[name].group)
+    if kind == "topic":
+        return SPECS[name].topic and eid == g.topic
+    if kind == "person":
+        return any(r == name and PEOPLE[p] == "user" and p not in FOREIGN_PEOPLE and g.nid(p) == eid
+                   for r, p, _ in RECORD_PEOPLE + PEOPLE_TO_RECORD)
+    raise AssertionError(kind)
+
+
+def _holds(g: Graph, name: str, pushed: Pushdown, within: list[dict[str, list[str]]] | None) -> bool:
+    row, spec = _expected_row(g, name), SPECS[name]
+    if "sources" in pushed and row["connectorName"] not in pushed["sources"]:
+        return False
+    if "record_types" in pushed and row["recordType"] not in pushed["record_types"]:
+        return False
+    if "containers" in pushed:
+        groups = _descendants([n for n in GROUP_PARENT if g.gid(n) in pushed["containers"]])
+        if spec.group is None or g.gid(spec.group) not in {g.gid(x) for x in groups} | set(pushed["containers"]):
+            return False
+    for key, value in (("created", row["createdAt"]), ("updated", row["updatedAt"])):
+        start, end = pushed.get(key, [None, None])
+        if (start is not None or end is not None) and value is None:
+            return False
+        if (start is not None and value < start) or (end is not None and value > end):
+            return False
+    for person in pushed.get("people", []):
+        if not any(p["id"] in person["ids"] and p["role"] in person["edges"] for p in row["people"]):
+            return False
+    for org_ids in pushed.get("organizations", []):
+        if not any(o["id"] in org_ids for o in row["organizations"]):
+            return False
+    for link in pushed.get("links", []):
+        if not any(lk["id"] in link["ids"] and link["relation"] in (None, lk["relation"]) for lk in row["links"]):
+            return False
+    if not all(_entity_holds(g, name, e) for e in pushed.get("entities", [])):
+        return False
+    # An empty limit is a limit that admits nothing, as ``within_param`` reads it.
+    for scope in ([] if within is None else within or [{}]):
+        if not (row["connectorId"] in scope.get("apps", []) or row["_key"] in scope.get("records", [])
+                or (spec.group is not None and g.gid(spec.group) in scope.get("groups", []))):
+            return False
+    return True
+
+
+def _reference(g: Graph, pushed: Pushdown, within: list[dict[str, list[str]]] | None = None) -> list[dict[str, Any]]:
+    rows = [_expected_row(g, n) for n in LIVE if _holds(g, n, pushed, within)]
+    return sorted(rows, key=lambda r: (-r["updatedAt"], r["_key"]))
+
+
+def _normal(row: dict[str, Any]) -> dict[str, Any]:
+    """A row with its edge lists in a fixed order: the contract orders records, not edges."""
+    def key(item: dict[str, Any]) -> tuple[str, ...]:
+        return tuple(f"{k}={item[k]}" for k in sorted(item))
+
+    return {**row, **{k: sorted(row[k], key=key) for k in ("people", "organizations", "links")}}
+
+
+async def _all_windows(g: Graph, pushed: Pushdown, *, window: int = 2, scan_cap: int = 1_000,
+                       within: list[dict[str, list[str]]] | None = None) -> tuple[list[dict[str, Any]], bool]:
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        found = await g.graph.get_record_query_candidates(
+            g.org, connector_ids=g.connector_ids, pushdown=pushed, offset=offset, window=window,
+            scan_cap=scan_cap, timeout_seconds=30, within=within,
+        )
+        assert found.window_size == len(found.rows)
+        rows.extend(found.rows)
+        offset += found.window_size
+        if found.window_size < window:
+            return rows, found.capped
+
+
+async def _assert_matches(g: Graph, pushed: Pushdown, within: list[dict[str, list[str]]] | None = None) -> None:
+    expected = _reference(g, pushed, within)
+    rows, capped = await _all_windows(g, pushed, within=within)
+    assert capped is False
+    assert [r["_key"] for r in rows] == [r["_key"] for r in expected]
+    assert [_normal(r) for r in rows] == [_normal(r) for r in expected]
+
+
+# --------------------------------------------------------------------- cases
+
+
+def _cases(g: Graph) -> dict[str, Pushdown]:
+    ann, bob, pete, zed = (g.nid(n) for n in ("ann", "bob", "pete", "zed"))
+    return {
+        "nothing": Pushdown(),
+        "sources": Pushdown(sources=["ZENDESK", "SALESFORCE"]),
+        "record_types": Pushdown(record_types=["DEAL", "FILE"]),
+        "containers_root_nested": Pushdown(containers=[g.gid("root")]),
+        "containers_child": Pushdown(containers=[g.gid("child"), g.gid("jira")]),
+        "created_window": Pushdown(created=[2_000, 5_000]),
+        "created_open_end": Pushdown(created=[None, 3_000]),
+        "updated_open_start": Pushdown(updated=[45_000, None]),
+        "people_assignee": Pushdown(people=[PushedPeople(edges=list(ROLE_EDGES["assignee"]), ids=[ann])]),
+        "people_any_role_person_node": Pushdown(people=[PushedPeople(edges=list(PERSON_EDGES), ids=[pete])]),
+        "people_mentioned_user_to_record": Pushdown(
+            people=[PushedPeople(edges=list(ROLE_EDGES["participant"]), ids=[bob])]),
+        "people_two_conditions": Pushdown(people=[
+            PushedPeople(edges=list(ROLE_EDGES["assignee"]), ids=[ann, bob]),
+            PushedPeople(edges=list(ROLE_EDGES["reporter"]), ids=[ann]),
+        ]),
+        "people_foreign_member": Pushdown(people=[PushedPeople(edges=list(PERSON_EDGES), ids=[zed])]),
+        "organizations": Pushdown(organizations=[[g.nid("acme")]]),
+        "organizations_any_and_all": Pushdown(organizations=[[g.nid("acme"), g.nid("globex")], [g.nid("globex")]]),
+        "organizations_foreign": Pushdown(organizations=[[g.nid("foreignco")]]),
+        "links_either_direction": Pushdown(links=[PushedLinks(ids=[g.rid("t1")], relation=None)]),
+        "links_incoming": Pushdown(links=[PushedLinks(ids=[g.rid("t3")], relation=None)]),
+        "links_relation": Pushdown(links=[PushedLinks(ids=[g.rid("t4"), g.rid("t1")], relation="RELATED")]),
+        "entity_topic": Pushdown(entities=[{"type": "topic", "id": g.topic}]),
+        "entity_record": Pushdown(entities=[{"type": "record", "id": g.rid("t4")}]),
+        "entity_record_group": Pushdown(entities=[{"type": "record_group", "id": g.gid("child")}]),
+        "entity_person": Pushdown(entities=[{"type": "person", "id": bob}]),
+        "combined": Pushdown(
+            sources=["ZENDESK", "JIRA"], record_types=["TICKET"], containers=[g.gid("root"), g.gid("jira")],
+            created=[1_000, None], updated=[None, 85_000],
+            people=[PushedPeople(edges=list(PERSON_EDGES), ids=[ann, bob])],
+        ),
+        "combined_edges": Pushdown(
+            organizations=[[g.nid("acme")]], people=[PushedPeople(edges=list(ROLE_EDGES["owner"]), ids=[ann])],
+            record_types=["DEAL"],
+        ),
+        "combined_entities": Pushdown(
+            entities=[{"type": "topic", "id": g.topic}, {"type": "person", "id": ann}],
+            links=[PushedLinks(ids=[g.rid("t3")], relation="BLOCKS")],
+        ),
+        "nothing_matches": Pushdown(sources=["ZENDESK"], record_types=["DEAL"]),
+        "empty_choice": Pushdown(sources=[]),
+    }
+
+
+CASE_NAMES = list(_cases(Graph(None, "o", "x")).keys())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("case", CASE_NAMES)
+async def test_each_pushdown_equals_the_reference(seeded: Graph, case: str) -> None:
+    pushed = _cases(seeded)[case]
+    expected = _reference(seeded, pushed)
+    if case not in ("nothing_matches", "empty_choice", "people_foreign_member", "organizations_foreign"):
+        assert expected, f"case {case} selects nothing; it would not test the key"
+    await _assert_matches(seeded, pushed)
+
+
+async def test_the_reference_cases_select_what_they_say(seeded: Graph) -> None:
+    """Guards the reference itself on a few hand-checked answers."""
+    g = seeded
+    cases = _cases(g)
+
+    def keys(case: str) -> list[str]:
+        return [r["_key"].removeprefix(f"{g.org}-") for r in _reference(g, cases[case])]
+
+    assert keys("nothing") == ["t4", "t2", "t1", "t3", "t5", "d1", "f1", "d2"]
+    assert keys("containers_root_nested") == ["t4", "t2", "t1"]
+    assert keys("people_assignee") == ["t4", "t1"]
+    assert keys("people_any_role_person_node") == ["t1", "d2"]
+    assert keys("links_either_direction") == ["t3"]
+    assert keys("created_open_end") == ["t2", "t1", "t3"]
+
+
+async def test_hydration_shapes_and_missing_values(seeded: Graph) -> None:
+    g = seeded
+    rows, _ = await _all_windows(g, Pushdown(), window=100)
+    by_key = {r["_key"].removeprefix(f"{g.org}-"): r for r in rows}
+    assert set(by_key) == set(LIVE)
+    for row in rows:
+        assert set(row) == {"_key", "recordName", "recordType", "connectorName", "connectorId", "recordGroupId",
+                            "webUrl", "createdAt", "updatedAt", "ticket", "deal", "people", "organizations", "links"}
+    assert by_key["t3"]["ticket"] == {"status": None, "sourceStatus": None, "priority": None,
+                                      "resolvedAt": None, "dueAt": None}
+    assert by_key["t2"]["ticket"]["resolvedAt"] == 70_000
+    assert by_key["t1"]["ticket"]["dueAt"] == 90_000
+    assert by_key["t5"]["createdAt"] is None and by_key["t5"]["recordGroupId"] is None
+    assert by_key["f1"]["ticket"] is None and by_key["f1"]["deal"] is None
+    assert by_key["d1"]["deal"] == {"amount": 1000.0, "closeDate": "2026-01-15", "isWon": True, "isClosed": True}
+    assert by_key["d2"]["deal"]["closeDate"] is None and by_key["d2"]["deal"]["isWon"] is False
+    assert by_key["d1"]["ticket"] is None and by_key["t1"]["deal"] is None
+    # Another org's member and Person are never hydrated; one member in two roles is two entries.
+    assert sorted((p["role"], p["name"]) for p in by_key["t1"]["people"]) == [("ASSIGNED_TO", "Ann"),
+                                                                              ("REPORTED_BY", "Pete")]
+    assert sorted(p["role"] for p in by_key["t4"]["people"]) == ["ASSIGNED_TO", "REPORTED_BY"]
+    assert by_key["t3"]["people"] == [{"role": "ASSIGNED_TO", "id": g.nid("bob"), "name": "Bob"}]
+    assert by_key["f1"]["people"] == [{"role": "MENTIONED_IN", "id": g.nid("bob"), "name": "Bob"}]
+    assert by_key["t2"]["organizations"] == [{"id": g.nid("globex"), "name": "Globex"}]
+    assert by_key["t1"]["links"] == [{"id": g.rid("t3"), "relation": "BLOCKS"}]
+    assert by_key["t5"]["people"] == [] and by_key["t5"]["organizations"] == [] and by_key["t5"]["links"] == []
+
+
+async def test_windows_page_to_the_same_rows_as_one_window(seeded: Graph) -> None:
+    for pushed in (Pushdown(), Pushdown(sources=["ZENDESK"]), Pushdown(people=[
+        PushedPeople(edges=list(PERSON_EDGES), ids=[seeded.nid("ann"), seeded.nid("bob")])])):
+        one, _ = await _all_windows(seeded, pushed, window=100)
+        for size in (1, 2, 3):
+            paged, capped = await _all_windows(seeded, pushed, window=size)
+            assert capped is False
+            assert [r["_key"] for r in paged] == [r["_key"] for r in one]
+        again, _ = await _all_windows(seeded, pushed, window=100)
+        assert again == one
+
+
+async def test_an_offset_past_the_end_is_an_empty_window(seeded: Graph) -> None:
+    found = await seeded.graph.get_record_query_candidates(
+        seeded.org, connector_ids=seeded.connector_ids, pushdown=Pushdown(), offset=50, window=10,
+    )
+    assert (found.rows, found.window_size, found.capped) == ([], 0, False)
+
+
+async def test_the_scan_cap_bounds_the_candidates_and_says_so(seeded: Graph) -> None:
+    g = seeded
+    total = len(LIVE)
+    rows, capped = await _all_windows(g, Pushdown(), window=2, scan_cap=3)
+    assert capped is True
+    assert len(rows) == 3
+    assert len({r["_key"] for r in rows}) == 3
+    stamps = [(-r["updatedAt"], r["_key"]) for r in rows]
+    assert stamps == sorted(stamps)
+    _, capped = await _all_windows(g, Pushdown(), window=100, scan_cap=total + 1)
+    assert capped is False
+    # A seeded scan over edges counts records, not edges: ann is on t4 twice.
+    people = Pushdown(people=[PushedPeople(edges=list(PERSON_EDGES), ids=[g.nid("ann")])])
+    expected = _reference(g, people)
+    rows, capped = await _all_windows(g, people, window=100, scan_cap=len(expected) + 1)
+    assert capped is False
+    assert [r["_key"] for r in rows] == [r["_key"] for r in expected]
+
+
+async def test_within_narrows_as_the_access_check_does(seeded: Graph) -> None:
+    g = seeded
+    for within in (
+        [{"apps": [g.connectors[ZENDESK]], "groups": [], "records": []}],
+        [{"apps": [], "groups": [g.gid("jira")], "records": [g.rid("t4")]}],
+        [{"apps": [g.connectors[ZENDESK], g.connectors[JIRA]], "groups": [], "records": []},
+         {"apps": [], "groups": [g.gid("child"), g.gid("jira")], "records": []}],
+        [],
+    ):
+        await _assert_matches(g, Pushdown(), within=within)
+        await _assert_matches(g, Pushdown(record_types=["TICKET"]), within=within)
+
+
+async def test_empty_scope_reads_nothing(seeded: Graph) -> None:
+    g = seeded
+    assert (await g.graph.get_record_query_candidates("", connector_ids=g.connector_ids, pushdown=Pushdown())).rows == []
+    assert (await g.graph.get_record_query_candidates(g.org, connector_ids=[], pushdown=Pushdown())).rows == []
+    only_jira = await g.graph.get_record_query_candidates(
+        g.org, connector_ids=[g.connectors[JIRA]], pushdown=Pushdown(), window=100,
+    )
+    assert sorted(r["_key"] for r in only_jira.rows) == [g.rid("f1"), g.rid("t3")]
+    unknown = await g.graph.get_record_query_candidates(
+        g.org, connector_ids=g.connector_ids, pushdown=Pushdown(entities=[{"type": "nonsense", "id": "x"}]),
+    )
+    assert unknown.rows == []
+
+
+# ---------------------------------------------------------------- end to end
+
+
+def _context(g: Graph) -> EntityAccessContext:
+    return EntityAccessContext(
+        org_id=g.org, user_key=g.nid("ann"), app_level_app_ids=frozenset(),
+        record_level_app_ids=frozenset(g.connectors.values()), record_group_ids=frozenset(),
+        app_names={key: c.value for c, key in g.connectors.items()},
+    )
+
+
+async def test_a_member_counts_sums_and_groups_only_what_they_can_read(seeded: Graph) -> None:
+    g = seeded
+    readable = {g.rid(n) for n in LIVE if SPECS[n].readable}
+    admitted = await g.graph.check_access(g.nid("ann"), g.org, node_ids=sorted(g.rid(n) for n in LIVE))
+    assert set(admitted.node_ids) == readable
+
+    tickets = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"field": "record_type", "in": ["ticket"]}],
+        "group_by": {"person_role": "assignee"}, "limit": 50,
+    }), window=2)
+    assert tickets.total == 4  # t1, t3, t4, t5; t2 is not readable
+    assert tickets.approximate is False
+    assert {r["record_id"] for r in tickets.rows} == {g.rid(n) for n in ("t1", "t3", "t4", "t5")}
+    # Bob is assignee of t2 (unreadable) and t3; Ann of t1 and t4.
+    assert {(grp.label, grp.count) for grp in tickets.groups} == {("Ann", 2), ("Bob", 1)}
+
+    deals = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"field": "record_type", "in": ["deal"]}, {"organization": {"ids": [g.nid("acme")]}}],
+        "aggregate": {"op": "sum", "field": "amount"},
+    }))
+    assert (deals.total, deals.value) == (1, 1000.0)
+    assert [r["record_id"] for r in deals.rows] == [g.rid("d1")]
+
+    linked = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"person": {"role": "reporter", "ids": [g.nid("ann")]}}],
+    }))
+    assert [r["record_id"] for r in linked.rows] == [g.rid("t4")]
+    assert linked.total == 1
