@@ -474,6 +474,13 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
             f' AND (HAS(@granted, {c}._key) ? true : {_aql_inherits(c, p, tag)})')
 
 
+def _aql_read_by_app(v: str) -> str:
+    """Whether ``v`` is read by this App's rules (``@app_id``). A record of another connector that a group
+    edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's rules,
+    so every listing arm ends in this test, once."""
+    return f'(NOT IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {v}) OR {v}.connectorId == @app_id)'
+
+
 def _aql_in_scope(c: str, p: str) -> str:
     """A child inside the declared scope (``@kh_scope``)."""
     return (f"LENGTH(@kh_scope) == 0 ? false : ({c}.isDeleted != true AND {p}.hideChildren != true"
@@ -487,9 +494,9 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str) -> str:
     open App) reaches ``p``, OPEN nodes only below a seed, and the declared scope either way. Written once:
     the expansion and a row's arrow both read it, so an arrow means the expansion lists something.
     ``kh_opens``, ``@granted`` and ``@kh_scope`` must be in scope."""
-    return (f"(({from_app}) OR kh_opens) ? ({_aql_granted_hop(c, p, tag + 'h', navigation=True)} ? true"
+    return (f"({_aql_read_by_app(c)} AND ((({from_app}) OR kh_opens) ? ({_aql_granted_hop(c, p, tag + 'h', navigation=True)} ? true"
             f" : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')})"
-            f" ? true : ({_aql_in_scope(c, p)})))")
+            f" ? true : ({_aql_in_scope(c, p)})))))")
 
 
 # Arango's write-write conflict (errorNum 1200), as the HTTP client reports it.
@@ -19588,7 +19595,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             row_ctx.update(kh_scope=dict.fromkeys(declared_scope, True), kh_from_app=bool(starts[0]["fromApp"]))
             walked = await self._kh_v3_walk(
                 [starts[0]["handle"]], "step_browse",
-                {"kh_opens": bind["kh_opens"], **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
+                {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
                 max_depth if flatten else 1, transaction,
             )
             visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
@@ -20038,6 +20045,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
                             AND kh_n.isDeleted != true AND (@kh_placeholders OR kh_n.isPlaceholder != true)
+                            AND {_aql_read_by_app("kh_n")}
                     LET node = {{
                         id: kh_n._key,
                         name: NOT_NULL(kh_n.name, kh_n.recordName, kh_n.groupName),

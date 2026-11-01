@@ -382,6 +382,13 @@ def _cypher_kh_date(v: str, source: str, ingest: str) -> str:
 _CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB')"
 
 
+def _cypher_read_by_app(v: str) -> str:
+    """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record of another connector
+    that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its own
+    connector's rules, so every listing arm ends in this test, once."""
+    return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
+
+
 def _cypher_kh_has_children(v: str, rule: str, filed: str, extra: str, container: str) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
@@ -20186,7 +20193,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arrow both read it, so an arrow means the expansion lists something."""
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop(c, p, state=state, grant_once=grant_once, opens=opens)
-        return f"""(({from_app} OR {opens}) AND ({hop}))
+        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}))
               OR (NOT {from_app} AND NOT {opens}
                   AND NOT {deleted(c, state=state)}
                   AND NOT {hides(p, state=state)}
@@ -20197,7 +20204,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND ({c}.id IN $declaredScope
                        OR ({c}:Record AND EXISTS {{
                            ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
-                       }})))"""
+                       }}))))"""
 
     @staticmethod
     def _kh_v3_hidden_above(v: str, tag: str, *, from_depth: int = 1) -> str:
@@ -20706,7 +20713,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND declaredScope + belowDeclared + seeds + belowSeeds + collection AS kh_x
             RETURN collect(DISTINCT kh_x) AS extra
         }}
-        WITH app, regionA + [kh_x IN extra WHERE NOT kh_x IN regionA] AS allNodes
+        WITH app, [kh_x IN regionA + [kh_x IN extra WHERE NOT kh_x IN regionA]
+                   WHERE {_cypher_read_by_app("kh_x")}] AS allNodes
             """
             if max_depth < 50:
                 # Depth is the number of hierarchy hops from the App (App -> group
@@ -21366,13 +21374,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         CALL (app, appOpensEverything, declaredScope) {{
             UNWIND $kh_candidates AS kh_cid
             MATCH (kh_n:Record|RecordGroup {{id: kh_cid}})
-            WHERE (appOpensEverything AND kh_n:Record AND NOT {deleted("kh_n", state=state)}
+            WHERE {_cypher_read_by_app("kh_n")}
+              AND ((appOpensEverything AND kh_n:Record AND NOT {deleted("kh_n", state=state)}
                    AND EXISTS {{ (kh_n)-[:BELONGS_TO]->(app) }})
                OR {from_app("kh_n", "a")}
                OR kh_n IN declaredScope
                OR {below_declared("kh_n", "b")}
                OR {seed("kh_n", "c")}
-               OR {below_seed("kh_n", "e")}
+               OR {below_seed("kh_n", "e")})
             RETURN collect(DISTINCT kh_n) AS allNodes
         }}
         WITH app, allNodes
