@@ -11,7 +11,7 @@ import { useChatStore } from '@/chat/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { revalidateSwrNamespace, SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSectionHeader } from './chat-section-header';
@@ -126,8 +126,6 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
                     if (isMobile) useMobileSidebarStore.getState().close();
                   }}
                   onDeleted={(deletedId) => {
-                    // An edition's row may delete without AgentsApi.deleteAgent, which invalidates too.
-                    revalidateSwrNamespace(SWR_NS.agentLists);
                     if (onChatRoute && currentAgentId === deletedId) {
                       router.replace('/chat/');
                     }

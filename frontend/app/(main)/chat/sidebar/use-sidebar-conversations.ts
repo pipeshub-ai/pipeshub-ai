@@ -53,7 +53,7 @@ export function useSidebarConversations(): void {
       ]
     : null;
 
-  const { data, error, isLoading } = useSWR(key, fetchSidebarConversations, {
+  const { data, error, isLoading, isValidating } = useSWR(key, fetchSidebarConversations, {
     ...SWR_POLICY.list30s,
     onSuccess: setSidebarLists,
   });
@@ -69,12 +69,19 @@ export function useSidebarConversations(): void {
   }, [flagsLoaded, isLoading, setIsConversationsLoading]);
 
   useEffect(() => {
-    if (!error) {
+    if (error) console.error('Failed to fetch conversations:', error);
+  }, [error]);
+
+  // "Failed to load" replaces the whole section, so it is shown only when there
+  // is nothing to show instead: a failed background refresh keeps the list, and
+  // an old error stays hidden while a new request runs.
+  const failed = Boolean(error) && !data && !isValidating;
+  useEffect(() => {
+    if (!failed) {
       setConversationsError(null);
       return;
     }
     if (!useServicesHealthStore.getState().apiServerReachable) return;
-    console.error('Failed to fetch conversations:', error);
     setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
-  }, [error, setConversationsError]);
+  }, [failed, error, setConversationsError]);
 }

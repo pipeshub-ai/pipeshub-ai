@@ -47,6 +47,24 @@ describe('clearSessionCache', () => {
     expect(result.current).toBe('org B rows');
   });
 
+  it('resets the stores before any refetch starts, so the refetch belongs to the new session', async () => {
+    const order: string[] = [];
+    const fetcher = vi.fn(async () => {
+      order.push('fetch');
+      return 'rows';
+    });
+    renderHook(() => useSWR(['test/list'], fetcher).data);
+    await settle();
+    order.length = 0;
+    const stop = onSessionEnd(() => order.push('reset'));
+
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+
+    expect(order).toEqual(['reset', 'fetch']);
+    stop();
+  });
+
   it('discards a response that was still in flight', async () => {
     let answer!: (value: string) => void;
     const onSuccess = vi.fn();

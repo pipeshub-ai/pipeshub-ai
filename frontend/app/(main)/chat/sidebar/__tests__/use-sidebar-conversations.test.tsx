@@ -281,7 +281,7 @@ describe('useSidebarConversations', () => {
     expect(fetchConversations).toHaveBeenCalledTimes(4);
   });
 
-  it('keeps the previous list when a background refresh fails', async () => {
+  it('keeps showing the list, not "Failed to load", when a background refresh fails', async () => {
     const first = await mount();
     first.unmount();
     await settle(31_000);
@@ -291,7 +291,29 @@ describe('useSidebarConversations', () => {
 
     expect(fetchConversations).toHaveBeenCalledTimes(4);
     expect(ownedTitles()).toEqual(['A']);
+    expect(useChatStore.getState().conversationsError).toBeNull();
+    expect(useChatStore.getState().isConversationsLoading).toBe(false);
+  });
+
+  it('shows the skeleton, not an earlier failure, while the next request runs', async () => {
+    fetchConversations.mockRejectedValue(new Error('500'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const first = await mount();
     expect(useChatStore.getState().conversationsError).toBeTruthy();
+    first.unmount();
+
+    const owned = deferred<ReturnType<typeof page>>();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>
+      opts.source === 'owned' ? owned.promise : Promise.resolve(page()),
+    );
+    await mount();
+
+    expect(useChatStore.getState().conversationsError).toBeNull();
+    expect(useChatStore.getState().isConversationsLoading).toBe(true);
+
+    await act(async () => owned.resolve(page(chat('a', 'A'))));
+    await settle();
+    expect(ownedTitles()).toEqual(['A']);
     expect(useChatStore.getState().isConversationsLoading).toBe(false);
   });
 

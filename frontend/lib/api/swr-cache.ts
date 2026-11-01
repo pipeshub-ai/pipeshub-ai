@@ -12,7 +12,7 @@ export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];
 /**
  * Freshness windows for cached reads. A response is reused for the window after
  * it arrives, then refetched in the background while the old data stays shown.
- * A failure is not retried on a timer: the next mount (or focus) asks again.
+ * A failure is not retried on a timer: the next mount (or, for list30s, focus) asks again.
  */
 export const SWR_POLICY = {
   /** Lists other people change often (conversations): also refetched on tab focus. */

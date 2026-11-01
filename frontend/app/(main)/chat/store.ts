@@ -222,6 +222,17 @@ export interface ChatPreviewFile {
   isSwitchingVersion?: boolean;
 }
 
+interface ConversationsPage {
+  conversations: Conversation[];
+  pagination: ConversationsListResponse['pagination'];
+}
+
+export interface SidebarConversationLists {
+  owned: ConversationsPage;
+  shared: ConversationsPage;
+  excludeProjectChats: boolean;
+}
+
 /**
  * Temporary sidebar entry created when a new chat stream begins.
  *
@@ -240,17 +251,6 @@ export interface ChatPreviewFile {
  * TODO: Handle Shared Chats — if the backend returns isShared=true on
  *       the complete event, we may need to move it to sharedConversations.
  */
-interface ConversationsPage {
-  conversations: Conversation[];
-  pagination: ConversationsListResponse['pagination'];
-}
-
-export interface SidebarConversationLists {
-  owned: ConversationsPage;
-  shared: ConversationsPage;
-  excludeProjectChats: boolean;
-}
-
 export interface PendingConversation {
   /** The slotId that owns this pending entry — used for sidebar click-to-switch */
   slotId: string;

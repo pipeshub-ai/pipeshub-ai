@@ -57,6 +57,12 @@ function fakeServer(...replies: Array<FakeReply | Error>) {
   return sent;
 }
 
+/** An unsigned JWT for `userId` in org `o1`. */
+function tokenFor(userId: string, secondsFromNow = 3600): string {
+  const claims = { exp: Math.floor(Date.now() / 1000) + secondsFromNow, userId, orgId: 'o1' };
+  return `header.${btoa(JSON.stringify(claims)).replace(/=+$/, '')}.signature`;
+}
+
 const bearer = (config: InternalAxiosRequestConfig) => AxiosHeaders.from(config.headers).get('Authorization');
 const errorToasts = () => useToastStore.getState().toasts.filter((t) => t.variant === 'error');
 const fetchMock = vi.fn<typeof fetch>();
@@ -356,6 +362,21 @@ describe('the proactive refresh timer', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
       expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('drops what this tab cached when another tab signs in as someone else', async () => {
+      const { onSessionEnd } = await import('../session-cache');
+      const reset = vi.fn();
+      const stop = onSessionEnd(reset);
+      useAuthStore.setState({ accessToken: tokenFor('user-a') });
+
+      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+      expect(reset).not.toHaveBeenCalled();
+
+      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+      stop();
     });
 
     it('signs out here when another tab signs out', () => {

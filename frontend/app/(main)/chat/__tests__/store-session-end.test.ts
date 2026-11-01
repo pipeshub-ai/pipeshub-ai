@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { useChatStore } from '@/chat/store';
 import type { Conversation } from '@/chat/types';
@@ -12,6 +12,8 @@ const PAGINATION = { page: 1, limit: 10, totalCount: 1, totalPages: 1, hasNextPa
 
 describe('chat store at the end of a session', () => {
   beforeEach(() => useChatStore.getState().reset());
+  // The toggles live in localStorage, which outlives each test.
+  afterEach(() => useChatStore.getState().setAgentCapabilities({ internalSearch: true, webSearch: true }));
 
   it("stops the last user's running answer, so it cannot land in the next user's Recents", () => {
     const store = useChatStore.getState();
@@ -34,7 +36,6 @@ describe('chat store at the end of a session', () => {
     clearSessionCache();
 
     expect(useChatStore.getState().settings.agentCapabilities.webSearch).toBe(false);
-    useChatStore.getState().setAgentCapabilities({ webSearch: true });
   });
 
   it('empties Recents and forgets which filter they were fetched with', () => {

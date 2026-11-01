@@ -721,8 +721,9 @@ export const AgentsApi = {
   /** POST /api/v1/agents/create */
   async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
     const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
-    if (!data?.agent) throw new Error('Create agent failed');
+    // The request succeeded, so the agent may exist even if the body lacks it.
     revalidateSwrNamespace(SWR_NS.agentLists);
+    if (!data?.agent) throw new Error('Create agent failed');
     return data.agent;
   },
 

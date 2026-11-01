@@ -38,6 +38,14 @@ describe('agent writes refresh the cached agent lists', () => {
     expect(revalidate).toHaveBeenCalledWith(SWR_NS.agentLists);
   });
 
+  it('after a create whose answer lacks the agent, since it may exist anyway', async () => {
+    api.post.mockResolvedValue({ data: { status: 'ok' } });
+
+    await expect(AgentsApi.createAgent({ name: 'Helper' } as never)).rejects.toThrow('Create agent failed');
+
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.agentLists);
+  });
+
   it('not after a failed write, since nothing changed', async () => {
     api.delete.mockRejectedValue(new Error('500'));
 

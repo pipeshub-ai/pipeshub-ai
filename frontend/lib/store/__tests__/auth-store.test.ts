@@ -177,9 +177,12 @@ describe('signing out drops what was cached for this user', () => {
   let tokenAtReset: string | null | undefined;
   const reset = vi.fn();
   let stop: () => void = () => {};
+  const originalLocation = window.location;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // jsdom cannot navigate; a plain object takes the web path's `href = '/login'` quietly.
+    Object.defineProperty(window, 'location', { value: { href: 'http://localhost/chat/' }, configurable: true });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
     const { onSessionEnd } = await import('@/lib/api/session-cache');
     const { useAuthStore } = await import('../auth-store');
@@ -191,7 +194,10 @@ describe('signing out drops what was cached for this user', () => {
     useAuthStore.getState().setTokens('access', 'refresh');
   });
 
-  afterEach(() => stop());
+  afterEach(() => {
+    stop();
+    Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+  });
 
   it('when the session expires, after the tokens are gone', async () => {
     const { useAuthStore } = await import('../auth-store');

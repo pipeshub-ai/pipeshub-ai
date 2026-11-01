@@ -29,8 +29,10 @@ import {
   refreshAccessToken,
   isTokenExpired,
   getTokenExpirySeconds,
+  decodeJwtPayload,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
+import { clearSessionCache } from './session-cache';
 
 /**
  * `setTimeout` accepts a 32-bit signed delay; values larger than this wrap
@@ -142,7 +144,17 @@ function handleStorageEvent(event: StorageEvent): void {
   } else {
     useAuthStore.getState().setAccessToken(event.newValue);
   }
+  // Another tab signed in as someone else without this one signing out: what
+  // was cached here belongs to the previous account.
+  const before = accountOf(current);
+  if (before && before !== accountOf(event.newValue)) clearSessionCache({ refetch: true });
   // The zustand subscription will then call `scheduleFromToken`.
+}
+
+/** The user and org a token is for, or null when it does not say. */
+function accountOf(token: string | null): string | null {
+  const payload = decodeJwtPayload(token);
+  return typeof payload?.userId === 'string' ? `${payload.userId}:${String(payload.orgId ?? '')}` : null;
 }
 
 function handleVisibilityChange(): void {

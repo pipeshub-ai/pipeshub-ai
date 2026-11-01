@@ -166,6 +166,19 @@ describe('demo data checks', () => {
     expect(result.current?.include).toBe(false);
   });
 
+  it('reads the switch for the new org after an org switch on the same screen', async () => {
+    const { result } = renderHook(() => useDemoDataStatus());
+    await settle();
+    expect(result.current?.include).toBe(true);
+
+    getStatus.mockResolvedValue(status({ include: false, chosen: false }));
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+
+    expect(getStatus).toHaveBeenCalledTimes(2);
+    expect(result.current?.include).toBe(false);
+  });
+
   it("forgets the last user's demo at sign-out and asks again for the next one", async () => {
     getActiveConnectors.mockResolvedValue(listing(demo()));
     await visit(useDemoDataActive);

@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
@@ -15,7 +15,9 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/config', () => ({
-  AgentSidebarListRow: ({ label }: { label: string }) => <div>{label}</div>,
+  AgentSidebarListRow: ({ label, onDeleted }: { label: string; onDeleted: (id: string) => void }) => (
+    <button type="button" onClick={() => onDeleted(label)}>{label}</button>
+  ),
   useUserPermission: () => true,
   usePermissionDeniedDialog: () => ({ guard: <F,>(_allowed: boolean, fn: F) => fn, dialog: null }),
 }));
@@ -101,6 +103,16 @@ describe('MyAgentsSection', () => {
     await settle();
 
     expect(screen.getByText('Renamed helper')).toBeTruthy();
+  });
+
+  it('leaves the refresh after a delete to the delete call, so it is asked for once', async () => {
+    await renderSection();
+
+    fireEvent.click(screen.getByText('Sales helper'));
+    await settle();
+
+    // AgentsApi.deleteAgent (mocked here) is what refreshes the list.
+    expect(agentsApi.getAgents).toHaveBeenCalledTimes(1);
   });
 
   it('says it could not load the agents when the first request fails', async () => {

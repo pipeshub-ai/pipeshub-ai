@@ -24,7 +24,8 @@ export interface ClearSessionCacheOptions {
  * org switch). Never throws, so signing out always completes.
  */
 export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions = {}): void {
-  unload({ revalidate: refetch });
+  // Stores first: a refetch started by unload calls its fetcher at once, and a
+  // reset after that would throw away the new session's answer.
   resetters.forEach((reset) => {
     try {
       reset();
@@ -32,4 +33,5 @@ export function clearSessionCache({ refetch = false }: ClearSessionCacheOptions 
       console.error('Session reset failed:', error);
     }
   });
+  unload({ revalidate: refetch });
 }
