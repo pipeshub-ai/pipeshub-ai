@@ -249,6 +249,17 @@ async def test_static_voyage_needs_no_credentials():
     assert any(model.id == "voyage-3-large" for model in result.models)
 
 
+@pytest.mark.asyncio
+async def test_static_vertex_lists_only_current_gemini_models():
+    result = await ModelDiscoveryService().discover(DiscoveryRequest(
+        provider="vertexAI", configuration={}
+    ))
+    ids = {model.id for model in result.models}
+    assert "gemini-3.8-flash" in ids
+    # Retired on Vertex AI (2.0 earlier, 2.5-* on 2026-10-20)
+    assert not {i for i in ids if i.startswith(("gemini-2.0", "gemini-2.5"))}
+
+
 def test_missing_catalog_flag_is_not_false():
     model = classify("openAI", RawModel(id="not-in-catalog"))
     assert model is not None

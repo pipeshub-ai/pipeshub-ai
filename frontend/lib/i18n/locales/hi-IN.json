@@ -210,6 +210,7 @@
       "next": "अगला",
       "enterPipeshub": "Pipeshub में प्रवेश करें",
       "finishing": "समाप्त हो रहा है…",
+      "finishFailed": "सेटअप पूरा नहीं हो सका। अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
       "saveLlmFirst": "जारी रखने के लिए पहले AI मॉडल चरण सहेजें"
     },
     "save": "सहेजें",
@@ -388,7 +389,10 @@
     "sources": "स्रोत",
     "sizes": "आकार",
     "clearFilter": "फ़िल्टर हटाएं",
-    "applyFilters": "फ़िल्टर लागू करें"
+    "applyFilters": "फ़िल्टर लागू करें",
+    "sort": "क्रम",
+    "sortAscending": "आरोही",
+    "sortDescending": "अवरोही"
   },
   "form": {
     "leaveBlankToKeep": "मौजूदा मान बनाए रखने के लिए खाली छोड़ें।",
@@ -433,6 +437,7 @@
   },
   "table": {
     "fileName": "फ़ाइल नाम",
+    "resizeColumn": "{{column}} कॉलम का आकार बदलें",
     "name": "नाम",
     "status": "स्थिति",
     "size": "आकार",
@@ -2262,6 +2267,7 @@
         "developerSettings": "डेवलपर सेटिंग्स",
         "oauth2": "OAuth 2.0 Apps",
         "personalAccessTokens": "व्यक्तिगत एक्सेस टोकन",
+        "apiDocumentation": "API दस्तावेज़",
         "profile": "प्रोफ़ाइल",
         "yourConnectors": "आपके व्यक्तिगत कनेक्टर्स",
         "yourActions": "आपकी कार्रवाइयाँ",
@@ -2660,8 +2666,8 @@
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
-      "backToCredentials": "← Back to credentials",
-      "backFromConfigure": "← Back",
+      "backToCredentials": "Back to credentials",
+      "backFromConfigure": "Back",
       "configPanelTitle": "{{name}} सेट अप करें",
       "instance": "Instance",
       "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",

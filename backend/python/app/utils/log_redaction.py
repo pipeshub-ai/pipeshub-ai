@@ -69,8 +69,11 @@ refresh_env_secrets()
 
 
 _TOKEN = r"A-Za-z0-9_\-"
+# A key may follow `_`, `-` or `.` (as in `report_sk-....txt`) but not a letter
+# or digit, so `task-...` and `disk-...` stay. A JWT keeps the stricter rule: a
+# run like `_eyJ_eyJ...` would otherwise be rescanned from every `eyJ`.
 _KEY_SHAPES = re.compile(
-    rf"(?<![{_TOKEN}])(?:"
+    r"(?<![A-Za-z0-9])(?:"
     rf"phpat_[{_TOKEN}]{{8,}}"
     rf"|sk-[{_TOKEN}]{{20,}}"
     rf"|(?:AKIA|ASIA)[0-9A-Z]{{16}}(?![0-9A-Za-z])"
@@ -78,7 +81,7 @@ _KEY_SHAPES = re.compile(
     rf"|AIza[{_TOKEN}]{{30,}}"
     rf"|gh[pousr]_[A-Za-z0-9]{{36,}}"
     rf"|github_pat_[A-Za-z0-9_]{{22,}}"
-    rf"|eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
+    rf"|(?<![_\-])eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
     rf")"
 )
 _KEY_SHAPE_TRIGGERS = ("phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj")
@@ -211,12 +214,13 @@ def redact_secrets_in_text(text: str) -> str:
     for secret in _env_secrets:
         if secret in text:
             text = text.replace(secret, REDACTED)
-    if any(t in lower for t in _KEY_SHAPE_TRIGGERS):
-        text = _KEY_SHAPES.sub(REDACTED, text)
     if "input_value=" in text:
         text = _PYDANTIC_INPUT_VALUE.sub(rf"\g<1>{REDACTED}", text)
     if any(t in lower for t in _PAIR_TRIGGERS):
         text = _redact_pairs(text)
+    # After pairs: a `[REDACTED]` inserted inside a pair value would cut that value short.
+    if any(t in lower for t in _KEY_SHAPE_TRIGGERS):
+        text = _KEY_SHAPES.sub(REDACTED, text)
     if "bearer" in lower or "Basic" in text:
         text = _AUTH_SCHEME.sub(lambda m: f"{m.group(1) or m.group(2)} {REDACTED}", text)
     if "://" in text:

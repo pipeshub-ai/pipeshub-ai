@@ -21,6 +21,7 @@ import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
 import { TableHeaderCell } from './kb-list-view';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
+import { kbCol, kbColMin, useKbColumnWidths } from './kb-column-widths';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -505,13 +506,14 @@ function RecordsLoadingTable({
   showSourceColumn: boolean;
   isMobile: boolean;
 }) {
+  const { style: columnWidthStyle } = useKbColumnWidths();
   return (
     <Flex
       direction="column"
       role="status"
       aria-busy="true"
       aria-label={label}
-      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)' }}
+      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)', ...columnWidthStyle }}
     >
       <Flex
         align="center"
@@ -524,11 +526,11 @@ function RecordsLoadingTable({
       >
         <Box style={{ width: 36, flexShrink: 0 }} />
         <TableHeaderCell label="File Name" flex={1} />
-        <TableHeaderCell label="Status" width="60px" />
-        {showSourceColumn && <TableHeaderCell label="Source" width="60px" />}
-        {!isMobile && <TableHeaderCell label="Size" width="89px" />}
-        {!isMobile && <TableHeaderCell label="Created" width="147px" />}
-        {!isMobile && <TableHeaderCell label="Updated" width="146px" />}
+        <TableHeaderCell label="Status" width={kbCol('status')} minWidth={kbColMin('status')} align="center" />
+        {showSourceColumn && <TableHeaderCell label="Source" width={kbCol('source')} minWidth={kbColMin('source')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Size" width={kbCol('size')} minWidth={kbColMin('size')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Created" width={kbCol('created')} minWidth={kbColMin('created')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Updated" width={kbCol('updated')} minWidth={kbColMin('updated')} align="center" />}
         <Box style={{ width: 104, flexShrink: 0 }} />
       </Flex>
       <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -538,13 +540,13 @@ function RecordsLoadingTable({
           actionsWidth={104}
           columns={[
             { barWidth: 0.62 },
-            { width: '60px', barWidth: 0.45 },
-            ...(showSourceColumn ? [{ width: '60px', barWidth: 0.45 }] : []),
+            { width: kbCol('status'), minWidth: kbColMin('status'), barWidth: 0.45 },
+            ...(showSourceColumn ? [{ width: kbCol('source'), minWidth: kbColMin('source'), barWidth: 0.45 }] : []),
             ...(!isMobile
               ? [
-                  { width: '89px', barWidth: 0.55 },
-                  { width: '147px', barWidth: 0.7 },
-                  { width: '146px', barWidth: 0.7 },
+                  { width: kbCol('size'), minWidth: kbColMin('size'), barWidth: 0.55 },
+                  { width: kbCol('created'), minWidth: kbColMin('created'), barWidth: 0.7 },
+                  { width: kbCol('updated'), minWidth: kbColMin('updated'), barWidth: 0.7 },
                 ]
               : []),
           ]}

@@ -91,6 +91,9 @@ export interface ModelInfo {
   modelFriendlyName?: string;
   /** Restored from the conversation's saved modelInfo when loading a thread. */
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: string;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -421,6 +424,11 @@ export interface ChatSettings {
    * the user hasn't set an explicit override.
    */
   agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * What a new assistant chat opens on when the edition sets one. A stored
+   * pick still wins, and a project chat keeps the concrete default model.
+   */
+  newChatDefaultModel: ModelOverride | null;
 }
 
 /**

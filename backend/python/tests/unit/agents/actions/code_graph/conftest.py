@@ -273,7 +273,7 @@ class QueryGraphProvider(FakeGraphProvider):
 
     async def get_nodes_by_field_prefix(
         self, collection, field_name, prefix, filters=None, limit=400,
-        transaction=None, raise_on_error=False
+        transaction=None, raise_on_error=False, return_fields=None
     ) -> list[dict]:
         docs = self._code_file_docs() if collection == CODE_FILES else self.blocks.values()
         return [

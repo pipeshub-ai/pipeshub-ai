@@ -630,6 +630,25 @@ class TestHandleXlsx:
             assert result is expected
             instance.load_workbook_from_binary.assert_called_once_with(b"raw")
 
+    @pytest.mark.asyncio
+    async def test_the_workbook_is_loaded_off_the_event_loop(self) -> None:
+        import threading
+
+        parser = _make_parser()
+        loop_thread = threading.get_ident()
+        loaded_in: list[int] = []
+        with patch(
+            "app.agents.actions.util.parse_file.get_llm_for_role",
+            new_callable=AsyncMock,
+            return_value=("llm", None),
+        ), patch("app.agents.actions.util.parse_file.ExcelParser") as mock_cls:
+            instance = mock_cls.return_value
+            instance.load_workbook_from_binary = lambda _raw: loaded_in.append(threading.get_ident())
+            instance.create_blocks = AsyncMock(return_value=BlocksContainer(blocks=[], block_groups=[]))
+            await parser.handle_xlsx(b"raw", "book.xlsx")
+        assert loaded_in
+        assert loaded_in[0] != loop_thread
+
 
 class TestHandleCsvTsv:
     @pytest.mark.asyncio

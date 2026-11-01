@@ -188,7 +188,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -269,13 +269,20 @@ class BookStackDataSource:
         # Note: multipart/form-data requests need special handling
         # The HTTPRequest should handle multipart encoding when files are present
 
+        # PHP parses a multipart body only on POST: BookStack takes a file update as a
+        # POST with "_method" set to PUT.
+        method = "PUT"
+        if files:
+            method = "POST"
+            body["_method"] = "PUT"
+
         request = HTTPRequest(
-            method="PUT",
+            method=method,
             url=url,
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -414,7 +421,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -503,13 +510,20 @@ class BookStackDataSource:
         # Note: multipart/form-data requests need special handling
         # The HTTPRequest should handle multipart encoding when files are present
 
+        # PHP parses a multipart body only on POST: BookStack takes a file update as a
+        # POST with "_method" set to PUT.
+        method = "PUT"
+        if files:
+            method = "POST"
+            body["_method"] = "PUT"
+
         request = HTTPRequest(
-            method="PUT",
+            method=method,
             url=url,
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1516,7 +1530,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1589,13 +1603,20 @@ class BookStackDataSource:
         # Note: multipart/form-data requests need special handling
         # The HTTPRequest should handle multipart encoding when files are present
 
+        # PHP parses a multipart body only on POST: BookStack takes a file update as a
+        # POST with "_method" set to PUT.
+        method = "PUT"
+        if files:
+            method = "POST"
+            body["_method"] = "PUT"
+
         request = HTTPRequest(
-            method="PUT",
+            method=method,
             url=url,
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1784,7 +1805,7 @@ class BookStackDataSource:
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:
@@ -1873,13 +1894,20 @@ class BookStackDataSource:
         # Note: multipart/form-data requests need special handling
         # The HTTPRequest should handle multipart encoding when files are present
 
+        # PHP parses a multipart body only on POST: BookStack takes a file update as a
+        # POST with "_method" set to PUT.
+        method = "PUT"
+        if files:
+            method = "POST"
+            body["_method"] = "PUT"
+
         request = HTTPRequest(
-            method="PUT",
+            method=method,
             url=url,
             headers=headers,
             query_params=params,
             body=body,
-            files=files
+            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,
         )
 
         try:

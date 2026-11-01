@@ -1222,8 +1222,10 @@ async def sync_until(
     check: Callable[[], Awaitable[bool]],
     *,
     description: str,
+    timeout: float | None = None,
 ) -> None:
-    """Sync, and sync again, until ``check`` holds.
+    """Sync, and sync again, until ``check`` holds, for ``timeout`` seconds in all
+    (default GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT).
 
     An edit made through the Drive API can take a while to reach the changes
     feed an incremental sync reads. A sync started straight after the edit may
@@ -1234,12 +1236,13 @@ async def sync_until(
     # covers the restart pauses plus the slowest sync wait, and the wait is
     # given what remains after the restart. When no round fits any more, the
     # graph is still polled until the deadline.
-    deadline = time.monotonic() + _SYNC_TIMEOUT_SEC
+    budget = _SYNC_TIMEOUT_SEC if timeout is None else timeout
+    deadline = time.monotonic() + budget
     restart_sec = sum(_RESTART_SYNC_PAUSE_SEC)
     round_sec = restart_sec + _SYNC_WAIT_FLOOR_SEC
-    if round_sec > _SYNC_TIMEOUT_SEC:
+    if round_sec > budget:
         raise ValueError(
-            f"sync timeout {_SYNC_TIMEOUT_SEC}s is shorter than one sync round "
+            f"sync timeout {budget}s is shorter than one sync round "
             f"({round_sec}s); raise GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT"
         )
     last_sync_error: TimeoutError | None = None
@@ -1266,7 +1269,7 @@ async def sync_until(
             detail = f" (last sync wait: {last_sync_error})" if last_sync_error else ""
             raise TimeoutError(
                 f"Timed out waiting for {description} for connector {connector_id}: "
-                f"not seen within {_SYNC_TIMEOUT_SEC}s of re-syncing{detail}"
+                f"not seen within {budget}s of re-syncing{detail}"
             )
         if remaining >= round_sec:
             # Shortened if need be, so the pause never costs the last round.

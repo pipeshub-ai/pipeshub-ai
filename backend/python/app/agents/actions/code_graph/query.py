@@ -136,7 +136,7 @@ def path_matches(path: str, pattern: str) -> bool:
 
 
 async def files_by_pattern(
-    graph_provider: IGraphDBProvider, org_id: str, pattern: str,
+    graph_provider: IGraphDBProvider, org_id: str, pattern: str, *, scan_limit: int | None = None,
 ) -> tuple[dict[str, str], bool]:
     """``(record id -> path, scan_capped)`` for the code files a glob, file or directory matches.
 
@@ -146,13 +146,15 @@ async def files_by_pattern(
     # Anchor the DB-side filter on the pattern's literal prefix so the index does
     # the work; the glob itself is applied in Python.
     prefix = pattern.split("*", 1)[0]
+    scan_limit = scan_limit or _SELECT_SCAN_LIMIT
     files = await graph_provider.get_nodes_by_field_prefix(
         collection=_CODE_FILES,
         field_name="filePath",
         prefix=prefix,
         filters={"orgId": org_id},
-        limit=_SELECT_SCAN_LIMIT,
+        limit=scan_limit,
         raise_on_error=True,
+        return_fields=["_key", "filePath"],
     )
     paths: dict[str, str] = {}
     for raw in files or []:
@@ -162,7 +164,7 @@ async def files_by_pattern(
         if not key or not path or not path_matches(path, pattern):
             continue
         paths[key] = path
-    return paths, len(files or []) >= _SELECT_SCAN_LIMIT
+    return paths, len(files or []) >= scan_limit
 
 
 async def _select_by_path(

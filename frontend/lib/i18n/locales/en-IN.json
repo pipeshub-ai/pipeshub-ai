@@ -210,6 +210,7 @@
       "next": "Next",
       "enterPipeshub": "Enter Pipeshub",
       "finishing": "Finishing…",
+      "finishFailed": "Couldn't finish setup. Check your connection and try again.",
       "saveLlmFirst": "Save the AI model step first to continue"
     },
     "save": "Save",
@@ -388,7 +389,10 @@
     "sources": "Sources",
     "sizes": "Sizes",
     "clearFilter": "Clear filter",
-    "applyFilters": "Apply filters"
+    "applyFilters": "Apply filters",
+    "sort": "Sort",
+    "sortAscending": "Ascending",
+    "sortDescending": "Descending"
   },
   "form": {
     "leaveBlankToKeep": "Leave blank to keep the existing value.",
@@ -433,6 +437,7 @@
   },
   "table": {
     "fileName": "File name",
+    "resizeColumn": "Resize {{column}} column",
     "name": "Name",
     "status": "Status",
     "size": "Size",
@@ -2262,6 +2267,7 @@
         "developerSettings": "Developer settings",
         "oauth2": "OAuth 2.0 apps",
         "personalAccessTokens": "Personal access tokens",
+        "apiDocumentation": "API documentation",
         "profile": "Profile",
         "yourConnectors": "Your connectors",
         "yourActions": "Your actions",
@@ -2656,8 +2662,8 @@
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
-      "backToCredentials": "← Back to credentials",
-      "backFromConfigure": "← Back",
+      "backToCredentials": "Back to credentials",
+      "backFromConfigure": "Back",
       "configPanelTitle": "Set up {{name}}",
       "instance": "Instance",
       "emailVisibilityDocLink": "Email visibility setup guide →",

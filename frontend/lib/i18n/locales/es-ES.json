@@ -217,6 +217,7 @@
       "next": "Siguiente",
       "enterPipeshub": "Entrar a Pipeshub",
       "finishing": "Finalizando…",
+      "finishFailed": "No se pudo completar la configuración. Comprueba tu conexión e inténtalo de nuevo.",
       "saveLlmFirst": "Guarda el paso de modelo de IA primero para continuar"
     },
     "save": "Guardar",
@@ -395,7 +396,10 @@
     "sources": "Orígenes",
     "sizes": "Tamaños",
     "clearFilter": "Limpiar filtros",
-    "applyFilters": "Aplicar filtros"
+    "applyFilters": "Aplicar filtros",
+    "sort": "Ordenar",
+    "sortAscending": "Ascendente",
+    "sortDescending": "Descendente"
   },
   "form": {
     "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",
@@ -440,6 +444,7 @@
   },
   "table": {
     "fileName": "Nombre de archivo",
+    "resizeColumn": "Cambiar el ancho de la columna {{column}}",
     "name": "Nombre",
     "status": "Estado",
     "size": "Tamaño",
@@ -2298,6 +2303,7 @@
         "developerSettings": "Configuración de desarrollador",
         "oauth2": "Apps de OAuth 2.0",
         "personalAccessTokens": "Tokens de acceso personal",
+        "apiDocumentation": "Documentación de la API",
         "profile": "Perfil",
         "yourConnectors": "Tus conectores personales",
         "yourActions": "Tus acciones",
@@ -2697,8 +2703,8 @@
       "continueToConfiguration": "Continuar a la configuración →",
       "oauthSigningIn": "Termine de iniciar sesión con su proveedor…",
       "authRequiredBeforeConfig": "Complete la autorización OAuth antes de configurar la sincronización y los filtros",
-      "backToCredentials": "← Volver a credenciales",
-      "backFromConfigure": "← Atrás",
+      "backToCredentials": "Volver a credenciales",
+      "backFromConfigure": "Atrás",
       "configPanelTitle": "Configurar {{name}}",
       "instance": "Instance",
       "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",

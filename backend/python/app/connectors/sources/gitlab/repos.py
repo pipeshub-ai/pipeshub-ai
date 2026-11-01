@@ -1233,8 +1233,12 @@ class ReposSync:
                         patches.append(patch)
                 if patches:
                     try:
-                        async with c.data_store_provider.transaction() as tx_store:
-                            await tx_store.batch_update_nodes(patches, CollectionNames.RECORDS.value)
+                        # Indexing writes these records right after the sync saved them;
+                        # execute_in_transaction runs the patch again on a write conflict.
+                        await c.data_store_provider.execute_in_transaction(
+                            lambda tx_store, patches: tx_store.batch_update_nodes(patches, CollectionNames.RECORDS.value),
+                            patches,
+                        )
                     except Exception as e:
                         self.logger.warning(
                             "Failed to patch %s timestamp(s) for project %s: %s",

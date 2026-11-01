@@ -41,7 +41,9 @@ from app.modules.transformers.stored_write import (
     mint_stored_write,
 )
 from app.modules.transformers.transformer import (
+    ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
+    EXTRACTION_DEFERRED_FIELD,
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
     Transformer,
@@ -51,6 +53,7 @@ from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
     artifact_settings,
     is_artifact_write_enabled,
+    is_classify_on_first_use_enabled,
 )
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
@@ -704,7 +707,13 @@ class SinkOrchestrator(Transformer):
             "isDirty": False,
         }
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
-            status["extractionStatus"] = ProgressStatus.QUEUED.value
+            if await is_classify_on_first_use_enabled(self.config_service):
+                # Decided here, once, so the status and the dispatch agree.
+                ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: False, ENRICHMENT_DEFERRED: True}
+                status["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+                status[EXTRACTION_DEFERRED_FIELD] = True
+            else:
+                status["extractionStatus"] = ProgressStatus.QUEUED.value
         if getattr(record, "is_vlm_ocr_processed", False) is True:
             status["isVLMOcrProcessed"] = True
         # Update, never upsert: a record deleted mid-indexing would come back as

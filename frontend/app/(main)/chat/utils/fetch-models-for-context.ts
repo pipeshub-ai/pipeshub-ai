@@ -4,6 +4,8 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import type { AvailableLlmModel, ModelOverride, ReasoningEffort } from '@/chat/types';
 import { normalizeReasoningEffort } from '@/chat/types';
 import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
+import { chatModelOptions } from '@/config';
+import { isModelInList } from './model-in-list';
 
 /**
  * Freshness window: within this many milliseconds the cached model list is
@@ -52,10 +54,7 @@ function clearSelectedModelIfNotInList(
   if (!current) {
     return;
   }
-  const stillValid = models.some(
-    (m) => m.modelKey === current.modelKey && m.modelName === current.modelName,
-  );
-  if (!stillValid) {
+  if (!isModelInList(models, current)) {
     s.setSelectedModelForCtx(ctxKey, null);
   }
 }
@@ -83,7 +82,7 @@ export class OrgModelsFetchError extends Error {
 /**
  * Fetch, cache, and normalize the model list for a given chat context.
  *
- * - `ctxKey === ASSISTANT_CTX`  → GET org LLMs (`ChatApi.fetchAvailableLlms`)
+ * - `ctxKey === ASSISTANT_CTX`  → GET org LLMs (`ChatApi.fetchOrgLlmCatalog`)
  * - otherwise the key IS the agentId → GET that agent's configured models
  *
  * Side effects on the chat store:
@@ -118,8 +117,11 @@ export async function fetchModelsForContext(
 
   const promise = (async (): Promise<AvailableLlmModel[]> => {
     let models: AvailableLlmModel[];
+    let newChatDefault: ModelOverride | null = null;
     if (ctxKey === ASSISTANT_CTX) {
-      models = await ChatApi.fetchAvailableLlms();
+      const catalog = await ChatApi.fetchOrgLlmCatalog();
+      models = catalog.models;
+      newChatDefault = chatModelOptions.newChatDefault(catalog.response, models);
     } else {
       const { agent } = await AgentsApi.getAgent(ctxKey, { quiet: true });
       const agentModels = agent?.models ?? [];
@@ -143,6 +145,7 @@ export async function fetchModelsForContext(
 
     const s = useChatStore.getState();
     s.setAvailableModelsForCtx(ctxKey, models);
+    if (ctxKey === ASSISTANT_CTX) s.setNewChatDefaultModel(newChatDefault);
 
     // Prefer an explicitly flagged default; otherwise fall back to the first
     // model in the list. Agent configs typically have no `isDefault` flag,

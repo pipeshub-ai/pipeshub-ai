@@ -29,6 +29,7 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -1489,6 +1490,7 @@ class RetrievalService:
                         "kb_count": len(kb_ids)
                     }
 
+                classify_on_first_use_later(response_data, org_id, self.config_service, self.logger)
                 return response_data
             else:
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)

@@ -52,6 +52,38 @@ async def test_unbound_membership_sync_leaves_the_reconcile_pending() -> None:
 
 
 @pytest.mark.asyncio
+async def test_copies_of_a_record_that_waited_for_first_use_are_reconciled() -> None:
+    graph = _graph({"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1", "copy-1"])
+    with patch("app.modules.pipeline.duplicates.DuplicateReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock(return_value=True)
+        await QueuedCopies(graph, None, logging.getLogger("t")).release(["rec-1"])
+    reconciler.return_value.reconcile.assert_awaited_once_with("rec-1", "vr-1")
+    # Pending before the copies change, so the recovery sweep finishes a failed reconcile.
+    key, _collection, fields = graph.update_node.await_args_list[0].args
+    assert key == "rec-1" and fields["duplicateReconcilePending"] is True
+
+
+@pytest.mark.asyncio
+async def test_copies_that_cannot_be_listed_are_left_to_the_sweep_and_the_delivery_fails() -> None:
+    graph = _graph({"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
+    graph.get_records_by_virtual_record_id = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+    with pytest.raises(ConnectionError):
+        await QueuedCopies(graph, None, logging.getLogger("t")).release(["rec-1"])
+    key, _collection, fields = graph.update_node.await_args.args
+    assert key == "rec-1" and fields["duplicateReconcilePending"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_record_without_copies_reconciles_nothing() -> None:
+    graph = _graph({"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=0)
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    with patch("app.modules.pipeline.duplicates.DuplicateReconciler") as reconciler:
+        await QueuedCopies(graph, None, logging.getLogger("t")).release(["rec-1"])
+    reconciler.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_promoted_copies_ask_for_their_code_edge_build() -> None:
     """A promoted copy can be its repo's last file; the stage path must ask, as the handler's does."""
     graph = _graph({"indexingStatus": "COMPLETED", "virtualRecordId": "vr-1"}, promoted=1)
