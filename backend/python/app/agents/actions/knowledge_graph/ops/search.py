@@ -516,7 +516,7 @@ async def execute_search(
         )
 
         created_before, modified_before = upper_bounds_before_today(
-            agent_today_start(state.get("current_time"), state.get("timezone")),
+            agent_today_start(state),
             created_after=created_after, created_before=created_before,
             modified_after=modified_after, modified_before=modified_before,
         )

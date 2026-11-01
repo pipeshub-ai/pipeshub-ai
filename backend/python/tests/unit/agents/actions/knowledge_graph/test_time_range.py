@@ -226,12 +226,13 @@ class TestAgentToday:
         ("2026-03-29T00:00:00Z", "Not/AZone", datetime(2026, 3, 29, tzinfo=timezone.utc)),
     ])
     def test_the_day_the_agent_is_told_it_is(self, current_time: str, zone: str | None, start: datetime) -> None:
-        assert agent_today_start(current_time, zone) == start
+        assert agent_today_start({"current_time": current_time, "timezone": zone}) == start
 
-    @pytest.mark.parametrize("current_time", [None, "", "not a time"])
-    def test_without_a_request_time_the_server_clock_decides(self, current_time: str | None) -> None:
+    @pytest.mark.parametrize("state", [{}, {"current_time": None}, {"current_time": ""}, {"current_time": "not a time"},
+                                       {"current_time": 1774742400000}, {"timezone": 7}])
+    def test_without_a_request_time_the_server_clock_decides(self, state: dict) -> None:
         now = datetime(2026, 10, 26, 16, 0, tzinfo=timezone.utc)
-        assert agent_today_start(current_time, None, now=now) == datetime(2026, 10, 26, tzinfo=timezone.utc)
+        assert agent_today_start(state, now=now) == datetime(2026, 10, 26, tzinfo=timezone.utc)
 
 
 class TestUpperBoundsBeforeToday:
@@ -253,7 +254,7 @@ class TestUpperBoundsBeforeToday:
 
     def test_east_of_utc_yesterday_stays_although_its_utc_day_ends_after_local_midnight(self) -> None:
         """Kolkata's 29 March starts at 18:30 UTC on the 28th, before the 28th's UTC end of day."""
-        today = agent_today_start("2026-03-29T02:00:00+05:30", "Asia/Kolkata")
+        today = agent_today_start({"current_time": "2026-03-29T02:00:00+05:30", "timezone": "Asia/Kolkata"})
 
         assert upper_bounds_before_today(today, created_before="2026-03-28") == ("2026-03-28", None)
         assert upper_bounds_before_today(today, created_before="2026-03-29") == (None, None)

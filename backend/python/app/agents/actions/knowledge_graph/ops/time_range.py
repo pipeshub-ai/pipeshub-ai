@@ -19,7 +19,11 @@ import json
 import logging
 import re
 from datetime import MINYEAR, datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = [
     "agent_today_start",
@@ -211,18 +215,17 @@ def parse_time_range(
     return time_range, None
 
 
-def agent_today_start(
-    current_time: str | None, time_zone: str | None, *, now: datetime | None = None,
-) -> datetime:
+def agent_today_start(state: Mapping[str, Any], *, now: datetime | None = None) -> datetime:
     """Midnight of the day the agent is told it is, in the user's zone: the
-    request's ``current_time`` (a naive value read in ``time_zone``), else this
-    server's clock. UTC when ``time_zone`` is missing or not a known zone."""
+    request's ``current_time`` (a naive value read in its ``timezone``), else
+    this server's clock. UTC when the request has no known zone."""
+    current_time, time_zone = state.get("current_time"), state.get("timezone")
     try:
-        zone = ZoneInfo(time_zone.strip()) if time_zone and time_zone.strip() else timezone.utc
+        zone = ZoneInfo(time_zone.strip()) if isinstance(time_zone, str) and time_zone.strip() else timezone.utc
     except (ZoneInfoNotFoundError, OSError, ValueError):
         zone = timezone.utc
     moment: datetime | None = None
-    if current_time and current_time.strip():
+    if isinstance(current_time, str) and current_time.strip():
         text = current_time.strip()
         try:
             moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text)
