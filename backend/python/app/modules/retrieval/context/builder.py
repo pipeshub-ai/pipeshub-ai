@@ -3,7 +3,7 @@
 The search tool, first-turn prefetch and the legacy retrieval tool all go
 through ``KnowledgeContextBuilder.build``, so they cannot drift apart:
 
-    hits -> units -> rank, keep the best -> neighbours -> FK tables -> graph context
+    hits -> units -> rank, keep the best -> neighbours (and small gaps) -> FK tables -> graph context
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.modules.retrieval.context.neighbours import expand_neighbours
+from app.modules.retrieval.context.neighbours import expand_neighbours, fill_small_gaps
 from app.modules.retrieval.context.ranking import rank_units
+from app.modules.retrieval.switches import context_gap_fill_enabled
 from app.utils.chat_helpers import (
     enrich_records_with_address_links,
     enrich_records_with_graph_context,
@@ -87,6 +88,8 @@ class KnowledgeContextBuilder:
         ranked = rank_units(units, max_units)
         spare = None if max_units is None else max(max_units - len(ranked), 0)
         ranked = expand_neighbours(ranked, records, limit=spare)
+        if context_gap_fill_enabled():
+            ranked = fill_small_gaps(ranked, records)
 
         kept = {unit.get("virtual_record_id") for unit in ranked}
         records = {vrid: record for vrid, record in records.items() if vrid in kept}
