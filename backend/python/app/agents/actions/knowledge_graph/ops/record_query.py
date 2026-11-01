@@ -119,6 +119,10 @@ def _applied(query: RecordQuery) -> str:
     return json.dumps(query.model_dump(mode="json", by_alias=True, exclude_none=True)["where"], separators=(",", ":"))
 
 
+def _number(value: float) -> str:
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
 def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None) -> str:  # noqa: ANN401
     """Totals first, then what was computed, then a page of rows to cite."""
     total = f"at least {result.total}" if result.approximate else str(result.total)
@@ -128,13 +132,16 @@ def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = No
     )]
     if query.where:
         lines.append(f"Conditions as applied: {_applied(query)}")
+    # A stopped scan saw only part of the matches: every figure from it is partial, not just the total.
+    kind = "approximate" if result.approximate else "exact"
     if query.aggregate.op != "count" and result.value is not None:
-        lines.append(f"{query.aggregate.op} of {query.aggregate.field}: {result.value:,.2f}".rstrip("0").rstrip("."))
+        lines.append(f"{query.aggregate.op} of {query.aggregate.field}: {_number(result.value)} ({kind})")
     if result.groups:
         by = query.group_by
         label = by.field or by.month or ("organization" if by.organization else (by.person_role or "person"))
-        lines.append(f"Groups by {label} (top {len(result.groups)}):")
-        lines += [f"- {g.label}: {g.count}" + (f" (value {g.value:,.2f})" if g.value is not None else "")
+        lines.append(f"Groups by {label} (top {len(result.groups)}, {kind} counts):")
+        lines += [f"- {g.label}: {'at least ' if result.approximate else ''}{g.count}"
+                  + (f", {query.aggregate.op} {_number(g.value)}" if g.value is not None else "") + f" ({kind})"
                   for g in result.groups]
     if result.unknown:
         lines.append("Not counted, because the record does not carry the field: " + ", ".join(

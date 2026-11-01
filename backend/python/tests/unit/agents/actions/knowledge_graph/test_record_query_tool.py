@@ -88,3 +88,28 @@ def test_the_field_guide_names_fields_but_no_values_and_no_edge_conditions() -> 
     guide = op.field_guide()
     assert "status" in guide and "amount" in guide
     assert "RESOLVED" not in guide and "linked_to" not in guide and "person" not in guide
+
+
+async def test_a_stopped_scan_labels_every_aggregate_and_group_approximate(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(
+        total=20000, approximate=True, value=1234.5,
+        groups=[Group(key="a", label="Ann", count=7, value=10.0), Group(key="b", label="Bob", count=3, value=2.0)],
+    )
+    _, text = await op.execute_find_records(
+        _state(), aggregate={"op": "sum", "field": "amount"}, group_by={"person_role": "owner"}, limit=0,
+    )
+    figures = [line for line in text.splitlines() if line.startswith(("sum of", "Groups by", "- "))]
+    assert len(figures) == 4
+    assert all("approximate" in line for line in figures), figures
+    assert "exact" not in text.replace("(approximate", "")
+
+
+async def test_a_complete_scan_labels_every_aggregate_and_group_exact(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(
+        total=10, value=99.0, groups=[Group(key="a", label="Ann", count=7, value=60.0)],
+    )
+    _, text = await op.execute_find_records(
+        _state(), aggregate={"op": "sum", "field": "amount"}, group_by={"person_role": "owner"}, limit=0,
+    )
+    figures = [line for line in text.splitlines() if line.startswith(("sum of", "Groups by", "- "))]
+    assert len(figures) == 3 and all("exact" in line and "approximate" not in line for line in figures)
