@@ -171,7 +171,7 @@ def _indexing_off_for(conn: NotionConnector, key: IndexingFilterKey) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [ProgressStatus.NOT_STARTED, ProgressStatus.QUEUED, ProgressStatus.FAILED])
+@pytest.mark.parametrize("status", [ProgressStatus.NOT_STARTED, ProgressStatus.QUEUED])
 async def test_an_unchanged_recheck_saves_a_page_whose_indexing_was_turned_off(status: ProgressStatus) -> None:
     conn = _unchanged_recheck([], [])
     conn.data_entities_processor.get_record_by_external_id.return_value.indexing_status = status.value
@@ -194,8 +194,11 @@ async def test_an_unchanged_recheck_saves_a_waiting_file_whose_indexing_was_turn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.COMPLETED])
-async def test_an_unchanged_recheck_with_indexing_off_leaves_a_page_a_save_would_not_change(
+@pytest.mark.parametrize(
+    "status",
+    [ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.COMPLETED, ProgressStatus.FAILED, ProgressStatus.IN_PROGRESS],
+)
+async def test_an_unchanged_recheck_with_indexing_off_leaves_a_page_indexing_has_reached_unsaved(
     status: ProgressStatus,
 ) -> None:
     conn = _unchanged_recheck([], [])
