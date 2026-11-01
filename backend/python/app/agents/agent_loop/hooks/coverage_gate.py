@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
-from app.agents.agent_loop.coverage.evidence import collect_evidence
-from app.agents.agent_loop.coverage.gate import Gap, GateDecision, assess_draft
+from app.agents.agent_loop.coverage.evidence import Evidence, collect_evidence
+from app.agents.agent_loop.coverage.gate import (
+    Gap,
+    GateDecision,
+    adjudicate_found,
+    assess_draft,
+)
 from app.agents.agent_loop.coverage.llm import coverage_llm
 from app.agents.agent_loop.coverage.prefetch import COVERAGE_USAGE_SOURCE
 from app.agents.agent_loop.coverage.state import CoverageState, coverage_state
@@ -31,7 +37,7 @@ from app.agents.agent_loop.coverage.targeted import (
 from app.agents.agent_loop.protocol.run_usage import llm_usage_reporter
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
-from app.utils.citations import cited_record_ids
+from app.utils.citations import cited_blocks, cited_record_ids
 from app.utils.coverage_switches import (
     coverage_adjudication_enabled,
     gate_round_budget,
@@ -55,6 +61,7 @@ CHECK_TIMEOUT_S = 20.0
 # draft stands.
 _MIN_TURNS_LEFT = 3
 _SEARCH_TOOL_SUFFIX = "search"
+_LOGGED_RULING_CHARS = 200
 
 # The reply to a send-back replaces the draft, so it must be the whole answer.
 RESTATE_THE_ANSWER = (
@@ -64,7 +71,7 @@ RESTATE_THE_ANSWER = (
 )
 
 _GAP_LINES = {
-    "facet": "Not supported by what you read: {label}",
+    "facet": "Your draft may lack: {label}",
     "reference": "Named but not read: {label}",
     "admission": 'Your draft says: "{label}"',
 }
@@ -76,14 +83,42 @@ def render_gap_request(decision: GateDecision, results_text: str) -> str:
     lines += [f"- {ruling}" for ruling in decision.rulings]
     if decision.gaps:
         lines.append(
-            "Searches for them were run for you; the results follow. Where a record here covers a "
-            f"point, use it (read it in full with {FETCH_RECORD_TOOL_NAME} if its blocks are not enough), and keep "
-            "what your draft already supported. Where nothing here covers a point, keep your answer "
-            "for it as it was, without adding new caveats."
+            "Searches for them were run for you; the results follow. Use a record here to fill a point "
+            f"your draft lacks (read it in full with {FETCH_RECORD_TOOL_NAME} if its blocks are not enough). "
+            "Keep every value your draft already cites: do not replace it with a different value from a "
+            "record here unless that record explicitly revises it, meaning it is about the same scope "
+            "(customer, product, version, team, period) and says it updates, corrects or supersedes the "
+            "cited one, or is a later version of the same document. If records of the same scope give "
+            "different values and neither revises the other, give both, each with its source, and say "
+            "which is which. Where nothing here covers a point, keep your answer for it as it was, "
+            "without adding new caveats."
         )
     lines.append(RESTATE_THE_ANSWER)
     text = "\n".join(lines)
     return f"{text}\n\n{results_text}" if results_text else text
+
+
+@dataclass
+class _Draft:
+    text: str
+    evidence: Evidence
+    cited_record_ids: list[str] = field(default_factory=list)
+    cited_blocks: dict[str, list[int]] = field(default_factory=dict)
+
+
+def _read_draft(context: "AgentContext", text: str) -> _Draft:
+    ref_mapper = context.tool_state.get("citation_ref_mapper")
+    ref_to_url = getattr(ref_mapper, "ref_to_url", None)
+    return _Draft(
+        text=text,
+        evidence=collect_evidence(context.tool_state),
+        cited_record_ids=cited_record_ids(text, ref_to_url),
+        cited_blocks=cited_blocks(text, ref_to_url),
+    )
+
+
+def _short(rulings: list[str]) -> list[str]:
+    return [ruling[:_LOGGED_RULING_CHARS] for ruling in rulings]
 
 
 def _agent_queries(ctx: "ModelResponseContext") -> list[str]:
@@ -126,7 +161,8 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
             return
         started = time.monotonic()
         try:
-            decision = await _decide(context, ctx, text)
+            draft = _read_draft(context, text)
+            decision = await _decide(context, ctx, draft)
         except Exception:
             # The draft stands; this gate only ever adds a look.
             logger.warning("coverage_loop: gate check failed", exc_info=True)
@@ -135,14 +171,17 @@ def coverage_gate(context: "AgentContext") -> "Middleware[ModelResponseContext]"
         if decision.checked:
             state.bump("gate_checker_calls")
         logger.info(
-            "coverage_loop: gate conversation=%s round=%d signals=%s gaps=%s rulings=%d ms=%d",
+            "coverage_loop: gate conversation=%s round=%d signals=%s gaps=%s rulings=%s ms=%d",
             context.conversation_id, state.gate_rounds, decision.signals,
-            [(gap.kind, gap.query) for gap in decision.gaps], len(decision.rulings),
+            [(gap.kind, gap.query) for gap in decision.gaps], _short(decision.rulings),
             int((time.monotonic() - started) * 1000),
         )
         if decision.covered:
             return
-        await _send_back(context, ctx, decision)
+        try:
+            await _send_back(context, ctx, draft, decision)
+        except Exception:
+            logger.warning("coverage_loop: gate send-back failed", exc_info=True)
 
     return _middleware
 
@@ -157,16 +196,16 @@ def _record_label(context: "AgentContext") -> "Callable[[str | None, str], str]"
     return _name
 
 
-async def _decide(context: "AgentContext", ctx: "ModelResponseContext", text: str) -> GateDecision:
+async def _decide(context: "AgentContext", ctx: "ModelResponseContext", draft: _Draft) -> GateDecision:
     state = coverage_state(context.tool_state)
-    ref_mapper = context.tool_state.get("citation_ref_mapper")
     llm = await coverage_llm(context.config_service, context.org_id, fallback=context.llm)
     return await assess_draft(
         question=context.query,
-        draft=text,
+        draft=draft.text,
         plan=state.plan,
-        evidence=collect_evidence(context.tool_state),
-        cited_record_ids=cited_record_ids(text, getattr(ref_mapper, "ref_to_url", None)),
+        evidence=draft.evidence,
+        cited_record_ids=draft.cited_record_ids,
+        cited_blocks=draft.cited_blocks,
         searched=[*state.searched, *_agent_queries(ctx)],
         llm=llm,
         timeout=CHECK_TIMEOUT_S,
@@ -177,7 +216,26 @@ async def _decide(context: "AgentContext", ctx: "ModelResponseContext", text: st
     )
 
 
-async def _send_back(context: "AgentContext", ctx: "ModelResponseContext", decision: GateDecision) -> None:
+async def _adjudicate_found(context: "AgentContext", draft: _Draft, evidence: Evidence, new: set[str]) -> list[str]:
+    llm = await coverage_llm(context.config_service, context.org_id, fallback=context.llm)
+    return await adjudicate_found(
+        question=context.query,
+        draft=draft.text,
+        plan=coverage_state(context.tool_state).plan,
+        evidence=evidence,
+        new_virtual_record_ids=new,
+        cited_record_ids=draft.cited_record_ids,
+        cited_blocks=draft.cited_blocks,
+        llm=llm,
+        timeout=CHECK_TIMEOUT_S,
+        name_of=_record_label(context),
+        on_usage=llm_usage_reporter(context.tool_state, COVERAGE_USAGE_SOURCE),
+    )
+
+
+async def _send_back(
+    context: "AgentContext", ctx: "ModelResponseContext", draft: _Draft, decision: GateDecision,
+) -> None:
     state = coverage_state(context.tool_state)
     queries = [gap.query for gap in decision.gaps]
     for query in queries:
@@ -190,14 +248,30 @@ async def _send_back(context: "AgentContext", ctx: "ModelResponseContext", decis
     state.bump("gate_searches", len(queries))
     state.bump("gate_searches_with_results", len(found))
     _count_gap_kinds(state, decision.gaps)
-    if not found and not decision.rulings:
-        # Nothing new to read: another turn would restate the same draft.
-        state.bump("gate_nothing_found")
+    evidence = collect_evidence(context.tool_state) if found else draft.evidence
+    shown = draft.evidence.virtual_record_ids()
+    new = {record.virtual_record_id for record in evidence.read_records()} - shown
+    state.bump("gate_new_records", len(new))
+    rulings = list(decision.rulings)
+    if new and coverage_adjudication_enabled():
+        for ruling in await _adjudicate_found(context, draft, evidence, new):
+            if ruling not in rulings:
+                rulings.append(ruling)
+                state.bump("gate_found_rulings")
+    logger.info(
+        "coverage_loop: gate searches conversation=%s results=%d new_records=%d rulings=%s",
+        context.conversation_id, len(found), len(new), _short(rulings),
+    )
+    if not new and not rulings:
+        # Nothing the draft has not seen: another turn would restate it, or
+        # trade a cited value for a lookalike's.
+        state.bump("gate_nothing_new" if found else "gate_nothing_found")
         return
     state.bump("gate_rounds_sent")
-    state.bump("gate_rulings", len(decision.rulings))
+    state.bump("gate_rulings", len(rulings))
+    request = GateDecision(gaps=decision.gaps if new else [], rulings=rulings, checked=decision.checked)
     ctx.recovery_message = UserMessage(
-        content=render_gap_request(decision, render_results(found) if found else ""), injected=True,
+        content=render_gap_request(request, render_results(found) if new else ""), injected=True,
     )
 
 
