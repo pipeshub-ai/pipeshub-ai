@@ -4,9 +4,11 @@ and what both providers share to build them; see ``docs/record-query.md``."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
+from app.config.constants.arangodb import ProgressStatus
 from app.modules.retrieval.record_fields import ORGANIZATION_EDGES, PERSON_EDGES
+from app.services.graph_db.taxonomy import TAXONOMY_ENTITY_TYPES
 
 if TYPE_CHECKING:
     from app.modules.retrieval.record_query.pushdown import Pushdown
@@ -15,10 +17,33 @@ if TYPE_CHECKING:
 # window row, so a record linked to thousands of others stays one bounded read.
 LINKED_PER_ROW = 100
 
+# Records reach these only over edges classification writes (and organisations
+# also over the MENTIONS edges it writes), so a record not classified yet lacks
+# them whatever it is about. See "Classify on first use" in docs/indexing-service.md.
+CLASSIFIED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {"organization"}
+# extractionStatus of a record whose classification has not run yet; a record
+# with none stored reads the same. FAILED and SKIPPED are outcomes, not waits.
+CLASSIFICATION_PENDING: tuple[str, ...] = (
+    ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value, ProgressStatus.PAUSED.value,
+)
+
 __all__ = [
-    "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES", "CandidateKey", "RecordCandidates", "matches_nothing",
+    "CLASSIFICATION_PENDING", "CLASSIFIED_ENTITY_TYPES", "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES",
+    "CandidateKey", "RecordCandidates", "Seed", "classification_pending", "classified_entities", "matches_nothing",
     "record_query_seed",
 ]
+
+
+def classification_pending(row: dict[str, Any]) -> bool:
+    """Whether the row's record has not been classified yet."""
+    status = row.get("extractionStatus")
+    return status is None or status in CLASSIFICATION_PENDING
+
+
+def classified_entities(pushed: Pushdown) -> list[dict[str, str]]:
+    """The pushed entity conditions only classification links a record to."""
+    return [e for e in pushed.get("entities", []) if e.get("type") in CLASSIFIED_ENTITY_TYPES]
 
 
 class CandidateKey(NamedTuple):
@@ -37,15 +62,36 @@ class RecordCandidates:
     capped: bool = False
 
 
-def record_query_seed(pushed: Pushdown) -> str:
-    """Which condition the scan starts from: the first edge condition present,
-    then containers, else every record of the org. Starting from a person's
-    or an entity's edges reads only their records instead of the tenant's;
-    every condition is still checked on each candidate."""
-    for key in ("entities", "links", "people", "organizations", "containers"):
+@dataclass(frozen=True)
+class Seed:
+    """Where the scan starts: ``key`` names the condition, ``entry`` is the
+    pushed entry seeded from, and ``with_pending`` adds every record not
+    classified yet, which the entry's edges cannot reach."""
+
+    key: str
+    entry: Any = None
+    with_pending: bool = False
+
+
+def record_query_seed(pushed: Pushdown) -> Seed:
+    """Which condition the scan starts from. Starting from an entity's, a
+    link's or a person's edges reads only their records instead of the
+    tenant's; every condition is still checked on each candidate. A condition
+    classification satisfies must also read every record not classified yet,
+    so a container, which needs no such addition, is preferred to it."""
+    exact = [e for e in pushed.get("entities", []) if e.get("type") not in CLASSIFIED_ENTITY_TYPES]
+    if exact:
+        return Seed("entities", exact[0])
+    for key in ("links", "people"):
         if pushed.get(key):
-            return key
-    return "org"
+            return Seed(key, pushed[key][0])
+    if pushed.get("containers"):
+        return Seed("containers")
+    if pushed.get("entities"):
+        return Seed("entities", pushed["entities"][0], with_pending=True)
+    if pushed.get("organizations"):
+        return Seed("organizations", pushed["organizations"][0], with_pending=True)
+    return Seed("org")
 
 
 def matches_nothing(pushed: Pushdown) -> bool:

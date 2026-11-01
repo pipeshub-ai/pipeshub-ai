@@ -85,6 +85,25 @@ neither matches nor fails a condition on it: the engine counts it as
 `unknown` for that field and reports the count. A derived field is unknown
 when any input is.
 
+**Not classified yet is unknown too.** Topics, categories, subcategories,
+departments, languages and an organisation's `MENTIONS` edges are written by
+classification. With the Labs flag `ENABLE_CLASSIFY_ON_FIRST_USE`
+(`docs/indexing-service.md`) a record stays `extractionStatus` NOT_STARTED
+until first used, and any record is QUEUED or IN_PROGRESS while it waits; it
+has none of those edges whatever it is about. So the providers push such a
+condition down as "edge exists, or not classified yet" (`extractionStatus`
+missing or NOT_STARTED, QUEUED, IN_PROGRESS, PAUSED), and a scan seeded from
+such an entity or organisation also reads the org's records not classified
+yet. A row reports which of the query's classified entities it links to
+(`entities`); one that links to none and is not classified yet is unknown,
+counted as `unknown["classification"]` and reported as such, never as a
+miss. FAILED and SKIPPED are outcomes and stay misses. An organisation
+condition still matches on a connector's `FOR_ACCOUNT` edge before
+classification. When the flag is on, find_records asks for classification of
+up to 50 such records a query, the shown rows first, through the same
+`classify_on_first_use_later` path a search uses (each record once per ten
+minutes per process); with it off nothing is queued.
+
 ## RecordQuery
 
 ```text
@@ -108,7 +127,8 @@ limit:      rows per page (default 20, max 50); cursor
   `approximate: true` when the scan cap or deadline was hit. Never silent.
 - `value`: the aggregate, over admitted rows only.
 - `groups`: `[{key, label, count, value}]`, top N by count.
-- `unknown`: `{field: count}` of admitted candidates a condition could not judge.
+- `unknown`: `{field: count}` of admitted candidates a condition could not judge;
+  `classification` counts records not classified yet.
 - `rows`: a page, readable names first (title, type, source, status, people
   by role, dates, amount), with record ids for fetch.
 - `applied`: the conditions as the engine read them (values as stored).
@@ -138,8 +158,11 @@ returns the rows of ids the access check already admitted, read in windows
 of `WINDOW` ids. Rows carry: `_key`, `recordName`, `recordType`,
 `connectorName`, `connectorId`, `recordGroupId`, `webUrl`, created/updated
 timestamps, the ticket fields, the deal fields, `people: [{role, id, name, email}]`,
-`organizations: [{id, name}]`, `links: [{id, relation}]`. A row of another
-org, or of a deleted record, is never returned.
+`organizations: [{id, name}]`, `links: [{id, relation}]`, `extractionStatus`,
+the fields first use needs (`indexingStatus`, `virtualRecordId`,
+`contentRev`, `mimeType`), and `entities: [{type, id}]`, the query's
+classified entities the record links to. A row of another org, or of a
+deleted record, is never returned.
 
 ## Sorting
 

@@ -140,11 +140,14 @@ from app.services.graph_db.common.full_sync_unlink import (
 )
 from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_query_rows import (
+    CLASSIFICATION_PENDING,
+    CLASSIFIED_ENTITY_TYPES,
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
     PERSON_EDGES,
     CandidateKey,
     RecordCandidates,
+    classified_entities,
     matches_nothing,
     record_query_seed,
 )
@@ -23375,7 +23378,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     MATCH (rec)-[lk:RECORD_LINK]-(lo:Record)
                     WHERE lo.orgId = $org_id
                     RETURN {id: lo.id, relation: lk.relationshipType} LIMIT $linked_per_row
-                  }"""
+                  },
+                  extractionStatus: rec.extractionStatus, indexingStatus: rec.indexingStatus,
+                  virtualRecordId: rec.virtualRecordId, contentRev: rec.contentRev, mimeType: rec.mimeType"""
 
     def _record_query_entity_condition(self, entity_type: str, param: str) -> str | None:
         """Record ``rec`` is connected to the entity ``$<param>`` as
@@ -23392,6 +23397,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             f"WHERE e.id = ${param}{scope} }}"
         )
 
+    _RECORD_QUERY_PENDING = "(rec.extractionStatus IS NULL OR rec.extractionStatus IN $pending_extraction)"
+
+    def _with_pending(self, linked: str) -> str:
+        """``linked``, clauses binding ``rec`` from ``ref``, joined with every
+        record of the org not classified yet, which no classification edge reaches."""
+        return f"""CALL {{
+              WITH ref
+              {linked}
+              RETURN rec
+              UNION
+              WITH ref
+              MATCH (rec:Record) WHERE rec.orgId = $org_id AND {self._RECORD_QUERY_PENDING}
+              RETURN rec
+            }}"""
+
     def _record_query_cypher(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
         """The candidate query for ``pushed`` and its parameters, or None when
         it names an entity type no record can be connected to. Fragments are
@@ -23399,6 +23419,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         params: dict[str, Any] = {
             "record_types": list(pushed["record_types"]) if "record_types" in pushed else None,
             "org_edges": list(ORGANIZATION_EDGES),
+            "pending_extraction": list(CLASSIFICATION_PENDING),
         }
         where = [self._ENTITY_CANDIDATE_RECORD_FILTER, self._ENTITY_WITHIN_FILTER]
         if "sources" in pushed:
@@ -23437,9 +23458,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         for i, org_ids in enumerate(pushed.get("organizations", [])):
             params[f"orgs_{i}"] = list(org_ids)
+            # A record not classified yet lacks the MENTIONS edges classification
+            # writes: it stays a candidate, and the evaluator counts it unknown.
             where.append(
-                f"EXISTS {{ MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization) WHERE o.id IN $orgs_{i} "
-                f"AND orl.edgeType IN $org_edges AND o.isExternal = true AND o.parentOrgId = $org_id }}"
+                f"(EXISTS {{ MATCH (rec)-[orl:ENTITYRELATIONS]->(o:Organization) WHERE o.id IN $orgs_{i} "
+                f"AND orl.edgeType IN $org_edges AND o.isExternal = true AND o.parentOrgId = $org_id }} "
+                f"OR {self._RECORD_QUERY_PENDING})"
             )
         for i, link in enumerate(pushed.get("links", [])):
             params[f"links_{i}_ids"], params[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
@@ -23450,30 +23474,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         for i, entity in enumerate(pushed.get("entities", [])):
             params[f"entities_{i}"] = str(entity.get("id") or "")
-            condition = self._record_query_entity_condition(str(entity.get("type") or ""), f"entities_{i}")
+            entity_type = str(entity.get("type") or "")
+            condition = self._record_query_entity_condition(entity_type, f"entities_{i}")
             if condition is None:
                 return None
+            if entity_type in CLASSIFIED_ENTITY_TYPES:
+                condition = f"({condition} OR {self._RECORD_QUERY_PENDING})"
             where.append(condition)
 
         seed = record_query_seed(pushed)
         params["seed_id"] = None
-        if seed == "entities":
-            first = pushed["entities"][0]
-            entity_type = str(first.get("type") or "")
-            params["seed_id"] = str(first.get("id") or "")
+        if seed.key == "entities":
+            entity_type = str(seed.entry.get("type") or "")
+            params["seed_id"] = str(seed.entry.get("id") or "")
             if entity_type == KnowledgeGraphEntityType.RECORD.value:
                 scan = "MATCH (rec:Record) WHERE rec.id = ref.id AND"
             else:
                 relationship, entity_match = self._entity_node_match(entity_type)
-                scan = f"""{entity_match}
-            MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)
+                linked = f"""{entity_match}
+            MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
+                scan = f"""{self._with_pending(linked) if seed.with_pending else linked}
             WITH DISTINCT {carry} WHERE"""
-        elif seed == "links":
+        elif seed.key == "links":
             params["seed_ids"] = list(pushed["links"][0]["ids"])
             scan = f"""MATCH (seed:Record) WHERE seed.id IN $seed_ids AND seed.orgId = $org_id
             MATCH (rec:Record)-[:RECORD_LINK]-(seed)
             WITH DISTINCT {carry} WHERE"""
-        elif seed == "people":
+        elif seed.key == "people":
             params["seed_ids"] = list(pushed["people"][0]["ids"])
             scan = f"""UNWIND $seed_ids AS pid
             CALL {{
@@ -23483,12 +23510,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }}
             MATCH (rec:Record)-[:ENTITYRELATIONS]-(seed) WHERE seed.orgId = $org_id
             WITH DISTINCT {carry} WHERE"""
-        elif seed == "organizations":
-            params["seed_ids"] = list(pushed["organizations"][0])
-            scan = f"""MATCH (seed:Organization) WHERE seed.id IN $seed_ids
-            MATCH (rec:Record)-[:ENTITYRELATIONS]->(seed)
+        elif seed.key == "organizations":
+            params["seed_ids"] = list(seed.entry)
+            linked = """MATCH (seed:Organization) WHERE seed.id IN $seed_ids
+            MATCH (rec:Record)-[:ENTITYRELATIONS]->(seed)"""
+            scan = f"""{self._with_pending(linked) if seed.with_pending else linked}
             WITH DISTINCT {carry} WHERE"""
-        elif seed == "containers":
+        elif seed.key == "containers":
             scan = "MATCH (rec:Record) WHERE rec.recordGroupId IN container_groups AND"
         else:
             scan = "MATCH (rec:Record) WHERE"
@@ -23554,14 +23582,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
+        # Which classified entities the query names each row links to: the scan
+        # also passes rows not classified yet, which the evaluator must tell apart.
+        named, entity_params = [], {}
+        for i, entity in enumerate(classified_entities(pushdown)):
+            condition = self._record_query_entity_condition(str(entity["type"]), f"ent_{i}")
+            if condition is not None:
+                entity_params[f"ent_{i}"], entity_params[f"ent_{i}_type"] = str(entity["id"]), str(entity["type"])
+                named.append(f"CASE WHEN {condition} THEN {{type: $ent_{i}_type, id: $ent_{i}}} END")
+        entities = f"[x IN [{', '.join(named)}] WHERE x IS NOT NULL]" if named else "[]"
         rows = await self.client.execute_query(
             f"""
             UNWIND $record_ids AS rid
             MATCH (rec:Record {{id: rid}})
             WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
-            RETURN {{{self._RECORD_QUERY_ROW}}} AS row
+            RETURN {{{self._RECORD_QUERY_ROW}, entities: {entities}}} AS row
             """,
             parameters={
+                **entity_params,
                 "org_id": org_id,
                 "record_ids": list(dict.fromkeys(record_ids)),
                 "person_edges": list(PERSON_EDGES),

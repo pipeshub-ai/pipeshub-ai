@@ -324,3 +324,22 @@ async def test_a_sorted_query_pages_by_its_own_cursor(readable: set[str]) -> Non
 def test_a_sort_on_anything_but_one_date_or_number_field_is_refused(sort: str) -> None:
     with pytest.raises(ValueError, match="sort is newest, oldest"):
         q(sort=sort)
+
+
+async def test_records_waiting_for_classification_are_handed_back_bounded(readable: set[str]) -> None:
+    rows = []
+    for i in range(120):
+        row = _row(i, assignee="ravi")
+        row.update(extractionStatus="NOT_STARTED" if i % 2 else "COMPLETED", entities=[], indexingStatus="COMPLETED",
+                   virtualRecordId=f"v{i}", contentRev="rev", mimeType="text/plain")
+        rows.append(row)
+    readable.update(r["_key"] for r in rows)
+    result = await run_record_query(FakeProvider(rows), CONTEXT, q(where=[{"entity": {"type": "topic", "id": "t"}}]))
+    assert (result.total, result.unknown) == (0, {"classification": 60})
+    assert len(result.not_classified) == engine.MAX_TO_CLASSIFY
+    assert {d["extractionStatus"] for d in result.not_classified} == {"NOT_STARTED"}
+    assert set(result.not_classified[0]) == {"_key", "virtualRecordId", "contentRev", "connectorId", "connectorName",
+                                             "mimeType", "indexingStatus", "extractionStatus"}
+    shown = await run_record_query(FakeProvider(rows), CONTEXT, q(limit=5))
+    assert [d["_key"] for d in shown.not_classified] == [r["record_id"] for r in shown.rows
+                                                          if int(r["record_id"][1:]) % 2]

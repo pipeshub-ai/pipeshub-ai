@@ -56,7 +56,11 @@ from app.modules.retrieval.record_query.pushdown import (
     PushedLinks,
     PushedPeople,
 )
-from app.services.graph_db.common.record_query_rows import CandidateKey
+from app.services.graph_db.common.record_query_rows import (
+    CLASSIFICATION_PENDING,
+    CLASSIFIED_ENTITY_TYPES,
+    CandidateKey,
+)
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -94,6 +98,8 @@ class Spec:
     placeholder: bool = False
     other_org: bool = False
     topic: bool = False
+    # extractionStatus: NOT_STARTED is a record waiting for classification on first use.
+    extraction: str = ProgressStatus.COMPLETED.value
 
 
 # Groups: root > child > grandchild (Zendesk), jira, account (Salesforce).
@@ -121,6 +127,10 @@ SPECS: dict[str, Spec] = {
                deal={"amount": 50000.0, "closeDate": None, "isWon": False, "isClosed": False}, readable=False),
     # Same newest time as d1: the id breaks the tie.
     "f1": Spec("file", JIRA, "jira", 7_000, 20_000),
+    # Not classified yet: no topic or MENTIONS edge can exist; u2 keeps a topic
+    # edge from an earlier classification while it is classified again.
+    "u1": Spec("file", JIRA, "jira", 3_500, 35_000, extraction=ProgressStatus.NOT_STARTED.value),
+    "u2": Spec("file", JIRA, "jira", 3_600, 36_000, extraction=ProgressStatus.QUEUED.value, topic=True),
     "deleted": Spec("ticket", ZENDESK, "child", 1_500, 99_000, ticket=_ticket("OPEN", "Open", "HIGH"), deleted=True),
     "placeholder": Spec("ticket", ZENDESK, "child", 1_600, 98_000, ticket=_ticket("OPEN", "Open", "HIGH"),
                         placeholder=True),
@@ -200,6 +210,7 @@ def _record(g: Graph, name: str, spec: Spec) -> Record:
         "origin": OriginTypes.CONNECTOR, "connector_name": spec.connector, "connector_id": g.connectors[spec.connector],
         "version": 1, "source_created_at": spec.created, "source_updated_at": spec.updated,
         "weburl": f"https://example.test/{name}", "is_deleted": spec.deleted, "is_placeholder": spec.placeholder,
+        "extraction_status": spec.extraction,
         "indexing_status": ProgressStatus.QUEUED.value if spec.placeholder else ProgressStatus.COMPLETED.value,
         "record_group_id": g.gid(spec.group) if spec.group else None,
     }
@@ -354,7 +365,7 @@ async def seeded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------- reference
 
 
-def _expected_row(g: Graph, name: str) -> dict[str, Any]:
+def _expected_row(g: Graph, name: str, pushed: Pushdown | None = None) -> dict[str, Any]:
     spec = SPECS[name]
     people = [
         {"role": t, "id": g.nid(p), "name": NAMES[p], "email": g.email(p)}
@@ -371,6 +382,9 @@ def _expected_row(g: Graph, name: str) -> dict[str, Any]:
         "createdAt": spec.created, "updatedAt": spec.updated,
         "ticket": dict(spec.ticket) if spec.ticket else None, "deal": dict(spec.deal) if spec.deal else None,
         "people": people, "organizations": orgs, "links": links,
+        "extractionStatus": spec.extraction,
+        "entities": [e for e in (pushed or {}).get("entities", [])
+                     if e["type"] in CLASSIFIED_ENTITY_TYPES and _entity_holds(g, name, e)],
     }
 
 
@@ -417,13 +431,15 @@ def _holds(g: Graph, name: str, pushed: Pushdown, within: list[dict[str, list[st
     for person in pushed.get("people", []):
         if not any(p["id"] in person["ids"] and p["role"] in person["edges"] for p in row["people"]):
             return False
+    waiting = spec.extraction in CLASSIFICATION_PENDING
     for org_ids in pushed.get("organizations", []):
-        if not any(o["id"] in org_ids for o in row["organizations"]):
+        if not (any(o["id"] in org_ids for o in row["organizations"]) or waiting):
             return False
     for link in pushed.get("links", []):
         if not any(lk["id"] in link["ids"] and link["relation"] in (None, lk["relation"]) for lk in row["links"]):
             return False
-    if not all(_entity_holds(g, name, e) for e in pushed.get("entities", [])):
+    if not all(_entity_holds(g, name, e) or (waiting and e["type"] in CLASSIFIED_ENTITY_TYPES)
+               for e in pushed.get("entities", [])):
         return False
     # An empty limit is a limit that admits nothing, as ``within_param`` reads it.
     for scope in ([] if within is None else within or [{}]):
@@ -434,7 +450,7 @@ def _holds(g: Graph, name: str, pushed: Pushdown, within: list[dict[str, list[st
 
 
 def _reference(g: Graph, pushed: Pushdown, within: list[dict[str, list[str]]] | None = None) -> list[dict[str, Any]]:
-    rows = [_expected_row(g, n) for n in LIVE if _holds(g, n, pushed, within)]
+    rows = [_expected_row(g, n, pushed) for n in LIVE if _holds(g, n, pushed, within)]
     return sorted(rows, key=lambda r: (-r["updatedAt"], r["_key"]))
 
 
@@ -443,7 +459,9 @@ def _normal(row: dict[str, Any]) -> dict[str, Any]:
     def key(item: dict[str, Any]) -> tuple[str, ...]:
         return tuple(f"{k}={item[k]}" for k in sorted(item))
 
-    return {**row, **{k: sorted(row[k], key=key) for k in ("people", "organizations", "links")}}
+    # What first use needs to queue classification: checked in its own test.
+    kept = {k: v for k, v in row.items() if k not in ("indexingStatus", "virtualRecordId", "contentRev", "mimeType")}
+    return {**kept, **{k: sorted(row[k], key=key) for k in ("people", "organizations", "links", "entities")}}
 
 
 async def _scan(g: Graph, pushed: Pushdown, *, scan_cap: int = 1_000,
@@ -506,6 +524,10 @@ def _cases(g: Graph) -> dict[str, Pushdown]:
         "links_incoming": Pushdown(links=[PushedLinks(ids=[g.rid("t3")], relation=None)]),
         "links_relation": Pushdown(links=[PushedLinks(ids=[g.rid("t4"), g.rid("t1")], relation="RELATED")]),
         "entity_topic": Pushdown(entities=[{"type": "topic", "id": g.topic}]),
+        "entity_topic_from_a_source": Pushdown(entities=[{"type": "topic", "id": g.topic}], sources=["JIRA"]),
+        "entity_topic_in_container": Pushdown(entities=[{"type": "topic", "id": g.topic}],
+                                              containers=[g.gid("jira")]),
+        "organizations_in_container": Pushdown(organizations=[[g.nid("acme")]], containers=[g.gid("jira")]),
         "entity_record": Pushdown(entities=[{"type": "record", "id": g.rid("t4")}]),
         "entity_record_group": Pushdown(entities=[{"type": "record_group", "id": g.gid("child")}]),
         "entity_person": Pushdown(entities=[{"type": "person", "id": bob}]),
@@ -548,7 +570,11 @@ async def test_the_reference_cases_select_what_they_say(seeded: Graph) -> None:
     def keys(case: str) -> list[str]:
         return [r["_key"].removeprefix(f"{g.org}-") for r in _reference(g, cases[case])]
 
-    assert keys("nothing") == ["t4", "t2", "t1", "t3", "t5", "d1", "f1", "d2"]
+    assert keys("nothing") == ["t4", "t2", "t1", "t3", "u2", "u1", "t5", "d1", "f1", "d2"]
+    # Records not classified yet stay candidates for what classification links.
+    assert keys("entity_topic") == ["t1", "t3", "u2", "u1"]
+    assert keys("organizations") == ["t1", "u2", "u1", "d1", "d2"]
+    assert keys("organizations_in_container") == ["u2", "u1"]
     assert keys("containers_root_nested") == ["t4", "t2", "t1"]
     assert keys("people_assignee") == ["t4", "t1"]
     assert keys("people_any_role_person_node") == ["t1", "d2"]
@@ -563,7 +589,11 @@ async def test_hydration_shapes_and_missing_values(seeded: Graph) -> None:
     assert set(by_key) == set(LIVE)
     for row in rows:
         assert set(row) == {"_key", "recordName", "recordType", "connectorName", "connectorId", "recordGroupId",
-                            "webUrl", "createdAt", "updatedAt", "ticket", "deal", "people", "organizations", "links"}
+                            "webUrl", "createdAt", "updatedAt", "ticket", "deal", "people", "organizations", "links",
+                            "extractionStatus", "indexingStatus", "virtualRecordId", "contentRev", "mimeType",
+                            "entities"}
+    assert by_key["u1"]["extractionStatus"] == "NOT_STARTED" and by_key["t1"]["extractionStatus"] == "COMPLETED"
+    assert by_key["u1"]["indexingStatus"] == "COMPLETED" and by_key["u1"]["entities"] == []
     assert by_key["t3"]["ticket"] == {"status": None, "sourceStatus": None, "priority": None,
                                       "resolvedAt": None, "dueAt": None}
     assert by_key["t2"]["ticket"]["resolvedAt"] == 70_000
@@ -645,7 +675,7 @@ async def test_empty_scope_reads_nothing(seeded: Graph) -> None:
     only_jira = await g.graph.get_record_query_candidates(
         g.org, connector_ids=[g.connectors[JIRA]], pushdown=Pushdown(),
     )
-    assert sorted(k.id for k in only_jira.keys) == [g.rid("f1"), g.rid("t3")]
+    assert sorted(k.id for k in only_jira.keys) == sorted(g.rid(n) for n in ("f1", "t3", "u1", "u2"))
     unknown = await g.graph.get_record_query_candidates(
         g.org, connector_ids=g.connector_ids, pushdown=Pushdown(entities=[{"type": "nonsense", "id": "x"}]),
     )
@@ -823,4 +853,28 @@ async def test_sort_by_a_date_field_pages_in_order_with_unknowns_last(seeded: Gr
         if not cursor:
             break
     # t5 has no created time: last, never placed as if it were oldest or newest.
-    assert seen == ["f1", "d1", "t4", "t3", "t1", "t5"]
+    assert seen == ["f1", "d1", "t4", "u2", "u1", "t3", "t1", "t5"]
+
+
+async def test_records_not_classified_yet_are_unknown_never_a_miss(seeded: Graph) -> None:
+    g = seeded
+    topic = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"entity": {"type": "topic", "id": g.topic}}], "limit": 50,
+    }))
+    # u2 keeps its topic edge while it is classified again; u1 has none yet.
+    assert sorted(r["record_id"] for r in topic.rows) == sorted(g.rid(n) for n in ("t1", "t3", "u2"))
+    assert (topic.total, topic.unknown) == (3, {"classification": 1})
+    assert sorted(d["_key"] for d in topic.not_classified) == sorted([g.rid("u1"), g.rid("u2")])
+
+    acme = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"organization": {"ids": [g.nid("acme")]}}],
+    }))
+    assert sorted(r["record_id"] for r in acme.rows) == sorted(g.rid(n) for n in ("t1", "d1"))
+    assert acme.unknown == {"classification": 2}
+
+    not_acme = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "where": [{"field": "source", "in": ["JIRA"]},
+                  {"not": {"organization": {"ids": [g.nid("acme")]}}}],
+    }))
+    assert sorted(r["record_id"] for r in not_acme.rows) == sorted(g.rid(n) for n in ("t3", "f1"))
+    assert not_acme.unknown == {"classification": 2}

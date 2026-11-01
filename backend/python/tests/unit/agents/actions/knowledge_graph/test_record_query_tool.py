@@ -120,3 +120,29 @@ async def test_sort_reaches_the_engine_and_the_rows_say_their_order(engine: Asyn
     ok, text = await op.execute_find_records(_state(), sort="amount desc")
     assert ok and engine.await_args.args[2].sort == "amount desc"
     assert "Records 1-1 of 1, amount desc:" in text
+
+
+async def test_records_not_classified_are_reported_and_queued_for_classification(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued = MagicMock()
+    monkeypatch.setattr(op, "classify_on_first_use_later", queued)
+    waiting = [{"_key": "r9", "extractionStatus": "NOT_STARTED"}]
+    engine.return_value = RecordQueryResult(total=2, unknown={"classification": 3, "status": 1},
+                                            not_classified=waiting)
+    state = {**_state(), "config_service": MagicMock(), "org_id": "org"}
+    op.load_entity_access_context.return_value = MagicMock(org_id="org", row_scopes=())
+    _, text = await op.execute_find_records(state, where=[{"entity": {"type": "topic", "id": "t"}}])
+    assert "3 records not classified yet" in text and "unknown" in text
+    assert "1 lack status" in text and "lack classification" not in text
+    queued.assert_called_once()
+    assert queued.call_args.args[0] == {"records": waiting} and queued.call_args.args[1] == "org"
+
+
+async def test_nothing_is_queued_when_every_record_is_classified(
+    engine: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued = MagicMock()
+    monkeypatch.setattr(op, "classify_on_first_use_later", queued)
+    await op.execute_find_records({**_state(), "config_service": MagicMock()})
+    queued.assert_not_called()

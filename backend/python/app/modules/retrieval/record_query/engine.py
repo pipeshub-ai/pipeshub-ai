@@ -23,6 +23,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.person_identity import people_of
 from app.modules.retrieval.record_query.evaluate import (
+    NOT_CLASSIFIED,
     ROLE_OF_EDGE,
     aggregate_value,
     field_value,
@@ -39,6 +40,7 @@ from app.modules.retrieval.record_query.model import (
 )
 from app.modules.retrieval.record_query.paging import page
 from app.modules.retrieval.record_query.pushdown import pushdown
+from app.services.graph_db.common.record_query_rows import classification_pending
 
 if TYPE_CHECKING:
     from app.modules.retrieval.entity_permissions import EntityAccessContext
@@ -54,6 +56,10 @@ DEADLINE_SECONDS = 20.0
 _SERVER_GRACE_SECONDS = 2.0
 # A person id that names the user asking.
 SELF_ID = "me"
+# Records one query hands to classification on first use, as one search does.
+MAX_TO_CLASSIFY = 50
+_FIRST_USE_FIELDS = ("_key", "virtualRecordId", "contentRev", "connectorId", "connectorName", "mimeType",
+                     "indexingStatus", "extractionStatus")
 
 
 def _connector_ids(context: EntityAccessContext, query: RecordQuery) -> list[str]:
@@ -120,9 +126,9 @@ async def run_record_query(
         checked += len(keys)
     result = _result(query, admitted_rows, approximate=approximate)
     logger.info(
-        "record query %s org=%s scanned=%d checked=%d admitted=%d total=%d approximate=%s ms=%d",
+        "record query %s org=%s scanned=%d checked=%d admitted=%d total=%d approximate=%s not_classified=%d ms=%d",
         qid, context.org_id, len(found.keys), checked, len(admitted_rows), result.total, result.approximate,
-        (time.monotonic() - started) * 1000,
+        result.unknown.get(NOT_CLASSIFIED, 0), (time.monotonic() - started) * 1000,
     )
     return result
 
@@ -159,17 +165,23 @@ async def resolve_people(
 
 
 def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> RecordQueryResult:
-    found = tally(query, admitted)
+    found = tally(query, admitted, keep_not_classified=MAX_TO_CLASSIFY)
     matched = found.matched
     value, _ = aggregate_value(query, matched) if query.aggregate.op != "count" else (float(len(matched)), 0)
     shown, start, next_cursor = page(
         matched, sort=query.sort, cursor=query.cursor, limit=query.limit, value_of=field_value,
     )
+    waiting = {r["_key"]: r for r in [*shown, *found.not_classified] if classification_pending(r)}
     return RecordQueryResult(
         total=len(matched), approximate=approximate, value=value, groups=groups(query, matched),
         unknown=dict(found.unknown), described=_described(query, matched),
         rows=[row_view(r) for r in shown], offset=start, next_cursor=next_cursor,
+        not_classified=[_first_use_doc(r) for r in list(waiting.values())[:MAX_TO_CLASSIFY]],
     )
+
+
+def _first_use_doc(row: Row) -> dict[str, Any]:
+    return {k: row.get(k) for k in _FIRST_USE_FIELDS}
 
 
 def _described(query: RecordQuery, matched: list[Row]) -> dict[str, list[Group]]:
@@ -205,4 +217,7 @@ def row_view(row: Row) -> dict[str, Any]:
     return {k: v for k, v in view.items() if v not in (None, "", [], {})}
 
 
-__all__ = ["DEADLINE_SECONDS", "SCAN_CAP", "SELF_ID", "WINDOW", "resolve_people", "row_view", "run_record_query"]
+__all__ = [
+    "DEADLINE_SECONDS", "MAX_TO_CLASSIFY", "SCAN_CAP", "SELF_ID", "WINDOW", "resolve_people", "row_view",
+    "run_record_query",
+]

@@ -266,6 +266,9 @@ class RecordQueryResult(BaseModel):
     # Where ``rows`` starts among the matches, for "records 21-40 of 57".
     offset: int = 0
     next_cursor: str | None = None
+    # Records shown or left unknown that wait for classification on first use:
+    # the fields ``app.modules.pipeline.first_use`` needs to ask for it. Never rendered.
+    not_classified: list[dict[str, Any]] = Field(default_factory=list)
 
 
 for _model in (AllOf, AnyOf, Not, RecordQuery):

@@ -44,11 +44,13 @@ class Pushdown(TypedDict, total=False):
     - ``created`` / ``updated``: ``[start_ms | None, end_ms | None]``, inclusive,
       on ``sourceCreatedAtTimestamp`` / ``sourceLastModifiedTimestamp``.
     - ``people``: each entry needs an edge of one of ``edges`` to one of ``ids``.
-    - ``organizations``: each entry is a list of organisation ids, any of which.
+    - ``organizations``: each entry is a list of organisation ids, any of which;
+      a record not classified yet also passes (classification writes MENTIONS).
     - ``links``: each entry needs a record link to one of ``ids`` (of
       ``relation`` when given), in either direction.
     - ``entities``: each ``{"type", "id"}`` must be connected as for
-      ``get_entity_candidate_records``.
+      ``get_entity_candidate_records``; for a type only classification links
+      (``CLASSIFIED_ENTITY_TYPES``), a record not classified yet also passes.
     """
 
     sources: list[str]

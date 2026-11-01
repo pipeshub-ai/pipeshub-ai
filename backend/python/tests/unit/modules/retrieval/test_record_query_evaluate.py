@@ -173,3 +173,52 @@ def test_a_container_condition_is_scope_and_must_be_top_level() -> None:
     assert [r["_key"] for r in tally(query, [nested]).matched] == ["a"]
     with pytest.raises(ValidationError, match="top-level"):
         q(where=[{"any_of": [{"field": "container", "in": ["g"]}, {"field": "status", "in": ["OPEN"]}]}])
+
+
+# -- records not classified yet (classify on first use)
+
+
+def _classified(key: str, status: str | None, *, topics: list[str] = (), orgs: list[str] = ()) -> dict:
+    row = _ticket(key, orgs=[{"id": o, "name": o} for o in orgs])
+    row["extractionStatus"] = status
+    row["entities"] = [{"type": "topic", "id": t} for t in topics]
+    return row
+
+
+@pytest.mark.parametrize("status", ["NOT_STARTED", "QUEUED", "IN_PROGRESS", None])
+def test_a_record_not_classified_yet_is_unknown_for_a_topic_never_a_miss(status: str | None) -> None:
+    query = q(where=[{"entity": {"type": "topic", "id": "billing"}}])
+    found = tally(query, [_classified("a", status), _classified("b", "COMPLETED"),
+                          _classified("c", status, topics=["billing"])])
+    assert [r["_key"] for r in found.matched] == ["c"]
+    assert found.unknown == {"classification": 1}
+
+
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "SKIPPED"])
+def test_a_classified_record_without_the_topic_is_a_miss(status: str) -> None:
+    query = q(where=[{"entity": {"type": "topic", "id": "billing"}}])
+    assert evaluate_all(query.where, _classified("a", status)).value is False
+
+
+def test_an_exact_entity_is_decided_by_the_provider_whatever_the_classification() -> None:
+    query = q(where=[{"entity": {"type": "record_group", "id": "queue"}}])
+    assert evaluate_all(query.where, _classified("a", "NOT_STARTED")).value is True
+
+
+def test_an_organisation_a_record_not_classified_yet_lacks_is_unknown() -> None:
+    query = q(where=[{"organization": {"ids": ["acme"]}}])
+    rows = [_classified("pending", "NOT_STARTED"), _classified("done", "COMPLETED"),
+            _classified("linked", "NOT_STARTED", orgs=["acme"])]
+    found = tally(query, rows)
+    assert [r["_key"] for r in found.matched] == ["linked"]
+    assert found.unknown == {"classification": 1}
+    negated = tally(q(where=[{"not": {"organization": {"ids": ["acme"]}}}]), rows)
+    assert [r["_key"] for r in negated.matched] == ["done"] and negated.unknown == {"classification": 1}
+
+
+def test_the_rows_left_unknown_for_classification_are_kept_up_to_a_bound() -> None:
+    query = q(where=[{"entity": {"type": "topic", "id": "billing"}}])
+    rows = [_classified(f"r{i}", "NOT_STARTED") for i in range(5)]
+    found = tally(query, rows, keep_not_classified=3)
+    assert [r["_key"] for r in found.not_classified] == ["r0", "r1", "r2"]
+    assert found.unknown == {"classification": 5}

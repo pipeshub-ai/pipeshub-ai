@@ -8666,7 +8666,9 @@ class IGraphDBProvider(ABC):
         ``connector_ids``, passing the entity-candidate record filter (not
         deleted, not a placeholder) and ``within`` exactly as
         ``get_permitted_entity_records`` applies it, and every condition in
-        ``pushdown`` (``record_query.pushdown.Pushdown``). The scan stops at
+        ``pushdown`` (``record_query.pushdown.Pushdown``), where a condition
+        only classification satisfies also passes a record not classified
+        yet (``record_query_rows.classification_pending``). The scan stops at
         ``scan_cap`` candidates and ``capped`` says it did. One query per call:
         the keys come back ordered as entity candidates are (newest first,
         then id), each with the timestamp it is ordered by.
@@ -8710,7 +8712,12 @@ class IGraphDBProvider(ABC):
           ``organizations``: ``[{id, name}]`` over ``FOR_ACCOUNT`` and
           ``MENTIONS`` edges;
           ``links``: ``[{id, relation}]`` over record links in either
-          direction, ``relation`` the link's ``relationshipType``.
+          direction, ``relation`` the link's ``relationshipType``;
+          ``extractionStatus``, ``indexingStatus``, ``virtualRecordId``,
+          ``contentRev``, ``mimeType`` as stored;
+          ``entities``: ``[{type, id}]``, the entities of ``pushdown`` of a
+          ``CLASSIFIED_ENTITY_TYPES`` type the record links to, since the
+          scan also passes records not classified yet.
         A value the graph does not hold is None, never a default.
 
         Raises:

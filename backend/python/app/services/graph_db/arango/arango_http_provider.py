@@ -193,11 +193,15 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
 )
 from app.services.graph_db.common.record_query_rows import (
+    CLASSIFICATION_PENDING,
+    CLASSIFIED_ENTITY_TYPES,
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
     PERSON_EDGES,
     CandidateKey,
     RecordCandidates,
+    Seed,
+    classified_entities,
     matches_nothing,
     record_query_seed,
 )
@@ -22267,6 +22271,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             amount: d.amount, closeDate: d.closeDate, isWon: d.isWon, isClosed: d.isClosed,
                         }},
                         "people": people, "organizations": organizations, "links": links,
+                        "extractionStatus": r.extractionStatus, "indexingStatus": r.indexingStatus,
+                        "virtualRecordId": r.virtualRecordId, "contentRev": r.contentRev, "mimeType": r.mimeType,
+                        "entities": entities,
                     }}"""
 
     def _record_query_entity_aql(self, entity_type: str, param: str) -> str | None:
@@ -22294,16 +22301,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return f"""LENGTH(FOR v IN 1..1 OUTBOUND rec {edge_collection}
                         FILTER v._id IN [{targets}] LIMIT 1 RETURN 1) > 0"""
 
-    def _record_query_seed_aql(self, pushed: Pushdown, bind_vars: dict[str, Any]) -> tuple[str, bool]:
+    def _record_query_seed_aql(self, seed: Seed, pushed: Pushdown, bind_vars: dict[str, Any]) -> tuple[str, bool]:
         """The loop binding ``rec`` to the records the scan starts from, and
         whether one record can come out of it twice."""
         records = CollectionNames.RECORDS.value
         relations = CollectionNames.ENTITY_RELATIONS.value
-        seed = record_query_seed(pushed)
-        if seed == "entities":
-            first = pushed["entities"][0]
-            entity_type = str(first.get("type") or "")
-            bind_vars["seed_id"] = str(first.get("id") or "")
+        if seed.key == "entities":
+            entity_type = str(seed.entry.get("type") or "")
+            bind_vars["seed_id"] = str(seed.entry.get("id") or "")
             if entity_type == EntityType.RECORD.value:
                 return f"FOR rec IN {records} FILTER rec._key == @seed_id", False
             if entity_type in self._LINKED_ENTITY_NODES:
@@ -22314,13 +22319,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to IN [{targets}] AND STARTS_WITH(edge._from, "{records}/")
                     LET rec = DOCUMENT(edge._from)
                     FILTER rec != null""", True
-        if seed == "links":
+        if seed.key == "links":
             bind_vars["seed_ids"] = list(pushed["links"][0]["ids"])
             return f"""FOR seed IN {records}
                     FILTER seed._key IN @seed_ids AND seed.orgId == @org_id
                     FOR rec IN 1..1 ANY seed {CollectionNames.RECORD_LINKS.value}
                         FILTER IS_SAME_COLLECTION("{records}", rec)""", True
-        if seed == "people":
+        if seed.key == "people":
             bind_vars["seed_ids"] = list(pushed["people"][0]["ids"])
             users, people = CollectionNames.USERS.value, CollectionNames.PEOPLE.value
             return f"""FOR sid IN @seed_ids
@@ -22328,17 +22333,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER seed != null AND seed.orgId == @org_id
                         FOR rec IN 1..1 ANY seed {relations}
                             FILTER IS_SAME_COLLECTION("{records}", rec)""", True
-        if seed == "organizations":
-            bind_vars["seed_ids"] = list(pushed["organizations"][0])
+        if seed.key == "organizations":
+            bind_vars["seed_ids"] = list(seed.entry)
             orgs = CollectionNames.ORGS.value
             return f"""FOR sid IN @seed_ids
                     LET seed = DOCUMENT(CONCAT("{orgs}/", sid))
                     FILTER seed != null AND seed.isExternal == true AND seed.parentOrgId == @org_id
                     FOR rec IN 1..1 INBOUND seed {relations}
                         FILTER IS_SAME_COLLECTION("{records}", rec)""", True
-        if seed == "containers":
+        if seed.key == "containers":
             return f"FOR rec IN {records} FILTER rec.orgId == @org_id AND rec.recordGroupId IN container_groups", False
         return f"FOR rec IN {records} FILTER rec.orgId == @org_id", False
+
+    _RECORD_QUERY_PENDING = "(rec.extractionStatus == null OR rec.extractionStatus IN @pending_extraction)"
 
     def _record_query_aql(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
         """The candidate query for ``pushed`` and its bind variables, or None
@@ -22395,10 +22402,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LIMIT 1 RETURN 1) > 0""")
         for i, org_ids in enumerate(pushed.get("organizations", [])):
             bind_vars[f"orgs_{i}"], bind_vars["org_edges"] = list(org_ids), list(ORGANIZATION_EDGES)
-            where.append(f"""LENGTH(FOR o, orl IN 1..1 OUTBOUND rec {relations}
+            bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
+            # A record not classified yet lacks the MENTIONS edges classification
+            # writes: it stays a candidate, and the evaluator counts it unknown.
+            where.append(f"""(LENGTH(FOR o, orl IN 1..1 OUTBOUND rec {relations}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", o) AND o._key IN @orgs_{i}
                             AND orl.edgeType IN @org_edges AND o.isExternal == true AND o.parentOrgId == @org_id
-                        LIMIT 1 RETURN 1) > 0""")
+                        LIMIT 1 RETURN 1) > 0 OR {self._RECORD_QUERY_PENDING})""")
         for i, link in enumerate(pushed.get("links", [])):
             bind_vars[f"links_{i}_ids"], bind_vars[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
             where.append(f"""LENGTH(FOR lo, lk IN 1..1 ANY rec {CollectionNames.RECORD_LINKS.value}
@@ -22408,27 +22418,43 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LIMIT 1 RETURN 1) > 0""")
         for i, entity in enumerate(pushed.get("entities", [])):
             bind_vars[f"entities_{i}"] = str(entity.get("id") or "")
-            condition = self._record_query_entity_aql(str(entity.get("type") or ""), f"entities_{i}")
+            entity_type = str(entity.get("type") or "")
+            condition = self._record_query_entity_aql(entity_type, f"entities_{i}")
             if condition is None:
                 return None
+            if entity_type in CLASSIFIED_ENTITY_TYPES:
+                bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
+                condition = f"({condition} OR {self._RECORD_QUERY_PENDING})"
             where.append(condition)
 
-        seed, repeats = self._record_query_seed_aql(pushed, bind_vars)
+        seed = record_query_seed(pushed)
+        loop, repeats = self._record_query_seed_aql(seed, pushed, bind_vars)
         filters = "\n                    ".join(f"FILTER {w}" for w in where)
         newest = self._entity_candidate_newest("rec")
-        # A seed over edges can reach a record twice; the cap counts records.
-        capped_scan = (
-            f"COLLECT id = rec._key, sort_ts = {newest}\n                    LIMIT @scan_cap\n"
-            "                    RETURN {id, sort_ts}"
-        ) if repeats else f"LIMIT @scan_cap\n                    RETURN {{id: rec._key, sort_ts: {newest}}}"
+
+        def scanned(loop: str, *, repeats: bool) -> str:
+            # A seed over edges can reach a record twice; the cap counts records.
+            capped_scan = (
+                f"COLLECT id = rec._key, sort_ts = {newest}\n                    LIMIT @scan_cap\n"
+                "                    RETURN {id, sort_ts}"
+            ) if repeats else f"LIMIT @scan_cap\n                    RETURN {{id: rec._key, sort_ts: {newest}}}"
+            return f"""(
+                {loop}
+                    {filters}
+                    {capped_scan}
+            )"""
+
+        keys = scanned(loop, repeats=repeats)
+        if seed.with_pending:
+            # No classification edge reaches a record not classified yet.
+            bind_vars["pending_extraction"] = list(CLASSIFICATION_PENDING)
+            pending = scanned(f"FOR rec IN {CollectionNames.RECORDS.value} FILTER rec.orgId == @org_id "
+                              f"AND {self._RECORD_QUERY_PENDING}", repeats=False)
+            keys = f"SLICE(UNION_DISTINCT({keys}, {pending}), 0, @scan_cap)"
         # One scan per query returning keys only; rows are read by id afterwards,
         # so no window re-runs the scan.
         query = f"""{prelude}
-            FOR k IN (
-                {seed}
-                    {filters}
-                    {capped_scan}
-            )
+            FOR k IN {keys}
                 SORT k.sort_ts DESC, k.id ASC
                 RETURN k
             """
@@ -22478,13 +22504,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_record_query_rows`."""
         if not org_id or not record_ids:
             return []
+        # Which classified entities the query names each row links to: the scan
+        # also passes rows not classified yet, which the evaluator must tell apart.
+        named, entity_vars = [], {}
+        for i, entity in enumerate(classified_entities(pushdown)):
+            condition = self._record_query_entity_aql(str(entity["type"]), f"ent_{i}")
+            if condition is not None:
+                entity_vars[f"ent_{i}"], entity_vars[f"ent_{i}_type"] = str(entity["id"]), str(entity["type"])
+                named.append(f"({condition}) ? {{type: @ent_{i}_type, id: @ent_{i}}} : null")
         rows = await self.execute_query(
             f"""
             FOR rid IN @record_ids
                 LET r = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
-                FILTER r != null AND r.orgId == @org_id AND r.isDeleted != true{self._RECORD_QUERY_HYDRATION}
+                FILTER r != null AND r.orgId == @org_id AND r.isDeleted != true
+                LET rec = r
+                LET entities = [{", ".join(named)}][* FILTER CURRENT != null]{self._RECORD_QUERY_HYDRATION}
             """,
             bind_vars={
+                **entity_vars,
                 "org_id": org_id,
                 "record_ids": list(dict.fromkeys(record_ids)),
                 "person_edges": list(PERSON_EDGES),

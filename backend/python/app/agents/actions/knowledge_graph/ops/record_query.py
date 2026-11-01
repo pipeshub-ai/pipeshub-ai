@@ -20,10 +20,12 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 )
 from app.agents.agent_loop.knowledge_graph_policy import knowledge_graph_policy_in
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.modules.retrieval.record_fields import FIELDS, ROLE_EDGES, FieldKind, Store
 from app.modules.retrieval.record_query.engine import run_record_query
+from app.modules.retrieval.record_query.evaluate import NOT_CLASSIFIED
 from app.modules.retrieval.record_query.model import (
     EntityCondition,
     LinkCondition,
@@ -109,6 +111,13 @@ async def execute_find_records(state: ChatState, **args: Any) -> tuple[bool, str
     except EntityAccessError:
         logger.warning("find_records failed", exc_info=True)
         return False, LOOKUP_FAILED_MSG
+    if result.not_classified and state.get("config_service") is not None:
+        # As a search does: records this query met that wait for classification
+        # are classified in the background (only with the Labs flag on), so the
+        # next query can decide them.
+        classify_on_first_use_later(
+            {"records": result.not_classified}, context.org_id, state["config_service"], logger,
+        )
     keys = [r["record_id"] for r in result.rows if r.get("record_id")]
     if keys:
         remember_record_ids(state, keys, names={r["record_id"]: r.get("title") or "" for r in result.rows})
@@ -144,9 +153,15 @@ def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = No
         lines += [f"- {g.label}: {'at least ' if result.approximate else ''}{g.count}"
                   + (f", {query.aggregate.op} {_number(g.value)}" if g.value is not None else "") + f" ({kind})"
                   for g in result.groups]
-    if result.unknown:
+    lacking = {name: n for name, n in result.unknown.items() if name != NOT_CLASSIFIED}
+    if lacking:
         lines.append("Not counted, because the record does not carry the field: " + ", ".join(
-            f"{n} lack {name}" for name, n in result.unknown.items()))
+            f"{n} lack {name}" for name, n in lacking.items()))
+    if result.unknown.get(NOT_CLASSIFIED):
+        lines.append(
+            f"Not counted: {result.unknown[NOT_CLASSIFIED]} records not classified yet, so whether they "
+            "match a topic, category or organisation condition is unknown (neither a match nor a miss)."
+        )
     for name, values in result.described.items():
         lines.append(f"Values of {name} among the matches: " + (
             ", ".join(f"{g.key} ({g.count})" for g in values) or "none"))
