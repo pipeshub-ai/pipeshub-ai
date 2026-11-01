@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import {
-  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
+  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, isFencedWriteComment, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
 } from '../../../src/libs/repositories/fence'
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../src/libs/repositories/errors'
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors'
@@ -52,7 +52,7 @@ describe('Mongo store fence', () => {
     const { state, c } = setup({ mode: 'draining' })
     await c.insertOne({ a: 1 })
     expect(state.log[0]).to.deep.equal(['fence-read', FENCE_COLLECTION, { _id: 'fence' }, { readPreference: 'primary', timeoutMS: FENCE_READ_DEADLINE_MS }])
-    expect(state.log[1]).to.deep.equal(['insertOne', { a: 1 }, { comment: FENCED_WRITE_COMMENT, timeoutMS: WRITE_TIMEOUT_MS }])
+    expect(state.log[1]).to.deep.equal(['insertOne', { a: 1 }, { comment: { tag: FENCED_WRITE_COMMENT }, timeoutMS: WRITE_TIMEOUT_MS }])
     expect(FENCE_READ_DEADLINE_MS).to.equal(2000)
     expect(WRITE_TIMEOUT_MS).to.equal(5000)
   })
@@ -62,19 +62,40 @@ describe('Mongo store fence', () => {
     await active.c.updateMany({}, { $set: { b: 1 } })
     await active.c.deleteMany({})
     await active.c.bulkWrite([])
-    const tag = { comment: FENCED_WRITE_COMMENT }
+    const tag = { comment: { tag: FENCED_WRITE_COMMENT } }
     expect(active.state.log.filter((l) => l[0] !== 'fence-read')).to.deep.equal([['updateMany', {}, { $set: { b: 1 } }, tag], ['deleteMany', {}, tag], ['bulkWrite', [], tag]])
     const moving = setup({ mode: 'draining' })
     await moving.c.updateMany({}, { $set: { b: 1 } })
     expect(moving.state.log[1]).to.deep.equal(['updateMany', {}, { $set: { b: 1 } }, { ...tag, timeoutMS: 5000 }])
   })
 
-  it('tags a write inside a transaction and keeps a comment the caller set', async () => {
+  it('tags a write inside a transaction, and whatever kind of comment the caller passed (none, string, object)', async () => {
     const { state, c } = setup({ mode: 'active' })
     await c.insertOne({}, { session: { inTransaction: () => true } })
     await c.insertOne({}, { comment: 'mine' } as never)
-    expect((state.log[1]?.[2] as { comment: string }).comment).to.equal(FENCED_WRITE_COMMENT)
-    expect((state.log[3]?.[2] as { comment: string }).comment).to.equal(`${FENCED_WRITE_COMMENT} mine`)
+    await c.insertOne({}, { comment: { a: 1 } } as never)
+    await c.insertOne({}, { comment: 7 } as never)
+    const comments = [1, 3, 5, 7].map((i) => (state.log[i]?.[2] as { comment: unknown }).comment)
+    expect(comments).to.deep.equal([
+      { tag: FENCED_WRITE_COMMENT }, { tag: FENCED_WRITE_COMMENT, caller: 'mine' },
+      { tag: FENCED_WRITE_COMMENT, caller: { a: 1 } }, { tag: FENCED_WRITE_COMMENT, caller: 7 },
+    ])
+    expect(comments.every(isFencedWriteComment)).to.equal(true)
+    expect(isFencedWriteComment('mine')).to.equal(false)
+    expect(isFencedWriteComment(null)).to.equal(false)
+  })
+
+  it('refuses drop and rename (the driver cannot tag them) while the store is being moved, and allows them when active', async () => {
+    const moving = setup({ mode: 'draining' })
+    for (const m of ['drop', 'rename'] as const) {
+      let err: unknown
+      await (moving.c as any)[m]().catch((e: unknown) => { err = e })
+      expect(err).to.be.instanceOf(DocStoreFencedError)
+    }
+    expect(moving.state.log.filter((l) => l[0] === 'drop' || l[0] === 'rename')).to.have.length(0)
+    const active = setup({ mode: 'active' })
+    await (active.c as any).drop()
+    expect(active.state.log.some((l) => l[0] === 'drop')).to.equal(true)
   })
 
   it('the cutover waits the read deadline + trust window before it looks for tagged writes', () => {
@@ -106,24 +127,24 @@ describe('Mongo store fence', () => {
   it('a missing fence document means active', async () => {
     const { state, c } = setup(null)
     await c.updateOne({ a: 1 }, { $set: { b: 1 } })
-    expect(state.log[1]).to.deep.equal(['updateOne', { a: 1 }, { $set: { b: 1 } }, { comment: FENCED_WRITE_COMMENT }])
+    expect(state.log[1]).to.deep.equal(['updateOne', { a: 1 }, { $set: { b: 1 } }, { comment: { tag: FENCED_WRITE_COMMENT } }])
   })
 
   it('keeps the options the caller passed and a timeout it set; skips the deadline inside a transaction (while the store is being moved)', async () => {
     const { state, c } = setup({ mode: 'draining' })
     await c.insertOne({}, { ordered: false })
-    expect(state.log[1]?.[2]).to.deep.equal({ ordered: false, comment: FENCED_WRITE_COMMENT, timeoutMS: 5000 })
+    expect(state.log[1]?.[2]).to.deep.equal({ ordered: false, comment: { tag: FENCED_WRITE_COMMENT }, timeoutMS: 5000 })
     await c.insertOne({}, { timeoutMS: 100 })
-    expect(state.log[3]?.[2]).to.deep.equal({ timeoutMS: 100, comment: FENCED_WRITE_COMMENT })
+    expect(state.log[3]?.[2]).to.deep.equal({ timeoutMS: 100, comment: { tag: FENCED_WRITE_COMMENT } })
     const session = { inTransaction: () => true }
     await c.insertOne({}, { session })
-    expect(state.log[5]?.[2]).to.deep.equal({ session, comment: FENCED_WRITE_COMMENT })
+    expect(state.log[5]?.[2]).to.deep.equal({ session, comment: { tag: FENCED_WRITE_COMMENT } })
   })
 
   it('pads omitted arguments so the options land in place (deleteMany())', async () => {
     const { state, c } = setup({ mode: 'draining' })
     await c.deleteMany()
-    expect(state.log[1]).to.deep.equal(['deleteMany', undefined, { comment: FENCED_WRITE_COMMENT, timeoutMS: 5000 }])
+    expect(state.log[1]).to.deep.equal(['deleteMany', undefined, { comment: { tag: FENCED_WRITE_COMMENT }, timeoutMS: 5000 }])
   })
 
   it('refuses every write while read-only, and answers a retired store with the fenced error; nothing is written', async () => {

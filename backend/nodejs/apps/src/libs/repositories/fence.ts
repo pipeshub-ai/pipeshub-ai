@@ -63,15 +63,25 @@ interface FenceReader {
  *
  * The rule for the cutover tool: after setting `draining`, wait at least FENCE_VISIBLE_MS (read deadline + this trust window), so
  * that every writer has seen the change; then wait until `$currentOp` (allUsers, idleSessions) lists no operation whose
- * `command.comment` starts with FENCED_WRITE_COMMENT; only then set `readonly` or `retired`. Writes started after the first wait
+ * `command.comment.tag` equals FENCED_WRITE_COMMENT (FENCED_WRITE_OP_MATCH, or isFencedWriteComment); only then set `readonly` or `retired`. Writes started after the first wait
  * see `draining` and carry the 5 s write timeout.
  */
 export const ACTIVE_FENCE_TRUST_MS = 500;
 const trustMs = (): number =>
   Number(process.env.DOC_STORE_FENCE_TRUST_MS ?? ACTIVE_FENCE_TRUST_MS);
 export const FENCE_VISIBLE_MS = FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS;
-/** Every write the fence lets through carries this `comment` (as a prefix of a caller's own string comment). */
+/**
+ * Every write the fence lets through carries the `comment` `{ tag: FENCED_WRITE_COMMENT, caller?: <the caller's own comment> }`.
+ * In `$currentOp` match it with FENCED_WRITE_OP_MATCH, or test a comment with isFencedWriteComment.
+ */
 export const FENCED_WRITE_COMMENT = 'pipeshub:fenced-write';
+export const FENCED_WRITE_OP_MATCH = {
+  'command.comment.tag': FENCED_WRITE_COMMENT,
+};
+export const isFencedWriteComment = (c: unknown): boolean =>
+  typeof c === 'object' &&
+  c !== null &&
+  (c as { tag?: unknown }).tag === FENCED_WRITE_COMMENT;
 let activeUntil = 0;
 // reads can finish out of order: a read that started before the last non-`active` answer must not re-trust `active`
 let readSeq = 0;
@@ -173,6 +183,11 @@ export function installMongoFence(collectionClass: {
       if (this.collectionName === FENCE_COLLECTION)
         return original.apply(this, args);
       const mode = await assertMongoWritable(this.s.db);
+      // the driver sends no `comment` with these two commands, so the cutover could not see them in `$currentOp`
+      if (mode === 'draining' && (method === 'drop' || method === 'rename'))
+        throw new DocStoreFencedError(
+          `${method} cannot be tagged, so it is refused while the store is being moved`,
+        );
       // shortcut: filter/doc may be omitted by callers of deleteOne()/deleteMany(); pad so options land at optsAt
       while (args.length < optsAt) args.push(undefined);
       const opts = (args[optsAt] ?? {}) as {
@@ -185,13 +200,12 @@ export function installMongoFence(collectionClass: {
         mode === 'draining' &&
         opts.timeoutMS === undefined &&
         !opts.session?.inTransaction();
-      // shortcut: a caller's non-string comment is kept as it is and so is not tagged; none exists in `src`
-      const comment =
-        opts.comment === undefined
-          ? FENCED_WRITE_COMMENT
-          : typeof opts.comment === 'string'
-            ? `${FENCED_WRITE_COMMENT} ${opts.comment}`
-            : opts.comment;
+      const comment = isFencedWriteComment(opts.comment)
+        ? opts.comment
+        : {
+            tag: FENCED_WRITE_COMMENT,
+            ...(opts.comment === undefined ? {} : { caller: opts.comment }),
+          };
       args[optsAt] = {
         ...opts,
         comment,
