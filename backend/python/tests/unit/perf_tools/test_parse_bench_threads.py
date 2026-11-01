@@ -21,7 +21,9 @@ MIB = report.MIB
 
 class TestOnnxThreadsFlag:
     def test_sets_the_variable_the_workers_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("PDF_TABLE_MODEL_THREADS", raising=False)
+        # setenv first so monkeypatch records the original state and undoes the write below.
+        monkeypatch.setenv("PDF_TABLE_MODEL_THREADS", "unset-marker")
+        monkeypatch.delenv("PDF_TABLE_MODEL_THREADS")
         driver.apply_onnx_threads(2)
         assert os.environ["PDF_TABLE_MODEL_THREADS"] == "2"
 
@@ -220,7 +222,34 @@ class TestDescendantCpu:
             acct.sample()
             time.sleep(0.05)
         child.wait()
-        assert acct.total_seconds() >= 0.3
+        # The root is this process, whose own CPU already exceeds 0.3 s: assert on the child's entry.
+        assert acct.seconds_for(child.pid) >= 0.3
+
+
+class TestProbeAfterFreezing:
+    async def test_the_sampler_is_stopped_before_the_probe_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events: list[str] = []
+
+        class FakeSampler:
+            def live_parse_workers(self) -> int:
+                return 2
+
+            def stop(self) -> None:
+                events.append("stop")
+
+            def is_alive(self) -> bool:
+                return True
+
+            def join(self, timeout: float | None = None) -> None:
+                events.append("join")
+
+        async def fake_probe(count: int, hold_seconds: float = 1.0) -> list[dict[str, object]]:
+            events.append(f"probe {count}")
+            return []
+
+        monkeypatch.setattr(driver, "probe_workers", fake_probe)
+        await driver.probe_after_freezing(FakeSampler(), 0)  # type: ignore[arg-type]
+        assert events == ["stop", "join", "probe 2"]
 
 
 class TestScanRoute:

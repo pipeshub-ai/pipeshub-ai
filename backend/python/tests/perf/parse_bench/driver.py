@@ -373,6 +373,20 @@ def summarize_payload(payload: Any) -> dict[str, Any]:  # noqa: ANN401
     return golden.summarize(payload, len(payload.get("blocks") or []), len(payload.get("block_groups") or []))
 
 
+async def probe_after_freezing(sampler: TreeSampler, probe_only: int) -> list[dict[str, Any]]:
+    """Probe the parse workers once the workload's peaks are frozen.
+
+    The probe imports OpenCV in a worker that may never have loaded it, which adds memory and
+    threads after the measured window; the sampler must not count them as the run's peaks or
+    abort a finished run on them.
+    """
+    count = sampler.live_parse_workers() or probe_only
+    sampler.stop()
+    if sampler.is_alive():
+        sampler.join(timeout=5)
+    return await probe_workers(count)
+
+
 async def probe_workers(count: int, hold_seconds: float = 1.0) -> list[dict[str, Any]]:
     """Ask *count* parse workers what OpenCV decided about threads.
 
@@ -518,7 +532,7 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
         cg_after["memory_peak_scope"] = "run" if peak.scoped else "container lifetime"
         peak.close()
     gov_stats = governor.stats()
-    probes = [] if args.no_probe else await probe_workers(sampler.live_parse_workers() or args.probe_only)
+    probes = [] if args.no_probe else await probe_after_freezing(sampler, args.probe_only)
     cpu_run_total = cpu.total_seconds()
     cpu.stop()
     monitor.stop()

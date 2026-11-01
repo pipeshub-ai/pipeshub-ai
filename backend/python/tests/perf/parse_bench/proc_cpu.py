@@ -94,6 +94,11 @@ class DescendantCpu(threading.Thread):
     def stop(self) -> None:
         self._stop_event.set()
 
+    def seconds_for(self, pid: int) -> float:
+        """CPU seconds recorded for one process (0 if it was never seen)."""
+        with self._lock:
+            return self._seen.get(pid, 0) / TICKS_PER_SECOND
+
     def run(self) -> None:
         while not self._stop_event.is_set():
             self.sample()
