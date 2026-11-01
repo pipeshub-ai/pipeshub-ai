@@ -1,11 +1,11 @@
 """Run one command confined by Landlock, then exec it.
 
-    python -I -S landlock_exec.py <readable-dir> -- <argv...>
+    python -I -S landlock_exec.py <readable-dir> [--cpu-seconds=N] -- <argv...>
 
 The command, and everything it starts, may read <readable-dir> and the system's
 programs and libraries, write only /dev/null, and use no network (on kernels
-with Landlock ABI 4 or later). Each stage also gets at most 30 s of CPU and
-2 GiB of memory. The storage
+with Landlock ABI 4 or later). Each stage also gets at most 30 s of CPU (N with
+--cpu-seconds, for a multi-threaded stage) and 2 GiB of memory. The storage
 tools run every pipeline stage this way, so a command that slips past their
 validator still cannot read another tenant's files, the app's configuration or
 /proc, or write anything. Exits 126 without running the command when Landlock
@@ -105,25 +105,30 @@ def confine(readable_dir: str) -> None:
         os.close(ruleset)
 
 
-def limit_resources() -> None:
+def limit_resources(cpu_seconds: int = CPU_SECONDS) -> None:
     """Cap this process's (and what it execs') CPU time and address space."""
-    for which, wanted in ((resource.RLIMIT_CPU, CPU_SECONDS), (resource.RLIMIT_AS, MEMORY_BYTES)):
+    for which, wanted in ((resource.RLIMIT_CPU, cpu_seconds), (resource.RLIMIT_AS, MEMORY_BYTES)):
         _soft, hard = resource.getrlimit(which)
         cap = wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
         resource.setrlimit(which, (cap, cap))
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) < 4 or argv[2] != "--":
-        sys.stderr.write("usage: landlock_exec.py <readable-dir> -- <argv...>\n")
+    rest = argv[2:]
+    cpu_seconds = CPU_SECONDS
+    if rest and rest[0].startswith("--cpu-seconds="):
+        value = rest.pop(0).split("=", 1)[1]
+        cpu_seconds = int(value) if value.isdigit() and int(value) > 0 else 0
+    if len(argv) < 2 or len(rest) < 2 or rest[0] != "--" or cpu_seconds <= 0:
+        sys.stderr.write("usage: landlock_exec.py <readable-dir> [--cpu-seconds=N] -- <argv...>\n")
         sys.exit(2)
     try:
-        limit_resources()
+        limit_resources(cpu_seconds)
         confine(argv[1])
     except (OSError, ValueError) as e:
         sys.stderr.write(f"landlock: refusing to run unconfined: {e}\n")
         sys.exit(126)
-    os.execvp(argv[3], argv[3:])
+    os.execvp(rest[1], rest[1:])
 
 
 if __name__ == "__main__":

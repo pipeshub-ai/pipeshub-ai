@@ -41,6 +41,12 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.storage_search.ripgrep import (
+    grep_to_ripgrep,
+    lists_files_only,
+    ripgrep_binary,
+    ripgrep_threads,
+)
 from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
@@ -1044,6 +1050,33 @@ def _stage_env() -> dict[str, str]:
     return {k: v for k in _STAGE_ENV_KEYS if (v := os.environ.get(k))}
 
 
+def _confined(argv: list[str], confine_to: str, threads: int) -> list[str]:
+    """*argv* run under Landlock, with CPU time for each of its *threads*."""
+    from app.agents.actions.storage_search.landlock_exec import CPU_SECONDS
+
+    cpu_seconds = CPU_SECONDS * threads
+    limit = [f"--cpu-seconds={cpu_seconds}"] if cpu_seconds != CPU_SECONDS else []
+    return [sys.executable, "-I", "-S", _LANDLOCK_EXEC, confine_to, *limit, "--", *argv]
+
+
+def _ripgrep_stage(
+    argv: list[str], rg: str, *, first: bool, previous: list[str] | None,
+) -> tuple[list[str], int]:
+    """*argv* with its grep run by ripgrep where that prints the same, and the
+    threads the stage then runs on. Only stages that read files: the first
+    stage's walk, and the grep of an ``xargs`` stage handed nothing but files."""
+    threads = ripgrep_threads()
+    translated: list[str] | None = None
+    if first:
+        translated = grep_to_ripgrep(argv, rg, walk=True, threads=threads)
+    elif argv[0] == "xargs" and previous is not None and lists_files_only(previous):
+        sub = _find_xargs_sub_binary(argv, 0)
+        tail = grep_to_ripgrep(argv[sub:], rg, walk=False, threads=threads) if sub is not None else None
+        if tail is not None:
+            translated = argv[:sub] + tail
+    return (argv, 1) if translated is None else (translated, threads)
+
+
 async def _run_subprocess(
     command: str,
     *,
@@ -1088,6 +1121,7 @@ async def _run_subprocess(
     last_stderr = b""
     killed_early = max_stdout_bytes > 0
     capped = False
+    rg = ripgrep_binary(confined=confine_to is not None)
 
     try:
         for i, tokens in enumerate(stage_tokens):
@@ -1099,10 +1133,15 @@ async def _run_subprocess(
                 if i > 0:
                     stdin_data = _sanitize_xargs_input(stdin_data or b"", cwd)
                 stage_argv = _force_xargs_null_delimited(tokens)
+            threads = 1
+            if rg is not None:
+                stage_argv, threads = _ripgrep_stage(
+                    stage_argv, rg, first=i == 0, previous=stage_tokens[i - 1] if i else None,
+                )
             if confine_to is not None:
                 # Landlock: the stage (and whatever it starts) may read only
                 # confine_to and the system's programs, write nothing, no network.
-                stage_argv = [sys.executable, "-I", "-S", _LANDLOCK_EXEC, confine_to, "--", *stage_argv]
+                stage_argv = _confined(stage_argv, confine_to, threads)
             proc = await asyncio.create_subprocess_exec(
                 *stage_argv,
                 stdin=asyncio.subprocess.PIPE,

@@ -371,6 +371,10 @@ config:
   # "true" through extraEnv. With it on, no one connector type holds more than
   # 4 of the first 10 records of a search API result; the records it pushes
   # down come back after the first page.
+  # PATTERN_MATCH_ENGINE is not part of this mode: "ripgrep" through extraEnv
+  # runs the keyword search's grep stages that read record files with rg on
+  # PATTERN_MATCH_RG_THREADS threads (default 4, at most 8), with the same
+  # results as grep.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

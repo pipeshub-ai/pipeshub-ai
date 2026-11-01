@@ -203,6 +203,9 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+      # Opt-in only: "ripgrep" runs keyword-search grep stages with rg.
+      - PATTERN_MATCH_ENGINE=${PATTERN_MATCH_ENGINE:-}
+      - PATTERN_MATCH_RG_THREADS=${PATTERN_MATCH_RG_THREADS:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
