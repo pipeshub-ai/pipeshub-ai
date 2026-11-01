@@ -40,6 +40,67 @@ class TestHealthCheck:
             "Resource governor stats failed: %s", error
         )
 
+    async def test_lane_stats_run_off_the_event_loop(self) -> None:
+        """Both can wait up to a second on the lane mutex; neither may hold the loop
+        nor queue behind parse work on the default executor."""
+        import threading
+
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        seen: dict[str, str] = {}
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        governor = MagicMock()
+        governor.stats.side_effect = lambda: seen.setdefault("stats", threading.current_thread().name) and {}
+
+        def fake_lanes_health(*_args: object) -> dict[str, object]:
+            seen["lanes"] = threading.current_thread().name
+            return {}
+
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", governor, create=True),
+            patch("app.parsing_main.lanes_health", side_effect=fake_lanes_health),
+        ):
+            await health_check()
+
+        assert set(seen) == {"stats", "lanes"}
+        assert all(name.startswith("health-stats") for name in seen.values())
+
+    async def test_health_answers_while_parse_work_fills_the_default_executor(self) -> None:
+        """Conversions and to_thread offloads can occupy every default-executor
+        thread; the liveness probe must still answer."""
+        import asyncio
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        governor = MagicMock()
+        governor.stats.return_value = {}
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        busy = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(busy)
+        blocker = asyncio.to_thread(release.wait, 30)
+        blocker_task = asyncio.ensure_future(blocker)
+        try:
+            with (
+                patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+                patch.object(parsing_main_app.state, "governor", governor, create=True),
+                patch("app.parsing_main.lanes_health", return_value={}),
+            ):
+                response = await asyncio.wait_for(health_check(), 5)
+            assert response.status_code == 200
+        finally:
+            release.set()
+            await blocker_task
+            busy.shutdown(wait=True)
+
     async def test_health_reports_lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.parsing_main import app as parsing_main_app
         from app.parsing_main import health_check
@@ -195,3 +256,59 @@ class TestLifespan:
                 docling_processor._resource_governor,
                 pdf_rasterizer._resource_governor,
             ) = saved
+
+    async def test_shutdown_order(self) -> None:
+        """The pool stops before the governor closes the lane budget its workers lease from (T51)."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from app.modules.parsers import parse_pool
+        from app.modules.parsers.pdf import docling_processor, pdf_rasterizer
+        from app.parsing_main import lifespan
+
+        order: list[str] = []
+        governor = MagicMock()
+        governor.run = AsyncMock()
+        governor.ceilings = SimpleNamespace(heavy=1, light=1)
+        governor.stop.side_effect = lambda: order.append("governor.stop")
+        governor.close.side_effect = lambda: order.append("governor.close")
+        pool = MagicMock()
+        pool.shutdown.side_effect = lambda: order.append("pool.shutdown")
+        saved = (
+            parse_pool._State.governor,
+            parse_pool._State.pool,
+            docling_processor._resource_governor,
+            pdf_rasterizer._resource_governor,
+        )
+        try:
+            with (
+                patch("app.parsing_main._get_initialized_container", new=AsyncMock(return_value=MagicMock())),
+                patch("app.parsing_main._build_registry", return_value=MagicMock()),
+                patch("app.parsing_main.is_local_cpu_embedding_configured", new=AsyncMock(return_value=False)),
+                patch("app.parsing_main.ResourceGovernor", return_value=governor),
+            ):
+                async with lifespan(MagicMock()):
+                    parse_pool._State.pool = pool
+            assert order.index("pool.shutdown") < order.index("governor.close")
+            assert order.index("pool.shutdown") < order.index("governor.stop")
+        finally:
+            (
+                parse_pool._State.governor,
+                parse_pool._State.pool,
+                docling_processor._resource_governor,
+                pdf_rasterizer._resource_governor,
+            ) = saved
+
+    def test_shutdown_order_in_indexing_main(self) -> None:
+        """Same rule in the indexing service, read from its source (its lifespan needs the whole app)."""
+        import ast
+        from pathlib import Path
+
+        tree = ast.parse((Path(__file__).parents[2] / "app" / "indexing_main.py").read_text())
+        lifespan = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "lifespan")
+        lines = {
+            ast.unparse(n.func): n.lineno
+            for n in ast.walk(lifespan)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        assert lines["parse_pool.shutdown_parse_pool"] < lines["governor.stop"] < lines["governor.close"]
