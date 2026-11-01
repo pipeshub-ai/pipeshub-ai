@@ -39,11 +39,17 @@ from app.modules.transformers.document_extraction import (
 )
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.utils.env_utils import env_positive_int
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
 require_classify_token = require_service_token(TokenScopes.DOCUMENT_CLASSIFY)
+
+# A block container for a very large document is tens of MB of JSON. The cap
+# is above that and below what would exhaust the process when parsed.
+MAX_CLASSIFY_REQUEST_BYTES = env_positive_int("EXTRACTION_MAX_REQUEST_BYTES", 128 * 1024 * 1024)
+CLASSIFY_PATH = "/api/v1/extract/classify"
 
 # On the router, not the app, so the checks hold wherever this router is included.
 router = APIRouter(

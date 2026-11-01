@@ -48,12 +48,14 @@ from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_ans
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
     exclude_from_state,
     note_org_real_data,
 )
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -163,6 +165,24 @@ async def _cancel_orphaned_agent_tasks(agent: Any) -> None:
     for t in pending:
         t.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def _await_tasks_draining(queue: "asyncio.Queue[Any]", tasks: list[asyncio.Task]) -> None:
+    """Wait for *tasks* after the client has gone, emptying *queue* meanwhile.
+
+    Nobody reads the SSE queue once the consumer stops, and it is bounded:
+    the producer's final flush and `_DONE` would otherwise wait for space
+    forever, and its cleanup would never finish.
+    """
+    async def _discard() -> None:
+        while True:
+            await queue.get()
+
+    drain = spawn_in_request(_discard(), name="sse-queue-drain")
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        drain.cancel()
 
 
 def sse_queue_maxsize() -> int:
@@ -433,6 +453,7 @@ async def run_agent_loop_stream(
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
@@ -530,6 +551,9 @@ async def run_agent_loop_stream(
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
             # Logged before _DONE so the line is written even when the
             # consumer stops waiting on this task after the last event.
             run_timer.emit(
@@ -613,7 +637,7 @@ async def run_agent_loop_stream(
             tasks = [producer]
             if heartbeat:
                 tasks.append(heartbeat)
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await _await_tasks_draining(queue, tasks)
         else:
             # Normal exit: _DONE was received, but the producer's
             # cleanup tail (orphan cancellation, sandbox teardown) is

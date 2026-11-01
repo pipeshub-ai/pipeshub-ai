@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
+    MAX_EMBEDDING_REQUEST_BYTES,
     DownloadStatus,
     EncodeGate,
     EncodePriority,
@@ -126,6 +127,26 @@ class TestEmbeddingServerRoutes:
             json={"model": DEFAULT_EMBEDDING_MODEL, "input": []},
         )
         assert response.status_code == 400
+
+    def test_create_embeddings_too_many_inputs_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        with patch("app.embedding_main.MAX_EMBEDDING_INPUTS", 3):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * 4},
+            )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
+
+    def test_create_embeddings_oversized_body_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        big = "x" * (MAX_EMBEDDING_REQUEST_BYTES + 1)
+        response = test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": big},
+        )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
 
     def test_create_embeddings_base64_format(self, client):
         test_client, mock_manager = client
