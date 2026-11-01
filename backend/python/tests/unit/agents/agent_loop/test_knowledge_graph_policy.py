@@ -198,3 +198,26 @@ class TestReadingItBack:
         if store:
             state["entity_vector_store"] = object()
         assert entity_tools_granted(state) is granted
+
+
+class TestRecordQuery:
+    """`KNOWLEDGE_GRAPH_RECORD_QUERY` (default off) swaps `find_records_by_entity`
+    for `find_records`, the exact filter and count tool (`docs/record-query.md`)."""
+
+    def test_the_harness_flips_this_exact_key(self) -> None:
+        assert CONFIG.KNOWLEDGE_GRAPH_RECORD_QUERY == "KNOWLEDGE_GRAPH_RECORD_QUERY"
+
+    @pytest.mark.parametrize(("tools", "people", "query", "on", "arm"), [
+        (True, True, None, False, "full"),
+        (True, True, True, True, "full+query"),
+        (True, None, True, True, "taxonomy+query"),
+        (False, True, True, False, "off"),
+    ])
+    async def test_it_is_off_by_default_and_needs_the_entity_tools(
+        self, tools: bool | None, people: bool | None, query: bool | None, on: bool, arm: str,
+    ) -> None:
+        flags = _flags(tools, people)
+        if query is not None:
+            flags[CONFIG.KNOWLEDGE_GRAPH_RECORD_QUERY] = query
+        policy = await decide_knowledge_graph_policy({"config_service": _Settings(flags)})
+        assert (policy.record_query, policy.arm) == (on, arm)

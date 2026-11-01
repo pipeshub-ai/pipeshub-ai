@@ -61,3 +61,6 @@ class CONFIG:
     # People and companies (and extracted named entities) in those tools; off,
     # they cover taxonomy, record titles and record groups only. Defaults to disabled.
     KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES = "KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES"
+    # find_records (exact filters, totals and groups over records) in place of
+    # find_records_by_entity; see docs/record-query.md. Defaults to disabled.
+    KNOWLEDGE_GRAPH_RECORD_QUERY = "KNOWLEDGE_GRAPH_RECORD_QUERY"

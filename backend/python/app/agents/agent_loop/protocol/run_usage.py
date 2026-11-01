@@ -187,7 +187,7 @@ async def emit_run_usage(
         payload.completionGateNudges = context.completion_gate_nudges
         policy = context.tool_state.get(KNOWLEDGE_GRAPH_POLICY_STATE_KEY)
         if isinstance(policy, KnowledgeGraphPolicy):
-            payload.knowledgeGraphArm = policy.mode.value
+            payload.knowledgeGraphArm = policy.arm
         for event in context.formatter.run_usage(context, payload=payload):
             await context.event_sink.write(event)
     except Exception:

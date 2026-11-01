@@ -67,10 +67,13 @@ class KnowledgeGraphPolicy:
     """Extracted named entities are searchable (``full`` with extraction on)."""
     search_by_entities: bool = False
     """``knowledgegraph__search_by_entities`` is offered."""
+    record_query: bool = False
+    """``knowledgegraph__find_records`` replaces ``find_records_by_entity``."""
 
     @classmethod
     def from_flags(
         cls, *, tools: bool, people_and_companies: bool, named_entities: bool, search_by_entities_wired: bool,
+        record_query: bool = False,
     ) -> KnowledgeGraphPolicy:
         if not tools:
             mode = KnowledgeGraphMode.OFF
@@ -79,7 +82,15 @@ class KnowledgeGraphPolicy:
         else:
             mode = KnowledgeGraphMode.TAXONOMY
         named = named_entities and mode is KnowledgeGraphMode.FULL
-        return cls(mode=mode, named_entities=named, search_by_entities=named and search_by_entities_wired)
+        return cls(
+            mode=mode, named_entities=named, search_by_entities=named and search_by_entities_wired,
+            record_query=record_query and mode is not KnowledgeGraphMode.OFF,
+        )
+
+    @property
+    def arm(self) -> str:
+        """The arm as the eval harness names it: the mode, plus "+query" with ``find_records``."""
+        return f"{self.mode.value}+query" if self.record_query else self.mode.value
 
     @property
     def entity_tools(self) -> bool:
@@ -120,6 +131,7 @@ async def decide_knowledge_graph_policy(tool_state: MutableMapping[str, Any]) ->
         people_and_companies=flags.people_and_companies,
         named_entities=flags.named_entities,
         search_by_entities_wired=entity_search_tool_switched_on() and bool(tool_state.get("entity_vector_store")),
+        record_query=flags.record_query,
     )
     tool_state[KNOWLEDGE_GRAPH_POLICY_STATE_KEY] = policy
     logger.info(

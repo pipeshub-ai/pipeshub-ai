@@ -17540,6 +17540,7 @@ components:
             - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
             - KNOWLEDGE_GRAPH_TOOLS (advanced): Agents get the knowledge-graph entity tools and the guidance for them (default: true)
             - KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES (advanced): Those tools also find colleagues, companies and extracted named entities (default: false)
+            - KNOWLEDGE_GRAPH_RECORD_QUERY (advanced): Agents get find_records, which filters, counts, totals and groups every record the user may open (default: false)
             - ENABLE_ARTIFACT_WRITE (advanced): While indexing, also store each new version of a record's processed content as a set of files (default: false)
             - ENABLE_ARTIFACT_READ_SHADOW (advanced): Also read those files when a record is read and compare them with the stored record; answers still come from the stored record (default: false)
             - ENABLE_ARTIFACT_READ (advanced): Read those files instead of the stored record, falling back to the stored record (default: false)
@@ -18280,7 +18281,7 @@ components:
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
             ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING,
-            KNOWLEDGE_GRAPH_TOOLS, KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES.
+            KNOWLEDGE_GRAPH_TOOLS, KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES, KNOWLEDGE_GRAPH_RECORD_QUERY.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:
@@ -69459,6 +69460,7 @@ paths:
         - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
         - KNOWLEDGE_GRAPH_TOOLS: Agents get the knowledge-graph entity tools and the guidance for them (default: true)
         - KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: Those tools also find colleagues, companies and extracted named entities (default: false)
+        - KNOWLEDGE_GRAPH_RECORD_QUERY: Agents get find_records, which filters, counts, totals and groups every record the user may open (default: false)
         - ENABLE_KH_SCOPE_LISTING (Labs: All Records Cache): Build the All Records listing from per-connector visibility stored after each sync (Neo4j only; default: false)
       operationId: setPlatformSettings
       security:

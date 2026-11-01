@@ -208,6 +208,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'KNOWLEDGE_GRAPH_RECORD_QUERY',
+    label: 'Exact Record Queries in the Knowledge Graph',
+    description:
+      'Let agents filter, count, total and group records exactly (for example by status, priority, dates, amount, person or customer) with one tool that reads every record the user may open, instead of counting search results. Agents get the tool only after their first search. Needs Knowledge Graph Entity Tools.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
     key: 'ENABLE_ARTIFACT_WRITE',
     label: 'Store Content Revisions as Files',
     description:

@@ -170,12 +170,14 @@ class KnowledgeGraphFlags(NamedTuple):
     tools: bool
     people_and_companies: bool
     named_entities: bool
+    record_query: bool = False
 
 
 _KNOWLEDGE_GRAPH_FLAG_DEFAULTS: dict[str, bool] = {
     CONFIG.KNOWLEDGE_GRAPH_TOOLS: True,
     CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: False,
     CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION: False,
+    CONFIG.KNOWLEDGE_GRAPH_RECORD_QUERY: False,
 }
 
 
@@ -192,6 +194,7 @@ async def knowledge_graph_flags(config_service: ConfigurationService | None = No
         tools=flags[CONFIG.KNOWLEDGE_GRAPH_TOOLS],
         people_and_companies=flags[CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES],
         named_entities=high_accuracy_mode() or flags[CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION],
+        record_query=flags[CONFIG.KNOWLEDGE_GRAPH_RECORD_QUERY],
     )
 
 

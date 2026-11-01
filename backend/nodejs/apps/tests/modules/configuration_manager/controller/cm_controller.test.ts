@@ -912,10 +912,13 @@ describe('ConfigurationManager Controller', () => {
       const flags = res.json.firstCall.args[0].flags
       const tools = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_TOOLS')
       const people = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES')
+      const query = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_RECORD_QUERY')
       expect(tools?.defaultEnabled).to.equal(true)
       expect(people?.defaultEnabled).to.equal(false)
+      expect(query?.defaultEnabled).to.equal(false)
       expect(tools?.advanced).to.equal(true)
       expect(people?.advanced).to.equal(true)
+      expect(query?.advanced).to.equal(true)
     })
 
     it('should not include hidden flags (e.g. ENABLE_BETA_CONNECTORS)', async () => {
@@ -1003,6 +1006,7 @@ describe('ConfigurationManager Controller', () => {
       const flags = res.json.firstCall.args[0].featureFlags
       expect(flags.KNOWLEDGE_GRAPH_TOOLS).to.equal(true)
       expect(flags.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES).to.equal(false)
+      expect(flags.KNOWLEDGE_GRAPH_RECORD_QUERY).to.equal(false)
     })
 
     it('should default ENABLE_KH_SCOPE_LISTING to false when the store has no entry', async () => {
