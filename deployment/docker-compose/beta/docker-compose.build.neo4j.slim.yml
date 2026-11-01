@@ -187,6 +187,8 @@ services:
       - PROJECT_TIMELINE=${PROJECT_TIMELINE:-}
       # history: only for questions about where the work stands or what was decided.
       - PROJECT_TIMELINE_TRIGGER=${PROJECT_TIMELINE_TRIGGER:-}
+      # true: the list is built for a project only, never for a policy.
+      - PROJECT_TIMELINE_PROJECTS_ONLY=${PROJECT_TIMELINE_PROJECTS_ONLY:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}

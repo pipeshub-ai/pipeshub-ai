@@ -325,6 +325,31 @@ def test_the_switch_is_off_unless_set_true(monkeypatch: pytest.MonkeyPatch) -> N
     assert pt.project_timeline_enabled()
 
 
+async def test_projects_only_builds_no_timeline_for_a_policy_subject(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[str] = []
+    subjects = iter([
+        TimelineSubject("policy", "Travel booking standard"),
+        TimelineSubject("policy", "Laptop refresh policy"),
+        TimelineSubject("project", "Badge reader rollout"),
+    ])
+
+    async def _detect(_context: object, _question: str) -> TimelineSubject:
+        return next(subjects)
+
+    async def _collect(_state: object, subject: TimelineSubject) -> Timeline:
+        built.append(subject.name)
+        return Timeline(subject, (_entry("a", None),))
+
+    monkeypatch.setattr(pt, "detect_subject", _detect)
+    monkeypatch.setattr(pt, "collect_timeline", _collect)
+    monkeypatch.delenv(pt.PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR, raising=False)
+    assert await pt._build(_context(), "q") is not None
+    monkeypatch.setenv(pt.PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR, "true")
+    assert await pt._build(_context(), "q") is None
+    assert await pt._build(_context(), "q") is not None
+    assert built == ["Travel booking standard", "Badge reader rollout"]
+
+
 async def test_a_failed_subject_call_builds_no_timeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PROJECT_TIMELINE", "true")
     _use_model(monkeypatch, _Llm(error=RuntimeError("provider down")))

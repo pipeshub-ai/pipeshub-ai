@@ -344,6 +344,8 @@ services:
       - PROJECT_TIMELINE=${PROJECT_TIMELINE:-}
       # history: only for questions about where the work stands or what was decided.
       - PROJECT_TIMELINE_TRIGGER=${PROJECT_TIMELINE_TRIGGER:-}
+      # true: the list is built for a project only, never for a policy.
+      - PROJECT_TIMELINE_PROJECTS_ONLY=${PROJECT_TIMELINE_PROJECTS_ONLY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

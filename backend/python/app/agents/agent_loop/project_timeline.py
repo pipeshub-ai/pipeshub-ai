@@ -13,7 +13,8 @@ permissions and the turn's filters, collects up to ``MAX_RECORDS`` of its
 records. Each is dated by its source system, by the date its content states, or
 by what its own text states (``named_entities.stated_dates``), and the first
 turn gets them in the search's order with a rule for reconciling versions
-within one scope.
+within one scope. With PROJECT_TIMELINE_PROJECTS_ONLY=true a policy gets no
+list.
 
 ``knowledgegraph__search_timeline`` (``ops/timeline``) is a different thing: a
 tool the model calls to search a span of time period by period, placing records
@@ -63,6 +64,8 @@ logger = logging.getLogger(__name__)
 PROJECT_TIMELINE_ENV_VAR = "PROJECT_TIMELINE"
 # "history": the subject call names a subject only when the question asks for something its history can change.
 PROJECT_TIMELINE_TRIGGER_ENV_VAR = "PROJECT_TIMELINE_TRIGGER"
+# "true": the list is built only when the subject is a project.
+PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR = "PROJECT_TIMELINE_PROJECTS_ONLY"
 MAX_RECORDS = 30
 # The subject call, the search and the reads together; past it the turn goes on without a timeline.
 BUILD_TIMEOUT_S = 30.0
@@ -143,6 +146,10 @@ _BASIS_LABELS = {
 
 def project_timeline_enabled() -> bool:
     return env_bool(PROJECT_TIMELINE_ENV_VAR, False)
+
+
+def timeline_wanted(subject: TimelineSubject) -> bool:
+    return subject.kind == "project" or not env_bool(PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR, False)
 
 
 def subject_prompt() -> str:
@@ -333,6 +340,10 @@ async def _build(context: AgentContext, question: str) -> Timeline | None:
     if subject is None:
         logger.info("project_timeline: no project or policy subject conversation=%s", context.conversation_id)
         return None
+    if not timeline_wanted(subject):
+        logger.info("project_timeline: kind=%s skipped, projects only conversation=%s", subject.kind,
+                    context.conversation_id)
+        return None
     timeline = await collect_timeline(context.tool_state, subject)
     logger.info(
         "project_timeline: kind=%s records=%d dated=%d conversation=%s",
@@ -383,6 +394,7 @@ __all__ = [
     "BUILD_TIMEOUT_S",
     "MAX_RECORDS",
     "PROJECT_TIMELINE_ENV_VAR",
+    "PROJECT_TIMELINE_PROJECTS_ONLY_ENV_VAR",
     "PROJECT_TIMELINE_TRIGGER_ENV_VAR",
     "Timeline",
     "TimelineEntry",
@@ -396,4 +408,5 @@ __all__ = [
     "render_timeline",
     "start_project_timeline",
     "subject_prompt",
+    "timeline_wanted",
 ]
