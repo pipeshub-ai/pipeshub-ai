@@ -350,7 +350,7 @@ async def test_the_own_record_of_an_app_is_still_listed_beside_the_foreign_ones(
     assert "c2-y5" in {row["id"] for row in page["rows"]}
 
 
-@pytest.mark.neo4j_only  # ArangoDB's schema requires a connectorId on a record, so it cannot hold one
+@pytest.mark.neo4j_only  # ArangoDB's schema rejects a record with no connectorId field, so this shape exists only on Neo4j
 async def test_a_record_without_a_connector_id_is_listed_as_the_access_check_says(world: _World) -> None:
     """The access check denies a record with no connector, so the declared group does not list it."""
     props = {k: v for k, v in rec("xc-nc", "zz NoConnector", connector_id=APP_A)["props"].items() if k != "connectorId"}
