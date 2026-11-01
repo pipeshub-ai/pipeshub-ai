@@ -12,7 +12,7 @@ _PARTS = ("COVERAGE_LOOP_FACETS", "COVERAGE_LOOP_GATE", "COVERAGE_LOOP_ADJUDICAT
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch) -> None:
     for name in ("HIGH_ACCURACY_MODE", "COVERAGE_LOOP", *_PARTS, "COVERAGE_LOOP_FACET_SEARCHES",
-                 "COVERAGE_LOOP_GATE_ROUNDS", "COVERAGE_LOOP_GATE_SEARCHES"):
+                 "COVERAGE_LOOP_GATE_ROUNDS", "COVERAGE_LOOP_GATE_SEARCHES", "COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -51,3 +51,11 @@ def test_budgets_are_tight_by_default_and_clamped(monkeypatch) -> None:
     monkeypatch.setenv("COVERAGE_LOOP_GATE_ROUNDS", "9")
     monkeypatch.setenv("COVERAGE_LOOP_FACET_SEARCHES", "x")
     assert switches.gate_round_budget() == 3 and switches.facet_search_budget() == 1
+
+
+def test_the_gate_search_timeout_is_short_by_default_and_clamped(monkeypatch) -> None:
+    assert switches.gate_search_timeout_seconds() == 20.0
+    monkeypatch.setenv("COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S", "1")
+    assert switches.gate_search_timeout_seconds() == 3.0
+    monkeypatch.setenv("COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S", "60")
+    assert switches.gate_search_timeout_seconds() == 60.0

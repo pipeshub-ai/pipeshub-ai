@@ -133,6 +133,11 @@ class TestCoverageGate:
         assert ctx.recovery_message.content == "ask with the card"
         assess.assert_not_called()
 
+    async def test_gate_searches_run_under_the_short_timeout(self, stubs, monkeypatch) -> None:
+        monkeypatch.setattr(gate_module, "assess_draft", _decision(Gap("facet", "EU region", "q")))
+        await run_post_model(coverage_gate(_context()), AssistantMessage(content="May 4."), scope=_scope())
+        assert stubs.await_args.kwargs["timeout"] == 20.0
+
     async def test_the_round_budget_follows_its_switch(self, stubs, monkeypatch) -> None:
         monkeypatch.setenv("COVERAGE_LOOP_GATE_ROUNDS", "0")
         assess = _decision(Gap("facet", "EU region", "q"))

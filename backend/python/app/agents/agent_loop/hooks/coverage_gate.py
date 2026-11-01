@@ -36,6 +36,7 @@ from app.utils.coverage_switches import (
     coverage_adjudication_enabled,
     gate_round_budget,
     gate_search_budget,
+    gate_search_timeout_seconds,
 )
 
 if TYPE_CHECKING:
@@ -181,7 +182,9 @@ async def _send_back(context: "AgentContext", ctx: "ModelResponseContext", decis
     queries = [gap.query for gap in decision.gaps]
     for query in queries:
         state.note_searched(query)
-    results = await run_targeted_searches(context, queries, purpose="gate") if queries else []
+    results = await run_targeted_searches(
+        context, queries, purpose="gate", timeout=gate_search_timeout_seconds(),
+    ) if queries else []
     found = [result for result in results if result.text]
     state.gate_rounds += 1
     state.bump("gate_searches", len(queries))

@@ -32,10 +32,12 @@ COVERAGE_LOOP_PROMPT_ENV_VAR = "COVERAGE_LOOP_PROMPT"
 COVERAGE_LOOP_FACET_SEARCHES_ENV_VAR = "COVERAGE_LOOP_FACET_SEARCHES"
 COVERAGE_LOOP_GATE_ROUNDS_ENV_VAR = "COVERAGE_LOOP_GATE_ROUNDS"
 COVERAGE_LOOP_GATE_SEARCHES_ENV_VAR = "COVERAGE_LOOP_GATE_SEARCHES"
+COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_ENV_VAR = "COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S"
 
 _DEFAULT_FACET_SEARCHES = 1
 _DEFAULT_GATE_ROUNDS = 1
 _DEFAULT_GATE_SEARCHES = 2
+_DEFAULT_GATE_SEARCH_TIMEOUT_S = 20
 
 
 def coverage_loop_enabled() -> bool:
@@ -77,6 +79,14 @@ def gate_search_budget() -> int:
     return env_int(COVERAGE_LOOP_GATE_SEARCHES_ENV_VAR, _DEFAULT_GATE_SEARCHES, lo=0, hi=5) or 0
 
 
+def gate_search_timeout_seconds() -> float:
+    """Bound on each search the gate runs; a slower one counts as finding nothing."""
+    return float(
+        env_int(COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_ENV_VAR, _DEFAULT_GATE_SEARCH_TIMEOUT_S, lo=3, hi=120)
+        or _DEFAULT_GATE_SEARCH_TIMEOUT_S
+    )
+
+
 __all__ = [
     "COVERAGE_LOOP_ENV_VAR",
     "coverage_adjudication_enabled",
@@ -87,4 +97,5 @@ __all__ = [
     "facet_search_budget",
     "gate_round_budget",
     "gate_search_budget",
+    "gate_search_timeout_seconds",
 ]
