@@ -48,4 +48,9 @@ describe('McpServerIcon', () => {
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
   });
+
+  it("shows Vercel's logo", () => {
+    expect(logo(<McpServerIcon typeId="vercel" name="Vercel" />)).toBe('vercel icon');
+  });
+
 });
