@@ -506,8 +506,20 @@ async def execute_search(
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
-    (``ops/outside_dates``).
+    (``ops/outside_dates``). An upper bound that reaches into the agent's own
+    today is not applied (``ops/time_range.upper_bounds_before_today``).
     """
+    if state:
+        from app.agents.actions.knowledge_graph.ops.time_range import (
+            agent_today_start,
+            upper_bounds_before_today,
+        )
+
+        created_before, modified_before = upper_bounds_before_today(
+            agent_today_start(state.get("current_time"), state.get("timezone")),
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+        )
     if scope_virtual_record_ids is None:
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,

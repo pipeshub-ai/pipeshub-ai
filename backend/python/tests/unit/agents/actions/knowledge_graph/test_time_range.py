@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+from app.agents.actions.knowledge_graph.ops.time_range import (
+    agent_today_start,
+    parse_time_range,
+    upper_bounds_before_today,
+)
 
 
 def _epoch_ms(dt: datetime) -> int:
@@ -210,3 +214,61 @@ def test_various_malformed_inputs_rejected(field: str, value: str) -> None:
     time_range, error = parse_time_range(**{field: value})
     assert time_range is None
     assert error is not None
+
+
+class TestAgentToday:
+    @pytest.mark.parametrize(("current_time", "zone", "start"), [
+        ("2026-03-29T00:00:00Z", None, datetime(2026, 3, 29, tzinfo=timezone.utc)),
+        ("2026-03-29T17:45:10+00:00", "", datetime(2026, 3, 29, tzinfo=timezone.utc)),
+        # 8 PM in California is already the next day in UTC; the agent's today is California's.
+        ("2026-03-28T20:00:00-07:00", "America/Los_Angeles", datetime(2026, 3, 28, 7, tzinfo=timezone.utc)),
+        ("2026-03-28T20:00:00", "America/Los_Angeles", datetime(2026, 3, 28, 7, tzinfo=timezone.utc)),
+        ("2026-03-29T00:00:00Z", "Not/AZone", datetime(2026, 3, 29, tzinfo=timezone.utc)),
+    ])
+    def test_the_day_the_agent_is_told_it_is(self, current_time: str, zone: str | None, start: datetime) -> None:
+        assert agent_today_start(current_time, zone) == start
+
+    @pytest.mark.parametrize("current_time", [None, "", "not a time"])
+    def test_without_a_request_time_the_server_clock_decides(self, current_time: str | None) -> None:
+        now = datetime(2026, 10, 26, 16, 0, tzinfo=timezone.utc)
+        assert agent_today_start(current_time, None, now=now) == datetime(2026, 10, 26, tzinfo=timezone.utc)
+
+
+class TestUpperBoundsBeforeToday:
+    TODAY = datetime(2026, 3, 29, tzinfo=timezone.utc)
+
+    def test_a_bound_at_or_after_the_agents_today_is_not_applied(self) -> None:
+        """A search bounded at the model's own date misses records written after its clock."""
+        assert upper_bounds_before_today(
+            self.TODAY, created_before="2026-03-29", modified_before="2027-01-01",
+        ) == (None, None)
+
+    def test_a_bound_before_today_came_from_the_question_and_stays(self) -> None:
+        assert upper_bounds_before_today(
+            self.TODAY, created_before="2026-03-28", modified_before="2026-03-29T00:00:00Z",
+        ) == ("2026-03-28", "2026-03-29T00:00:00Z")
+
+    def test_a_moment_later_today_is_not_applied(self) -> None:
+        assert upper_bounds_before_today(self.TODAY, created_before="2026-03-29T08:15:00Z") == (None, None)
+
+    def test_east_of_utc_yesterday_stays_although_its_utc_day_ends_after_local_midnight(self) -> None:
+        """Kolkata's 29 March starts at 18:30 UTC on the 28th, before the 28th's UTC end of day."""
+        today = agent_today_start("2026-03-29T02:00:00+05:30", "Asia/Kolkata")
+
+        assert upper_bounds_before_today(today, created_before="2026-03-28") == ("2026-03-28", None)
+        assert upper_bounds_before_today(today, created_before="2026-03-29") == (None, None)
+
+    def test_lower_bounds_are_left_alone(self) -> None:
+        assert upper_bounds_before_today(
+            self.TODAY, created_after="2026-01-01", created_before="2026-03-29",
+        ) == (None, None)
+
+    @pytest.mark.parametrize("bounds", [
+        {"created_before": "29 March"},
+        {"created_after": "2026-03-30", "created_before": "2026-03-29"},
+    ], ids=["unparsed", "inverted"])
+    def test_dates_the_search_rejects_are_returned_for_it_to_report(self, bounds: dict[str, str]) -> None:
+        assert upper_bounds_before_today(self.TODAY, **bounds) == (bounds["created_before"], None)
+
+    def test_no_bounds_are_no_bounds(self) -> None:
+        assert upper_bounds_before_today(self.TODAY) == (None, None)
