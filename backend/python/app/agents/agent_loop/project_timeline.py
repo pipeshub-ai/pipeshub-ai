@@ -113,6 +113,8 @@ _SUBJECT_PROMPT_HISTORY = (
 
 # "The later record governs" on its own picked a newer record over the older one the question meant, and another
 # product's or customer's record over the question's own, so it holds only within one scope and one document line.
+# Records of one event are accounts, not versions: with no rule for them, answers set an early summary against the
+# event's review and contradicted themselves.
 _RECONCILE_RULE = (
     "These records come from different times and can disagree. Two records conflict only when they cover the same "
     "thing in the same scope, meaning the product, component, version, customer, region or tier the question is "
@@ -120,8 +122,12 @@ _RECONCILE_RULE = (
     "out of the answer. Within one scope, a later record replaces what an earlier one said only when it is a "
     "newer version of the same document or it records that the decision changed; then call the earlier value "
     "superseded and give both dates. An implementation note, an update for one customer, a discussion, a draft or "
-    "a proposal does not override a published specification, standard, policy or decision record. Treat the list "
-    "as leads: read a record before you rely on it."
+    "a proposal does not override a published specification, standard, policy or decision record. Records about "
+    "one event (an incident, outage, test or rollout) are accounts of it, not versions: where they differ on what "
+    "happened or what was done, answer from the account that matches what the question says about the event, "
+    "otherwise from the most complete account written after it was over (its review or report, or the resolution "
+    "on its ticket), and leave the other account out unless the question asks how they differ. Treat the list as "
+    "leads: read a record before you rely on it."
 )
 
 _BASIS_LABELS = {

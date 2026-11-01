@@ -212,6 +212,7 @@ def test_render_keeps_the_search_order_with_each_date_ids_a_read_call_and_the_ru
     assert 'knowledgegraph__fetch_record(record_ids=["sa", "sd", "sb"])' in text
     assert "superseded and give both dates" in text
     assert "is not another version" in text
+    assert "are accounts of it, not versions" in text
 
 
 # --- collecting --------------------------------------------------------------------------------------------------
