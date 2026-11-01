@@ -901,7 +901,7 @@ describe('ConfigurationManager Controller', () => {
       expect(scopeFlag.hidden).to.not.equal(true)
     })
 
-    it('should list the knowledge graph arm flags in Labs: tools on, people and companies off', async () => {
+    it('should list the knowledge graph arm flags in Labs: tools and people and companies on', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
       const res = createMockResponse()
@@ -914,7 +914,7 @@ describe('ConfigurationManager Controller', () => {
       const people = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES')
       const query = flags.find((f: any) => f.key === 'KNOWLEDGE_GRAPH_RECORD_QUERY')
       expect(tools?.defaultEnabled).to.equal(true)
-      expect(people?.defaultEnabled).to.equal(false)
+      expect(people?.defaultEnabled).to.equal(true)
       expect(query?.defaultEnabled).to.equal(false)
       expect(tools?.advanced).to.equal(true)
       expect(people?.advanced).to.equal(true)

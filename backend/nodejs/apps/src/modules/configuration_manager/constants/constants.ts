@@ -204,7 +204,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'People and Companies in the Knowledge Graph',
     description:
       'Let the knowledge graph entity tools also find colleagues and companies (and, with Extract Named Entities on, the organizations, products and places named in documents), and the records connected to them. Disable to limit those tools to departments, topics, record groups and record titles. Needs Knowledge Graph Entity Tools.',
-    defaultEnabled: false,
+    defaultEnabled: true,
     advanced: true,
   },
   {

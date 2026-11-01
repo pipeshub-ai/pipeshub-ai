@@ -138,6 +138,8 @@ class TestGuards:
         assert ok is True
         assert "ignoredEntityTypes" not in json.loads(text)
         _, search_kwargs = patched[1].call_args
+        # The extractor files a product as its company and back, so a kind
+        # filter reaches the related kind too (#5003).
         assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (
             ["organization", "record", "named_entity"], ["organization", "product"],
         )

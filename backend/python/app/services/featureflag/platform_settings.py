@@ -175,7 +175,7 @@ class KnowledgeGraphFlags(NamedTuple):
 
 _KNOWLEDGE_GRAPH_FLAG_DEFAULTS: dict[str, bool] = {
     CONFIG.KNOWLEDGE_GRAPH_TOOLS: True,
-    CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: False,
+    CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: True,
     CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION: False,
     CONFIG.KNOWLEDGE_GRAPH_RECORD_QUERY: False,
 }
@@ -183,7 +183,7 @@ _KNOWLEDGE_GRAPH_FLAG_DEFAULTS: dict[str, bool] = {
 
 async def knowledge_graph_flags(config_service: ConfigurationService | None = None) -> KnowledgeGraphFlags:
     """``KNOWLEDGE_GRAPH_TOOLS`` (default on), ``KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES``
-    (default off) and the named-entity flag as ``is_named_entity_extraction_enabled``
+    (default on) and the named-entity flag as ``is_named_entity_extraction_enabled``
     answers it, from one live read of the settings. Unreadable settings answer the
     defaults."""
     if config_service is None:

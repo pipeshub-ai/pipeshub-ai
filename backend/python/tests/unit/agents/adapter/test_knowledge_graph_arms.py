@@ -41,11 +41,12 @@ _ENTITY_TOOLS = {
     "knowledgegraph__find_records_by_entity",
     "knowledgegraph__find_records_by_value",
     "knowledgegraph__search_by_entities",
+    "knowledgegraph__find_records_by_person",
 }
 _ARMS = {
     KnowledgeGraphMode.OFF: {CONFIG.KNOWLEDGE_GRAPH_TOOLS: False},
-    KnowledgeGraphMode.TAXONOMY: {},
-    KnowledgeGraphMode.FULL: {CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: True},
+    KnowledgeGraphMode.TAXONOMY: {CONFIG.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES: False},
+    KnowledgeGraphMode.FULL: {},
 }
 _PEOPLE_WORDS = re.compile(r"person|people|organi[sz]ation|colleague|compan", re.IGNORECASE)
 

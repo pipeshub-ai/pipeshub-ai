@@ -4,7 +4,8 @@
 - ``off``: no entity tools, and ``search`` without ``entity_ids``, which only
   takes ids those tools return.
 - ``taxonomy``: the entity tools with people and organisations edited out of
-  their descriptions, since the arm never returns them.
+  their descriptions, since the arm never returns them, and without
+  ``find_records_by_person``, which only lists people's records.
 - ``full``: the toolset as declared.
 
 Where ``search_by_entities`` is offered, the request also gets the
@@ -46,11 +47,13 @@ FIND_CO_MENTIONED_TOOL_NAME = "knowledgegraph__find_co_mentioned_entities"
 FIND_RECORDS_TOOL_NAME = "knowledgegraph__find_records"
 # Tools that read only named entities: left out with extraction off, where they could only fail.
 _NAMED_ENTITY_ONLY_TOOLS = frozenset({FIND_RECORDS_BY_VALUE_TOOL_NAME, FIND_CO_MENTIONED_TOOL_NAME})
+FIND_RECORDS_BY_PERSON_TOOL_NAME = "knowledgegraph__find_records_by_person"
 ENTITY_TOOL_NAMES: frozenset[str] = frozenset({
     SEARCH_ENTITIES_TOOL_NAME,
     FIND_RECORDS_BY_ENTITY_TOOL_NAME,
     FIND_RECORDS_TOOL_NAME,
     SEARCH_BY_ENTITIES_TOOL_NAME,
+    FIND_RECORDS_BY_PERSON_TOOL_NAME,
 }) | _NAMED_ENTITY_ONLY_TOOLS
 
 
@@ -248,6 +251,8 @@ def _withdrawn(policy: KnowledgeGraphPolicy) -> frozenset[str]:
     withdrawn.add(FIND_RECORDS_BY_ENTITY_TOOL_NAME if policy.record_query else FIND_RECORDS_TOOL_NAME)
     if not policy.named_entities:
         withdrawn |= _NAMED_ENTITY_ONLY_TOOLS
+    if not policy.people_and_companies:
+        withdrawn.add(FIND_RECORDS_BY_PERSON_TOOL_NAME)
     return frozenset(withdrawn)
 
 

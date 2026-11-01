@@ -4,11 +4,12 @@ Three arms, picked by two Labs flags:
 
 - ``off`` (``KNOWLEDGE_GRAPH_TOOLS`` false): no entity tools and no Entities
   paragraph in the system prompt.
-- ``taxonomy`` (the default): entity tools over departments, categories,
-  topics, languages, record titles and record groups; no people, no
-  organisations, and no extracted named entities, which name both.
-- ``full`` (``KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES`` true as well): everything,
-  named entities included where extraction is on.
+- ``taxonomy`` (``KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES`` false): entity
+  tools over departments, categories, topics, languages, record titles and
+  record groups; no people, no organisations, and no extracted named
+  entities, which name both. ``find_records_by_person`` is withdrawn too.
+- ``full`` (the default): everything, named entities included where
+  extraction is on.
 
 ``knowledgegraph__search_by_entities`` is offered only in ``full`` with
 named entities on, the entity store wired, and the deployment switch
@@ -29,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from app.core import org_context
 from app.modules.retrieval.entity_permissions import (
     NAMED_ENTITY_TYPE,
     ORGANIZATION_ENTITY_TYPE,
@@ -62,7 +64,7 @@ class KnowledgeGraphMode(StrEnum):
 class KnowledgeGraphPolicy:
     """One request's knowledge-graph arm. The defaults are the flags' defaults."""
 
-    mode: KnowledgeGraphMode = KnowledgeGraphMode.TAXONOMY
+    mode: KnowledgeGraphMode = KnowledgeGraphMode.FULL
     named_entities: bool = False
     """Extracted named entities are searchable (``full`` with extraction on)."""
     search_by_entities: bool = False
@@ -119,6 +121,13 @@ def entity_search_tool_switched_on() -> bool:
     return env_bool(ENTITY_SEARCH_TOOL_ENV_VAR, False)
 
 
+def _org_for_log() -> str | None:
+    try:
+        return org_context.current_or_system().org_id
+    except org_context.MissingOrgContext:
+        return None
+
+
 async def decide_knowledge_graph_policy(tool_state: MutableMapping[str, Any]) -> KnowledgeGraphPolicy:
     """The request's policy, decided on the first call from one read of the
     Labs settings and stored on ``tool_state``; later calls return it unread."""
@@ -137,7 +146,7 @@ async def decide_knowledge_graph_policy(tool_state: MutableMapping[str, Any]) ->
     logger.info(
         "knowledge graph policy mode=%s named_entities=%s search_by_entities=%s org_id=%s conversation_id=%s",
         policy.mode.value, policy.named_entities, policy.search_by_entities,
-        tool_state.get("org_id"), tool_state.get("conversation_id"),
+        _org_for_log(), tool_state.get("conversation_id"),
     )
     return policy
 

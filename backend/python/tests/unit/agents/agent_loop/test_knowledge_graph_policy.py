@@ -2,7 +2,7 @@
 once from the Labs flags before tools load.
 
 `KNOWLEDGE_GRAPH_TOOLS` (default on) and `KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES`
-(default off) pick `off`, `taxonomy` or `full`; the named-entity flag and the
+(default on) pick `off`, `taxonomy` or `full`; the named-entity flag and the
 `ENTITY_SEARCH_TOOL` switch decide the rest. One settings read decides it all.
 """
 
@@ -22,6 +22,7 @@ from app.agents.agent_loop.knowledge_graph_policy import (
     entity_tools_granted,
     knowledge_graph_policy_in,
 )
+from app.core import org_context
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 
@@ -67,8 +68,8 @@ class TestTheFlagKeys:
 
 class TestDecision:
     @pytest.mark.parametrize(("tools", "people", "mode"), [
-        (None, None, KnowledgeGraphMode.TAXONOMY),
-        (True, None, KnowledgeGraphMode.TAXONOMY),
+        (None, None, KnowledgeGraphMode.FULL),
+        (True, None, KnowledgeGraphMode.FULL),
         (True, False, KnowledgeGraphMode.TAXONOMY),
         (True, True, KnowledgeGraphMode.FULL),
         (None, True, KnowledgeGraphMode.FULL),
@@ -133,17 +134,18 @@ class TestDecision:
     async def test_an_unreadable_store_answers_the_defaults(self) -> None:
         state: dict[str, Any] = {"config_service": _Settings(_flags(False, True), fail=True)}
         policy = await decide_knowledge_graph_policy(state)
-        assert policy.mode is KnowledgeGraphMode.TAXONOMY
+        assert policy.mode is KnowledgeGraphMode.FULL
         assert policy.named_entities is False
 
     async def test_it_is_logged_once_with_the_conversation_and_no_content(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:
         state: dict[str, Any] = {
-            "config_service": _Settings(_flags(True, True)), "org_id": "org-9",
+            "config_service": _Settings(_flags(True, True)),
             "conversation_id": "conv-7", "query": "who owns the Contoso renewal",
         }
-        with caplog.at_level(logging.INFO, logger="app.agents.agent_loop.knowledge_graph_policy"):
+        with org_context.for_org("org-9", job="test"), \
+                caplog.at_level(logging.INFO, logger="app.agents.agent_loop.knowledge_graph_policy"):
             await decide_knowledge_graph_policy(state)
             await decide_knowledge_graph_policy(state)
         lines = [r.getMessage() for r in caplog.records if "knowledge graph policy" in r.getMessage()]
@@ -182,7 +184,7 @@ class TestReadingItBack:
     def test_a_request_that_never_decided_gets_the_defaults(self) -> None:
         policy = knowledge_graph_policy_in({})
         assert policy == KnowledgeGraphPolicy()
-        assert policy.mode is KnowledgeGraphMode.TAXONOMY
+        assert policy.mode is KnowledgeGraphMode.FULL
         assert knowledge_graph_policy_in(None) == KnowledgeGraphPolicy()
 
     @pytest.mark.parametrize(("mode", "store", "granted"), [
@@ -210,7 +212,8 @@ class TestRecordQuery:
     @pytest.mark.parametrize(("tools", "people", "query", "on", "arm"), [
         (True, True, None, False, "full"),
         (True, True, True, True, "full+query"),
-        (True, None, True, True, "taxonomy+query"),
+        (True, False, True, True, "taxonomy+query"),
+        (True, None, True, True, "full+query"),
         (False, True, True, False, "off"),
     ])
     async def test_it_is_off_by_default_and_needs_the_entity_tools(

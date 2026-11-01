@@ -14,6 +14,10 @@ from app.modules.retrieval.record_fields import (
     field,
     role_edges,
 )
+from app.services.graph_db.common.utils import (
+    PERSON_EDGES_FROM_USER,
+    PERSON_EDGES_TO_USER,
+)
 
 
 def _stored_properties(store: Store) -> set[str]:
@@ -62,3 +66,11 @@ def test_an_unknown_field_or_role_names_the_choices() -> None:
         field("colour")
     with pytest.raises(ValueError, match="roles: assignee"):
         role_edges("sponsor")
+
+
+def test_a_project_lead_is_a_role() -> None:
+    assert role_edges("lead") == (EntityRelations.LEAD_BY.value,)
+
+
+def test_the_roles_cover_exactly_the_person_edges_the_graph_stores() -> None:
+    assert set(record_fields.PERSON_EDGES) == set(PERSON_EDGES_TO_USER) | set(PERSON_EDGES_FROM_USER)

@@ -91,10 +91,8 @@ ROLE_EDGES: dict[str, tuple[str, ...]] = {
     "reviewer": (EntityRelations.REVIEWED_BY.value,),
     "editor": (EntityRelations.LAST_MODIFIED_BY.value,),
     "recipient": (EntityRelations.ADDRESSED_TO.value,),
-    "participant": (
-        EntityRelations.INVOLVED_IN.value, EntityRelations.MENTIONED_IN.value,
-        EntityRelations.RELATED_TO_PERSON.value,
-    ),
+    "lead": (EntityRelations.LEAD_BY.value,),
+    "participant": (EntityRelations.INVOLVED_IN.value, EntityRelations.MENTIONED_IN.value),
 }
 PERSON_EDGES: tuple[str, ...] = tuple(dict.fromkeys(e for edges in ROLE_EDGES.values() for e in edges))
 ORGANIZATION_EDGES: tuple[str, ...] = (EntityRelations.FOR_ACCOUNT.value, EntityRelations.MENTIONS.value)

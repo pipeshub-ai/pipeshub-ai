@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import EntityRelations
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.utils import (
     PERSON_EDGES_FROM_USER,
@@ -58,6 +59,19 @@ class TestPersonQueryRef:
             "inTypes": list(PERSON_EDGES_FROM_USER),
         }
         assert person_query_ref({"id": "u9", "outTypes": [], "inTypes": []})["outTypes"] == []
+
+    def test_a_ref_naming_no_relation_never_follows_an_organisation_edge(self) -> None:
+        ref = person_query_ref({"id": "u9"})
+        organisation = {EntityRelations.FOR_ACCOUNT.value, EntityRelations.MENTIONS.value}
+        assert not organisation & {*ref["outTypes"], *ref["inTypes"]}
+
+    def test_every_record_to_person_edge_a_connector_writes_is_in_its_direction(self) -> None:
+        written = {
+            EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY, EntityRelations.CREATED_BY,
+            EntityRelations.LEAD_BY, EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
+            EntityRelations.REVIEWED_BY, EntityRelations.LAST_MODIFIED_BY, EntityRelations.ADDRESSED_TO,
+        }
+        assert {r.value for r in written} == set(PERSON_EDGES_TO_USER)
 
     def test_naming_one_direction_leaves_the_other_empty(self) -> None:
         assert person_query_ref({"id": "u9", "inTypes": ["MENTIONED_IN"]})["outTypes"] == []
