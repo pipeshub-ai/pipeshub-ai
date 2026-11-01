@@ -4,7 +4,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,6 +60,11 @@ from app.modules.retrieval.record_rerank import (
     create_record_reranker,
     reorder_items,
     rerank_order,
+)
+from app.modules.retrieval.record_rerank.dense_pool import (
+    DENSE_POINTS_PER_RECORD,
+    with_dense_records,
+    without_unpicked,
 )
 from app.modules.retrieval.source_diversity import (
     SourceDiversity,
@@ -2226,10 +2231,17 @@ class RetrievalService:
         # After verification, so the strategy reads only records this user may
         # see; not on a page the record-id search is about to replace.
         if record_rerank is not None and not plan.narrow_shortfall:
+            added: set[str] = set()
+            if record_rerank.settings.dense_pool:
+                admitted, best_accessible, added = await self._verified_dense_pool(
+                    record_rerank.settings.dense_pool, admitted, best_accessible, filter, plan,
+                    org_id, user_key, scope_connector_ids, scopes,
+                )
             scope = _RecordRerankScope(record_rerank, self._verified_titles(best_accessible, org_id))
             order = await self._record_rerank_order(scope, admitted, HITS, org_id, user_id, plan.collections)
             if order is not None:
                 admitted = reorder_items(admitted, order.records, HITS)
+            admitted = without_unpicked(admitted, HITS, added, order.placed if order is not None else ())
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
@@ -2725,7 +2737,6 @@ class RetrievalService:
         Split out so a re-query at a larger limit reuses the embeddings — the
         only field that differs between attempts is ``HybridSearchRequest.limit``.
         """
-        all_results: list[tuple] = []
         fused_limit = (
             record_cut.fused_limit(limit, _OVERFETCH_ABSOLUTE_CAP)
             if record_cut is not None
@@ -2757,25 +2768,46 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
-        search_results = await self._fan_out_searches(
-            collections, requests, fused_limit, failed=failed_collections,
-        )
+        fan_out = self._fan_out_searches(collections, requests, fused_limit, failed=failed_collections)
+        dense_pool = record_rerank.rerank.settings.dense_pool if record_rerank is not None else 0
+        dense_results: list[list] | None = None
+        if dense_pool:
+            search_results, dense_results = await asyncio.gather(
+                fan_out, self._dense_pool_leg(collections, dense_query_embeddings, filter, dense_pool),
+            )
+        else:
+            search_results = await fan_out
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        added: set[str] = set()
+        if dense_results is not None:
+            pooled = [
+                with_dense_records(batch, dense, POINTS, dense_pool)
+                for batch, dense in zip(search_results, dense_results)
+            ]
+            search_results = [batch for batch, _ in pooled]
+            added = set().union(*(records for _, records in pooled))
         if record_rerank is not None:
             search_results = await self._rerank_batches(
-                record_rerank, search_results, org_id, user_id, collections,
+                record_rerank, search_results, org_id, user_id, collections, added,
             )
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
+        elif added:
+            # A dense record the reranker picked must not lengthen the page.
+            search_results = [batch[:limit] for batch in search_results]
         # Measured after the cut, so "exhausted" still means a query came back
         # short of `limit`; a retry at a larger limit keeps more of a deep batch.
         if plan is not None:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
+        return self._hits_of(search_results)
 
+    def _hits_of(self, batches: list[list]) -> list[dict[str, Any]]:
+        """The points of ``batches`` as hits, each point once, in order."""
+        all_results: list[tuple] = []
         seen_points: set = set()
-        for batch in search_results:
+        for batch in batches:
             for point in batch:
                 if point.id in seen_points:
                     continue
@@ -2797,16 +2829,83 @@ class RetrievalService:
         org_id: str,
         user_id: str | None,
         collections: list[str],
+        added: Collection[str] = (),
     ) -> list[list]:
-        """Every query's points in one record order, reranked over their union."""
+        """Every query's points in one record order, reranked over their union.
+        Of the ``added`` (dense pool) records, only those placed stay."""
         union: dict[Any, Any] = {}
         for batch in batches:
             for point in batch:
                 union.setdefault(point.id, point)
         order = await self._record_rerank_order(scope, list(union.values()), POINTS, org_id, user_id, collections)
-        if order is None:
-            return batches
-        return [reorder_items(batch, order.records, POINTS) for batch in batches]
+        if order is not None:
+            batches = [reorder_items(batch, order.records, POINTS) for batch in batches]
+        if added:
+            placed = order.placed if order is not None else frozenset()
+            batches = [without_unpicked(batch, POINTS, added, placed) for batch in batches]
+        return batches
+
+    async def _dense_pool_leg(
+        self,
+        collections: list[str],
+        dense_query_embeddings: list,
+        vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
+        pool_records: int,
+    ) -> list[list] | None:
+        """Per query, a dense-only request under the same permission filter,
+        deep enough to fill the rerank pool. None when it fails: the pool is
+        then the fused list alone."""
+        limit = pool_records * DENSE_POINTS_PER_RECORD
+        requests = [
+            HybridSearchRequest(dense_query=embedding, filter=vector_filter, limit=limit)
+            for embedding in dense_query_embeddings
+        ]
+        try:
+            return await self._fan_out_searches(collections, requests, limit, failed=[])
+        except Exception as exc:
+            self.logger.warning("record_rerank: dense pool search failed; reranking the fused list alone: %s", exc)
+            return None
+
+    async def _verified_dense_pool(
+        self,
+        size: int,
+        admitted: list[dict[str, Any]],
+        accessible: dict[str, str],
+        vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
+        plan: "_QueryPlan",
+        org_id: str,
+        user_key: str | None,
+        scope_connector_ids: frozenset[str] | None,
+        scopes: Sequence[SelectionScope],
+    ) -> tuple[list[dict[str, Any]], dict[str, str], set[str]]:
+        """``admitted`` filled to ``size`` records with the dense leg's records
+        under the container filter that the access check admits, the
+        accessible map with them, and the records added. The container filter
+        admits more than the user may read, so these are checked as the hits
+        were. Unchanged when the leg or the check fails."""
+        if plan.dense is None or not plan.collections:
+            return admitted, accessible, set()
+        dense = await self._dense_pool_leg(plan.collections, plan.dense, vector_filter, size)
+        known = {hit_record_id(hit) for hit in admitted}
+        candidates = sorted(
+            (hit for hit in self._hits_of(dense or []) if hit_record_id(hit) not in known),
+            key=lambda hit: -(hit.get("score") or 0.0),
+        )
+        vrids = {vrid for hit in candidates if (vrid := hit_record_id(hit)) is not None}
+        if not vrids:
+            return admitted, accessible, set()
+        try:
+            readable = (await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=vrids, indexed_only=True,
+                connector_ids=scope_connector_ids, scopes=scopes,
+            )).records_by_vrid
+        except Exception as exc:
+            self.logger.warning("record_rerank: dense pool access check failed; reranking the admitted hits: %s", exc)
+            return admitted, accessible, set()
+        pooled, added = with_dense_records(
+            admitted, [hit for hit in candidates if hit_record_id(hit) in readable], HITS, size,
+        )
+        return pooled, {**accessible, **{vrid: readable[vrid] for vrid in added}}, added
 
     async def _record_rerank_order(
         self,

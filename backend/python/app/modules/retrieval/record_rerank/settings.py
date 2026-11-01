@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from app.modules.retrieval.record_rerank.dense_pool import dense_pool_size
 from app.utils.env_config import env_float
 from app.utils.env_utils import env_bool, env_int
 
@@ -46,6 +47,9 @@ class RecordRerankSettings:
     """Bound on the strategy's call; past it the fused order stands."""
     lookup_timeout_s: float = 10.0
     """Bound on reading the pool's titles and summaries, before that call."""
+    dense_pool: int = 0
+    """Records the pool is filled to with the dense leg's own records after
+    the fused ones (dense_pool.py); 0 is off. ``pool`` is at least this."""
     text_chars: int = 300
     """Cap on the text shown beside each title: more costs tokens and latency
     on every reranked search for little gain."""
@@ -63,9 +67,11 @@ def _bounded(name: str, default: int, low: int, high: int) -> int:
 def record_rerank_settings() -> RecordRerankSettings:
     defaults = RecordRerankSettings()
     strategy = (os.getenv(RECORD_RERANK_STRATEGY_ENV_VAR) or "").strip().lower()
+    dense_pool = dense_pool_size()
     return RecordRerankSettings(
         strategy=strategy or defaults.strategy,
-        pool=_bounded(RECORD_RERANK_POOL_ENV_VAR, defaults.pool, 2, MAX_POOL),
+        pool=max(_bounded(RECORD_RERANK_POOL_ENV_VAR, defaults.pool, 2, MAX_POOL), dense_pool),
+        dense_pool=dense_pool,
         top=_bounded(RECORD_RERANK_TOP_ENV_VAR, defaults.top, 1, MAX_TOP),
         keep_top=_bounded(RECORD_RERANK_KEEP_TOP_ENV_VAR, defaults.keep_top, 0, MAX_TOP),
         timeout_s=env_float(RECORD_RERANK_TIMEOUT_ENV_VAR, defaults.timeout_s, low=0.1, high=60.0),
