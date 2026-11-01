@@ -58,13 +58,12 @@ interface FenceReader {
 /**
  * An `active` answer is trusted for this long, so a burst of writes pays for one read. A freeze or retirement then reaches a writer
  * at most this much later than the 2 s check-to-write deadline allows for: far inside the 10 s grace the cutover waits (2 s + 5 s
- * write timeout + this). Every other answer is read afresh each time.
+ * write timeout + this). Every other answer is read afresh each time. The cutover tool must therefore stay in `draining` for at least this long (plus the read deadline) before it sets `readonly` or `retired`.
  */
 export const ACTIVE_FENCE_TRUST_MS = 500;
 const trustMs = (): number =>
   Number(process.env.DOC_STORE_FENCE_TRUST_MS ?? ACTIVE_FENCE_TRUST_MS);
 let activeUntil = 0;
-let trusted: 'active' | 'draining' = 'active';
 
 /** Tests: forget a trusted `active` answer. */
 export const forgetFenceCache = (): void => {
@@ -79,7 +78,7 @@ export const forgetFenceCache = (): void => {
 export async function assertMongoWritable(
   db: FenceDb,
 ): Promise<'active' | 'draining'> {
-  if (Date.now() < activeUntil) return trusted;
+  if (Date.now() < activeUntil) return 'active';
   const t0 = process.hrtime.bigint();
   let doc: Awaited<ReturnType<FenceReader['findOne']>>;
   try {
@@ -107,9 +106,8 @@ export async function assertMongoWritable(
     throw new ServiceUnavailableError('The document store fence read was late');
   }
   const mode = doc?.mode ?? 'active';
-  activeUntil =
-    mode === 'active' || mode === 'draining' ? Date.now() + trustMs() : 0;
-  if (mode === 'active' || mode === 'draining') trusted = mode;
+  // only `active` is trusted: `draining` still allows writes, so a cached one would let a write through after a move to `readonly`
+  activeUntil = mode === 'active' ? Date.now() + trustMs() : 0;
   if (mode === 'readonly') {
     docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'readonly' });
     throw new DocStoreReadOnlyError();

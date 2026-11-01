@@ -131,6 +131,21 @@ describe('Mongo store fence', () => {
     }
   })
 
+  it('a draining answer is not trusted: the next write after a move to readonly is refused', async () => {
+    process.env.DOC_STORE_FENCE_TRUST_MS = '60000'
+    try {
+      let mode = 'draining'
+      const db = { collection: () => ({ findOne: async () => ({ mode }) }) }
+      expect(await assertMongoWritable(db as never)).to.equal('draining')
+      mode = 'readonly'
+      let err: unknown
+      await assertMongoWritable(db as never).catch((e) => { err = e })
+      expect(err).to.be.instanceOf(DocStoreReadOnlyError)
+    } finally {
+      process.env.DOC_STORE_FENCE_TRUST_MS = '0'
+    }
+  })
+
   it('assertMongoWritable refuses a read that came back late', async () => {
     const slow = { collection: () => ({ findOne: async () => { await new Promise((r) => setTimeout(r, 30)); return { mode: 'active' } } }) }
     const realNow = process.hrtime.bigint
