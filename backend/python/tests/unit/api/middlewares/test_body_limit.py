@@ -90,3 +90,17 @@ async def test_body_of_exactly_the_limit_passes_and_one_more_is_413() -> None:
     assert ok.status_code == 200
     over = await _post(app, "/capped", content=b'{"a":"' + b"x" * 53 + b'"}', headers={"content-type": "application/json"})
     assert over.status_code == 413
+
+
+_ROOT = __import__("pathlib").Path(__file__).resolve().parents[6]
+
+
+@pytest.mark.parametrize(
+    "path", ["deployment/docker-compose/docker-compose.yml", "deployment/docker-compose/env.template"],
+)
+def test_every_request_cap_reaches_the_compose_container(path: str) -> None:
+    """Compose lists the service's variables one by one: a cap set in `.env`
+    but missing from that list never reaches the process."""
+    text = (_ROOT / path).read_text()
+    caps = ["EMBEDDING_SERVER_MAX_REQUEST_BYTES", "EMBEDDING_SERVER_MAX_INPUTS", "EXTRACTION_MAX_REQUEST_BYTES"]
+    assert [c for c in caps if c not in text] == []

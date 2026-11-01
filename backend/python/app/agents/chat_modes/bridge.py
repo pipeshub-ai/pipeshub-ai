@@ -58,6 +58,7 @@ from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _await_tasks_draining,
     _cancel_orphaned_agent_tasks,
     _heartbeat,
     _pre_stream_error_frame,
@@ -95,7 +96,7 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
-from app.utils.conversation_tasks import discard_tasks
+from app.utils.conversation_tasks import begin_run, discard_tasks
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
@@ -546,6 +547,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
@@ -748,9 +750,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
-            discard_tasks(query_info.get("conversationId"))
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:
@@ -776,7 +780,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         tasks = [producer]
         if heartbeat:
             tasks.append(heartbeat)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await _await_tasks_draining(queue, tasks)
 
 
 __all__ = ["run_chat_stream"]
