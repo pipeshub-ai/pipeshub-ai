@@ -6,6 +6,7 @@ URL asserted is the one that would go to Salesforce.
 """
 
 import json
+from collections.abc import Awaitable, Callable
 
 import httpx
 import pytest
@@ -37,7 +38,7 @@ def _toolset(sent: list) -> Salesforce:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sobject", ["../composite", "../../../apexrest/X", "Account/External_Id__c", "Account?x=1"])
-async def test_create_record_rejects_an_object_name_that_is_a_path(sobject) -> None:
+async def test_create_record_rejects_an_object_name_that_is_a_path(sobject: str) -> None:
     sent: list = []
     ok, body = await _toolset(sent).create_record(sobject=sobject, data={"Name": "x"})
     assert ok is False
@@ -47,7 +48,7 @@ async def test_create_record_rejects_an_object_name_that_is_a_path(sobject) -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("record_id", ["x/../../../composite/sobjects", "001000000000001AAA/..", "{x}", "001"])
-async def test_update_record_rejects_a_record_id_that_is_a_path(record_id) -> None:
+async def test_update_record_rejects_a_record_id_that_is_a_path(record_id: str) -> None:
     sent: list = []
     ok, _ = await _toolset(sent).update_record(sobject="Account", record_id=record_id, data={"Name": "x"})
     assert ok is False
@@ -71,7 +72,7 @@ async def test_valid_names_and_ids_still_reach_their_endpoint() -> None:
     lambda sf: sf.get_record_chatter(record_id="../../limits"),
     lambda sf: sf.post_chatter_comment(feed_element_id="../../limits", text="hi"),
 ])
-async def test_every_path_argument_is_checked(call) -> None:
+async def test_every_path_argument_is_checked(call: Callable[[Salesforce], Awaitable[tuple[bool, str]]]) -> None:
     sent: list = []
     ok, _ = await call(_toolset(sent))
     assert ok is False

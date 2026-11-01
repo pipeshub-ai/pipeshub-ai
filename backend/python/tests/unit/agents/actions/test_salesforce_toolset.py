@@ -878,6 +878,14 @@ class TestListPricebooks:
         assert "LIMIT 5" in q
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("limit", "sent"), [(150, 150), (500, 200), (None, 20), ("x", 20)])
+    async def test_limit_keeps_the_documented_default_and_maximum(self, limit: object, sent: int) -> None:
+        sf = _build_salesforce()
+        sf.client.soql_query = AsyncMock(return_value=_success_response({"totalSize": 0, "records": []}))
+        await sf.list_pricebooks(limit=limit)
+        assert f"LIMIT {sent}" in sf.client.soql_query.call_args.kwargs["q"]
+
+    @pytest.mark.asyncio
     async def test_exception(self):
         sf = _build_salesforce()
         sf.client.soql_query = AsyncMock(side_effect=Exception("fail"))

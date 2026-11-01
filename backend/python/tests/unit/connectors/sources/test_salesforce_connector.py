@@ -3391,7 +3391,7 @@ class TestSyncFiles:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("manual", [False, True])
-    async def test_a_file_held_back_by_manual_indexing_is_indexed_once_it_is_off(self, manual) -> None:
+    async def test_a_file_held_back_by_manual_indexing_is_indexed_once_it_is_off(self, manual: bool) -> None:
         """A full sync queues the other record types it writes again; a held-back file the same."""
         from app.connectors.core.registry.filters import FilterCollection
         connector = _make_connector()
@@ -3424,7 +3424,7 @@ class TestSyncFiles:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", [None, ""])
-    async def test_a_manual_indexing_switch_without_a_value_is_off(self, value) -> None:
+    async def test_a_manual_indexing_switch_without_a_value_is_off(self, value: str | None) -> None:
         """The UI shows a switch saved with no value as off."""
         from app.connectors.core.registry.filters import FilterCollection
         connector = _make_connector()

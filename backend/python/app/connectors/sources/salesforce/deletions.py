@@ -258,7 +258,9 @@ class SalesforceDeletions:
         return await self._records_of_type(RecordType.FILE)
 
     async def _group_has_records(self, external_group_id: str) -> bool:
-        return any(n.get("externalGroupId") == external_group_id
+        """A record in the trash does not hold the group up: the platform keeps a deleted
+        group while its trashed records need it, and purges it after them."""
+        return any(n.get("externalGroupId") == external_group_id and not n.get("isDeleted")
                    for n in await self._records_by(field="externalGroupId", values=[external_group_id]))
 
     async def _delete(self, node: dict[str, Any]) -> int:

@@ -285,12 +285,12 @@ class Salesforce:
     MAX_SEARCH_LIMIT = 50
 
     @classmethod
-    def _search_limit(cls, limit: object, default: int = 10) -> int:
+    def _search_limit(cls, limit: object, default: int = 10, maximum: int | None = None) -> int:
         try:
             value = int(limit)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return default
-        return max(1, min(value, cls.MAX_SEARCH_LIMIT))
+        return max(1, min(value, maximum or cls.MAX_SEARCH_LIMIT))
 
     # Regex for valid Salesforce API names (sObject names, field names, etc.)
     _VALID_API_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*(__[a-zA-Z0-9]+)?$")
@@ -938,6 +938,18 @@ class Salesforce:
             logger.exception(ERR_LOG, "upload_file_to_salesforce", e)
             return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
+    async def _with_attachments(self, body: str, record_id: str, attachment_record_ids: list[str]) -> str:
+        """Attach files to a record just created and add each file's outcome to the answer,
+        so a file that could not be linked is not reported as attached."""
+        _, uploaded = await self.upload_file_to_salesforce(
+            attachment_record_ids, link_to_salesforce_id=record_id,
+        )
+        answer, outcome = json.loads(body), json.loads(uploaded)
+        answer.setdefault(SF_JSON_DATA_KEY, {})["attachments"] = outcome.get(SF_JSON_DATA_KEY) or {
+            SF_JSON_ERROR_KEY: outcome.get(SF_JSON_ERROR_KEY),
+        }
+        return json.dumps(answer, default=str)
+
     @tool(
         path="/tools/salesforce/attach_file_to_record",
         short_description="Link a Salesforce file to a record",
@@ -1535,16 +1547,8 @@ class Salesforce:
             except Exception:
                 opp_id = None
 
-            if opp_id and attachment_record_ids:
-                bundle = await resolve_attachments(self.chat_state, attachment_record_ids)
-                from app.agents.actions.salesforce.attachments import SalesforceAttachmentUploader
-                from app.agents.actions.util.attachment_upload import AttachmentTarget
-                uploader = SalesforceAttachmentUploader(
-                    client=self.client, api_version=self.api_version,
-                )
-                target = AttachmentTarget(destination_id=opp_id, display_name=name)
-                await uploader.upload(target, bundle.resolved)
-
+            if opp_id:
+                body = await self._with_attachments(body, opp_id, attachment_record_ids)
             return ok, body
         except Exception as e:
             logger.error(ERR_LOG, "create_opportunity", e)
@@ -1665,16 +1669,8 @@ class Salesforce:
             except Exception:
                 case_id = None
 
-            if case_id and attachment_record_ids:
-                bundle = await resolve_attachments(self.chat_state, attachment_record_ids)
-                from app.agents.actions.salesforce.attachments import SalesforceAttachmentUploader
-                from app.agents.actions.util.attachment_upload import AttachmentTarget
-                uploader = SalesforceAttachmentUploader(
-                    client=self.client, api_version=self.api_version,
-                )
-                target = AttachmentTarget(destination_id=case_id, display_name=subject)
-                await uploader.upload(target, bundle.resolved)
-
+            if case_id:
+                body = await self._with_attachments(body, case_id, attachment_record_ids)
             return ok, body
         except Exception as e:
             logger.error(ERR_LOG, "create_case", e)
@@ -1815,7 +1811,7 @@ class Salesforce:
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
-            query = SOQL_LIST_PRICEBOOKS.format(where=where, limit=self._search_limit(limit))
+            query = SOQL_LIST_PRICEBOOKS.format(where=where, limit=self._search_limit(limit, default=20, maximum=200))
             logger.info("salesforce.list_pricebooks query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query

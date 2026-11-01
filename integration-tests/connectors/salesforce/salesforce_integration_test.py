@@ -26,6 +26,7 @@ run in order on one org; each leaves it as the next one expects (DESIGN.md has t
   TC-SF-017  with more than 1,000 records every user still gets access, and revocations apply
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -152,7 +153,7 @@ async def _sync_until(pipeshub_client: PipeshubClient, graph_provider: GraphProv
             return
         except TimeoutError:
             logger.info("%s not yet seen after sync %d", what, attempt + 1)
-            time.sleep(SYNC_GAP_SEC)
+            await asyncio.sleep(SYNC_GAP_SEC)
     raise AssertionError(f"{what} not seen after {SYNC_ATTEMPTS} syncs")
 
 
@@ -267,7 +268,7 @@ class TestSalesforceConnector:
             ("an edited reply", [{"op": "edit_comment", "key": "pricing_reply", "text": "Signed by both"}]),
         ):
             before = await revision()
-            time.sleep(1.1)  # a new SystemModstamp second
+            await asyncio.sleep(1.1)  # a new SystemModstamp second
             sim.ops(*ops)
 
             async def moved() -> bool:
@@ -410,7 +411,7 @@ class TestSalesforceConnector:
         sim = salesforce_source.sim
         # Everything synced so far was last changed before the cut; only the fresh case after it.
         cut = int(time.time() * 1000)
-        time.sleep(2)
+        await asyncio.sleep(2)
         (salesforce_source.ids["fresh"],) = sim.ops(
             {"op": "add_case", "key": "fresh", "subject": "Fresh case", "owner": "admin", "account": "acme"})
         modified = {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cut, "end": None}}}
