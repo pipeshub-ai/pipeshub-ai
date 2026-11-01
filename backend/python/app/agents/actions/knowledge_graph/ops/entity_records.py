@@ -12,13 +12,17 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.entity_discovery import _named_entities_enabled
+from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    _named_entities_enabled,
+)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
     limited_scope_note,
     load_entity_access_context,
 )
 from app.agents.actions.knowledge_graph.views import (
+    CITE_NOTE,
     _compact_date,
     _read_hint,
     _short,
@@ -46,6 +50,8 @@ from app.utils.chat_helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.modules.agents.qna.chat_state import ChatState
     from app.utils.chat_helpers import RecordIdShortener
 
@@ -145,6 +151,12 @@ async def execute_find_records_by_entity(
     )
     note_retrieved_by(state, "entity", graph_record_refs(page.records))
     name = indexed.get("name") if indexed.get("type") == resolved_type else None
+    # Quoted outside the chat too, where "this topic" would point at nothing.
+    said = f"{_preposition(resolved_type)} " + (f'{resolved_type} "{_trunc(name)}"' if name else f"a {resolved_type}")
+    cite_refs = await cite_listed_records(
+        state, state["graph_provider"], context.org_id,
+        {r["_key"]: listing_facts(r, said) for r in page.records if r.get("_key")},
+    )
     # The first page names the same entity's other nodes, so a count or listing covers them too.
     note = "" if cursor else await _alias_note(state, context, resolved_id, resolved_type)
     return True, note.strip() + ("\n" if note else "") + _render_page(
@@ -156,6 +168,7 @@ async def execute_find_records_by_entity(
         next_cursor=page.next_cursor,
         capped=page.capped,
         shortener=shortener,
+        cite_refs=cite_refs,
         frontend_url=await resolve_frontend_url(state.get("config_service")),
     )
 
@@ -211,12 +224,16 @@ def _render_page(
     capped: bool = False,
     shortener: "RecordIdShortener | None",
     frontend_url: str | None = None,
+    cite_refs: "Mapping[str, str] | None" = None,
 ) -> str:
-    preposition = "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
+    cite_refs = cite_refs or {}
     subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
     order = "newest of a sample" if capped else "newest first"
-    lines = [f"Records {preposition} {subject}, {order} ({len(records)} shown):"]
-    lines.extend(record_line(record, context, shortener, frontend_url) for record in records)
+    lines = [f"Records {_preposition(entity_type)} {subject}, {order} ({len(records)} shown):"]
+    lines.extend(cite_note(records, cite_refs))
+    lines.extend(
+        record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"])) for record in records
+    )
     lines.append("")
     if next_cursor is not None:
         lines.append(f"More records may exist: {_continue_call(entity_ref, entity_type, next_cursor)}")
@@ -230,21 +247,45 @@ def _render_page(
     return "\n".join(lines)
 
 
+def _preposition(entity_type: str) -> str:
+    return "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
+
+
+def _listing_date(record: dict[str, Any]) -> tuple[str, int] | None:
+    return RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
+
+
+def listing_facts(record: dict[str, Any], stated: str) -> str:
+    """What an entity listing states about one record, as a citation of it quotes:
+    the listing's own words and the date its row shows, never the record's content."""
+    dated = _listing_date(record)
+    return " · ".join(part for part in (stated, f"{dated[0]} {_compact_date(dated[1])}" if dated else "") if part)
+
+
+def cite_note(records: list[dict[str, Any]], cite_refs: "Mapping[str, str]") -> list[str]:
+    """The line telling the model how to cite a row, when any row can be cited."""
+    cited = [cite_refs[r["_key"]] for r in records if r.get("_key") in cite_refs]
+    return [CITE_NOTE.format(ref=cited[0])] if cited else []
+
+
 def record_line(
     record: dict[str, Any],
     context: EntityAccessContext,
     shortener: "RecordIdShortener | None",
     frontend_url: str | None,
+    cite: str | None = None,
 ) -> str:
-    """One listed record: type, name, id, app, date and url."""
+    """One listed record: type, name, id, its Citation ID when it has one, app, date and url."""
     parts = [
         f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
         f"record_id={_short(record['_key'], shortener)}",
     ]
+    if cite:
+        parts.append(f"cite={cite}")
     app = context.app_names.get(record.get("connectorId"))
     if app:
         parts.append(f"app: {app}")
-    dated = RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
+    dated = _listing_date(record)
     if dated:
         parts.append(f"{dated[0]}: {_compact_date(dated[1])}")
     url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
