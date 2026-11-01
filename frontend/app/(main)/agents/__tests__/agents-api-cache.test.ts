@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient } from '@/lib/api';
-import { refreshSwrKey, revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { refreshSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
 import { clearSessionCache } from '@/lib/api/session-cache';
 import { AgentsApi, agentDetailKey } from '../api';
 
@@ -12,11 +12,13 @@ vi.mock('@/lib/api/swr-cache', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/api/swr-cache')>()),
   revalidateSwrNamespace: vi.fn(),
   refreshSwrKey: vi.fn(),
+  writeSwrKey: vi.fn(),
 }));
 
 const api = vi.mocked(apiClient);
 const revalidate = vi.mocked(revalidateSwrNamespace);
 const refreshKey = vi.mocked(refreshSwrKey);
+const writeKey = vi.mocked(writeSwrKey);
 const AGENT = { _key: 'a1', name: 'Helper' };
 
 function deferred<T>() {
@@ -122,20 +124,23 @@ describe('concurrent reads of one agent share a request', () => {
 describe('agent writes update the cached agent detail', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it.each([
-    ['a save', () => {
-      api.put.mockResolvedValue({ data: { agent: AGENT } });
-      return AgentsApi.updateAgent('a1', { name: 'Helper' });
-    }],
-    ['a delete', () => {
-      api.delete.mockResolvedValue({ data: {} });
-      return AgentsApi.deleteAgent('a1');
-    }],
-  ])('%s drops that agent so its next reader asks again', async (_name, write) => {
-    await write();
+  it('a save drops that agent so its next reader asks again', async () => {
+    api.put.mockResolvedValue({ data: { agent: AGENT } });
+
+    await AgentsApi.updateAgent('a1', { name: 'Helper' });
 
     expect(refreshKey).toHaveBeenCalledTimes(1);
     expect(refreshKey).toHaveBeenCalledWith(agentDetailKey('a1'));
+  });
+
+  it('a delete marks the agent gone without asking the server', async () => {
+    api.delete.mockResolvedValue({ data: {} });
+
+    await AgentsApi.deleteAgent('a1');
+
+    expect(writeKey).toHaveBeenCalledWith(agentDetailKey('a1'), { agent: null, toolFullNames: [] });
+    expect(refreshKey).not.toHaveBeenCalled();
+    expect(api.get).not.toHaveBeenCalled();
   });
 
   it('a failed save or delete changes nothing', async () => {
@@ -146,6 +151,7 @@ describe('agent writes update the cached agent detail', () => {
     await expect(AgentsApi.deleteAgent('a1')).rejects.toThrow('500');
 
     expect(refreshKey).not.toHaveBeenCalled();
+    expect(writeKey).not.toHaveBeenCalled();
   });
 });
 

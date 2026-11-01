@@ -159,20 +159,22 @@ describe('useAgentDetail', () => {
     expect(agentGets()).toBe(2);
   });
 
-  it('after a delete, the next reader inside the window asks again and sees the agent is gone', async () => {
-    mountReader().unmount();
+  it('a mounted reader of an agent deleted in this tab makes no request and sees it gone, as does the next mount', async () => {
+    const open = mountReader();
     await settle();
     api.delete.mockResolvedValue({ data: {} });
+
     await act(async () => {
       await AgentsApi.deleteAgent('agent-7');
     });
-    api.get.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
+    await settle();
+    expect(open.result.current).toEqual({ detail: { agent: null, toolFullNames: [] }, unavailable: false });
+    open.unmount();
 
     const back = mountReader();
     await settle();
-
-    expect(agentGets()).toBe(2);
-    expect(back.result.current).toEqual({ detail: undefined, unavailable: true });
+    expect(back.result.current.detail?.agent).toBeNull();
+    expect(agentGets()).toBe(1);
   });
 
   it('starts over after sign-out', async () => {

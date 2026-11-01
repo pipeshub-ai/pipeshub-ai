@@ -237,6 +237,12 @@ function conversationDetail({
   };
 }
 
+const AGENT_WITH_TOOLS = {
+  _key: 'agent-a',
+  name: 'Agent A',
+  toolsets: [{ name: 'jira', tools: [{ name: 'search', fullName: 'jira.search' }] }],
+};
+
 /** What the shared API client rejects with on an HTTP error. */
 function httpFailure(status: number) {
   const failure = new AxiosError(`Request failed with status code ${status}`);
@@ -916,6 +922,62 @@ describe('Chat page — agent chats', () => {
     expect(screen.queryByText('Support Bot')).toBeNull();
     expect(toastError).not.toHaveBeenCalled();
     expect(useChatStore.getState().agentToolCatalogFullNames).toEqual([]);
+  });
+
+  it('a deleted agent whose chat is open is shown as gone, with no request and no error toast', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    getAgent.mockResolvedValue({ agent: { _key: 'agent-7', name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    renderPage('agentId=agent-7');
+    expect(await screen.findByText('Support Bot')).toBeTruthy();
+
+    // What AgentsApi.deleteAgent writes.
+    act(() => writeSwrKey(agentDetailKey('agent-7'), { agent: null, toolFullNames: [] }));
+
+    await waitFor(() => expect(useChatStore.getState().agentContextDisplayName).toBeNull());
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(getAgent).toHaveBeenCalledTimes(1);
+    expect(toastError).not.toHaveBeenCalled();
+    expect(useChatStore.getState().agentContextAccess).toBeNull();
+  });
+
+  it("clears the previous agent's tools, knowledge and access while the next agent loads", async () => {
+    getAgent.mockResolvedValueOnce({ agent: AGENT_WITH_TOOLS, toolFullNames: ['jira.search'] });
+    const { rerender } = renderPage('agentId=agent-a');
+    await waitFor(() => expect(useChatStore.getState().agentChatToolGroups).toHaveLength(1));
+    expect(useChatStore.getState().agentContextAccess).not.toBeNull();
+
+    getAgent.mockReturnValue(new Promise(() => {}));
+    searchParams = new URLSearchParams('agentId=agent-b');
+    rerender(<Theme><ChatPage /></Theme>);
+
+    await waitFor(() => expect(useChatStore.getState().agentChatToolGroups).toEqual([]));
+    const state = useChatStore.getState();
+    expect(state.agentToolCatalogFullNames).toEqual([]);
+    expect(state.agentKnowledgeDefaults).toEqual({ apps: [], kb: [] });
+    expect(state.agentContextAccess).toBeNull();
+    expect(state.agentContextDisplayName).toBeNull();
+  });
+
+  it('resets every agent field when the user leaves the agent for the main chat', async () => {
+    getAgent.mockResolvedValue({ agent: AGENT_WITH_TOOLS, toolFullNames: ['jira.search'] });
+    const { rerender } = renderPage('agentId=agent-a');
+    await waitFor(() => expect(useChatStore.getState().agentChatToolGroups).toHaveLength(1));
+    // What the user may have picked meanwhile.
+    act(() => {
+      useChatStore.getState().setAgentKnowledgeScope({ apps: ['app-1'], kb: [] });
+      useChatStore.getState().setAgentStreamTools(['jira.search']);
+    });
+
+    searchParams = new URLSearchParams();
+    rerender(<Theme><ChatPage /></Theme>);
+
+    await waitFor(() => expect(useChatStore.getState().agentChatToolGroups).toEqual([]));
+    const state = useChatStore.getState();
+    expect(state.agentKnowledgeScope).toBeNull();
+    expect(state.agentStreamTools).toBeNull();
+    expect(state.agentToolCatalogFullNames).toEqual([]);
+    expect(state.agentContextAccess).toBeNull();
+    expect(state.agentContextDisplayName).toBeNull();
   });
 
   it('shows the new agent, never the previous one, when switching to an agent already loaded', async () => {

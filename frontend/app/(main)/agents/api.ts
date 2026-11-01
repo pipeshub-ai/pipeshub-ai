@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import { refreshSwrKey, revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { refreshSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
@@ -786,8 +786,8 @@ export const AgentsApi = {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
     revalidateSwrNamespace(SWR_NS.agentLists);
     forgetPendingAgent(agentKey);
-    // Its next reader asks again and gets the 404 (and its "not found" toast on a new chat), as before caching.
-    refreshSwrKey(agentDetailKey(agentKey));
+    // Gone, without asking: a refetch while its chat is still open would only bring back a 404 and its toast.
+    writeSwrKey<GetAgentResult>(agentDetailKey(agentKey), { agent: null, toolFullNames: [] });
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */
