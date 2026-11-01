@@ -1,6 +1,10 @@
 # ruff: noqa
 
 # NOTE — Development-only generator (Jira)
+#
+# NOTE: the generated ``add_attachment`` cannot upload (multipart without a boundary, no
+# X-Atlassian-Token). ``upload_issue_attachment`` and ``get_attachment_settings`` are
+# hand-maintained in app/sources/external/jira/jira.py and must be re-applied after regeneration.
 
 import sys
 from pathlib import Path

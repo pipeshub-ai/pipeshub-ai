@@ -57,7 +57,6 @@ export function MenuItem({
     margin: 0,
     font: 'inherit',
     color: 'inherit',
-    outline: 'none',
     textDecoration: 'none',
     display: 'flex',
     alignItems: 'center',
@@ -68,22 +67,16 @@ export function MenuItem({
     boxSizing: 'border-box',
     flexShrink: 0,
     borderRadius: 'var(--radius-1)',
-    backgroundColor: isActive
-      ? 'var(--slate-a3)'
-      : isHovered
-        ? 'var(--olive-3)'
-        : 'transparent',
-    border: isActive
-      ? '1px solid var(--slate-a4)'
-      : isHovered
-        ? '1px solid var(--olive-4)'
-        : '1px solid transparent',
+    border: 'none',
+    backgroundColor: isActive || isHovered ? 'var(--gray-a3)' : 'transparent',
+    transition: 'background-color 120ms ease',
     cursor: (onClick || href) ? 'pointer' : 'default',
   };
 
   const hoverHandlers = {
     onMouseEnter: () => setIsHovered(true),
     onMouseLeave: () => setIsHovered(false),
+    className: 'workspace-menu-item',
   };
 
   const content = (

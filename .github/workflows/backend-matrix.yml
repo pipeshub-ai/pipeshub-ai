@@ -79,7 +79,13 @@ on:
       - 'backend/nodejs/apps/src/libs/services/logger.service.ts'
       - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
       - 'backend/nodejs/apps/src/libs/repositories/**'
+      - 'backend/nodejs/apps/src/libs/db/uow.ts'
+      - 'backend/nodejs/apps/src/libs/errors/storage.errors.ts'
+      - 'backend/nodejs/apps/src/libs/context/**'
       - 'backend/nodejs/apps/tests/support/**'
+      # The storage fingerprint: its reference model, the integration test that replays the model, the table it adds and the checker.
+      - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
+      - 'backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'backend/nodejs/apps/tsconfig.json'
@@ -523,6 +529,62 @@ jobs:
           TESTS=$(cat "$RUNNER_TEMP/storage-discovered.txt")
           # shellcheck disable=SC2086
           pytest $TESTS -m integration -v -rs --timeout=300 --junitxml="$REPORT"
+
+      # The storage fingerprint (writer windows, verified document read) against this leg's file store and MongoDB. The reference
+      # model runs once per workflow run, on the local leg.
+      - name: Fingerprint reference model
+        if: always() && matrix.backend == 'local'
+        working-directory: backend/nodejs/apps
+        run: python3 tests/storage/fingerprint-model/model.py --ci
+
+      - name: Fingerprint integration tests
+        if: always()
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          DOC_STORE: mongo
+          MONGO_IT_URI: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}
+          TS_NODE_PROJECT: tsconfig.test.json
+          NODE_OPTIONS: ${{ matrix.backend == 's3' && format('--require {0}/backend/nodejs/apps/tests/support/vhost-pin.js', github.workspace) || '' }}
+        run: >-
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --exit --timeout 180000
+          --forbid-only --forbid-pending --reporter xunit --reporter-option output="$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml"
+          tests/stores/storage-fingerprint.itest.ts
+
+      # The number of cases is whatever the file defines for this leg (some exist only for local disk, some only for S3 and Azure), counted
+      # by a dry run of the same file with the same environment; the run must have executed exactly that many, none skipped or failed.
+      - name: Fingerprint tests ran, none skipped
+        if: always()
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          DOC_STORE: mongo
+          MONGO_IT_URI: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: |
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --dry-run --reporter json \
+            --reporter-option output="$RUNNER_TEMP/fingerprint-defined.json" tests/stores/storage-fingerprint.itest.ts > /dev/null
+          N=$(python3 -c "import json,os; print(json.load(open(os.environ['RUNNER_TEMP'] + '/fingerprint-defined.json'))['stats']['tests'])")
+          echo "defined for ${{ matrix.backend }}: $N"
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/fingerprint-${{ matrix.backend }}.xml" --expect-suite "document fingerprint=$N"
+
+      # The mocha report is a file, so a red run would say only "exit code N"; this prints each failed case and its message.
+      - name: Show the failed fingerprint cases
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          import xml.etree.ElementTree as ET
+          path = os.path.join(os.environ["RUNNER_TEMP"], "fingerprint-${{ matrix.backend }}.xml")
+          if not os.path.exists(path):
+              sys.exit(0)
+          for case in ET.parse(path).getroot().iter("testcase"):
+              for bad in list(case.findall("failure")) + list(case.findall("error")):
+                  print("FAILED:", case.get("name"))
+                  print((bad.get("message") or "")[:600])
+                  print((bad.text or "")[:1500])
+          PY
 
       # Every skip fails, and so does a discovered file that contributed no test.
       # The one allowance: a test that cannot apply to this store says so with a

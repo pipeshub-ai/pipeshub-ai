@@ -1,22 +1,19 @@
 import asyncio
 import mimetypes
-import re
-import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
 
 from aiolimiter import AsyncLimiter
-from dropbox.exceptions import ApiError
 
 # Dropbox SDK specific types
+from dropbox.users import FullAccount
 from dropbox.files import (
     DeletedMetadata,
     FileMetadata,
     FolderMetadata,
 )
-from dropbox.sharing import LinkAudience, SharedLinkSettings
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -67,7 +64,23 @@ from app.connectors.core.constants import (
 )
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
-from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.dropbox.deletes import (
+    DeleteOutcome,
+    apply_deleted_entry,
+    apply_out_of_scope_entry,
+    apply_replaced_entry,
+    item_still_exists,
+    recheck_owed_deletes,
+)
+from app.connectors.sources.dropbox.errors import is_auth_error, is_cursor_reset
+from app.connectors.sources.dropbox.owed import OwedDeletes
+from app.connectors.sources.dropbox.parents import ParentResolver
+from app.connectors.sources.dropbox.paths import repath_descendants
+from app.connectors.sources.dropbox.reconcile import remove_unlisted
+from app.connectors.sources.dropbox.sync_health import SyncHealth
+from app.connectors.sources.dropbox.sync_notices import SyncNotices
+from app.connectors.sources.dropbox.weblinks import WebLinks
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
@@ -82,8 +95,10 @@ from app.models.entities import (
 from app.models.permission import Permission
 from app.sources.client.dropbox.dropbox_ import (
     DropboxClient,
+    DropboxResponse,
     DropboxTokenConfig,
 )
+from app.sources.client.dropbox.endpoint import dropbox_api_base_url
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -279,6 +294,10 @@ class DropboxIndividualConnector(BaseConnector):
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+        self._health = SyncHealth()
+        self._owed = OwedDeletes(self.dropbox_cursor_sync_point)
+        self._web_links: WebLinks | None = None
+        self._moved_folders: list[tuple[str, str, str]] = []
 
     async def init(self) -> bool:
         """
@@ -331,6 +350,11 @@ class DropboxIndividualConnector(BaseConnector):
             )
             client = await DropboxClient.build_with_config(config, is_team=False)
             self.data_source = DropboxDataSource(client)
+            if dropbox_api_base_url():
+                self.logger.warning(
+                    "Dropbox calls for this connector go to %s (DROPBOX_API_BASE_URL), not to Dropbox: "
+                    "only a test deployment should set it.", dropbox_api_base_url()
+                )
             self.logger.info("Dropbox Individual client initialized successfully.")
             return True
         except Exception as e:
@@ -404,191 +428,85 @@ class DropboxIndividualConnector(BaseConnector):
         modified_after: Optional[datetime] = None,
         modified_before: Optional[datetime] = None,
         created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None
+        created_before: datetime | None = None,
+        *,
+        parents: ParentResolver | None = None,
     ) -> Optional[RecordUpdate]:
         """
-        Process a single Dropbox entry and detect changes.
-        Simplified version without team-specific parameters.
-
-        Args:
-            entry: The Dropbox file/folder metadata
-            user_id: The user's account ID
-            user_email: The user's email
-            record_group_id: The record group ID (user's drive ID)
-            modified_after: Only include files modified after this date
-            modified_before: Only include files modified before this date
-            created_after: Only include files created after this date
-            created_before: Only include files created before this date
-
-        Returns:
-            RecordUpdate object or None if entry should be skipped
+        Turn one listed entry into the record to write, and say what changed. A delete is applied here and gives
+        None. Records of a personal connector carry no grants: the connector's creator reaches all of them.
         """
         try:
             # A delete has no id, dates or extension to filter on.
             if isinstance(entry, DeletedMetadata):
-                await apply_deleted_entry(
+                outcome = await apply_deleted_entry(
                     self.data_entities_processor, self.connector_id, entry.path_lower,
-                    self._item_still_exists, self.logger,
+                    self._item_still_exists, self.logger, record_group_id=record_group_id,
                 )
+                self._note_delete_outcome(outcome)
+                if parents is not None:
+                    parents.note_gone(entry.path_lower)
                 return None
 
-            # 0. Apply date filters
-            if not self._pass_date_filters(
-                entry, modified_after, modified_before, created_after, created_before
-            ):
+            if not (self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before)
+                    and self._pass_extension_filter(entry)):
+                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}): outside the sync filters.")
+                self._note_delete_outcome(await apply_out_of_scope_entry(
+                    self.data_entities_processor, self.connector_id, entry.id, self.logger,
+                ))
                 return None
 
-            if not self._pass_extension_filter(entry):
-                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
-                return None
-
-            # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 self.connector_id, entry.id
             )
-
-            # 3. Detect changes
-            is_new = existing_record is None
-            is_updated = False
-            metadata_changed = False
-            content_changed = False
             is_file = isinstance(entry, FileMetadata)
+            if existing_record is None:
+                # Another item stored at this path was replaced (deleted, and this one made in its place).
+                self._note_delete_outcome(await apply_replaced_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower, entry.id, record_group_id,
+                    self._item_still_exists, self.logger,
+                ))
+            elif not is_file:
+                stored_file = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                old_path = getattr(stored_file, "path", None)
+                if old_path and old_path != entry.path_lower:
+                    self._moved_folders.append((entry.id, old_path, entry.path_lower))
 
-            if existing_record:
-                if existing_record.record_name != entry.name:
-                    metadata_changed = True
-                    is_updated = True
-                if is_file and existing_record.external_revision_id != entry.rev:
-                    content_changed = True
-                    is_updated = True
-
-            # 4. Create or Update the FileRecord object
-            record_type = RecordType.FILE
-
-            # Conditionally get timestamp: files have it, folders do not.
             if is_file:
                 timestamp_ms = int(entry.server_modified.timestamp() * 1000)
+                created_ms = int((getattr(entry, "client_modified", None) or entry.server_modified).timestamp() * 1000)
+            elif existing_record is not None:
+                # Folders carry no dates; keep the stored ones instead of moving them on every sync.
+                timestamp_ms = existing_record.source_updated_at or existing_record.updated_at
+                created_ms = existing_record.source_created_at or existing_record.created_at
             else:
-                # Use current time for folders as a fallback.
-                timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                timestamp_ms = created_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-            # 5. Get signed URL for files
-            signed_url = None
-            if is_file:
-                temp_link_result = await self.data_source.files_get_temporary_link(
-                    entry.path_lower
-                )
-                if temp_link_result.success:
-                    signed_url = temp_link_result.data.link
-
-            # 5.5 Get preview URL
-            # We keep the verbose logging and fallback logic from Teams because
-            # Dropbox API often throws "shared_link_already_exists" for individual users too.
-            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
-
-            preview_url = None
-            link_settings = SharedLinkSettings(
-                audience=LinkAudience('no_one'),
-                allow_download=True
-            )
-
-            # First call - try to create link with settings
-            shared_link_result = await self.data_source.sharing_create_shared_link_with_settings(
-                path=entry.path_lower,
-                settings=link_settings
-            )
-
-            self.logger.debug("Result 1: %s", shared_link_result)
-
-            if shared_link_result.success:
-                # Successfully created new link
-                preview_url = shared_link_result.data.url
-                self.logger.debug("Successfully created new link: %s", preview_url)
+            if parents is not None:
+                parent_external_record_id = await parents.parent_id(entry.path_lower)
             else:
-                # First call failed - check if link already exists
-                error_str = str(shared_link_result.error)
-                self.logger.debug("First call failed with error type")
+                parent_external_record_id = await self._ask_parent_id(get_parent_path_from_path(entry.path_lower))
 
-                if 'shared_link_already_exists' in error_str:
-                    self.logger.debug("Link already exists, making second call to retrieve it")
+            weburl = await self._links().link_for(entry, stored=existing_record.weburl if existing_record else None)
 
-                    # Make second call with settings=None to get the existing link
-                    second_result = await self.data_source.sharing_create_shared_link_with_settings(
-                        path=entry.path_lower,
-                        settings=None
-                    )
-
-                    self.logger.debug("Result 2 received")
-
-                    if second_result.success:
-                        # Unexpectedly succeeded
-                        preview_url = second_result.data.url
-                        self.logger.debug("Second call succeeded: %s", preview_url)
-                    else:
-                        # Expected to fail - extract URL from error string
-                        second_error_str = str(second_result.error)
-
-                        if 'shared_link_already_exists' in second_error_str:
-                            # Extract URL using regex - Crucial fallback for Dropbox API quirks
-                            url_pattern = r"url='(https://[^']+)'"
-                            url_match = re.search(url_pattern, second_error_str)
-
-                            if url_match:
-                                preview_url = url_match.group(1)
-                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
-                            else:
-                                self.logger.error("Could not extract URL from second error string")
-                                self.logger.debug("Error string: %s", second_error_str[:500]) # Log first 500 chars
-                        else:
-                            self.logger.error("Unexpected error on second call (not shared_link_already_exists)")
-                else:
-                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
-
-            # Final check - fall back to a direct Dropbox web link if we couldn't
-            # create/retrieve a shared link (e.g. access_denied on nested shared
-            # folders with a restrictive shared_link_policy, or path/not_found
-            # for content whose path doesn't resolve in this namespace context).
-            if preview_url is None:
-                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
-                preview_url = f"https://www.dropbox.com/home{encoded_path}"
-                self.logger.warning(
-                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
-                )
-            else:
-                self.logger.debug("Final preview_url: %s", preview_url)
-
-            # 6. Get parent record ID
-            parent_path = None
-            parent_external_record_id = None
-            if entry.path_display != '/':
-                parent_path = get_parent_path_from_path(entry.path_lower)
-
-            if parent_path:
-                # For individual accounts, we just query the path directly.
-                parent_metadata = await self.data_source.files_get_metadata(parent_path)
-
-                if parent_metadata.success:
-                    parent_external_record_id = parent_metadata.data.id
-
-            # 7. Create the FileRecord object
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=entry.name,
-                record_type=record_type,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=record_group_id, # This is the User's personal drive ID
                 external_record_id=entry.id,
                 external_revision_id=entry.rev if is_file else None,
-                version=0 if is_new else existing_record.version + 1,
+                # The processor sets the version: it moves on a content change only.
+                version=0,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                created_at=timestamp_ms,
+                created_at=created_ms,
                 updated_at=timestamp_ms,
-                source_created_at=timestamp_ms,
+                source_created_at=created_ms,
                 source_updated_at=timestamp_ms,
-                weburl=preview_url, # Calculated in step 5.5
-                signed_url=signed_url, # Calculated in step 5
+                weburl=weburl,
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=entry.size if is_file else 0,
@@ -603,12 +521,13 @@ class DropboxIndividualConnector(BaseConnector):
             file_record.rewrite_permissions = True
             file_record.inherit_permissions = True
 
+            content_changed = bool(existing_record) and is_file and existing_record.external_revision_id != entry.rev
             return RecordUpdate(
                 record=file_record,
-                is_new=is_new,
-                is_updated=is_updated,
+                is_new=existing_record is None,
+                is_updated=existing_record is not None,
                 is_deleted=False,
-                metadata_changed=metadata_changed,
+                metadata_changed=bool(existing_record) and existing_record.record_name != entry.name,
                 content_changed=content_changed,
                 permissions_changed=True,
                 old_permissions=[],
@@ -618,7 +537,36 @@ class DropboxIndividualConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
+            self._health.skipped(f"entry {getattr(entry, 'path_lower', '?')}", ex)
             return None
+
+    def _note_delete_outcome(self, outcome: DeleteOutcome) -> None:
+        """A delete Dropbox could not confirm is owed: the cursor moves on, and Dropbox lists the change only once."""
+        if outcome.unsure_external_ids:
+            self._owed.add(outcome.unsure_external_ids)
+        if outcome.failed:
+            self._health.skipped("a delete", "could not be written; it is tried again on the next run")
+
+    def _links(self) -> WebLinks:
+        if self._web_links is None or self._web_links.data_source is not self.data_source:
+            self._web_links = WebLinks(self.data_source, self.logger)
+        return self._web_links
+
+    async def _stored_id_at(self, path_lower: str, record_group_id: str) -> str | None:
+        for record in await self.data_entities_processor.get_records_by_file_path(self.connector_id, path_lower):
+            if record.external_record_group_id == record_group_id:
+                return record.external_record_id
+        return None
+
+    async def _ask_parent_id(self, parent_path: str | None) -> str | None:
+        if not parent_path or parent_path == "/":
+            return None
+        metadata = await self.data_source.files_get_metadata(parent_path)
+        found = item_still_exists(metadata)
+        if found is None:
+            # Unknown is not "no parent": the entry would be written at the root and Dropbox lists it once.
+            raise RuntimeError(f"could not read the parent folder {parent_path}: {metadata.error}")
+        return metadata.data.id if found else None
 
     async def _item_still_exists(self, record: Record) -> bool | None:
         """Whether a deleted path's record still resolves by id (a move also reports a delete at the old path)."""
@@ -633,7 +581,9 @@ class DropboxIndividualConnector(BaseConnector):
         modified_after: Optional[datetime] = None,
         modified_before: Optional[datetime] = None,
         created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None
+        created_before: datetime | None = None,
+        *,
+        parents: ParentResolver | None = None,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.
@@ -649,6 +599,11 @@ class DropboxIndividualConnector(BaseConnector):
             created_after: Only include files created after this date
             created_before: Only include files created before this date
         """
+        if parents is not None:
+            # A page may list a child before its folder.
+            for entry in entries:
+                if isinstance(entry, FolderMetadata):
+                    parents.note_folder(entry.path_lower, entry.id)
         for entry in entries:
             try:
                 record_update = await self._process_dropbox_entry(
@@ -659,7 +614,8 @@ class DropboxIndividualConnector(BaseConnector):
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
-                    created_before=created_before
+                    created_before=created_before,
+                    parents=parents,
                 )
                 if record_update and record_update.record:
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
@@ -671,6 +627,7 @@ class DropboxIndividualConnector(BaseConnector):
                 await asyncio.sleep(0)
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
+                self._health.skipped(f"entry {getattr(entry, 'path_lower', '?')}", e)
                 continue
 
     def _pass_date_filters(
@@ -842,178 +799,205 @@ class DropboxIndividualConnector(BaseConnector):
 
     async def _run_sync_with_cursor(self, user_id: str, user_email: str) -> None:
         """
-        Synchronizes Dropbox files using cursor-based approach.
-        """
-        # 1. Setup (Let errors bubble up to run_sync if DB fails here)
-        sync_point_key = generate_record_sync_point_key(
-            RecordType.DRIVE.value,
-            "personal_drive",
-            user_id
-        )
+        List the account from its cursor and write what changed.
 
+        A page is written before its cursor is saved, so a run cut off part way resumes there. A cursor Dropbox
+        reset is dropped and the account listed from the start; once that listing has finished, what it no longer
+        shows is checked and removed. A page that cannot be read ends the listing for this run and is recorded,
+        so the run is not reported as a success and a full sync removes nothing.
+        """
+        # _v2: a listing written by an earlier version is read once more from the start, and what it no longer
+        # shows is removed, to repair what that version stored (paths left by moves, records of replaced files).
+        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "personal_drive_v2", user_id)
         sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
         cursor = sync_point.get('cursor')
+        older = cursor is None and bool((await self.dropbox_cursor_sync_point.read_sync_point(
+            generate_record_sync_point_key(RecordType.DRIVE.value, "personal_drive", user_id))).get('cursor'))
 
         self.logger.info(f"Starting sync for {user_email}. Cursor exists: {bool(cursor)}")
 
         modified_after, modified_before, created_after, created_before = self._get_date_filters()
+        parents = ParentResolver(
+            stored_id_at=lambda path: self._stored_id_at(path, user_id),
+            ask_dropbox=self._ask_parent_id,
+        )
+        problems_before = len(self._health.problems)
+        # A listing from the start (a full sync) shows what exists, not what was deleted since the last cursor,
+        # which Dropbox reports only once: what it does not show is checked once it ends.
+        relisting = older or cursor is None
+        listed: set[str] = set()
+        held = restart = False
 
-        has_more = True
-
-        while has_more:
+        while True:
             try:
-                # 2. Rate Limiting (Standard)
                 async with self.rate_limiter:
                     if cursor:
                         result = await self.data_source.files_list_folder_continue(cursor)
                     else:
-                        result = await self.data_source.files_list_folder(
-                            path="",
-                            recursive=True
-                        )
+                        result = await self.data_source.files_list_folder(path="", recursive=True)
+            except Exception as e:  # the data source normally answers failures, it does not raise
+                result = DropboxResponse(success=False, error=str(e))
 
-                if not result.success:
-                    self.logger.error(f"Dropbox List Folder failed: {result.error}")
-                    has_more = False
+            if not result.success:
+                if cursor and is_cursor_reset(result.error):
+                    self.logger.warning(f"Dropbox reset the cursor of {user_email}; listing it again from the start")
+                    self._health.relisted.append(f"Dropbox of {user_email}")
+                    relisting, cursor = True, None
+                    listed.clear()
                     continue
+                if is_auth_error(result.error):
+                    self._health.auth_failed(result.error)
+                    return
+                self.logger.error(f"Dropbox List Folder failed: {result.error}")
+                self._health.skipped(f"listing of {user_email}'s Dropbox", result.error)
+                return
 
-                # 3. Process Batch
-                entries = result.data.entries
-                batch_records = []
+            entries = result.data.entries
+            page_problems = len(self._health.problems)
+            updates = []
+            async for _record, _perms, update in self._process_dropbox_items_generator(
+                entries,
+                user_id,
+                user_email,
+                user_id,
+                modified_after=modified_after,
+                modified_before=modified_before,
+                created_after=created_after,
+                created_before=created_before,
+                parents=parents,
+            ):
+                updates.append(update)
+            if relisting:
+                listed.update(getattr(e, "id", None) for e in entries if not isinstance(e, DeletedMetadata))
+            # In listing order, in one batch: a moved file and the folder made for it land together.
+            if updates:
+                await self.data_entities_processor.on_new_records([(u.record, []) for u in updates])
+            moved, self._moved_folders = self._moved_folders, []
+            for external_id, old_path, new_path in moved:
+                _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
+                                                   old_path, new_path, self.logger)
+                if not done:
+                    # Listed again from the start, which writes every path below it. Saved now: replayed from an
+                    # older cursor, the move would no longer show.
+                    self._health.skipped(f"paths below {new_path}", "could not all be rewritten; listed again next run")
+                    restart = True
+                    await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': None})
 
-                async for record, perms, update in self._process_dropbox_items_generator(
-                    entries,
-                    user_id,
-                    user_email,
-                    user_id,
-                    modified_after=modified_after,
-                    modified_before=modified_before,
-                    created_after=created_after,
-                    created_before=created_before
-                ):
-                    if update.is_deleted:
-                        await self._handle_record_updates(update)
-                    elif update.is_updated:
-                        await self._handle_record_updates(update)
-                    else:
-                        batch_records.append((record, perms))
+            cursor = result.data.cursor
+            # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
+            # the next run reads it again (its writes are idempotent). The pages after it are still written.
+            held = held or len(self._health.problems) > page_problems
+            if not (held or restart):
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, {'cursor': cursor})
+            if result.data.has_more is not True:
+                break
 
-                        if len(batch_records) >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            batch_records = []
-                            await asyncio.sleep(0)
-
-                # Flush remaining
-                if batch_records:
-                    await self.data_entities_processor.on_new_records(batch_records)
-
-                # 4. Update Cursor
-                cursor = result.data.cursor
-                has_more = result.data.has_more
-
-                await self.dropbox_cursor_sync_point.update_sync_point(
-                    sync_point_key,
-                    {'cursor': cursor}
-                )
-
-            except ApiError as api_e:
-                error_str = str(api_e)
-                # Handle known "Stop Sync" errors gracefully
-                if 'cursor' in error_str.lower() or 'reset' in error_str.lower():
-                    self.logger.warning(f"Dropbox Cursor Invalid/Expired for {user_email}. Stopping sync.")
-                    has_more = False
-                elif 'path/not_found' in error_str.lower():
-                    self.logger.warning(f"Path not found for {user_email}. Stopping sync.")
-                    has_more = False
-                else:
-                    # Re-raise unexpected API errors so run_sync knows we failed
-                    self.logger.error(f"Dropbox API Error during sync: {api_e}", exc_info=True)
-                    raise api_e
-
-            except Exception as loop_e:
-                # Catch generic processing errors to prevent infinite loops
-                self.logger.error(f"Error in sync loop: {loop_e}", exc_info=True)
-                has_more = False
+        if relisting and len(self._health.problems) == problems_before:
+            self._note_delete_outcome(await remove_unlisted(
+                self.data_entities_processor, self.connector_id, user_id, listed, self._item_still_exists,
+                self.logger,
+            ))
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """Handle different types of record updates (new, updated, deleted)."""
-        try:
-            if record_update.is_deleted:
-                # The update carries the source's id; records are deleted by their key.
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    self.connector_id, record_update.external_record_id
-                )
-                if existing_record:
-                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
-            elif record_update.is_new:
-                self.logger.info(f"New record detected: {record_update.record.record_name}")
-            elif record_update.is_updated:
-                if record_update.metadata_changed:
-                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_record_metadata_update(record_update.record)
+        """Write one re-read record (a reindex that found it changed), or delete one."""
+        if record_update.is_deleted:
+            # The update carries Dropbox's id; records are deleted by their key.
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record_update.external_record_id
+            )
+            if existing:
+                await self.data_entities_processor.on_record_deleted(record_id=existing.id)
+            return
+        if record_update.record is not None:
+            await self.data_entities_processor.on_new_records([(record_update.record, [])])
 
-                if record_update.permissions_changed:
-                    self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_updated_record_permissions(
-                        record_update.record,
-                        record_update.new_permissions
-                    )
-
-                if record_update.content_changed:
-                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_record_content_update(record_update.record)
-
-        except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A run that skipped part of Dropbox did not see everything, so a full sync must remove nothing."""
+        return FullSyncCoverage(complete=self._health.complete)
 
     async def run_sync(self) -> None:
         """
-        Runs a full synchronization from the Dropbox individual account.
-        Simplified workflow without team/group syncing.
+        Runs a sync of the Dropbox individual account, from its cursor (or in full after a full-sync request).
+
+        A run that could not read part of Dropbox, or whose credentials Dropbox refused, raises at the end: it is
+        recorded as failed, a full sync removes nothing, and the creator is told once.
         """
+        self._health = SyncHealth()
         try:
-            self.logger.info("🚀 Starting Dropbox Individual Sync")
-
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "dropboxpersonal", self.connector_id, self.logger
-            )
-
-            # 1. Fetch and sync the current user as AppUser
-            self.logger.info("Syncing user...")
-            response = await self.data_source.users_get_current_account()
-
-            if not response or not response.success or not response.data:
-                raise ValueError("Failed to retrieve account information for user sync.")
-
-            app_user = self._get_current_user_as_app_user(response.data)
-            await self.data_entities_processor.on_new_app_users([app_user])
-            await self.register_authenticated_source_user(
-                response.data.email, response.data.account_id
-            )
-            self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
-
-            # 2. Identify the User (for backward compatibility with existing code)
-            user_id, user_email = await self._get_current_user_info()
-            self.logger.info(f"Identified current user: {user_email} ({user_id})")
-
-            # 3. Create the 'Drive' (Record Group)
-            display_name = f"Dropbox - {user_email}"
-            await self._create_personal_record_group(
-                user_id,
-                user_email,
-                display_name
-            )
-            self.logger.info(f"Ensured Record Group exists for: {display_name}")
-
-            # 4. Start the Sync Engine
-            self.logger.info("Starting file traversal...")
-            await self._run_sync_with_cursor(user_id, user_email)
-
-            self.logger.info("✅ Dropbox Individual Sync Completed Successfully")
-
+            await self._sync_steps()
         except Exception as ex:
             self.logger.error(f"❌ Error in Dropbox Individual connector run: {ex}", exc_info=True)
+            if is_auth_error(ex):
+                self._health.auth_failed(ex)
+            else:
+                self._health.skipped("the sync", ex)
             raise
+        finally:
+            self.last_sync_summary = {"skipped": len(self._health.problems), "relisted": len(self._health.relisted)}
+            await SyncNotices(self).report(self._health)
+        self._health.raise_if_incomplete()
+
+    async def _sync_steps(self) -> None:
+        self.logger.info("🚀 Starting Dropbox Individual Sync")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "dropboxpersonal", self.connector_id, self.logger
+        )
+
+        # 1. The connected account, and who may read it: the connector's creator only.
+        response = await self.data_source.users_get_current_account()
+        if not response or not response.success or not response.data:
+            error = getattr(response, "error", None) or "no account information"
+            if is_auth_error(error):
+                self._health.auth_failed(error)
+                return
+            raise ValueError(f"Failed to retrieve account information for user sync: {error}")
+        await self._grant_creator(response.data)
+        self.current_user_id, self.current_user_email = response.data.account_id, response.data.email
+        user_id, user_email = self.current_user_id, self.current_user_email
+        self.logger.info(f"Identified current user: {user_email} ({user_id})")
+
+        # 2. Create the 'Drive' (Record Group)
+        display_name = f"Dropbox - {user_email}"
+        await self._create_personal_record_group(user_id, user_email, display_name)
+
+        # Deletes earlier runs could not confirm.
+        owed = await self._owed.load()
+        if owed:
+            self._owed.settle(await recheck_owed_deletes(
+                self.data_entities_processor, self.connector_id, owed, self._item_still_exists, self.logger,
+            ))
+
+        # 3. The files.
+        self.logger.info("Starting file traversal...")
+        try:
+            await self._run_sync_with_cursor(user_id, user_email)
+        finally:
+            # Deletes owed so far are kept even when this run stops part way.
+            await self._owed.save()
+        self.logger.info("✅ Dropbox Individual Sync Completed")
+
+    async def _grant_creator(self, account_data: FullAccount) -> None:
+        """Let the connector's creator, and nobody else, reach the account's records.
+
+        The account's email may be another PipesHub user's (someone connects a Dropbox account under a colleague's
+        address). Saving it as the connector's user would give that colleague the whole account, so it is saved
+        only when it is the creator's own; the creator is always linked, and any other user an earlier version
+        linked through the account's email is unlinked.
+        """
+        await self._load_creator_email()
+        creator = (self.creator_email or "").lower()
+        account_email = (account_data.email or "").lower()
+        if creator and account_email == creator:
+            await self.data_entities_processor.on_new_app_users([self._get_current_user_as_app_user(account_data)])
+        await self.ensure_creator_user_app_relation()
+        await self.register_authenticated_source_user(account_data.email, account_data.account_id)
+        if creator:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            others = [u for u in stored if (u.email or "").lower() != creator]
+            if others:
+                self.logger.info(f"Unlinking {len(others)} user(s) who are not this personal connector's creator")
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
 
     async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str) -> RecordGroup:
         """
@@ -1034,17 +1018,8 @@ class DropboxIndividualConnector(BaseConnector):
         return record_group
 
     async def run_incremental_sync(self) -> None:
-        """Runs an incremental sync using the last known cursor."""
-        try:
-            self.logger.info("🔄 Starting Dropbox Individual incremental sync.")
-
-            user_id, user_email = await self._get_current_user_info()
-            await self._run_sync_with_cursor(user_id, user_email)
-
-            self.logger.info("✅ Dropbox Individual incremental sync completed.")
-        except Exception as e:
-            self.logger.error(f"❌ Error in incremental sync: {e}", exc_info=True)
-            raise
+        """Every run is incremental already: the account is listed from its cursor."""
+        await self.run_sync()
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -1105,15 +1080,19 @@ class DropboxIndividualConnector(BaseConnector):
         )
 
     async def test_connection_and_access(self) -> bool:
+        """Whether Dropbox accepts the token: the data source reports a refusal in its answer, it does not raise."""
         if not self.data_source:
             return False
         try:
-            await self.data_source.users_get_current_account()
-            self.logger.info("Dropbox connection test successful.")
-            return True
+            response = await self.data_source.users_get_current_account()
         except Exception as e:
             self.logger.error(f"Dropbox connection test failed: {e}", exc_info=True)
             return False
+        if not response.success:
+            self.logger.error(f"Dropbox connection test failed: {response.error}")
+            return False
+        self.logger.info("Dropbox connection test successful.")
+        return True
 
     async def reindex_records(self, records: List[Record]) -> None:
         """
@@ -1160,6 +1139,15 @@ class DropboxIndividualConnector(BaseConnector):
             # Update DB only for records that changed at source
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
+                # A folder that moved is stored at its new path now, so no later listing sees the move: the
+                # paths below it are rewritten here.
+                moved, self._moved_folders = self._moved_folders, []
+                for external_id, old_path, new_path in moved:
+                    _, done = await repath_descendants(self.data_entities_processor, self.connector_id,
+                                                       external_id, old_path, new_path, self.logger)
+                    if not done:
+                        self.logger.warning(f"Paths below {new_path} could not all be rewritten; a full sync "
+                                            "writes them again")
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records
@@ -1208,7 +1196,12 @@ class DropboxIndividualConnector(BaseConnector):
                 self.logger.info(f"Record {record.id} has been deleted at source")
                 return None
 
-            # Process the entry using existing logic
+            # Unchanged content and place: only a re-index is wanted.
+            stored = await self.data_entities_processor.get_file_record_by_id(record.id)
+            if entry.name == record.record_name and getattr(entry, "rev", None) == record.external_revision_id \
+                    and entry.path_lower == getattr(stored, "path", entry.path_lower):
+                return None
+
             # For individual accounts, record_group_id is the user's account ID
             record_update = await self._process_dropbox_entry(
                 entry=entry,
@@ -1220,14 +1213,9 @@ class DropboxIndividualConnector(BaseConnector):
             if not record_update or record_update.is_deleted:
                 return None
 
-            # Only return data if there's an actual update (metadata, content, or permissions)
-            if record_update.is_updated:
-                self.logger.info(f"Record {external_id} has changed at source. Updating.")
-                # Ensure we keep the internal DB ID
-                record_update.record.id = record.id
-                return (record_update.record, record_update.new_permissions or [])
-
-            return None
+            self.logger.info(f"Record {external_id} has changed at source. Updating.")
+            record_update.record.id = record.id
+            return (record_update.record, record_update.new_permissions or [])
 
         except Exception as e:
             self.logger.error(f"Error checking Dropbox Individual record {record.id} at source: {e}", exc_info=True)

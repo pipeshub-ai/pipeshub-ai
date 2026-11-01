@@ -24,7 +24,7 @@ info:
 
     **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters.
 
-    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
+    **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse or whose top level is not an object or an array (a bare string, number, `true`, `false` or `null`), or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
     **Request size.** On every route with a request validator, the body, query and path values are measured before the schema runs. An array over 10,000 items (`<path> can have at most 10000 items.`), an object over 10,000 keys (`<path> can have at most 10000 fields.`), more than 100,000 array items and object keys in the whole request (`The request holds too many items in total (the limit is 100000); the limit is reached at <path>.`) or nesting deeper than 64 levels (`<path> is nested more than 64 levels deep.`) is refused with `400 VALIDATION_ERROR` (detail code `TOO_BIG`, or `TOO_DEEP` for nesting; the path reads like `body.items`). The deployment can change the first three limits with `VALIDATION_MAX_ARRAY_LENGTH`, `VALIDATION_MAX_OBJECT_KEYS` and `VALIDATION_MAX_TOTAL_ITEMS`.
 
@@ -445,6 +445,150 @@ tags:
     description: |
       The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
       document that UI renders, and a health check. These routes are public (no token is read).
+# Sidebar of the docs page at /api/v1/docs: heading -> nav item -> tags. A tag with endpoints
+# listed nowhere here still shows, under "Other". The SDK generator ignores this key.
+x-pipeshub-nav:
+  - name: Identity & Access
+    modules:
+      - name: Authentication
+        icon: lock
+        description: User authentication, authorization, and session management
+        tags:
+          - User Account
+          - Organization Auth Config
+          - Personal Access Tokens
+      - name: OAuth App Management
+        icon: key
+        description: OAuth 2.0 authorization server, app registration, and OpenID Connect
+        tags:
+          - OAuth Provider
+          - OAuth Apps
+          - OpenID Connect
+      - name: User Management
+        icon: user
+        description: Users, service accounts, teams, groups, organizations, and notifications
+        tags:
+          - Users
+          - Service Accounts
+          - Service Tokens
+          - Teams
+          - Organizations
+          - User Groups
+          - Notifications
+  - name: Data Management
+    modules:
+      - name: Storage
+        icon: folder
+        description: Service-to-service document storage (not callable with a user token)
+        tags:
+          - Internal Storage
+      - name: Knowledge Base
+        icon: book
+        description: Knowledge bases, folders, records, and permissions
+        tags:
+          - Knowledge Base
+          - Knowledge Hub
+          - Folders
+          - Records
+          - Permissions
+          - Upload
+          - Connector
+      - name: Artifacts
+        icon: image
+        description: Generated artifacts, with preview, download, and versions
+        tags:
+          - Artifacts
+  - name: Search & AI
+    modules:
+      - name: Enterprise Search
+        icon: search
+        description: Conversational AI, semantic search, and code graphs
+        tags:
+          - Conversations
+          - Projects
+          - Code Graph
+          - Semantic Search
+          - Conversational Speech
+      - name: Agents
+        icon: cpu
+        description: Custom AI agents, agent templates, and skills
+        tags:
+          - Agents
+          - Agent Templates
+          - Agent Conversations
+          - Skills
+  - name: Integrations
+    modules:
+      - name: Connector Manager
+        icon: code
+        description: Third-party integrations, OAuth flows, and data synchronization
+        tags:
+          - Connector Registry
+          - Connector Instances
+          - Connector Configuration
+          - Connector Control
+          - Connector OAuth
+          - Connector Filters
+          - OAuth Configuration
+      - name: Toolsets
+        icon: tool
+        description: Toolsets that give agents actions in other apps or your own REST APIs
+        tags:
+          - Toolset Registry
+          - Toolset Instances
+          - Toolset Configuration
+          - Toolset OAuth
+          - API Toolsets
+      - name: MCP Servers
+        icon: server
+        description: External MCP servers that agents and users connect to
+        tags:
+          - MCP Server Catalog
+          - MCP Server Instances
+          - MCP Server Credentials
+          - MCP Server OAuth
+          - MCP Servers for Agents
+          - MCP Servers
+      - name: MCP
+        icon: layers
+        description: The PipesHub MCP endpoint at /mcp
+        tags:
+          - MCP
+  - name: System
+    modules:
+      - name: Configuration Manager
+        icon: gear
+        description: System-wide configuration management
+        tags:
+          - Storage Configuration
+          - SMTP Configuration
+          - Authentication Configuration
+          - Platform Settings
+          - AI Models Providers
+          - Configuration Manager
+          - Public URLs
+          - Web Search
+          - Metrics Collection
+      - name: Crawling Manager
+        icon: clock
+        description: Data crawling job scheduling and monitoring
+        tags:
+          - Crawling Jobs
+      - name: Mail
+        icon: mail
+        description: Service-to-service email sending and SMTP setup
+        tags:
+          - Mail
+      - name: Health
+        icon: activity
+        description: Health of the deployment, and the build that it runs
+        tags:
+          - Health
+      - name: API Documentation
+        icon: book
+        description: This API reference and the JSON it renders
+        tags:
+          - API Documentation
 components:
   parameters:
     RevealStoredSecrets:
@@ -4860,6 +5004,55 @@ components:
         - __v
 
     # ==================== STORAGE SCHEMAS ====================
+    StorageFingerprint:
+      type: object
+      description: |
+        What a reader may rely on about a document's stored bytes. Only `trusted` may justify skipping a re-read. `value` is
+        comparable only between verified responses (`verified: true`); store it only when `trusted` is true.
+
+        The ETag is reported without quotes and without a weak marker; add exactly one pair of quotes to build `If-Match`. On local
+        storage the ETag is synthetic (a hash of device, inode, size and modification time of the file). On S3 only virtual-hosted
+        style stored URLs can be checked: a path-style endpoint, or a bucket or region that does not match the configuration, answers
+        `objectUnverifiable: true` with `reason: unparseable_storage_url` (HTTP 200, not trusted, no retry needed).
+
+        Operators bump `STORAGE_FINGERPRINT_EPOCH` after a restore from backup or a store migration; every stored `value` then stops
+        matching once (one re-read). It is a per-pod setting, so during a rolling restart a value can alternate, which only ever
+        reads as "changed".
+      required: [version, value, settled, verified, object, objectMissing, objectUnverifiable, trusted]
+      properties:
+        version:
+          type: integer
+          example: 1
+        value:
+          type: string
+          description: 32 hex characters.
+        settled:
+          type: boolean
+          description: No writer is mid-write.
+        verified:
+          type: boolean
+        object:
+          nullable: true
+          type: object
+          description: Present only when verified and the object exists.
+          properties:
+            size:
+              type: integer
+            etag:
+              type: string
+            lastModified:
+              type: string
+              nullable: true
+              description: Informational; one-second resolution on Azure. Not part of `value`.
+        objectMissing:
+          type: boolean
+        objectUnverifiable:
+          type: boolean
+        reason:
+          type: string
+          description: '`unparseable_storage_url` or `server_clock_unavailable`.'
+        trusted:
+          type: boolean
     Document:
       type: object
       description: |
@@ -4880,6 +5073,14 @@ components:
           type: string
           description: Display name of the document
           example: "Q4 Financial Report.pdf"
+        awaitingDirectUpload:
+          type: boolean
+          description: A direct upload was started and has not been recorded as finished (a verified read of the document records it).
+        retiredAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Server time (ms) the document was marked retired.
         alternateDocumentName:
           type: string
           description: Alternative name for search/display purposes
@@ -10202,6 +10403,10 @@ components:
           type: string
           enum: [none, low, medium, high, max]
           description: Reasoning effort requested for the turn, when one was set.
+        modelNote:
+          type: string
+          description: On an answer, a short note the AI service added about the model that answered.
+
     FollowUpQuestion:
       type: object
       additionalProperties: false
@@ -16249,6 +16454,7 @@ components:
         - BEARER_TOKEN
         - BASIC_AUTH
         - ACCESS_KEY
+        - KEY_PAIR
         - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
@@ -28413,6 +28619,34 @@ paths:
           schema:
             type: string
             pattern: '^,*([a-fA-F0-9]{24}(,+[a-fA-F0-9]{24})*)?,*$'
+        - name: joinedFrom
+          in: query
+          required: false
+          description: Only users who joined at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: joinedTo
+          in: query
+          required: false
+          description: Only users who joined before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveFrom
+          in: query
+          required: false
+          description: Only users last active (last updated) at or after this time, in epoch milliseconds (inclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
+        - name: lastActiveTo
+          in: query
+          required: false
+          description: Only users last active (last updated) before this time, in epoch milliseconds (exclusive).
+          schema:
+            type: string
+            pattern: '^-?\d{1,15}$'
         - name: includeServiceAccounts
           in: query
           required: false
@@ -34920,15 +35154,57 @@ paths:
       tags:
         - Internal Storage
       summary: Read a document record (service-to-service)
-      description: Mirrors `GET /document/{documentId}`.
+      description: |
+        Returns the stored document record plus a `storageFingerprint`: a value that changes whenever the document's bytes can have
+        changed, on every write path. Without `verify` the object store is not asked: the fingerprint follows the document's
+        counters only and is never trusted. With `verify=1` the stored object is checked (HEAD on S3 and Azure, a file stat on
+        local storage) and `object` holds its real size and ETag; `trusted` is then the only flag that may justify skipping a
+        re-read.
+
+        A direct upload that finished is recorded by the first verified read (the `awaitingDirectUpload` flag is cleared and
+        `sizeInBytes` follows the object); for documents uploaded before this existed that is a one-time write on a GET.
+        `sizeInBytes` is advisory; `object.size` is the truth. Every response carries `Cache-Control: no-store`.
+
+        Presigned upload links can change a document's bytes for as long as they live (one hour) without any event the server
+        sees; the ETag check and the `If-Match` rule below are what cover that.
       operationId: internalGetDocumentById
       security:
         - scopedToken: []
       parameters:
         - $ref: '#/components/parameters/InternalDocumentId'
+        - name: verify
+          in: query
+          required: false
+          description: '`1` or `true` checks the stored object. Any other value is a 400.'
+          schema:
+            type: string
+            enum: ['1', 'true']
       responses:
         '200':
-          description: The document record.
+          description: The document record and its fingerprint.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Document'
+                  - type: object
+                    required:
+                      - storageFingerprint
+                    properties:
+                      storageFingerprint:
+                        $ref: '#/components/schemas/StorageFingerprint'
+        '503':
+          description: |
+            The object store or the document store could not be read. A verified read still answers 200 with
+            `trusted: false` when the object is missing (`objectMissing`, no `object`), when its stored URL cannot be
+            parsed (`objectUnverifiable`, no `object`), when the document is awaiting its direct upload or is a deleted or
+            retired row (`object` holds the stored object's size and ETag when there is one), when it is an artifact set
+            (no `object`), and when the store clock is unavailable (no `object`; the `reason` says why).
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36147,7 +36423,12 @@ paths:
       summary: Download a document (service-to-service)
       description: |
         Returns a time-limited link for S3 or Azure, or the file itself for local
-        storage. Mirrors `GET /document/{documentId}/download`.
+        storage.
+
+        Bind the download to a verified fingerprint: on S3 and Azure send `If-Match: "<object.etag>"` on every request to the
+        signed link (a range download on each range) and compare the `ETag` header of every response with `object.etag`; a 412 or a
+        mismatch means the object changed. On local storage pass the bare `object.etag` as `ifMatch`; the identity is taken from
+        the open file and a different one answers 412 before a byte is sent. The response always carries `ETag`.
       operationId: internalDownloadDocument
       security:
         - scopedToken: []
@@ -36167,9 +36448,22 @@ paths:
           schema:
             type: integer
             minimum: 1
+        - name: ifMatch
+          in: query
+          required: false
+          description: Local storage only. The `object.etag` the caller verified; any other file identity answers 412.
+          schema:
+            type: string
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+          headers:
+            ETag:
+              description: Local storage only. The quoted identity of the file that was sent.
+              schema:
+                type: string
+        '412':
+          description: Local storage only. The file is not the one named by `ifMatch`.
         '400':
           description: |
             The document id is not a 24-character hex id, or the storage token's
@@ -36232,7 +36526,8 @@ paths:
       tags:
         - Internal Storage
       summary: Replace a document's bytes (service-to-service)
-      description: Mirrors `PUT /document/{documentId}/buffer`.
+      description: |
+        Replaces the document's bytes. Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUpdateDocumentBuffer
       security:
         - scopedToken: []
@@ -36281,7 +36576,9 @@ paths:
       tags:
         - Internal Storage
       summary: Add a new version of a document (service-to-service)
-      description: Mirrors `POST /document/{documentId}/uploadNextVersion`.
+      description: |
+        Uploads the next version.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalUploadNextVersion
       security:
         - scopedToken: []
@@ -36328,7 +36625,9 @@ paths:
       tags:
         - Internal Storage
       summary: Roll a document back to an earlier version (service-to-service)
-      description: Mirrors `POST /document/{documentId}/rollBack`.
+      description: |
+        Restores a past version as the current one.
+        Moves the document's `storageFingerprint`: the write runs inside a writer window, so a verified read is not trusted until it ends.
       operationId: internalRollBackToPreviousVersion
       security:
         - scopedToken: []
@@ -36371,6 +36670,8 @@ paths:
           description: No such document, or no such version.
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: Another write to this document was in progress, or the store's clock could not be read; nothing was written. Safe to retry.
   /document/internal/{documentId}/directUpload:
     post:
       tags:
@@ -36378,7 +36679,11 @@ paths:
       summary: Get a link to upload straight to storage (service-to-service)
       description: |
         Returns a time-limited link the caller uses to send the file directly to
-        S3 or Azure. Mirrors `POST /document/{documentId}/directUpload`.
+        S3 or Azure.
+
+        The link replaces the document's current file and stays valid for one hour: the bytes can change at any time in that hour
+        without an event the server sees. Issuing the link moves the document's `storageFingerprint`; only a verified read
+        (`verify=1`) with an `If-Match` download is sound after that.
       operationId: internalDirectUpload
       security:
         - scopedToken: []
@@ -44135,14 +44440,6 @@ paths:
             SSE stream established. The body is a sequence of
             `text/event-stream` frames using the event vocabulary described
             on the schema below.
-
-            The conversation is looked up only after the stream is open, so
-            a conversation that does not exist, is deleted, belongs to
-            another user or is an agent conversation is not answered `404`:
-            the stream is `200` and carries a `CUSTOM` `conversation_created`
-            frame echoing the path's `conversationId`, then a single
-            `RUN_ERROR` with `message: "Conversation not found"` and
-            `code: "internal_error"`.
           content:
             text/event-stream:
               schema:
@@ -44166,6 +44463,15 @@ paths:
           description: |
             Forbidden — the caller's token does not include the
             `conversation:chat` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or is an agent
+            conversation (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -49668,12 +49974,7 @@ paths:
               $ref: '#/components/schemas/AgentAddMessageStreamRequest'
       responses:
         '200':
-          description: |
-            SSE stream (text/event-stream). The stream opens before the
-            conversation is looked up, so a conversation that does not exist,
-            belongs to another user or to another agent also answers 200: the
-            stream carries one `RUN_ERROR` frame with `code: internal_error`
-            and ends. There is no 404.
+          description: SSE stream (text/event-stream).
           content:
             text/event-stream:
               schema:
@@ -49697,6 +49998,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The access token lacks the `agent:execute` OAuth scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Answered before the stream opens when the conversation does not
+            exist, is deleted, belongs to another user or belongs to another
+            agent, including an `agentKey` that names no agent
+            (`HTTP_NOT_FOUND`, "Conversation not found").
           content:
             application/json:
               schema:
@@ -51873,14 +52184,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
@@ -52249,14 +52553,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/active:
     get:
       tags:
@@ -53730,14 +54027,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: |
             The sync event could not be published to the message broker, so
@@ -54262,14 +54552,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/{connectorId}/config/filters-sync:
     put:
       tags:
@@ -54283,8 +54566,13 @@ paths:
         <b>Merging:</b><br>
         `sync` is merged key by key into the saved sync settings. Each of
         `filters.sync` and `filters.indexing` that is sent replaces the saved
-        one. A `sync` or `filters` value that is not an object is skipped
-        without an error. Fields other than `sync` and `filters`, `baseUrl`
+        one. At least one of `sync` and `filters` must be truthy in
+        JavaScript (`400` otherwise), so `{"filters": false}` on its own is a
+        `400`. Past that check, a `sync` value that is not an object, and a
+        falsy `filters` value (`null`, `false`, `0`, `""` or `[]`), is
+        skipped without an error; any other `filters` value that is not an object, such as
+        `true`, `[null]` or a non-empty string, is answered `500`. Fields
+        other than `sync` and `filters`, `baseUrl`
         included, are dropped without an error.<br><br>
         The connector must be disabled (`400` otherwise).
       operationId: updateConnectorFiltersSyncConfig
@@ -54331,7 +54619,8 @@ paths:
                   - config
         '400':
           description: |
-            Invalid settings, a required sync filter is missing, `filters.sync` or `filters.indexing`
+            Invalid settings, neither `sync` nor `filters` is truthy ("Sync or filters configuration is
+            required"), a required sync filter is missing, `filters.sync` or `filters.indexing`
             is present but not an object ("filters.sync must be an object"), or the connector is active
           content:
             application/json:
@@ -54363,9 +54652,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Internal error, for example when the body or `filters` is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+            Internal error, for example when `filters` is neither an object nor falsy, such as `true`, `[null]` or a non-empty string. A body the app-wide parsers refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413` and an unsupported encoding a `415` (see Body parsers in the introduction).
           content:
             application/json:
               schema:
@@ -54467,14 +54754,7 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -54701,7 +54981,7 @@ paths:
         An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
         any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
         <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
-        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
+        <code>KEY_PAIR</code>, <code>IAM_ROLE</code>, <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
         including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
         needs saved settings but no auth section. Otherwise the request is refused with
         <code>400</code>.
@@ -64088,14 +64368,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
   /oauth/{connectorType}/{configId}:
     get:
       tags:
@@ -64293,14 +64566,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Internal error, for example when the JSON body is not an object
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - OAuth Configuration
@@ -65813,6 +66079,14 @@ paths:
                       contextLength:
                         type: number
                         nullable: true
+                      configuration:
+                        type: object
+                        additionalProperties: true
+                        description: |
+                          Non-secret settings that differ for this model, applied over the shared `configuration`.
+                          Only the model's public settings apply (those reads return as stored, such as
+                          `defaultReasoningEffort`); credentials, the endpoint, `model` and `modelFriendlyName`
+                          stay shared, and any other key is ignored. `contextLength` goes in the field of its own.
       responses:
         '200':
           description: |
@@ -70518,11 +70792,11 @@ paths:
         - MCP
       summary: MCP SSE streaming endpoint
       description: |
-        Opens the standalone server-to-client SSE stream of the Streamable HTTP transport.
-        PipesHub runs the transport in stateless mode, where nothing is ever sent on this stream:
-        it answers `200` with `text/event-stream` and then stays open, with no events, until the
-        client closes it. (The route comment in the code says stateless mode answers `405`; it
-        does not.)
+        The standalone server-to-client SSE stream of the Streamable HTTP transport. PipesHub runs
+        the transport stateless, with a new server for every request, so this stream could never
+        carry an event: an authenticated `GET` is answered `405` with `Allow: POST`, which the MCP
+        specification lets a client read as "this server offers no SSE stream". Clients send every
+        message with `POST /mcp`.
       operationId: handleMCPStreamingRequest
       servers:
         - url: "{instance_url}"
@@ -70532,40 +70806,50 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: []
-      parameters:
-        - name: Mcp-Protocol-Version
-          in: header
-          required: false
-          description: |
-            MCP protocol version the client speaks. A value outside this list is refused with `400`.
-          schema:
-            type: string
-            enum: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
       responses:
-        '200':
-          description: An SSE stream that stays open and never carries an event
-          content:
-            text/event-stream:
+        '405':
+          description: This server offers no SSE stream; send messages with `POST /mcp`
+          headers:
+            Allow:
+              description: Always `POST`.
               schema:
                 type: string
+                enum: [POST]
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                        enum: ["Method not allowed."]
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
         '400':
           description: |
-            The Streamable HTTP transport rejected the request, for example because the
-            `Mcp-Protocol-Version` header names a protocol version the server does not support.
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+            Returned before authentication when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/McpTransportError'
-                  - $ref: '#/components/schemas/ErrorResponse'
-        '406':
-          description: Not Acceptable - the `Accept` header does not include `text/event-stream`
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpTransportError'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           headers:

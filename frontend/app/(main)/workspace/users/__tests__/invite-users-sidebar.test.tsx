@@ -92,11 +92,11 @@ function tags(...values: Array<[string, boolean]>) {
   return values.map(([value, isValid], i) => ({ id: `t${i}`, value, isValid }));
 }
 
-function openPanel(emails: ReturnType<typeof tags>) {
+function openPanel(emails: ReturnType<typeof tags>, inviteRole = 'Member') {
   useUsersStore.setState({
     isInvitePanelOpen: true,
     inviteEmails: emails,
-    inviteRole: 'Member',
+    inviteRole,
     inviteGroupIds: [],
     editingInviteUser: null,
   });
@@ -131,6 +131,22 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useUsersStore.setState({ isInvitePanelOpen: false, inviteEmails: [] });
+});
+
+describe('inviting admins', () => {
+  const warning = /becomes a full org admin/;
+
+  it('warns that everyone on the list becomes an admin when the role is Admin', () => {
+    openPanel(tags(['a@x.com', true], ['b@x.com', true]), 'Admin');
+
+    expect(screen.getByRole('alert').textContent).toMatch(warning);
+  });
+
+  it('shows no warning for members', () => {
+    openPanel(tags(['a@x.com', true], ['b@x.com', true]));
+
+    expect(screen.queryByText(warning)).toBeNull();
+  });
 });
 
 describe('sending invites', () => {

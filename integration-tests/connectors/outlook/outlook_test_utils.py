@@ -106,6 +106,30 @@ async def run_sync_and_wait(
     return count
 
 
+async def resync_while(
+    still_wrong: Callable[[], Awaitable[bool]],
+    resync: Callable[[int], Awaitable[Any]],
+    *,
+    attempts: int,
+    wait_sec: float,
+    description: str,
+) -> int:
+    """Re-sync while ``still_wrong()`` holds, at most ``attempts`` times; return how many ran.
+
+    Graph's directory reads are eventually consistent. A read that already shows a change can
+    be followed by the connector's own read, which does not yet, so one sync after the source
+    settled may still store the old state. A connector that never picks the change up fails the
+    phase's assertion all the same once the attempts run out.
+    """
+    done = 0
+    while done < attempts and await still_wrong():
+        done += 1
+        logger.info("%s: still stale after the sync; re-sync %d/%d in %.0fs", description, done, attempts, wait_sec)
+        await asyncio.sleep(wait_sec)
+        await resync(done)
+    return done
+
+
 async def admitted(graph_provider: Any, user_graph_id: str, org_id: str, node_ids: list[str]) -> frozenset[str]:
     """The subset of ``node_ids`` the product's access check lets this user read.
 

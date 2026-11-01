@@ -48,7 +48,9 @@ export function useInitializeUserProfile() {
         console.debug(LOG, 'Skipping — initialization already in-flight');
         return;
       }
-      if (!force && isInitialized) {
+      // A missing profile or unknown role is retried on the next call (e.g. a token refresh)
+      // so a recovered request can still send an admin to onboarding.
+      if (!force && isInitialized && typeof useUserStore.getState().profile?.isAdmin === 'boolean') {
         console.debug(LOG, 'Skipping — profile already initialized', useUserStore.getState().profile);
         return;
       }
@@ -125,7 +127,11 @@ export function useInitializeUserProfile() {
         } else if (roleLower === 'member') {
           isAdmin = false;
         } else if (groups) {
-          isAdmin = groups.some((g) => g.type === GroupType.ADMIN);
+          const inAdminGroup = groups.some((g) => g.type === GroupType.ADMIN);
+          // Admins are marked by role, not by a group. If the user request failed the
+          // role is unknown, so no admin group must not turn an admin into a member.
+          if (inAdminGroup) isAdmin = true;
+          else if (userResult.status === 'fulfilled') isAdmin = false;
         }
 
         console.debug(LOG, 'isAdmin resolved:', isAdmin);

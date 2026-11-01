@@ -11,6 +11,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -633,6 +634,132 @@ def _ds_call_by_method(c: MagicMock, mapping: dict[str, object]) -> object:
         return failed_response(f"unmocked method {method!r}")
 
     return _dispatch
+
+
+class TestProfileReuse:
+    """A fetched GET /users/:login profile is reused for a day, across syncs and
+    across the org's connectors. Each sync used to fetch again every member
+    without a public email, and each new connector the whole org: about a third
+    of an hour's GitHub allowance per sync on a 1,700-member org."""
+
+    @staticmethod
+    def _sync(c: MagicMock, members: list[SimpleNamespace], profiles: dict[str, object]) -> UsersSync:
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_org_members:
+                return ok_response(members)
+            if method is c.data_source.get_user:
+                return profiles[args[0]]
+            return failed_response("unmocked")
+
+        c.runtime.ds_call.side_effect = dispatch
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async((["acme"], True))
+        return sync
+
+    @staticmethod
+    def _profile_fetches(c: MagicMock) -> int:
+        return sum(1 for call in c.runtime.ds_call.await_args_list if call.args[0] is c.data_source.get_user)
+
+    async def test_member_without_public_email_is_not_fetched_again_next_sync(self) -> None:
+        c = make_mock_connector()
+        members = [make_named_user(user_id=6, login="frank")]
+        profiles = {"frank": ok_response(make_named_user(user_id=6, login="frank", completed=True))}
+
+        await self._sync(c, members, profiles).sync_users()
+        await self._sync(c, members, profiles).sync_users()
+
+        assert self._profile_fetches(c) == 1
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    async def test_another_connector_of_the_org_reuses_the_profile(self) -> None:
+        profiles = {"bob": ok_response(make_named_user(user_id=2, login="bob", email="bob@example.com", completed=True))}
+        first, second = make_mock_connector(), make_mock_connector()
+        second.connector_id = "github-conn-2"
+
+        await self._sync(first, [make_named_user(user_id=2, login="bob")], profiles).sync_users()
+        await self._sync(second, [make_named_user(user_id=2, login="bob")], profiles).sync_users()
+
+        assert self._profile_fetches(second) == 0
+        persisted = second.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [(u.email, u.connector_id) for u in persisted] == [("bob@example.com", "github-conn-2")]
+
+    async def test_another_pipeshub_org_fetches_its_own(self) -> None:
+        profiles = {"bob": ok_response(make_named_user(user_id=2, login="bob", completed=True))}
+        first, second = make_mock_connector(), make_mock_connector()
+        second.data_entities_processor.org_id = "org-2"
+
+        await self._sync(first, [make_named_user(user_id=2, login="bob")], profiles).sync_users()
+        await self._sync(second, [make_named_user(user_id=2, login="bob")], profiles).sync_users()
+
+        assert self._profile_fetches(second) == 1
+
+    async def test_failed_fetch_is_retried_next_sync(self) -> None:
+        c = make_mock_connector()
+        members = [make_named_user(user_id=6, login="frank")]
+
+        await self._sync(c, members, {"frank": failed_response("rate limited", 403)}).sync_users()
+        await self._sync(c, members, {"frank": ok_response(
+            make_named_user(user_id=6, login="frank", email="frank@example.com", completed=True)
+        )}).sync_users()
+
+        assert self._profile_fetches(c) == 2
+        persisted = c.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert persisted[0].email == "frank@example.com"
+
+    async def test_connectors_syncing_together_fetch_each_profile_once(self) -> None:
+        connectors = [make_mock_connector() for _ in range(3)]
+        for i, c in enumerate(connectors):
+            c.connector_id = f"github-conn-{i}"
+        release = asyncio.Event()
+
+        def dispatch_for(c: MagicMock) -> object:
+            async def dispatch(method: object, *args: object, **kwargs: object) -> object:
+                if method is c.data_source.list_org_members:
+                    return ok_response([make_named_user(user_id=6, login="frank")])
+                if method is c.data_source.get_user:
+                    await release.wait()  # every sync reaches the lookup before the first answer
+                    return ok_response(make_named_user(user_id=6, login="frank", completed=True))
+                return failed_response("unmocked")
+            return dispatch
+
+        syncs = []
+        for c in connectors:
+            c.runtime.ds_call.side_effect = dispatch_for(c)
+            sync = UsersSync(c)
+            sync._resolve_target_orgs = MagicMock_async((["acme"], True))
+            syncs.append(sync)
+
+        running = asyncio.gather(*(sync.sync_users() for sync in syncs))
+        await asyncio.sleep(0.01)
+        release.set()
+        await running
+
+        assert sum(self._profile_fetches(c) for c in connectors) == 1
+
+    async def test_profile_older_than_a_day_is_fetched_again(self) -> None:
+        c = make_mock_connector()
+        members = [make_named_user(user_id=6, login="frank")]
+        profiles = {"frank": ok_response(make_named_user(user_id=6, login="frank", completed=True))}
+
+        await self._sync(c, members, profiles).sync_users()
+        fetched_at, profile = users_mod._recent_profiles[("org-1", 6)]
+        users_mod._recent_profiles[("org-1", 6)] = (fetched_at - users_mod._GITHUB_PROFILE_REUSE_SECONDS, profile)
+        await self._sync(c, members, profiles).sync_users()
+
+        assert self._profile_fetches(c) == 2
+        assert list(users_mod._recent_profiles) == [("org-1", 6)]
+
+    async def test_expired_profiles_are_dropped_even_when_no_profile_is_looked_up(self) -> None:
+        c = make_mock_connector()
+        users_mod._recent_profiles[("org-1", 6)] = (-users_mod._GITHUB_PROFILE_REUSE_SECONDS, object())
+        users_mod._profile_fetch_locks[("org-1", 6)] = asyncio.Lock()
+        members = [make_named_user(user_id=2, login="bob", email="bob@example.com")]
+
+        await self._sync(c, members, {}).sync_users()
+
+        assert self._profile_fetches(c) == 0
+        assert users_mod._recent_profiles == {}
+        assert users_mod._profile_fetch_locks == {}
 
 
 class TestResolveCollaboratorPrincipals:

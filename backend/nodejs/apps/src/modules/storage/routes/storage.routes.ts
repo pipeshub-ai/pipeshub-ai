@@ -8,6 +8,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   UploadNewSchema,
   DocumentIdParams,
+  DocumentInfoParams,
   GetBufferSchema,
   CreateDocumentSchema,
   UploadNextVersionSchema,
@@ -239,7 +240,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    ValidationMiddleware.validate(DocumentIdParams),
+    ValidationMiddleware.validate(DocumentInfoParams),
     async (
       req: AuthenticatedServiceRequest,
       res: Response,

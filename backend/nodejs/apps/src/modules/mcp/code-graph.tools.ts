@@ -108,10 +108,13 @@ const repoRequired = repo
 // validation error costs more than accepting it.
 const LINE_RANGE = /^\[?\s*\d+\s*[-,]\s*\d+\s*\]?$/;
 
+// A non-empty list can be incomplete too: agents took a short caller list as the whole answer.
 const COVERAGE =
-  'The graph can miss calls made through callbacks or dynamic dispatch, and a ' +
-  '`coverage` field says when an answer may be incomplete: confirm an empty result ' +
-  'with pipeshub_code_search (`mode: "text"`) before relying on it.';
+  "Calls are edges only when the receiver's type is known from the code, so a " +
+  'caller list, impact set or path can be incomplete where values are untyped, ' +
+  'passed in, or dispatched dynamically. For every-caller, impact or ' +
+  'does-A-reach-B questions, also search the call text (pipeshub_code_search, ' +
+  '`mode: "text"`, e.g. `.name(`) at each level before answering.';
 
 // The query service writes its guidance with the in-product agent's tool
 // names; over MCP those tools have other names, which an agent cannot call.

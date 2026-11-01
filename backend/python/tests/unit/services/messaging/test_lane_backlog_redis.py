@@ -264,6 +264,42 @@ class TestIndexingConsumerLaneBacklog:
         assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
         assert backlog.oldest_waiting_for({"connectorId": IDLE}) is None
 
+    async def test_a_replica_reading_a_lane_subset_still_sees_every_lanes_backlog(
+        self, provider: FakeRedisConnectionProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        idle_lane = stable_lane(IDLE, LANES)
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", str(idle_lane))
+        for topic in RedisLaneRouter(LANES).lane_topics(TOPIC):
+            await provider.get_client().xgroup_create(topic, GROUP, id="0", mkstream=True)
+        subset = _consumer(provider, [TOPIC, f"{TOPIC}.{idle_lane}"])
+        await _publish(provider, BUSY, "rec-1")
+
+        backlog = await subset.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
+
+    async def test_a_lane_no_replica_has_started_on_is_still_read(
+        self, provider: FakeRedisConnectionProvider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other pool has not started, so its lanes have events and no group."""
+        idle_lane = stable_lane(IDLE, LANES)
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", str(idle_lane))
+        for topic in (TOPIC, f"{TOPIC}.{idle_lane}"):
+            await provider.get_client().xgroup_create(topic, GROUP, id="0", mkstream=True)
+        subset = _consumer(provider, [TOPIC, f"{TOPIC}.{idle_lane}"])
+        await _publish(provider, BUSY, "rec-1")
+
+        backlog = await subset.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
+        groups = await provider.get_client().xinfo_groups(f"{TOPIC}.{stable_lane(BUSY, LANES)}")
+        assert len(groups) == 1
+
+        # A group deleted by hand (the retention warning suggests it) comes back.
+        await provider.get_client().xgroup_destroy(f"{TOPIC}.{stable_lane(BUSY, LANES)}", GROUP)
+        backlog = await subset.lane_backlog(TOPIC)
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is not None
+
     async def test_work_on_the_base_stream_is_waiting_for_every_connector(
         self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
     ) -> None:

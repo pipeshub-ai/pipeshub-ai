@@ -4,6 +4,7 @@ import pytest
 
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.named_entities.extractor import _deterministic
+from app.modules.named_entities.merge import resolve_overlaps
 from app.modules.named_entities.normalizers.contacts import normalize_contact
 from app.modules.named_entities.normalizers.dates import (
     NormalizationContext,
@@ -190,6 +191,77 @@ def test_money_recognizer_does_not_join_separate_numbers():
     assert [m.surface for m in mentions] == ["$5"]
 
 
+def _money_mentions(text: str) -> list[tuple[str, str]]:
+    mentions = ValueCandidateRecognizer(frozenset({EntityKind.CURRENCY})).recognize([TextUnit(0, "b", text)])
+    found = []
+    for mention in mentions:
+        value = normalize_money(mention.surface)
+        found.append((mention.surface, value and f"{value.currency}:{value.amount}"))
+    return found
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Paid ₹2,50,000,000 today", "Paid Rs 1,23,456,789 today", "Net ₹12,34,56,789.123 paid", "Paid ₹1,23,4567"],
+)
+def test_a_malformed_grouping_gives_no_amount(text) -> None:
+    """Better no value than the leading "₹2,50" read as 2.50 rupees."""
+    assert _money_mentions(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "key"),
+    [
+        ("Paid ₹2,50,000 today", "₹2,50,000", "INR:250000"),
+        ("Fee Rs. 1,85,297 due", "Rs. 1,85,297", "INR:185297"),
+        ("Budget INR 12,34,56,789", "INR 12,34,56,789", "INR:123456789"),
+        ("Total 2,50,000 INR", "2,50,000 INR", "INR:250000"),
+        ("Owed 1,85,297 rupees", "1,85,297 rupees", "INR:185297"),
+        ("Net ₹2,50,000.50 paid", "₹2,50,000.50", "INR:250000.50"),
+        ("Net ₹10,00,000.00 paid", "₹10,00,000.00", "INR:1000000.00"),
+        ("Rs 2,50,000/- only", "Rs 2,50,000", "INR:250000"),
+        ("Capex ₹1,50,000 crore", "₹1,50,000 crore", "INR:1500000000000"),
+        # Not only rupees: the grouping says how to read the digits.
+        ("Quote $1,23,456 sent", "$1,23,456", "USD:123456"),
+    ],
+)
+def test_indian_digit_grouping_is_read_whole(text, surface, key) -> None:
+    """'₹2,50,000' used to be cut at '₹2,50' and stored as 2.50 rupees."""
+    assert _money_mentions(text) == [(surface, key)]
+
+
+def test_an_indian_grouped_range_gives_both_ends() -> None:
+    assert _money_mentions("Budget ₹1,00,000-₹2,00,000") == [
+        ("₹1,00,000", "INR:100000"), ("₹2,00,000", "INR:200000"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "surface", "key"),
+    [
+        ("Paid $1,250,000", "$1,250,000", "USD:1250000"),
+        ("Paid €2,50", "€2,50", "EUR:2.50"),
+        ("Budget is EUR 1.250,00 total", "EUR 1.250,00", "EUR:1250.00"),
+        ("We owe 12,345 USD", "12,345 USD", "USD:12345"),
+        ("Fee ₹25,000", "₹25,000", "INR:25000"),
+        ("Fee ₹5 lakh", "₹5 lakh", "INR:500000"),
+    ],
+)
+def test_thousands_and_decimal_groupings_are_unchanged(text, surface, key) -> None:
+    assert _money_mentions(text) == [(surface, key)]
+
+
+@pytest.mark.parametrize("text", ["Sold 1,50,000 ₹10 tickets", "Sold 1,500 ₹10 tickets"])
+def test_a_symbol_that_starts_the_next_amount_is_not_a_suffix(text) -> None:
+    assert _money_mentions(text) == [("₹10", "INR:10")]
+
+
+def test_an_indian_amount_reaches_the_indexed_values() -> None:
+    found = _deterministic([TextUnit(0, "b", "Invoice total ₹1,85,297")], default_enabled_kinds(), NormalizationContext())
+    assert [(mention.kind, mention.surface) for mention in found] == [(EntityKind.CURRENCY, "₹1,85,297")]
+    assert normalize_money(found[0].surface).amount == 185297
+
+
 def test_celsius_converts_to_kelvin():
     value = normalize_quantity("20 °C")
     assert value is not None
@@ -306,8 +378,16 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
         "123 " * 10_000,
         ",".join(str(100 + i % 900) for i in range(10_000)),
         "a." * 20_000,
+        "₹" + "1,23," * 20_000,
+        "1" + ",23" * 10_000 + " INR",
+        "May 1-" * 10_000,
+        "1 May - " * 10_000,
+        "2025-01-01-" * 10_000,
     ],
-    ids=["space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at"],
+    ids=[
+        "space-grouped", "comma-grouped", "nbsp-grouped", "numeric-csv", "dotted-no-at", "indian-prefix",
+        "indian-suffix", "month-day-dashes", "day-month-dashes", "iso-dashes",
+    ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
     import time
@@ -477,3 +557,141 @@ def test_a_dash_before_a_non_temperature_is_not_a_sign() -> None:
     (mention,) = ValueCandidateRecognizer(frozenset({EntityKind.DIMENSION})).recognize([TextUnit(0, "b", "Weights: -5 kg each")])
     assert mention.surface == "5 kg"
     assert normalize_quantity("-5 kg") is None and normalize_quantity("-20 tokens") is None
+
+
+@pytest.mark.parametrize(
+    ("surface", "timex", "start", "end"),
+    [
+        ("May 20–22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20-22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20 - 22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("May 20th–22nd, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("from May 20 to 22, 2025", "2025-05-20/2025-05-22", (2025, 5, 20), (2025, 5, 23)),
+        ("9–11 September 2025", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("9 to 11 September 2025", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("May 28 – June 3, 2025", "2025-05-28/2025-06-03", (2025, 5, 28), (2025, 6, 4)),
+        ("28 May – 3 June 2025", "2025-05-28/2025-06-03", (2025, 5, 28), (2025, 6, 4)),
+        ("May 20, 2025 – June 3, 2025", "2025-05-20/2025-06-03", (2025, 5, 20), (2025, 6, 4)),
+        ("2025-09-09 to 2025-09-11", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        ("2025-09-09-2025-09-11", "2025-09-09/2025-09-11", (2025, 9, 9), (2025, 9, 12)),
+        # A range that wraps the year takes the year it leaves out from the other end.
+        ("Dec 28 – Jan 3, 2026", "2025-12-28/2026-01-03", (2025, 12, 28), (2026, 1, 4)),
+        ("Dec 28, 2025 – Jan 3", "2025-12-28/2026-01-03", (2025, 12, 28), (2026, 1, 4)),
+        ("Jan–Mar 2025", "2025-01/2025-03", (2025, 1, 1), (2025, 4, 1)),
+        ("January to March 2025", "2025-01/2025-03", (2025, 1, 1), (2025, 4, 1)),
+        ("Nov–Feb 2026", "2025-11/2026-02", (2025, 11, 1), (2026, 3, 1)),
+        # Any backwards pair of months is read across the year end, as "Sep–Jun 2025" is a school year.
+        ("Sep–Jun 2025", "2024-09/2025-06", (2024, 9, 1), (2025, 7, 1)),
+        ("Mar 5 – Feb 3, 2025", "2024-03-05/2025-02-03", (2024, 3, 5), (2025, 2, 4)),
+    ],
+)
+def test_a_date_range_keeps_both_ends(surface, timex, start, end) -> None:
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.timex, value.start_ms, value.end_ms) == (timex, _ms(*start), _ms(*end))
+    assert value.anchor_source == "explicit"
+
+
+def test_an_iso_datetime_range_keeps_its_times() -> None:
+    value = normalize_temporal(
+        EntityKind.DATE_RANGE, "2025-09-09T10:00 to 2025-09-09T12:30", NormalizationContext(tz="UTC"),
+    )
+    assert value is not None
+    assert value.granularity == "minute"
+    assert value.timex == "2025-09-09T10:00/2025-09-09T12:30"
+
+
+@pytest.mark.parametrize(
+    ("surface", "timex"),
+    [("May 20–22", "XXXX-05-20/XXXX-05-22"), ("May 20    –    22", "XXXX-05-20/XXXX-05-22"), ("Dec 28 – Jan 3", "XXXX-12-28/XXXX-01-03"), ("Sep 9 – 11", "XXXX-09-09/XXXX-09-11")],
+)
+def test_a_range_with_no_year_is_not_given_one(surface, timex) -> None:
+    # dateparser read the last day as the year: "May 20–22" was 2022-05-20.
+    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(reference_time_ms=_ms(2026, 3, 10)))
+    assert value is not None
+    assert (value.timex, value.start_ms, value.ambiguous) == (timex, None, True)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ["May 22–20, 2025", "May 22–20", "Feb 28–30, 2025", "3-1 May 2025", "May 22, 2026 – May 20, 2025", "May 20–Jun 2025"],
+)
+def test_a_backwards_or_impossible_range_has_no_value(surface) -> None:
+    """Not handed on to dateparser, which made one day of it ("Feb 28–30, 2025" was Feb 28)."""
+    assert normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC")) is None
+
+
+@pytest.mark.parametrize(("surface", "day"), [("May 20th, 2025", (2025, 5, 20)), ("3rd of June 2025", (2025, 6, 3))])
+def test_an_ordinal_day_is_read_as_stated(surface, day) -> None:
+    value = normalize_temporal(EntityKind.DATE, surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.start_ms, value.anchor_source) == (_ms(*day), "explicit")
+
+
+def _date_spans(text: str) -> list[tuple[str, str]]:
+    found = _deterministic([TextUnit(0, "b", text)], default_enabled_kinds(), NormalizationContext(tz="UTC"))
+    return [
+        (mention.surface, mention.kind.value)
+        for mention in resolve_overlaps(found)
+        if mention.kind in {EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, EntityKind.DURATION}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "surface"),
+    [
+        ("Held May 20–22, 2025 in Pune.", "May 20–22, 2025"),
+        ("Held 9–11 September 2025 in Pune.", "9–11 September 2025"),
+        ("The trip is May 28 – June 3, 2025.", "May 28 – June 3, 2025"),
+        ("Valid May 20, 2025 – June 3, 2025 only.", "May 20, 2025 – June 3, 2025"),
+        ("Q1 ran Jan–Mar 2025.", "Jan–Mar 2025"),
+        ("Window 2025-09-09/2025-09-11 agreed.", "2025-09-09/2025-09-11"),
+        ("Window 2025-09-09 to 2025-09-11 agreed.", "2025-09-09 to 2025-09-11"),
+        ("Call 2025-09-09T10:00 to 2025-09-09T12:00 booked.", "2025-09-09T10:00 to 2025-09-09T12:00"),
+        ("Office closed Dec 28 – Jan 3, 2026.", "Dec 28 – Jan 3, 2026"),
+        ("Due Sept. 3–5, 2025.", "Sept. 3–5, 2025"),
+    ],
+)
+def test_a_range_is_one_span(text, surface) -> None:
+    assert _date_spans(text) == [(surface, "date_range")]
+
+
+@pytest.mark.parametrize(
+    ("text", "spans"),
+    [
+        # A score before a date is no range; the date still counts.
+        ("Won 3-1 May 2025.", [("1 May 2025", "date")]),
+        ("Meeting Sep 9 – 11:00 AM.", [("Sep 9", "date")]),
+        ("Meeting May 3 – 5 PM.", [("May 3", "date")]),
+        ("From May 3 to 5pm.", [("May 3", "date")]),
+        ("Starts Jun 10-2025.", [("Jun 10", "date")]),
+        ("May 2025 - 3 items shipped.", [("May 2025", "date")]),
+        ("Signed May 20, 2025 and 2025-09-09.", [("May 20, 2025", "date"), ("2025-09-09", "date")]),
+        ("Ship by 15 May 2026, please.", [("15 May 2026", "date")]),
+        # A link takes part of the range; the date left outside it still counts.
+        ("Logs at http://x.com/2025-09-09 to 2025-09-11 kept.", [("2025-09-11", "date")]),
+    ],
+)
+def test_what_is_not_a_range_keeps_its_single_dates(text, spans) -> None:
+    assert _date_spans(text) == spans
+
+
+def test_a_range_reaches_the_indexed_values_whole() -> None:
+    found = _deterministic(
+        [TextUnit(0, "b", "Conference on 9–11 September 2025 in Pune.")], default_enabled_kinds(), NormalizationContext(tz="UTC"),
+    )
+    # The single date inside the range is not counted a second time.
+    (mention,) = [m for m in found if m.kind in {EntityKind.DATE, EntityKind.DATE_RANGE}]
+    assert mention.kind is EntityKind.DATE_RANGE
+    value = normalize_temporal(mention.kind, mention.surface, NormalizationContext(tz="UTC"))
+    assert value is not None
+    assert (value.start_ms, value.end_ms) == (_ms(2025, 9, 9), _ms(2025, 9, 12))
+
+
+def test_a_date_padded_with_spaces_normalizes_in_linear_time() -> None:
+    import time
+
+    # The single-date pattern takes any run of spaces ("Jan     5" in a padded table).
+    start = time.process_time()
+    normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
+    assert time.process_time() - start < 1.0

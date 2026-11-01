@@ -1486,6 +1486,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 external_record_group_id=group_id,
                 record_group_type=RecordGroupType.GROUP_MAILBOX,
                 inherit_permissions=True,
+                preview_renderable=False,
                 subject=thread_topic,
                 from_email=sender_email,
                 to_emails=to_emails,
@@ -1848,8 +1849,10 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Create all edges in batch
             if edges:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    # Run again on a write conflict: a later sync does not revisit these mails.
+                    await self.data_store_provider.execute_in_transaction(
+                        lambda tx_store: tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    )
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0
@@ -2575,6 +2578,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
                 inherit_permissions=True,
+                preview_renderable=False,
                 subject=message.subject or OutlookDefaults.SUBJECT,
                 from_email=self._extract_email_from_recipient(message.from_),
                 to_emails=[self._extract_email_from_recipient(r) for r in (message.to_recipients or [])],
