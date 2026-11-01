@@ -33,15 +33,14 @@ export class MigrationRuntime {
     readonly mongo: MongoClient,
     private readonly migrate: Pool | undefined,
     private readonly pools: Array<{ end(): Promise<void> }>,
+    /** Set when this runtime switched DOC_STORE: the value to put back on close (`undefined`: it was unset). */
+    private readonly docStore?: { previous: string | undefined },
   ) {}
 
   static async open(cfg: MigrateConfig): Promise<MigrationRuntime> {
     // checked before connecting: a throw after the connection would leave the MongoDB client open and the process hanging
     if (Boolean(cfg.pgImportUrl) !== Boolean(cfg.pgMigrateUrl))
       throw new Error('PG_IMPORT_URL and PG_MIGRATE_URL are both needed');
-    // set only once the configuration is accepted, so a refused open leaves the process as it was
-    // the repositories are picked by DOC_STORE; the copy writes through the PostgreSQL ones
-    process.env.DOC_STORE = 'postgres';
     const mongo = await new MongoClient(cfg.mongoUri, {
       serverSelectionTimeoutMS: 8000,
       appName: 'docstore-migrate',
@@ -75,11 +74,17 @@ export class MigrationRuntime {
           'pgbouncer_txn',
       }),
     );
-    return new MigrationRuntime(cfg, mongo, migratePool, [
-      jobsPool,
-      ...(nodePool ? [nodePool] : []),
+    // The repositories are picked by the process-wide DOC_STORE and the copy writes through the PostgreSQL ones. It is switched only
+    // here, once everything that can fail has succeeded, and `close()` puts the previous value back.
+    const previous = process.env.DOC_STORE;
+    process.env.DOC_STORE = 'postgres';
+    return new MigrationRuntime(
+      cfg,
+      mongo,
       migratePool,
-    ]);
+      [jobsPool, ...(nodePool ? [nodePool] : []), migratePool],
+      { previous },
+    );
   }
 
   /** The migrate login (job state, global tables). */
@@ -119,6 +124,10 @@ export class MigrationRuntime {
 
   async close(): Promise<void> {
     configurePg(undefined);
+    if (this.docStore) {
+      if (this.docStore.previous === undefined) delete process.env.DOC_STORE;
+      else process.env.DOC_STORE = this.docStore.previous;
+    }
     await this.mongo.close().catch(() => undefined);
     for (const p of this.pools) await p.end().catch(() => undefined);
   }

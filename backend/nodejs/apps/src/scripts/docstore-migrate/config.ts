@@ -68,6 +68,12 @@ export function loadConfig(
   };
 }
 
-/** A URL or message with any password removed (through the last `@` before the first `/`, `?` or `#`, so a password holding an `@` is covered and a query string is not). */
+/**
+ * A URL or message with any password removed: the userinfo password (an empty user name is allowed; it runs to the last `@` before the first
+ * `/`, `?` or `#`, so a password holding an `@` is covered and a query string is not) and the libpq `password` and `sslpassword`
+ * query parameters.
+ */
 export const redact = (s: string): string =>
-  s.replace(/(:\/\/[^:/@\s]+:)[^/?#\s]*@/g, '$1***@');
+  s
+    .replace(/(:\/\/[^:/@\s]*:)[^/?#\s]*@/g, '$1***@')
+    .replace(/([?&](?:ssl)?password=)[^&#\s]*/gi, '$1***');

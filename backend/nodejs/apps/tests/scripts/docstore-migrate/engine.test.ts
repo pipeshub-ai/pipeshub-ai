@@ -1,7 +1,8 @@
 /** The pieces of the migrator that need no database: source canonicalisation, the path census, the decoder, the comparison. */
 import 'reflect-metadata';
 import { expect } from 'chai';
-import { Decimal128, Long, ObjectId } from 'mongodb';
+import { Decimal128, Long, MongoClient, ObjectId } from 'mongodb';
+import sinon from 'sinon';
 import { Census, judgeCensus } from '../../../src/scripts/docstore-migrate/census';
 import { compareDocs } from '../../../src/scripts/docstore-migrate/compare';
 import { decodeDoc } from '../../../src/scripts/docstore-migrate/decode';
@@ -163,6 +164,14 @@ describe('docstore-migrate engine', () => {
     });
   });
 
+  describe('redact forms', () => {
+    it('hides query passwords and a password with no user name', () => {
+      expect(redact('postgresql://m@h/db?sslmode=require&password=se@cret&application_name=x')).to.equal('postgresql://m@h/db?sslmode=require&password=***&application_name=x');
+      expect(redact('postgresql://h/db?sslpassword=key-pass#frag')).to.equal('postgresql://h/db?sslpassword=***#frag');
+      expect(redact('failed postgresql://:secret@h:5432/db')).to.equal('failed postgresql://:***@h:5432/db');
+    });
+  });
+
   describe('runtime and state', () => {
     it('refuses one PostgreSQL URL without opening MongoDB', async () => {
       const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db' } as never;
@@ -173,6 +182,50 @@ describe('docstore-migrate engine', () => {
       expect(Date.now() - t).to.be.lessThan(2000);
       // a refused open must not switch the process to the PostgreSQL repositories (later tests in the same process would use them)
       expect(process.env.DOC_STORE).to.equal(store);
+    });
+    describe('DOC_STORE', () => {
+      const saved = process.env.DOC_STORE;
+      afterEach(() => {
+        if (saved === undefined) delete process.env.DOC_STORE;
+        else process.env.DOC_STORE = saved;
+      });
+      const pg = { pgImportUrl: 'postgresql://j@127.0.0.1:1/db', pgMigrateUrl: 'postgresql://m@127.0.0.1:1/db', parallel: 1 };
+      it('stays as it was on a failed open', async () => {
+        sinon.stub(MongoClient.prototype, 'connect').rejects(new Error('unreachable'));
+        try {
+          for (const prev of [undefined, 'mongo']) {
+            if (prev === undefined) delete process.env.DOC_STORE;
+            else process.env.DOC_STORE = prev;
+            await MigrationRuntime.open({ mongoUri: 'mongodb://127.0.0.1:1/', ...pg } as never).then(() => expect.fail('should refuse'), (e: Error) => expect(e.message).to.equal('unreachable'));
+            expect(process.env.DOC_STORE).to.equal(prev);
+          }
+        } finally {
+          sinon.restore();
+        }
+      });
+      it('is postgres while a PostgreSQL runtime is open and restored on close, including unset', async () => {
+        // no server needed: the MongoDB connection is faked, and the PostgreSQL pools connect only when used
+        sinon.stub(MongoClient.prototype, 'connect').callsFake(function (this: MongoClient) {
+          return Promise.resolve(this);
+        });
+        sinon.stub(MongoClient.prototype, 'close').resolves();
+        try {
+          for (const prev of [undefined, 'shadow']) {
+            if (prev === undefined) delete process.env.DOC_STORE;
+            else process.env.DOC_STORE = prev;
+            const only = await MigrationRuntime.open({ mongoUri: 'mongodb://127.0.0.1:1/' } as never);
+            expect(process.env.DOC_STORE).to.equal(prev);
+            await only.close();
+            expect(process.env.DOC_STORE).to.equal(prev);
+            const rt = await MigrationRuntime.open({ mongoUri: 'mongodb://127.0.0.1:1/', ...pg } as never);
+            expect(process.env.DOC_STORE).to.equal('postgres');
+            await rt.close();
+            expect(process.env.DOC_STORE).to.equal(prev);
+          }
+        } finally {
+          sinon.restore();
+        }
+      });
     });
     it('keeps the migrate pool alive through an idle client error', async () => {
       const pool = createMigratePool('postgresql://m@127.0.0.1:1/db');
