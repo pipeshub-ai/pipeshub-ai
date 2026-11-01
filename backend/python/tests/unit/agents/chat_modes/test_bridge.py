@@ -1529,3 +1529,84 @@ class TestConnectorFlagsReachChatState:
         seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
         assert (seen["has_sql_connector"], seen["has_slack_connector"],
                 seen["has_code_connector"]) == (True, True, True)
+
+
+class TestCoverageLoopPlan:
+    """The coverage loop's facet plan starts beside the prefetch on
+    enterprise-search chat, and only with the loop on."""
+
+    async def _run(self, monkeypatch: pytest.MonkeyPatch, *, loop: bool) -> tuple[MagicMock, AsyncMock]:
+        if loop:
+            monkeypatch.setenv("COVERAGE_LOOP", "true")
+        else:
+            monkeypatch.delenv("COVERAGE_LOOP", raising=False)
+
+        async def _fake_create(
+            self, context, llm, chat_mode, *, query, model_name="", model_key=None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        plan_future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        plan_future.set_result(None)
+        start = MagicMock(return_value=plan_future)
+        cover = AsyncMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.unreadable_scope_error", new=AsyncMock(return_value=None)),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)),
+            patch("app.agents.chat_modes.bridge.start_facet_plan", new=start),
+            patch("app.agents.chat_modes.bridge._cover_question", new=cover),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**TestRunChatStream._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+        return start, cover
+
+    async def test_off_no_plan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        start, cover = await self._run(monkeypatch, loop=False)
+        start.assert_not_called()
+        cover.assert_not_called()
+
+    async def test_on_the_plan_runs_and_is_kept_for_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        start, cover = await self._run(monkeypatch, loop=True)
+        start.assert_called_once()
+        assert cover.await_args.kwargs == {"prefetched": True, "facet_searches": True}
+
+    async def test_cover_question_keeps_the_plan_and_adds_facet_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.context import AgentContext
+        from app.agents.agent_loop.coverage.state import coverage_state
+        from app.agents.chat_modes import bridge
+
+        context = AgentContext(org_id="o", user_id="u", user_email="u@example.com", query="Which kiln fires on Tuesdays?")
+        plan = object()
+        monkeypatch.setattr(bridge, "finish_facet_plan", AsyncMock(return_value=plan))
+        search = AsyncMock(return_value="More context")
+        monkeypatch.setattr(bridge, "search_uncovered_facets", search)
+        ensure = MagicMock()
+        monkeypatch.setattr(bridge, "ensure_fetch_full_record_available", ensure)
+        goal = MagicMock(constraints=[])
+
+        await bridge._cover_question(context, MagicMock(), goal, MagicMock(), prefetched=True, facet_searches=True)
+
+        assert search.await_args.args == (context, plan)
+        assert goal.constraints == ["More context"]
+        ensure.assert_called_once()
+        assert coverage_state(context.tool_state).was_searched("Which kiln fires on Tuesdays?")
+
+    async def test_failed_facet_searches_leave_the_turn_as_it_was(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.context import AgentContext
+        from app.agents.chat_modes import bridge
+
+        context = AgentContext(org_id="o", user_id="u", user_email="u@example.com", query="Which kiln fires on Tuesdays?")
+        monkeypatch.setattr(bridge, "finish_facet_plan", AsyncMock(return_value=object()))
+        monkeypatch.setattr(bridge, "search_uncovered_facets", AsyncMock(side_effect=RuntimeError("search down")))
+        goal = MagicMock(constraints=[])
+
+        await bridge._cover_question(context, MagicMock(), goal, MagicMock(), prefetched=False, facet_searches=True)
+
+        assert goal.constraints == []

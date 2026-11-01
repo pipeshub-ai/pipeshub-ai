@@ -46,6 +46,12 @@ from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.coverage.prefetch import (
+    finish_facet_plan,
+    search_uncovered_facets,
+    start_facet_plan,
+)
+from app.agents.agent_loop.coverage.state import coverage_state
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import (
@@ -95,6 +101,11 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.coverage_switches import (
+    coverage_facets_enabled,
+    coverage_gate_enabled,
+    coverage_prompt_enabled,
+)
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
@@ -139,10 +150,12 @@ def _with_mode_instructions(
     composition: bool = False,
     thorough: bool = False,
     entity_tools: bool = False,
+    coverage_rules: bool = False,
 ) -> str:
     if policy.system_prompt_key == "internal_search":
         addendum = internal_search_instructions(
             composition=composition, thorough=thorough, entity_tools=entity_tools,
+            coverage_rules=coverage_rules,
         )
     else:
         addendum = _MODE_INSTRUCTIONS.get(policy.system_prompt_key, "")
@@ -167,8 +180,36 @@ def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy)
         composition=internal_search and answer_composition_rules_enabled(),
         thorough=thorough,
         entity_tools=bool(chat_state.get("entity_vector_store")),
+        coverage_rules=internal_search and coverage_prompt_enabled(),
     )
     chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
+
+
+async def _cover_question(
+    context: AgentContext,
+    plan_task: "asyncio.Future[Any]",
+    goal: Any,  # noqa: ANN401
+    runtime: Any,  # noqa: ANN401
+    *,
+    prefetched: bool,
+    facet_searches: bool,
+) -> None:
+    """Keep the question's facet plan for the coverage gate and, with facet
+    searches on, add context for the facets the prefetch does not cover."""
+    plan = await finish_facet_plan(context, plan_task)
+    if prefetched:
+        coverage_state(context.tool_state).note_searched(context.query)
+    if not facet_searches:
+        return
+    try:
+        extra = await search_uncovered_facets(context, plan)
+    except Exception:
+        # The turn goes on with the prefetched context alone.
+        logger.warning("run_chat_stream: facet searches failed", exc_info=True)
+        return
+    if extra:
+        goal.constraints.append(extra)
+        ensure_fetch_full_record_available(context, registry=runtime.tool_registry)
 
 
 async def _none() -> None:
@@ -546,6 +587,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
         agent: Any = None
+        plan_task: asyncio.Future[Any] | None = None
         try:
             factory = PipesHubAgentFactory()
             # Shared with `retrieval.py`/`citations.py`'s tool-result image
@@ -576,6 +618,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
                 else None
             )
+            # The coverage loop's facet plan runs beside the prefetch.
+            internal_search = policy.system_prompt_key == "internal_search"
+            facet_searches = internal_search and coverage_facets_enabled()
+            if facet_searches or (internal_search and coverage_gate_enabled()):
+                plan_task = start_facet_plan(context, query_info.get("query", ""))
 
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, policy.loop_chat_mode,
@@ -711,6 +758,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             await emit_prefetch_retrieval_context(
                 context, scheduled=prefetch_task is not None, result=prefetch_result,
             )
+            if plan_task is not None and not clarifying_questions:
+                await _cover_question(
+                    context, plan_task, goal, _runtime,
+                    prefetched=prefetch_task is not None, facet_searches=facet_searches,
+                )
             if clarifying_questions:
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
@@ -747,6 +799,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            if plan_task is not None and not plan_task.done():
+                plan_task.cancel()
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
