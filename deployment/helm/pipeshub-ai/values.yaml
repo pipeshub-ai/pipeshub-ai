@@ -371,6 +371,11 @@ config:
   # "true" through extraEnv. With it on, no one connector type holds more than
   # 4 of the first 10 records of a search API result; the records it pushes
   # down come back after the first page.
+  # ANSWER_DRAFT_SELECTION is not part of this mode either: it is off unless set
+  # to 2, 3 or 4 through extraEnv. With it on, that many independent runs
+  # answer each enterprise-search question and one more call on the same model
+  # keeps the answer its cited records support, at about that many times the
+  # answering cost; the answer arrives whole once chosen instead of streaming.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

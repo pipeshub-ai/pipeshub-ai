@@ -42,6 +42,15 @@ from app.agents.agent_loop.answer_rules import (
     answer_composition_rules_enabled,
     thorough_retrieval_enabled,
 )
+from app.agents.agent_loop.answer_selection import (
+    Draft,
+    DraftEventSink,
+    ProgressGate,
+    answer_draft_runs,
+    fork_chat_state,
+    pool_usage,
+    select_among_drafts,
+)
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
@@ -533,7 +542,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=sse_queue_maxsize())
     event_sink = QueueEventSink(queue)
 
-    def _new_context(state: dict[str, Any], sink: QueueEventSink) -> AgentContext:
+    def _new_context(state: dict[str, Any], sink: QueueEventSink | DraftEventSink) -> AgentContext:
         # Store event_sink and protocol in chat_state so ArtifactManager tools
         # (promote_artifact, etc.) can emit live SSE events without needing
         # direct access to AgentContext — chat_state IS tool_state in AgentContext.
@@ -546,6 +555,14 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             run_id=run_id, cancellation_token=cancellation_token,
         )
 
+    # Forked before the request's own context seeds `chat_state`, so no run starts with another's accumulators.
+    draft_states = [
+        fork_chat_state(chat_state)
+        for _ in range(answer_draft_runs(
+            knowledge_answer=policy.system_prompt_key == "internal_search",
+            resumes_a_call=bool(query_info.get("toolApproval")),
+        ))
+    ]
     context = _new_context(chat_state, event_sink)
 
     def _start_prefetch(
@@ -760,6 +777,46 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             except Exception:
                 log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
 
+    async def _run_draft(draft: Draft) -> None:
+        run_context = draft.context
+        prefetch_task = _start_prefetch(run_context, run_context.tool_state["citation_ref_mapper"])
+        draft.agent, runtime, goal, draft.clarifying_questions = await _create_agent(run_context)
+        draft.goal = goal
+        await _merge_prefetch(run_context, prefetch_task, goal, runtime)
+        if not draft.clarifying_questions:
+            draft.collector, draft.streamer, draft.result = await _stream(run_context, draft.agent, goal)
+
+    async def _answer_from_drafts() -> None:
+        """Answers with the run `select_among_drafts` chooses. The client watches one run's progress and gets the
+        chosen answer whole, once chosen: no run's text streams, since it may not be the one kept."""
+        gate = ProgressGate()
+        drafts: list[Draft] = []
+        for index, state in enumerate(draft_states):
+            sink = DraftEventSink(event_sink, gate, index)
+            drafts.append(Draft(index, _new_context(state, sink), sink))
+        try:
+            choice = await select_among_drafts(
+                drafts, _run_draft, client_sink=event_sink, question=query_info.get("query", ""), llm=llm,
+                cancellation_token=cancellation_token,
+            )
+            chosen = choice.draft
+            if chosen is None:
+                # The error path sends the usage frame from the request's own context.
+                pool_usage(context, drafts)
+                raise next((d.error for d in drafts if d.error is not None), None) or RuntimeError(
+                    "no answer run finished",
+                )
+            if chosen.collector is not None and chosen.streamer is not None and chosen.result is not None:
+                await _finalize(
+                    chosen.context, chosen.agent, chosen.collector, chosen.result, chosen.streamer.reasoning_turns,
+                    streamed_answer="", cancelled=choice.stopped or chosen.result.cancelled,
+                )
+            elif chosen.goal is not None:
+                await _clarify(chosen.context, chosen.agent, chosen.goal, chosen.clarifying_questions)
+        finally:
+            for draft in drafts:
+                await _release(draft.context, draft.agent)
+
     async def _produce() -> None:
         # Record headers rendered by tools show dates in the user's zone,
         # weekday included. Set inside this task so it reaches every tool
@@ -767,6 +824,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         set_llm_time_zone(context.timezone)
         agent: Any = None
         try:
+            if draft_states:
+                await _answer_from_drafts()
+                return
             prefetch_task = _start_prefetch(context, ref_mapper)
             agent, _runtime, goal, clarifying_questions = await _create_agent(context)
             await _merge_prefetch(context, prefetch_task, goal, _runtime)
