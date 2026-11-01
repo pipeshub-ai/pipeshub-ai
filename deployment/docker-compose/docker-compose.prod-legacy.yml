@@ -211,6 +211,8 @@ services:
       - PATTERN_MATCH_TOTAL_BUDGET_SECS=${PATTERN_MATCH_TOTAL_BUDGET_SECS:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - GREP_SHARED_CONTENT=${GREP_SHARED_CONTENT:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - GREP_RANK_ALL_OUTPUT=${GREP_RANK_ALL_OUTPUT:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}

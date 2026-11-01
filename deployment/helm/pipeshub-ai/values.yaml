@@ -381,6 +381,8 @@ config:
   # GREP_SHARED_CONTENT is not part of this mode: "true" through extraEnv lets
   # a scoped keyword search also grep other sources' storage that holds files
   # the scope shares (stored once, under the source that indexed them first).
+  # GREP_RANK_ALL_OUTPUT is not part of this mode: "true" through extraEnv ranks
+  # every file a keyword-search grep lists, not only its first matches.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

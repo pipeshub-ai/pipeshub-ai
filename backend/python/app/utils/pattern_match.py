@@ -102,6 +102,7 @@ KEYWORD_SEARCH_BUDGETS = ("short", "full")
 _RRF_K = 60
 _GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
 _GREP_SHARED_CONTENT_ENV_VAR = "GREP_SHARED_CONTENT"
+_GREP_RANK_ALL_OUTPUT_ENV_VAR = "GREP_RANK_ALL_OUTPUT"
 # Storage outside a scoped search that holds content records of the scope share
 # (deduplicated content is stored once, under the connector that indexed it
 # first). Skipped when little of what a grep there walks is shared: its hits
@@ -279,6 +280,9 @@ _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
 # so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
+# With GREP_RANK_ALL_OUTPUT every kept line is ranked before the permission
+# check, so the cap only bounds that work; output past it is narrowed instead.
+_RANK_ALL_OUTPUT_CHARS = 1_000_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
 
@@ -1290,6 +1294,7 @@ async def run_pattern_match_with_llm_grep(
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
                 found=found, on_llm_usage=on_llm_usage, coverage=coverage,
                 retrieval_service=retrieval_service,
+                deadline=time.monotonic() + _PATTERN_MATCH_TOTAL_BUDGET,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1318,9 +1323,11 @@ async def _run_pattern_match_with_llm_grep(
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
     coverage: PatternMatchCoverage | None = None,
     retrieval_service: LexicalSearcher | None = None,
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
-    so the caller still has them if the total budget cancels this."""
+    so the caller still has them if the total budget cancels this. *deadline*
+    (``time.monotonic()``) is when that budget runs out."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
     searcher = await _index_searcher(retrieval_service, logger_instance)
@@ -1362,6 +1369,7 @@ async def _run_pattern_match_with_llm_grep(
         "logger_instance": logger_instance,
         "coverage": coverage,
         "content_owner_ids": content_owner_ids,
+        "deadline": deadline,
     }
     keyword_cmd = build_grep_command_from_query(query)
     scan_cmds = list(llm_grep_cmds or [])
@@ -1577,6 +1585,7 @@ async def execute_pattern_match_pipeline(
     skip_grep_validation: bool = False,
     coverage: PatternMatchCoverage | None = None,
     content_owner_ids: Iterable[str] = (),
+    deadline: float | None = None,
 ) -> list[dict]:
     """Full pipeline: eligibility check → build grep → resolve connectors → run.
 
@@ -1594,7 +1603,7 @@ async def execute_pattern_match_pipeline(
     which is the real security gate and allows xargs.
 
     *content_owner_ids*: storage outside a scoped request to grep as well
-    (``content_owner_connector_ids``).
+    (``content_owner_connector_ids``). *deadline*: as in ``run_pattern_match``.
     """
     if not await check_pattern_match_eligible(config_service, logger_instance):
         logger_instance.info("pattern_match pipeline: storage not local, skipping")
@@ -1641,6 +1650,7 @@ async def execute_pattern_match_pipeline(
         coverage=coverage,
         scope_connector_ids=frozenset(connector_ids) if scoped else None,
         content_owner_ids=content_owner_ids,
+        deadline=deadline,
     )
 
 
@@ -1657,6 +1667,7 @@ async def run_pattern_match(
     coverage: PatternMatchCoverage | None = None,
     scope_connector_ids: frozenset[str] | None = None,
     content_owner_ids: Iterable[str] = (),
+    deadline: float | None = None,
 ) -> list[dict]:
     """Run grep pattern match across connectors. Returns raw, UNADJUDICATED records.
 
@@ -1676,6 +1687,11 @@ async def run_pattern_match(
       records share → grep the whole directory. A hit there is kept only when
       it names a record of the scope the user may read and that record's own
       text matched, and it is not counted in *coverage*.
+
+    With ``GREP_RANK_ALL_OUTPUT``, every record a grep lists is ranked, not
+    only the readable ones, and output cut at its size limit is narrowed by a
+    second grep while *deadline* (``time.monotonic()``, the search's total
+    budget) and *timeout* leave time for it.
     """
     if not connector_ids or not command:
         return []
@@ -1723,6 +1739,10 @@ async def run_pattern_match(
         "graph_provider": graph_provider,
     }
     storage_tool = StoragePatternMatch(state)
+    rank_all = env_bool(_GREP_RANK_ALL_OUTPUT_ENV_VAR, False)
+    connector_deadline = time.monotonic() + timeout
+    if deadline is not None:
+        connector_deadline = min(connector_deadline, deadline)
 
     # Per connector, the outcome of its last grep; read once into *coverage*.
     outcomes: dict[str, str] = {}
@@ -1736,9 +1756,11 @@ async def run_pattern_match(
                 command=cmd,
                 max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
-                max_output_chars=_MAX_GREP_OUTPUT_CHARS,
+                max_output_chars=_RANK_ALL_OUTPUT_CHARS if rank_all else _MAX_GREP_OUTPUT_CHARS,
                 scope_connector_ids=scope_connector_ids if content_owner else None,
                 content_owner=content_owner,
+                rank_all_output=rank_all,
+                deadline=connector_deadline if rank_all else None,
             )
         except Exception:
             logger_instance.warning(
