@@ -8404,6 +8404,12 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_named_entity_mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        """Every named-entity mention edge from ``record_ids`` (records the caller can
+        read): ``{recordId, entityId, kind, extractedNames}``; merged nodes left out."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_named_entity_values_in_records(
         self, org_id: str, query: "NamedEntityQuery | None", record_ids: list[str], per_record: int = 10,
     ) -> dict[str, list[str]]:

@@ -1260,3 +1260,29 @@ async def test_mentions_in_records_are_the_named_records_edges_only(graph) -> No
     assert all(row["extractedNames"] and row["mentionCount"] == 1 for row in rows)
     assert await provider.get_named_entity_mentions_in_records(f"{org_id}-other", [acme.graph_key], [first]) == []
     assert await provider.get_named_entity_mentions_in_records(org_id, [], [first]) == []
+
+
+async def test_mentions_from_records_list_every_live_entity_of_only_those_records(graph) -> None:
+    """The co-mention tool counts over these rows, so they must come only from the
+    records passed, from this org, and never from a merged node."""
+    provider, org_id, backend = graph
+    first, second, other = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme, globex, initech = _org(org_id, "Acme"), _org(org_id, "Globex"), _org(org_id, "Initech")
+    await writer.write(org_id, first, [acme, globex])
+    await writer.write(org_id, second, [acme, initech])
+    await writer.write(org_id, other, [globex])
+
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [first, second])
+    seen = {(row["recordId"], row["entityId"], row["kind"]) for row in rows}
+    assert seen == {
+        (first, acme.graph_key, "organization"), (first, globex.graph_key, "organization"),
+        (second, acme.graph_key, "organization"), (second, initech.graph_key, "organization"),
+    }
+    assert all(row["extractedNames"] for row in rows)
+    assert await provider.get_named_entity_mentions_from_records(f"{org_id}-other", [first, second]) == []
+    assert await provider.get_named_entity_mentions_from_records(org_id, []) == []
+
+    await _merge(provider, backend, initech.graph_key, acme.graph_key)
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [second])
+    assert {row["entityId"] for row in rows} == {acme.graph_key}

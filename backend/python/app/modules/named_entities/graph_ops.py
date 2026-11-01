@@ -241,6 +241,23 @@ RETURN r.id AS recordId, n.id AS entityId, e.blockIndexes AS blockIndexes,
        e.extractedNames AS extractedNames, e.mentionCount AS mentionCount
 """
 
+# Every named entity the given records mention, walked from the records' side of the
+# edge index. A merged node is left out: its mentions moved to the node it merged into.
+MENTIONS_FROM_RECORDS_AQL = f"""
+FOR recordId IN @recordIds
+  FOR e IN {_EDGE}
+    FILTER e._from == CONCAT("{_RECORDS}/", recordId) AND e.orgId == @orgId
+    LET node = DOCUMENT(e._to)
+    FILTER node != null AND node.mergedInto == null
+    RETURN {{recordId: recordId, entityId: node._key, kind: node.kind, extractedNames: e.extractedNames}}
+"""
+
+MENTIONS_FROM_RECORDS_CYPHER = f"""
+MATCH (r:{_RECORD_LABEL})-[e:{_REL}]->(n:{_LABEL})
+WHERE r.id IN $recordIds AND e.orgId = $orgId AND n.mergedInto IS NULL
+RETURN r.id AS recordId, n.id AS entityId, n.kind AS kind, e.extractedNames AS extractedNames
+"""
+
 # ``e._to IN`` is served by the edge index; a key computed from ``_to`` would scan
 # every mention edge of every org.
 NODE_RECORDS_AQL = f"""
@@ -889,6 +906,13 @@ class NamedEntityGraph:
         statement = MENTIONS_IN_RECORDS_AQL if self._dialect == "arango" else MENTIONS_IN_RECORDS_CYPHER
         return _unwrap(await self._execute(statement, binds))
 
+    async def mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        if not record_ids:
+            return []
+        binds = {"orgId": org_id, "recordIds": list(dict.fromkeys(record_ids))}
+        statement = MENTIONS_FROM_RECORDS_AQL if self._dialect == "arango" else MENTIONS_FROM_RECORDS_CYPHER
+        return _unwrap(await self._execute(statement, binds))
+
     async def values_in_records(
         self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int,
     ) -> dict[str, list[str]]:
@@ -1263,6 +1287,9 @@ class NamedEntityGraphMixin:
         self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int = 10,
     ) -> dict[str, list[str]]:
         return await self._named_entity_graph().values_in_records(org_id, query, record_ids, per_record)
+
+    async def get_named_entity_mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        return await self._named_entity_graph().mentions_from_records(org_id, record_ids)
 
     async def add_named_entity_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
