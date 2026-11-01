@@ -1,6 +1,7 @@
 import { expect } from 'chai'
+import { MongoClient } from 'mongodb'
 import {
-  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCE_CUTOVER_WAIT_MS, FENCE_PRE_SEND_TIMEOUT_MS, FENCE_SEND_MS, fenceClientOptions, setFenceTrustMsForTests, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, isFencedWriteComment, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
+  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCE_WAIT_QUEUE_MS, fenceClientOptions, fenceCutoverWaitMs, fenceSendMs, setFenceTrustMsForTests, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, isFencedWriteComment, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
 } from '../../../src/libs/repositories/fence'
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../src/libs/repositories/errors'
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors'
@@ -100,17 +101,21 @@ describe('Mongo store fence', () => {
     expect(active.state.log.some((l) => l[0] === 'drop')).to.equal(true)
   })
 
-  it('while armed the client bounds every pre-send wait and does not retry writes; off, it adds nothing', () => {
-    const o = fenceClientOptions()
-    expect(o).to.deep.equal({ waitQueueTimeoutMS: 2000, connectTimeoutMS: 2000, serverSelectionTimeoutMS: 2000, retryWrites: false })
+  it('while armed the client changes only the wait queue bound; off, it adds nothing', () => {
+    expect(fenceClientOptions()).to.deep.equal({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
     process.env.DOC_STORE_FENCE = 'off'
     try { expect(fenceClientOptions()).to.deep.equal({}) } finally { process.env.DOC_STORE_FENCE = 'on' }
   })
 
-  it('the cutover waits the visibility window plus the send bound before it polls', () => {
-    expect(FENCE_SEND_MS).to.equal(3 * FENCE_PRE_SEND_TIMEOUT_MS)
-    expect(FENCE_CUTOVER_WAIT_MS).to.equal(FENCE_VISIBLE_MS + FENCE_SEND_MS)
-    expect(FENCE_CUTOVER_WAIT_MS).to.equal(8500)
+  it('the cutover wait is the visibility window plus the pre-send waits, twice with a retry, from the options the client really resolved', () => {
+    const mongoOptions = new MongoClient('mongodb://localhost:27017', { serverSelectionTimeoutMS: 5000, ...fenceClientOptions() }).options
+    expect(mongoOptions.connectTimeoutMS).to.equal(30000) // driver default, as MongoService leaves it
+    expect(mongoOptions.retryWrites).to.equal(true)
+    expect(fenceSendMs(mongoOptions)).to.equal(2 * (30000 + 30000 + 5000))
+    expect(fenceCutoverWaitMs(mongoOptions)).to.equal(FENCE_VISIBLE_MS + 130000)
+    expect(fenceCutoverWaitMs({ ...mongoOptions, retryWrites: false })).to.equal(FENCE_VISIBLE_MS + 65000)
+    // unarmed: the wait queue is unbounded, so is the send time
+    expect(fenceSendMs(new MongoClient('mongodb://localhost:27017').options)).to.equal(Infinity)
   })
 
   it('the cutover waits the read deadline + trust window before it looks for tagged writes', () => {

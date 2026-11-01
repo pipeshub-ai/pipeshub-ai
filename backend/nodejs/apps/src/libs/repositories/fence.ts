@@ -72,37 +72,44 @@ export const FENCE_VISIBLE_MS = FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS;
 
 /**
  * A write that passed the fence is handed to the driver at once, but the driver may wait before it sends: for a pooled
- * connection (`waitQueueTimeoutMS`), to open one (`connectTimeoutMS`) and to find the primary (`serverSelectionTimeoutMS`), and it
- * may retry a failed write (`retryWrites`). While the fence is armed the client bounds each of these phases (not the server's
- * execution of the write) and does not retry, so the write reaches the server, where `$currentOp` shows it, within
- * FENCE_SEND_MS of passing the fence (an upper bound: the three waits added up).
+ * connection (`waitQueueTimeoutMS`, unbounded by default), to open one (`connectTimeoutMS`) and to find the primary
+ * (`serverSelectionTimeoutMS`), and it retries a failed write once (`retryWrites`). While the fence is armed the only change to the
+ * client is a bound on the wait queue; everything else stays as the deployment has it.
  */
-export const FENCE_PRE_SEND_TIMEOUT_MS = 2_000;
-export const FENCE_SEND_MS = 3 * FENCE_PRE_SEND_TIMEOUT_MS;
+export const FENCE_WAIT_QUEUE_MS = 30_000;
 /** The MongoClient options to merge in while the fence is armed; empty when it is off. */
-export const fenceClientOptions = (): {
-  waitQueueTimeoutMS?: number;
-  connectTimeoutMS?: number;
-  serverSelectionTimeoutMS?: number;
-  retryWrites?: boolean;
-} =>
-  mongoFenceArmed()
-    ? {
-        waitQueueTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
-        connectTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
-        serverSelectionTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
-        retryWrites: false,
-      }
-    : {};
+export const fenceClientOptions = (): { waitQueueTimeoutMS?: number } =>
+  mongoFenceArmed() ? { waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS } : {};
+
+/** The client's resolved options (`mongoose.connection.getClient().options`), as far as the send bound needs them. */
+export interface FenceSendOptions {
+  waitQueueTimeoutMS: number;
+  connectTimeoutMS: number;
+  serverSelectionTimeoutMS: number;
+  retryWrites: boolean;
+}
+/**
+ * The longest a write can spend in the driver before it reaches the server: the three pre-send waits, twice when a failed write
+ * is retried. Infinity when the wait queue is unbounded (0), i.e. when the fence is not armed.
+ */
+export const fenceSendMs = (o: FenceSendOptions): number =>
+  o.waitQueueTimeoutMS === 0
+    ? Infinity
+    : (o.retryWrites ? 2 : 1) *
+      (o.waitQueueTimeoutMS + o.connectTimeoutMS + o.serverSelectionTimeoutMS);
 /**
  * The rule for the cutover tool, after it sets `draining`:
- *  1. wait FENCE_CUTOVER_WAIT_MS (every writer has seen `draining`, and any write that passed the fence earlier has reached the server);
+ *  1. wait fenceCutoverWaitMs(client options) = FENCE_VISIBLE_MS + fenceSendMs: every writer has seen `draining`, and any write
+ *     that passed the fence earlier has reached the server. With the usual options (30 s wait queue, 30 s connect, 5 s selection,
+ *     one retry) this is about 2.2 minutes, which is fine for an operator step;
  *  2. poll `$currentOp` ({ allUsers: true, idleSessions: true }, match FENCED_WRITE_OP_MATCH) twice, FENCE_POLL_GAP_MS apart,
  *     and go on only when both polls (and every poll until then) show no such operation;
  *  3. only then set `readonly` or `retired`.
- * Writes that start after step 1 see `draining` and carry the 5 s write timeout.
+ * Writes that start after step 1 see `draining` and carry the 5 s write timeout. Revoking the app user's write role on the server
+ * is the guard that does not depend on any of this.
  */
-export const FENCE_CUTOVER_WAIT_MS = FENCE_VISIBLE_MS + FENCE_SEND_MS;
+export const fenceCutoverWaitMs = (o: FenceSendOptions): number =>
+  FENCE_VISIBLE_MS + fenceSendMs(o);
 export const FENCE_POLL_GAP_MS = 1_000;
 /**
  * Every write the fence lets through carries the `comment` `{ tag: FENCED_WRITE_COMMENT, caller?: <the caller's own comment> }`.
