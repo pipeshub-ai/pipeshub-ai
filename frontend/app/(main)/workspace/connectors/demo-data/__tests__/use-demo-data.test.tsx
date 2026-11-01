@@ -154,6 +154,32 @@ describe('demo data checks', () => {
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
+  it('reads the switch again on the next visit when the read failed, keeping what was known', async () => {
+    await visit(useDemoDataStatus);
+    await settle(61_000);
+    getStatus.mockRejectedValueOnce(new Error('offline'));
+    await visit(useDemoDataStatus);
+    expect(useDemoDataStore.getState().status?.include).toBe(true);
+
+    getStatus.mockResolvedValue(status({ include: false, chosen: false }));
+    await visit(useDemoDataStatus);
+
+    expect(getStatus).toHaveBeenCalledTimes(3);
+    expect(useDemoDataStore.getState().status?.include).toBe(false);
+  });
+
+  it('checks for the demo again on the next visit when the lookup failed', async () => {
+    getActiveConnectors.mockRejectedValueOnce(new Error('offline'));
+    await visit(useDemoDataActive);
+    getActiveConnectors.mockResolvedValue(listing(demo()));
+
+    const { result } = renderHook(() => useDemoDataActive());
+    await settle();
+
+    expect(getActiveConnectors).toHaveBeenCalledTimes(2);
+    expect(result.current).toBe(true);
+  });
+
   it('reads the switch once a minute, and shows a change at once', async () => {
     await visit(useDemoDataStatus);
     setInclude.mockResolvedValue(status({ include: false, chosen: false }));

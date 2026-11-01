@@ -123,7 +123,8 @@ export const useDemoDataStore = create<DemoDataState>()(
           .then((status) => {
             if (started === generation && revision === statusRevision) set({ status });
           })
-          .catch(() => undefined)
+          // A failure keeps the status already known and rejects, so the caller's
+          // SWR window does not count it as read.
           .finally(() => {
             if (statusLookup === lookup) statusLookup = null;
           });
