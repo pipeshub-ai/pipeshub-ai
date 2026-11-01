@@ -23,6 +23,7 @@ import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
 import {
   getShareRoleLabels,
+  ShareFeedbackShownError,
   type ShareAdapter,
   type SharedMember,
   type ShareTeam,
@@ -268,6 +269,7 @@ export function ShareSidebar({
 
       onShareSuccess?.();
     } catch (error) {
+      if (error instanceof ShareFeedbackShownError) return;
       // Error is already processed by apiClient interceptor
       const processedError = error as { message?: string };
       const message = processedError?.message ?? t('shareSidebar.shareError');
@@ -300,6 +302,7 @@ export function ShareSidebar({
           }),
         });
       } catch (error) {
+        if (error instanceof ShareFeedbackShownError) return;
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
         const message = processedError?.message ?? t('shareSidebar.roleError');
@@ -331,6 +334,7 @@ export function ShareSidebar({
         }
         onShareSuccess?.();
       } catch (error) {
+        if (error instanceof ShareFeedbackShownError) return;
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
         const message = processedError?.message ?? t('shareSidebar.revokeError');
