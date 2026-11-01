@@ -90,6 +90,7 @@ from app.utils.record_block_selection import (  # noqa: E402
     ReadHints,
     continuation_hint,
     describe_gaps,
+    block_positions,
     grouped_row_indexes,
     no_fit_hint,
     record_trailer_reserve,
@@ -3130,6 +3131,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # A split row's container queued for a large table, by chunk id: where its
     # entry sits in rows_to_be_included, so a later fragment can raise its score.
     pending_split_rows: dict[str, tuple[str, int]] = {}
+    # Block id to position, per record, for points that group several table rows.
+    row_positions: dict[str, dict[str, int]] = {}
     # What a later point on an already-seen chunk updates, so the passage keeps
     # its best hit's score: a block over 100 words is several points with one
     # blockIndex, and the search API runs several queries.
@@ -3146,7 +3149,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     blocks: list[dict[str, Any]], score: float) -> None:
         """Queue the table rows one point stands for; a row already queued only has its score raised."""
         virtual_record_id = rows_key.rsplit("_", 1)[0]
-        for row_index in grouped_row_indexes(meta, blocks, index):
+        if meta.get("rowBlockIds") and virtual_record_id not in row_positions:
+            row_positions[virtual_record_id] = block_positions(blocks)
+        for row_index in grouped_row_indexes(meta, row_positions.get(virtual_record_id, {}), index):
             row_chunk_id = f"{virtual_record_id}-{row_index}"
             if row_chunk_id in pending_split_rows:
                 _raise_pending_row(row_chunk_id, score)

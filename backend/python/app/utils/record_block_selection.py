@@ -149,7 +149,12 @@ def _block_indices(record: dict[str, Any]) -> list[int]:
     )
 
 
-def grouped_row_indexes(meta: dict[str, Any], blocks: list[dict[str, Any]], index: int) -> list[int]:
+def block_positions(blocks: list[dict[str, Any]]) -> dict[str, int]:
+    """Position of each block by id; build it once per record, not per hit."""
+    return {block.get("id"): i for i, block in enumerate(blocks)}
+
+
+def grouped_row_indexes(meta: dict[str, Any], positions: dict[str, int], index: int) -> list[int]:
     """Positions of the table rows one point stands for.
 
     A point built from several rows lists their block ids in ``rowBlockIds`` and
@@ -159,9 +164,7 @@ def grouped_row_indexes(meta: dict[str, Any], blocks: list[dict[str, Any]], inde
     ids = meta.get("rowBlockIds")
     if not ids:
         return [index]
-    wanted = set(ids)
-    found = [i for i, block in enumerate(blocks) if block.get("id") in wanted]
-    return found or [index]
+    return sorted(positions[i] for i in ids if i in positions) or [index]
 
 
 def _hits_from_search(
@@ -169,7 +172,8 @@ def _hits_from_search(
 ) -> list[int]:
     """Block indices from a search response, best first.
 
-    A grouped-row point yields every row it lists.
+    A grouped-row point yields every row it lists; without ``blocks`` it can
+    only yield its first row.
 
     Results without a `blockIndex` are skipped rather than guessed at: a wrong
     index would pull an unrelated block into the selection.
@@ -177,6 +181,7 @@ def _hits_from_search(
     if not isinstance(response, dict):
         return []
     ordered: list[int] = []
+    positions = block_positions(blocks or [])
     for result in response.get("searchResults") or []:
         if not isinstance(result, dict):
             continue
@@ -186,7 +191,7 @@ def _hits_from_search(
         index = metadata.get("blockIndex")
         if not isinstance(index, int):
             continue
-        for row in grouped_row_indexes(metadata, blocks or [], index):
+        for row in grouped_row_indexes(metadata, positions, index):
             if row not in ordered:
                 ordered.append(row)
     return ordered

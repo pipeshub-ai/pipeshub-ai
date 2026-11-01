@@ -291,6 +291,11 @@ class EmbeddingRequest(BaseModel):
     trust_remote_code: bool = False
 
 
+class TokenizeResponse(BaseModel):
+    model: str
+    counts: list[int]
+
+
 class EmbeddingData(BaseModel):
     object: str = "embedding"
     embedding: list[float] | str
@@ -756,6 +761,17 @@ class ModelManager:
             logger.info("Embedding model '%s' loaded", model_name)
             return model
 
+    async def count_tokens(
+        self, model_name: str, texts: list[str], *, trust_remote_code: bool = False,
+    ) -> list[int]:
+        """Tokens the model itself reads for each text, special tokens included."""
+        async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
+            def _count() -> list[int]:
+                ids = model.tokenizer(texts, add_special_tokens=True, truncation=False)["input_ids"]
+                return [len(i) for i in ids]
+
+            return await asyncio.to_thread(_count)
+
     async def encode(
         self,
         model_name: str,
@@ -1077,6 +1093,22 @@ async def create_embeddings(
             total_tokens=token_estimate,
         ),
     )
+
+
+@app.post("/v1/tokenize")
+async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
+    """Token counts under the model's own tokenizer, so a caller can size its inputs exactly."""
+    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{request.model}' is not in the server's allowed model list.",
+        )
+    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
+        raise HTTPException(status_code=403, detail="trust_remote_code is disabled on this server.")
+    counts = await model_manager.count_tokens(
+        request.model, _normalize_input(request.input), trust_remote_code=request.trust_remote_code,
+    )
+    return TokenizeResponse(model=request.model, counts=counts)
 
 
 def run(

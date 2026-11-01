@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+import openai
 from langchain_core.embeddings import Embeddings
 from langchain_openai.embeddings import OpenAIEmbeddings
 
@@ -104,16 +105,40 @@ class EmbeddingServerEmbeddings(Embeddings):
 
     async def max_input_tokens(self) -> int | None:
         """The model's longest input as the server reports it, or None."""
+        client = openai.AsyncOpenAI(
+            base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY,
+            max_retries=0, timeout=self.timeout,
+        )
         try:
-            page = await self._inner.root_async_client.models.list()
-        except Exception:
-            logger.warning("Embedding server did not report the model's input limit", exc_info=True)
+            page = await client.models.list()
+        except openai.OpenAIError:
+            logger.error("Embedding server did not report the model's input limit", exc_info=True)
             return None
+        finally:
+            await client.close()
         for item in page.data:
             if item.id == self.model:
                 limit = getattr(item, "max_seq_length", None)
                 return limit if isinstance(limit, int) and limit > 0 else None
         return None
+
+    def count_tokens(self, texts: list[str]) -> list[int]:
+        """Tokens the server's model reads for each text. Raises when the server cannot say."""
+        client = openai.OpenAI(
+            base_url=_embedding_server_base_url(), api_key=_EMBEDDING_SERVER_API_KEY,
+            max_retries=0, timeout=self.timeout,
+        )
+        try:
+            body = {"model": self.model, "input": texts, "trust_remote_code": self.trust_remote_code}
+            return call_with_retry(
+                lambda: client.post("/tokenize", cast_to=object, body=body)["counts"],
+                max_retries=self.max_retries,
+                operation="count_tokens",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            )
+        finally:
+            client.close()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(

@@ -83,6 +83,13 @@ class TestEmbeddingServerRoutes:
         assert body["data"][0]["id"] == DEFAULT_EMBEDDING_MODEL
         assert body["data"][0]["max_seq_length"] == 512
 
+    def test_tokenize_returns_the_counts(self, client) -> None:
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[3, 7])
+        response = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a", "b"]})
+        assert response.status_code == 200
+        assert response.json()["counts"] == [3, 7]
+
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
         response = test_client.post(
@@ -297,7 +304,18 @@ class TestModelManager:
         manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
 
-    def test_max_seq_length_reads_the_loaded_model(self):
+    @pytest.mark.asyncio
+    async def test_count_tokens_uses_the_models_own_tokenizer(self) -> None:
+        class Model:
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool) -> dict:
+                assert add_special_tokens and truncation is False
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
+
+    def test_max_seq_length_reads_the_loaded_model(self) -> None:
         manager = ModelManager()
         manager._models = {"a": MagicMock(max_seq_length=384), "b": MagicMock(max_seq_length=None)}
         assert manager.max_seq_length("a") == 384
