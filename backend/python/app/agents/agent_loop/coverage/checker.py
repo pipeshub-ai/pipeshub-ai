@@ -23,6 +23,13 @@ _MAX_DRAFT_CHARS = 12_000
 _MAX_ITEMS = 6
 
 CHECK_SYSTEM = "You check a draft answer against the evidence it was written from. Reply with JSON only."
+_CONFLICT_SCHEMA = (
+    '"conflicts": parts for which records above give different values: [{{"facet", "draft_leads_with": '
+    '[labels the draft\'s answer comes from], "draft_mentions": [other labels the draft cites for it], '
+    '"values": [{{"record": "R2", "value", "scope": "the customer, product, version, team or period it '
+    'applies to", "doc_type": "the kind of document", "same_scope_as_question": true or false, '
+    '"revises": [labels of records this one says it updates, corrects or replaces]}}]}}]'
+)
 CHECK_USER = (
     "Question: {question}\n\n"
     "Parts the answer must cover:\n{facets}\n\n"
@@ -38,13 +45,22 @@ CHECK_USER = (
     '- "admissions": sentences where the draft says something asked for was not found, not read, does not '
     'match or does not meet a condition, or offers a closest match: [{{"quote", "query"}}], the query being '
     "a search that could find a record that does meet it. Leave out caveats the evidence itself settles.\n"
-    '- "conflicts": parts for which records above give different values: [{{"facet", "draft_leads_with": '
-    '[labels the draft\'s answer comes from], "draft_mentions": [other labels the draft cites for it], '
-    '"values": [{{"record": "R2", "value", "scope": "the customer, product, version, team or period it '
-    'applies to", "doc_type": "the kind of document", "same_scope_as_question": true or false, '
-    '"revises": [labels of records this one says it updates, corrects or replaces]}}]}}]. A looser or '
-    "partial mention of the same value is not a conflict.\n"
+    f"- {_CONFLICT_SCHEMA}. A looser or partial mention of the same value is not a conflict.\n"
     'Reply as {{"facets": [], "unread_references": [], "admissions": [], "conflicts": []}}'
+)
+
+CONFLICT_USER = (
+    "Question: {question}\n\n"
+    "Parts the answer must cover:\n{facets}\n\n"
+    "Draft answer:\n<<<\n{draft}\n>>>\n\n"
+    "Evidence (records labelled R1, R2, ...; those marked new were found after the draft was written):\n"
+    "{evidence}\n\n"
+    "Report, using only the draft and the evidence above, whether a new record gives a different value "
+    "from the draft's for a part of the question:\n"
+    f"- {_CONFLICT_SCHEMA}. Include the draft's own records for that part. A looser or partial mention "
+    "of the same value is not a conflict, and \"revises\" needs the record itself to say so or to be a "
+    "later version of the same document.\n"
+    'Reply as {{"conflicts": []}}'
 )
 
 
@@ -174,11 +190,35 @@ async def check_draft(
     return parse_checker_report(payload)
 
 
+async def check_conflicts(
+    llm: Any,  # noqa: ANN401
+    *,
+    question: str,
+    plan: "FacetPlan | None",
+    draft: str,
+    evidence_digest: str,
+    timeout: float,
+    on_usage: "Callable[[BaseMessage], None] | None" = None,
+) -> CheckerReport | None:
+    """The conflicts records found after the draft raise against it."""
+    user = CONFLICT_USER.format(
+        question=question.strip(),
+        facets=_facet_lines(plan),
+        draft=draft.strip()[:_MAX_DRAFT_CHARS],
+        evidence=evidence_digest or "(no record text was shown)",
+    )
+    payload = await complete_json(
+        llm, CHECK_SYSTEM, user, timeout=timeout, purpose="coverage conflict check", on_usage=on_usage,
+    )
+    return parse_checker_report(payload)
+
+
 __all__ = [
     "AdmissionGap",
     "CheckerReport",
     "FacetVerdict",
     "ReferenceGap",
+    "check_conflicts",
     "check_draft",
     "parse_checker_report",
 ]

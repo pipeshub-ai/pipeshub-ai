@@ -202,6 +202,11 @@ def facet_supported(facet: Facet, evidence_tokens: set[str]) -> bool:
     return present >= max(1, math.ceil(len(facet.terms) * 2 / 3))
 
 
+def facet_stated(facet: Facet, evidence_tokens: set[str]) -> bool:
+    """`facet_supported`, reading a facet with no terms by its own words."""
+    return facet_supported(facet, evidence_tokens) if facet.terms else _term_present(facet.text, evidence_tokens)
+
+
 def uncovered_facets(plan: FacetPlan | None, evidence_texts: "Iterable[str]") -> list[Facet]:
     """Facets of ``plan`` the texts do not lexically cover, in plan order."""
     if plan is None:
@@ -216,6 +221,7 @@ __all__ = [
     "MAX_FACETS",
     "Facet",
     "FacetPlan",
+    "facet_stated",
     "facet_supported",
     "parse_facet_plan",
     "plan_facets",

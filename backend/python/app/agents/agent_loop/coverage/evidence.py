@@ -5,7 +5,7 @@ from fetches (only the blocks a fetch rendered, not the whole stored record).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,11 +25,26 @@ class EvidenceRecord:
     passages: list[str] = field(default_factory=list)
     fetched: bool = False
     complete: bool = False
+    blocks: dict[int, str] = field(default_factory=dict)
+    """Shown text by block index, for matching the blocks a draft cites."""
 
-    def add(self, text: str) -> None:
+    def add(self, text: str, block_index: object = None) -> None:
         text = text.strip()
-        if text and text not in self.passages:
+        if not text:
+            return
+        if isinstance(block_index, int) and not isinstance(block_index, bool):
+            self.blocks.setdefault(block_index, text)
+        if text not in self.passages:
             self.passages.append(text)
+
+    def block_texts(self, indices: Collection[int]) -> list[str]:
+        """The shown text of these blocks, in block order."""
+        return [self.blocks[index] for index in sorted(set(indices)) if index in self.blocks]
+
+    def cited_passages(self, indices: Collection[int]) -> list[str]:
+        """The shown text of the cited blocks; every shown passage when the
+        citation names no block, or none of the named blocks was shown."""
+        return self.block_texts(indices) or list(self.passages)
 
 
 @dataclass
@@ -42,6 +57,17 @@ class Evidence:
     def read_records(self) -> list[EvidenceRecord]:
         """Records whose own text reached the model (not just a listed name)."""
         return [record for record in self.records if record.passages]
+
+    def virtual_record_ids(self) -> set[str]:
+        return {record.virtual_record_id for record in self.records}
+
+    def cited_texts(self, cited: Mapping[str, Collection[int]]) -> list[str]:
+        """The passages a draft cites, given cited block indices per record id."""
+        return [
+            passage
+            for record in self.records if record.record_id and record.record_id in cited
+            for passage in record.cited_passages(cited[record.record_id])
+        ]
 
     def label_of(self, record_id: str | None) -> str | None:
         for position, record in enumerate(self.records, start=1):
@@ -102,9 +128,9 @@ def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
         if not isinstance(unit, Mapping) or not unit.get("virtual_record_id"):
             continue
         record = entry(str(unit["virtual_record_id"]))
-        record.add(_content_text(unit.get("content")))
+        record.add(_content_text(unit.get("content")), unit.get("block_index"))
         for child in unit_children(unit):
-            record.add(_content_text(child.get("content")))
+            record.add(_content_text(child.get("content")), child.get("block_index"))
 
     outcomes: Mapping[str, Any] = tool_state.get(FETCH_RENDER_OUTCOMES_KEY) or {}
     for entries in outcomes.values():
@@ -119,7 +145,7 @@ def collect_evidence(tool_state: Mapping[str, Any]) -> Evidence:
             for index in outcome.get("shownBlocks") or ():
                 block = blocks.get(index)
                 if block is not None:
-                    record.add(_content_text(block.get("data")))
+                    record.add(_content_text(block.get("data")), index)
     return Evidence(records=list(by_vrid.values()))
 
 
@@ -129,25 +155,47 @@ def _ranked_passages(record: EvidenceRecord, focus: set[str]) -> list[str]:
     return sorted(record.passages, key=lambda passage: -len(tokens(passage) & focus))
 
 
+def _excerpt(passages: Iterable[str], budget: int, *, verbatim: bool) -> str:
+    body = ""
+    for passage in passages:
+        room = budget - len(body) - (3 if body else 0)
+        if room <= 80:
+            break
+        snippet = passage.strip() if verbatim else " ".join(passage.split())
+        body += (" | " if body else "") + (snippet if len(snippet) <= room else snippet[: room - 1] + "…")
+    return body
+
+
 def evidence_digest(
     evidence: Evidence,
     *,
     focus_terms: Iterable[str] = (),
     cited_record_ids: Iterable[str] = (),
+    cited_blocks: Mapping[str, Collection[int]] | None = None,
+    new_virtual_record_ids: Collection[str] = (),
     per_record_chars: int = 1_800,
-    total_chars: int = 16_000,
+    cited_record_chars: int = 6_000,
+    total_chars: int = 20_000,
 ) -> str:
-    """The evidence as labelled excerpts (``[R1] name``) for the checker, the
-    passages sharing most words with ``focus_terms`` first, cited and fetched
-    records before records only seen in results."""
+    """The evidence as labelled excerpts (``[R1] name``) for the checker.
+
+    A cited record leads with the blocks the draft cites, verbatim, within
+    ``cited_record_chars``; then every record gets up to ``per_record_chars``
+    of its other passages, those sharing most words with ``focus_terms``
+    first. Cited records come first, then records in
+    ``new_virtual_record_ids`` (just found by a search run in code), then
+    fetched ones, then records only seen in results."""
     focus: set[str] = set()
     for term in focus_terms:
         focus |= tokens(term)
-    cited = set(cited_record_ids)
+    blocks_cited = dict(cited_blocks or {})
+    cited = set(cited_record_ids) | set(blocks_cited)
+    new = set(new_virtual_record_ids)
     order = sorted(
         range(len(evidence.records)),
         key=lambda i: (
             evidence.records[i].record_id not in cited,
+            evidence.records[i].virtual_record_id not in new,
             not evidence.records[i].fetched,
             i,
         ),
@@ -159,18 +207,22 @@ def evidence_digest(
         if not record.passages:
             continue
         how = "read in full" if record.complete else "partly read" if record.fetched else "blocks from search"
-        cited_note = ", cited in the draft" if record.record_id in cited else ""
-        header = f"[R{i + 1}] {record.name or '(untitled)'} ({how}{cited_note})"
-        body = ""
-        for passage in _ranked_passages(record, focus):
-            room = per_record_chars - len(body)
-            if room <= 80:
-                break
-            snippet = " ".join(passage.split())
-            body += (" | " if body else "") + (snippet if len(snippet) <= room else snippet[: room - 1] + "…")
+        is_cited = record.record_id in cited
+        note = ", cited in the draft" if is_cited else ", new from a search run for you" if (
+            record.virtual_record_id in new
+        ) else ""
+        header = f"[R{i + 1}] {record.name or '(untitled)'} ({how}{note})"
+        if is_cited:
+            lead = record.block_texts(blocks_cited.get(record.record_id or "", ()))
+            rest = [passage for passage in _ranked_passages(record, focus) if passage not in lead]
+            body = _excerpt(lead, cited_record_chars, verbatim=True)
+            tail = _excerpt(rest, per_record_chars - len(body) - 3, verbatim=False)
+            body = f"{body} | {tail}" if body and tail else body or tail
+        else:
+            body = _excerpt(_ranked_passages(record, focus), per_record_chars, verbatim=False)
         block = f"{header}\n{body}"
         if used + len(block) > total_chars:
-            break
+            continue
         parts.append(block)
         used += len(block) + 2
     return "\n\n".join(parts)

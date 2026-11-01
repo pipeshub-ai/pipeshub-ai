@@ -10,7 +10,11 @@ from langchain_core.messages import AIMessage
 
 from app.agents.agent_loop.coverage.evidence import collect_evidence
 from app.agents.agent_loop.coverage.facets import Facet, FacetPlan
-from app.agents.agent_loop.coverage.gate import GateDecision, assess_draft
+from app.agents.agent_loop.coverage.gate import (
+    GateDecision,
+    adjudicate_found,
+    assess_draft,
+)
 
 _PLAN = FacetPlan(anchor="Northwind", facets=[
     Facet(id="f1", kind="entity", text="Northwind", terms=["Northwind"], query="Northwind rollout"),
@@ -49,11 +53,12 @@ def _llm(reply: dict | str | Exception) -> MagicMock:
 
 async def _evaluate(draft: str, state: dict, llm: MagicMock, *, plan: FacetPlan | None = _PLAN,
                     searched: list[str] | None = None, cited: list[str] | None = None,
-                    adjudication: bool = True) -> GateDecision:
+                    blocks: dict[str, list[int]] | None = None,
+                    adjudication: bool = True, max_gaps: int = 2) -> GateDecision:
     return await assess_draft(
         question="When does Northwind roll out in the EU region?", draft=draft, plan=plan,
         evidence=collect_evidence(state), cited_record_ids=cited or [], searched=searched or [],
-        llm=llm, timeout=1.0, max_gaps=2, adjudication=adjudication,
+        llm=llm, timeout=1.0, max_gaps=max_gaps, adjudication=adjudication, cited_blocks=blocks,
     )
 
 
@@ -154,3 +159,78 @@ class TestRulings:
         )
         assert decision.covered
         llm.ainvoke.assert_not_called()
+
+
+_DATE_PLAN = FacetPlan(anchor="Northwind", facets=[
+    Facet(id="f1", kind="entity", text="Northwind", terms=["Northwind"], query="Northwind rollout"),
+    Facet(id="f2", kind="sub_question", text="EU go-live date", terms=["EU", "go-live"], query="Northwind EU go-live"),
+    Facet(id="f3", kind="sub_question", text="who approved", terms=["approved"], query="Northwind approval"),
+])
+_TWO_RECORDS = _tool_state(
+    ("vr-1", "rec-1", "northwind plan", ["Northwind overview.", "EU go-live: May 4."]),
+    ("vr-2", "rec-2", "northwind notes", ["Approved by the steering group."]),
+)
+_DATE_DRAFT = "Northwind's EU go-live is May 4 [ref1]. The plan doesn't state who approved it."
+# Not an admission: a signal that reopens every part.
+_CONFLICT_DRAFT = "Northwind's EU go-live is May 4 [ref1]; the sources differ on the date."
+
+
+class TestCheckerVerdictsAgainstCitedText:
+    async def test_an_unsupported_part_the_cited_block_states_is_dropped(self) -> None:
+        reply = {"facets": [{"id": "f2", "supported": False, "query": "Northwind EU launch date"}]}
+        decision = await _evaluate(
+            _CONFLICT_DRAFT, _TWO_RECORDS, _llm(reply), plan=_DATE_PLAN, cited=["rec-1"], blocks={"rec-1": [1]},
+        )
+        assert decision.checked and decision.gaps == []
+        assert decision.signals["cited_overrules"] == 1
+
+    async def test_text_the_draft_does_not_cite_does_not_overrule_the_checker(self) -> None:
+        reply = {"facets": [{"id": "f2", "supported": False, "query": "Northwind EU launch date"}]}
+        decision = await _evaluate(
+            _CONFLICT_DRAFT, _TWO_RECORDS, _llm(reply), plan=_DATE_PLAN, cited=["rec-1"], blocks={"rec-1": [0]},
+        )
+        assert [(g.kind, g.query) for g in decision.gaps] == [("facet", "Northwind EU launch date")]
+
+    async def test_an_admission_alone_keeps_only_admission_gaps(self) -> None:
+        reply = {
+            "facets": [{"id": "f3", "supported": False, "query": "Northwind steering approval minutes"}],
+            "unread_references": [{"name": "ADR-021", "query": "ADR-021 decision record"}],
+            "admissions": [{"quote": "doesn't state who approved", "query": "Northwind EU rollout approver"}],
+        }
+        decision = await _evaluate(
+            _DATE_DRAFT, _TWO_RECORDS, _llm(reply), plan=_DATE_PLAN, cited=["rec-1"], blocks={"rec-1": [1]},
+            max_gaps=3,
+        )
+        assert decision.signals["admissions"] == 1 and decision.signals["uncovered"] == 0
+        assert [(g.kind, g.query) for g in decision.gaps] == [("admission", "Northwind EU rollout approver")]
+
+
+class TestAdjudicatingFoundRecords:
+    async def test_no_new_record_costs_no_call(self) -> None:
+        llm = _llm({"conflicts": []})
+        rulings = await adjudicate_found(
+            question="q", draft=_DATE_DRAFT, plan=_DATE_PLAN, evidence=collect_evidence(_TWO_RECORDS),
+            new_virtual_record_ids={"vr-9"}, cited_record_ids=["rec-1"], llm=llm, timeout=1.0,
+        )
+        assert rulings == []
+        llm.ainvoke.assert_not_called()
+
+    async def test_a_found_revision_of_the_cited_record_leads(self) -> None:
+        state = _tool_state(
+            ("vr-1", "rec-1", "northwind plan", ["EU go-live: May 4."]),
+            ("vr-3", "rec-3", "northwind plan v2", ["Revised: EU go-live moves to June 1."]),
+        )
+        reply = {"conflicts": [{"facet": "f2", "draft_leads_with": ["R1"], "values": [
+            {"record": "R1", "value": "May 4"},
+            {"record": "R2", "value": "June 1", "revises": ["R1"]},
+        ]}]}
+        llm = _llm(reply)
+        rulings = await adjudicate_found(
+            question="q", draft=_DATE_DRAFT, plan=_DATE_PLAN, evidence=collect_evidence(state),
+            new_virtual_record_ids={"vr-3"}, cited_record_ids=["rec-1"], llm=llm, timeout=1.0,
+        )
+        assert rulings == [
+            "For EU go-live date: lead with the value from northwind plan v2 (rec-3). "
+            "northwind plan (rec-1) is revised by northwind plan v2 (rec-3): give its value only as the earlier one."
+        ]
+        assert "(blocks from search, new from a search run for you)" in llm.ainvoke.await_args.args[0][1].content

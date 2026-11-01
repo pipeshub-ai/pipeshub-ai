@@ -18,6 +18,7 @@ from app.utils.citations import (
     _badge_url,
     _renumber_citation_links,
     build_tiny_web_ref_url,
+    cited_blocks,
     cited_record_ids,
     detect_hallucinated_citation_urls,
     display_url_for_llm,
@@ -2679,7 +2680,7 @@ class TestBadgeUrl:
         )
 
 
-class TestCitedRecordIds:
+class TestCitedRecords:
     _REF_TO_URL = {
         "ref1": "https://app/record/rec-1/preview#blockIndex=7",
         "ref2": "https://app/record/rec-1/preview#blockIndex=3",
@@ -2689,6 +2690,11 @@ class TestCitedRecordIds:
     def test_each_record_once_in_first_cited_order(self) -> None:
         text = "A [x](ref3) B [y](ref1) C [z](ref2) D [w](ref3)"
         assert cited_record_ids(text, self._REF_TO_URL) == ["rec-2", "rec-1"]
+
+    def test_cited_blocks_are_read_per_record_from_the_ref_urls(self) -> None:
+        assert cited_blocks("A [x](ref1) B [y](ref2) C [z](ref3) D [w](ref1)", self._REF_TO_URL) == {
+            "rec-1": [7, 3], "rec-2": [],
+        }
 
     def test_unknown_refs_and_no_mapper_cite_nothing(self) -> None:
         assert cited_record_ids("A [x](ref9)", self._REF_TO_URL) == []

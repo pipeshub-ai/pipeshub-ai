@@ -55,3 +55,36 @@ def test_the_state_is_shared_by_every_reader_of_the_request() -> None:
     coverage_state(tool_state).note_searched("Kiln twelve firing schedule")
     assert coverage_state(tool_state).was_searched("firing schedules for kiln twelve")
     assert not coverage_state(tool_state).was_searched("kiln seven firing schedule")
+
+
+def test_the_digest_leads_a_cited_record_with_its_cited_blocks_verbatim() -> None:
+    passages = [f"Kiln room note {n}: kiln owners review firing logs weekly." for n in range(60)]
+    state = _search_state(("vr-1", "rec-1", "kiln tracker", [*passages, "Row | Kiln B | fires | Tuesday"]))
+    digest = evidence_digest(
+        collect_evidence(state), focus_terms=["kiln room"], cited_record_ids=["rec-1"], cited_blocks={"rec-1": [60]},
+    )
+    header = "[R1] kiln tracker (blocks from search, cited in the draft)"
+    assert digest.startswith(f"{header}\nRow | Kiln B | fires | Tuesday | ")
+    assert len(digest) <= len(header) + 1 + 1_800
+
+
+def test_a_long_record_does_not_crowd_out_the_rest_of_the_digest() -> None:
+    state = _search_state(
+        ("vr-1", "rec-1", "big", [f"Kiln passage {n} " + "x" * 300 for n in range(30)]),
+        ("vr-2", "rec-2", "small", ["Kiln B fires on Tuesdays."]),
+    )
+    digest = evidence_digest(
+        collect_evidence(state), cited_record_ids=["rec-1"], cited_blocks={"rec-1": list(range(30))},
+        cited_record_chars=5_000, total_chars=3_000,
+    )
+    assert "[R1] big" not in digest
+    assert "[R2] small" in digest
+
+
+def test_cited_passages_are_the_cited_blocks_or_every_shown_passage() -> None:
+    evidence = collect_evidence(_search_state(
+        ("vr-1", "rec-1", "kiln-schedule", ["Kiln B fires on Tuesdays.", "Kiln B cools for nine hours."]),
+    ))
+    assert evidence.cited_texts({"rec-1": [1]}) == ["Kiln B cools for nine hours."]
+    assert evidence.cited_texts({"rec-1": []}) == ["Kiln B fires on Tuesdays.", "Kiln B cools for nine hours."]
+    assert evidence.cited_texts({"rec-9": [0]}) == []
