@@ -227,6 +227,36 @@ describe('docstore-migrate engine', () => {
         }
       });
     });
+    it('allows one PostgreSQL runtime at a time, closes once, and opens again after a close', async () => {
+      sinon.stub(MongoClient.prototype, 'connect').callsFake(function (this: MongoClient) {
+        return Promise.resolve(this);
+      });
+      sinon.stub(MongoClient.prototype, 'close').resolves();
+      const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db', pgMigrateUrl: 'postgresql://m@127.0.0.1:1/db', parallel: 1 } as never;
+      const saved = process.env.DOC_STORE;
+      process.env.DOC_STORE = 'shadow';
+      try {
+        const a = await MigrationRuntime.open(cfg);
+        // a second open is refused before it touches anything, and a MongoDB-only runtime may come and go beside the first
+        const second = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
+        expect(second?.message).to.include('already open');
+        expect(process.env.DOC_STORE).to.equal('postgres');
+        await (await MigrationRuntime.open({ mongoUri: 'mongodb://127.0.0.1:1/' } as never)).close();
+        expect(process.env.DOC_STORE).to.equal('postgres');
+        await a.close();
+        expect(process.env.DOC_STORE).to.equal('shadow');
+        // the first runtime's second close does nothing, even while another one is open
+        const b = await MigrationRuntime.open(cfg);
+        await a.close();
+        expect(process.env.DOC_STORE).to.equal('postgres');
+        await b.close();
+        expect(process.env.DOC_STORE).to.equal('shadow');
+      } finally {
+        sinon.restore();
+        if (saved === undefined) delete process.env.DOC_STORE;
+        else process.env.DOC_STORE = saved;
+      }
+    });
     it('keeps the migrate pool alive through an idle client error', async () => {
       const pool = createMigratePool('postgresql://m@127.0.0.1:1/db');
       expect(() => pool.emit('error', new Error('terminating connection'))).to.not.throw();

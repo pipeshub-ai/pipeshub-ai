@@ -27,7 +27,12 @@ export function createMigratePool(connectionString: string): Pool {
   return pool;
 }
 
+/** DOC_STORE and the PostgreSQL runtime are process-wide, so one PostgreSQL runtime may be open at a time; this says whether one is. */
+let pgOpen = false;
+
 export class MigrationRuntime {
+  private closed = false;
+
   private constructor(
     readonly cfg: MigrateConfig,
     readonly mongo: MongoClient,
@@ -41,6 +46,21 @@ export class MigrationRuntime {
     // checked before connecting: a throw after the connection would leave the MongoDB client open and the process hanging
     if (Boolean(cfg.pgImportUrl) !== Boolean(cfg.pgMigrateUrl))
       throw new Error('PG_IMPORT_URL and PG_MIGRATE_URL are both needed');
+    if (!cfg.pgImportUrl) return MigrationRuntime.connect(cfg);
+    if (pgOpen)
+      throw new Error(
+        'a PostgreSQL migration runtime is already open in this process; close it first',
+      );
+    pgOpen = true; // taken before the first await, so two concurrent opens cannot both pass
+    try {
+      return await MigrationRuntime.connect(cfg);
+    } catch (e) {
+      pgOpen = false;
+      throw e;
+    }
+  }
+
+  private static async connect(cfg: MigrateConfig): Promise<MigrationRuntime> {
     const mongo = await new MongoClient(cfg.mongoUri, {
       serverSelectionTimeoutMS: 8000,
       appName: 'docstore-migrate',
@@ -123,10 +143,14 @@ export class MigrationRuntime {
   }
 
   async close(): Promise<void> {
-    configurePg(undefined);
+    if (this.closed) return;
+    this.closed = true;
+    // only the PostgreSQL runtime owns the process-wide settings; a MongoDB-only one must not clear a live one's
     if (this.docStore) {
+      configurePg(undefined);
       if (this.docStore.previous === undefined) delete process.env.DOC_STORE;
       else process.env.DOC_STORE = this.docStore.previous;
+      pgOpen = false;
     }
     await this.mongo.close().catch(() => undefined);
     for (const p of this.pools) await p.end().catch(() => undefined);
