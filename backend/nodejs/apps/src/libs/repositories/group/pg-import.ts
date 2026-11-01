@@ -6,6 +6,7 @@ import {
   Row,
   emptyStats,
   idText,
+  isUpsert,
   writePlan,
 } from '../import';
 import { bool, needId, stamps, str, version } from '../identity/import-util';
@@ -54,6 +55,22 @@ export async function importGroupDocs(
     throw new Error(`the group repository does not import '${collection}'`);
   const stats = emptyStats(docs.length);
   const parts = docs.map(groupRows);
+  // the member rows follow the group row: a group that is already there keeps its members, unless this write replaces the
+  // group in place, and then the document's members replace them
+  const ids = parts.map((p) => p.group.id as string);
+  if (isUpsert('identity.user_groups')) {
+    await k.query(
+      '/* pipeshub:import.group_members_replace */ DELETE FROM identity.user_group_members WHERE group_id = ANY($1::text[])',
+      [ids],
+    );
+  } else {
+    const { rows } = await k.query<{ id: string }>(
+      '/* pipeshub:import.group_existing */ SELECT id FROM identity.user_groups WHERE id = ANY($1::text[])',
+      [ids],
+    );
+    const there = new Set(rows.map((r) => r.id));
+    for (const p of parts) if (there.has(p.group.id as string)) p.members = [];
+  }
   await writePlan(
     k,
     [

@@ -63,6 +63,10 @@ export const withUpsert = <T>(
   fn: () => Promise<T>,
 ): Promise<T> => upsertTables.run(new Set(tables), fn);
 
+/** Whether a write replaces rows of `table` in place (inside `withUpsert`). */
+export const isUpsert = (table: string): boolean =>
+  upsertTables.getStore()?.has(table) ?? false;
+
 const keyCache = new Map<string, string[]>();
 async function primaryKey(k: PgKernelTx, table: string): Promise<string[]> {
   const hit = keyCache.get(table);
@@ -119,23 +123,40 @@ export async function insertRows(
       if (!COLUMN_RE.test(c)) throw new Error(`bad column name '${c}'`);
     const list = cols.join(', ');
     let conflict = 'ON CONFLICT DO NOTHING';
-    if (upsertTables.getStore()?.has(table)) {
+    let batch = group;
+    let upsert = false;
+    if (isUpsert(table)) {
       // replace in place: the key stays, every other column takes the new value (a column the row leaves out goes back to its default)
       const key = await primaryKey(k, table);
       const set = (await allColumns(k, table))
         .filter((c) => !key.includes(c))
         .map((c) => `${c} = ${cols.includes(c) ? `excluded.${c}` : 'DEFAULT'}`);
-      if (key.length > 0 && set.length > 0)
+      if (key.length > 0 && set.length > 0) {
         conflict = `ON CONFLICT (${key.join(', ')}) DO UPDATE SET ${set.join(', ')}`;
+        upsert = true;
+        // one statement may not update a row twice (cardinality violation): the last row of a key wins, as separate upserts would leave it
+        if (key.every((c) => cols.includes(c)))
+          batch = [
+            ...new Map(
+              group.map((r) => [JSON.stringify(key.map((c) => r[c])), r]),
+            ).values(),
+          ];
+      }
     }
-    const { rowCount } = await k.query(
+    // xmax is 0 on a row this statement inserted and set on one it updated; rowCount counts both
+    const { rows: out, rowCount } = await k.query<{ ins: boolean }>(
       fill(
-        '/* pipeshub:import.rows */ INSERT INTO @{T} (@{C}) SELECT @{C} FROM jsonb_populate_recordset(NULL::@{T}, $1::jsonb) @{X}',
-        { T: table, C: list, X: conflict },
+        '/* pipeshub:import.rows */ INSERT INTO @{T} (@{C}) SELECT @{C} FROM jsonb_populate_recordset(NULL::@{T}, $1::jsonb) @{X}@{R}',
+        {
+          T: table,
+          C: list,
+          X: conflict,
+          R: upsert ? ' RETURNING (xmax = 0) AS ins' : '',
+        },
       ),
-      [JSON.stringify(group)],
+      [JSON.stringify(batch)],
     );
-    written += rowCount ?? 0;
+    written += upsert ? out.filter((r) => r.ins).length : (rowCount ?? 0);
   }
   return written;
 }
@@ -195,8 +216,9 @@ export function neutral(v: unknown): unknown {
   if (isBson(v, 'Int32') || isBson(v, 'Double'))
     return (v as { value: number }).value;
   if (isBson(v, 'Binary')) {
-    const b = v as { buffer: Uint8Array; sub_type?: number };
-    return Buffer.from(b.buffer);
+    // `buffer` may be larger than the content (`position` bytes) when the Binary was built in memory
+    const b = v as { buffer: Uint8Array; position: number };
+    return Buffer.from(b.buffer.subarray(0, b.position));
   }
   if (isBson(v, 'BSONRegExp') || isBson(v, 'Timestamp')) return text(v);
   if (isBson(v, 'UUID')) return text(v);
