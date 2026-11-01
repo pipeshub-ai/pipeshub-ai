@@ -192,6 +192,14 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.common.record_query_rows import (
+    LINKED_PER_ROW,
+    ORGANIZATION_EDGES,
+    PERSON_EDGES,
+    RecordCandidates,
+    matches_nothing,
+    record_query_seed,
+)
 from app.services.graph_db.common.team_grant_role import (
     TEAM_GRANT_ROLES,
     aql_team_grant_role,
@@ -307,6 +315,8 @@ from app.utils.user_messages import folder_in_trash
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+
+    from app.modules.retrieval.record_query.pushdown import Pushdown
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -22164,6 +22174,257 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         row.get("rows") or [], capped=bool(row.get("capped")),
                     )
         return results
+
+    _RECORD_QUERY_HYDRATION = f"""
+                    LET t = FIRST(FOR v IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.TICKETS.value}", v) LIMIT 1 RETURN v)
+                    LET d = FIRST(FOR v IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.DEALS.value}", v) LIMIT 1 RETURN v)
+                    LET people = (
+                        FOR p, pr IN 1..1 ANY r {CollectionNames.ENTITY_RELATIONS.value}
+                            FILTER (IS_SAME_COLLECTION("{CollectionNames.USERS.value}", p)
+                                OR IS_SAME_COLLECTION("{CollectionNames.PEOPLE.value}", p))
+                                AND p.orgId == @org_id AND pr.edgeType IN @person_edges
+                            LIMIT @linked_per_row
+                            RETURN {{role: pr.edgeType, id: p._key, name: p.fullName}}
+                    )
+                    LET organizations = (
+                        FOR o, orl IN 1..1 OUTBOUND r {CollectionNames.ENTITY_RELATIONS.value}
+                            FILTER IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", o)
+                                AND o.isExternal == true AND o.parentOrgId == @org_id
+                                AND orl.edgeType IN @org_edges
+                            LIMIT @linked_per_row
+                            RETURN {{id: o._key, name: o.name}}
+                    )
+                    LET links = (
+                        FOR lo, lk IN 1..1 ANY r {CollectionNames.RECORD_LINKS.value}
+                            FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", lo) AND lo.orgId == @org_id
+                            LIMIT @linked_per_row
+                            RETURN {{id: lo._key, relation: lk.relationshipType}}
+                    )
+                    RETURN {{
+                        "_key": r._key, "recordName": r.recordName, "recordType": r.recordType,
+                        "connectorName": r.connectorName, "connectorId": r.connectorId,
+                        "recordGroupId": r.recordGroupId, "webUrl": r.webUrl,
+                        "createdAt": r.sourceCreatedAtTimestamp, "updatedAt": r.sourceLastModifiedTimestamp,
+                        "ticket": t == null ? null : {{
+                            status: t.status, sourceStatus: t.sourceStatus, priority: t.priority,
+                            resolvedAt: t.resolvedAtTimestamp, dueAt: t.dueDateTimestamp,
+                        }},
+                        "deal": d == null ? null : {{
+                            amount: d.amount, closeDate: d.closeDate, isWon: d.isWon, isClosed: d.isClosed,
+                        }},
+                        "people": people, "organizations": organizations, "links": links,
+                    }}"""
+
+    def _record_query_entity_aql(self, entity_type: str, param: str) -> str | None:
+        """Record ``rec`` is connected to the entity ``@<param>`` as
+        ``get_entity_candidate_records`` connects it; None for a type it does
+        not take."""
+        if entity_type == EntityType.RECORD.value:
+            return f"rec._key == @{param}"
+        if entity_type not in self._ENTITY_CANDIDATE_EDGE_TARGETS:
+            return None
+        if entity_type in self._LINKED_ENTITY_NODES:
+            collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
+            # The scope names its node ``n``, which the seed loop may have bound already.
+            scope = re.sub(r"\bn\.", "en.", scope)
+            return f"""LENGTH(FOR en IN 1..1 ANY rec {CollectionNames.ENTITY_RELATIONS.value}
+                        FILTER IS_SAME_COLLECTION("{collection}", en) AND en._key == @{param} AND {scope}
+                        LIMIT 1 RETURN 1) > 0"""
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        if entity_type == EntityType.RECORD_GROUP.value:
+            groups = CollectionNames.RECORD_GROUPS.value
+            return f"""LENGTH(FOR g IN 1..1 OUTBOUND rec {edge_collection}
+                        FILTER IS_SAME_COLLECTION("{groups}", g) AND g._key == @{param} AND g.orgId == @org_id
+                        LIMIT 1 RETURN 1) > 0"""
+        targets = ", ".join(f'CONCAT("{c}/", @{param})' for c in target_collections)
+        return f"""LENGTH(FOR v IN 1..1 OUTBOUND rec {edge_collection}
+                        FILTER v._id IN [{targets}] LIMIT 1 RETURN 1) > 0"""
+
+    def _record_query_seed_aql(self, pushed: Pushdown, bind_vars: dict[str, Any]) -> tuple[str, bool]:
+        """The loop binding ``rec`` to the records the scan starts from, and
+        whether one record can come out of it twice."""
+        records = CollectionNames.RECORDS.value
+        relations = CollectionNames.ENTITY_RELATIONS.value
+        seed = record_query_seed(pushed)
+        if seed == "entities":
+            first = pushed["entities"][0]
+            entity_type = str(first.get("type") or "")
+            bind_vars["seed_id"] = str(first.get("id") or "")
+            if entity_type == EntityType.RECORD.value:
+                return f"FOR rec IN {records} FILTER rec._key == @seed_id", False
+            if entity_type in self._LINKED_ENTITY_NODES:
+                return self._linked_records_loop(entity_type, "@seed_id"), False
+            edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+            targets = ", ".join(f'CONCAT("{c}/", @seed_id)' for c in target_collections)
+            return f"""FOR edge IN {edge_collection}
+                    FILTER edge._to IN [{targets}] AND STARTS_WITH(edge._from, "{records}/")
+                    LET rec = DOCUMENT(edge._from)
+                    FILTER rec != null""", True
+        if seed == "links":
+            bind_vars["seed_ids"] = list(pushed["links"][0]["ids"])
+            return f"""FOR seed IN {records}
+                    FILTER seed._key IN @seed_ids AND seed.orgId == @org_id
+                    FOR rec IN 1..1 ANY seed {CollectionNames.RECORD_LINKS.value}
+                        FILTER IS_SAME_COLLECTION("{records}", rec)""", True
+        if seed == "people":
+            bind_vars["seed_ids"] = list(pushed["people"][0]["ids"])
+            users, people = CollectionNames.USERS.value, CollectionNames.PEOPLE.value
+            return f"""FOR sid IN @seed_ids
+                    FOR seed IN [DOCUMENT(CONCAT("{users}/", sid)), DOCUMENT(CONCAT("{people}/", sid))]
+                        FILTER seed != null AND seed.orgId == @org_id
+                        FOR rec IN 1..1 ANY seed {relations}
+                            FILTER IS_SAME_COLLECTION("{records}", rec)""", True
+        if seed == "organizations":
+            bind_vars["seed_ids"] = list(pushed["organizations"][0])
+            orgs = CollectionNames.ORGS.value
+            return f"""FOR sid IN @seed_ids
+                    LET seed = DOCUMENT(CONCAT("{orgs}/", sid))
+                    FILTER seed != null AND seed.isExternal == true AND seed.parentOrgId == @org_id
+                    FOR rec IN 1..1 INBOUND seed {relations}
+                        FILTER IS_SAME_COLLECTION("{records}", rec)""", True
+        if seed == "containers":
+            return f"FOR rec IN {records} FILTER rec.orgId == @org_id AND rec.recordGroupId IN container_groups", False
+        return f"FOR rec IN {records} FILTER rec.orgId == @org_id", False
+
+    def _record_query_aql(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
+        """The candidate query for ``pushed`` and its bind variables, or None
+        when it names an entity type no record can be connected to. Fragments
+        are chosen by which keys are present; every value is a bind variable,
+        and only variables the query references are bound."""
+        bind_vars: dict[str, Any] = {
+            "person_edges": list(PERSON_EDGES),
+            "org_edges": list(ORGANIZATION_EDGES),
+            "linked_per_row": LINKED_PER_ROW,
+        }
+        where = [
+            "rec.orgId == @org_id AND rec.isDeleted != true",
+            aql_searchable_record("rec", "completed"),
+            "rec.connectorId IN @connector_ids",
+            self._entity_within_aql("rec"),
+        ]
+        for key, prop in (("record_types", "recordType"), ("sources", "connectorName")):
+            if key in pushed:
+                bind_vars[key] = list(pushed[key])
+                where.append(f"rec.{prop} IN @{key}")
+        for key, prop in (("created", "sourceCreatedAtTimestamp"), ("updated", "sourceLastModifiedTimestamp")):
+            start, end = ([*pushed.get(key, []), None, None])[:2]
+            if start is not None:
+                bind_vars[f"{key}_start"] = int(start)
+                where.append(f"rec.{prop} >= @{key}_start")
+            if end is not None:
+                bind_vars[f"{key}_end"] = int(end)
+                # AQL orders null below every number.
+                where.append(f"rec.{prop} != null AND rec.{prop} <= @{key}_end")
+        prelude = ""
+        if "containers" in pushed:
+            bind_vars["containers"] = list(pushed["containers"])
+            groups = CollectionNames.RECORD_GROUPS.value
+            hierarchy = '["PARENT_CHILD", "ATTACHMENT"]'
+            # A record names only its own group; one in a nested group is found
+            # by walking down from the named ones as a selection is walked.
+            prelude = f"""
+            LET container_groups = UNION_DISTINCT(@containers, (
+                FOR sg IN {groups}
+                    FILTER sg._key IN @containers AND sg.orgId == @org_id AND sg.isDeleted != true
+                    FOR g, ge, gp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND sg {CollectionNames.NODE_RELATIONS.value}
+                        PRUNE ge != null AND (ge.relationshipType NOT IN {hierarchy} OR g.isDeleted == true)
+                        OPTIONS {{bfs: true, uniqueVertices: "global", vertexCollections: ["{groups}"]}}
+                        FILTER gp.edges[*].relationshipType ALL IN {hierarchy}
+                        FILTER gp.vertices[*].isDeleted NONE == true
+                        RETURN g._key
+            ))"""
+            where.append("rec.recordGroupId IN container_groups")
+        relations, records = CollectionNames.ENTITY_RELATIONS.value, CollectionNames.RECORDS.value
+        for i, person in enumerate(pushed.get("people", [])):
+            bind_vars[f"people_{i}_ids"], bind_vars[f"people_{i}_edges"] = list(person["ids"]), list(person["edges"])
+            where.append(f"""LENGTH(FOR p, pr IN 1..1 ANY rec {relations}
+                        FILTER (IS_SAME_COLLECTION("{CollectionNames.USERS.value}", p)
+                            OR IS_SAME_COLLECTION("{CollectionNames.PEOPLE.value}", p))
+                            AND p._key IN @people_{i}_ids AND pr.edgeType IN @people_{i}_edges
+                            AND p.orgId == @org_id
+                        LIMIT 1 RETURN 1) > 0""")
+        for i, org_ids in enumerate(pushed.get("organizations", [])):
+            bind_vars[f"orgs_{i}"] = list(org_ids)
+            where.append(f"""LENGTH(FOR o, orl IN 1..1 OUTBOUND rec {relations}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", o) AND o._key IN @orgs_{i}
+                            AND orl.edgeType IN @org_edges AND o.isExternal == true AND o.parentOrgId == @org_id
+                        LIMIT 1 RETURN 1) > 0""")
+        for i, link in enumerate(pushed.get("links", [])):
+            bind_vars[f"links_{i}_ids"], bind_vars[f"links_{i}_relation"] = list(link["ids"]), link.get("relation")
+            where.append(f"""LENGTH(FOR lo, lk IN 1..1 ANY rec {CollectionNames.RECORD_LINKS.value}
+                        FILTER IS_SAME_COLLECTION("{records}", lo) AND lo._key IN @links_{i}_ids
+                            AND lo.orgId == @org_id
+                            AND (@links_{i}_relation == null OR lk.relationshipType == @links_{i}_relation)
+                        LIMIT 1 RETURN 1) > 0""")
+        for i, entity in enumerate(pushed.get("entities", [])):
+            bind_vars[f"entities_{i}"] = str(entity.get("id") or "")
+            condition = self._record_query_entity_aql(str(entity.get("type") or ""), f"entities_{i}")
+            if condition is None:
+                return None
+            where.append(condition)
+
+        seed, repeats = self._record_query_seed_aql(pushed, bind_vars)
+        filters = "\n                    ".join(f"FILTER {w}" for w in where)
+        # A seed over edges can reach a record twice; the cap counts records.
+        capped_scan = (
+            "COLLECT seen = rec._key INTO dupes KEEP rec\n                    LIMIT @scan_cap\n"
+            "                    RETURN dupes[0].rec"
+        ) if repeats else "LIMIT @scan_cap\n                    RETURN rec"
+        query = f"""{prelude}
+            LET scanned = (
+                {seed}
+                    {filters}
+                    {capped_scan}
+            )
+            LET rows = (
+                FOR rec IN scanned
+                    COLLECT key = rec._key INTO grouped KEEP rec
+                    LET r = grouped[0].rec
+                    {self._entity_candidate_sort}
+                    LIMIT @offset, @window{self._RECORD_QUERY_HYDRATION}
+            )
+            RETURN {{rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
+            """
+        return query, bind_vars
+
+    async def get_record_query_candidates(
+        self,
+        org_id: str,
+        *,
+        connector_ids: list[str],
+        pushdown: Pushdown,
+        offset: int = 0,
+        window: int = 500,
+        scan_cap: int = 20_000,
+        timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
+    ) -> RecordCandidates:
+        """See :meth:`IGraphDBProvider.get_record_query_candidates`."""
+        if not org_id or not connector_ids or matches_nothing(pushdown):
+            return RecordCandidates()
+        built = self._record_query_aql(pushdown)
+        if built is None:
+            return RecordCandidates()
+        query, bind_vars = built
+        rows = await self.execute_query(
+            query,
+            bind_vars={
+                **bind_vars,
+                "org_id": org_id,
+                "connector_ids": list(connector_ids),
+                "within": within_param(within),
+                "completed": ProgressStatus.COMPLETED.value,
+                "offset": max(0, offset),
+                "window": max(1, window),
+                "scan_cap": max(1, scan_cap),
+            },
+            **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+        )
+        first = (rows or [{}])[0] or {}
+        found = [dict(r) for r in first.get("rows") or []]
+        return RecordCandidates(found, window_size=len(found), capped=bool(first.get("capped")))
 
     async def get_taxonomy_entity_membership(
         self,
