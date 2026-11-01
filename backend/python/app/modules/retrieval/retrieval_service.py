@@ -114,6 +114,7 @@ from app.services.vector_db.models import (
     FusionMethod,
     HybridSearchRequest,
     SearchFailureKind,
+    SearchResult,
 )
 from app.services.vector_db.search_retry import (
     VectorSearchUnavailableError,
@@ -2776,10 +2777,13 @@ class RetrievalService:
                 plan.collections = collections
         failed_collections: list[str] = []
         fan_out = self._fan_out_searches(collections, requests, fused_limit, failed=failed_collections)
-        dense_pool = record_rerank.rerank.settings.dense_pool if record_rerank is not None else 0
-        if dense_pool:
+        rerank = record_rerank.rerank if record_rerank is not None else None
+        dense_pool = rerank.settings.dense_pool if rerank is not None else 0
+        dense_results: list[list[SearchResult]] | None = None
+        anchor_results: list[SearchResult] | None = None
+        if rerank is not None and dense_pool:
             search_results, (dense_results, anchor_results) = await asyncio.gather(
-                fan_out, self._dense_pool_legs(collections, dense_query_embeddings, filter, record_rerank.rerank),
+                fan_out, self._dense_pool_legs(collections, dense_query_embeddings, filter, rerank),
             )
         else:
             search_results = await fan_out
@@ -2809,7 +2813,7 @@ class RetrievalService:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
         return self._hits_of(search_results)
 
-    def _hits_of(self, batches: list[list]) -> list[dict[str, Any]]:
+    def _hits_of(self, batches: Sequence[Sequence[SearchResult]]) -> list[dict[str, Any]]:
         """The points of ``batches`` as hits, each point once, in order."""
         all_results: list[tuple] = []
         seen_points: set = set()
@@ -2831,15 +2835,15 @@ class RetrievalService:
     async def _rerank_batches(
         self,
         scope: _RecordRerankScope,
-        batches: list[list],
+        batches: list[list[SearchResult]],
         org_id: str,
         user_id: str | None,
         collections: list[str],
         added: Collection[str] = (),
-    ) -> list[list]:
+    ) -> list[list[SearchResult]]:
         """Every query's points in one record order, reranked over their union.
         Of the ``added`` (dense pool) records, only those placed stay."""
-        union: dict[Any, Any] = {}
+        union: dict[str, SearchResult] = {}
         for batch in batches:
             for point in batch:
                 union.setdefault(point.id, point)
@@ -2854,10 +2858,10 @@ class RetrievalService:
     async def _dense_pool_legs(
         self,
         collections: list[str],
-        dense_query_embeddings: list,
+        dense_query_embeddings: list[list[float]],
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         rerank: RecordRerank,
-    ) -> tuple[list[list] | None, list | None]:
+    ) -> tuple[list[list[SearchResult]] | None, list[SearchResult] | None]:
         """Per query the dense leg's points, and the points of the rerank's
         anchor (None when it has none); a leg that fails is None."""
         size = rerank.settings.dense_pool
@@ -2874,7 +2878,7 @@ class RetrievalService:
         anchor: str,
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         pool_records: int,
-    ) -> list | None:
+    ) -> list[SearchResult] | None:
         """A dense-only request for the user's question behind an agent's
         search, under the same permission filter, deep enough for its share of
         the pool. None when it fails: the pool is then the search's own."""
@@ -2894,10 +2898,10 @@ class RetrievalService:
     async def _dense_pool_leg(
         self,
         collections: list[str],
-        dense_query_embeddings: list,
+        dense_query_embeddings: list[list[float]],
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
         pool_records: int,
-    ) -> list[list] | None:
+    ) -> list[list[SearchResult]] | None:
         """Per query, a dense-only request under the same permission filter,
         deep enough to fill the rerank pool. None when it fails: the pool is
         then the fused list alone."""
@@ -2934,7 +2938,7 @@ class RetrievalService:
         dense, anchor = await self._dense_pool_legs(plan.collections, plan.dense, vector_filter, rerank)
         known = {hit_record_id(hit) for hit in admitted}
 
-        def new_hits(batches: list[list]) -> list[dict[str, Any]]:
+        def new_hits(batches: list[list[SearchResult]]) -> list[dict[str, Any]]:
             hits = (hit for hit in self._hits_of(batches) if hit_record_id(hit) not in known)
             return sorted(hits, key=lambda hit: -(hit.get("score") or 0.0))
 
@@ -2961,7 +2965,7 @@ class RetrievalService:
     async def _record_rerank_order(
         self,
         scope: _RecordRerankScope,
-        items: list,
+        items: Sequence[Any],
         view: ItemView,
         org_id: str,
         user_id: str | None,
@@ -3032,7 +3036,7 @@ class RetrievalService:
         fetched = await self.graph_provider.get_records_by_record_ids(list(by_record_id), org_id)
         names: dict[str, str] = {}
         for record in fetched or []:
-            key = (record.get("_key") or record.get("id")) if isinstance(record, dict) else None
+            key = (record.get("_key") or record.get("id")) if record else None
             if key in by_record_id:
                 names[by_record_id[key]] = record.get("recordName") or ""
         return names

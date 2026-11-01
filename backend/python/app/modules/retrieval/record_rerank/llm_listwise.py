@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from cachetools import TTLCache
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -104,7 +104,7 @@ async def rerank_llm(config_service: ConfigurationService, model: str) -> BaseCh
 class LlmListwiseReranker(RecordReranker):
     def __init__(self, deps: RerankerDeps) -> None:
         self._config_service = deps.config_service
-        self._llms: TTLCache = TTLCache(maxsize=256, ttl=_LLM_TTL_S)
+        self._llms: TTLCache[tuple[str, str], BaseChatModel] = TTLCache(maxsize=256, ttl=_LLM_TTL_S)
 
     async def _llm(self, org_id: str) -> BaseChatModel:
         model = (os.getenv(RECORD_RERANK_MODEL_ENV_VAR) or "").strip()
@@ -115,6 +115,7 @@ class LlmListwiseReranker(RecordReranker):
             llm = self._llms[(org_id, model)] = await rerank_llm(self._config_service, model)
         return llm
 
+    @override
     async def rank(self, request: RerankRequest) -> list[str]:
         if not request.candidates:
             return []

@@ -3,7 +3,8 @@
 Importing the package registers the built-in strategies.
 """
 
-from app.modules.retrieval.record_rerank import llm_listwise  # noqa: F401 - registers the built-in strategy
+# Imported for its side effect: it registers the built-in strategy.
+from app.modules.retrieval.record_rerank import llm_listwise  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from app.modules.retrieval.record_rerank.base import (
     RecordCandidate,
     RecordReranker,
