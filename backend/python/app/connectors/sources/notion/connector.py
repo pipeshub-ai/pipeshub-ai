@@ -173,13 +173,21 @@ _OAUTH_REQUIRED_SCOPES = (
 )
 
 
+# With its filter off, an unchanged record keeps these statuses when saved; a save marks any other
+# AUTO_INDEX_OFF.
+_KEPT_WITH_INDEXING_OFF = frozenset(
+    s.value for s in (ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.COMPLETED, ProgressStatus.PASSWORD_PROTECTED)
+)
+
+
 def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
-    """Stored with indexing off while its filter now allows it, or still waiting to be indexed
-    while its filter now turns indexing off: only a save brings the status in line."""
+    """Stored with indexing off while its filter now allows it, or with a status a save would mark
+    AUTO_INDEX_OFF while its filter now turns indexing off: only a save brings the status in line."""
     status = getattr(record, "indexing_status", None)
+    status = getattr(status, "value", status)
     if enabled:
-        return status in (ProgressStatus.AUTO_INDEX_OFF, ProgressStatus.AUTO_INDEX_OFF.value)
-    return status in (ProgressStatus.NOT_STARTED, ProgressStatus.NOT_STARTED.value)
+        return status == ProgressStatus.AUTO_INDEX_OFF.value
+    return status not in _KEPT_WITH_INDEXING_OFF
 
 
 def _edit_part(revision: str | None) -> str | None:
