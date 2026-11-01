@@ -1143,15 +1143,19 @@ describe('Chat page — projects and previews', () => {
 
   it('treats a project deleted or left in this tab as gone: one toast, back to a plain chat, no request', async () => {
     useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
-    // What ProjectApi.remove and ProjectApi.leave write.
-    writeSwrKey(projectDetailKey('p-1'), null);
+    getProject.mockResolvedValue({ id: 'p-1', name: 'Launch plan', color: '#f00' });
+    renderPage('projectId=p-1');
+    expect(await screen.findByText('Launch plan')).toBeTruthy();
+    cleanup();
 
+    // What ProjectApi.remove and ProjectApi.leave write, within the window of that load.
+    writeSwrKey(projectDetailKey('p-1'), null);
     renderPage('projectId=p-1');
 
     await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/chat/'));
     expect(toastError).toHaveBeenCalledTimes(1);
     expect(toastError).toHaveBeenCalledWith('Failed to load this project');
-    expect(getProject).not.toHaveBeenCalled();
+    expect(getProject).toHaveBeenCalledTimes(1);
   });
 
   it('reports each project that fails to load, not only the first', async () => {
