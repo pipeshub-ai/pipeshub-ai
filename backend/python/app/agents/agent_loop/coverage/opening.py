@@ -1,16 +1,22 @@
-"""Whether a cited draft opens with a limitation instead of its substance: what
-the assistant itself cannot do or hand over, or the status of the thing asked
-for ("not yet delivered"), ahead of the cited facts that follow.
+"""Whether a cited draft frames its answer badly: it opens with a limitation
+instead of its substance (what the assistant itself cannot do or hand over,
+the status of the thing asked for, that no single record answers, that the
+records conflict), or it disputes wording the question uses.
 
-Read deterministically from the opening alone: the part before the first
-citation, up to the first paragraph break. A draft with no citation is a
-not-found answer and is left alone, as is a status sentence after the first,
-and a status sentence when the question itself asks about status.
+Read deterministically. The limitation and status rules read the part before
+the first citation, up to the first paragraph break; a status sentence after
+the first is left alone, as is a status sentence when the question itself
+asks about status. The broader opening patterns read the first three
+sentences, and the dispute patterns the whole draft. A draft with no citation,
+or whose opening says the item is absent, is a not-found answer and is left
+alone.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 _MAX_OPENING_CHARS = 500
 _MAX_FIRST_SENTENCE_CHARS = 300
@@ -117,4 +123,105 @@ def limitation_lead(question: str, draft: str) -> str | None:
     return _sentence_at(opening, found.start())[:_MAX_FIRST_SENTENCE_CHARS]
 
 
-__all__ = ["asks_about_status", "limitation_lead"]
+# "Closest / best match" and "isn't in the records" are left out on purpose:
+# rewriting them changed nothing, since the first marks an answer resting on
+# the wrong record and the second a neutral aside.
+_OPENING_PATTERNS = (
+    r"\bno single\b|\bhas no single\b|\bnot one (?:document|record)\b",
+    r"\b(?:can['’]t|cannot|can not|couldn['’]t|could not) tell (?:which|whether|if)\b|\bisn['’]t clear which\b"
+    r"|\bis not clear which\b|\bnot be the one (?:you|the question)",
+    r"\bI\s+(?:can['’]t|cannot|can not|couldn['’]t|could not|am unable to|['’]m unable to|am not able to)\s+"
+    r"(?:\w+\s+(?:or|and)\s+)?(?:hand|produce|deliver|provide|give|generate|send|attach|export|share|sign)\b",
+    r"\b(?:could|can)(?:n['’]t| not)(?: fully)? reconcile\b",
+    r"\b(?:the )?(?:two |these )?(?:documents|records|sources|notes|threads) (?:conflict|disagree|contradict)\b",
+    r"\bnothing (?:I found |in the (?:records|documents) )?(?:resolves|settles|says which)\b",
+    r"\bno (?:document|record|source) (?:I found )?(?:lists|says|states|confirms|gives|names)\b",
+)
+_DISPUTE_PATTERNS = (
+    r"\bnot as a direct quote\b|\bnot a direct quote\b|\b(?:don['’]t|do not) attribute\b",
+    r"\b(?:does not|doesn['’]t|do not|don['’]t|did not|didn['’]t) (?:say|state|specify|show|confirm) (?:whether|if)\b",
+    r"\brather than [\"“‘']",
+    r"\bno record (?:that|of) (?:it|the|this|that|they|its)\b",
+    r"\b(?:does not|doesn['’]t|do not|don['’]t) use the (?:term|word|phrase)\b"
+    r"|\bnot (?:the )?(?:question['’]s|your) (?:term|word)\b|\bI read it as\b|\bis not stated as\b",
+)
+_OPENING_RES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in _OPENING_PATTERNS)
+_DISPUTE_RES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in _DISPUTE_PATTERNS)
+_ABSENT_RE = re.compile(
+    r"\b(?:could(?:n['’]t| not)|did(?:n['’]t| not)|was unable to|were unable to|can['’]t|cannot) (?:find|locate|see)\b"
+    r"|\bI found no\b|\bno (?:record|document|mention|information|evidence|data|details?)s? "
+    r"(?:of|about|on|for|that|in|describing)\b"
+    r"|\b(?:isn['’]t|is not|aren['’]t|are not|wasn['’]t|was not|weren['’]t|were not) "
+    r"(?:in|covered|documented|recorded|mentioned|described|available)\b"
+    r"|\bnot (?:found|documented|recorded|covered|mentioned) (?:in|anywhere)\b|\bthere (?:is|are|was|were) no\b"
+    r"|\bnone of the (?:records|documents|sources)\b|\bdoes(?:n['’]t| not) (?:appear|exist)\b"
+    r"|\b(?:doesn['’]t|does not|don['’]t|do not|never) (?:list|define|name|state|give|mention|include|specify|contain"
+    r"|document|provide|describe|set|record)\b",
+    re.IGNORECASE,
+)
+_LINK_RE = re.compile(r"\s*\[\d+\]\((?:https?://[^)\s]+|ref[\w-]+)\)|\s*\[source\]\([^)]*\)")
+_ANSWER_LABEL_RE = re.compile(r"^\*\*(?:Short answer|Answer|Summary):?\*\*:?\s*")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_MAX_SENTENCE_WINDOW_CHARS = 250
+_ABSENT_SENTENCES = 2
+_OPENING_SENTENCES = 3
+_DISPUTE_CONTEXT_CHARS = 80
+
+
+@dataclass(frozen=True)
+class FramingHit:
+    """``opening``: the draft leads with it; ``dispute``: the draft says it."""
+
+    kind: Literal["opening", "dispute"]
+    quote: str
+
+
+def _first_sentences(text: str, count: int) -> str:
+    text = _ANSWER_LABEL_RE.sub("", _LEADING_HEADINGS_RE.sub("", text.strip()))
+    sentences = _SENTENCE_SPLIT_RE.split(text.strip(), maxsplit=count)[:count]
+    return " ".join(sentences)[:_MAX_SENTENCE_WINDOW_CHARS * count]
+
+
+def plain_text(draft: str) -> str:
+    """The draft without its citation links."""
+    return _LINK_RE.sub("", draft).strip()
+
+
+def framing_exempt(draft: str) -> bool:
+    """A draft that cites nothing, or opens by saying the item is absent: its
+    concession is the answer."""
+    if _CITATION_RE.search(draft) is None:
+        return True
+    return _ABSENT_RE.search(_first_sentences(plain_text(draft), _ABSENT_SENTENCES)) is not None
+
+
+def framing_hits(question: str, draft: str) -> list[FramingHit]:
+    """What in a cited draft's framing should be rewritten, or nothing."""
+    if framing_exempt(draft):
+        return []
+    hits = []
+    lead = limitation_lead(question, draft)
+    if lead:
+        hits.append(FramingHit("opening", lead))
+    text = plain_text(draft)
+    opening = _first_sentences(text, _OPENING_SENTENCES)
+    for pattern in _OPENING_RES:
+        found = pattern.search(opening)
+        if found and not (lead and found.group(0) in lead):
+            hits.append(FramingHit("opening", found.group(0)))
+    for pattern in _DISPUTE_RES:
+        found = pattern.search(text)
+        if found:
+            context = text[max(0, found.start() - _DISPUTE_CONTEXT_CHARS):found.end() + _DISPUTE_CONTEXT_CHARS]
+            hits.append(FramingHit("dispute", context))
+    return hits
+
+
+__all__ = [
+    "FramingHit",
+    "asks_about_status",
+    "framing_exempt",
+    "framing_hits",
+    "limitation_lead",
+    "plain_text",
+]

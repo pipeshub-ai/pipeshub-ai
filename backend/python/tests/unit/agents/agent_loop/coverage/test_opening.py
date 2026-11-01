@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.agent_loop.coverage.opening import asks_about_status, limitation_lead
+from app.agents.agent_loop.coverage.opening import (
+    FramingHit,
+    asks_about_status,
+    framing_exempt,
+    framing_hits,
+    limitation_lead,
+)
 
 _ARCHIVE_QUESTION = (
     "For the Orchard Lane clinic pilot, can you put together a signed audit archive for the June export, "
@@ -116,3 +122,97 @@ class TestDoesNotFire:
 
     def test_the_archive_question_is_not_a_status_question(self) -> None:
         assert not asks_about_status(_ARCHIVE_QUESTION)
+
+
+def _link(block: int) -> str:
+    return f"[{block}](http://localhost:3000/record/7c1f20aa/preview#blockIndex={block})"
+
+
+_STATUS_LED = f"The audit archive has not been sent yet. The vendor's ETA was 2026-05-20 {_link(1)}."
+
+
+class TestFramingHits:
+    def test_an_inability_in_the_third_sentence(self) -> None:
+        draft = (
+            "**Answer:** The Orchard Lane ticket (HD-5521) describes this archive. It is for site "
+            "`orchard-07` in us-east. I can't export or sign the archive myself, and the ticket doesn't show "
+            "it was sent.\n\n"
+            f"- **Signed sample:** a notarised index for the whole June window {_link(6)}."
+        )
+        assert framing_hits(_ARCHIVE_QUESTION, draft) == [FramingHit(
+            "opening", "I can't export or sign the archive myself, and the ticket doesn't show it was sent.",
+        )]
+
+    def test_no_record_gives_in_the_third_sentence_of_a_bold_lead(self) -> None:
+        question = "For the Halden checkout outage, which incident category and response targets should support use?"
+        draft = (
+            "**Set the category to Payments / Gateway, with the payments team as primary owner. The response "
+            "targets depend on the severity declared in the paging tool. No record I found gives a declared "
+            "severity for the Halden HD-7731 outage.**\n\n**Category and owner**\n"
+            f"- The HD-7731 record notes an internal decision to file it as Payments/Gateway {_link(54)}."
+        )
+        assert framing_hits(question, draft) == [FramingHit("opening", "No record I found gives")]
+
+    @pytest.mark.parametrize(("lead", "hit"), [
+        ("The knowledge base has no single count of findings by office.", "has no single"),
+        ("I can't tell which of the two audits you mean.", "can't tell which"),
+        ("I could not reconcile the two checklists.", "could not reconcile"),
+        ("The sources disagree on the closing date.", "The sources disagree"),
+        ("Nothing I found resolves which figure is current.", "Nothing I found resolves"),
+    ])
+    def test_the_other_opening_families(self, lead: str, hit: str) -> None:
+        draft = f"Leeds logged the most open findings. {lead} Leeds has about 9 {_link(1)}."
+        assert framing_hits("Which office logged the most open findings?", draft) == [FramingHit("opening", hit)]
+
+    def test_an_opening_pattern_after_the_third_sentence_is_left_alone(self) -> None:
+        draft = f"Leeds logged the most. It had 9. York had 8 {_link(1)}. The sources disagree on two findings."
+        assert framing_hits("Which office logged the most open findings?", draft) == []
+
+    @pytest.mark.parametrize(("body", "said"), [
+        ('Her reply says "done already", which doesn\'t say whether she enabled it on this tenant.',
+         "doesn't say whether"),
+        ('Marta also asked to say "brief interruption" and "steps we are taking" rather than "downtime".',
+         'rather than "'),
+        ("Tom's plan added that as a checklist item. I found no record that it was signed off.", "no record that it"),
+        ("She said it in the review, not as a direct quote.", "not as a direct quote"),
+        ("The guide doesn't use the term burst buffer.", "doesn't use the term"),
+    ])
+    def test_a_dispute_anywhere_in_the_draft(self, body: str, said: str) -> None:
+        draft = (
+            "The change was turning on chunked uploads with `upload_chunking=true`. A trial cut timeouts to "
+            f"zero {_link(7)}.\n\n**Context.** Priya reported timeouts on large attachments {_link(8)}.\n\n{body}"
+        )
+        hits = framing_hits("Which setting ended the upload timeouts?", draft)
+        assert [hit.kind for hit in hits] == ["dispute"]
+        assert said in hits[0].quote and "[" not in hits[0].quote
+
+    @pytest.mark.parametrize("said", [
+        "The closest match is the v1 list value `payments_gateway.auth_lag`.",
+        "The best match in the records is DOC-311.",
+        "The closing date isn't in the records I read.",
+    ])
+    def test_closest_match_and_isnt_in_the_do_not_fire(self, said: str) -> None:
+        draft = f"File it as Payments / Gateway. It is defined as slow card authorisation {_link(96)}. {said}"
+        assert not framing_exempt(draft)
+        assert framing_hits("What incident subtype should we file?", draft) == []
+
+    @pytest.mark.parametrize("draft", [
+        "No record I found gives a declared severity for HD-7731, and I can't tell which runbook applies.",
+        f"I couldn't find a declared severity for HD-7731. No record I found gives one {_link(3)}.",
+        f"The knowledge base doesn't list a severity for HD-7731. The sources disagree on the owner {_link(3)}.",
+        f"There is no record of an offline preset for the kiosks. The guide doesn't say whether one exists {_link(2)}.",
+    ])
+    def test_a_draft_with_no_citation_or_that_says_the_item_is_absent(self, draft: str) -> None:
+        assert framing_exempt(draft)
+        assert framing_hits("What severity was declared for HD-7731?", draft) == []
+
+    def test_a_status_question_skips_only_the_status_rule(self) -> None:
+        question = "Was the Orchard Lane audit archive sent?"
+        assert framing_hits(question, _STATUS_LED) == []
+        disputed = f"{_STATUS_LED} The ticket doesn't say whether the archive was signed."
+        assert [hit.kind for hit in framing_hits(question, disputed)] == ["dispute"]
+
+    def test_a_status_lead_on_any_other_question_still_fires(self) -> None:
+        assert framing_hits(_ARCHIVE_QUESTION, _STATUS_LED) == [
+            FramingHit("opening", "The audit archive has not been sent yet."),
+        ]
