@@ -282,7 +282,7 @@ dependencies = [
     # app/sources/external/microsoft/ do `if not config.headers: config.headers = {}` and then `config.headers.add(...)`,
     # so every call that sets a header fails with "'dict' object has no attribute 'add'". Remove this pin once the
     # wrappers keep the collection (test_a_request_configuration_keeps_a_headers_collection_the_wrappers_can_add_to).
-    "microsoft-kiota-abstractions<1.16",
+    "microsoft-kiota-abstractions<1.17",
     # 1.11.7 is the first release whose JSON parser base64-decodes Edm.Binary fields
     # (attachment contentBytes); older ones return the base64 text as bytes.
     "microsoft-kiota-serialization-json>=1.11.7",
