@@ -25,6 +25,7 @@ import {
 } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
+import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { randomBytes } from 'crypto';
 import type { Tx } from '../../../libs/repositories/uow';
 import { newObjectId } from '../../../libs/repositories/ids';
@@ -684,6 +685,7 @@ export const streamChat =
     res: Response,
     next?: NextFunction,
   ): Promise<void> => {
+    if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const timer = new StageTimer();
@@ -1456,6 +1458,7 @@ export const addMessageStream =
     res: Response,
     next?: NextFunction,
   ): Promise<void> => {
+    if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const userId = req.user?.userId;
@@ -4242,6 +4245,7 @@ async function regenerateAnswersInternal(
 export const regenerateAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
+    if (await refuseIfDraining(res)) return;
     await regenerateAnswersInternal(appConfig, req, res, {
       isAgentSession: false,
       scopeOf: () => CHAT_SCOPE,
@@ -6400,6 +6404,7 @@ export const streamAgentConversation =
     res: Response,
     next?: NextFunction,
   ): Promise<void> => {
+    if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: string | undefined;
@@ -7147,6 +7152,7 @@ export const addMessageStreamToAgentConversation =
     res: Response,
     next?: NextFunction,
   ) => {
+    if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: string | undefined;
@@ -7919,6 +7925,7 @@ export const addMessageStreamToAgentConversationInternal =
 export const regenerateAgentAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
+    if (await refuseIfDraining(res)) return;
     await regenerateAnswersInternal(appConfig, req, res, {
       isAgentSession: true,
       scopeOf: (agentKey) => agentScope(agentKey),

@@ -17,6 +17,7 @@ Focuses on:
 """
 
 import uuid
+from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1134,6 +1135,70 @@ class TestOnNewUserGroups:
 
         tx_store.batch_upsert_user_groups.assert_awaited()
         tx_store.batch_create_edges.assert_awaited()
+
+    @staticmethod
+    def _deadlock() -> Exception:
+        class TransientError(Exception):
+            pass
+
+        return TransientError("{neo4j_code: Neo.TransientError.Transaction.DeadlockDetected}")
+
+    @staticmethod
+    def _group() -> AppUserGroup:
+        return AppUserGroup(
+            app_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="ext-ug-1",
+            name="Test Group",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_deadlock_the_retry_gets_past_logs_no_error(self, monkeypatch) -> None:
+        """Two syncs writing the same members deadlock, and the retry succeeds. An
+        error here set off alerts for groups that were saved."""
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_group_by_external_id = AsyncMock(side_effect=[self._deadlock(), None])
+
+        await proc.on_new_user_groups([(self._group(), [])])
+
+        proc.logger.error.assert_not_called()
+        warned = [str(call.args[0]) for call in proc.logger.warning.call_args_list]
+        assert any("Transaction on_new_user_groups failed" in message for message in warned)
+        tx_store.batch_upsert_user_groups.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_deadlock_on_every_attempt_logs_one_error(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        async def deadlock(**_kwargs: object) -> Never:
+            raise self._deadlock()
+
+        tx_store.get_user_group_by_external_id = AsyncMock(side_effect=deadlock)
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await proc.on_new_user_groups([(self._group(), [])])
+
+        assert tx_store.get_user_group_by_external_id.await_count == 6
+        assert proc.logger.error.call_count == 1
+        assert "Transaction on_new_user_groups failed" in str(proc.logger.error.call_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_retried_still_logs_an_error(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_group_by_external_id = AsyncMock(side_effect=ValueError("graph unreachable"))
+
+        with pytest.raises(ValueError):
+            await proc.on_new_user_groups([(self._group(), [])])
+
+        proc.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_user_not_found_logs_warning(self):

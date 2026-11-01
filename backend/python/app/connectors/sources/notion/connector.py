@@ -74,6 +74,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.notion.block_parser import NotionBlockParser, property_items_fetcher
 from app.connectors.sources.notion.common.apps import NotionApp
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -171,6 +172,21 @@ _OAUTH_REQUIRED_SCOPES = (
     ("read_content", "Read content"),
     ("read_comment", "Read comments"),
 )
+
+
+# Waiting for indexing, which a filter turned off since must stop. Not a record indexing has
+# reached: a save would erase its parsing state and failure reason, or race a live run.
+_WAITING_FOR_INDEXING = frozenset((ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value))
+
+
+def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
+    """Stored with indexing off while its filter now allows it, or waiting to be indexed while its
+    filter now turns indexing off: only a save brings the status in line."""
+    status = getattr(record, "indexing_status", None)
+    status = getattr(status, "value", status)
+    if enabled:
+        return status == ProgressStatus.AUTO_INDEX_OFF.value
+    return status in _WAITING_FOR_INDEXING
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -2536,7 +2552,8 @@ class NotionConnector(BaseConnector):
         """The records one search result becomes: the page or data source, then (pages) its
         attachment and comment-attachment files.
 
-        None: nothing to sync (its database is gone). ``[]``: it failed this run (transform, its
+        None: nothing to sync (its database is gone, or a rechecked page whose comments did not
+        change). ``[]``: it failed this run (transform, its
         database, attachments or comments) and is not saved, so its stored revision stays old and
         the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
         revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
@@ -2657,6 +2674,28 @@ class NotionConnector(BaseConnector):
         )
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
+        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+        if recheck_comments and same_edit and existing.external_revision_id == record.external_revision_id:
+            children = await self.data_entities_processor.get_records_by_parent(self.connector_id, obj_id)
+            stored = {c.external_record_id: c for c in children or [] if c.record_type == RecordType.FILE}
+            # Saving it again would change nothing but its timestamps, on every page the rotation
+            # reaches. It is saved below when a failed batch left one of its files unstored or
+            # stale, or when its indexing filter was turned on or off since the page or a file was stored.
+            if not _indexing_status_outdated(existing, enabled=indexing_enabled) and all(
+                f.external_record_id in stored
+                and stored[f.external_record_id].external_revision_id == f.external_revision_id
+                and not _indexing_status_outdated(stored[f.external_record_id], enabled=files_indexing_enabled)
+                for f in files
+            ):
+                current = {f.external_record_id for f in files}
+                # Notion's edit time has minute precision, so a file removed within the minute
+                # leaves the revision as it was.
+                await self._prune_removed_files(obj_id, current)
+                if self.data_entities_processor.full_sync_running(self.connector_id):
+                    self.data_entities_processor.note_kept_records(
+                        self.connector_id, [existing.id, *(stored[i].id for i in current)]
+                    )
+                return None
         # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
         # whose revision did not change. Full: keep the oldest, which indexing streams first.
         will_stream = indexing_enabled and not (
@@ -2665,7 +2704,6 @@ class NotionConnector(BaseConnector):
         if will_stream and len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
             self._sync_comments[obj_id] = (record.external_revision_id, comments_by_block)
 
-        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
         for file_record in files:
             if not files_indexing_enabled:
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -3759,6 +3797,7 @@ class NotionConnector(BaseConnector):
 
                 if record_type == RecordType.FILE:
                     minimal_record = FileRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3789,6 +3828,7 @@ class NotionConnector(BaseConnector):
                             parent_record_type = RecordType.WEBPAGE
 
                     minimal_record = WebpageRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3812,16 +3852,18 @@ class NotionConnector(BaseConnector):
                     )
 
                 records_to_create.append((minimal_record, []))
-                # Pre-populate mapping (record.id is set before on_new_records)
-                child_record_map[ext_id] = ChildRecord(
-                    child_type=ChildType.RECORD,
-                    child_id=minimal_record.id,
-                    child_name=minimal_record.record_name
-                )
 
             # Batch create all missing records in one call
             await self.data_entities_processor.on_new_records(records_to_create)
             self.logger.info(f"Created {len(records_to_create)} placeholder records")
+            # After the write: a record the sync stored since the lookup keeps its id, and the
+            # processor hands that id back on the record, so the block points at what is stored.
+            for minimal_record, _ in records_to_create:
+                child_record_map[minimal_record.external_record_id] = ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=minimal_record.id,
+                    child_name=minimal_record.record_name
+                )
 
         return child_record_map
 
@@ -4875,6 +4917,7 @@ class NotionConnector(BaseConnector):
             workspace_group_id = self.workspace_id if self.workspace_id else None
 
             return WebpageRecord(
+                id=new_record_id(self.connector_id, obj_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=title,
                 record_type=record_type,
@@ -4997,6 +5040,7 @@ class NotionConnector(BaseConnector):
             source_updated_at = self._parse_iso_timestamp(last_edited_time) if last_edited_time else None
 
             return FileRecord(
+                id=new_record_id(self.connector_id, file_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,
@@ -5332,6 +5376,7 @@ class NotionConnector(BaseConnector):
 
             self.logger.debug(f"Record not found: {external_id}, creating a placeholder")
             minimal_record = WebpageRecord(
+                id=new_record_id(self.connector_id, external_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=page_title or ("Database Row" if parent_data_source_id else f"Page {external_id[:8]}"),
                 record_type=RecordType.WEBPAGE,

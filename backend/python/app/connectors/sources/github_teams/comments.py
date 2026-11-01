@@ -18,7 +18,6 @@ import base64
 import datetime
 import os
 import re
-import uuid
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -31,6 +30,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     raise_for_stream_fetch,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -404,8 +404,8 @@ class CommentsHelper:
     ) -> RecordUpdate | None:
         """Build one attachment FileRecord update. No DB access.
 
-        ``existing_record`` is only consulted for ``source_created_at``: the
-        processor re-runs the same external-id lookup, overwrites ``record.id``
+        ``existing_record`` is only consulted for its id and ``source_created_at``:
+        the processor re-runs the same external-id lookup, overwrites ``record.id``
         with the stored one, and derives everything else itself — but it does
         NOT carry ``source_created_at`` forward, so without the caller's lookup
         every re-sync would reset an attachment's created time to "now".
@@ -423,12 +423,13 @@ class CommentsHelper:
             return None
         attachment_name = attach.get("filename") or os.path.basename(urlparse(attachment_url).path) or "attachment"
         attachment_type = attach.get("type") or "unknown"
+        external_record_id = attachment_key(str(attachment_url), str(record.external_record_id))
         filerecord = FileRecord(
-            id=str(uuid.uuid4()),
+            id=existing_record.id if existing_record else new_record_id(self.c.connector_id, external_record_id),
             org_id=self.c.data_entities_processor.org_id,
             record_name=attachment_name,
             record_type=RecordType.FILE.value,
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            external_record_id=external_record_id,
             connector_name=self.c.connector_name,
             connector_id=self.c.connector_id,
             origin=OriginTypes.CONNECTOR,
@@ -460,8 +461,7 @@ class CommentsHelper:
         return RecordUpdate(
             record=filerecord, is_new=existing_record is None, is_updated=existing_record is not None,
             is_deleted=False, metadata_changed=False, content_changed=False, permissions_changed=False,
-            old_permissions=[], new_permissions=[],
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            old_permissions=[], new_permissions=[], external_record_id=external_record_id,
         )
 
     async def make_file_records_from_list(

@@ -2422,6 +2422,7 @@
         "developerSettings": "Developer settings",
         "oauth2": "OAuth 2.0 apps",
         "personalAccessTokens": "Personal access tokens",
+        "apiDocumentation": "API documentation",
         "profile": "Profile",
         "yourConnectors": "Your connectors",
         "yourActions": "Your actions",

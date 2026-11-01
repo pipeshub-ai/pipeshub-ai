@@ -427,9 +427,11 @@ test.describe('Projects — sharing (owner)', () => {
 
     const putRequest = await putPromise;
     const putBody = putRequest.postDataJSON() as {
-      members: Array<{ principalId: string; role: string }>;
+      members: Array<{ principalId: string; principalType: string; role: string }>;
     };
-    expect(putBody.members).toEqual([{ principalId: SUGGESTED_USER_ID, role: 'viewer' }]);
+    expect(putBody.members).toEqual([
+      { principalId: SUGGESTED_USER_ID, principalType: 'user', role: 'viewer' },
+    ]);
 
     // Sidebar re-fetches members after a successful share; the new row appears
     // alongside the owner (`isOwner: true` row synthesized in the adapter).

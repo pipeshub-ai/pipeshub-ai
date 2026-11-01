@@ -39,6 +39,9 @@ class CONFIG:
     ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"
     # Typed named-entity extraction during indexing. Defaults to disabled.
     ENABLE_NAMED_ENTITY_EXTRACTION = "ENABLE_NAMED_ENTITY_EXTRACTION"
+    # A record is classified (summary, categories, topics) the first time a
+    # search returns it, not right after it is indexed. Defaults to disabled.
+    ENABLE_CLASSIFY_ON_FIRST_USE = "ENABLE_CLASSIFY_ON_FIRST_USE"
     # Indexing also stores each content revision as a directory of artifact
     # files beside the stored record. Nothing reads them yet. Defaults to disabled.
     ENABLE_ARTIFACT_WRITE = "ENABLE_ARTIFACT_WRITE"

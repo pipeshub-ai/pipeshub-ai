@@ -2285,6 +2285,7 @@
         "superOrgs": "Organisationen",
         "oauthApps": "OAuth-Apps für Connectoren",
         "personalAccessTokens": "Persönliche Zugriffstoken",
+        "apiDocumentation": "API-Dokumentation",
         "serviceAccounts": "Dienstkonten"
       }
     },

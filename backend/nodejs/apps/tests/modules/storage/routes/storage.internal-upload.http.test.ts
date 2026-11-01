@@ -25,6 +25,7 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 const JWT_SECRET = 'storage-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'storage-http-test-scoped-secret'
@@ -33,6 +34,7 @@ const USER_ID = '64d0000000000000000000a2'
 const MOUNT = 'kbnode-storage-mount'
 
 describe('Storage internal upload over HTTP: the local disk path', () => {
+  useInertWriteState()
   let backend: FakeBackend
   let kv: FakeKeyValueStore
   let server: http.Server

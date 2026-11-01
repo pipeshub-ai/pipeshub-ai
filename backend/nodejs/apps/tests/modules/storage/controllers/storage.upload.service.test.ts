@@ -8,6 +8,7 @@ import { BadRequestError, InternalServerError, NotFoundError } from '../../../..
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { useInertWriteState } from '../../../support/inert-write-state'
 
 // The repository reloads the row it updates, so create and findOne answer with the same object.
 const stubDocumentStore = (doc: any) => {
@@ -16,6 +17,7 @@ const stubDocumentStore = (doc: any) => {
 }
 
 describe('UploadDocumentService', () => {
+  useInertWriteState()
   let mockAdapter: any
   let mockKeyValueStoreService: any
   let mockDefaultConfig: any
@@ -557,6 +559,38 @@ describe('UploadDocumentService', () => {
   describe('uploadDocument - direct upload for large files', () => {
     // 11 MB > 10 MB cutoff so the code routes through the presigned-URL path
     const LARGE_SIZE = 11 * 1024 * 1024
+
+    for (const vendor of [StorageVendor.S3, StorageVendor.AzureBlob]) {
+      it(`records the configured vendor on the placeholder of a ${vendor} direct upload`, async () => {
+        const placeholderDoc: any = {
+          _id: 'doc-43',
+          documentName: 'big',
+          documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+          isVersionedFile: false,
+          save: sinon.stub().resolves(),
+        }
+        stubDocumentStore(placeholderDoc)
+        mockAdapter.generatePresignedUrlForDirectUpload.resolves({ statusCode: 200, data: { url: 'https://store.example/presigned?x=1' } })
+        const service = new UploadDocumentService(
+          mockAdapter,
+          { buffer: Buffer.from('x'), originalname: 'big.pdf', size: LARGE_SIZE, mimetype: 'application/pdf' } as any,
+          vendor,
+          mockKeyValueStoreService,
+          mockDefaultConfig,
+        )
+        const req = {
+          user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+          body: { documentName: 'big', documentPath: 'Finance', extension: 'pdf', isVersionedFile: false },
+        } as any
+        const res = { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as any
+
+        await service.uploadDocument(req, res, sinon.stub())
+
+        const created = (DocumentModel.create as sinon.SinonStub).firstCall.args[0]
+        const row = Array.isArray(created) ? created[0] : created
+        expect(row.storageVendor).to.equal(vendor)
+      })
+    }
 
     it('should strip stored orgId/PipesHub prefix before generating presigned URL', async () => {
       // Placeholder comes back already carrying the persisted full path

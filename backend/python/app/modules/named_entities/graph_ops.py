@@ -116,6 +116,7 @@ FOR n IN {_COLLECTION}
 ALIAS_CYPHER = f"""
 MATCH (n:{_LABEL} {{id: $key}})
 WHERE n.orgId = $orgId AND n.kind = $kind
+  AND any(normalized IN $normalized WHERE NOT normalized IN coalesce(n.normalizedAliases, []))
 SET n._aliasLock = true
 WITH n, coalesce(n.aliases, []) AS displays, coalesce(n.normalizedAliases, []) AS normals
 WITH n, displays, normals,
@@ -154,13 +155,40 @@ SKIP $skip LIMIT $limit
 ENTITIES_BY_IDS_AQL = f"""
 FOR n IN {_COLLECTION}
   FILTER n._key IN @ids AND n.orgId == @orgId
-  RETURN {{ id: n._key, kind: n.kind, name: n.name, normKey: n.normKey }}
+  RETURN {{ id: n._key, kind: n.kind, name: n.name, normKey: n.normKey, normalizedAliases: n.normalizedAliases }}
 """
 
 ENTITIES_BY_IDS_CYPHER = f"""
 MATCH (n:{_LABEL})
 WHERE n.id IN $ids AND n.orgId = $orgId
-RETURN n.id AS id, n.kind AS kind, n.name AS name, n.normKey AS normKey
+RETURN n.id AS id, n.kind AS kind, n.name AS name, n.normKey AS normKey, n.normalizedAliases AS normalizedAliases
+"""
+
+# Nodes that carry ``key`` as an alias without it being their own key ("pinecrest"
+# on "Pinecrest Hospitality"), at most ``limit`` per pair, on the alias index.
+ALIAS_CARRIERS_AQL = f"""
+FOR p IN @pairs
+  LET found = (
+    FOR n IN {_COLLECTION}
+      FILTER n.orgId == @orgId AND n.kind == p.kind AND p.key IN n.normalizedAliases[*]
+      FILTER n.normKey != p.key AND n.mergedInto == null
+      LIMIT @limit
+      RETURN n
+  )
+  FOR n IN found
+    RETURN {{ key: p.key, id: n._key, kind: n.kind, name: n.name, normKey: n.normKey }}
+"""
+
+ALIAS_CARRIERS_CYPHER = f"""
+UNWIND $pairs AS p
+CALL {{
+  WITH p
+  MATCH (a:TaxonomyAlias {{orgId: $orgId, collection: p.partition, normalized: p.key}})-[:ALIAS_OF]->(n:{_LABEL})
+  WHERE n.orgId = $orgId AND n.kind = p.kind AND n.normKey <> p.key AND n.mergedInto IS NULL
+  RETURN n
+  LIMIT $limit
+}}
+RETURN p.key AS key, n.id AS id, n.kind AS kind, n.name AS name, n.normKey AS normKey
 """
 
 # A name followed by more words ("sam" -> "sam lee", never "samsung"): keys after
@@ -211,6 +239,23 @@ MATCH (r:{_RECORD_LABEL})-[e:{_REL}]->(n:{_LABEL})
 WHERE r.id IN $recordIds AND n.id IN $entityIds AND e.orgId = $orgId
 RETURN r.id AS recordId, n.id AS entityId, e.blockIndexes AS blockIndexes,
        e.extractedNames AS extractedNames, e.mentionCount AS mentionCount
+"""
+
+# Every named entity the given records mention, walked from the records' side of the
+# edge index. A merged node is left out: its mentions moved to the node it merged into.
+MENTIONS_FROM_RECORDS_AQL = f"""
+FOR recordId IN @recordIds
+  FOR e IN {_EDGE}
+    FILTER e._from == CONCAT("{_RECORDS}/", recordId) AND e.orgId == @orgId
+    LET node = DOCUMENT(e._to)
+    FILTER node != null AND node.mergedInto == null
+    RETURN {{recordId: recordId, entityId: node._key, kind: node.kind, extractedNames: e.extractedNames}}
+"""
+
+MENTIONS_FROM_RECORDS_CYPHER = f"""
+MATCH (r:{_RECORD_LABEL})-[e:{_REL}]->(n:{_LABEL})
+WHERE r.id IN $recordIds AND e.orgId = $orgId AND n.mergedInto IS NULL
+RETURN r.id AS recordId, n.id AS entityId, n.kind AS kind, e.extractedNames AS extractedNames
 """
 
 # ``e._to IN`` is served by the edge index; a key computed from ``_to`` would scan
@@ -578,6 +623,21 @@ SET r.attempts = CASE WHEN coalesce(r.reextract, false) THEN r.attempts ELSE 0 E
 RETURN r.dueAt AS dueAt
 """
 
+# A reprojection (an operator writing every stored extraction again) is a persist
+# retry that nothing failed: due now, no failure counted. A record that already has
+# a pending retry or re-extraction keeps it, since that writes the record anyway.
+SCHEDULE_REPROJECT_AQL = f"""
+INSERT {{ _key: @recordId, orgId: @orgId, recordId: @recordId, attempts: 0, dueAt: @now,
+         lastError: "reproject", createdAtTimestamp: @now, updatedAtTimestamp: @now }}
+INTO {_RETRIES} OPTIONS {{ overwriteMode: "ignore" }}
+"""
+
+SCHEDULE_REPROJECT_CYPHER = f"""
+MERGE (r:{_RETRY_LABEL} {{id: $recordId}})
+ON CREATE SET r.orgId = $orgId, r.recordId = $recordId, r.attempts = 0, r.dueAt = $now,
+              r.lastError = "reproject", r.createdAtTimestamp = $now, r.updatedAtTimestamp = $now
+"""
+
 DUE_RETRIES_AQL = f"""
 FOR r IN {_RETRIES}
   FILTER r.dueAt <= @now AND (r.reextract == true) == @reextract
@@ -820,6 +880,21 @@ class NamedEntityGraph:
         statement = KEY_PREFIX_AQL if self._dialect == "arango" else KEY_PREFIX_CYPHER
         return _unwrap(await self._execute(statement, binds))
 
+    async def alias_carriers(self, org_id: str, pairs: list[tuple[str, str]], limit: int) -> list[dict]:
+        """Nodes carrying each ``(kind, key)``'s key as an alias other than their own key;
+        at most ``limit`` per pair, each row tagged with the ``key``."""
+        if not pairs:
+            return []
+        binds = {
+            "orgId": org_id,
+            "limit": max(1, limit),
+            "pairs": [
+                {"kind": kind, "key": key, "partition": alias_partition(kind)} for kind, key in dict.fromkeys(pairs)
+            ],
+        }
+        statement = ALIAS_CARRIERS_AQL if self._dialect == "arango" else ALIAS_CARRIERS_CYPHER
+        return _unwrap(await self._execute(statement, binds))
+
     async def mentions_in_records(self, org_id: str, entity_ids: list[str], record_ids: list[str]) -> list[dict]:
         if not entity_ids or not record_ids:
             return []
@@ -829,6 +904,13 @@ class NamedEntityGraph:
             "recordIds": list(dict.fromkeys(record_ids)),
         }
         statement = MENTIONS_IN_RECORDS_AQL if self._dialect == "arango" else MENTIONS_IN_RECORDS_CYPHER
+        return _unwrap(await self._execute(statement, binds))
+
+    async def mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        if not record_ids:
+            return []
+        binds = {"orgId": org_id, "recordIds": list(dict.fromkeys(record_ids))}
+        statement = MENTIONS_FROM_RECORDS_AQL if self._dialect == "arango" else MENTIONS_FROM_RECORDS_CYPHER
         return _unwrap(await self._execute(statement, binds))
 
     async def values_in_records(
@@ -1070,6 +1152,10 @@ class NamedEntityGraph:
         binds = {"orgId": org_id, "recordId": record_id, "now": now}
         await self._write(SCHEDULE_REEXTRACT_AQL if self._dialect == "arango" else SCHEDULE_REEXTRACT_CYPHER, binds)
 
+    async def schedule_reproject(self, org_id: str, record_id: str, now: int) -> None:
+        binds = {"orgId": org_id, "recordId": record_id, "now": now}
+        await self._write(SCHEDULE_REPROJECT_AQL if self._dialect == "arango" else SCHEDULE_REPROJECT_CYPHER, binds)
+
     async def due_persist_retries(self, now: int, limit: int, *, reextract: bool = False) -> list[dict[str, Any]]:
         binds = {"now": now, "limit": max(1, limit), "reextract": reextract}
         statement = DUE_RETRIES_AQL if self._dialect == "arango" else DUE_RETRIES_CYPHER
@@ -1182,6 +1268,11 @@ class NamedEntityGraphMixin:
     async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
         return await self._named_entity_graph().by_ids(org_id, ids)
 
+    async def find_named_entities_by_alias(
+        self, org_id: str, pairs: list[tuple[str, str]], limit: int = 3
+    ) -> list[dict]:
+        return await self._named_entity_graph().alias_carriers(org_id, pairs, limit)
+
     async def find_named_entities_by_key_prefix(
         self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
     ) -> list[dict]:
@@ -1196,6 +1287,9 @@ class NamedEntityGraphMixin:
         self, org_id: str, query: NamedEntityQueryLike | None, record_ids: list[str], per_record: int = 10,
     ) -> dict[str, list[str]]:
         return await self._named_entity_graph().values_in_records(org_id, query, record_ids, per_record)
+
+    async def get_named_entity_mentions_from_records(self, org_id: str, record_ids: list[str]) -> list[dict]:
+        return await self._named_entity_graph().mentions_from_records(org_id, record_ids)
 
     async def add_named_entity_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
@@ -1237,6 +1331,11 @@ class NamedEntityGraphMixin:
             org_id, record_id, error, get_epoch_timestamp_in_ms(), PERSIST_RETRY_BASE_MS, PERSIST_RETRY_MAX_MS,
             attempts_so_far,
         )
+
+    async def schedule_named_entity_reproject(self, org_id: str, record_id: str) -> None:
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        await self._named_entity_graph().schedule_reproject(org_id, record_id, get_epoch_timestamp_in_ms())
 
     async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
         from app.utils.time_conversion import get_epoch_timestamp_in_ms

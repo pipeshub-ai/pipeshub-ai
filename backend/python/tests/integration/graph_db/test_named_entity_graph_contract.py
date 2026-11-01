@@ -198,6 +198,36 @@ async def test_aliases_are_partitioned_per_kind(graph) -> None:
     assert await provider.find_named_entities(f"{org_id}-other", "organization", ["acme corp"]) == []
 
 
+async def test_a_learned_alias_is_found_on_the_one_node_that_carries_it(graph) -> None:
+    provider, org_id, _ = graph
+    full, short = _org(org_id, "Pinecrest Hospitality"), _org(org_id, "Pinecrest")
+    now = get_epoch_timestamp_in_ms()
+    await provider.create_named_entities_if_absent([node_document(org_id, item, now) for item in (full, short)])
+    await provider.add_named_entity_aliases(org_id, "organization", full.graph_key, ["Pinecrest"], ["pinecrest"])
+
+    rows = await provider.find_named_entities_by_alias(
+        org_id, [("organization", "pinecrest"), ("organization", "pinecrest hospitality"), ("product", "pinecrest")],
+    )
+    # The short node's own key is not an alias of it; only the full node carries "pinecrest".
+    assert [(row["key"], row["id"]) for row in rows] == [("pinecrest", full.graph_key)]
+    (by_id,) = await provider.get_named_entities_by_ids(org_id, [full.graph_key])
+    assert set(by_id["normalizedAliases"]) == {"pinecrest hospitality", "pinecrest"}
+    assert await provider.find_named_entities_by_alias(f"{org_id}-other", [("organization", "pinecrest")]) == []
+
+
+async def test_a_reprojection_is_due_now_counts_no_failure_and_keeps_a_pending_job(graph) -> None:
+    provider, org_id, _ = graph
+    await provider.schedule_named_entity_reproject(org_id, f"{org_id}-r1")
+    await provider.schedule_named_entity_reextract(org_id, f"{org_id}-r2")
+    await provider.schedule_named_entity_reproject(org_id, f"{org_id}-r2")
+
+    due = {row["recordId"]: row for row in await provider.get_due_named_entity_persist_retries(10)}
+    assert due[f"{org_id}-r1"]["attempts"] == 0
+    # The pending re-extraction is untouched: still a re-extraction job.
+    assert f"{org_id}-r2" not in due
+    assert f"{org_id}-r2" in {row["recordId"] for row in await provider.get_due_named_entity_persist_retries(10, reextract=True)}
+
+
 async def test_range_and_overlap_queries_return_the_same_records(graph) -> None:
     provider, org_id, _ = graph
     first, second = await _records(provider, org_id, 2)
@@ -1230,3 +1260,29 @@ async def test_mentions_in_records_are_the_named_records_edges_only(graph) -> No
     assert all(row["extractedNames"] and row["mentionCount"] == 1 for row in rows)
     assert await provider.get_named_entity_mentions_in_records(f"{org_id}-other", [acme.graph_key], [first]) == []
     assert await provider.get_named_entity_mentions_in_records(org_id, [], [first]) == []
+
+
+async def test_mentions_from_records_list_every_live_entity_of_only_those_records(graph) -> None:
+    """The co-mention tool counts over these rows, so they must come only from the
+    records passed, from this org, and never from a merged node."""
+    provider, org_id, backend = graph
+    first, second, other = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme, globex, initech = _org(org_id, "Acme"), _org(org_id, "Globex"), _org(org_id, "Initech")
+    await writer.write(org_id, first, [acme, globex])
+    await writer.write(org_id, second, [acme, initech])
+    await writer.write(org_id, other, [globex])
+
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [first, second])
+    seen = {(row["recordId"], row["entityId"], row["kind"]) for row in rows}
+    assert seen == {
+        (first, acme.graph_key, "organization"), (first, globex.graph_key, "organization"),
+        (second, acme.graph_key, "organization"), (second, initech.graph_key, "organization"),
+    }
+    assert all(row["extractedNames"] for row in rows)
+    assert await provider.get_named_entity_mentions_from_records(f"{org_id}-other", [first, second]) == []
+    assert await provider.get_named_entity_mentions_from_records(org_id, []) == []
+
+    await _merge(provider, backend, initech.graph_key, acme.graph_key)
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [second])
+    assert {row["entityId"] for row in rows} == {acme.graph_key}

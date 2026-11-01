@@ -281,11 +281,11 @@ pytest -m "integration and not slow" -v             # exclude slow
 
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
-four shards (`CONN_SHARD_1` … `CONN_SHARD_4`), and a fifth `core` shard runs
-everything those four do not name, plus the browser tests. A sixth `demo` shard
+five shards (`CONN_SHARD_1` … `CONN_SHARD_5`), and a sixth `core` shard runs
+everything those five do not name, plus the browser tests. A seventh `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. A seventh
+workspace has data of its own; `core` leaves the `demo` marker out. An eighth
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
@@ -295,8 +295,9 @@ against a local Ollama model in `integration-tests-ollama.yml`. Each shard
 brings up its own stack and runs both graph databases, so a shard's wall clock is
 roughly the sum of its two legs, and has to stay under the job's 300-minute timeout.
 
-Adding a connector means adding its marker to `CONN_SHARD_4`, the shard new
-connector suites go on (shards 1–3 are full). Connector
+Adding a connector means adding its marker to one of the `CONN_SHARD_*` lines.
+Put it on the shard with the most room that starts what the suite needs: the
+comment above those lines says which suites must stay on which shard. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that
@@ -329,9 +330,9 @@ job's summary lists each shard with the file that started it:
 - Unit tests, docs, other workflows and the helper unit tests (`unit/`) run no
   shard and need no approval. When `integration-tests/` changed, the helper unit
   tests run in the `it-fork` job instead.
-- Anything else, such as the Node API or shared Python code, runs all six.
+- Anything else, such as the Node API or shared Python code, runs all seven.
 
-The `it-all` label runs all six anyway. A push, the schedule and a manual run
+The `it-all` label runs all seven anyway. A push, the schedule and a manual run
 always run every shard. A new connector's marker goes in `CONNECTOR_SHARDS` in
 `scripts/pr_changes.py` as well as in `CONN_SHARD_N`; `python3 -m unittest
 discover -s scripts` fails until the two agree. A new connector code folder runs

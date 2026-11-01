@@ -47,6 +47,17 @@ _GATE_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 # Docling runs this model with 4 threads too (LayoutPredictor's default).
 _THREADS = int(os.environ.get("PDF_TABLE_MODEL_THREADS", "4"))
+_THREADS_EXPLICIT = "PDF_TABLE_MODEL_THREADS" in os.environ
+
+
+def _threads() -> int:
+    """ONNX intra-op threads: an explicit setting (0 included) wins, then the
+    value a parse-pool lane hands its worker, then the default."""
+    if _THREADS_EXPLICIT:
+        return _THREADS
+    lane = os.environ.get("PIPESHUB_LANE_THREADS", "")
+    return int(lane) if lane.isdigit() and int(lane) > 0 else _THREADS
+
 
 _lock = threading.Lock()
 _sessions: dict = {}
@@ -68,7 +79,7 @@ def _session(name: str) -> Optional["InferenceSession"]:
                     if path == "off":
                         path = None
                 opts = ort.SessionOptions()
-                opts.intra_op_num_threads = _THREADS
+                opts.intra_op_num_threads = _threads()
                 opts.inter_op_num_threads = 1
                 _sessions[name] = ort.InferenceSession(
                     path, opts, providers=["CPUExecutionProvider"]

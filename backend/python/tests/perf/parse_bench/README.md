@@ -143,3 +143,19 @@ whole tree, PSS, peak threads, parse workers, ONNX threads x workers, and for
 each parse worker its first and peak RSS and thread count), `cgroup`, `golden`.
 Per-worker peak RSS is the layout models' cost (G-11); run with
 `PDF_TABLE_MODEL=off` for the difference.
+
+## Lane and thread split flags
+
+- `--onnx-threads N` sets `PDF_TABLE_MODEL_THREADS` for the parse workers (they read it at import).
+- `--reserve-embedding` builds the governor as a deployment with local embedding does (its CPU
+  reservation comes off the quota, which can lower the number of parse workers).
+- `--only-path TEXT` keeps the corpus files whose path contains TEXT; the single-kind mixes
+  `docx`, `digital`, `scanned`, `tables`, `figures` run one kind (use them for one conversion or one long file).
+- `--scan-route layout` sends scanned PDFs to the layout analyzer instead of OCR (not a deployed route).
+- `--probe-only K` parses nothing and asks K parse workers what OpenCV decided about threads;
+  `--no-probe` skips the same question at the end of a normal run.
+- The result's `metrics.cores` has cores used (CPU seconds of the process and all descendants,
+  read from `/proc`, divided by the window), and `metrics.workers.per_worker` has each worker's
+  threads, `cv2.getNumThreads()`, and its RSS at 0/10/20/30 s with the growth after 20 s.
+  `raster_children` are the raster processes inside a parse worker.
+- Profiles `workset60` and `workset300` hold one 60- or 300-page file per page-heavy kind.

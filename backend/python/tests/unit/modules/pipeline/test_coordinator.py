@@ -415,3 +415,23 @@ async def test_a_revision_is_seen_once_its_external_prerequisite_is_recorded() -
     await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="newRecord")
     assert await h.coordinator.has_seen_revision(VRID, REV) is True
     assert await h.coordinator.has_seen_revision(VRID, "another-rev") is False
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_stage_is_left_for_a_redrive_and_its_siblings_still_run() -> None:
+    registry = _classify_after_embed()
+    registry.register(_stage("entities", "embed"))
+    h = _Harness(registry)
+
+    dispatched = await h.coordinator.on_external_done(
+        "embed", _view(), priority=Priority.BULK, trigger="newRecord", defer=frozenset({"classify"})
+    )
+
+    assert dispatched == [f"{VRID}:{REV}:entities@1"]
+    assert h.status("classify") is None
+    assert h.headlines.writes == []
+    # First use: an unforced redrive dispatches it from the embed state.
+    assert await h.coordinator.redrive_revision(
+        VRID, REV, ["classify"], priority=Priority.INTERACTIVE, force=False
+    ) == [f"{VRID}:{REV}:classify@1"]
+    assert StageJob.model_validate(h.producer.jobs("pipeline.classify")[-1]).force is False

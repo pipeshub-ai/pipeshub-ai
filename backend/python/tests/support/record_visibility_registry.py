@@ -140,6 +140,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_named_entity_mentions_in_records": (
         Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
     ),
+    "get_named_entity_mentions_from_records": (
+        Rule.ALL, _STRUCTURE + "; find_co_mentioned_entities passes only records list_accessible_entity_records returned",
+    ),
     "get_named_entity_values_in_records": (
         Rule.ALL, _STRUCTURE + "; find_records_by_value passes only records it already permission-checked",
     ),

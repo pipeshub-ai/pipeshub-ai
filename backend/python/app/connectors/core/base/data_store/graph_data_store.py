@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import functools
 import logging
 import random
@@ -126,6 +127,19 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+# False while retry_on_deadlock still has an attempt left after the current one.
+_ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "retry_on_deadlock_on_last_attempt", default=True
+)
+
+
+def will_retry(instance: object, exception: Exception) -> bool:
+    """Whether the retry_on_deadlock call this runs in will run again after this
+    failure. A handler inside one logs such a failure as a warning: the decorator
+    reports each retry, and an error there alerted on syncs that then succeeded."""
+    return not _ON_LAST_ATTEMPT.get() and _is_retryable(instance, exception)
+
+
 def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
     Decorator that retries an async function on deadlocks and write conflicts.
@@ -155,6 +169,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
             logger = logging.getLogger(func.__module__)
             last_exception = None
             for attempt in range(max_retries):
+                last_attempt = _ON_LAST_ATTEMPT.set(attempt == max_retries - 1)
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -177,6 +192,8 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
+                finally:
+                    _ON_LAST_ATTEMPT.reset(last_attempt)
 
             raise last_exception
         return wrapper

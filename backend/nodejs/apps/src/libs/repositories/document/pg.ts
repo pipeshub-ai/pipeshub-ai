@@ -8,6 +8,7 @@ import {
   ConflictError,
   InternalServerError,
 } from '../../errors/http.errors';
+import { ownUnit } from './token-unit';
 import { stripNul } from '../nul';
 import {
   Params,
@@ -19,7 +20,10 @@ import {
   oidsOf,
 } from '../pg-util';
 import type { Tx as PgKernelTx } from '../../db';
-import type { StorageVendor } from '../../../modules/storage/types/storage.service.types';
+import type {
+  FingerprintState,
+  StorageVendor,
+} from '../../../modules/storage/types/storage.service.types';
 import type {
   ArtifactFence,
   ConnectorScope,
@@ -31,7 +35,7 @@ import type {
   NewDocument,
   UpdateOptions,
 } from './types';
-import { ENVELOPE_PREFIXES } from './types';
+import { DocumentBusy, ENVELOPE_PREFIXES } from './types';
 
 interface Row {
   id: string;
@@ -73,6 +77,15 @@ const COLS = `id, org_id, document_name, alternate_document_name, document_path,
   initiator_user_id, initiator_unset, size_in_bytes, mime_type, extension, version_history, custom_metadata, current_version, tags, deleted_by_user_id,
   is_deleted, s3, azure_blob, local, storage_vendor, idempotency_key, idempotency_fingerprint, upload_lease_token,
   upload_lease_expires_at, awaiting_direct_upload, artifact_set, retired_at, version, created_at, updated_at`;
+/** Writers in flight on one document (a 65th gets `DocumentBusy`). */
+const MAX_WRITERS = 64;
+const NOW_MS = `(extract(epoch FROM clock_timestamp())*1000)::bigint`;
+const toNumber = (v: unknown): number => Number(v);
+const writersOf = (v: unknown): { t: string; until: number }[] =>
+  (Array.isArray(v) ? (v as { t: string; until: unknown }[]) : []).map((w) => ({
+    t: w.t,
+    until: Number(w.until),
+  }));
 const TREE_COLS =
   'id, document_path, document_name, extension, is_versioned_file, version_history';
 const NO_INITIATOR = '000000000000000000000000';
@@ -486,6 +499,223 @@ export class PgDocumentRepository implements DocumentRepository {
         p.values,
       );
       return rows[0] ? docOf(rows[0]) : null;
+    });
+  }
+
+  async beginWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<{ writeSeq: number } | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return ownUnit(orgId, true, async (k) => {
+      // prune expired tokens only, cap the live ones, add this one and bump: one statement
+      const begun = await k.query<{ write_seq: string }>(
+        fill(
+          `/* pipeshub:content.document_begin_write */ WITH c AS (SELECT @{NOW} AS n)
+          UPDATE content.documents d SET write_seq = d.write_seq + 1,
+            writers = COALESCE((SELECT jsonb_agg(w) FROM jsonb_array_elements(d.writers) w WHERE (w->>'until')::bigint >= c.n), '[]'::jsonb)
+              || jsonb_build_array(jsonb_build_object('t', $3::text, 'until', c.n + $4::bigint))
+          FROM c WHERE d.org_id = $1 AND d.id = $2
+            AND (SELECT count(*) FROM jsonb_array_elements(d.writers) w WHERE (w->>'until')::bigint >= c.n) < @{MAX}
+          RETURNING d.write_seq`,
+          { NOW: NOW_MS, MAX: String(MAX_WRITERS) },
+        ),
+        [k.orgId, oid, token, windowMs],
+      );
+      if (begun.rows[0]) return { writeSeq: toNumber(begun.rows[0].write_seq) };
+      const there = await k.query(
+        '/* pipeshub:content.document_begin_write_exists */ SELECT 1 FROM content.documents WHERE org_id = $1 AND id = $2',
+        [k.orgId, oid],
+      );
+      if (there.rows.length > 0) throw new DocumentBusy();
+      return null;
+    });
+  }
+
+  async renewWrite(
+    orgId: string,
+    id: string,
+    token: string,
+    windowMs: number,
+  ): Promise<void> {
+    const oid = oidOf(id);
+    if (!oid) return;
+    await ownUnit(orgId, true, async (k) => {
+      // The WHERE makes a renew on an empty list or after the token's end a no-op that does not rewrite the row; COALESCE because
+      // jsonb_agg over no rows is NULL; GREATEST so a delayed older renew cannot shorten a token.
+      await k.query(
+        fill(
+          `/* pipeshub:content.document_renew_write */ WITH c AS (SELECT @{NOW} AS n)
+          UPDATE content.documents SET writers = COALESCE((SELECT jsonb_agg(CASE WHEN w->>'t' = $3 THEN
+              jsonb_set(w, '{until}', to_jsonb(GREATEST((w->>'until')::bigint, c.n + $4::bigint))) ELSE w END)
+            FROM jsonb_array_elements(writers) w), '[]'::jsonb)
+          FROM c WHERE org_id = $1 AND id = $2 AND writers @> jsonb_build_array(jsonb_build_object('t', $3::text))`,
+          { NOW: NOW_MS },
+        ),
+        [k.orgId, oid, token, windowMs],
+      );
+    });
+  }
+
+  async endWrite(orgId: string, id: string, token: string): Promise<void> {
+    const oid = oidOf(id);
+    if (!oid) return;
+    await ownUnit(orgId, true, async (k) => {
+      await k.query(
+        `/* pipeshub:content.document_end_write */ UPDATE content.documents SET write_seq = write_seq + 1,
+          writers = COALESCE((SELECT jsonb_agg(w) FROM jsonb_array_elements(writers) w WHERE w->>'t' <> $3), '[]'::jsonb)
+        WHERE org_id = $1 AND id = $2`,
+        [k.orgId, oid, token],
+      );
+    });
+  }
+
+  async bumpSeq(
+    orgId: string,
+    id: string,
+  ): Promise<{ writeSeq: number } | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return ownUnit(orgId, true, async (k) => {
+      const { rows } = await k.query<{ write_seq: string }>(
+        '/* pipeshub:content.document_bump_seq */ UPDATE content.documents SET write_seq = write_seq + 1 WHERE org_id = $1 AND id = $2 RETURNING write_seq',
+        [k.orgId, oid],
+      );
+      return rows[0] ? { writeSeq: toNumber(rows[0].write_seq) } : null;
+    });
+  }
+
+  async adoptDirectUpload(
+    orgId: string,
+    id: string,
+    size: number,
+  ): Promise<boolean> {
+    const oid = oidOf(id);
+    if (!oid) return false;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const r = await k.query(
+        '/* pipeshub:content.document_adopt_upload */ UPDATE content.documents SET awaiting_direct_upload = NULL, size_in_bytes = $3, write_seq = write_seq + 1 WHERE org_id = $1 AND id = $2 AND awaiting_direct_upload = true',
+        [k.orgId, oid, size],
+      );
+      return r.rowCount === 1;
+    });
+  }
+
+  async correctSize(
+    orgId: string,
+    id: string,
+    from: number | null | undefined,
+    to: number,
+  ): Promise<void> {
+    const oid = oidOf(id);
+    if (!oid) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      await k.query(
+        '/* pipeshub:content.document_correct_size */ UPDATE content.documents SET size_in_bytes = $4 WHERE org_id = $1 AND id = $2 AND size_in_bytes IS NOT DISTINCT FROM $3::bigint',
+        [k.orgId, oid, from ?? null, to],
+      );
+    });
+  }
+
+  async markAwaitingDirectUpload(
+    orgId: string,
+    id: string,
+    patch: DocumentPatch,
+  ): Promise<{ row: DocumentRow; writeSeq: number } | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      const p = new Params();
+      const org = p.add(k.orgId);
+      const rowId = p.add(oid);
+      const sets = setClauses(
+        p,
+        stripNul(patch as Record<string, unknown>, 'document', 'patch'),
+      );
+      sets.push(
+        'write_seq = write_seq + 1',
+        `updated_at = ${p.add(new Date())}`,
+      );
+      const { rows } = await k.query<Row & { write_seq: string }>(
+        fill(
+          `/* pipeshub:content.document_mark_awaiting */ UPDATE content.documents SET @{A}
+          WHERE org_id = @{B} AND id = @{C} RETURNING @{COLS}, write_seq`,
+          { A: sets.join(', '), B: org, C: rowId, COLS },
+        ),
+        p.values,
+      );
+      return rows[0]
+        ? { row: docOf(rows[0]), writeSeq: toNumber(rows[0].write_seq) }
+        : null;
+    });
+  }
+
+  async getWithFingerprintState(
+    orgId: string,
+    id: string,
+  ): Promise<
+    ({ row: DocumentRow; serverNow: number } & FingerprintState) | null
+  > {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<
+        Row & { write_seq: string; writers: unknown; server_now: string }
+      >(
+        fill(
+          `/* pipeshub:content.document_get_with_state */ SELECT @{COLS}, write_seq, writers, @{NOW} AS server_now
+          FROM content.documents WHERE org_id = $1 AND id = $2`,
+          { COLS, NOW: NOW_MS },
+        ),
+        [k.orgId, oid],
+      );
+      const r = rows[0];
+      return r
+        ? {
+            row: docOf(r),
+            serverNow: toNumber(r.server_now),
+            writeSeq: toNumber(r.write_seq),
+            writers: writersOf(r.writers),
+          }
+        : null;
+    });
+  }
+
+  async peekWriteState(
+    orgId: string,
+    id: string,
+  ): Promise<FingerprintState | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ write_seq: string; writers: unknown }>(
+        '/* pipeshub:content.document_peek_write_state */ SELECT write_seq, writers FROM content.documents WHERE org_id = $1 AND id = $2',
+        [k.orgId, oid],
+      );
+      const r = rows[0];
+      return r
+        ? { writeSeq: toNumber(r.write_seq), writers: writersOf(r.writers) }
+        : null;
+    });
+  }
+
+  async serverClockMs(): Promise<number> {
+    return inUnit(undefined, { write: false }, async (k) => {
+      const { rows } = await k.query<{ n: string }>(
+        fill(
+          '/* pipeshub:content.document_server_clock */ SELECT @{NOW} AS n',
+          { NOW: NOW_MS },
+        ),
+      );
+      return toNumber(rows[0]?.n);
     });
   }
 

@@ -29,6 +29,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -40,6 +41,7 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
+from app.utils.env_utils import env_positive_int
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -68,6 +70,9 @@ MAX_CONCURRENT_EMBEDDINGS = (
     if _ENV_MAX_CONCURRENT_EMBEDDINGS
     else _default_max_concurrent_embeddings()
 )
+MAX_EMBEDDING_REQUEST_BYTES = env_positive_int("EMBEDDING_SERVER_MAX_REQUEST_BYTES", 16 * 1024 * 1024)
+MAX_EMBEDDING_INPUTS = env_positive_int("EMBEDDING_SERVER_MAX_INPUTS", 2048)
+
 if MAX_CONCURRENT_EMBEDDINGS < 1:
     raise ValueError(
         f"EMBEDDING_SERVER_MAX_CONCURRENCY must be at least 1, got {MAX_CONCURRENT_EMBEDDINGS}"
@@ -783,6 +788,11 @@ def _normalize_input(raw: str | list[str]) -> list[str]:
         return [raw]
     if not raw:
         raise HTTPException(status_code=400, detail="'input' must not be empty")
+    if len(raw) > MAX_EMBEDDING_INPUTS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"'input' has {len(raw)} items; the limit is {MAX_EMBEDDING_INPUTS}.",
+        )
     return list(raw)
 
 
@@ -908,6 +918,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Size caps: refuse before the body is buffered. The indexing client sends at
+# most ~100k characters per request; the item cap matches the OpenAI limit.
+app.add_middleware(BodyLimitMiddleware, limits={"/v1/embeddings": MAX_EMBEDDING_REQUEST_BYTES})
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)

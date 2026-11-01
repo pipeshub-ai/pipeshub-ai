@@ -201,12 +201,12 @@ jobs:
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Four
+        # slow connector suites do not all serialize on one worker. Five
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
-        # CONN_SHARD_4 (one source of truth); "core" is everything those four
-        # and "demo" do not own, so the six partition -m "integration" exactly.
+        # CONN_SHARD_5 (one source of truth); "core" is everything those five
+        # and "demo" do not own, so the seven partition -m "integration" exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -218,11 +218,11 @@ jobs:
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
         # A pull request runs only the shards its changes can affect (the
-        # changes job above); it-all runs all six.
+        # changes job above); it-all runs all seven.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -487,24 +487,35 @@ jobs:
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these four and the `demo` shard do not own, built in the test step
+      # these five and the `demo` shard do not own, built in the test step
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~235 min (with servicenow's estimate), shard 3
-      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
-      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
-      # and shard 3 zammad (zammad-source). The two Google Drive suites have
-      # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on the lightest shard (outlook and then
-      # servicenow went on shard 2, which was lightest); check with scripts/shard_balance.py. The
-      # Gmail suites are on shard 2 too: they need the simulator image Jira's
-      # shard already builds, and no Google secrets.
-      # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or postgres or web or rss or local_fs or local_fs_sim or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      # one job, so a shard's wall clock is the sum of the two plus ~15 min of
+      # stack build and start-up, and the job times out at 300 min): shard 1
+      # ~238 min, shard 2 ~232 min, shard 3 ~230 min, shard 4 ~236 min,
+      # shard 5 ~238 min. Those totals count GitLab (shard 4) at ~33 min and
+      # Zendesk (shard 2) at ~15 min, what they take when they work; today
+      # their tests fail at setup and cost about a minute, so shards 2 and 4
+      # finish earlier until they are fixed. servicenow's 60 min (shard 2) is
+      # still an estimate.
+      # Shard 1 keeps nextcloud and bookstack, the only suites needing
+      # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
+      # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
+      # zendesk (its token is minted only there) and the Gmail suites (the
+      # Gmail simulator starts only there). Shard 3 keeps zammad
+      # (zammad-source), notion (notion-sim) and sharepoint_sim, whose
+      # simulator answers Microsoft's host names for the whole stack, so the
+      # live sharepoint and outlook suites must stay off shard 3. Jira and
+      # Confluence need the Atlassian simulators, which start on shards 2
+      # and 3 only. Shards 4 and 5 start nothing extra: google_drive_workspace
+      # alone is ~184 min, so it shares shard 5 with s3 only.
+      # Rebalance with scripts/shard_balance.py when a suite grows, and keep
+      # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
+      CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres"
+      CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear"
+      CONN_SHARD_5: "google_drive_workspace or s3"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -871,7 +882,8 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-5) MARKERS="$CONN_SHARD_5" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1076,7 +1088,8 @@ jobs:
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-5) MARKERS="$CONN_SHARD_5" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;

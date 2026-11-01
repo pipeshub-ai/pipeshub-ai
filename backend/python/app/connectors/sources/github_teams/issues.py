@@ -55,7 +55,16 @@ from app.models.entities import (
 )
 from app.connectors.utils.value_mapper import map_priority, map_type
 
-from .common.utils import epoch_ms_or_now, listing_payload, listing_since, sync_window_start
+from .common.utils import (
+    STALE_RESUME_STATUSES,
+    epoch_ms_or_now,
+    listing_payload,
+    listing_since,
+    relative_window,
+    resume_fields_to_clear,
+    resume_point,
+    sync_window_start,
+)
 from .constants import ISSUE_PAGE_SIZE
 from .models import GitHubLiterals, RecordUpdate
 
@@ -82,8 +91,6 @@ def _item_type_from_issue_type(issue_type: Any) -> str | None:
 
 # https://api.github.com/repos/{owner}/{repo}/issues/{number}
 _PARENT_ISSUE_URL_RE = re.compile(r"^https://[^/]+/repos/([^/]+)/([^/]+)/issues/(\d+)$")
-
-
 
 def _priority_from_issue_field_values(field_values: Any) -> str | None:
     """Structured Priority from the ``issue_field_values`` inlined on the
@@ -205,7 +212,14 @@ class IssuesSync:
         On a page failure the checkpoint is left untouched and the sweep stops.
         The checkpoint is committed only once the sweep completes, so a failure
         part-way is re-read from the old checkpoint next sync whatever the
-        order.
+        order. What it saves is the page it stopped at, so the next sync reads
+        on from there instead of from the first page: a listing longer than
+        one hour's rate limit would otherwise start over every hour and never
+        finish. Issues changed in between move to the front, past that place,
+        and are newer than the watermark, so the sync after picks them up. A
+        place without a cursor is a page number, so reading on starts a page
+        early: an issue removed from the pages already read would otherwise
+        move one onto them unread.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -217,9 +231,13 @@ class IssuesSync:
             # drop the watermark so turning issues back on reads them all again. The
             # total (0, as GitHub shows) marks the pull requests' files as settled.
             await c.issue_reconciler.remove_all(repo, group_id)
-            if (await self._read_checkpoint(group_id)).get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+            stored = await self._read_checkpoint(group_id)
+            if stored.get(GitHubLiterals.ISSUE_TOTAL.value) is None:
                 await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
-            await self._write_checkpoint(group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0})
+            # A saved listing place goes too: its earlier pages were just removed.
+            await self._write_checkpoint(
+                group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0, **resume_fields_to_clear(stored)},
+            )
             return True
 
         # Only the issues watermark: PRs page their own listing against their
@@ -242,12 +260,54 @@ class IssuesSync:
             else None
         )
         request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
+        since_ms = datetime_to_epoch_ms(request_since) if request_since else None
+        rolling = relative_window(c.sync_filters) if window_floor else None
 
         page = 1
         cursor: str | None = None
         created: set[int] = set()  # issues created since the last sync
+        created_before = 0  # counted by the interrupted listing this one reads on from
         processed = 0
         watermarks: dict[str, int] = {}
+        stored_page = 0  # the place this listing reads on from, if any
+        resume = resume_point(checkpoint, since_ms, rolling)
+        if resume is not None:
+            if resume.get(GitHubLiterals.RESUME_SINCE.value) != since_ms:
+                # A rolling window has moved on since the stop: read on with the start the
+                # listing began with, which GitHub's cursor and page offsets belong to.
+                since_ms = resume.get(GitHubLiterals.RESUME_SINCE.value)
+                request_since = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
+                window_dt = since_dt = window_floor = request_since + timedelta(seconds=1)
+            page = stored_page = resume[GitHubLiterals.RESUME_PAGE.value]
+            cursor = resume.get(GitHubLiterals.RESUME_CURSOR.value)
+            if cursor is None and page > 1:
+                # A page number is an offset: an issue removed from a page already read
+                # moves a later one onto it. Reading the page before again covers that.
+                page -= 1
+            created_before = resume.get(GitHubLiterals.RESUME_CREATED.value) or 0
+            if resume.get(GitHubLiterals.RESUME_WATERMARK.value):
+                watermarks[group_id] = resume[GitHubLiterals.RESUME_WATERMARK.value]
+            self.logger.info("Reading on with the issues of %s from page %s, where the last sync stopped",
+                             repo.full_name, page)
+        resumed_page = page if resume is not None else None
+
+        async def save_place() -> None:
+            # Never behind the stored place: a failure while re-reading the page before it
+            # would otherwise step the next sync back a page each time, towards page 1.
+            if (place := max(page, stored_page)) > 1:
+                await self._write_checkpoint(group_id, {
+                    GitHubLiterals.RESUME_PAGE.value: place,
+                    GitHubLiterals.RESUME_CURSOR.value: cursor,
+                    GitHubLiterals.RESUME_SINCE.value: since_ms,
+                    GitHubLiterals.RESUME_WATERMARK.value: watermarks.get(group_id),
+                    GitHubLiterals.RESUME_CREATED.value: created_before + len(created),
+                    GitHubLiterals.RESUME_WINDOW.value: rolling,
+                })
+
+        async def forget_place() -> None:
+            if cleared := resume_fields_to_clear(checkpoint):
+                await self._write_checkpoint(group_id, cleared)
+
         while True:
             issues_res = await c.runtime.ds_call(
                 c.data_source.list_issues, owner, repo_name,
@@ -259,6 +319,12 @@ class IssuesSync:
                     "Error fetching issues for %s (page %s): %s; not advancing the checkpoint "
                     "so this page is retried next sync.", repo.full_name, page, issues_res.error,
                 )
+                if page == resumed_page and issues_res.status_code in STALE_RESUME_STATUSES:
+                    self.logger.warning("GitHub no longer reads the saved place in the issues of %s; "
+                                        "the next sync lists them from the start.", repo.full_name)
+                    await forget_place()
+                else:
+                    await save_place()
                 return False
             listed = issues_res.data or []
             if not listed:
@@ -277,6 +343,7 @@ class IssuesSync:
                     "stays behind the failure instead of skipping past it.",
                     repo.full_name, page,
                 )
+                await save_place()
                 return False
             processed += len(items)
             created.update(
@@ -302,6 +369,7 @@ class IssuesSync:
                     "GitHub returned the same issues cursor twice for %s (page %s); stopping "
                     "without advancing the checkpoint.", repo.full_name, page,
                 )
+                await forget_place()  # a place that leads here would lead here again
                 return False
             cursor = next_cursor
             page += 1
@@ -320,7 +388,7 @@ class IssuesSync:
         # it (a relative window moves on its own) hides some: check by number instead.
         previous_total = checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value) if since_dt == checkpoint_dt else None
         ok, total = await self._reconcile_removed_issues(
-            repo, group_id, previous_total, len(created), datetime_to_epoch_ms(window_dt),
+            repo, group_id, previous_total, created_before + len(created), datetime_to_epoch_ms(window_dt),
         )
         # The watermark moves only with the total: the next count check adds the issues
         # created since the watermark to the stored total, so the two must stay paired.
@@ -328,6 +396,10 @@ class IssuesSync:
             new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]
         if total is not None:
             new_checkpoint[GitHubLiterals.ISSUE_TOTAL.value] = total
+        if ok:
+            # With the watermark. A failed check leaves the old watermark, so the next
+            # sync reads on from the saved place and checks again, not from page 1.
+            new_checkpoint.update(resume_fields_to_clear(checkpoint))
         if new_checkpoint != checkpoint:
             await self._write_checkpoint(group_id, new_checkpoint)
         return ok

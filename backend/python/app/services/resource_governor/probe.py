@@ -456,7 +456,7 @@ def _cgroup_v2_cpu_quota() -> float | None:
         quota_us, period_us = int(parts[0]), int(parts[1])
     except ValueError:
         return None
-    if period_us <= 0:
+    if period_us <= 0 or quota_us <= 0:
         return None
     return quota_us / period_us
 
@@ -515,15 +515,22 @@ def effective_cpu_source() -> str:
 
 
 def _resolve_cpu_quota() -> float:
+    """CPUs this container can burn, fractions kept (1.5 stays 1.5).
+
+    The smaller of the cgroup quota and the affinity mask, as in
+    ``effective_cpu_count``: with a larger quota than cpuset the quota can never
+    be reached, so utilisation divided by it would never exceed the cpuset
+    share and the utilisation brake could not fire. Ceilings floor this value
+    (``ceiling_cpus``); utilisation divides by it as is.
+    """
     quota = _cgroup_v2_cpu_quota()
+    if quota is None:
+        quota = _cgroup_v1_cpu_quota()
+    affinity = _affinity_cpu_count()
     if quota is not None:
-        return quota
-    quota = _cgroup_v1_cpu_quota()
-    if quota is not None:
-        return quota
-    count = _affinity_cpu_count()
-    if count:
-        return float(count)
+        return min(quota, float(affinity)) if affinity else quota
+    if affinity:
+        return float(affinity)
     count = os.cpu_count()
     return float(count) if count else 1.0
 

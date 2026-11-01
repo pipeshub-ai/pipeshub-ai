@@ -119,6 +119,13 @@ STORAGE_NODE = (
     "backend/nodejs/apps/package-lock.json",
     "backend/nodejs/apps/tsconfig.json",
     "backend/nodejs/apps/tsconfig.test.json",
+    # The document write state the storage server keeps (its unit of work, errors and
+    # org context), and the model and itest that prove it.
+    "backend/nodejs/apps/src/libs/db/uow.ts",
+    "backend/nodejs/apps/src/libs/errors/storage.errors.ts",
+    "backend/nodejs/apps/src/libs/context/**",
+    "backend/nodejs/apps/tests/storage/fingerprint-model/**",
+    "backend/nodejs/apps/tests/stores/storage-fingerprint.itest.ts",
 )
 
 
@@ -196,19 +203,19 @@ CODEQL_LANGUAGES = {
 
 IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 
-# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_4 in
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_5 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
     "connectors-1": (
-        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "postgres", "web", "rss", "local_fs",
-        "local_fs_sim", "github", "sharepoint",
+        "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "local_fs", "local_fs_sim", "github",
+        "sharepoint",
     ),
     "connectors-2": (
-        "gitlab", "jira", "linear", "azure_blob", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual",
-        "servicenow",
+        "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
     ),
-    "connectors-3": ("notion", "github_teams", "confluence", "s3", "gcs", "zammad", "sharepoint_sim"),
-    "connectors-4": ("google_drive_workspace", "google_drive_individual"),
+    "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres"),
+    "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear"),
+    "connectors-5": ("google_drive_workspace", "s3"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -325,13 +332,14 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
 }
 # Shards whose suites import a connector test folder's helpers, beyond the
 # folder's own: MinIO's tests build on S3's, the personal GitHub suite on GitHub
-# Teams' (which uses Jira's block parser), Gmail on Google Drive's sync helpers,
-# and the cleanup tests on core create MinIO, Postgres and S3 connectors.
+# Teams' (which, like GitLab's, uses Jira's block parser), Gmail and the individual
+# Google Drive suite on the workspace Drive suite's helpers, and the cleanup tests
+# on core create MinIO, Postgres and S3 connectors.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
-    "google_drive_workspace": ("connectors-2",),
-    "jira": ("connectors-1", "connectors-3"),
+    "google_drive_workspace": ("connectors-2", "connectors-4"),
+    "jira": ("connectors-1", "connectors-4"),
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),

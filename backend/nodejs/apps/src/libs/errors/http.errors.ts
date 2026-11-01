@@ -74,6 +74,12 @@ export class ConflictError extends HttpError {
   }
 }
 
+export class PreconditionFailedError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('PRECONDITION_FAILED', message, 412, metadata);
+  }
+}
+
 export class TooManyRequestsError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super(

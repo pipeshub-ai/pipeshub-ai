@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import zipfile
 from datetime import datetime, time
 from typing import Any
 
@@ -579,6 +580,11 @@ class ExcelParser:
             raise
         except LoaderFailure as failure:
             raise _loader_error(failure) from None
+        except zipfile.BadZipFile:
+            # A damaged file, or another format named .xlsx, which the worker hands back as is.
+            # As a 500 the indexer retried it as an outage, and every copy of the same bytes
+            # waited for the one before it to give up.
+            raise ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE) from None
         self.workbook = model
         self.logger.info(
             "Workbook loaded with %d sheets: %s (worker peak %d MB)",

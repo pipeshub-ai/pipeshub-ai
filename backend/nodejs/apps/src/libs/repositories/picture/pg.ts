@@ -2,6 +2,10 @@
 import { stripNul } from '../nul';
 import { assertOrg, inUnit, newObjectId, oidOf, oidsOf } from '../pg-util';
 import type { PictureDto, PictureRepository } from './types';
+import type { Tx } from '../uow';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importPictureDocs } from './pg-import';
 
 interface PictureRow {
   id: string;
@@ -24,7 +28,15 @@ const dto = (r: PictureRow, orgId: string): PictureDto => ({
   __v: r.version,
 });
 
-export class PgPictureRepository implements PictureRepository {
+export class PgPictureRepository implements PictureRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importPictureDocs(kernelTx(tx), collection, docs);
+  }
   async get(orgId: string, userId: string): Promise<PictureDto | null> {
     const uid = oidOf(userId);
     if (uid === undefined) return null;

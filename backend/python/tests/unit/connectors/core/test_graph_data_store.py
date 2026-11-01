@@ -19,6 +19,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphTransactionStore,
     _is_deadlock_error,
     retry_on_deadlock,
+    will_retry,
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -1332,6 +1333,76 @@ class TestRetryOnDeadlockDecorator:
         result = await my_func()
         assert result == "success"
         assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_will_retry_until_the_last_attempt(self) -> None:
+        """A handler inside the call can tell a failure the decorator runs again
+        from the one it raises, and outside any retried call nothing retries."""
+        seen = []
+
+        @retry_on_deadlock(max_retries=3)
+        async def my_func() -> Never:
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await my_func()
+        assert seen == [True, True, False]
+        assert will_retry(None, create_deadlock_error()) is False
+
+    @pytest.mark.asyncio
+    async def test_will_retry_is_false_for_a_failure_the_decorator_raises_at_once(self) -> None:
+        seen = []
+
+        @retry_on_deadlock()
+        async def my_func() -> Never:
+            error = ValueError("bad edge")
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(ValueError):
+            await my_func()
+        assert seen == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> None:
+            return None
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_that_fails_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> Never:
+            raise create_deadlock_error()
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            with contextlib.suppress(Exception):
+                await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
 
     @pytest.mark.asyncio
     async def test_retries_on_single_deadlock(self) -> None:

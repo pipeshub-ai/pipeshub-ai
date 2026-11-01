@@ -9,6 +9,8 @@ import type {
 } from '../../../src/libs/repositories/document';
 import { ConflictError } from '../../../src/libs/repositories/errors';
 import { StorageVendor } from '../../../src/modules/storage/types/storage.service.types';
+import { DocumentBusy } from '../../../src/libs/repositories/document/types';
+import { isSettled } from '../../../src/modules/storage/utils/storage-fingerprint';
 
 export interface HiddenState {
   writeSeq: number;
@@ -22,6 +24,15 @@ export interface DocumentFixture {
   setHiddenState(orgId: string, id: string, state: HiddenState): Promise<void>;
   /** Reads it back the same way. */
   getHiddenState(orgId: string, id: string): Promise<HiddenState>;
+  /**
+   * A value that changes when the stored row is rewritten (PostgreSQL: `xmin`). Optional: a store without one skips only the
+   * "row not rewritten" half of C10.
+   */
+  rowStamp?(orgId: string, id: string): Promise<string>;
+  /**
+   * Runs `body` while the caller holds an open unit of work of the store (a transaction), then rolls that unit back. Used by C13.
+   */
+  inCallerUnit?(orgId: string, body: () => Promise<void>): Promise<void>;
 }
 
 const HEX = /^[0-9a-f]{24}$/;
@@ -673,6 +684,285 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect((await repo.get(org, row._id))?.sizeInBytes).to.equal(1);
       expect(await fx.getHiddenState(org, row._id)).to.deep.equal({ writeSeq: 9, writers: [{ t: 'a', until: 1 }] });
       expect(JSON.stringify(await repo.get(org, row._id))).to.not.match(LEAK);
+    });
+  });
+
+  describe('document store contract (fingerprint)', () => {
+    const TOK = (n: string): string => `${n}-${fx.newId()}`;
+    const stateOf = (org: string, id: string) => repo.peekWriteState(org, id).then((x) => {
+      if (!x) throw new Error(`no row ${id}`);
+      return x;
+    });
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const tokens = (st: { writers: { t: string }[] }): string[] => st.writers.map((w) => w.t).sort();
+    const row = async (org: string) => repo.create(mk(org, { documentPath: `${org}/PipesHub/fp` }));
+    /** Waits (on the store's clock) until `until` has passed. */
+    const pastExpiry = async (until: number): Promise<void> => {
+      for (let i = 0; i < 100 && (await repo.serverClockMs()) <= until; i++) await sleep(25);
+    };
+
+    it('C1: 50 parallel begins get 50 distinct sequence numbers and 50 tokens; the 65th live writer is refused; 50 ends empty the list', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const toks = Array.from({ length: 50 }, () => TOK('p'));
+      const begun = await Promise.all(toks.map((t) => repo.beginWrite(org, r._id, t, 60_000)));
+      const seqs = begun.map((b) => b?.writeSeq);
+      expect(new Set(seqs).size).to.equal(50);
+      expect(Math.max(...(seqs as number[]))).to.equal(50);
+      expect(tokens(await stateOf(org, r._id))).to.deep.equal([...toks].sort());
+      await Promise.all(toks.map((t) => repo.endWrite(org, r._id, t)));
+      const after = await stateOf(org, r._id);
+      expect(after.writers).to.deep.equal([]);
+      expect(after.writeSeq).to.equal(100);
+
+      const full = await row(org);
+      const sixtyFour = Array.from({ length: 64 }, () => TOK('c'));
+      await Promise.all(sixtyFour.map((t) => repo.beginWrite(org, full._id, t, 60_000)));
+      let refused: unknown;
+      try {
+        await repo.beginWrite(org, full._id, TOK('65th'), 60_000);
+      } catch (e) {
+        refused = e;
+      }
+      expect(refused, 'the 65th concurrent writer').to.be.instanceOf(DocumentBusy);
+      const st = await stateOf(org, full._id);
+      expect(st.writers.length).to.equal(64);
+      expect(st.writeSeq, 'a refused begin wrote nothing').to.equal(64);
+    });
+
+    it('C2: A begins, B begins, B ends, A ends (and the other order): settled only after the last end', async () => {
+      for (const order of [['B', 'A'], ['A', 'B']]) {
+        const org = fx.newId();
+        const r = await row(org);
+        const t = { A: TOK('a'), B: TOK('b') } as Record<string, string>;
+        const [first, second] = order as [string, string];
+        await repo.beginWrite(org, r._id, t.A!, 60_000);
+        await repo.beginWrite(org, r._id, t.B!, 60_000);
+        await repo.endWrite(org, r._id, t[first]!);
+        const mid = await stateOf(org, r._id);
+        expect(isSettled(mid.writers, await repo.serverClockMs()), `after ${first} ended`).to.equal(false);
+        await repo.endWrite(org, r._id, t[second]!);
+        const end = await stateOf(org, r._id);
+        expect(isSettled(end.writers, await repo.serverClockMs())).to.equal(true);
+        expect(end.writeSeq).to.equal(4);
+      }
+    });
+
+    it('C3: ending A twice leaves B\'s token in place', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      const b = TOK('b');
+      await repo.beginWrite(org, r._id, a, 60_000);
+      await repo.beginWrite(org, r._id, b, 60_000);
+      await repo.endWrite(org, r._id, a);
+      await repo.endWrite(org, r._id, a);
+      const st = await stateOf(org, r._id);
+      expect(tokens(st)).to.deep.equal([b]);
+      expect(isSettled(st.writers, await repo.serverClockMs())).to.equal(false);
+    });
+
+    it('C4: bumpSeq during a write leaves the tokens unchanged', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      const begun = await repo.beginWrite(org, r._id, a, 60_000);
+      const before = await stateOf(org, r._id);
+      const bumped = await repo.bumpSeq(org, r._id);
+      expect(bumped?.writeSeq).to.equal((begun?.writeSeq ?? 0) + 1);
+      const after = await stateOf(org, r._id);
+      expect(after.writers).to.deep.equal(before.writers);
+      expect(await repo.bumpSeq(org, fx.newId())).to.equal(null);
+    });
+
+    it('C5: a writer that never ended stops counting once its window passed on the store clock; the next begin prunes it', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const crashed = TOK('x');
+      await repo.beginWrite(org, r._id, crashed, 300);
+      const live = await stateOf(org, r._id);
+      expect(isSettled(live.writers, await repo.serverClockMs())).to.equal(false);
+      await pastExpiry(live.writers[0]!.until);
+      expect(isSettled((await stateOf(org, r._id)).writers, await repo.serverClockMs())).to.equal(true);
+      const next = TOK('n');
+      await repo.beginWrite(org, r._id, next, 60_000);
+      expect(tokens(await stateOf(org, r._id))).to.deep.equal([next]);
+    });
+
+    it('C6: ending a pruned token still bumps the sequence and never errors; a missing row or another org is null', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const gone = TOK('gone');
+      await repo.beginWrite(org, r._id, gone, 200);
+      await pastExpiry((await stateOf(org, r._id)).writers[0]!.until);
+      await repo.beginWrite(org, r._id, TOK('later'), 60_000); // prunes `gone`
+      const before = (await stateOf(org, r._id)).writeSeq;
+      await repo.endWrite(org, r._id, gone);
+      expect((await stateOf(org, r._id)).writeSeq).to.equal(before + 1);
+      expect(await repo.beginWrite(org, fx.newId(), TOK('m'), 1000)).to.equal(null);
+      expect(await repo.beginWrite(fx.newId(), r._id, TOK('o'), 1000)).to.equal(null);
+      await repo.endWrite(org, fx.newId(), gone);
+      expect(await repo.peekWriteState(fx.newId(), r._id)).to.equal(null);
+    });
+
+    it('C7: adoptDirectUpload matches once under 20 parallel calls; correctSize is compare-and-set; markAwaitingDirectUpload moves path, flag, url and sequence together', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const marked = await repo.markAwaitingDirectUpload(org, r._id, {
+        documentPath: `${org}/PipesHub/awaiting`,
+        awaitingDirectUpload: true,
+        s3: { url: 'https://b.s3.us-east-1.amazonaws.com/k' },
+      });
+      expect(marked?.row.awaitingDirectUpload).to.equal(true);
+      expect(marked?.row.documentPath).to.equal(`${org}/PipesHub/awaiting`);
+      expect(marked?.row.s3?.url).to.equal('https://b.s3.us-east-1.amazonaws.com/k');
+      expect(marked?.writeSeq).to.equal(1);
+      expect(JSON.stringify(marked?.row)).to.not.match(/"(writeSeq|writers|write_seq)"/);
+      expect(await repo.markAwaitingDirectUpload(org, fx.newId(), { awaitingDirectUpload: true })).to.equal(null);
+      const results = await Promise.all(Array.from({ length: 20 }, () => repo.adoptDirectUpload(org, r._id, 5)));
+      expect(results.filter(Boolean).length).to.equal(1);
+      const adopted = await repo.get(org, r._id);
+      expect(adopted?.awaitingDirectUpload ?? false).to.equal(false);
+      expect(adopted?.sizeInBytes).to.equal(5);
+      expect((await stateOf(org, r._id)).writeSeq, 'one adoption, one bump').to.equal(2);
+      await repo.correctSize(org, r._id, 4, 9);
+      expect((await repo.get(org, r._id))?.sizeInBytes, 'a stale expectation changes nothing').to.equal(5);
+      await repo.correctSize(org, r._id, 5, 7);
+      expect((await repo.get(org, r._id))?.sizeInBytes).to.equal(7);
+      expect((await stateOf(org, r._id)).writeSeq, 'correctSize does not bump').to.equal(2);
+    });
+
+    it('C8: a slow writer\'s renewed token survives a fast writer; a renew of a pruned token does not bring it back', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const slow = TOK('slow');
+      const fast = TOK('fast');
+      await repo.beginWrite(org, r._id, slow, 400);
+      await repo.renewWrite(org, r._id, slow, 60_000);
+      await repo.beginWrite(org, r._id, fast, 60_000);
+      await repo.endWrite(org, r._id, fast);
+      expect(tokens(await stateOf(org, r._id))).to.deep.equal([slow]);
+
+      const pruned = TOK('pruned');
+      await repo.beginWrite(org, r._id, pruned, 150);
+      await pastExpiry((await stateOf(org, r._id)).writers.find((w) => w.t === pruned)!.until);
+      await repo.beginWrite(org, r._id, TOK('after'), 60_000); // prunes `pruned`
+      await repo.renewWrite(org, r._id, pruned, 60_000);
+      expect((await stateOf(org, r._id)).writers.map((w) => w.t)).to.not.include(pruned);
+      expect((await stateOf(org, r._id)).writers.map((w) => w.t)).to.include(slow);
+    });
+
+    it('C9: the store clock decides, not the pod clock (the pod clock one hour ahead)', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const t0 = Date.now();
+      const realNow = Date.now;
+      Date.now = () => realNow() + 3_600_000;
+      try {
+        await repo.beginWrite(org, r._id, TOK('skew'), 60_000);
+        const server = await repo.serverClockMs();
+        expect(Math.abs(server - t0), 'serverClockMs').to.be.lessThan(5000);
+      } finally {
+        Date.now = realNow;
+      }
+      const until = (await stateOf(org, r._id)).writers[0]!.until;
+      expect(until - t0, 'the token lapses a window after the STORE time').to.be.within(55_000, 65_000);
+    });
+
+    it('C10: renewing on an empty list is a no-op and does not rewrite the row', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      await repo.bumpSeq(org, r._id);
+      const stamp = await fx.rowStamp?.(org, r._id);
+      const before = await stateOf(org, r._id);
+      await repo.renewWrite(org, r._id, TOK('nobody'), 60_000);
+      expect(await stateOf(org, r._id)).to.deep.equal(before);
+      if (fx.rowStamp) expect(await fx.rowStamp(org, r._id), 'row rewritten').to.equal(stamp);
+    });
+
+    it('C11: renewing after the token ended does not bring it back or touch the others', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      const b = TOK('b');
+      await repo.beginWrite(org, r._id, a, 60_000);
+      await repo.beginWrite(org, r._id, b, 60_000);
+      await repo.endWrite(org, r._id, a);
+      const before = await stateOf(org, r._id);
+      await repo.renewWrite(org, r._id, a, 120_000);
+      expect(await stateOf(org, r._id)).to.deep.equal(before);
+      await repo.endWrite(org, r._id, b);
+      await repo.renewWrite(org, r._id, b, 120_000);
+      expect((await stateOf(org, r._id)).writers).to.deep.equal([]);
+    });
+
+    it('C12: a delayed older renew cannot shorten a token', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      await repo.beginWrite(org, r._id, a, 1000);
+      await repo.renewWrite(org, r._id, a, 120_000);
+      const longer = (await stateOf(org, r._id)).writers[0]!.until;
+      await repo.renewWrite(org, r._id, a, 100);
+      expect((await stateOf(org, r._id)).writers[0]!.until).to.equal(longer);
+    });
+
+    it('C13: a token begun while the caller\'s unit is open is visible at once and survives that unit\'s rollback', async function () {
+      if (!fx.inCallerUnit) return;
+      const org = fx.newId();
+      const r = await row(org);
+      const t = TOK('unit');
+      await fx.inCallerUnit(org, async () => {
+        const begun = await repo.beginWrite(org, r._id, t, 60_000);
+        expect(typeof begun?.writeSeq).to.equal('number');
+        // another connection (outside the caller's unit) sees it before that unit commits
+        expect(tokens(await stateOf(org, r._id))).to.deep.equal([t]);
+        await repo.renewWrite(org, r._id, t, 90_000);
+        await repo.bumpSeq(org, r._id);
+      });
+      const st = await stateOf(org, r._id);
+      expect(tokens(st), 'token lost with the rolled back unit').to.deep.equal([t]);
+      expect(st.writeSeq).to.equal(2);
+    });
+
+    it('getWithFingerprintState returns the row without the state, the counters, and the clock taken first', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      await repo.beginWrite(org, r._id, a, 60_000);
+      const t0 = await repo.serverClockMs();
+      const got = await repo.getWithFingerprintState(org, r._id);
+      expect(got?.row._id).to.equal(r._id);
+      expect(JSON.stringify(got?.row)).to.not.match(/"(writeSeq|writers|write_seq)"/);
+      expect(got?.writeSeq).to.equal(1);
+      expect(tokens(got!)).to.deep.equal([a]);
+      expect(got!.serverNow).to.be.within(t0 - 5000, t0 + 5000);
+      expect(await repo.getWithFingerprintState(org, fx.newId())).to.equal(null);
+      expect(await repo.getWithFingerprintState(fx.newId(), r._id)).to.equal(null);
+    });
+
+    it('the write-state calls leave updatedAt alone and return rows without the state (F15b)', async () => {
+      const org = fx.newId();
+      const r = await row(org);
+      const a = TOK('a');
+      const stamp = (await repo.get(org, r._id))?.updatedAt;
+      await repo.beginWrite(org, r._id, a, 60_000);
+      await repo.renewWrite(org, r._id, a, 60_000);
+      await repo.bumpSeq(org, r._id);
+      await repo.endWrite(org, r._id, a);
+      await repo.markAwaitingDirectUpload(org, r._id, { awaitingDirectUpload: true });
+      await repo.adoptDirectUpload(org, r._id, 3);
+      const after = await repo.get(org, r._id);
+      expect(JSON.stringify(after)).to.not.match(/"(writeSeq|writers|write_seq)"/);
+      expect(after?.updatedAt, 'only markAwaitingDirectUpload is a real document change').to.be.at.least(stamp ?? 0);
+      const org2 = fx.newId();
+      const r2 = await row(org2);
+      const s2 = (await repo.get(org2, r2._id))?.updatedAt;
+      await repo.beginWrite(org2, r2._id, a, 60_000);
+      await repo.renewWrite(org2, r2._id, a, 60_000);
+      await repo.bumpSeq(org2, r2._id);
+      await repo.endWrite(org2, r2._id, a);
+      expect((await repo.get(org2, r2._id))?.updatedAt).to.equal(s2);
     });
   });
 

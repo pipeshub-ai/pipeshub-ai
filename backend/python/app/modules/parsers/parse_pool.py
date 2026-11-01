@@ -42,6 +42,7 @@ from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parsers import parse_worker
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
+from app.services.resource_governor.lanes import parse_lanes_mode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
 from app.utils.user_errors import (
@@ -53,6 +54,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.modules.parsers.parse_pool_lanes import LanePool
     from app.services.resource_governor import ResourceGovernor
 
 T = TypeVar("T")
@@ -60,6 +62,7 @@ T = TypeVar("T")
 __all__ = [
     "ParseWorkerError",
     "parse_pool_workers",
+    "pool_stats",
     "run_blocking",
     "set_resource_governor",
     "should_offload",
@@ -107,7 +110,9 @@ class _PoolClosed(Exception):
 
 class _State:
     governor: ResourceGovernor | None = None
-    pool: _ParsePool | None = None
+    pool: _ParsePool | LanePool | None = None
+    # Chat attachments under PARSE_LANES=on: a pool of their own, outside the budget.
+    interactive_pool: LanePool | None = None
     lock = threading.Lock()
 
 
@@ -133,6 +138,10 @@ def parse_pool_workers() -> int:
     if governor is None or os.name != "posix":
         return 0
     cpu_bound_ceiling = max(1, governor.ceilings.heavy)
+    if parse_lanes_mode() == "on":
+        from app.modules.parsers import parse_pool_lanes
+
+        return parse_pool_lanes.pool_width(governor, cpu_bound_ceiling)
     configured = env_int(WORKERS_ENV, -1)
     if configured < 0:
         return max(1, min(DEFAULT_MAX_WORKERS, cpu_bound_ceiling // 2))
@@ -161,10 +170,12 @@ class _Job:
 class _Worker:
     """One parse worker process and the two pipes to it."""
 
-    def __init__(self) -> None:
+    def __init__(self, extra_env: dict[str, str] | None = None) -> None:
         request_r, request_w = os.pipe()
         reply_r, reply_w = os.pipe()
         env = dict(os.environ)
+        if extra_env:
+            env.update(extra_env)
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (_PYTHON_ROOT, env.get("PYTHONPATH")) if p
         )
@@ -253,8 +264,11 @@ class _Lane:
         if worker is not None:
             worker.stop()
 
+    def _new_worker(self) -> _Worker:
+        return _Worker()
+
     def _start_worker(self, job: _Job) -> _Worker:
-        worker = _Worker()
+        worker = self._new_worker()
         deadline = time.monotonic() + WORKER_START_SECONDS
         try:
             while not worker.reply_ready(_POLL_SECONDS):
@@ -386,10 +400,15 @@ class _ParsePool:
             thread.join(timeout=5)
 
 
-def _pool() -> _ParsePool | None:
+def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
     workers = parse_pool_workers()
     if workers <= 0:
         return None
+    governor = _State.governor
+    if governor is not None and parse_lanes_mode() == "on":
+        from app.modules.parsers import parse_pool_lanes
+
+        return parse_pool_lanes.get_pool(governor, interactive=interactive)
     with _State.lock:
         if _State.pool is None:
             _State.pool = _ParsePool(workers)
@@ -403,6 +422,7 @@ async def submit(
     label: str = "",
     size: int = 0,
     timeout: float | None = None,
+    interactive: bool = False,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -414,8 +434,12 @@ async def submit(
     seconds (``RECORD_PROCESSING_TIMEOUT`` when not given). Only this job
     fails. A thread cannot be stopped, so without a pool *timeout* is not
     enforced.
+
+    *interactive* (a chat attachment a person is waiting on) runs on a pool of
+    its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
+    it is ignored otherwise.
     """
-    pool = _pool()
+    pool = _pool(interactive=interactive)
     if pool is not None:
         try:
             return await pool.submit(_Job(fn, args, label, size, timeout))
@@ -475,10 +499,22 @@ def shutdown_parse_pool() -> bool:
     """Stop the workers, killing any job still running. True if a pool existed."""
     with _State.lock:
         pool, _State.pool = _State.pool, None
+        interactive, _State.interactive_pool = _State.interactive_pool, None
+    if interactive is not None:
+        interactive.shutdown()
     if pool is None:
-        return False
+        return interactive is not None
     pool.shutdown()
     return True
+
+
+def pool_stats() -> dict[str, object]:
+    """The pool gauges of ``/health`` under ``PARSE_LANES=on``; empty otherwise."""
+    if parse_lanes_mode() != "on":
+        return {}
+    from app.modules.parsers import parse_pool_lanes
+
+    return parse_pool_lanes.pool_stats()
 
 
 atexit.register(shutdown_parse_pool)

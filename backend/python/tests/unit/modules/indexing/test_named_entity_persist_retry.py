@@ -190,3 +190,18 @@ async def test_the_record_lease_is_released_whatever_the_retry_does(result):
         )
     pool, owner = manager.release.await_args.args
     assert pool == "record:r1" and owner == manager.try_acquire.await_args.args[1]
+
+
+async def test_the_rebuilt_record_reaches_the_reprojection_with_its_content_id() -> None:
+    # The real conversion: without the content id the reprojection read nothing, and every
+    # retry was cleared as "nothing to write" while the record kept its old entities.
+    record = {
+        "_key": "r1", "orgId": "o1", "recordName": "Doc", "recordType": "FILE", "externalRecordId": "e1",
+        "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "rev-a", "mimeType": "text/plain",
+    }
+    sink = MagicMock()
+    sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": {}})
+    sink.reproject_named_entities = AsyncMock(return_value="written")
+    assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
+    (ctx,), _ = sink.reproject_named_entities.await_args
+    assert ctx.record.virtual_record_id == "v1"
