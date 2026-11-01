@@ -171,7 +171,7 @@ jobs:
           cp "$RUNNER_TEMP/release/release.json" tmp-release/release.json
 
       - name: Run the release-changelog skill
-        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1
         env:
           # Read-only: this job has only read permissions.
           GH_TOKEN: ${{ github.token }}
