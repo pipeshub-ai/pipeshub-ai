@@ -5,8 +5,20 @@
  */
 import { assertOrg, inUnit } from '../pg-util';
 import type { ResetLinkRepository } from './types';
+import type { Tx } from '../uow';
+import { kernelTx } from '../pg';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importResetLinkDocs } from './pg-import';
 
-export class PgResetLinkRepository implements ResetLinkRepository {
+export class PgResetLinkRepository implements ResetLinkRepository, Importable {
+  /** The migration copy: see ./pg-import. */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importResetLinkDocs(kernelTx(tx), collection, docs);
+  }
   async claim(input: {
     linkHash: string;
     userId: string;

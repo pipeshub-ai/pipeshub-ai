@@ -23,6 +23,9 @@ import type {
   OrgRepository,
 } from './types';
 import type { Tx } from '../uow';
+import type { Importable, ImportStats, NeutralDoc } from '../import';
+import { importOrgDocs } from './pg-import';
+import { kernelTx } from '../pg';
 
 interface OrgRow {
   org_id: string;
@@ -76,7 +79,15 @@ function dto(r: OrgRow): OrgDto {
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
-export class PgOrgRepository implements OrgRepository {
+export class PgOrgRepository implements OrgRepository, Importable {
+  /** The migration copy: `org` and `org-logos` documents as they were stored (see ./pg-import.ts). */
+  importBatch(
+    collection: string,
+    docs: NeutralDoc[],
+    tx: Tx,
+  ): Promise<ImportStats> {
+    return importOrgDocs(kernelTx(tx), collection, docs);
+  }
   async count(): Promise<number> {
     return getIdentityPort().orgCount(false);
   }
