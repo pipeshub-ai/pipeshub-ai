@@ -660,6 +660,7 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
@@ -763,6 +764,7 @@ pull_request_record_schema = {
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
