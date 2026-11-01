@@ -251,6 +251,12 @@ regress other questions.
   database. For connectors with per-record permissions, candidates are
   paged and checked with `check_access` in batches, up to the scan cap. The
   total is exact when no cap was hit, and marked approximate when one was.
+- **The not-yet-classified seed** reads the `(orgId, extractionStatus)`
+  index on both backends (`record_org_extraction_status` in Neo4j,
+  `records_org_extraction_status` in ArangoDB, hinted there), created with
+  the other record indexes at startup. It reads stored statuses only: every
+  record write stores one, and a record with none is still judged unknown
+  wherever another seed reaches it.
 - **Indexes** back each stored field a query filters on (record org,
   connector, type and timestamps; ticket status, priority and resolved;
   deal amount and close date). They are added per backend with a migration,

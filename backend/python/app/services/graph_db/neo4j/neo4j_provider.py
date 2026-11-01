@@ -1369,6 +1369,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.orgId, n.recordGroupId, n.indexingStatus)"
         )
 
+        # COMPOSITE: orgId + extractionStatus. A record query seeded from a topic
+        # or an organisation also reads the org's records not classified yet
+        # (docs/record-query.md); with classify on first use that is most of
+        # the org, so it must seek, not scan the org's records.
+        indexes.append(
+            "CREATE INDEX record_org_extraction_status IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.extractionStatus)"
+        )
+
         # SINGLE: parsingStatus. The indexing service's stale-record recovery
         # pages on it every tick; unindexed, each tick scans every Record.
         indexes.append(
@@ -23401,14 +23410,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _with_pending(self, linked: str) -> str:
         """``linked``, clauses binding ``rec`` from ``ref``, joined with every
-        record of the org not classified yet, which no classification edge reaches."""
+        record of the org not classified yet, which no classification edge
+        reaches. The seed reads only stored statuses, which the
+        (orgId, extractionStatus) index serves; every record write stores one."""
         return f"""CALL {{
               WITH ref
               {linked}
               RETURN rec
               UNION
               WITH ref
-              MATCH (rec:Record) WHERE rec.orgId = $org_id AND {self._RECORD_QUERY_UNDECIDED}
+              MATCH (rec:Record) WHERE rec.orgId = $org_id AND rec.extractionStatus IN $undecided_extraction
               RETURN rec
             }}"""
 

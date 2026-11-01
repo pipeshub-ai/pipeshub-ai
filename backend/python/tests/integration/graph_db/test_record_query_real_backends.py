@@ -893,3 +893,53 @@ async def test_grouping_by_organisation_lists_unplaced_records_apart(seeded: Gra
         ("no_organization", 4), ("classification", 2), ("classification_failed", 1),
     ]
     assert sum(grp.count for grp in [*result.groups, *result.unassigned]) == result.total == 9
+
+
+def _operators(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    return [plan, *(op for child in plan.get("children", []) for op in _operators(child))]
+
+
+async def test_the_seed_of_records_not_classified_yet_reads_the_org_status_index(seeded: Graph) -> None:
+    """A topic seed also reads every record of the org not classified yet;
+    with classify on first use that is most of the org, so it must seek the
+    (orgId, extractionStatus) index instead of scanning the org's records."""
+    g = seeded
+    pushed = Pushdown(entities=[{"type": "topic", "id": g.topic}])
+    params = {"org_id": g.org, "connector_ids": g.connector_ids, "within": None, "completed": "COMPLETED",
+              "scan_cap": 1_000}
+    if isinstance(g.graph, Neo4jProvider):
+        for statement in g.graph._generate_performance_indexes():
+            if "extractionStatus" in statement:
+                await g.graph.client.execute_query(statement)
+        await g.graph.client.execute_query("CALL db.awaitIndexes(300)")
+        query, built = g.graph._record_query_cypher(pushed)
+        async with g.graph.client.driver.session(database=g.graph.client.database) as session:
+            summary = await (await session.run(f"EXPLAIN {query}", {**built, **params})).consume()
+        seeks = [op for op in _operators(summary.plan) if "IndexSeek" in op["operatorType"]]
+        assert any("extractionStatus" in op["args"].get("Details", "") for op in seeks), summary.plan
+    else:
+        client = g.graph.http_client
+        session = await client._get_session()
+        db = f"{client.base_url}/_db/{client.database}/_api/index"
+        async with session.get(db, params={"collection": C.RECORDS.value}) as resp:
+            existing = (await resp.json())["indexes"]
+        for index in existing:
+            # The hint names the index: one left on the same fields under another name would not serve it.
+            if index.get("fields") == ["orgId", "extractionStatus"] and index["name"] != "records_org_extraction_status":
+                async with session.delete(f"{db}/{index['id']}") as resp:
+                    assert resp.status == 200
+        assert await client.ensure_persistent_index(C.RECORDS.value, ["orgId", "extractionStatus"],
+                                                    name="records_org_extraction_status")
+        query, built = g.graph._record_query_aql(pushed)
+        used = {k: v for k, v in {**built, **params}.items() if f"@{k}" in query}
+        async with session.post(f"{client.base_url}/_db/{client.database}/_api/explain",
+                                json={"query": query, "bindVars": used}) as resp:
+            nodes = (await resp.json())["plan"]["nodes"]
+
+        def flat(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [n for node in nodes for n in [node, *flat(node.get("subquery", {}).get("nodes", []))]]
+
+        fields = [i["fields"] for n in flat(nodes) if n["type"] == "IndexNode" for i in n["indexes"]]
+        assert ["orgId", "extractionStatus"] in fields, fields
+    keys, _ = await _scan(g, pushed)
+    assert [k.id for k in keys] == [r["_key"] for r in _reference(g, pushed)]

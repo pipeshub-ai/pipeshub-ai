@@ -394,6 +394,7 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _RECORDS_ORG_KEY_INDEX = "records_org_key"
+_RECORDS_ORG_EXTRACTION_INDEX = "records_org_extraction_status"
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
@@ -1398,6 +1399,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["indexingStatus"],
+        )
+
+        # COMPOSITE: orgId + extractionStatus. A record query seeded from a topic
+        # or an organisation also reads the org's records not classified yet
+        # (docs/record-query.md); with classify on first use that is most of
+        # the org, so it must seek, not scan the org's records.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId", "extractionStatus"],
+            name=_RECORDS_ORG_EXTRACTION_INDEX,
         )
 
         # COMPOUND: records parked while their connector was off, read per
@@ -22448,8 +22459,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if seed.with_pending:
             # No classification edge reaches a record not classified yet.
             bind_vars["undecided_extraction"] = list(CLASSIFICATION_UNDECIDED)
-            pending = scanned(f"FOR rec IN {CollectionNames.RECORDS.value} FILTER rec.orgId == @org_id "
-                              f"AND {self._RECORD_QUERY_UNDECIDED}", repeats=False)
+            # Stored statuses only, which the (orgId, extractionStatus) index
+            # serves; every record write stores one. Hinted: the optimizer
+            # otherwise takes an orgId index and reads the whole org.
+            pending = scanned(
+                f'FOR rec IN {CollectionNames.RECORDS.value} OPTIONS {{indexHint: "{_RECORDS_ORG_EXTRACTION_INDEX}"}} '
+                "FILTER rec.orgId == @org_id AND rec.extractionStatus IN @undecided_extraction", repeats=False,
+            )
             keys = f"SLICE(UNION_DISTINCT({keys}, {pending}), 0, @scan_cap)"
         # One scan per query returning keys only; rows are read by id afterwards,
         # so no window re-runs the scan.
