@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import {
-  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, isFencedWriteComment, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
+  ACTIVE_FENCE_TRUST_MS, FENCE_COLLECTION, FENCE_CUTOVER_WAIT_MS, FENCE_PRE_SEND_TIMEOUT_MS, FENCE_SEND_MS, fenceClientOptions, setFenceTrustMsForTests, FENCED_WRITE_COMMENT, FENCE_VISIBLE_MS, isFencedWriteComment, FENCE_READ_DEADLINE_MS, WRITE_TIMEOUT_MS, assertMongoWritable, forgetFenceCache, installMongoFence,
 } from '../../../src/libs/repositories/fence'
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../src/libs/repositories/errors'
 import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors'
@@ -33,8 +33,8 @@ function makeCollectionClass(state: { fence: Fence; log: unknown[][] }) {
 describe('Mongo store fence', () => {
   beforeEach(() => forgetFenceCache());
   // the tests below read the fence on every write; the trust window has its own test
-  before(() => { process.env.DOC_STORE_FENCE = 'on'; process.env.DOC_STORE_FENCE_TRUST_MS = '0' })
-  after(() => { process.env.DOC_STORE_FENCE = 'off'; delete process.env.DOC_STORE_FENCE_TRUST_MS })
+  before(() => { process.env.DOC_STORE_FENCE = 'on'; setFenceTrustMsForTests(0) })
+  after(() => { process.env.DOC_STORE_FENCE = 'off'; setFenceTrustMsForTests(ACTIVE_FENCE_TRUST_MS) })
 
   // installMongoFence wraps once per process; each test gets its own class, so reset the module flag by re-requiring
   const fresh = () => {
@@ -44,7 +44,9 @@ describe('Mongo store fence', () => {
   const setup = (fence: Fence) => {
     const state = { fence, log: [] as unknown[][] }
     const Col = makeCollectionClass(state)
-    fresh().installMongoFence(Col)
+    const f = fresh()
+    f.setFenceTrustMsForTests(0)
+    f.installMongoFence(Col)
     return { state, c: new Col('things') }
   }
 
@@ -89,13 +91,26 @@ describe('Mongo store fence', () => {
     const moving = setup({ mode: 'draining' })
     for (const m of ['drop', 'rename'] as const) {
       let err: unknown
-      await (moving.c as any)[m]().catch((e: unknown) => { err = e })
+      await (moving.c as unknown as Record<string, () => Promise<unknown>>)[m]!().catch((e: unknown) => { err = e })
       expect(err).to.be.instanceOf(DocStoreFencedError)
     }
     expect(moving.state.log.filter((l) => l[0] === 'drop' || l[0] === 'rename')).to.have.length(0)
     const active = setup({ mode: 'active' })
-    await (active.c as any).drop()
+    await (active.c as unknown as { drop(): Promise<unknown> }).drop()
     expect(active.state.log.some((l) => l[0] === 'drop')).to.equal(true)
+  })
+
+  it('while armed the client bounds every pre-send wait and does not retry writes; off, it adds nothing', () => {
+    const o = fenceClientOptions()
+    expect(o).to.deep.equal({ waitQueueTimeoutMS: 2000, connectTimeoutMS: 2000, serverSelectionTimeoutMS: 2000, retryWrites: false })
+    process.env.DOC_STORE_FENCE = 'off'
+    try { expect(fenceClientOptions()).to.deep.equal({}) } finally { process.env.DOC_STORE_FENCE = 'on' }
+  })
+
+  it('the cutover waits the visibility window plus the send bound before it polls', () => {
+    expect(FENCE_SEND_MS).to.equal(3 * FENCE_PRE_SEND_TIMEOUT_MS)
+    expect(FENCE_CUTOVER_WAIT_MS).to.equal(FENCE_VISIBLE_MS + FENCE_SEND_MS)
+    expect(FENCE_CUTOVER_WAIT_MS).to.equal(8500)
   })
 
   it('the cutover waits the read deadline + trust window before it looks for tagged writes', () => {
@@ -104,7 +119,7 @@ describe('Mongo store fence', () => {
   })
 
   it('an older read that finishes late with active does not re-trust active after a newer draining one', async () => {
-    process.env.DOC_STORE_FENCE_TRUST_MS = '60000'
+    setFenceTrustMsForTests(60000)
     try {
       const resolvers: Array<(d: { mode: string }) => void> = []
       let reads = 0
@@ -120,7 +135,7 @@ describe('Mongo store fence', () => {
       await third
       expect(reads).to.equal(3) // the stale active was not trusted: the next write read the fence again
     } finally {
-      process.env.DOC_STORE_FENCE_TRUST_MS = '0'
+      setFenceTrustMsForTests(0)
     }
   })
 
@@ -171,7 +186,7 @@ describe('Mongo store fence', () => {
   })
 
   it('trusts an active answer for a moment (a burst of writes pays for one read) and re-reads a refusal every time', async () => {
-    process.env.DOC_STORE_FENCE_TRUST_MS = '500'
+    setFenceTrustMsForTests(500)
     try {
       let reads = 0
       const db = (mode: string) => ({ collection: () => ({ findOne: async () => ((reads += 1), { mode, epoch: 1 }) }) })
@@ -183,12 +198,12 @@ describe('Mongo store fence', () => {
       for (let i = 0; i < 3; i++) await assertMongoWritable(db('retired') as never).catch(() => undefined)
       expect(reads).to.equal(3)
     } finally {
-      process.env.DOC_STORE_FENCE_TRUST_MS = '0'
+      setFenceTrustMsForTests(0)
     }
   })
 
   it('a draining answer is not trusted: the next write after a move to readonly is refused', async () => {
-    process.env.DOC_STORE_FENCE_TRUST_MS = '60000'
+    setFenceTrustMsForTests(60000)
     try {
       let mode = 'draining'
       const db = { collection: () => ({ findOne: async () => ({ mode }) }) }
@@ -198,7 +213,7 @@ describe('Mongo store fence', () => {
       await assertMongoWritable(db as never).catch((e) => { err = e })
       expect(err).to.be.instanceOf(DocStoreReadOnlyError)
     } finally {
-      process.env.DOC_STORE_FENCE_TRUST_MS = '0'
+      setFenceTrustMsForTests(0)
     }
   })
 
@@ -232,7 +247,9 @@ describe('Mongo store fence', () => {
     try {
       const state = { fence: { mode: 'readonly' } as Fence, log: [] as unknown[][] }
       const Col = makeCollectionClass(state)
-      fresh().installMongoFence(Col)
+      const f = fresh()
+    f.setFenceTrustMsForTests(0)
+    f.installMongoFence(Col)
       await new Col('t').insertOne({ a: 1 })
       expect(state.log).to.deep.equal([['insertOne', { a: 1 }]])
       expect(fresh().mongoFenceArmed()).to.equal(false)

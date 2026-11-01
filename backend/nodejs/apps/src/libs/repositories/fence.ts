@@ -56,20 +56,54 @@ interface FenceReader {
   ): Promise<{ mode?: Mode; epoch?: number } | null>;
 }
 
-/** Throws unless the fence says writes may proceed. Reads the primary, never a cache: a cache would be the gap. */
 /**
  * An `active` answer is trusted for this long, so a burst of writes pays for one read. A freeze or retirement then reaches a writer
  * at most this much later. Every other answer is read afresh each time.
- *
- * The rule for the cutover tool: after setting `draining`, wait at least FENCE_VISIBLE_MS (read deadline + this trust window), so
- * that every writer has seen the change; then wait until `$currentOp` (allUsers, idleSessions) lists no operation whose
- * `command.comment.tag` equals FENCED_WRITE_COMMENT (FENCED_WRITE_OP_MATCH, or isFencedWriteComment); only then set `readonly` or `retired`. Writes started after the first wait
- * see `draining` and carry the 5 s write timeout.
  */
 export const ACTIVE_FENCE_TRUST_MS = 500;
-const trustMs = (): number =>
-  Number(process.env.DOC_STORE_FENCE_TRUST_MS ?? ACTIVE_FENCE_TRUST_MS);
+let trust = ACTIVE_FENCE_TRUST_MS;
+/** Tests only: the trust window is a constant in production, so the cutover's wait cannot drift from it. */
+export const setFenceTrustMsForTests = (ms: number): void => {
+  trust = ms;
+};
+const trustMs = (): number => trust;
+/** After `draining` is set, every writer has seen it once this long has passed (read deadline + trust window). */
 export const FENCE_VISIBLE_MS = FENCE_READ_DEADLINE_MS + ACTIVE_FENCE_TRUST_MS;
+
+/**
+ * A write that passed the fence is handed to the driver at once, but the driver may wait before it sends: for a pooled
+ * connection (`waitQueueTimeoutMS`), to open one (`connectTimeoutMS`) and to find the primary (`serverSelectionTimeoutMS`), and it
+ * may retry a failed write (`retryWrites`). While the fence is armed the client bounds each of these phases (not the server's
+ * execution of the write) and does not retry, so the write reaches the server, where `$currentOp` shows it, within
+ * FENCE_SEND_MS of passing the fence (an upper bound: the three waits added up).
+ */
+export const FENCE_PRE_SEND_TIMEOUT_MS = 2_000;
+export const FENCE_SEND_MS = 3 * FENCE_PRE_SEND_TIMEOUT_MS;
+/** The MongoClient options to merge in while the fence is armed; empty when it is off. */
+export const fenceClientOptions = (): {
+  waitQueueTimeoutMS?: number;
+  connectTimeoutMS?: number;
+  serverSelectionTimeoutMS?: number;
+  retryWrites?: boolean;
+} =>
+  mongoFenceArmed()
+    ? {
+        waitQueueTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
+        connectTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
+        serverSelectionTimeoutMS: FENCE_PRE_SEND_TIMEOUT_MS,
+        retryWrites: false,
+      }
+    : {};
+/**
+ * The rule for the cutover tool, after it sets `draining`:
+ *  1. wait FENCE_CUTOVER_WAIT_MS (every writer has seen `draining`, and any write that passed the fence earlier has reached the server);
+ *  2. poll `$currentOp` ({ allUsers: true, idleSessions: true }, match FENCED_WRITE_OP_MATCH) twice, FENCE_POLL_GAP_MS apart,
+ *     and go on only when both polls (and every poll until then) show no such operation;
+ *  3. only then set `readonly` or `retired`.
+ * Writes that start after step 1 see `draining` and carry the 5 s write timeout.
+ */
+export const FENCE_CUTOVER_WAIT_MS = FENCE_VISIBLE_MS + FENCE_SEND_MS;
+export const FENCE_POLL_GAP_MS = 1_000;
 /**
  * Every write the fence lets through carries the `comment` `{ tag: FENCED_WRITE_COMMENT, caller?: <the caller's own comment> }`.
  * In `$currentOp` match it with FENCED_WRITE_OP_MATCH, or test a comment with isFencedWriteComment.
