@@ -75,10 +75,12 @@ _T = TypeVar("_T")
 
 ANSWER_DRAFT_SELECTION_ENV_VAR = "ANSWER_DRAFT_SELECTION"
 # The first run answers alone; the others start only when its answer is the kind independent runs most often
-# disagree on (several records cited, a long search) or when it gave none.
+# disagree on (several records cited, a long search) or when it gave none. An exhaustive search is the costliest
+# run and another rarely changes its outcome, so it stands.
 ANSWER_DRAFT_SELECTION_ADAPTIVE_ENV_VAR = "ANSWER_DRAFT_SELECTION_ADAPTIVE"
 MORE_RUNS_MIN_CITED_RECORDS = 2
 MORE_RUNS_MIN_TOOL_CALLS = 4
+MORE_RUNS_TOOL_CALL_CEILING = 25
 MAX_DRAFT_RUNS = 4
 RECORD_CHARS = 14_000
 TOTAL_RECORD_CHARS = 150_000
@@ -129,9 +131,12 @@ def adaptive_runs_enabled() -> bool:
 
 def needs_more_runs(draft: Draft) -> bool:
     """Whether the other runs should answer too: the first run's answer cites several records or took a long
-    search, the answers independent runs most often disagree on, or it gave no answer."""
+    search, the answers independent runs most often disagree on, or it gave no answer. A run that already searched
+    exhaustively stands."""
     if not draft.answered:
         return True
+    if draft.tool_calls >= MORE_RUNS_TOOL_CALL_CEILING:
+        return False
     cited = cited_record_ids(draft.answer, draft.ref_to_url)
     return len(cited) >= MORE_RUNS_MIN_CITED_RECORDS or draft.tool_calls >= MORE_RUNS_MIN_TOOL_CALLS
 
@@ -636,6 +641,7 @@ __all__ = [
     "MAX_RECORDS",
     "MORE_RUNS_MIN_CITED_RECORDS",
     "MORE_RUNS_MIN_TOOL_CALLS",
+    "MORE_RUNS_TOOL_CALL_CEILING",
     "RECORD_CHARS",
     "SELECTION_TIMEOUT_SECONDS",
     "SYSTEM_PROMPT",

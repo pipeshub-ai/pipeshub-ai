@@ -661,3 +661,24 @@ def test_a_runs_tool_calls_are_counted_from_its_turns() -> None:
                AgentTurn(tool_calls=[ToolCall(id="c", name="z")])],
     )
     assert draft.tool_calls == 3
+
+
+async def test_adaptive_an_answer_after_an_exhaustive_search_stands_even_on_several_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    client, gate = _Sink(), ProgressGate()
+    records = [_record("rec-a", "A", "a"), _record("rec-b", "B", "b")]
+    drafts = [_draft(0, client, gate, *records), _draft(1, client, gate, *records)]
+    started: list[int] = []
+
+    choice = await _select(
+        drafts,
+        _searching(
+            {0: "a [s](ref1) b [s](ref2)", 1: "other"}, {0: answer_selection.MORE_RUNS_TOOL_CALL_CEILING}, started,
+        ),
+        _Selector('{"pick": "B"}'), client,
+    )
+
+    assert started == [0]
+    assert choice.reason == "first_run_stands"
