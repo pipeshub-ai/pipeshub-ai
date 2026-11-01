@@ -15,6 +15,11 @@ itself.
 - ``COVERAGE_LOOP_PROMPT``: the answer rules stop weighing records of a
   different scope as rival versions.
 
+``ANSWER_OPENING_CHECK`` is off unless set "true": in the gate, a cited draft
+that opens with what the assistant cannot do or with the status of what was
+asked for goes back once to lead with the substance. It runs inside the gate,
+so it needs the loop too.
+
 Lives under `app/utils` because the chat bridge and the agent factory both
 read it, and neither may import the other's modules for a switch.
 """
@@ -28,6 +33,7 @@ COVERAGE_LOOP_FACETS_ENV_VAR = "COVERAGE_LOOP_FACETS"
 COVERAGE_LOOP_GATE_ENV_VAR = "COVERAGE_LOOP_GATE"
 COVERAGE_LOOP_ADJUDICATION_ENV_VAR = "COVERAGE_LOOP_ADJUDICATION"
 COVERAGE_LOOP_PROMPT_ENV_VAR = "COVERAGE_LOOP_PROMPT"
+ANSWER_OPENING_CHECK_ENV_VAR = "ANSWER_OPENING_CHECK"
 
 COVERAGE_LOOP_FACET_SEARCHES_ENV_VAR = "COVERAGE_LOOP_FACET_SEARCHES"
 COVERAGE_LOOP_GATE_ROUNDS_ENV_VAR = "COVERAGE_LOOP_GATE_ROUNDS"
@@ -64,6 +70,10 @@ def coverage_prompt_enabled() -> bool:
     return _part_enabled(COVERAGE_LOOP_PROMPT_ENV_VAR)
 
 
+def answer_opening_check_enabled() -> bool:
+    return env_bool(ANSWER_OPENING_CHECK_ENV_VAR, False)
+
+
 def facet_search_budget() -> int:
     """Searches run in code for parts the prefetch does not cover."""
     return env_int(COVERAGE_LOOP_FACET_SEARCHES_ENV_VAR, _DEFAULT_FACET_SEARCHES, lo=0, hi=4) or 0
@@ -88,7 +98,9 @@ def gate_search_timeout_seconds() -> float:
 
 
 __all__ = [
+    "ANSWER_OPENING_CHECK_ENV_VAR",
     "COVERAGE_LOOP_ENV_VAR",
+    "answer_opening_check_enabled",
     "coverage_adjudication_enabled",
     "coverage_facets_enabled",
     "coverage_gate_enabled",
