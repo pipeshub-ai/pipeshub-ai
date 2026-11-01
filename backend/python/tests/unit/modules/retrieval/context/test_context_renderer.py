@@ -404,6 +404,25 @@ class TestKnowledgeContextBuilder:
         assert mock_links.await_args.kwargs["user_id"] == "u1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("spread", [False, True])
+    async def test_with_record_spread_one_record_cannot_fill_the_cut_alone(
+        self, monkeypatch: pytest.MonkeyPatch, spread: bool,
+    ) -> None:
+        monkeypatch.setenv("CONTEXT_RECORD_SPREAD", str(spread).lower())
+        records = {"a": _record("a", "A", blocks=0), "b": _record("b", "B", blocks=0)}
+        units = [_unit("a", i, f"a{i}", 0.9 - i / 100) for i in range(6)] + [_unit("b", 0, "b0", 0.1)]
+        flatten, graph, fk = self._patches(units, records)
+        with flatten, graph, fk:
+            knowledge = await self._builder().build([], {}, is_multimodal_llm=False, max_units=5)
+
+        keys = [(u["virtual_record_id"], u["block_index"]) for u in knowledge.ranked]
+        if spread:
+            # Four per record at this limit, then the most relevant of the rest.
+            assert keys == [("a", 0), ("a", 1), ("a", 2), ("a", 3), ("b", 0)]
+        else:
+            assert keys == [("a", i) for i in range(5)]
+
+    @pytest.mark.asyncio
     async def test_neighbours_take_only_the_slots_the_hits_left(self, records) -> None:
         flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9)], records)
         with flatten, graph, fk:

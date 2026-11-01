@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.neighbours import expand_neighbours, fill_small_gaps
 from app.modules.retrieval.context.ranking import rank_units
-from app.modules.retrieval.switches import context_gap_fill_enabled
+from app.modules.retrieval.record_cut import cut_by_record, passages_per_record
+from app.modules.retrieval.switches import (
+    context_gap_fill_enabled,
+    context_record_spread_enabled,
+)
 from app.utils.chat_helpers import (
     enrich_records_with_address_links,
     enrich_records_with_graph_context,
@@ -69,7 +73,9 @@ class KnowledgeContextBuilder:
         include_fk_children: bool = False,
     ) -> KnowledgeContext:
         """``max_units`` caps the units shown. Hits take it first; neighbours
-        get only the slots the hits left, as they always did.
+        get only the slots the hits left, as they always did. With
+        CONTEXT_RECORD_SPREAD each record keeps a few hits before any record
+        keeps more.
 
         ``include_fk_children`` adds the DDL of tables related by foreign key
         to any SQL table that was kept.
@@ -85,7 +91,7 @@ class KnowledgeContextBuilder:
             graph_provider=self._graph_provider,
         )
         units = [unit for unit in units if records.get(unit.get("virtual_record_id")) is not None]
-        ranked = rank_units(units, max_units)
+        ranked = _keep_best(rank_units(units), max_units)
         spare = None if max_units is None else max(max_units - len(ranked), 0)
         ranked = expand_neighbours(ranked, records, limit=spare)
         if context_gap_fill_enabled():
@@ -118,3 +124,20 @@ class KnowledgeContextBuilder:
             records.values(), self._graph_provider, self._user_id, self._org_id, self._connection_sources,
         )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)
+
+
+def _keep_best(ranked: list[Unit], max_units: int | None) -> list[Unit]:
+    """The best ``max_units`` of ``ranked``. Spread across records, one record
+    holds at most as many as a search response gives one record, so a long
+    record that matches everywhere cannot take every slot."""
+    if max_units is None:
+        return ranked
+    if max_units < 1 or not context_record_spread_enabled():
+        return ranked[: max(max_units, 0)]
+    return cut_by_record(
+        ranked,
+        max_units,
+        per_record=passages_per_record(max_units),
+        reserve=0,
+        record_of=lambda unit: unit.get("virtual_record_id"),
+    )
