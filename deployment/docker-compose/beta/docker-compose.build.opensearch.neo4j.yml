@@ -206,6 +206,10 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+      # Opt-in only: an enterprise-search answer is checked for evidence of
+      # every part of the question, and gaps are searched, before it is final.
+      - COVERAGE_LOOP=${COVERAGE_LOOP:-}
+      - COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S=${COVERAGE_LOOP_GATE_SEARCH_TIMEOUT_S:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
