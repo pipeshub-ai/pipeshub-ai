@@ -220,20 +220,28 @@ _tokenize_unavailable = False
 def _server_counts(ask_server: Callable[[list[str]], list[int]], texts: list[str]) -> list[int]:
     """Model token counts from the embedding server.
 
-    A server without ``/v1/tokenize`` (an older image, or another
-    OpenAI-compatible server) or one that errors switches this process, once and
-    with one warning, to the cl100k count scaled by the worst measured ratio.
+    A server without ``/v1/tokenize`` (404 or 405: an older image, or another
+    OpenAI-compatible server) switches this process for good, with one warning,
+    to the cl100k count scaled by the worst measured ratio. Any other failure
+    (a 5xx, a timeout) uses that count for this call only; the next call asks
+    the server again.
     """
     global _tokenize_unavailable  # noqa: PLW0603
     if not _tokenize_unavailable:
         try:
             return ask_server(texts)
-        except openai.OpenAIError:
-            _tokenize_unavailable = True
-            _module_logger.warning(
-                "Embedding server cannot count tokens; windows are sized from cl100k counts "
-                "x %s from now on", _WORST_CASE_TOKEN_RATIO, exc_info=True,
-            )
+        except openai.OpenAIError as exc:
+            if getattr(exc, "status_code", None) in (404, 405):
+                _tokenize_unavailable = True
+                _module_logger.warning(
+                    "Embedding server has no token counting; windows are sized from "
+                    "cl100k counts x %s from now on", _WORST_CASE_TOKEN_RATIO,
+                )
+            else:
+                _module_logger.warning(
+                    "Embedding server could not count tokens (%s); this call uses cl100k x %s",
+                    exc, _WORST_CASE_TOKEN_RATIO,
+                )
     return [math.ceil(_token_len(t) * _WORST_CASE_TOKEN_RATIO) for t in texts]
 
 
@@ -679,8 +687,8 @@ def _row_group_points(part: list[Document], window: _Window | None) -> list[Docu
 def _group_table_row_documents(documents: list, window: _Window | None = None) -> list:
     """Policy C: merge consecutive TABLE_ROW documents of one table into points
     of ``_rows_per_point()`` rows. A table with more rows than the cap allows
-    gets larger groups, so its groups never exceed ``_max_row_points_per_table()``
-    (a group longer than the model's window is cut further, see
+    gets larger groups, so it has at most ``_max_row_points_per_table()``
+    groups (a group longer than the model's window is cut further, see
     ``_row_group_points``). A point lists its rows' ids in ``rowBlockIds``, which
     readers use to cite the rows."""
     out: list = []

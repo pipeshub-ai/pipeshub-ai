@@ -770,7 +770,8 @@ class ModelManager:
                 ids = model.tokenizer(texts, add_special_tokens=True, truncation=False)["input_ids"]
                 return [len(i) for i in ids]
 
-            return await asyncio.to_thread(_count)
+            async with self._encode_gate.slot(EncodePriority.BULK):
+                return await asyncio.to_thread(_count)
 
     async def encode(
         self,
@@ -1095,6 +1096,11 @@ async def create_embeddings(
     )
 
 
+# /v1/embeddings has no size limit; tokenizing is cheap but still holds a thread, so bound it.
+TOKENIZE_MAX_ITEMS = 2048
+TOKENIZE_MAX_CHARS = 2_000_000
+
+
 @app.post("/v1/tokenize")
 async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
     """Token counts under the model's own tokenizer, so a caller can size its inputs exactly."""
@@ -1105,8 +1111,14 @@ async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
         )
     if request.trust_remote_code and not ALLOW_REMOTE_CODE:
         raise HTTPException(status_code=403, detail="trust_remote_code is disabled on this server.")
+    texts = _normalize_input(request.input)
+    if len(texts) > TOKENIZE_MAX_ITEMS or sum(len(t) for t in texts) > TOKENIZE_MAX_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Send at most {TOKENIZE_MAX_ITEMS} texts and {TOKENIZE_MAX_CHARS} characters at a time.",
+        )
     counts = await model_manager.count_tokens(
-        request.model, _normalize_input(request.input), trust_remote_code=request.trust_remote_code,
+        request.model, texts, trust_remote_code=request.trust_remote_code,
     )
     return TokenizeResponse(model=request.model, counts=counts)
 

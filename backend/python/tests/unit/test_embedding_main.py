@@ -5,7 +5,7 @@ import base64
 import struct
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -89,6 +89,16 @@ class TestEmbeddingServerRoutes:
         response = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a", "b"]})
         assert response.status_code == 200
         assert response.json()["counts"] == [3, 7]
+
+    def test_tokenize_rejects_too_many_items_or_characters(self, client) -> None:
+        import app.embedding_main as em
+
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[1])
+        too_many = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * (em.TOKENIZE_MAX_ITEMS + 1)})
+        too_long = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": "a" * (em.TOKENIZE_MAX_CHARS + 1)})
+        assert (too_many.status_code, too_long.status_code) == (413, 413)
+        mock_manager.count_tokens.assert_not_awaited()
 
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
@@ -313,7 +323,20 @@ class TestModelManager:
 
         manager = ModelManager()
         manager._models = {"m": Model()}
+        entered = []
+
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def slot(priority: object) -> AsyncIterator[None]:
+            entered.append(priority)
+            yield
+
+        gate = MagicMock()
+        gate.slot = slot
+        manager._encode_gate = gate
         assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
+        assert len(entered) == 1  # takes an encode slot like embeddings do
 
     def test_max_seq_length_reads_the_loaded_model(self) -> None:
         manager = ModelManager()

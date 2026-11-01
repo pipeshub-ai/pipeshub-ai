@@ -360,31 +360,49 @@ def tokenize_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vs, "_tokenize_unavailable", False)
 
 
-@pytest.mark.parametrize("failure", ["missing", "error"])
-@pytest.mark.usefixtures("tokenize_state")
-def test_a_server_without_tokenize_falls_back_to_scaled_cl100k_once(
-    failure: str, caplog: pytest.LogCaptureFixture,
-) -> None:
+def _status_error(status: int) -> Exception:
     import httpx
     import openai
 
     request = httpx.Request("POST", "http://x/v1/tokenize")
-    status = 404 if failure == "missing" else 500
+    return openai.APIStatusError("no", response=httpx.Response(status, request=request), body=None)
+
+
+@pytest.mark.parametrize("status", [404, 405])
+@pytest.mark.usefixtures("tokenize_state")
+def test_a_server_without_tokenize_switches_the_process_to_scaled_cl100k_for_good(
+    status: int, caplog: pytest.LogCaptureFixture,
+) -> None:
     calls: list[int] = []
 
     def ask(texts: list[str]) -> list[int]:
         calls.append(len(texts))
-        raise openai.APIStatusError("no", response=httpx.Response(status, request=request), body=None)
+        raise _status_error(status)
 
     text = "word " * 400
     with caplog.at_level("WARNING"):
         first = vs._server_counts(ask, [text])
         second = vs._server_counts(ask, [text])
-    expected = [-(-int(vs._token_len(text) * vs._WORST_CASE_TOKEN_RATIO * 100) // 100)]
-    assert first == second and abs(first[0] - expected[0]) <= 1
-    assert first[0] > vs._token_len(text) * 2
+    assert first == second
+    assert first[0] >= int(vs._token_len(text) * vs._WORST_CASE_TOKEN_RATIO)
     assert calls == [1]  # asked once; the process then stays on the fallback
-    assert sum("cannot count tokens" in r.message for r in caplog.records) == 1
+    assert sum("no token counting" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.usefixtures("tokenize_state")
+def test_a_transient_server_error_falls_back_for_that_call_only() -> None:
+    answers: list[object] = [_status_error(500), [42]]
+
+    def ask(texts: list[str]) -> list[int]:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    text = "word " * 400
+    assert vs._server_counts(ask, [text])[0] >= vs._token_len(text) * 2  # scaled fallback
+    assert vs._server_counts(ask, [text]) == [42]  # back to exact counts
+    assert not vs._tokenize_unavailable
 
 
 @pytest.mark.asyncio
