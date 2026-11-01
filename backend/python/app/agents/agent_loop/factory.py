@@ -136,6 +136,7 @@ from app.agents.agent_loop.hooks import (
     sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
+from app.agents.agent_loop.hooks.coverage_gate import coverage_gate
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
     PROGRESSIVE_TOOL_NAMES,
@@ -209,6 +210,7 @@ from app.services.featureflag.platform_settings import (
     is_skills_enabled,
 )
 from app.utils.citations import rewrite_request_refs
+from app.utils.coverage_switches import coverage_gate_enabled
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
 
@@ -385,6 +387,12 @@ def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -
     if entity_tools_used_in_history(context.previous_conversations):
         return tool_names
     return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
+
+
+def _answers_from_knowledge_only(context: "AgentContext") -> bool:
+    """Enterprise-search chat (`chat_modes.bridge` sets the mode), the one
+    surface whose answers come from the knowledge base alone."""
+    return context.tool_state.get("chat_mode") == "internal_search"
 
 
 class PipesHubAgentFactory:
@@ -1170,6 +1178,9 @@ class PipesHubAgentFactory:
         # After visibility mutations — prompt builder reads bound_tool_names.
         hooks.on(HookEvent.PRE_TURN).use(sync_visible_tools_for_prompt(context))
 
+        # Before `completion_gate`, so it checks only a draft the hooks after it let stand.
+        if coverage_gate_enabled() and _answers_from_knowledge_only(context):
+            hooks.on(HookEvent.POST_MODEL).use(coverage_gate(context))
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
         # Last: a reply the gates above already sent back is not checked for a text question.

@@ -641,6 +641,22 @@ def _extract_record_id_from_url(url: str) -> str | None:
     return None
 
 
+_CITED_REF_RE = re.compile(r'\b(ref\d+)\b')
+
+
+def cited_record_ids(text: str, ref_to_url: Mapping[str, str] | None) -> list[str]:
+    """Record ids an answer cites through its `refN` markers, first cited first."""
+    if not text or not ref_to_url:
+        return []
+    record_ids: dict[str, None] = {}
+    for ref in _CITED_REF_RE.findall(text):
+        url = ref_to_url.get(ref)
+        record_id = _extract_record_id_from_url(url) if url else None
+        if record_id:
+            record_ids.setdefault(record_id, None)
+    return list(record_ids)
+
+
 def _find_record_by_id(
     record_id: str,
     records: list[dict[str, Any]],

@@ -18,6 +18,7 @@ from app.utils.citations import (
     _badge_url,
     _renumber_citation_links,
     build_tiny_web_ref_url,
+    cited_record_ids,
     detect_hallucinated_citation_urls,
     display_url_for_llm,
     extract_tiny_ref,
@@ -2676,3 +2677,19 @@ class TestBadgeUrl:
             "Python 3.0 shipped in 2008 "
             "[1](https://en.wikipedia.org/wiki/Python_%28programming_language%29#:~:text=a)."
         )
+
+
+class TestCitedRecordIds:
+    _REF_TO_URL = {
+        "ref1": "https://app/record/rec-1/preview#blockIndex=7",
+        "ref2": "https://app/record/rec-1/preview#blockIndex=3",
+        "ref3": "https://app/record/rec-2",
+    }
+
+    def test_each_record_once_in_first_cited_order(self) -> None:
+        text = "A [x](ref3) B [y](ref1) C [z](ref2) D [w](ref3)"
+        assert cited_record_ids(text, self._REF_TO_URL) == ["rec-2", "rec-1"]
+
+    def test_unknown_refs_and_no_mapper_cite_nothing(self) -> None:
+        assert cited_record_ids("A [x](ref9)", self._REF_TO_URL) == []
+        assert cited_record_ids("A [x](ref1)", None) == []
