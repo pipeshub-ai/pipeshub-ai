@@ -376,6 +376,9 @@ config:
   # answer each enterprise-search question and one more call on the same model
   # keeps the answer its cited records support, at about that many times the
   # answering cost; the answer arrives whole once chosen instead of streaming.
+  # ANSWER_DRAFT_SELECTION_ADAPTIVE="true" (also through extraEnv) lets the first
+  # run answer alone and starts the others only when its answer cites several
+  # records or took a long search.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

@@ -50,7 +50,7 @@ from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.chat_helpers import CitationRefMapper, is_base64_image
 from app.utils.citations import cited_record_ids, normalize_malformed_citations
 from app.utils.conversation_tasks import pop_tasks, register_task
-from app.utils.env_utils import env_int
+from app.utils.env_utils import env_bool, env_int
 from app.utils.streaming import (
     cleanup_content,
     extract_json_from_string,
@@ -74,6 +74,11 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 ANSWER_DRAFT_SELECTION_ENV_VAR = "ANSWER_DRAFT_SELECTION"
+# The first run answers alone; the others start only when its answer is the kind independent runs most often
+# disagree on (several records cited, a long search) or when it gave none.
+ANSWER_DRAFT_SELECTION_ADAPTIVE_ENV_VAR = "ANSWER_DRAFT_SELECTION_ADAPTIVE"
+MORE_RUNS_MIN_CITED_RECORDS = 2
+MORE_RUNS_MIN_TOOL_CALLS = 4
 MAX_DRAFT_RUNS = 4
 RECORD_CHARS = 14_000
 TOTAL_RECORD_CHARS = 150_000
@@ -116,6 +121,19 @@ def answer_draft_runs(*, knowledge_answer: bool, resumes_a_call: bool = False) -
     once."""
     runs = env_int(ANSWER_DRAFT_SELECTION_ENV_VAR, 0, lo=0, hi=MAX_DRAFT_RUNS) or 0
     return runs if runs >= 2 and knowledge_answer and not resumes_a_call else 0
+
+
+def adaptive_runs_enabled() -> bool:
+    return env_bool(ANSWER_DRAFT_SELECTION_ADAPTIVE_ENV_VAR, False)
+
+
+def needs_more_runs(draft: Draft) -> bool:
+    """Whether the other runs should answer too: the first run's answer cites several records or took a long
+    search, the answers independent runs most often disagree on, or it gave no answer."""
+    if not draft.answered:
+        return True
+    cited = cited_record_ids(draft.answer, draft.ref_to_url)
+    return len(cited) >= MORE_RUNS_MIN_CITED_RECORDS or draft.tool_calls >= MORE_RUNS_MIN_TOOL_CALLS
 
 
 def fork_chat_state(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -246,6 +264,11 @@ class Draft:
     def ref_to_url(self) -> dict[str, str]:
         return dict(self.context.citation_ref_to_url() or {})
 
+    @property
+    def tool_calls(self) -> int:
+        """Tool calls the run's agent made, whatever the wire protocol showed of them."""
+        return sum(len(turn.tool_calls) for turn in self.result.turns) if self.result is not None else 0
+
 
 @dataclass(frozen=True)
 class Choice:
@@ -309,13 +332,25 @@ async def select_among_drafts(
 ) -> Choice:
     """Runs every draft and chooses the one whose answer is finalized, then hands that run the client: its kept
     frames go out, its context writes to the client from now on, and its usage ledger counts every run and the
-    selection call. A request stopped before the choice is made ends as stopped. Logs one line per request."""
+    selection call. A request stopped before the choice is made ends as stopped. Logs one line per request.
+
+    Under ANSWER_DRAFT_SELECTION_ADAPTIVE the first run answers alone and the others start only if
+    ``needs_more_runs``; the client sees the first run's progress, and nothing more while the others run."""
     started = time.monotonic()
-    await run_drafts(drafts, run)
+    settled = False
+    if adaptive_runs_enabled() and len(drafts) > 1:
+        await run_drafts(drafts[:1], run)
+        settled = not needs_more_runs(drafts[0])
+        if not settled and not _stop_asked(cancellation_token):
+            await run_drafts(drafts[1:], run)
+    else:
+        await run_drafts(drafts, run)
     runs_ms = _ms_since(started)
     choosing = time.monotonic()
-    if cancellation_token is not None and cancellation_token.is_cancelled:
+    if _stop_asked(cancellation_token):
         choice = _stopped(drafts)
+    elif settled:
+        choice = Choice(drafts[0], "first_run_stands")
     else:
         choice = await _choose(drafts, question=question, llm=llm, cancellation_token=cancellation_token)
     _log_choice(choice, drafts, runs_ms=runs_ms, select_ms=_ms_since(choosing))
@@ -383,6 +418,10 @@ async def _ask_selector(llm: BaseChatModel, prompt: str) -> tuple[dict[str, Any]
     except ValueError:
         return None, usage
     return (verdict if isinstance(verdict, dict) else None), usage
+
+
+def _stop_asked(token: CancellationToken | None) -> bool:
+    return token is not None and token.is_cancelled
 
 
 def _stopped(drafts: Sequence[Draft]) -> Choice:
@@ -591,9 +630,12 @@ def _log_choice(choice: Choice, drafts: Sequence[Draft], *, runs_ms: int, select
 
 
 __all__ = [
+    "ANSWER_DRAFT_SELECTION_ADAPTIVE_ENV_VAR",
     "ANSWER_DRAFT_SELECTION_ENV_VAR",
     "MAX_DRAFT_RUNS",
     "MAX_RECORDS",
+    "MORE_RUNS_MIN_CITED_RECORDS",
+    "MORE_RUNS_MIN_TOOL_CALLS",
     "RECORD_CHARS",
     "SELECTION_TIMEOUT_SECONDS",
     "SYSTEM_PROMPT",
@@ -604,6 +646,7 @@ __all__ = [
     "FrameUse",
     "ProgressGate",
     "RecordText",
+    "adaptive_runs_enabled",
     "answer_draft_runs",
     "assemble_records",
     "build_user_prompt",
@@ -612,6 +655,7 @@ __all__ = [
     "fork_chat_state",
     "frame_use",
     "label_order",
+    "needs_more_runs",
     "pick_label",
     "pool_usage",
     "run_drafts",

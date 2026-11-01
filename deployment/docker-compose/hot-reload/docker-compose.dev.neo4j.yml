@@ -177,6 +177,9 @@ services:
       # Opt-in only: this many independent runs (2-4) answer each enterprise-
       # search question, and the answer its cited records support is kept.
       - ANSWER_DRAFT_SELECTION=${ANSWER_DRAFT_SELECTION:-}
+      # true: the first run answers alone, and the others start only when its
+      # answer cites several records or took a long search.
+      - ANSWER_DRAFT_SELECTION_ADAPTIVE=${ANSWER_DRAFT_SELECTION_ADAPTIVE:-}
       # Opt-in only: knowledge-base uploads take the dates their content
       # states (true: instead of upload times; all: also of file times).
       - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}

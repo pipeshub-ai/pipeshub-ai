@@ -339,3 +339,18 @@ async def test_the_client_leaving_cancels_every_run(monkeypatch: pytest.MonkeyPa
     assert len(factory.agents) == 2
     assert all(agent.task_cancelled for agent in factory.agents)
     assert selector.prompts == []
+
+
+async def test_adaptive_a_short_answer_from_one_record_needs_no_other_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION", "2")
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    factory, selector = _Factory(), _Selector()
+
+    events = await _run(factory, selector, protocol="agui")
+
+    assert len(factory.contexts) == 1
+    assert selector.prompts == []
+    final = _final(events)
+    assert final["answer"].startswith("Answer 0: build 4.0")
+    assert [c["metadata"]["recordId"] for c in final["citations"]] == ["rec-0"]
+    assert "TEXT_MESSAGE_CONTENT" not in [name for name, _ in events]

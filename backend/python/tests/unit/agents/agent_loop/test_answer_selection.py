@@ -11,8 +11,9 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.core.responses import TokenUsage
-from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.core.types import AgentResult, AgentTurn, Goal
 from app.agents.agent_loop import answer_selection
 from app.agents.agent_loop.answer_selection import (
     MAX_DRAFT_RUNS,
@@ -131,6 +132,11 @@ async def _select(
         drafts, run, client_sink=client, question=_QUESTION, llm=selector,  # type: ignore[arg-type]
         cancellation_token=token,
     )
+
+
+@pytest.fixture(autouse=True)
+def _not_adaptive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -525,3 +531,133 @@ async def test_only_the_chosen_runs_conversation_tasks_stay_registered() -> None
     assert choice.draft is drafts[1]
     assert kept == [started[1]]
     assert await started[0] == 0
+
+
+def _searching(
+    answers: dict[int, str | Exception], tool_calls: dict[int, int], started: list[int],
+) -> Callable[[Draft], Awaitable[None]]:
+    """A run that makes ``tool_calls[index]`` tool calls (one by default), then answers ``answers[index]`` (or raises
+    it)."""
+
+    async def _run(draft: Draft) -> None:
+        started.append(draft.index)
+        outcome = answers[draft.index]
+        if isinstance(outcome, Exception):
+            raise outcome
+        calls = [ToolCall(id=f"call-{i}", name="knowledgegraph__search") for i in range(tool_calls.get(draft.index, 1))]
+        draft.result = AgentResult(
+            goal=Goal(description=_QUESTION), output=outcome,
+            turns=[AgentTurn(tool_calls=calls), AgentTurn()],
+        )
+
+    return _run
+
+
+async def test_adaptive_an_answer_from_one_record_after_a_short_search_stands_without_the_other_runs(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    client, gate = _Sink(), ProgressGate()
+    notes = _record("rec-1", "Kiosk printer notes", "Build 4.3 cleared the jam.")
+    drafts = [_draft(0, client, gate, notes), _draft(1, client, gate, notes)]
+    started: list[int] = []
+    selector = _Selector('{"pick": "B"}')
+
+    with caplog.at_level(logging.INFO, logger=answer_selection.__name__):
+        choice = await _select(
+            drafts, _searching({0: "Build 4.3 [source](ref1), per the notes [again](ref1).", 1: "other"}, {0: 3}, started),
+            selector, client,
+        )
+
+    assert started == [0]
+    assert choice.draft is drafts[0]
+    assert choice.reason == "first_run_stands"
+    assert selector.prompts == []
+    [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("answer_selection: chose")]
+    assert "reason=first_run_stands" in line and "answered=1" in line
+
+
+@pytest.mark.parametrize(("cited", "tool_calls"), [(2, 1), (1, 4)])
+async def test_adaptive_an_answer_on_several_records_or_after_a_long_search_gets_the_other_runs_and_the_selector(
+    monkeypatch: pytest.MonkeyPatch, cited: int, tool_calls: int,
+) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    client, gate = _Sink(), ProgressGate()
+    records = [
+        _record("rec-a", "Kiosk printer notes (draft)", "Build 4.2."),
+        _record("rec-b", "Kiosk printer notes (final)", "Build 4.3."),
+    ]
+    drafts = [_draft(0, client, gate, *records), _draft(1, client, gate, *records)]
+    first = " ".join(f"Build 4.{i + 2} [source](ref{i + 1})." for i in range(cited))
+    started: list[int] = []
+    selector = _Selector(_picks("final word"))
+
+    choice = await _select(
+        drafts, _searching({0: first, 1: "The final word: build 4.3 [source](ref2)."}, {0: tool_calls}, started),
+        selector, client,
+    )
+
+    assert started == [0, 1]
+    assert choice.draft is drafts[1]
+    assert choice.reason == "selected"
+    assert len(selector.prompts) == 1
+
+
+async def test_adaptive_a_first_run_without_an_answer_gets_the_other_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    client, gate = _Sink(), ProgressGate()
+    drafts = [_draft(0, client, gate), _draft(1, client, gate)]
+    started: list[int] = []
+
+    choice = await _select(
+        drafts, _searching({0: RuntimeError("search failed"), 1: "the answer"}, {}, started), _Selector("{}"), client,
+    )
+
+    assert started == [0, 1]
+    assert choice.draft is drafts[1]
+    assert choice.reason == "one_answer"
+
+
+async def test_adaptive_a_stop_during_the_first_run_starts_no_other_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANSWER_DRAFT_SELECTION_ADAPTIVE", "true")
+    client, gate, token = _Sink(), ProgressGate(), CancellationToken()
+    records = [_record("rec-a", "A", "a"), _record("rec-b", "B", "b")]
+    drafts = [_draft(0, client, gate, *records), _draft(1, client, gate, *records)]
+    started: list[int] = []
+
+    async def _run(draft: Draft) -> None:
+        started.append(draft.index)
+        token.cancel()
+        draft.result = AgentResult(goal=Goal(description=_QUESTION), output="a [s](ref1) b [s](ref2)")
+
+    choice = await _select(drafts, _run, _Selector('{"pick": "A"}'), client, token)
+
+    assert started == [0]
+    assert choice.stopped
+    assert choice.draft is drafts[0]
+
+
+async def test_without_the_adaptive_switch_every_run_starts_at_once() -> None:
+    client, gate = _Sink(), ProgressGate()
+    notes = _record("rec-1", "Kiosk printer notes", "Build 4.3 cleared the jam.")
+    drafts = [_draft(0, client, gate, notes), _draft(1, client, gate, notes)]
+    started: list[int] = []
+
+    choice = await _select(
+        drafts, _searching({0: "4.3 [s](ref1).", 1: "4.3 [s](ref1)."}, {}, started), _Selector('{"pick": "A"}'), client,
+    )
+
+    assert sorted(started) == [0, 1]
+    assert choice.reason == "selected"
+
+
+def test_a_runs_tool_calls_are_counted_from_its_turns() -> None:
+    client, gate = _Sink(), ProgressGate()
+    draft = _draft(0, client, gate)
+    assert draft.tool_calls == 0
+    draft.result = AgentResult(
+        goal=Goal(description=_QUESTION),
+        turns=[AgentTurn(tool_calls=[ToolCall(id="a", name="x"), ToolCall(id="b", name="y")]), AgentTurn(),
+               AgentTurn(tool_calls=[ToolCall(id="c", name="z")])],
+    )
+    assert draft.tool_calls == 3
