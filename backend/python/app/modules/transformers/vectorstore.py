@@ -37,6 +37,11 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
+from app.modules.parsers.section_paths import (
+    SECTION_PATH_SEPARATOR,
+    block_heading_path,
+    section_paths_enabled,
+)
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.code_units import code_units
@@ -111,7 +116,10 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
             and not metadata.get("isRecordSummary")
         )
         kind = "chunk" if is_sub_chunk else "unit"
-        name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
+        # The text as embedded: the same words under another heading are another point.
+        context = metadata.get(_EMBED_CONTEXT)
+        text = f"{context}\n{page_content}" if context else page_content
+        name = f"{virtual_record_id}|{block_id}|{kind}|{text}"
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
@@ -148,6 +156,10 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
 # Document metadata key for text that feeds the sparse (keyword) vector only.
 _SPARSE_EXTRA = "_sparseExtra"
+# Document metadata key for where a text block sits (record title, section
+# headings): embedded on the line before its text, never stored as its text.
+_EMBED_CONTEXT = "_embedContext"
+_MAX_EMBED_TITLE_CHARS = 100
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
 # OpenAI and Azure OpenAI batches are bounded by tokens instead of by document
@@ -537,13 +549,62 @@ def _bounded_documents(text: str, metadata: dict) -> list[Document]:
     ]
 
 
+def _embedding_context(record_title: str, block: object) -> str:
+    """``Title › Section › Subsection`` for a block, or "" when neither is known.
+
+    A section that repeats the title (a page's own top heading) is dropped.
+    """
+    title = " ".join(record_title.split())[:_MAX_EMBED_TITLE_CHARS]
+    sections = block_heading_path(block)
+    if sections and title and sections[0].strip().casefold() == title.casefold():
+        sections = sections[1:]
+    return SECTION_PATH_SEPARATOR.join(part for part in (title, *sections) if part)
+
+
+def _embed_under(context: str, documents: list[Document]) -> list[Document]:
+    """Mark ``documents`` to embed with ``context`` on the line before their text.
+
+    A document sized to the model's limit is left without it rather than pushed
+    over the limit.
+    """
+    if context:
+        ceiling = _embed_token_ceiling()
+        for document in documents:
+            if not _exceeds_token_ceiling(f"{context}\n{document.page_content}", ceiling):
+                document.metadata[_EMBED_CONTEXT] = context
+    return documents
+
+
+def _embedding_text(document: Document) -> str:
+    context = document.metadata.get(_EMBED_CONTEXT)
+    return f"{context}\n{document.page_content}" if context else document.page_content
+
+
+def _stored_metadata(metadata: dict) -> dict:
+    return {k: v for k, v in metadata.items() if k not in (_SPARSE_EXTRA, _EMBED_CONTEXT)}
+
+
+def _record_title(record: Optional["Record"]) -> str:
+    """The record's name as a title: a stored file name loses its extension."""
+    name = getattr(record, "record_name", None) if record is not None else None
+    name = name.strip() if isinstance(name, str) else ""
+    extension = getattr(record, "extension", None)
+    if isinstance(extension, str) and extension and name.lower().endswith(f".{extension.lower()}"):
+        name = name[: -len(extension) - 1].strip()
+    return name
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
     language: str,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Sentence-split each text block into embeddable Documents.
+
+    With ``record_title`` (section paths on), each is embedded under the
+    record's title and the headings its block sits under.
 
     CPU-bound (regex/rule-based sentence segmentation); callers should run
     this via ``asyncio.to_thread`` to keep the event loop responsive.
@@ -580,30 +641,33 @@ def _build_text_documents(
             # Too large to also embed as one whole-block document (would be a
             # useless retrieval unit) — pack into overlapping windows instead.
             ceiling = _embed_token_ceiling()
-            documents.extend(
+            block_documents = [
                 Document(page_content=piece, metadata={**metadata, "isBlock": False})
                 for chunk in _chunk_oversized_text(block_text, language)
                 # A sentence longer than the window is emitted whole by
                 # _chunk_oversized_text; bound it rather than let it be rejected.
                 for piece in _split_to_token_ceiling(chunk, ceiling)
-            )
-            continue
-
-        if _word_count(block_text) > _min_words_for_sentence_embeddings():
-            sentences = split_into_sentences(block_text, language=language)
-            if len(sentences) > 1:
-                ceiling = _embed_token_ceiling()
-                documents.extend(
-                    Document(page_content=piece, metadata={**metadata, "isBlock": False})
-                    for sentence in sentences
-                    for piece in _split_to_token_ceiling(sentence, ceiling)
+            ]
+        else:
+            block_documents = []
+            if _word_count(block_text) > _min_words_for_sentence_embeddings():
+                sentences = split_into_sentences(block_text, language=language)
+                if len(sentences) > 1:
+                    ceiling = _embed_token_ceiling()
+                    block_documents.extend(
+                        Document(page_content=piece, metadata={**metadata, "isBlock": False})
+                        for sentence in sentences
+                        for piece in _split_to_token_ceiling(sentence, ceiling)
+                    )
+            block_documents.append(
+                Document(
+                    page_content=block_text,
+                    metadata={**metadata, "isBlock": True},
                 )
-        documents.append(
-            Document(
-                page_content=block_text,
-                metadata={**metadata, "isBlock": True},
             )
-        )
+        if record_title is not None:
+            _embed_under(_embedding_context(record_title, block), block_documents)
+        documents.extend(block_documents)
     return documents
 
 
@@ -673,6 +737,7 @@ def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -680,7 +745,9 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
+    return _build_text_documents(
+        text_blocks, virtual_record_id, org_id, language, record_title
+    )
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -813,6 +880,7 @@ class VectorStore(Transformer):
         is_reconciliation = False
         # A changed row's heading may be an unchanged block left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
+        record_title = _record_title(record) if section_paths_enabled() else None
 
         if (
             ctx.reconciliation_context
@@ -846,6 +914,7 @@ class VectorStore(Transformer):
             is_reconciliation=is_reconciliation,
             record=record,
             titles=titles,
+            record_title=record_title,
         )
 
     # ------------------------------------------------------------------
@@ -1653,7 +1722,7 @@ class VectorStore(Transformer):
             )
             return
 
-        texts = [doc.page_content for doc in documents]
+        texts = [_embedding_text(doc) for doc in documents]
 
         with stage(
             "embed.dense",
@@ -1664,9 +1733,9 @@ class VectorStore(Transformer):
         # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
         with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
             sparse_embeddings = await self._compute_sparse_embeddings([
-                f"{doc.page_content}\n{doc.metadata[_SPARSE_EXTRA]}"
-                if doc.metadata.get(_SPARSE_EXTRA) else doc.page_content
-                for doc in documents
+                f"{text}\n{doc.metadata[_SPARSE_EXTRA]}"
+                if doc.metadata.get(_SPARSE_EXTRA) else text
+                for doc, text in zip(documents, texts)
             ])
 
         points: List[VectorPoint] = [
@@ -1674,10 +1743,7 @@ class VectorStore(Transformer):
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload=vector_point_payload(
-                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
-                    doc.page_content,
-                ),
+                payload=vector_point_payload(_stored_metadata(doc.metadata), doc.page_content),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
@@ -1823,7 +1889,11 @@ class VectorStore(Transformer):
         is_reconciliation: bool = False,
         record: Optional["Record"] = None,
         titles: dict[int, str] | None = None,
+        record_title: str | None = None,
     ) -> bool | None:
+        """``record_title`` names the record in what text and table rows embed
+        under; left out, it is read from ``record`` while section paths are on.
+        """
         try:
             with stage("embed.setup"):
                 is_multimodal_embedding = await self.get_embedding_model_instance()
@@ -1842,6 +1912,10 @@ class VectorStore(Transformer):
         block_groups = block_containers.block_groups
         if titles is None:
             titles = table_titles(blocks, block_groups)
+        if not section_paths_enabled():
+            record_title = None
+        elif record_title is None:
+            record_title = _record_title(record)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
@@ -1933,7 +2007,8 @@ class VectorStore(Transformer):
                     with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
                         text_documents = await asyncio.wait_for(
                             asyncio.to_thread(
-                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id,
+                                record_title,
                             ),
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
@@ -2154,7 +2229,7 @@ class VectorStore(Transformer):
                             table_data.get("row_natural_language_text", "")
                         )
                         if row_text:
-                            documents_to_embed.extend(_bounded_documents(
+                            row_documents = _bounded_documents(
                                 _with_title(titles.get(block.parent_index), row_text),
                                 {
                                     "virtualRecordId": virtual_record_id,
@@ -2165,7 +2240,10 @@ class VectorStore(Transformer):
                                     "isBlockGroup": False,
                                     "blockType": BlockType.TABLE_ROW.value,
                                 },
-                            ))
+                            )
+                            if record_title is not None:
+                                _embed_under(_embedding_context(record_title, block), row_documents)
+                            documents_to_embed.extend(row_documents)
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):

@@ -183,6 +183,7 @@ class TestVectorStoreApply:
             is_reconciliation=False,
             record=record,
             titles={},
+            record_title=None,
         )
         assert result is True
 
@@ -235,6 +236,7 @@ class TestVectorStoreApply:
             is_reconciliation=False,
             record=record,
             titles={},
+            record_title=None,
         )
 
 
@@ -1345,6 +1347,7 @@ class TestApply:
             is_reconciliation=False,
             record=mock_ctx.record,
             titles={},
+            record_title=None,
         )
 
 

@@ -48,6 +48,7 @@ from app.models.entities import (
 )
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, epoch_ms
 from app.modules.artifacts.reader import record_artifact_reader
+from app.modules.parsers.section_paths import block_heading_path, format_section_path
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
@@ -3025,6 +3026,43 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def _attach_section_paths(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+) -> None:
+    """Copy the headings stored on each hit's block or group onto the hit.
+
+    Only blocks parsed with section paths on carry them; other hits are left
+    as they are and render as before.
+    """
+    for result in flattened_results:
+        record = virtual_record_id_to_result.get(result.get("virtual_record_id"))
+        if not isinstance(record, dict):
+            continue
+        containers = record.get("block_containers") or {}
+        group_index = result.get("block_group_index")
+        if isinstance(group_index, int):
+            items, index = containers.get("block_groups") or [], group_index
+        else:
+            items, index = containers.get("blocks") or [], result.get("block_index")
+        if isinstance(index, int) and 0 <= index < len(items) and isinstance(items[index], dict):
+            path = format_section_path(block_heading_path(items[index]))
+            if path:
+                result["section_path"] = path
+
+
+def section_path_note(result: dict[str, Any]) -> str:
+    """`` (§ Section › Subsection)`` for a hit with a section path, else "".
+
+    Rendered inside the hit's own text so budget trimming drops it with the
+    hit, and it names no block, so it adds no citation ref.
+    """
+    path = result.get("section_path")
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    return f" (§ {path.strip()})"
+
+
 def _point_position(meta: dict[str, Any]) -> int | None:
     """Where a vector point's block sits, when the point says so itself.
 
@@ -3843,6 +3881,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
 
+    _attach_section_paths(flattened_results, virtual_record_id_to_result)
     return flattened_results
 
 def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
@@ -6158,13 +6197,14 @@ def build_message_content_array(
                         block_group_web_url="",
                         table_summary=table_summary,
                         table_rows=child_results,
+                        section_note=section_path_note(result),
                     )
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
                     })
                 else:
-                    header = f"[Table #{block_group_index}: {table_summary}]\n"
+                    header = f"[Table #{block_group_index}: {table_summary}]{section_path_note(result)}\n"
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
@@ -6179,7 +6219,7 @@ def build_message_content_array(
                 content.append({
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
-                        f"[{block_index}|{ref}] {result.get('content')}\n\n"
+                        f"[{block_index}|{ref}]{section_path_note(result)} {result.get('content')}\n\n"
                     ),
                 })
             elif block_type == BlockType.CODE.value and group_child_results(result) is None:
@@ -6217,6 +6257,7 @@ def build_message_content_array(
                         label=block_type,
                         blocks=group_blocks,
                         file_path=current_file_path,
+                        section_note=section_path_note(result),
                     )
                     current_record_has_blocks = True
                     content.append({
@@ -6225,7 +6266,7 @@ def build_message_content_array(
                     })
                 else:
                     # Emit blocks in reading order to preserve text/image interleaving.
-                    header = f"[{block_type} #{block_group_index}]\n"
+                    header = f"[{block_type} #{block_group_index}]{section_path_note(result)}\n"
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",

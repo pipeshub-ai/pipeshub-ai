@@ -30,6 +30,12 @@ from app.modules.parsers.markdown.linear_image_search import (
     MD_IMAGE_NESTED,
     LinearImageSearch,
 )
+from app.modules.parsers.section_paths import (
+    SectionOpener,
+    assign_section_paths,
+    note_section_opener,
+    section_paths_enabled,
+)
 from app.modules.parsers.text_splitting import split_long_text
 from app.modules.transformers.block_container_validator import strip_base64_images
 
@@ -239,6 +245,8 @@ class MarkdownToBlocksConverter:
         container = walker.walk(tokens)
         if page_number is not None:
             _apply_page_number_to_container(container, page_number)
+        if walker.section_openers is not None:
+            assign_section_paths(container, walker.section_openers)
         return container
 
 
@@ -278,6 +286,9 @@ class _TokenWalker:
         self.blockquote_depth = 0
         self.table_state: _TableState | None = None
         self._pending_heading: tuple[int, Token] | None = None
+        self.section_openers: dict[int, SectionOpener] | None = (
+            {} if section_paths_enabled() else None
+        )
 
     def walk(self, tokens: list[Token]) -> BlocksContainer:
         index = 0
@@ -341,9 +352,18 @@ class _TokenWalker:
         turned out not to be a paragraph."""
         if self._pending_heading is None:
             return
-        _level, inline_token = self._pending_heading
+        level, inline_token = self._pending_heading
         self._pending_heading = None
+        start = len(self.blocks)
         self._add_text_blocks_from_inline(inline_token, BlockSubType.HEADING)
+        self._open_section(start, level, inline_token)
+
+    def _open_section(self, start: int, level: int, heading_inline: Token) -> None:
+        """Note the section a heading emitted from block ``start`` on opens."""
+        if self.section_openers is not None:
+            note_section_opener(
+                self.blocks, start, level, heading_inline.content or "", self.section_openers,
+            )
 
     # ---------------------------------------------------------- token dispatch
 
@@ -367,7 +387,9 @@ class _TokenWalker:
                 if next_idx is not None and tokens[next_idx].type == "paragraph_open":
                     self._pending_heading = (heading_level, inline_token)
                     return end_idx - 1
+                start = len(self.blocks)
                 self._add_text_blocks_from_inline(inline_token, BlockSubType.HEADING)
+                self._open_section(start, heading_level, inline_token)
                 return index + 2
             return index + 1
 
@@ -378,7 +400,9 @@ class _TokenWalker:
                 if self._pending_heading is not None:
                     level, heading_inline = self._pending_heading
                     self._pending_heading = None
+                    start = len(self.blocks)
                     self._add_paragraph_with_heading(level, heading_inline, tokens[index + 1])
+                    self._open_section(start, level, heading_inline)
                 else:
                     self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.PARAGRAPH)
                 return index + 2

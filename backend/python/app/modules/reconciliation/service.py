@@ -5,15 +5,21 @@ import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 import hashlib
 from app.models.blocks import BlocksContainer, BlockType
+from app.modules.parsers.section_paths import block_heading_path
 from app.modules.parsers.table_titles import table_titles
 from app.utils.logger import create_logger
 
 logger = create_logger("reconciliation_service")
 
 
-def _content_hash(data: Any, title: str | None) -> str:  # noqa: ANN401 - block data is any JSON value
-    """A block's data hash; with a title, of the data and the title together."""
-    payload = json.dumps(data if title is None else {"data": data, "title": title}, sort_keys=True).encode("utf-8")
+def _content_hash(data: Any, title: str | None, headings: list[str] | None = None) -> str:  # noqa: ANN401 - block data is any JSON value
+    """A block's data hash; with a title or headings, of them and the data together."""
+    hashed = data
+    if title is not None or headings:
+        hashed = {"data": data, "title": title}
+        if headings:
+            hashed["headings"] = headings
+    payload = json.dumps(hashed, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
 
 
@@ -89,8 +95,10 @@ class ReconciliationService:
 
         for i, block in enumerate(block_containers.blocks):
             title = titles.get(block.parent_index) if block.type == BlockType.TABLE_ROW else None
-            if title is not None or block.content_hash is None:
-                block.content_hash = _content_hash(block.data, title)
+            # Blocks are embedded under their headings too, so a renamed heading re-embeds them.
+            headings = block_heading_path(block)
+            if title is not None or headings or block.content_hash is None:
+                block.content_hash = _content_hash(block.data, title, headings)
             if block.content_hash:
                 hash_to_block_ids.setdefault(block.content_hash, []).append(block.id)
                 block_id_to_index[block.id] = i

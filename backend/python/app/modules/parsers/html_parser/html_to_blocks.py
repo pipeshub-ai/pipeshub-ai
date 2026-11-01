@@ -104,6 +104,12 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.link_text import markdown_link_destination
+from app.modules.parsers.section_paths import (
+    SectionOpener,
+    assign_section_paths,
+    note_section_opener,
+    section_paths_enabled,
+)
 from app.modules.parsers.text_splitting import split_long_text
 from app.modules.transformers.block_container_validator import strip_base64_images
 
@@ -1545,6 +1551,9 @@ class _DomWalker:
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
         self.group_stack: list[_OpenGroup] = []
+        self.section_openers: dict[int, SectionOpener] | None = (
+            {} if section_paths_enabled() else None
+        )
 
     # ------------------------------------------------------------------ traversal
 
@@ -1563,7 +1572,17 @@ class _DomWalker:
                 format=DataFormat.MARKDOWN,
             )
         self._walk_children(root, depth=0)
-        return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
+        container = BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
+        if self.section_openers is not None:
+            assign_section_paths(container, self.section_openers)
+        return container
+
+    def _open_section(self, start: int, level: int | None, heading_node: LexborNode) -> None:
+        """Note the section a heading emitted from block ``start`` on opens."""
+        if self.section_openers is not None:
+            note_section_opener(
+                self.blocks, start, level, _node_text(heading_node), self.section_openers,
+            )
 
     def _walk_children(self, parent: LexborNode, depth: int = 0) -> None:
         """Dispatch each direct child of ``parent`` through ``_process_node``.
@@ -1661,6 +1680,7 @@ class _DomWalker:
         elif content_md:
             markdown_source = content_md
 
+        start = len(self.blocks)
         self._emit_with_image_splits(
             block_type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
@@ -1669,6 +1689,7 @@ class _DomWalker:
             markdown_source=markdown_source,
             image_nodes=heading_images + content_images,
         )
+        self._open_section(start, level, heading_node)
 
     def _process_node(self, node: LexborNode, depth: int = 0) -> None:  # noqa: C901
         """Route one DOM node to the correct block emitter based on its HTML tag.
@@ -1696,7 +1717,9 @@ class _DomWalker:
 
         if tag in _HEADING_TAGS:
             if not _is_hidden(node):
+                start = len(self.blocks)
                 self._emit_text_block(node, BlockSubType.HEADING)
+                self._open_section(start, int(tag[1]), node)
             return
 
         if tag in _PARAGRAPH_LIKE_TAGS:
@@ -1747,7 +1770,9 @@ class _DomWalker:
             return
 
         if tag == "summary":
+            start = len(self.blocks)
             self._emit_text_block(node, BlockSubType.HEADING)
+            self._open_section(start, None, node)
             return
 
         if tag == "hr":
@@ -1972,7 +1997,9 @@ class _DomWalker:
         """
         for child in _direct_children(node):
             if _tag_name(child) == "summary":
+                start = len(self.blocks)
                 self._emit_text_block(child, BlockSubType.HEADING)
+                self._open_section(start, None, child)
                 break
 
         for child in _direct_children(node):

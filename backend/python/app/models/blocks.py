@@ -93,6 +93,8 @@ class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
     # All File formatsspecific
     section_title: Optional[str] = None
+    # Headings the block sits under, outermost first (parsers/section_paths.py)
+    heading_path: Optional[list[str]] = None
 
     # PDF specific
     page_number: Optional[int] = None

@@ -1,8 +1,10 @@
 """What the vector store embeds versus what it leaves in the stored blocks."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from langchain_core.documents import Document
 
 from app.models.blocks import (
     Block,
@@ -10,12 +12,17 @@ from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
     BlockType,
+    CitationMetadata,
     DataFormat,
     GroupType,
     ImageMetadata,
     MediaMetadata,
 )
-from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.vectorstore import (
+    VectorStore,
+    _embed_under,
+    _embedding_text,
+)
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore_p1
 
 LINKED_TEXT = (
@@ -133,6 +140,103 @@ async def test_block_that_is_only_an_empty_image_link_embeds_nothing() -> None:
     await _index(vs, BlocksContainer(blocks=[_text_block(0, "![](https://example.com/spacer.gif)")]))
 
     assert capture.dense == []
+
+
+def _record(name: str = "Greenhouse Handbook.html", extension: str | None = "html") -> SimpleNamespace:
+    return SimpleNamespace(
+        record_name=name, extension=extension, connector_id=None, connector_name=None,
+        semantic_metadata=None,
+    )
+
+
+def _under(block: Block, *headings: str) -> Block:
+    block.citation_metadata = CitationMetadata(heading_path=list(headings))
+    return block
+
+
+async def _index_record(vs, container: BlocksContainer, record) -> None:
+    await vs.index_documents(
+        block_containers=container,
+        org_id="org-1",
+        record_id="rec-1",
+        virtual_record_id="vr-1",
+        record=record,
+    )
+
+
+@pytest.fixture
+def section_paths_on(monkeypatch) -> None:
+    monkeypatch.setenv("INDEXING_SECTION_PATHS", "true")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_text_embeds_under_title_and_headings_but_stores_its_own_text() -> None:
+    vs, capture = _capturing_vectorstore()
+    block = _under(_text_block(0, "Seedlings are watered at dawn."), "Daily care", "Watering")
+
+    await _index_record(vs, BlocksContainer(blocks=[block]), _record())
+
+    assert capture.dense == ["Greenhouse Handbook › Daily care › Watering\nSeedlings are watered at dawn."]
+    assert capture.sparse == capture.dense
+    (point,) = capture.points
+    assert point.payload["page_content"] == "Seedlings are watered at dawn."
+    assert "_embedContext" not in point.payload["metadata"]
+    assert block.data == "Seedlings are watered at dawn."
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_table_row_embeds_under_its_headings() -> None:
+    vs, capture = _capturing_vectorstore()
+    container = _table("Rack: North, Lamps: 6")
+    _under(container.blocks[0], "Lighting")
+
+    await _index_record(vs, container, _record())
+
+    assert "Greenhouse Handbook › Lighting\nRack: North, Lamps: 6" in capture.dense
+    row_point = next(p for p in capture.points if p.payload["metadata"]["blockType"] == "table_row")
+    assert row_point.payload["page_content"] == "Rack: North, Lamps: 6"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_a_heading_repeating_the_title_is_not_embedded_twice() -> None:
+    vs, capture = _capturing_vectorstore()
+    block = _under(_text_block(0, "Body."), "Greenhouse Handbook", "Pests")
+
+    await _index_record(vs, BlocksContainer(blocks=[block]), _record())
+
+    assert capture.dense == ["Greenhouse Handbook › Pests\nBody."]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("section_paths_on")
+async def test_the_context_line_changes_the_point_id() -> None:
+    vs, capture = _capturing_vectorstore()
+    await _index_record(vs, BlocksContainer(blocks=[_under(_text_block(0, "Body."), "Pests")]), _record())
+    await _index_record(vs, BlocksContainer(blocks=[_under(_text_block(0, "Body."), "Soil")]), _record())
+
+    first, second = capture.points
+    assert first.id != second.id
+
+
+@pytest.mark.asyncio
+async def test_switched_off_text_with_headings_embeds_as_before(monkeypatch) -> None:
+    monkeypatch.delenv("INDEXING_SECTION_PATHS", raising=False)
+    vs, capture = _capturing_vectorstore()
+    block = _under(_text_block(0, "Body."), "Pests")
+
+    await _index_record(vs, BlocksContainer(blocks=[block]), _record())
+
+    assert capture.dense == ["Body."]
+
+
+def test_context_is_left_off_rather_than_overflowing_the_model_limit(monkeypatch) -> None:
+    monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "8")
+    document = Document(page_content="a b c d e f g h", metadata={})
+    _embed_under("A long title › A long section", [document])
+    assert _embedding_text(document) == "a b c d e f g h"
 
 
 def test_image_alt_text_is_part_of_the_image_description() -> None:
