@@ -80,6 +80,16 @@ class AccessCheck:
 
 
 @dataclass(frozen=True)
+class SharedContentCount:
+    """How much of a request scope's content one other connector also holds."""
+
+    #: Distinct virtual record ids that live records of the scope share with this connector.
+    shared: int
+    #: All of this connector's records: the size of the storage a file search there walks.
+    records: int
+
+
+@dataclass(frozen=True)
 class AccessibleContainers:
     """The containers a user may search, in place of enumerating their records.
 
@@ -4471,6 +4481,28 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.
+        """
+        raise NotImplementedError
+
+    async def get_content_owner_connector_ids(
+        self,
+        scope_connector_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[str, SharedContentCount]:
+        """Connectors outside *scope_connector_ids* holding content that live
+        records of the scope share, keyed by connector id.
+
+        Deduplicated content is stored once, under whichever connector indexed
+        it first, so a file search over the scope's own storage cannot see it;
+        these connectors' storage can. Only a hint for where to look: it says
+        nothing about who may read a record, and a caller must adjudicate every
+        hit against the scope as usual. Both sides are bounded by ``org_id``,
+        since a virtual record id is not unique across orgs. A connector's own
+        copies count whether or not they are live: the stored file stays where
+        the first holder wrote it.
+
+        Raises on failure, so a caller cannot mistake it for "nothing shared".
         """
         raise NotImplementedError
 

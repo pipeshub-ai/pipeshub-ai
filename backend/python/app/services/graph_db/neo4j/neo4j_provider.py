@@ -199,6 +199,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CodeFileInfo,
     IGraphDBProvider,
     MoveDestinationMissing,
+    SharedContentCount,
     _distinct_connector_types,
     _unsupported_container_filters,
     promoted_duplicate_extraction_status,
@@ -4282,6 +4283,37 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if vid and row.get("id"):
                 holders.setdefault(vid, []).append(row)
         return holders
+
+    async def get_content_owner_connector_ids(
+        self,
+        scope_connector_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[str, SharedContentCount]:
+        if not scope_connector_ids or not org_id:
+            return {}
+        query = f"""
+        MATCH (r:Record)
+        WHERE r.connectorId IN $scope_ids AND r.orgId = $org_id
+          AND r.virtualRecordId IS NOT NULL AND {cypher_live_record("r")}
+        WITH DISTINCT r.virtualRecordId AS vid
+        MATCH (o:Record {{virtualRecordId: vid}})
+        WHERE o.orgId = $org_id AND o.connectorId IS NOT NULL
+          AND NOT o.connectorId IN $scope_ids
+        WITH o.connectorId AS cid, count(DISTINCT vid) AS shared
+        RETURN cid, shared,
+               COUNT {{ MATCH (a:Record {{connectorId: cid}}) WHERE a.orgId = $org_id }} AS records
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"scope_ids": sorted(set(scope_connector_ids)), "org_id": org_id},
+            txn_id=transaction,
+        )
+        return {
+            row["cid"]: SharedContentCount(shared=int(row["shared"]), records=int(row["records"] or 0))
+            for row in results or []
+            if row.get("cid")
+        }
 
     async def get_records_by_virtual_record_id(
         self,

@@ -346,6 +346,8 @@ services:
       # Keyword-search time limits; blank keeps 30 s per source and 35 s in all.
       - PATTERN_MATCH_TIMEOUT_SECS=${PATTERN_MATCH_TIMEOUT_SECS:-}
       - PATTERN_MATCH_TOTAL_BUDGET_SECS=${PATTERN_MATCH_TOTAL_BUDGET_SECS:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - GREP_SHARED_CONTENT=${GREP_SHARED_CONTENT:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

@@ -1329,15 +1329,23 @@ def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
     ``grep a . | xargs grep "b\\|c"`` yields regexes for a, b and c, so a
     file can be ranked by how many distinct alternatives it contains.
     """
-    regexes: list[regex.Pattern[str]] = []
+    regexes = [rx for group in _grep_stage_regexes(command) for rx in group]
+    # A term repeated across stages or alternatives must count once.
+    return list({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
+
+
+def _grep_stage_regexes(command: str) -> list[list[regex.Pattern[str]]]:
+    """The compiled alternatives of each non-inverted grep stage, one list per stage."""
+    groups: list[list[regex.Pattern[str]]] = []
     for stage_text in _split_pipeline_stages(command):
         stage = grep_stage(stage_text)
         if stage is None or stage.inverted:
             continue
-        for pattern in stage.patterns:
-            regexes.extend(_compile_alternatives(pattern, fixed=stage.fixed, extended=stage.extended))
-    # A term repeated across stages or alternatives must count once.
-    return list({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
+        groups.append([
+            rx for pattern in stage.patterns
+            for rx in _compile_alternatives(pattern, fixed=stage.fixed, extended=stage.extended)
+        ])
+    return groups
 
 
 def _compile_alternatives(
@@ -1541,6 +1549,39 @@ def _rank_candidates(
     return [(path, vrid, d, total, snippet) for d, total, _o, path, vrid, snippet in scored]
 
 
+def _text_matches_every_stage(full_path: str, stage_regexes: list[list[regex.Pattern[str]]]) -> bool:
+    """Whether a record's own text (not its stored name or metadata) satisfies
+    every grep stage; False whenever that cannot be shown."""
+    if not stage_regexes or not all(stage_regexes):
+        return False
+    try:
+        text = _record_search_text(_read_scored_record(full_path))
+        return all(
+            any(rx.search(text, timeout=_RANK_MATCH_TIMEOUT_SECS) for rx in group)
+            for group in stage_regexes
+        )
+    except (OSError, TimeoutError):
+        return False
+
+
+def _keep_text_matches(
+    ranked: list[tuple[str, str, int, int, str]],
+    connector_dir: str,
+    stage_regexes: list[list[regex.Pattern[str]]],
+    keep: int,
+) -> list[tuple[str, str, int, int, str]]:
+    """The first *keep* of *ranked* whose own text matches every stage."""
+    real_dir = os.path.realpath(connector_dir)
+    kept: list[tuple[str, str, int, int, str]] = []
+    for item in ranked:
+        if len(kept) >= keep:
+            break
+        full_path = os.path.realpath(os.path.join(connector_dir, item[0]))
+        if full_path.startswith(real_dir + os.sep) and _text_matches_every_stage(full_path, stage_regexes):
+            kept.append(item)
+    return kept
+
+
 def _list_stored_files(connector_dir: str) -> list[tuple[str, str]] | None:
     """(relative path, virtualRecordId) of every stored record file, or None past the cap.
 
@@ -1661,10 +1702,10 @@ class StoragePatternMatch:
 
     def __init__(self, state: ChatState) -> None:
         self.state = state
-        # vrid -> record_id, or None when not readable; answers for this turn only
-        # (the tool instance does not outlive it), so repeated commands and the
-        # output filter do not ask again.
-        self._access_by_vrid: dict[str, str | None] = {}
+        # Per narrowing scope (None: the agent's own), vrid -> record_id, or None
+        # when not readable; answers for this turn only (the tool instance does
+        # not outlive it), so repeated commands and the output filter do not ask again.
+        self._access_by_vrid: dict[frozenset[str] | None, dict[str, str | None]] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1761,29 +1802,39 @@ class StoragePatternMatch:
             )
         return None
 
-    async def _check_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
+    async def _check_accessible_vrids(
+        self, vrids: list[str], *, scope_connector_ids: frozenset[str] | None = None,
+    ) -> dict[str, str] | None:
         """Resolve which of *vrids* the requesting user may access.
 
         Returns a {virtual_record_id: record_id} map, or None if the check
         cannot be performed (missing user_id / graph provider / lookup error) —
         callers MUST fail closed on None. Empty ``vrids`` returns an empty map.
+        *scope_connector_ids* narrows the agent's knowledge scope further: the
+        record cited must be of one of those connectors.
         """
         if not vrids:
             return {}
+        known = self._access_by_vrid.setdefault(scope_connector_ids, {})
         wanted = list(dict.fromkeys(vrids))
-        missing = [v for v in wanted if v not in self._access_by_vrid]
+        missing = [v for v in wanted if v not in known]
         if missing:
-            fetched = await self._fetch_accessible_vrids(missing)
+            fetched = await self._fetch_accessible_vrids(missing, scope_connector_ids)
             if fetched is None:
                 return None
             for vrid in missing:
-                self._access_by_vrid[vrid] = fetched.get(vrid)
-        return {
-            vrid: record_id for vrid in wanted
-            if (record_id := self._access_by_vrid[vrid]) is not None
-        }
+                known[vrid] = fetched.get(vrid)
+        return {vrid: record_id for vrid in wanted if (record_id := known[vrid]) is not None}
 
-    async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
+    def _narrowed_scope(self, scope_connector_ids: frozenset[str] | None) -> frozenset[str] | None:
+        agent = self._scope_connector_ids()
+        if scope_connector_ids is None:
+            return agent
+        return scope_connector_ids if agent is None else agent & scope_connector_ids
+
+    async def _fetch_accessible_vrids(
+        self, vrids: list[str], scope_connector_ids: frozenset[str] | None = None,
+    ) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
         org_id = self.state.get("org_id", "")
         graph_provider = self.state.get("graph_provider")
@@ -1803,7 +1854,7 @@ class StoragePatternMatch:
             # and the agent's knowledge scope bounding which record may be cited.
             accessible = await graph_provider.filter_accessible_virtual_record_ids(
                 list(dict.fromkeys(vrids)), user_id, org_id,
-                scope_connector_ids=self._scope_connector_ids(),
+                scope_connector_ids=self._narrowed_scope(scope_connector_ids),
             )
         except Exception as exc:
             logger.warning(
@@ -2154,6 +2205,8 @@ class StoragePatternMatch:
         max_output_lines: int | None = None,
         *,
         readable_only: bool = False,
+        scope_connector_ids: frozenset[str] | None = None,
+        content_owner: bool = False,
     ) -> tuple[bool, str]:
         """Run a command and parse record file paths from output into structured metadata.
 
@@ -2167,6 +2220,12 @@ class StoragePatternMatch:
         access check is down) nothing is run and the answer is always "cut".
         Elsewhere (*readable_only* off) the output limits
         are not reported, only a constant hint that results may be incomplete.
+
+        *scope_connector_ids* narrows which record a hit may name, as in
+        ``_check_accessible_vrids``. *content_owner* marks a directory outside
+        that scope which stores content records of the scope share: a hit there
+        counts only when the record's own text matched every grep stage, never
+        the stored name or metadata, which belong to the record that stored it.
         """
         org_id = self.state.get("org_id", "")
         logger.info(
@@ -2288,7 +2347,9 @@ class StoragePatternMatch:
 
             # Permission gate: keep only records the requesting user may access.
             # Fail closed if the check cannot be performed.
-            accessible = await self._check_accessible_vrids([v for _, v, _c in line_vrids])
+            accessible = await self._check_accessible_vrids(
+                [v for _, v, _c in line_vrids], scope_connector_ids=scope_connector_ids,
+            )
             if accessible is None:
                 return False, (
                     "Error: cannot verify record access (permission service "
@@ -2310,6 +2371,13 @@ class StoragePatternMatch:
                 # Ranking only improves order; never lose the results over it.
                 logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
                 ranked = [(path, vrid, 0, count, "") for path, vrid, count in candidates]
+            if content_owner:
+                # A hit on the stored name or metadata would reveal them through
+                # a record the user may read.
+                ranked = await asyncio.to_thread(
+                    _keep_text_matches, [r for r in ranked if r[2] > 0], run_dir,
+                    _grep_stage_regexes(command), max_results,
+                )
 
             graph_provider = self.state.get("graph_provider")
             try:
