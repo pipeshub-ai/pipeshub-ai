@@ -48,12 +48,14 @@ async function childRows(
   for (const c of m.children ?? []) {
     const { rows } = await k.query<{ r: Row }>(
       fill(
-        '/* pipeshub:verify.children */ SELECT @{J} AS r FROM @{T} c WHERE c.@{P} = ANY($1::text[])',
+        '/* pipeshub:verify.children */ SELECT @{J} AS r FROM @{T} c WHERE c.@{P} = ANY($1::@{K}[])',
         {
-          J: rowJson(
-            'c',
-            c.fields.filter((f) => f.type === 'bigint').map((f) => f.col),
-          ),
+          // a child's parent column has the type of the root id
+          K: m.idType === 'bigint' ? 'bigint' : 'text',
+          J: rowJson('c', [
+            ...(m.idType === 'bigint' ? [c.parentCol] : []),
+            ...c.fields.filter((f) => f.type === 'bigint').map((f) => f.col),
+          ]),
           T: ident(c.table),
           P: ident(c.parentCol),
         },

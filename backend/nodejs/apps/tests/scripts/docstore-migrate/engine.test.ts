@@ -82,13 +82,19 @@ describe('docstore-migrate engine', () => {
   describe('PostgreSQL reads', () => {
     const seen: string[] = [];
     const k = { query: (text: string) => (seen.push(text), Promise.resolve({ rows: [], rowCount: 0 })) };
-    const outbox: CollectionMapping = { ...M, table: 'x.outbox', idType: 'bigint', fields: [{ col: 'size', path: 'size', type: 'bigint' }], children: [] };
+    const outbox: CollectionMapping = { ...M, table: 'x.outbox', idType: 'bigint', fields: [{ col: 'size', path: 'size', type: 'bigint' }], children: [{ table: 'x.kids', parentCol: 'outbox_id', path: 'kids', orderCol: 'pos', fields: [{ col: 'n', path: 'n', type: 'bigint' }], derived: [] }] };
     it('pages a bigint id by number and reads bigint columns as text', async () => {
       seen.length = 0;
       await readDecodedPage(k, outbox, null, 10);
       await readDecoded(k, outbox, ['1']);
+
       expect(seen[0]).to.include('$1::bigint IS NULL').and.include('t.id > $1::bigint');
-      for (const q of seen) expect(q).to.include("'id', t.id::text").and.include("'size', t.size::text");
+      const roots = seen.filter((q) => q.includes('verify.roots') || q.includes('verify.page'));
+      expect(roots).to.have.length(2);
+      for (const q of roots) expect(q).to.include("'id', t.id::text").and.include("'size', t.size::text");
+      const kids = seen.filter((q) => q.includes('verify.children'));
+      expect(kids).to.have.length(2);
+      for (const q of kids) expect(q).to.include('c.outbox_id = ANY($1::bigint[])').and.include("'outbox_id', c.outbox_id::text").and.include("'n', c.n::text");
     });
   });
 
@@ -153,6 +159,7 @@ describe('docstore-migrate engine', () => {
     });
     it('hides a password that holds an @', () => {
       expect(redact('postgresql://m:pa@ss@h/db')).to.equal('postgresql://m:***@h/db');
+      expect(redact('postgresql://m:secret@db/app?reply=ops@example.org#a@b')).to.equal('postgresql://m:***@db/app?reply=ops@example.org#a@b');
     });
   });
 
@@ -160,9 +167,12 @@ describe('docstore-migrate engine', () => {
     it('refuses one PostgreSQL URL without opening MongoDB', async () => {
       const cfg = { mongoUri: 'mongodb://127.0.0.1:1/', pgImportUrl: 'postgresql://j@127.0.0.1:1/db' } as never;
       const t = Date.now();
+      const store = process.env.DOC_STORE;
       const err = await MigrationRuntime.open(cfg).then(() => undefined, (e: Error) => e);
       expect(err?.message).to.include('both needed');
       expect(Date.now() - t).to.be.lessThan(2000);
+      // a refused open must not switch the process to the PostgreSQL repositories (later tests in the same process would use them)
+      expect(process.env.DOC_STORE).to.equal(store);
     });
     it('keeps the migrate pool alive through an idle client error', async () => {
       const pool = createMigratePool('postgresql://m@127.0.0.1:1/db');

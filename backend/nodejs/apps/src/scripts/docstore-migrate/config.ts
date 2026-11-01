@@ -68,6 +68,6 @@ export function loadConfig(
   };
 }
 
-/** A URL or message with any password removed (through the last `@` of the token, so a password holding an `@` is covered too). */
+/** A URL or message with any password removed (through the last `@` before the first `/`, `?` or `#`, so a password holding an `@` is covered and a query string is not). */
 export const redact = (s: string): string =>
-  s.replace(/(:\/\/[^:/@\s]+:)\S*@/g, '$1***@');
+  s.replace(/(:\/\/[^:/@\s]+:)[^/?#\s]*@/g, '$1***@');

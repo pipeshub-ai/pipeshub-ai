@@ -36,11 +36,12 @@ export class MigrationRuntime {
   ) {}
 
   static async open(cfg: MigrateConfig): Promise<MigrationRuntime> {
-    // the repositories are picked by DOC_STORE; the copy writes through the PostgreSQL ones
-    process.env.DOC_STORE = 'postgres';
     // checked before connecting: a throw after the connection would leave the MongoDB client open and the process hanging
     if (Boolean(cfg.pgImportUrl) !== Boolean(cfg.pgMigrateUrl))
       throw new Error('PG_IMPORT_URL and PG_MIGRATE_URL are both needed');
+    // set only once the configuration is accepted, so a refused open leaves the process as it was
+    // the repositories are picked by DOC_STORE; the copy writes through the PostgreSQL ones
+    process.env.DOC_STORE = 'postgres';
     const mongo = await new MongoClient(cfg.mongoUri, {
       serverSelectionTimeoutMS: 8000,
       appName: 'docstore-migrate',
