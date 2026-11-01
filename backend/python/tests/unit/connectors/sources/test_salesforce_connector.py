@@ -3390,6 +3390,58 @@ class TestSyncFiles:
         assert written.id == stored.id and written.external_record_id == "doc-1"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("manual", [False, True])
+    async def test_a_file_held_back_by_manual_indexing_is_indexed_once_it_is_off(self, manual) -> None:
+        """A full sync queues the other record types it writes again; a held-back file the same."""
+        from app.connectors.core.registry.filters import FilterCollection
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        connector._full_run_parents = set()
+        connector.indexing_filters = FilterCollection.from_dict(
+            {"enable_manual_sync": {"operator": "is", "type": "boolean", "value": manual}})
+        file_row = self._make_file_row()
+        stored = connector._build_file_record(
+            file_row, "doc-1", external_record_group_id=f"{connector.data_entities_processor.org_id}-files",
+        )
+        stored.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        self._store_like_the_graph(connector, stored)
+        connector._handle_record_updates = AsyncMock()
+        connector.data_entities_processor.on_record_metadata_update = AsyncMock()
+
+        await connector._sync_files(
+            api_version="59.0", file_records_pages=_async_iter_pages([file_row]),
+        )
+
+        if manual:
+            connector._handle_record_updates.assert_not_awaited()
+            connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+        else:
+            update = connector._handle_record_updates.await_args.args[0]
+            assert update.content_changed and not update.metadata_changed
+            assert update.record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+            assert update.record.version == stored.version  # same content, same version
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [None, ""])
+    async def test_a_manual_indexing_switch_without_a_value_is_off(self, value) -> None:
+        """The UI shows a switch saved with no value as off."""
+        from app.connectors.core.registry.filters import FilterCollection
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        connector.indexing_filters = FilterCollection.from_dict(
+            {"enable_manual_sync": {"operator": "is", "type": "boolean", "value": value}})
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        await connector._sync_files(
+            api_version="59.0", file_records_pages=_async_iter_pages([self._make_file_row()]),
+        )
+
+        written = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert written and all(r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value for r, _ in written)
+
+    @pytest.mark.asyncio
     async def test_a_failed_update_write_stops_the_file_sync(self) -> None:
         """run_sync saves the files checkpoint only after _sync_files returns, so this keeps it in place."""
         connector = _make_connector()
@@ -4079,6 +4131,52 @@ class TestReindexRecords:
         connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(
             updated_record
         )
+
+    @pytest.mark.asyncio
+    async def test_a_rebuilt_file_keeps_its_record_and_group(self):
+        """The one-row rebuild of a file knows neither its record nor its group: without them
+        a reindexed file lost every reader."""
+        connector = _make_connector()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        rebuilt = MagicMock(external_record_group_id=None, parent_external_record_id=None, parent_record_type=None)
+        connector._fetch_salesforce_record_if_updated = AsyncMock(return_value=rebuilt)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(record_type=RecordType.DEAL))
+        stored = MagicMock(
+            external_revision_id="068000000000001AAA", external_record_id="069000000000001AAA-006000000000001AAA",
+            record_type=RecordType.FILE, external_record_group_id="001000000000001AAA",
+            parent_external_record_id="006000000000001AAA", parent_record_type=None,
+        )
+
+        await connector.reindex_records([stored])
+
+        written = connector.data_entities_processor.on_record_content_update.await_args.args[0]
+        assert (written.external_record_group_id, written.parent_external_record_id, written.parent_record_type) == (
+            "001000000000001AAA", "006000000000001AAA", RecordType.DEAL)
+
+    @pytest.mark.asyncio
+    async def test_a_rebuilt_task_keeps_its_group_and_its_own_parent(self):
+        """Rebuilt without its deal's account, a task fell into the unassigned group."""
+        connector = _make_connector()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        rebuilt = MagicMock(external_record_group_id="UNASSIGNED-DEAL",
+                            parent_external_record_id="006000000000001AAA", parent_record_type=RecordType.DEAL)
+        connector._fetch_salesforce_record_if_updated = AsyncMock(return_value=rebuilt)
+        stored = MagicMock(
+            external_revision_id="2026-01-01T00:00:00.000+0000", external_record_id="00T000000000001AAA",
+            record_type=RecordType.TASK, external_record_group_id="001000000000001AAA",
+            parent_external_record_id="006000000000001AAA", parent_record_type=None,
+        )
+
+        await connector.reindex_records([stored])
+
+        written = connector.data_entities_processor.on_record_content_update.await_args.args[0]
+        assert (written.external_record_group_id, written.parent_external_record_id, written.parent_record_type) == (
+            "001000000000001AAA", "006000000000001AAA", RecordType.DEAL)
 
     @pytest.mark.asyncio
     async def test_adds_unchanged_records_to_reindex_list(self):

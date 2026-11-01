@@ -5294,7 +5294,7 @@ class SalesforceConnector(BaseConnector):
                             product, list_price=price_map.get(product.Id),
                         )
                         if self.indexing_filters and self.indexing_filters.is_enabled(
-                            IndexingFilterKey.ENABLE_MANUAL_SYNC,
+                            IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False,
                         ):
                             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                         records.append(record)
@@ -5388,7 +5388,7 @@ class SalesforceConnector(BaseConnector):
                         continue
                     record = self._build_deal_record(opp)
                     if self.indexing_filters and self.indexing_filters.is_enabled(
-                        IndexingFilterKey.ENABLE_MANUAL_SYNC,
+                        IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False,
                     ):
                         record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
@@ -5720,7 +5720,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         record = self._build_case_record(case_row)
                         if self.indexing_filters and self.indexing_filters.is_enabled(
-                            IndexingFilterKey.ENABLE_MANUAL_SYNC,
+                            IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False,
                         ):
                             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                         records.append(record)
@@ -5927,7 +5927,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         record = self._build_task_record(task_row, opp_account_map, case_account_map)
                         if self.indexing_filters and self.indexing_filters.is_enabled(
-                            IndexingFilterKey.ENABLE_MANUAL_SYNC,
+                            IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False,
                         ):
                             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                         records.append(record)
@@ -6291,7 +6291,7 @@ class SalesforceConnector(BaseConnector):
                         all_records.append((rec, doc_id))
 
                 manual_indexing = bool(self.indexing_filters and self.indexing_filters.is_enabled(
-                    IndexingFilterKey.ENABLE_MANUAL_SYNC,
+                    IndexingFilterKey.ENABLE_MANUAL_SYNC, default=False,
                 ))
                 new_records_batch: List[Tuple[FileRecord, List[Permission]]] = []
                 page_updated = 0
@@ -6328,16 +6328,22 @@ class SalesforceConnector(BaseConnector):
                             self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
                             existing_file = None
                         metadata_changed = existing_file is None or existing_file.extension != rec.extension
-                    if content_changed or metadata_changed:
+                    # Stored while manual indexing was on, which is now off: index it, as a
+                    # full sync does for the other record types.
+                    held_back = (
+                        not manual_indexing
+                        and getattr(existing, "indexing_status", None) == ProgressStatus.AUTO_INDEX_OFF.value
+                    )
+                    if content_changed or metadata_changed or held_back:
                         rec.id = existing.id
-                        rec.version = getattr(existing, "version", 0) + 1
+                        rec.version = getattr(existing, "version", 0) + (1 if content_changed or metadata_changed else 0)
                         record_update = RecordUpdate(
                             record=rec,
                             is_new=False,
                             is_updated=True,
                             is_deleted=False,
                             metadata_changed=metadata_changed,
-                            content_changed=content_changed,
+                            content_changed=content_changed or held_back,
                             permissions_changed=False,
                             external_record_id=ext_id,
                         )
@@ -6966,6 +6972,17 @@ class SalesforceConnector(BaseConnector):
                 )
 
                 if updated_record:
+                    # A reindex refreshes what the record says. Its record group, which decides who
+                    # reads it, is the sync's, read with its parent (a task's account, a file's
+                    # record); so is a file's parent, which this one-row rebuild does not know.
+                    if record.external_record_group_id:
+                        updated_record.external_record_group_id = record.external_record_group_id
+                    if not updated_record.parent_external_record_id and record.parent_external_record_id:
+                        parent = await self.data_entities_processor.get_record_by_external_id(
+                            self.connector_id, record.parent_external_record_id,
+                        )
+                        updated_record.parent_external_record_id = record.parent_external_record_id
+                        updated_record.parent_record_type = parent.record_type if parent else None
                     await self.data_entities_processor.on_record_content_update(updated_record)
                 else:
                     to_reindex.append(record)
