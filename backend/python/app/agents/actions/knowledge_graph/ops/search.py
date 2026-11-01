@@ -491,6 +491,7 @@ async def execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    max_result_chars: int | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope (see
     `_execute_search`).
@@ -500,9 +501,12 @@ async def execute_search(
     empty one searches nothing, and grep, which knows no such scope, stays off.
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
+    ``max_result_chars`` sizes the result below the request's own cap, for a
+    search run in code beside others.
 
-    Without a scope, dates over a span longer than a month run the timeline
-    tool's search instead (``ops/timeline.automatic_timeline_search``).
+    Without a scope or a size, dates over a span longer than a month run the
+    timeline tool's search instead (``ops/timeline.automatic_timeline_search``),
+    whose result is sized to the request's cap.
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
@@ -521,7 +525,7 @@ async def execute_search(
             created_after=created_after, created_before=created_before,
             modified_after=modified_after, modified_before=modified_before,
         )
-    if scope_virtual_record_ids is None:
+    if scope_virtual_record_ids is None and max_result_chars is None:
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
@@ -539,6 +543,7 @@ async def execute_search(
         created_after=created_after, created_before=created_before,
         modified_after=modified_after, modified_before=modified_before,
         entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
+        max_result_chars=max_result_chars,
     )
     return with_json_preamble(result, preamble)
 
@@ -569,6 +574,7 @@ async def _execute_search(
     entity_ids: list[str] | None = None,
     scope_virtual_record_ids: list[str] | None = None,
     preamble: str = "",
+    max_result_chars: int | None = None,
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -1109,6 +1115,9 @@ async def _execute_search(
         # what an earlier search of this request showed giving way to new text.
         targeted = targeted_retrieval_enabled()
         result_max_chars = search_max_chars() if targeted else DEFAULT_MAX_RESULT_CHARS
+        if max_result_chars:
+            # Smaller, never larger: the request's cap would cut the rest mid-record.
+            result_max_chars = min(max_result_chars, result_max_chars)
         per_record = passages_per_record(adjusted_limit) if targeted else 0
         passage_cap: PassageCap | None = None
         if targeted and knowledge.ranked:
