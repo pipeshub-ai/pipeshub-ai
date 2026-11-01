@@ -161,9 +161,11 @@ EXACT_MATCH_PARAMETER = ToolParameter(
     description=(
         "Also look for the query's own words as literal text, whatever the query is. "
         "That literal pass already runs by itself when the query holds an identifier, "
-        "ticket key, version, file name or path, a measured value or a \"quoted phrase\". "
-        "Set this when an ordinary word or name has to occur as written, or when "
-        "searching by meaning keeps coming back without it."
+        "ticket key, version, file name or path, a measured value or a \"quoted phrase\", "
+        "unless dates spanning more than 31 days make the search run period by period, "
+        "which skips it. Set this when an ordinary word or name has to occur as written, "
+        "when searching by meaning keeps coming back without it, or to keep the literal "
+        "pass on such a long date range (the search then stays one ranked search)."
     ),
     required=False,
     default=False,
