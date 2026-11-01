@@ -364,19 +364,24 @@ describe('the proactive refresh timer', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it('drops what this tab cached when another tab signs in as someone else', async () => {
-      const { onSessionEnd } = await import('../session-cache');
-      const reset = vi.fn();
-      const stop = onSessionEnd(reset);
-      useAuthStore.setState({ accessToken: tokenFor('user-a') });
+    it('starts over on a fresh chat page when another tab signs in as someone else', () => {
+      const originalLocation = window.location;
+      const assign = vi.fn();
+      Object.defineProperty(window, 'location', { value: { assign }, configurable: true });
+      try {
+        useAuthStore.setState({ accessToken: tokenFor('user-a') });
 
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
-      expect(reset).not.toHaveBeenCalled();
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        expect(assign).not.toHaveBeenCalled();
 
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
-      expect(reset).toHaveBeenCalledTimes(1);
-      expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
-      stop();
+        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        // A page load drops every cache and store of the previous account, and the
+        // chat it had open, which belongs to that account.
+        expect(assign).toHaveBeenCalledWith('/chat/');
+        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+      } finally {
+        Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+      }
     });
 
     it('signs out here when another tab signs out', () => {

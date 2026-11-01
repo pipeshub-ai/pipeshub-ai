@@ -32,8 +32,6 @@ import {
   decodeJwtPayload,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
-import { clearSessionCache } from './session-cache';
-
 /**
  * `setTimeout` accepts a 32-bit signed delay; values larger than this wrap
  * to a near-zero delay and would fire immediately. We clamp and chain.
@@ -144,10 +142,12 @@ function handleStorageEvent(event: StorageEvent): void {
   } else {
     useAuthStore.getState().setAccessToken(event.newValue);
   }
-  // Another tab signed in as someone else without this one signing out: what
-  // was cached here belongs to the previous account.
+  // Another tab signed in as someone else without this one signing out. Every
+  // cache, store and the open chat here belong to the previous account, and a
+  // page load is the one reset that leaves none of it on screen. Web only in
+  // practice: the desktop app has a single window, so no other tab writes.
   const before = accountOf(current);
-  if (before && before !== accountOf(event.newValue)) clearSessionCache({ refetch: true });
+  if (before && before !== accountOf(event.newValue)) window.location.assign('/chat/');
   // The zustand subscription will then call `scheduleFromToken`.
 }
 
