@@ -122,6 +122,7 @@ const CONNECTOR_ICONS_BASE_PATH = '/icons/connectors';
 const svg = (name: string) => `${CONNECTOR_ICONS_BASE_PATH}/${name}.svg`;
 
 export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallback: string; needDarkModeInvert?: boolean }> = {
+  'intercom': { svg: svg('intercom'), fallback: 'hub' },
   // Communication & Collaboration
   'slack': { svg: svg('slack'), fallback: 'tag' },
   'teams': { svg: svg('teams'), fallback: 'groups' },
