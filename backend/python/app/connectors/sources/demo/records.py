@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.sources.demo.fields import deal_fields, ticket_fields
 from app.connectors.sources.demo.systems import shape_of
 from app.models.entities import (
     CommentRecord,
@@ -117,6 +118,7 @@ def _github_issue(common: dict[str, Any], slots: Slots, people: People, rec: Map
         creator_name=people.name(slots["reporter"]),
         assignee_source_id=list(slots["assignees"]),
         assignee=people.name(slots["assignees"]),
+        **ticket_fields(rec),
         **common,
     )
 
@@ -133,6 +135,7 @@ def _jira_issue(
         assignee_email=people.email(slots["assignee"]),
         assignee=people.name(slots["assignee"]),
         **source_ids,
+        **ticket_fields(rec),
         **common,
     )
 
@@ -146,7 +149,7 @@ def _zendesk_ticket(common: dict[str, Any], slots: Slots, people: People, rec: M
 
 
 def _servicenow_ticket(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any]) -> Record:
-    return TicketRecord(record_type=RecordType.TICKET, **common)
+    return TicketRecord(record_type=RecordType.TICKET, **ticket_fields(rec), **common)
 
 
 def _comment(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str, Any]) -> Record:
@@ -208,6 +211,7 @@ def _deal(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str
         record_group_type=RecordGroupType.DEAL,
         name=rec["title"],
         owner_id=_first(slots["owner"]),
+        **deal_fields(rec),
         **common,
     )
 
@@ -222,6 +226,7 @@ def _case(common: dict[str, Any], slots: Slots, people: People, rec: Mapping[str
         assignee=people.name(slots["assignee"]),
         reporter_email=people.email(slots["reporter"]),
         reporter_name=people.name(slots["reporter"]),
+        **ticket_fields(rec),
         **common,
     )
 

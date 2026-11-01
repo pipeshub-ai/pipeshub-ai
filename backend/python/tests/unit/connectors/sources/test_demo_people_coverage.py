@@ -26,7 +26,7 @@ from app.connectors.sources.demo import connector as demo_connector
 from app.connectors.sources.demo.fixture_loader import load_fixture
 from app.connectors.sources.demo.ground_truth import expected_graph
 from app.connectors.sources.demo.systems import ADDRESSED_TO, INVOLVED_IN
-from app.models.entities import MessageRecord, RecordType
+from app.models.entities import MessageRecord, Priority, RecordType, Status
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -306,3 +306,39 @@ def test_golden_answers_still_appear_in_the_records_they_cite(fx) -> None:
         text = "\n".join(bodies[r] for r in cited if r in bodies).lower()
         missing = [t for t in q.get("answer_must_mention", []) if t.lower() not in text]
         assert not missing, (q["id"], missing)
+
+
+# -- structured fields, filled the way the real connectors fill them
+
+
+def _emitted(processor: RecordingProcessor, external_id: str) -> Record:
+    return next(r for r in processor.records if r.external_record_id == external_id)
+
+
+async def test_a_ticket_carries_its_status_priority_and_resolved_date(synced) -> None:
+    # Real ticket connectors set these fields from the API; the record-query
+    # engine filters on them, so the demo must set them too, not leave them in text.
+    _, processor, _ = synced
+    ticket = _emitted(processor, "zd-5007")
+    assert ticket.status == Status.RESOLVED and ticket.source_status == "Solved"
+    assert ticket.priority == Priority.MEDIUM
+    assert ticket.resolved_at == 1770940800000  # 2026-02-13, midnight UTC
+    escalation = _emitted(processor, "jira-int-101")
+    assert (escalation.status, escalation.source_status) == (Status.DONE, "Done")
+    case = _emitted(processor, "sf-case-quarry-2001")
+    assert (case.status, case.resolved_at) == (Status.CLOSED, 1770940800000)
+
+
+async def test_an_open_ticket_has_no_resolved_date(synced) -> None:
+    _, processor, _ = synced
+    ticket = _emitted(processor, "zd-5149")
+    assert ticket.status == Status.OPEN and ticket.resolved_at is None
+
+
+async def test_a_deal_carries_its_amount_close_date_and_outcome(synced) -> None:
+    _, processor, _ = synced
+    deal = _emitted(processor, "sf-deal-mm-001")
+    assert (deal.amount, deal.close_date) == (9000.0, "2026-03-04")
+    assert (deal.is_closed, deal.is_won) == (True, True)
+    lost = next(r for r in processor.records if r.record_type == RecordType.DEAL and r.is_closed and not r.is_won)
+    assert lost.amount is not None
