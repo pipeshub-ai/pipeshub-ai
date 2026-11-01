@@ -6,7 +6,8 @@ import { ConnectorsApi } from '../api';
 import { KnowledgeHubApi } from '@/app/(main)/knowledge-base/api';
 import { DemoDataApi, type DemoDataStatus } from './api';
 import type { Connector, ConnectorScope } from '../types';
-import { demoConnectorsIn, hasActiveDemo, hasIndexedRecords, otherConnectorsIn } from './demo-data';
+import { onSessionEnd } from '@/lib/api/session-cache';
+import { demoConnectorsIn, hasIndexedRecords, otherConnectorsIn } from './demo-data';
 
 interface DemoDataState {
   /** Demo connector instances (the Acme Corp sample company), enabled or not; empty until found. */
@@ -18,7 +19,8 @@ interface DemoDataState {
   realDataIndexed: boolean | null;
   /** This person's demo data switch; `null` until read. */
   status: DemoDataStatus | null;
-  loadDemoConnectors: () => Promise<void>;
+  /** Picks the demo instances out of a fresh active team connector list. */
+  setTeamConnectors: (connectors: Connector[]) => void;
   checkRealData: () => Promise<void>;
   loadStatus: () => Promise<void>;
   /** Show or hide the demo for this person; `null` goes back to the default. */
@@ -30,7 +32,6 @@ interface DemoDataState {
 }
 
 // One lookup at a time, however many components ask.
-let demoLookup: Promise<void> | null = null;
 let realDataLookup: Promise<void> | null = null;
 let statusLookup: Promise<void> | null = null;
 // Bumped by every change of the switch, so a status read that started before
@@ -75,26 +76,7 @@ export const useDemoDataStore = create<DemoDataState>()(
       realDataIndexed: null,
       status: null,
 
-      // Only a positive answer is remembered. Chat is the landing page, so the
-      // first lookup of a session usually runs before anyone has turned the
-      // demo on; remembering that "no", or a failed lookup, would hide the demo
-      // for the rest of the session. A disabled demo is asked about again too,
-      // since it may be turned back on.
-      loadDemoConnectors: () => {
-        if (hasActiveDemo(get().demoConnectors)) return Promise.resolve();
-        if (demoLookup) return demoLookup;
-        const started = generation;
-        const lookup: Promise<void> = ConnectorsApi.getActiveConnectors('team')
-          .then((res) => {
-            if (started === generation) set({ demoConnectors: demoConnectorsIn(res.connectors ?? []) });
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            if (demoLookup === lookup) demoLookup = null;
-          });
-        demoLookup = lookup;
-        return lookup;
-      },
+      setTeamConnectors: (connectors) => set({ demoConnectors: demoConnectorsIn(connectors) }),
 
       // Same rule: once real data is there it stays there, while "none yet" is
       // asked again next time.
@@ -166,7 +148,6 @@ export const useDemoDataStore = create<DemoDataState>()(
 
       reset: () => {
         generation += 1;
-        demoLookup = null;
         realDataLookup = null;
         statusLookup = null;
         set({ demoConnectors: [], realDataIndexed: null, status: null });
@@ -175,3 +156,5 @@ export const useDemoDataStore = create<DemoDataState>()(
     { name: 'demo-data-store' },
   ),
 );
+
+onSessionEnd(() => useDemoDataStore.getState().reset());
