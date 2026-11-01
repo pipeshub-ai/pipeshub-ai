@@ -29,6 +29,7 @@ from app.modules.retrieval.record_query.evaluate import (
     field_value,
     groups,
     tally,
+    unassigned,
 )
 from app.modules.retrieval.record_query.model import (
     MAX_DESCRIBED_VALUES,
@@ -174,6 +175,7 @@ def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> Re
     waiting = {r["_key"]: r for r in [*shown, *found.not_classified] if classification_pending(r)}
     return RecordQueryResult(
         total=len(matched), approximate=approximate, value=value, groups=groups(query, matched),
+        unassigned=unassigned(query, matched),
         unknown=dict(found.unknown), described=_described(query, matched),
         rows=[row_view(r) for r in shown], offset=start, next_cursor=next_cursor,
         not_classified=[_first_use_doc(r) for r in list(waiting.values())[:MAX_TO_CLASSIFY]],

@@ -187,3 +187,14 @@ async def test_records_whose_classification_failed_are_reported_apart(engine: As
     assert "2 records not classified yet" in text
     assert "4 records whose classification failed" in text and "reindex" in text
     assert "lack classification" not in text
+
+
+async def test_records_no_organisation_group_holds_are_listed_apart_and_labelled(engine: AsyncMock) -> None:
+    engine.return_value = RecordQueryResult(total=6, groups=[Group(key="acme", label="Acme", count=2)], unassigned=[
+        Group(key="classification", label="unknown (not classified yet)", count=3),
+        Group(key="classification_failed", label="unknown (classification failed)", count=1),
+    ])
+    _, text = await op.execute_find_records(_state(), group_by={"organization": True}, limit=0)
+    assert "- Acme: 2 (exact)" in text
+    assert "- unknown (not classified yet): 3 (exact)" in text
+    assert "- unknown (classification failed): 1 (exact)" in text

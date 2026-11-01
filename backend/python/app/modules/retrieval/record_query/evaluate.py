@@ -248,5 +248,36 @@ def groups(query: RecordQuery, rows: list[Row]) -> list[Group]:
     return out
 
 
-__all__ = ["CLASSIFICATION_FAILED", "NOT_CLASSIFIED", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
+# Rows grouped by organisation that fall in no organisation, by why. Never
+# merged into a real group: an unclassified record may yet name one.
+NO_ORGANIZATION = "no_organization"
+UNASSIGNED_LABELS = {
+    NO_ORGANIZATION: "(no organization)",
+    NOT_CLASSIFIED: "unknown (not classified yet)",
+    CLASSIFICATION_FAILED: "unknown (classification failed)",
+}
+
+
+def unassigned(query: RecordQuery, rows: list[Row]) -> list[Group]:
+    """Matched rows a classification-derived grouping (organisation) puts in no
+    group: those not classified yet, those whose classification failed, and
+    those classified with no organisation, so the groups and these add up."""
+    if query.group_by is None or not query.group_by.organization:
+        return []
+    members: dict[str, list[Row]] = defaultdict(list)
+    for row in rows:
+        if row.get("organizations"):
+            continue
+        reason = (NOT_CLASSIFIED if classification_pending(row)
+                  else CLASSIFICATION_FAILED if classification_failed(row) else NO_ORGANIZATION)
+        members[reason].append(row)
+    out = []
+    for reason in UNASSIGNED_LABELS:
+        if members.get(reason):
+            value, _ = aggregate_value(query, members[reason]) if query.aggregate.op != "count" else (None, 0)
+            out.append(Group(key=reason, label=UNASSIGNED_LABELS[reason], count=len(members[reason]), value=value))
+    return out
+
+
+__all__ = ["CLASSIFICATION_FAILED", "NOT_CLASSIFIED", "NO_ORGANIZATION", "UNASSIGNED_LABELS", "unassigned", "ROLE_OF_EDGE", "Row", "Tally", "Verdict", "aggregate_value", "evaluate", "evaluate_all",
            "field_value", "groups", "tally"]

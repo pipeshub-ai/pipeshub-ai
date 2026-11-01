@@ -260,6 +260,8 @@ class RecordQueryResult(BaseModel):
     approximate: bool = False
     value: float | None = None
     groups: list[Group] = Field(default_factory=list)
+    # Rows an organisation grouping puts in no group, by reason; never in ``groups``.
+    unassigned: list[Group] = Field(default_factory=list)
     unknown: dict[str, int] = Field(default_factory=dict)
     described: dict[str, list[Group]] = Field(default_factory=dict)
     rows: list[dict[str, Any]] = Field(default_factory=list)

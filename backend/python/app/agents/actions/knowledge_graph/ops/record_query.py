@@ -177,13 +177,13 @@ def render(
     kind = "approximate" if result.approximate else "exact"
     if query.aggregate.op != "count" and result.value is not None:
         lines.append(f"{query.aggregate.op} of {query.aggregate.field}: {_number(result.value)} ({kind})")
-    if result.groups:
+    if result.groups or result.unassigned:
         by = query.group_by
         label = by.field or by.month or ("organization" if by.organization else (by.person_role or "person"))
         lines.append(f"Groups by {label} (top {len(result.groups)}, {kind} counts):")
         lines += [f"- {g.label}: {'at least ' if result.approximate else ''}{g.count}"
                   + (f", {query.aggregate.op} {_number(g.value)}" if g.value is not None else "") + f" ({kind})"
-                  for g in result.groups]
+                  for g in [*result.groups, *result.unassigned]]
     lacking = {name: n for name, n in result.unknown.items() if name not in (NOT_CLASSIFIED, CLASSIFICATION_FAILED)}
     if lacking:
         lines.append("Not counted, because the record does not carry the field: " + ", ".join(

@@ -11,6 +11,7 @@ from app.modules.retrieval.record_query.evaluate import (
     field_value,
     groups,
     tally,
+    unassigned,
 )
 from app.modules.retrieval.record_query.model import RecordQuery, day_start_ms
 
@@ -234,3 +235,21 @@ def test_a_record_whose_classification_failed_is_unknown_for_its_own_reason() ->
     assert [r["_key"] for r in topic.not_classified] == ["waiting"]
     org = tally(q(where=[{"organization": {"ids": ["acme"]}}]), rows)
     assert org.unknown == {"classification": 1, "classification_failed": 1}
+
+
+def test_grouping_by_organisation_never_drops_a_record_it_cannot_place() -> None:
+    rows = [_classified("acme1", "COMPLETED", orgs=["acme"]), _classified("acme2", "NOT_STARTED", orgs=["acme"]),
+            _classified("waiting", "NOT_STARTED"), _classified("queued", "QUEUED"),
+            _classified("failed", "FAILED"), _classified("none", "COMPLETED")]
+    query = q(group_by={"organization": True})
+    real = groups(query, rows)
+    others = unassigned(query, rows)
+    assert [(g.label, g.count) for g in real] == [("acme", 2)]
+    assert [(g.key, g.label, g.count) for g in others] == [
+        ("no_organization", "(no organization)", 1),
+        ("classification", "unknown (not classified yet)", 2),
+        ("classification_failed", "unknown (classification failed)", 1),
+    ]
+    # One organisation a record at most, so every record is in exactly one line.
+    assert sum(g.count for g in real + others) == len(rows)
+    assert unassigned(q(group_by={"field": "status"}), rows) == []

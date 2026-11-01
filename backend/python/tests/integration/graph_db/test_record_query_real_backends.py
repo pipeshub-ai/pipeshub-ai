@@ -881,3 +881,15 @@ async def test_records_not_classified_yet_are_unknown_never_a_miss(seeded: Graph
     }))
     assert sorted(r["record_id"] for r in not_acme.rows) == sorted(g.rid(n) for n in ("t3", "f1"))
     assert not_acme.unknown == {"classification": 2, "classification_failed": 1}
+
+
+async def test_grouping_by_organisation_lists_unplaced_records_apart(seeded: Graph) -> None:
+    g = seeded
+    result = await run_record_query(g.graph, _context(g), RecordQuery.model_validate({
+        "group_by": {"organization": True}, "limit": 0,
+    }))
+    assert [(grp.label, grp.count) for grp in result.groups] == [("Acme", 2)]  # t1, d1
+    assert [(grp.key, grp.count) for grp in result.unassigned] == [
+        ("no_organization", 4), ("classification", 2), ("classification_failed", 1),
+    ]
+    assert sum(grp.count for grp in [*result.groups, *result.unassigned]) == result.total == 9

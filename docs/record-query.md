@@ -133,6 +133,12 @@ limit:      rows per page (default 20, max 50); cursor
   `approximate: true` when the scan cap or deadline was hit. Never silent.
 - `value`: the aggregate, over admitted rows only.
 - `groups`: `[{key, label, count, value}]`, top N by count.
+- `unassigned`: for `group_by` organization (the one grouping classification
+  feeds), the matched records in no organisation group, never merged into
+  one: `unknown (not classified yet)`, `unknown (classification failed)` and
+  `(no organization)` for classified records naming none. With at most one
+  organisation a record, groups plus these add up to the total; a record
+  naming two organisations counts in both groups.
 - `unknown`: `{field: count}` of admitted candidates a condition could not judge;
   `classification` counts records not classified yet, `classification_failed`
   those whose classification failed.
