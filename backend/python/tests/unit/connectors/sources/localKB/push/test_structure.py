@@ -354,13 +354,14 @@ def unclosed_quote_backslash(n: int) -> bytes:
 
 
 def cpu_of(body: bytes) -> tuple[float, PushRefusal | None]:
-    start = time.process_time()
+    # This thread's CPU only, so other threads left in the test process do not count.
+    start = time.thread_time()
     try:
         S.structure_pass(body, NAMES)
         refusal = None
     except PushRefusal as r:
         refusal = r
-    return time.process_time() - start, refusal
+    return time.thread_time() - start, refusal
 
 
 def fastest_cpu(body: bytes, runs: int = 3) -> float:
@@ -415,9 +416,9 @@ def test_the_old_lexer_is_quadratic_on_the_same_body() -> None:
         body = unclosed_escapes(n)
         runs = []
         for _ in range(3):  # the fastest of three: a busy machine only ever makes a run slower
-            start = time.process_time()
+            start = time.thread_time()
             old.sub(rb'"\1"', body)
-            runs.append(time.process_time() - start)
+            runs.append(time.thread_time() - start)
         return min(runs)
 
     # Eight times the input: linear growth is about 8x, quadratic about 64x. A ratio, not a

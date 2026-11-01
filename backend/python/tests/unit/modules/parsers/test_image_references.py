@@ -127,12 +127,12 @@ def urls(md: str) -> list[str]:
 
 
 def cpu(fn: Callable[[str], object], text: str, repeat: int = 3) -> float:
-    """Best of ``repeat`` runs in process CPU time (not disturbed by other processes)."""
+    """Best of ``repeat`` runs in this thread's CPU time (not disturbed by other processes or threads)."""
     best = float("inf")
     for _ in range(repeat):
-        start = time.process_time()
+        start = time.thread_time()
         fn(text)
-        best = min(best, time.process_time() - start)
+        best = min(best, time.thread_time() - start)
     return best
 
 
