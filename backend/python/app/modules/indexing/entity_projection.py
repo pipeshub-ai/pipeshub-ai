@@ -30,7 +30,7 @@ def taxonomy_entity_type(collection: str) -> tuple[EntityType, str | None]:
     """The entity type and subcategory level of points from ``collection``."""
     if collection == CollectionNames.DEPARTMENTS.value:
         return EntityType.DEPARTMENT, None
-    if collection == CollectionNames.USERS.value:
+    if collection in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
         return EntityType.PERSON, None
     if collection == CollectionNames.ORGS.value:
         return EntityType.ORGANIZATION, None

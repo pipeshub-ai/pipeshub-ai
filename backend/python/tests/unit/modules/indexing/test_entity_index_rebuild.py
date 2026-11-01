@@ -54,6 +54,7 @@ CATEGORIES = CollectionNames.CATEGORIES.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
 SUB2 = CollectionNames.SUBCATEGORIES2.value
 USERS = CollectionNames.USERS.value
+PEOPLE = CollectionNames.PEOPLE.value
 
 FP = "openai:text-embedding-3-small:1536"
 MARKER = entity_index_marker(FP)
@@ -642,7 +643,7 @@ class TestTaxonomyPass:
         assert set(ENTITY_INDEX_TAXONOMY_SOURCES) == {
             CATEGORIES, DEPARTMENTS, CollectionNames.LANGUAGES.value,
             CollectionNames.SUBCATEGORIES1.value, SUB2,
-            CollectionNames.SUBCATEGORIES3.value, TOPICS, USERS, ORGS,
+            CollectionNames.SUBCATEGORIES3.value, TOPICS, USERS, PEOPLE, ORGS,
         }
 
     async def test_walks_each_collection_once_and_completes(self) -> None:
@@ -705,6 +706,23 @@ class TestTaxonomyPass:
         (written,) = store.written()
         assert written == EntityRecord.for_person("u1", "Ann Lee", "org-1", "c1", "g1")
         assert store.deletes == [("org-1", "person", ["u2"])]
+
+    async def test_outsiders_are_projected_as_people(self) -> None:
+        """A non-member record_people named is found by name as a member is,
+        through the records naming them; one no record names is not."""
+        from app.models.entities import EntityRecord
+
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: PEOPLE})
+        graph.sources[(PEOPLE, "org-1")] = [{"_key": "p1", "name": "Olu Ade"}, {"_key": "p2", "name": "Nobody"}]
+        graph.membership[("person", "p1")] = {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}
+        await _rebuilder(graph, store).tick()
+        (written,) = store.written()
+        assert written == EntityRecord.for_person("p1", "Olu Ade", "org-1", "c1", "g1")
+        assert store.deletes == [("org-1", "person", ["p2"])]
+
+    def test_outsiders_rerun_the_org_pass(self) -> None:
+        assert ORG_PASS_VERSION >= 5  # 4 was CRM accounts as organisations
 
     async def test_accounts_are_projected_as_indexing_writes_them(self) -> None:
         from app.models.entities import EntityRecord
@@ -773,6 +791,7 @@ class TestSweep:
             GROUPS: {"g-live": {"orgId": "org-1"}, "g-other": {"orgId": "org-2"}},
             SUB2: {"s-live": {"orgId": "org-1"}},
             USERS: {"u-live": {"orgId": "org-1"}, "u-other": {"orgId": "org-2"}},
+            PEOPLE: {"p-live": {"orgId": "org-1"}, "p-other": {"orgId": "org-2"}},
             ORGS: {"o-live": {"parentOrgId": "org-1"}, "o-other": {"parentOrgId": "org-2"}},
         }
         store.points = [
@@ -785,6 +804,7 @@ class TestSweep:
             _point("subcategory", "s-live", "2"), _point("subcategory", "s-gone", "2"),
             _point("subcategory", "s-nolevel", None),
             _point("person", "u-live"), _point("person", "u-other"), _point("person", "u-gone"),
+            _point("person", "p-live"), _point("person", "p-other"),
             _point("organization", "o-live"), _point("organization", "o-other"), _point("organization", "o-gone"),
         ]
         assert await _rebuilder(graph, store).tick() == "sweep"
@@ -792,7 +812,7 @@ class TestSweep:
         assert sorted(store.deletes) == [
             ("org-1", "department", ["d-gone"]),
             ("org-1", "organization", ["o-gone", "o-other"]),
-            ("org-1", "person", ["u-gone", "u-other"]),
+            ("org-1", "person", ["p-other", "u-gone", "u-other"]),
             ("org-1", "record_group", ["g-gone", "g-other"]),
             ("org-1", "subcategory", ["s-gone"]),
             ("org-1", "topic", ["t-gone", "t-other"]),

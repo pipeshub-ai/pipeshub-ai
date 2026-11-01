@@ -78,6 +78,10 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
         EntityIndexSource(
             CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email", blank_name_falls_back=True,
         ),
+        # Outsiders record_people named, projected as people the same way.
+        EntityIndexSource(
+            CollectionNames.PEOPLE.value, "orgId", "fullName", name_fallback="email", blank_name_falls_back=True,
+        ),
         EntityIndexSource(
             CollectionNames.ORGS.value, "parentOrgId", "name", required_true=("isExternal",),
         ),

@@ -22689,9 +22689,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
             (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
         ),
+        # A member (User) or an outsider record_people named (Person).
         KnowledgeGraphEntityType.PERSON.value: (
             edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
-            (collection_to_label(CollectionNames.USERS.value),),
+            (collection_to_label(CollectionNames.USERS.value), collection_to_label(CollectionNames.PEOPLE.value)),
         ),
         KnowledgeGraphEntityType.ORGANIZATION.value: (
             edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
@@ -22874,14 +22875,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
         """The record relationship for ``entity_type`` and a clause binding
-        ``e`` to the node whose id is ``ref.id``."""
+        ``e`` to the node whose id is ``ref.id``, in ``$org_id`` for a
+        tenant-owned type."""
         relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        scope = f" WHERE {self._ENTITY_ORG_SCOPE[entity_type]}" if entity_type in self._ENTITY_ORG_SCOPE else ""
         if len(labels) == 1:
-            return relationship, f"MATCH (e:{labels[0]} {{id: ref.id}})"
+            return relationship, f"MATCH (e:{labels[0]} {{id: ref.id}}){scope}"
         # One index seek per label instead of an unlabeled scan.
         branches = "\n                UNION\n                ".join(
             f"""WITH ref
-                MATCH (e:{label} {{id: ref.id}})
+                MATCH (e:{label} {{id: ref.id}}){scope}
                 RETURN e"""
             for label in labels
         )
@@ -22925,21 +22928,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         another org."""
         if entity_type == PERSON_ENTITY_TYPE:
             relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
-            return f"""CALL {{
-                WITH ref
-                MATCH (rec:Record)-[r:{relation}]->(p:User)
+            _, labels = self._ENTITY_CANDIDATE_TARGETS[KnowledgeGraphEntityType.PERSON.value]
+            # One branch per label and direction, so each starts from an id index seek.
+            branches = "\n                UNION\n".join(
+                f"""                WITH ref
+                MATCH (rec:Record)-[r:{relation}]->(p:{label})
                 WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.outTypes
                 RETURN rec
                 UNION
                 WITH ref
-                MATCH (p:User)-[r:{relation}]->(rec:Record)
+                MATCH (p:{label})-[r:{relation}]->(rec:Record)
                 WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.inTypes
-                RETURN rec
+                RETURN rec"""
+                for label in labels
+            )
+            return f"""CALL {{
+{branches}
               }}
               WITH *"""
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type in self._ENTITY_ORG_SCOPE:
-            entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[entity_type]}"
         return f"""{entity_match}
               MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
 
@@ -23094,10 +23101,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        relationship, (label,) = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
         rows = await self.client.execute_query(
             f"""
-            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
+            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{'|'.join(labels)})
             WHERE rec.orgId = $org_id AND {self._ENTITY_ORG_SCOPE[entity_type]}
             WITH DISTINCT e
             RETURN e.id AS id, {fields}
@@ -23374,7 +23381,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if entity_type not in self._ENTITY_CANDIDATE_TARGETS:
             return None
         relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
-        scope = f" AND {self._ENTITY_TENANT_SCOPE[entity_type]}" if entity_type in self._ENTITY_TENANT_SCOPE else ""
+        scope = f" AND {self._ENTITY_ORG_SCOPE[entity_type]}" if entity_type in self._ENTITY_ORG_SCOPE else ""
         return (
             f"EXISTS {{ MATCH (rec)-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{'|'.join(labels)}) "
             f"WHERE e.id = ${param}{scope} }}"
@@ -23455,8 +23462,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 scan = "MATCH (rec:Record) WHERE rec.id = ref.id AND"
             else:
                 relationship, entity_match = self._entity_node_match(entity_type)
-                if entity_type in self._ENTITY_TENANT_SCOPE:
-                    entity_match += f"\n            WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}"
                 scan = f"""{entity_match}
             MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)
             WITH DISTINCT {carry} WHERE"""
@@ -23569,8 +23574,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
-            if ref_type in self._ENTITY_ORG_SCOPE:
-                entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[ref_type]}"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref

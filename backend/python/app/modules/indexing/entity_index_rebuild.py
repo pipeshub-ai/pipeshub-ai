@@ -73,8 +73,8 @@ if TYPE_CHECKING:
 # 2: records that are not indexed yet get a point too, and trashed ones lose theirs.
 ENTITY_INDEX_VERSION = 2
 # Orgs carried ENTITY_INDEX_VERSION's marker before the passes split, so 2 is
-# taken. 3: people, 4: CRM accounts as organisations.
-ORG_PASS_VERSION = 4
+# taken. 3: people, 4: CRM accounts as organisations, 5: outsiders (person nodes).
+ORG_PASS_VERSION = 5
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -121,6 +121,7 @@ _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _DEPARTMENTS = CollectionNames.DEPARTMENTS.value
 _USERS = CollectionNames.USERS.value
+_PEOPLE = CollectionNames.PEOPLE.value
 
 CONNECTOR_SOURCES: tuple[str, ...] = (_RECORD_GROUPS, _RECORDS)
 ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
@@ -132,6 +133,7 @@ ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
     CollectionNames.SUBCATEGORIES3.value,
     CollectionNames.TOPICS.value,
     _USERS,
+    _PEOPLE,
     _ORGS,
 )
 
@@ -145,15 +147,16 @@ _SWEPT_TYPES: tuple[str, ...] = (
     EntityType.PERSON.value,
     EntityType.ORGANIZATION.value,
 )
-# Node collection of a swept point; subcategories are resolved by level.
-_SWEPT_COLLECTIONS: dict[str, str] = {
-    EntityType.CATEGORY.value: CollectionNames.CATEGORIES.value,
-    EntityType.TOPIC.value: CollectionNames.TOPICS.value,
-    EntityType.LANGUAGE.value: CollectionNames.LANGUAGES.value,
-    EntityType.DEPARTMENT.value: _DEPARTMENTS,
-    EntityType.RECORD_GROUP.value: _RECORD_GROUPS,
-    EntityType.PERSON.value: _USERS,
-    EntityType.ORGANIZATION.value: _ORGS,
+# Node collections of a swept point, any of which may hold it (a person is
+# a member or an outsider); subcategories are resolved by level.
+_SWEPT_COLLECTIONS: dict[str, tuple[str, ...]] = {
+    EntityType.CATEGORY.value: (CollectionNames.CATEGORIES.value,),
+    EntityType.TOPIC.value: (CollectionNames.TOPICS.value,),
+    EntityType.LANGUAGE.value: (CollectionNames.LANGUAGES.value,),
+    EntityType.DEPARTMENT.value: (_DEPARTMENTS,),
+    EntityType.RECORD_GROUP.value: (_RECORD_GROUPS,),
+    EntityType.PERSON.value: (_USERS, _PEOPLE),
+    EntityType.ORGANIZATION.value: (_ORGS,),
 }
 # The field naming a swept node's org, where it is not orgId.
 _SWEPT_OWNER_FIELDS: dict[str, str] = {_ORGS: "parentOrgId"}
@@ -746,27 +749,30 @@ class EntityIndexRebuilder:
 
         A node without an org is kept: departments are global, and legacy
         taxonomy nodes still carry records until they are migrated."""
-        by_collection: dict[str, list[EntityPointRef]] = {}
+        by_collections: dict[tuple[str, ...], list[EntityPointRef]] = {}
         for ref in refs:
             if ref.entity_type == EntityType.SUBCATEGORY.value:
-                collection = _SUBCATEGORY_COLLECTIONS.get(ref.level or "")
+                level = _SUBCATEGORY_COLLECTIONS.get(ref.level or "")
+                collections = (level,) if level else ()
             else:
-                collection = _SWEPT_COLLECTIONS.get(ref.entity_type)
-            if collection:
-                by_collection.setdefault(collection, []).append(ref)
+                collections = _SWEPT_COLLECTIONS.get(ref.entity_type, ())
+            if collections:
+                by_collections.setdefault(collections, []).append(ref)
 
         stale: dict[str, list[str]] = {}
-        for collection, group in by_collection.items():
+        for collections, group in by_collections.items():
             for start in range(0, len(group), _SWEEP_LOOKUP_BATCH):
                 batch = group[start:start + _SWEEP_LOOKUP_BATCH]
-                owner_field = _SWEPT_OWNER_FIELDS.get(collection, "orgId")
-                rows = await self.graph.get_nodes_by_field_in(
-                    collection, "id", sorted({r.entity_id for r in batch}),
-                    return_fields=["id", owner_field, "mergedInto"], raise_on_error=True,
-                )
-                owner = {
-                    _key_of(row): row.get(owner_field) for row in rows or [] if not row.get("mergedInto")
-                }
+                owner: dict[str | None, Any] = {}
+                for collection in collections:
+                    owner_field = _SWEPT_OWNER_FIELDS.get(collection, "orgId")
+                    rows = await self.graph.get_nodes_by_field_in(
+                        collection, "id", sorted({r.entity_id for r in batch} - set(owner)),
+                        return_fields=["id", owner_field, "mergedInto"], raise_on_error=True,
+                    )
+                    owner.update(
+                        (_key_of(row), row.get(owner_field)) for row in rows or [] if not row.get("mergedInto")
+                    )
                 for ref in batch:
                     if ref.entity_id not in owner or owner[ref.entity_id] not in (None, org_id):
                         stale.setdefault(ref.entity_type, []).append(ref.entity_id)

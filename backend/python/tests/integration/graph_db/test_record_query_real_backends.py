@@ -392,7 +392,7 @@ def _entity_holds(g: Graph, name: str, entity: dict[str, str]) -> bool:
     if kind == "topic":
         return SPECS[name].topic and eid == g.topic
     if kind == "person":
-        return any(r == name and PEOPLE[p] == "user" and p not in FOREIGN_PEOPLE and g.nid(p) == eid
+        return any(r == name and p not in FOREIGN_PEOPLE and g.nid(p) == eid
                    for r, p, _ in RECORD_PEOPLE + PEOPLE_TO_RECORD)
     raise AssertionError(kind)
 
@@ -502,6 +502,7 @@ def _cases(g: Graph) -> dict[str, Pushdown]:
         "entity_record": Pushdown(entities=[{"type": "record", "id": g.rid("t4")}]),
         "entity_record_group": Pushdown(entities=[{"type": "record_group", "id": g.gid("child")}]),
         "entity_person": Pushdown(entities=[{"type": "person", "id": bob}]),
+        "entity_person_outsider": Pushdown(entities=[{"type": "person", "id": pete}]),
         "combined": Pushdown(
             sources=["ZENDESK", "JIRA"], record_types=["TICKET"], containers=[g.gid("root"), g.gid("jira")],
             created=[1_000, None], updated=[None, 85_000],
@@ -730,3 +731,39 @@ async def test_a_person_condition_and_me_match_every_node_of_the_person(seeded: 
     assert [(grp.key, grp.label) for grp in ann_groups] == [(g.nid("ann"), f"Ann ({g.email('ann')})")]
     # t1, t4, t5 and d1 are Ann's and readable; t2 is not readable.
     assert ann_groups[0].count == 4
+
+
+# ---------------------------------------------------------------- outsiders
+
+
+async def test_an_outsider_is_a_person_entity_as_a_member_is(seeded: Graph) -> None:
+    """record_people's person nodes are reached through their records by
+    every path a member is: indexing, membership, listing and the access-checked walk."""
+    g = seeded
+    pete = g.nid("pete")
+    from app.config.constants.arangodb import CollectionNames as Names
+
+    people = await g.graph.get_record_people(g.rid("t1"), g.org)
+    assert {p["id"] for p in people} == {g.nid("ann"), pete}
+    assert {p["id"]: p["email"] for p in people}[pete] == g.email("pete")
+
+    membership = await g.graph.get_taxonomy_entity_membership([{"id": pete, "type": "person"}], g.org)
+    assert sorted(membership[("person", pete)]["connectorIds"]) == sorted(
+        [g.connectors[ZENDESK], g.connectors[SALESFORCE]])
+
+    ref = {"id": pete, "type": "person", "connectorIds": g.connector_ids}
+    candidates = await g.graph.get_entity_candidate_records([ref], g.org)
+    # The listing reads each person edge in its stored direction; d2's INVOLVED_IN
+    # is seeded record -> person, the other way from how Slack stores it.
+    assert [r["_key"] for r in candidates[("person", pete)]] == [g.rid("t1")]
+    permitted = await g.graph.get_permitted_entity_records(
+        [ref], g.org, g.nid("ann"), app_level_connector_ids=[],
+    )
+    # d2 is not readable to Ann.
+    assert [r["_key"] for r in permitted[("person", pete)]] == [g.rid("t1")]
+
+    page = await g.graph.page_entity_index_source(Names.PEOPLE.value, g.org, None, 50)
+    assert {(r["_key"], r["name"]) for r in page} == {(pete, "Pete"), (g.nid("annx"), "Ann X")}
+    # Another org's outsider is in no page and links to nothing here.
+    foreign = await g.graph.get_taxonomy_entity_membership([{"id": g.nid("xena"), "type": "person"}], g.org)
+    assert foreign[("person", g.nid("xena"))]["connectorIds"] == []

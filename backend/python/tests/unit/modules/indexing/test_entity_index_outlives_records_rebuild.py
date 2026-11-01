@@ -17,6 +17,7 @@ import pytest
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.models.entities import EntityRecord
 from app.modules.indexing.entity_index_rebuild import (
+    ENTITY_INDEX_TAXONOMY_SOURCES,
     ORG_PASS_VERSION,
     EntityIndexState,
     entity_index_marker,
@@ -225,7 +226,7 @@ class TestEmbeddingModelChange:
             assert await d.rebuild() == ["idle"]
 
         fingerprint = "openAI:text-embedding-3-small:6"
-        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 9
+        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == len(ENTITY_INDEX_TAXONOMY_SOURCES)
         assert d.entities.dimension == 6 and d.entities.deletions == 1
         assert len(d.entities.entity_points) == 2
         for point in d.entities.entity_points.values():

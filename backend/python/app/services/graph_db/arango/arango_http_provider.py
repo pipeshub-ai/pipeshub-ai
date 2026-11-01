@@ -21491,7 +21491,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ),
         EntityType.PERSON.value: (
             CollectionNames.ENTITY_RELATIONS.value,
-            (CollectionNames.USERS.value,),
+            (CollectionNames.USERS.value, CollectionNames.PEOPLE.value),
         ),
         EntityType.ORGANIZATION.value: (
             CollectionNames.ENTITY_RELATIONS.value,
@@ -21499,17 +21499,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ),
     }
     # Entity types records reach over entityRelations (KG-13): the node
-    # collection, how a node ``n`` is matched to @org_id, and its fields.
-    # An external organisation (a CRM account) carries the org it belongs to as
-    # parentOrgId; the org itself is never an entity.
-    _LINKED_ENTITY_NODES: dict[str, tuple[str, str, str]] = {
+    # collections, how a node ``n`` is matched to @org_id, and its fields.
+    # A person is a member (users) or an outsider record_people named
+    # (person). An external organisation (a CRM account) carries the org it belongs
+    # to as parentOrgId; the org itself is never an entity.
+    _LINKED_ENTITY_NODES: dict[str, tuple[tuple[str, ...], str, str]] = {
         EntityType.PERSON.value: (
-            CollectionNames.USERS.value, "n.orgId == @org_id", "name: n.fullName, email: n.email",
+            (CollectionNames.USERS.value, CollectionNames.PEOPLE.value),
+            "n.orgId == @org_id", "name: n.fullName, email: n.email",
         ),
         EntityType.ORGANIZATION.value: (
-            CollectionNames.ORGS.value, "n.isExternal == true AND n.parentOrgId == @org_id", "name: n.name",
+            (CollectionNames.ORGS.value,), "n.isExternal == true AND n.parentOrgId == @org_id", "name: n.name",
         ),
     }
+
+    @staticmethod
+    def _in_collections(collections: tuple[str, ...], var: str) -> str:
+        return "(" + " OR ".join(f'IS_SAME_COLLECTION("{c}", {var})' for c in collections) + ")"
     _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | set(_LINKED_ENTITY_NODES)
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
@@ -21677,16 +21683,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LIMIT @scan_cap
                         RETURN rec"""
         if entity_type == PERSON_ENTITY_TYPE:
-            # Both directions, the person always at the users end: a record
-            # group is also MENTIONED_IN a record. Distinct ids first, so a
+            # Both directions, the person always at the users or person end:
+            # a record group is also MENTIONED_IN a record. Distinct ids first, so a
             # record linked twice (reporter and creator) is one candidate.
             relations = CollectionNames.ENTITY_RELATIONS.value
-            # Gated on the org too: this org's record may name a user of another org.
+            # Only this org's nodes: a record of the org may name another org's user.
             scope = f"""LET people = (
                     FOR uid IN ref.userIds
-                        LET person_node = DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", uid))
-                        FILTER person_node != null AND person_node.orgId == @org_id
-                        RETURN person_node._id
+                        FOR n IN [DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", uid)),
+                                  DOCUMENT(CONCAT("{CollectionNames.PEOPLE.value}/", uid))]
+                            FILTER n != null AND n.orgId == @org_id
+                            RETURN n._id
                 )"""
             return scope, f"""(
                     FOR rec_id IN UNION_DISTINCT(
@@ -21732,9 +21739,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         A traversal streams, so a caller's LIMIT stops it early; the node
         lookup is a loop rather than a ternary, which AQL would hoist and
         evaluate for another org's node too."""
-        collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
-        return f"""FOR n IN {collection}
-                        FILTER n._key == {key} AND {scope}
+        collections, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
+        if len(collections) == 1:
+            nodes = collections[0]
+        else:
+            nodes = "[" + ", ".join(f'DOCUMENT(CONCAT("{c}/", {key}))' for c in collections) + "]"
+        return f"""FOR n IN {nodes}
+                        FILTER n != null AND n._key == {key} AND {scope}
                         FOR rec IN 1..1 ANY n {CollectionNames.ENTITY_RELATIONS.value}
                             OPTIONS {{order: "bfs", uniqueVertices: "global"}}
                             FILTER rec != null AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)"""
@@ -21859,14 +21870,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[dict[str, Any]]:
         if not record_id or not org_id:
             return []
-        collection, scope, fields = self._LINKED_ENTITY_NODES[entity_type]
+        collections, scope, fields = self._LINKED_ENTITY_NODES[entity_type]
         rows = await self.http_client.execute_aql(
             f"""
             FOR rec IN {CollectionNames.RECORDS.value}
                 FILTER rec._key == @record_id AND rec.orgId == @org_id
                 FOR n IN 1..1 ANY rec {CollectionNames.ENTITY_RELATIONS.value}
                     OPTIONS {{order: "bfs", uniqueVertices: "global"}}
-                    FILTER n != null AND IS_SAME_COLLECTION("{collection}", n) AND {scope}
+                    FILTER n != null AND {self._in_collections(collections, "n")} AND {scope}
                     SORT n._key
                     RETURN {{id: n._key, {fields}}}
             """,
@@ -22262,11 +22273,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if entity_type not in self._ENTITY_CANDIDATE_EDGE_TARGETS:
             return None
         if entity_type in self._LINKED_ENTITY_NODES:
-            collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
+            collections, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
             # The scope names its node ``n``, which the seed loop may have bound already.
             scope = re.sub(r"\bn\.", "en.", scope)
             return f"""LENGTH(FOR en IN 1..1 ANY rec {CollectionNames.ENTITY_RELATIONS.value}
-                        FILTER IS_SAME_COLLECTION("{collection}", en) AND en._key == @{param} AND {scope}
+                        FILTER {self._in_collections(collections, "en")} AND en._key == @{param} AND {scope}
                         LIMIT 1 RETURN 1) > 0"""
         edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
         if entity_type == EntityType.RECORD_GROUP.value:

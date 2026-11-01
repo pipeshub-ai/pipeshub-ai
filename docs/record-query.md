@@ -73,7 +73,12 @@ another org stays as given and matches nothing); the id `me` is the user
 asking. `group_by` person groups by person, keyed by one of their ids and
 labelled "Name (email)". `search_entities` returns one hit per person with
 `entityIds` listing the nodes it found, and `find_records_by_entity` on a
-person lists every node's records.
+person lists every node's records. Outsiders are people the same way
+members are: the entity index rebuild projects `person` nodes (org pass
+version 4), indexing writes their points from `get_record_people`, and every
+person path in both providers (membership, listing, the access-checked walk,
+record query) reads `users` and `person` alike, each node gated to the org.
+Like a member, an outsider is found only through a record the user can open.
 
 **Unknown is never "no".** A record whose connector did not supply a field
 neither matches nor fails a condition on it: the engine counts it as

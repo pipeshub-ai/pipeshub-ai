@@ -110,11 +110,13 @@ class TestNeo4jPersonQuery:
 
     async def test_the_person_must_be_a_member_of_the_org_in_both_directions(self) -> None:
         """The record filter alone would let this org's record surface a user
-        of another org that it names."""
+        of another org that it names: every branch, member or outsider, either
+        direction, is gated."""
         p = _neo4j()
         await p.get_entity_candidate_records([PERSON_REF], "org1")
         query = p.client.execute_query.call_args.args[0]
-        assert query.count("p.id IN ref.userIds AND p.orgId = $org_id") == 2
+        assert query.count("p.id IN ref.userIds AND p.orgId = $org_id") == 4
+        assert query.count("MATCH (rec:Record)-[r:") == query.count("]->(rec:Record)") == 2
 
     async def test_candidate_listing_supports_person_too(self) -> None:
         p = _neo4j()
@@ -148,7 +150,7 @@ class TestArangoPersonQuery:
         await p.get_entity_candidate_records([PERSON_REF], "org1")
         query = p.execute_query.await_args.args[0]
         people = query[query.index("LET people"):query.index("UNION_DISTINCT(")]
-        assert "person_node.orgId == @org_id" in people
+        assert "FILTER n != null AND n.orgId == @org_id" in people
 
     async def test_ids_are_distinct_then_filtered_and_narrowed_before_the_cap(self) -> None:
         p = _arango()
