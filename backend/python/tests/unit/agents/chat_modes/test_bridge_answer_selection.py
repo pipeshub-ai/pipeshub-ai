@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -128,8 +127,8 @@ class _Selector:
         self.prompts.append(prompt)
         if self.reply:
             return AIMessage(content=self.reply)
-        answers = re.findall(r"=== Answer ([A-Z]) ===\n(.*?)(?=\n\n=== |\n\nRECORDS)", prompt, re.S)
-        label = next(label for label, text in answers if text.startswith("Answer 1"))
+        answers = json.loads(prompt)["answers"]
+        label = next(answer["label"] for answer in answers if answer["text"].startswith("Answer 1"))
         return AIMessage(content=json.dumps({"pick": label}))
 
 
