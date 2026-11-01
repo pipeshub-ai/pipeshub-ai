@@ -418,6 +418,8 @@ if TYPE_CHECKING:
         User,
     )
     from app.modules.named_entities.graph_ops import NamedEntityQuery
+    from app.modules.retrieval.record_query.pushdown import Pushdown
+    from app.services.graph_db.common.record_query_rows import RecordCandidates
     from app.services.graph_db.common.utils import (
         EntityCandidateRows,
         PermittedEntityRows,
@@ -8624,6 +8626,61 @@ class IGraphDBProvider(ABC):
 
         Raises:
             Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_query_candidates(
+        self,
+        org_id: str,
+        *,
+        connector_ids: list[str],
+        pushdown: "Pushdown",
+        offset: int = 0,
+        window: int = 500,
+        scan_cap: int = 20_000,
+        timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
+    ) -> "RecordCandidates":
+        """One window of candidate records for a record query
+        (``docs/record-query.md``). Not an access decision: the caller decides
+        every row with ``check_access``.
+
+        Candidates are the records of ``org_id`` whose ``connectorId`` is in
+        ``connector_ids``, passing the entity-candidate record filter (not
+        deleted, not a placeholder) and ``within`` exactly as
+        ``get_permitted_entity_records`` applies it, and every condition in
+        ``pushdown`` (``record_query.pushdown.Pushdown``). At most ``scan_cap``
+        are considered and ``capped`` says the cap was reached. They are
+        ordered as entity candidates are (newest first, then id), and the
+        window ``[offset, offset + window)`` is returned.
+
+        Each row is a dict:
+          ``_key``, ``recordName``, ``recordType``, ``connectorName``,
+          ``connectorId``, ``recordGroupId``, ``webUrl``, ``createdAt``
+          (``sourceCreatedAtTimestamp``), ``updatedAt``
+          (``sourceLastModifiedTimestamp``);
+          ``ticket``: ``{status, sourceStatus, priority, resolvedAt, dueAt}``
+          from the Ticket node the record IS_OF_TYPE, or None;
+          ``deal``: ``{amount, closeDate, isWon, isClosed}`` from the Deals
+          node, or None;
+          ``people``: ``[{role, id, name}]``, one per person edge, ``role``
+          the edge's ``edgeType`` and ``id`` the id ``search_entities``
+          returns for that person;
+          ``organizations``: ``[{id, name}]`` over ``FOR_ACCOUNT`` and
+          ``MENTIONS`` edges;
+          ``links``: ``[{id, relation}]`` over record links in either
+          direction, ``relation`` the link's ``relationshipType``.
+        A value the graph does not hold is None, never a default.
+
+        The query is built from fixed fragments and parameters only.
+
+        Returns:
+            ``RecordCandidates(rows, window_size, capped)``; ``window_size``
+            below ``window`` means the candidates ended.
+
+        Raises:
+            Exception: on any query failure, including the timeout.
         """
         pass
 
