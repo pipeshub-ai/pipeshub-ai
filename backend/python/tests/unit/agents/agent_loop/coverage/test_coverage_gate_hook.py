@@ -335,3 +335,18 @@ class TestCitedValuesStand:
 
         assert ctx.recovery_message is None
         assert coverage_state(context.tool_state).counters["gate_nothing_new"] == 1
+
+    async def test_a_caveat_with_named_unread_documents_still_brings_them_in(self, searches, monkeypatch) -> None:
+        searches.side_effect = _shows(
+            ("vr-guide", "rec-guide", "compressor restart guide", "Restart order per bank."),
+            text="Record: compressor restart guide ...",
+        )
+        reply = {**_UNSUPPORTED_CITED_PART, "unread_references": [
+            {"name": "compressor restart guide", "query": "compressor restart guide bank order"},
+        ]}
+        monkeypatch.setattr(gate_module, "coverage_llm", AsyncMock(return_value=_checker(reply, {"conflicts": []})))
+
+        ctx = await run_post_model(coverage_gate(_room_context()), AssistantMessage(content=_ROOM_DRAFT), scope=_scope())
+
+        assert searches.await_args.args[1] == ["compressor restart guide bank order"]
+        assert "- Named but not read: compressor restart guide" in ctx.recovery_message.content

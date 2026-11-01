@@ -191,18 +191,35 @@ class TestCheckerVerdictsAgainstCitedText:
         )
         assert [(g.kind, g.query) for g in decision.gaps] == [("facet", "Northwind EU launch date")]
 
-    async def test_an_admission_alone_keeps_only_admission_gaps(self) -> None:
+    async def test_an_admission_alone_reopens_no_answered_part_or_value(self) -> None:
         reply = {
             "facets": [{"id": "f3", "supported": False, "query": "Northwind steering approval minutes"}],
             "unread_references": [{"name": "ADR-021", "query": "ADR-021 decision record"}],
             "admissions": [{"quote": "doesn't state who approved", "query": "Northwind EU rollout approver"}],
+            "conflicts": [{"facet": "f2", "draft_leads_with": ["R1"], "values": [
+                {"record": "R1", "value": "May 4"}, {"record": "R2", "value": "June 1", "revises": ["R1"]},
+            ]}],
         }
         decision = await _evaluate(
             _DATE_DRAFT, _TWO_RECORDS, _llm(reply), plan=_DATE_PLAN, cited=["rec-1"], blocks={"rec-1": [1]},
             max_gaps=3,
         )
         assert decision.signals["admissions"] == 1 and decision.signals["uncovered"] == 0
-        assert [(g.kind, g.query) for g in decision.gaps] == [("admission", "Northwind EU rollout approver")]
+        assert [(g.kind, g.query) for g in decision.gaps] == [
+            ("reference", "ADR-021 decision record"), ("admission", "Northwind EU rollout approver"),
+        ]
+        assert decision.rulings == []
+
+    async def test_with_another_signal_the_checker_verdicts_stand(self) -> None:
+        reply = {
+            "facets": [{"id": "f3", "supported": False, "query": "Northwind steering approval minutes"}],
+            "admissions": [{"quote": "doesn't state who approved", "query": "Northwind EU rollout approver"}],
+        }
+        decision = await _evaluate(
+            _DATE_DRAFT + " The sources differ on the date.", _TWO_RECORDS, _llm(reply), plan=_DATE_PLAN,
+            cited=["rec-1"], blocks={"rec-1": [1]},
+        )
+        assert [g.kind for g in decision.gaps] == ["facet", "admission"]
 
 
 class TestAdjudicatingFoundRecords:

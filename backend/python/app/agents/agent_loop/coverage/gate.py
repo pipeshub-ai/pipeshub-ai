@@ -230,8 +230,10 @@ async def assess_draft(
         signals["cited_overrules"] = sum(not v.supported for v in report.facets) - sum(g.kind == "facet" for g in gaps)
         rulings = rulings_from_report(report, plan, evidence, name_of) if adjudication else []
     if admissions and not (references or uncovered or lookalikes or conflict_words):
-        # A caveat alone does not reopen parts the draft already answered.
-        gaps = [gap for gap in gaps if gap.kind == "admission"]
+        # A caveat alone reopens neither the parts nor the values the draft
+        # answered: only what it concedes and documents named but not read.
+        gaps = [gap for gap in gaps if gap.kind != "facet"]
+        rulings = []
     signals["checker"] = int(report is not None)
     return GateDecision(
         gaps=_new_gaps(gaps, searched, max_gaps), rulings=rulings, checked=True, signals=signals,
