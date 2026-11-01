@@ -216,7 +216,7 @@ function InstanceCountBar({
         }}
         style={{
           flex: 1,
-          height: 28,
+          height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
           borderRadius: 'var(--radius-2)',
           backgroundColor: 'var(--green-a3)',
           padding: '0 8px',

@@ -852,9 +852,10 @@ async def _stage_conversation_uploads(
 
 
 def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxManager):
-    """POST_TOOL_USE middleware: redacts host sandbox paths out of
-    `run_code`'s stdout/stderr/error_analysis, and — when the result carries
-    `artifacts` + `sandbox_id` — fetches the artifact bytes INLINE (before
+    """POST_TOOL_USE middleware: redacts host sandbox paths and secrets out
+    of every coding-sandbox result, success or not (stdout/stderr/error/
+    error_analysis and `read_sandbox_file`'s UTF-8 `content`), and — when
+    the result carries `artifacts` + `sandbox_id` — fetches the artifact bytes INLINE (before
     this hook returns, so the sandbox can't be destroyed out from under the
     read) and registers each one SYNCHRONOUSLY through
     `ArtifactRegistryService`, right here in the hook — never as a
@@ -875,18 +876,23 @@ def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxMana
 
     async def _middleware(ctx: ToolResultContext, next_fn) -> None:
         response = ctx.tool_response
-        if response.success and isinstance(response.data, dict):
+        if response.error:
+            response.error = redact_sandbox_paths(response.error)
+        if isinstance(response.data, dict):
             data = response.data
-            if "stdout" in data:
-                data["stdout"] = redact_sandbox_paths(data.get("stdout"))
-            if "stderr" in data:
-                data["stderr"] = redact_sandbox_paths(data.get("stderr"))
+            for key in ("stdout", "stderr", "error"):
+                if isinstance(data.get(key), str):
+                    data[key] = redact_sandbox_paths(data[key])
+            if data.get("encoding") == "utf-8" and isinstance(data.get("content"), str):
+                data["content"] = redact_sandbox_paths(data["content"])
             error_analysis = data.get("error_analysis")
             if isinstance(error_analysis, dict):
                 for key in ("message", "stack_trace", "suggestion"):
                     if error_analysis.get(key):
                         error_analysis[key] = redact_sandbox_paths(error_analysis[key])
 
+        if response.success and isinstance(response.data, dict):
+            data = response.data
             artifacts = data.get("artifacts")
             sandbox_id = data.get("sandbox_id")
             if artifacts and sandbox_id:
@@ -1075,7 +1081,7 @@ async def _register_run_code_artifacts(
     deliverable_paths, scratch_paths = _partition_sandbox_outputs(artifact_paths)
 
     if scratch_paths:
-        data["scratch_files"] = [os.path.basename(p) for p in scratch_paths]
+        data["scratch_files"] = [redact_sandbox_paths(os.path.basename(p)) for p in scratch_paths]
         data["scratch_files_note"] = (
             "These files were written outside $OUTPUT_DIR and stayed inside the sandbox "
             "-- they were NOT uploaded or shown to the user. If one of them is actually "

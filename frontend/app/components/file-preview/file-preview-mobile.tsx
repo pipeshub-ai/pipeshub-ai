@@ -21,6 +21,12 @@ import {
   PDF_ZOOM_MIN,
 } from './types';
 import type { FilePreviewProps, PaginationControls, PreviewCitation } from './types';
+import {
+  PREVIEW_TOOLBAR_BUTTON,
+  PREVIEW_TOOLBAR_DIVIDER,
+  PREVIEW_TOOLBAR_PAGE,
+  PREVIEW_TOOLBAR_VALUE,
+} from './preview-toolbar-styles';
 
 export function FilePreviewMobile({
   file,
@@ -152,7 +158,7 @@ export function FilePreviewMobile({
         style={{
           height: '40px',
           padding: '0 var(--space-2)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           backgroundColor: 'var(--effects-translucent)',
           borderBottom: '1px solid var(--olive-3)',
           flexShrink: 0,
@@ -349,18 +355,18 @@ export function FilePreviewMobile({
               <Flex
                 align="center"
                 justify="center"
-                gap="2"
+                gap="1"
                 style={{
                   position: 'absolute',
                   bottom: hasCitations ? '64px' : 'var(--space-4)',
                   left: '50%',
                   transform: 'translateX(-50%)',
                   padding: 'var(--space-1)',
-                  backgroundColor: 'var(--effects-translucent)',
+                  backgroundColor: 'var(--frost-bg-strong)',
                   border: '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   // Above .PdfHighlighter__highlight-layer (z-3) / tips (z-6); avoid PDF text/hit target stealing clicks
                   zIndex: 20,
                   isolation: 'isolate',
@@ -373,17 +379,12 @@ export function FilePreviewMobile({
                   size="1"
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
-                <Box
-                  style={{
-                    minWidth: '36px',
-                    textAlign: 'center',
-                  }}
-                >
+                <Box style={PREVIEW_TOOLBAR_VALUE}>
                   <Text
                     as="span"
                     size="2"
@@ -399,7 +400,7 @@ export function FilePreviewMobile({
                   size="1"
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
@@ -410,7 +411,7 @@ export function FilePreviewMobile({
                   color="gray"
                   size="1"
                   onClick={toggleZoomLock}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                   title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-pressed={isZoomLocked}
@@ -422,15 +423,7 @@ export function FilePreviewMobile({
                   />
                 </IconButton>
 
-                <Box
-                  style={{
-                    width: '1px',
-                    height: '16px',
-                    backgroundColor: 'var(--slate-4)',
-                    flexShrink: 0,
-                  }}
-                  aria-hidden
-                />
+                <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
                 <IconButton className="touch-hit"
                   variant="ghost"
@@ -438,17 +431,16 @@ export function FilePreviewMobile({
                   size="1"
                   onClick={handlePrevPage}
                   disabled={currentPage === 1}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_left" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
                 <Box
                   style={{
+                    ...PREVIEW_TOOLBAR_PAGE,
                     backgroundColor: 'var(--olive-2)',
                     border: '1px solid var(--olive-3)',
-                    borderRadius: 'var(--radius-1)',
-                    padding: '4px 12px',
                   }}
                 >
                   <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -462,7 +454,7 @@ export function FilePreviewMobile({
                   size="1"
                   onClick={handleNextPage}
                   disabled={totalPages === null || currentPage === totalPages}
-                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  style={PREVIEW_TOOLBAR_BUTTON}
                 >
                   <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -479,8 +471,8 @@ export function FilePreviewMobile({
                   bottom: 'var(--space-4)',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  backdropFilter: 'blur(25px)',
-                  backgroundColor: 'var(--effects-translucent)',
+                  backdropFilter: 'var(--frost-filter)',
+                  backgroundColor: 'var(--frost-bg-strong)',
                   border: '1px solid var(--olive-3)',
                   borderRadius: 'var(--radius-1)',
                   boxShadow: '0px 20px 28px 0px rgba(0, 0, 0, 0.15)',
@@ -506,7 +498,7 @@ export function FilePreviewMobile({
             style={{
               flexShrink: 0,
               height: '55vh',
-              backdropFilter: 'blur(25px)',
+              backdropFilter: 'var(--frost-filter)',
               backgroundColor: 'var(--olive-2)',
               borderTop: '1px solid var(--olive-3)',
               borderTopLeftRadius: 'var(--radius-2)',

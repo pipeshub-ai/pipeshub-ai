@@ -239,7 +239,7 @@ export function SmtpConfigurePanel({
         {/* ── Info banner ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--accent-3)',
             borderRadius: 'var(--radius-2)',
             overflow: 'hidden',
@@ -275,7 +275,7 @@ export function SmtpConfigurePanel({
         {/* ── Fields box ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             padding: 'var(--space-4)',

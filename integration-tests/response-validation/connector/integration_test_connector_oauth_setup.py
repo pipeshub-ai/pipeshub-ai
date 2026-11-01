@@ -268,15 +268,17 @@ class TestSavedOAuthApps:
             "the spec accepts an empty oauthInstanceName"
         )
 
-    def test_update_oauth_config_body_that_is_not_an_object_is_500(
+    def test_update_oauth_config_body_that_is_not_an_object_is_400(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
     ) -> None:
         resp = oauth_configs_api.put(
             f"/Jira/{jira_oauth_connector.oauth_config_id}",
             data='"not-an-object"',
         )
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 500)
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 400)
 
     def test_update_oauth_config_with_array_config_is_500(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
@@ -461,12 +463,14 @@ class TestCreateAndDeleteOAuthApp:
             f"the spec accepts {body}"
         )
 
-    def test_create_oauth_config_body_that_is_not_an_object_is_500(
+    def test_create_oauth_config_body_that_is_not_an_object_is_400(
         self, oauth_configs_api: ConnectorOAuthConfigsClient
     ) -> None:
         resp = oauth_configs_api.post("/Jira", data='"not-an-object"')
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 500)
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
+        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 400)
 
     def test_create_oauth_config_unauthenticated_is_401(
         self, oauth_configs_api: ConnectorOAuthConfigsClient

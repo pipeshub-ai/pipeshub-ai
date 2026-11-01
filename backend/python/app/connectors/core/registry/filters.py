@@ -243,6 +243,7 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    KNOWLEDGE_BASES = "knowledge_bases"
     # Code repositories: gitignore-style paths whose files get no record
     EXCLUDE_PATHS = "exclude_paths"
     # Code repositories: the branch whose files are synced; unset = default branch

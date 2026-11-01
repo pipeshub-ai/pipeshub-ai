@@ -44,7 +44,11 @@ from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
-from app.utils.user_errors import PARSE_WORKER_OUT_OF_MEMORY, PROCESSING_TIMED_OUT
+from app.utils.user_errors import (
+    PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
+    PROCESSING_TIMED_OUT,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -56,6 +60,7 @@ T = TypeVar("T")
 __all__ = [
     "ParseWorkerError",
     "parse_pool_workers",
+    "run_blocking",
     "set_resource_governor",
     "should_offload",
     "shutdown_parse_pool",
@@ -146,6 +151,9 @@ class _Job:
     label: str
     size: int
     timeout: float | None = None
+    # Never run in the calling thread when no worker can be started: the job is
+    # here because it must not allocate in this process.
+    require_worker: bool = False
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -291,6 +299,9 @@ class _Lane:
         try:
             worker = self._send(job)
         except _WorkerUnavailable as exc:
+            if job.require_worker:
+                _logger.error("Could not start a parse worker (%s) for %s", exc, job.label)
+                raise ParseWorkerError(PARSE_WORKER_UNAVAILABLE, "unavailable") from exc
             _logger.error(
                 "Could not start a parse worker (%s); parsing %s in a thread instead",
                 exc, job.label,
@@ -350,11 +361,14 @@ class _ParsePool:
         for thread in self._threads:
             thread.start()
 
-    async def submit(self, job: _Job) -> object:
+    def enqueue(self, job: _Job) -> None:
         with self._submit_lock:
             if self.closed.is_set():
                 raise _PoolClosed
             self.jobs.put(job)
+
+    async def submit(self, job: _Job) -> object:
+        self.enqueue(job)
         try:
             return await asyncio.wrap_future(job.future)
         except asyncio.CancelledError:
@@ -408,6 +422,53 @@ async def submit(
         except _PoolClosed:
             pass
     return await asyncio.to_thread(fn, *args)
+
+
+class _OneShotPool:
+    """Stands in for a pool so a lane can run a single job on a worker of its own."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+
+_ONE_SHOT_SLOTS = threading.BoundedSemaphore(max(1, env_int("PARSE_ONE_SHOT_WORKERS", 2)))
+
+
+def run_blocking(
+    fn: Callable[..., T],
+    *args: object,
+    label: str = "",
+    size: int = 0,
+    timeout: float | None = None,
+) -> T:
+    """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
+
+    For work that must not allocate in this process: it uses a pool lane when
+    this process owns a pool, and otherwise a worker started for this one job
+    and killed with its process group afterwards (at most
+    ``PARSE_ONE_SHOT_WORKERS`` at once). It never falls back to running in the
+    calling thread when POSIX workers exist; if none can start it raises
+    ``ParseWorkerError``. Without POSIX (no ``pass_fds``) there are no workers
+    and *fn* runs in the calling thread.
+    """
+    if os.name != "posix":
+        return fn(*args)
+    job = _Job(fn, args, label, size, timeout, require_worker=True)
+    pool = _pool()
+    if pool is not None:
+        try:
+            pool.enqueue(job)
+        except _PoolClosed:
+            pass
+        else:
+            return job.future.result()
+    with _ONE_SHOT_SLOTS:
+        lane = _Lane(_OneShotPool())  # type: ignore[arg-type]
+        job.future.set_running_or_notify_cancel()
+        try:
+            return lane._run(job)
+        finally:
+            lane._drop_worker()
 
 
 def shutdown_parse_pool() -> bool:

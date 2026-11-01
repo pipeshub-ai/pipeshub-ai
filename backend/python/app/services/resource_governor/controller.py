@@ -11,6 +11,10 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from app.services.resource_governor.download_ahead import (
+    HEAVY_DOWNLOAD_AHEAD,
+    DownloadAhead,
+)
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
     FeedbackWindow,
@@ -39,6 +43,7 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    ceiling_cpus,
     ceiling_for,
     cgroup_heavy_parse_limit,
     floor_for,
@@ -175,6 +180,8 @@ class ResourceGovernor:
         # Records too big for the count limits reserve their memory here.
         self.memory_budget = MemoryBudget()
         self.memory_budget.limit = free_memory_share_bytes(initial_snapshot, self._worker_count)
+        # Heavy records downloaded but not yet holding a parse permit.
+        self.download_ahead = DownloadAhead(HEAVY_DOWNLOAD_AHEAD)
 
         self._running = False
 
@@ -217,9 +224,10 @@ class ResourceGovernor:
         if reserve_embedding_cpus:
             # Mirrors resolve_ceilings: the reservation is capped at a share of
             # the quota so it cannot flatten heavy on a small host.
+            ceiling_quota = ceiling_cpus(initial_snapshot.cpu_quota)
             reservation = min(
                 EMBEDDING_CPU_RESERVATION,
-                initial_snapshot.cpu_quota * EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
+                ceiling_quota * EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
             )
             self._logger.info(
                 "ResourceGovernor: local CPU embedding model configured — %.2f of "
@@ -229,8 +237,8 @@ class ResourceGovernor:
                 "GOVERNOR_EMBEDDING_CPU_RESERVATION=0 to size heavy off the full "
                 "quota, or raise it if embedding is still starved",
                 reservation,
-                initial_snapshot.cpu_quota,
-                max(0.0, initial_snapshot.cpu_quota - reservation),
+                ceiling_quota,
+                max(0.0, ceiling_quota - reservation),
             )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
@@ -548,6 +556,7 @@ class ResourceGovernor:
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
             "record_memory": self.memory_budget.stats(),
+            "download_ahead": self.download_ahead.stats(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

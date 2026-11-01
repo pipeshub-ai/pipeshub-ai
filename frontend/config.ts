@@ -63,5 +63,10 @@ export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/w
 // Notices for features this edition does not include (OSS: shown)
 export { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 export { McpAgentApprovalsNotice } from '@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice';
+// Chat model menu entries and AI model form settings (OSS: none)
+export { chatModelOptions } from '@/app/(main)/chat/utils/chat-model-options';
+export { ModelSelectorExtraOptions } from '@/app/(main)/chat/components/chat-panel/expansion-panels/model-selector/model-selector-extra-options';
+export { aiModelFormOptions } from '@/app/(main)/workspace/ai-models/ai-model-form-options';
+export { PickedModelExtraFields } from '@/app/(main)/workspace/ai-models/components/picked-model-extra-fields';
 
 

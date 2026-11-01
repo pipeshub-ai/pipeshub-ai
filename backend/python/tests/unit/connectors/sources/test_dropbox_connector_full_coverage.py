@@ -13,7 +13,6 @@ import pytest
 from dropbox.exceptions import ApiError
 from fastapi import HTTPException
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
-from dropbox.sharing import AccessLevel
 from dropbox.team_log import EventCategory
 
 from app.config.constants.arangodb import (
@@ -45,7 +44,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +83,16 @@ def _make_mock_tx_store(existing_record=None):
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
     tx.get_file_record_by_id = AsyncMock(return_value=None)
+    tx.get_records_by_file_path = AsyncMock(return_value=[])
+    tx.get_records_in_record_group = AsyncMock(return_value=[])
+    tx.get_all_app_users = AsyncMock(return_value=[])
+    tx.withdraw_app_user_access = AsyncMock()
+    tx.on_external_app_users = AsyncMock()
+    tx.reap_external_app_users = AsyncMock(return_value=0)
+    tx.get_nodes_by_filters = AsyncMock(return_value=[])
+    tx.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    tx.batch_update_nodes = AsyncMock()
+    tx.get_records_by_parent = AsyncMock(return_value=[])
     tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     tx.get_user_by_email = AsyncMock(return_value=None)
     tx.get_user_group_by_external_id = AsyncMock(return_value=None)
@@ -228,6 +237,16 @@ def mock_data_entities_processor():
     proc.upsert_permission_edge = AsyncMock()
     proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
+    proc.get_records_by_file_path = AsyncMock(return_value=[])
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.withdraw_app_user_access = AsyncMock()
+    proc.on_external_app_users = AsyncMock()
+    proc.reap_external_app_users = AsyncMock(return_value=0)
+    proc.get_nodes_by_filters = AsyncMock(return_value=[])
+    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.batch_update_nodes = AsyncMock()
+    proc.get_records_by_parent = AsyncMock(return_value=[])
     return proc
 
 
@@ -331,7 +350,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://link"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -340,98 +359,9 @@ class TestProcessDropboxEntryBranches:
         assert result is not None
         assert result.record.signed_url is None
 
-    async def test_shared_link_second_call_succeeds(self, connector):
-        entry = _make_file_entry()
-        connector.data_source.files_get_temporary_link = AsyncMock(
-            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
-        )
 
-        first_call = _make_dropbox_response(success=False, error="shared_link_already_exists stuff")
-        second_call = _make_dropbox_response(success=True, data=MagicMock(url="https://preview2"))
-        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first_call, second_call]
-        )
-        connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
-        )
 
-        result = await connector._process_dropbox_entry(
-            entry, "user1", "user@test.com", "rg1", False
-        )
-        assert result is not None
-        assert result.record.weburl == "https://preview2"
 
-    async def test_shared_link_url_extracted_from_second_error(self, connector):
-        entry = _make_file_entry()
-        connector.data_source.files_get_temporary_link = AsyncMock(
-            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
-        )
-
-        first_call = _make_dropbox_response(success=False, error="shared_link_already_exists")
-        second_call = _make_dropbox_response(
-            success=False,
-            error="shared_link_already_exists url='https://extracted.url/link'"
-        )
-        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first_call, second_call]
-        )
-        connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
-        )
-
-        result = await connector._process_dropbox_entry(
-            entry, "user1", "user@test.com", "rg1", False
-        )
-        assert result is not None
-        assert result.record.weburl == "https://extracted.url/link"
-
-    async def test_shared_link_no_url_in_second_error(self, connector):
-        entry = _make_file_entry()
-        connector.data_source.files_get_temporary_link = AsyncMock(
-            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
-        )
-
-        first_call = _make_dropbox_response(success=False, error="shared_link_already_exists")
-        second_call = _make_dropbox_response(
-            success=False,
-            error="shared_link_already_exists no_url_here"
-        )
-        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first_call, second_call]
-        )
-        connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
-        )
-
-        result = await connector._process_dropbox_entry(
-            entry, "user1", "user@test.com", "rg1", False
-        )
-        assert result is not None
-        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
-
-    async def test_shared_link_second_call_unexpected_error(self, connector):
-        entry = _make_file_entry()
-        connector.data_source.files_get_temporary_link = AsyncMock(
-            return_value=_make_dropbox_response(success=True, data=MagicMock(link="https://tmp"))
-        )
-
-        first_call = _make_dropbox_response(success=False, error="shared_link_already_exists")
-        second_call = _make_dropbox_response(
-            success=False,
-            error="some_other_error completely different"
-        )
-        connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first_call, second_call]
-        )
-        connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
-        )
-
-        result = await connector._process_dropbox_entry(
-            entry, "user1", "user@test.com", "rg1", False
-        )
-        assert result is not None
-        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     async def test_first_shared_link_call_unexpected_error(self, connector):
         entry = _make_file_entry()
@@ -442,7 +372,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -460,7 +390,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=False, error="rate_limit_exceeded")
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -496,7 +426,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         result = await connector._process_dropbox_entry(
@@ -512,7 +442,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         members_data = MagicMock()
         members_data.users = []
@@ -535,7 +465,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         user_membership = MagicMock()
@@ -574,7 +504,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
 
         group_membership = MagicMock()
@@ -605,7 +535,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector._convert_dropbox_permissions_to_permissions = AsyncMock(
             side_effect=Exception("permission error")
@@ -615,7 +545,8 @@ class TestProcessDropboxEntryBranches:
             entry, "user1", "user@test.com", "rg1", False
         )
         assert result is not None
-        assert result.new_permissions == []
+        assert result.new_permissions is None  # not read: the stored grants are kept
+        assert result.record.rewrite_permissions is False
         assert result.record.is_shared is False
         assert result.record.inherit_permissions is True
         connector._convert_dropbox_permissions_to_permissions.assert_awaited_once_with(
@@ -640,7 +571,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_file_members = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(users=[], groups=[]))
@@ -668,7 +599,7 @@ class TestProcessDropboxEntryBranches:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://preview"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_folder_members = AsyncMock(
             return_value=_make_dropbox_response(success=False)
@@ -685,206 +616,16 @@ class TestProcessDropboxEntryBranches:
 # ===========================================================================
 # _process_entry (legacy)
 # ===========================================================================
-class TestProcessEntryLegacy:
-    async def test_deleted_entry(self, connector):
-        entry = _make_deleted_entry()
-        result = await connector._process_entry(entry)
-        assert result is None
-
-    async def test_file_entry(self, connector):
-        """_process_entry is a legacy/unused function that creates FileRecord without
-        required 'version' field and uses invalid 'web_url' kwarg, causing ValidationError."""
-        from pydantic import ValidationError
-        entry = _make_file_entry()
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            return_value=MagicMock(data=MagicMock(users=[], groups=[]))
-        )
-        with pytest.raises(ValidationError):
-            await connector._process_entry(entry)
-
-    async def test_folder_entry(self, connector):
-        """_process_entry is a legacy/unused function that creates FileRecord without
-        required 'version' field and uses invalid 'web_url' kwarg, causing ValidationError."""
-        from pydantic import ValidationError
-        entry = _make_folder_entry()
-        entry.shared_folder_id = None
-        connector.data_source.sharing_list_folder_members = AsyncMock(
-            return_value=MagicMock(data=MagicMock(users=[], groups=[]))
-        )
-        with pytest.raises(ValidationError):
-            await connector._process_entry(entry)
 
 
 # ===========================================================================
 # _get_permissions (legacy)
 # ===========================================================================
-class TestGetPermissionsLegacy:
-    async def test_no_data_source(self, connector):
-        connector.data_source = None
-        entry = _make_file_entry()
-        perms = await connector._get_permissions(entry)
-        assert perms == []
-
-    async def test_file_with_members(self, connector):
-        user_member = MagicMock()
-        user_member.access_type = AccessLevel.owner
-        user_info = MagicMock()
-        user_info.account_id = "acct:1"
-        user_info.email = "user@test.com"
-        user_member.user = user_info
-
-        members_data = MagicMock()
-        members_data.users = [user_member]
-        members_data.groups = []
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            return_value=MagicMock(data=members_data)
-        )
-
-        entry = _make_file_entry()
-        perms = await connector._get_permissions(entry)
-        assert len(perms) == 1
-
-    async def test_folder_with_shared_folder_id(self, connector):
-        entry = _make_folder_entry()
-        entry.shared_folder_id = "sf:1"
-
-        # The _get_permissions code uses getattr(member, 'user', getattr(member, 'group', None))
-        # so we must ensure the group_member has no 'user' attr for 'group' to be picked up.
-        # Also, group_info must not have 'account_id' (so entity_type becomes GROUP)
-        # and group_id must be a real string (not MagicMock) for Pydantic validation.
-        group_member = MagicMock(spec=['access_type', 'group'])
-        group_member.access_type = AccessLevel.editor
-        group_info = MagicMock(spec=['group_id'])
-        group_info.group_id = "g:1"
-        group_member.group = group_info
-
-        members_data = MagicMock()
-        members_data.users = []
-        members_data.groups = [group_member]
-        connector.data_source.sharing_list_folder_members = AsyncMock(
-            return_value=MagicMock(data=members_data)
-        )
-
-        perms = await connector._get_permissions(entry)
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.GROUP
-
-    async def test_folder_no_shared_folder_id(self, connector):
-        entry = _make_folder_entry()
-        entry.shared_folder_id = None
-        perms = await connector._get_permissions(entry)
-        assert perms == []
-
-    async def test_no_members_result(self, connector):
-        connector.data_source.sharing_list_file_members = AsyncMock(return_value=None)
-        entry = _make_file_entry()
-        perms = await connector._get_permissions(entry)
-        assert perms == []
-
-    async def test_exception_returns_empty(self, connector):
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            side_effect=Exception("API down")
-        )
-        entry = _make_file_entry()
-        perms = await connector._get_permissions(entry)
-        assert perms == []
-
-    async def test_member_without_user_or_group(self, connector):
-        member = MagicMock()
-        member.access_type = AccessLevel.viewer
-        member.user = None
-        member.group = None
-        delattr(member, 'user')
-        delattr(member, 'group')
-
-        members_data = MagicMock()
-        members_data.users = [member]
-        members_data.groups = []
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            return_value=MagicMock(data=members_data)
-        )
-
-        entry = _make_file_entry()
-        perms = await connector._get_permissions(entry)
-        assert len(perms) == 0
 
 
 # ===========================================================================
 # _sync_from_source
 # ===========================================================================
-class TestSyncFromSource:
-    async def test_not_initialized(self, connector):
-        connector.data_source = None
-        with pytest.raises(ConnectionError):
-            await connector._sync_from_source()
-
-    async def test_basic_sync(self, connector):
-        """_sync_from_source calls _process_entry which is a legacy function that
-        creates FileRecord without required 'version' field, causing ValidationError.
-        The error is caught and the sync loop ends. on_new_records is never called."""
-        entry = _make_file_entry()
-        list_result = MagicMock()
-        list_result.entries = [entry]
-        list_result.data = MagicMock(cursor="cursor1", has_more=False)
-
-        connector.data_source.files_list_folder = AsyncMock(
-            return_value=MagicMock(data=list_result)
-        )
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            return_value=MagicMock(data=MagicMock(users=[], groups=[]))
-        )
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.update_sync_point = AsyncMock()
-
-        await connector._sync_from_source()
-        # _process_entry raises ValidationError, caught by _sync_from_source,
-        # so no records are processed
-        connector.data_entities_processor.on_new_records.assert_not_called()
-
-    async def test_sync_with_cursor(self, connector):
-        list_result = MagicMock()
-        list_result.entries = []
-        list_result.data = MagicMock(cursor="cursor2", has_more=False)
-
-        connector.data_source.files_list_folder_continue = AsyncMock(
-            return_value=MagicMock(data=list_result)
-        )
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.update_sync_point = AsyncMock()
-
-        await connector._sync_from_source(cursor="cursor1")
-
-    async def test_sync_error_stops_loop(self, connector):
-        connector.data_source.files_list_folder = AsyncMock(
-            side_effect=Exception("API error")
-        )
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.update_sync_point = AsyncMock()
-        await connector._sync_from_source()
-
-    async def test_batch_processing(self, connector):
-        """_sync_from_source calls _process_entry which is a legacy function that
-        creates FileRecord without required 'version' field, causing ValidationError.
-        The error is caught on the first entry and the sync loop ends."""
-        entries = [_make_file_entry(name=f"f{i}.pdf", file_id=f"id:{i}", path=f"/f{i}.pdf")
-                   for i in range(150)]
-        list_result = MagicMock()
-        list_result.entries = entries
-        list_result.data = MagicMock(cursor="c1", has_more=False)
-
-        connector.data_source.files_list_folder = AsyncMock(
-            return_value=MagicMock(data=list_result)
-        )
-        connector.data_source.sharing_list_file_members = AsyncMock(
-            return_value=MagicMock(data=MagicMock(users=[], groups=[]))
-        )
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.update_sync_point = AsyncMock()
-
-        await connector._sync_from_source()
-        # _process_entry raises ValidationError on the first entry,
-        # caught by _sync_from_source's except, ending the loop
-        connector.data_entities_processor.on_new_records.assert_not_called()
 
 
 # ===========================================================================
@@ -1053,7 +794,7 @@ class TestRunSyncWithYield:
             return_value=_make_dropbox_response(success=True, data=MagicMock(url="https://url"))
         )
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=False)
+            return_value=_make_dropbox_response(success=False, error="path/not_found/")
         )
         connector.data_source.sharing_list_file_members = AsyncMock(
             return_value=_make_dropbox_response(success=True, data=MagicMock(users=[], groups=[]))
@@ -1119,208 +860,21 @@ class TestInitializeEventCursor:
 # ===========================================================================
 # _sync_member_changes_with_cursor
 # ===========================================================================
-class TestSyncMemberChangesWithCursor:
-    async def test_no_cursor(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-        await connector._sync_member_changes_with_cursor([])
-
-    async def test_processes_events(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "c1"}
-        )
-        event = _make_event("member_change_status")
-        resp = _make_dropbox_response(success=True, data=MagicMock(
-            events=[event], cursor="c2", has_more=False
-        ))
-        connector.data_source.team_log_get_events_continue = AsyncMock(return_value=resp)
-        connector._process_member_event = AsyncMock()
-
-        await connector._sync_member_changes_with_cursor([])
-        connector._process_member_event.assert_called_once()
-
-    async def test_api_failure(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "c1"}
-        )
-        resp = _make_dropbox_response(success=False, error="rate limited")
-        connector.data_source.team_log_get_events_continue = AsyncMock(return_value=resp)
-
-        await connector._sync_member_changes_with_cursor([])
-
-    async def test_event_processing_error(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "c1"}
-        )
-        event = _make_event("member_change_status")
-        resp = _make_dropbox_response(success=True, data=MagicMock(
-            events=[event], cursor="c2", has_more=False
-        ))
-        connector.data_source.team_log_get_events_continue = AsyncMock(return_value=resp)
-        connector._process_member_event = AsyncMock(side_effect=Exception("event error"))
-
-        await connector._sync_member_changes_with_cursor([])
-
-    async def test_loop_exception(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "c1"}
-        )
-        connector.data_source.team_log_get_events_continue = AsyncMock(
-            side_effect=Exception("loop error")
-        )
-
-        await connector._sync_member_changes_with_cursor([])
-
-    async def test_fatal_exception(self, connector):
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            side_effect=Exception("fatal")
-        )
-        with pytest.raises(Exception, match="fatal"):
-            await connector._sync_member_changes_with_cursor([])
 
 
 # ===========================================================================
 # _process_member_event
 # ===========================================================================
-class TestProcessMemberEvent:
-    async def test_member_change_status(self, connector):
-        event = _make_event("member_change_status")
-        connector._handle_member_change_status_event = AsyncMock()
-        await connector._process_member_event(event, [])
-        connector._handle_member_change_status_event.assert_called_once()
-
-    async def test_unknown_event_type(self, connector):
-        event = _make_event("something_else")
-        await connector._process_member_event(event, [])
-
-    async def test_exception_in_processing(self, connector):
-        event = _make_event("member_change_status")
-        connector._handle_member_change_status_event = AsyncMock(
-            side_effect=Exception("handler error")
-        )
-        await connector._process_member_event(event, [])
 
 
 # ===========================================================================
 # _handle_member_change_status_event
 # ===========================================================================
-class TestHandleMemberChangeStatusEvent:
-    async def test_active_status(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "new@test.com"
-        user_info.display_name = "New User"
-        user_info.team_member_id = "tm:new"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value = MagicMock(_tag="active")
-        status_details.previous_value = MagicMock(_tag="invited")
-        event.details = MagicMock()
-        event.details.get_member_change_status_details.return_value = status_details
-
-        connector._handle_member_added = AsyncMock()
-        app_users = [_make_app_user(email="new@test.com")]
-
-        await connector._handle_member_change_status_event(event, app_users)
-        connector._handle_member_added.assert_called_once()
-
-    async def test_removed_status(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "removed@test.com"
-        user_info.display_name = "Removed User"
-        user_info.team_member_id = "tm:old"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value = MagicMock(_tag="removed")
-        status_details.previous_value = MagicMock(_tag="active")
-        event.details = MagicMock()
-        event.details.get_member_change_status_details.return_value = status_details
-
-        await connector._handle_member_change_status_event(event, [])
-
-    async def test_other_status(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "user@test.com"
-        user_info.display_name = "User"
-        user_info.team_member_id = "tm:1"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value = MagicMock(_tag="suspended")
-        status_details.previous_value = MagicMock(_tag="active")
-        event.details = MagicMock()
-        event.details.get_member_change_status_details.return_value = status_details
-
-        await connector._handle_member_change_status_event(event, [])
-
-    async def test_no_email(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = False
-        event.details = MagicMock(spec=[])
-
-        await connector._handle_member_change_status_event(event, [])
-
-    async def test_exception_in_handler(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "user@test.com"
-        user_info.display_name = "User"
-        user_info.team_member_id = "tm:1"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value = MagicMock(_tag="active")
-        status_details.previous_value = MagicMock(_tag="invited")
-        event.details = MagicMock()
-        event.details.get_member_change_status_details.return_value = status_details
-
-        connector._handle_member_added = AsyncMock(side_effect=Exception("fail"))
-        await connector._handle_member_change_status_event(event, [])
-
-    async def test_no_details_method(self, connector):
-        event = MagicMock()
-        event.context = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "user@test.com"
-        user_info.display_name = "User"
-        user_info.team_member_id = "tm:1"
-        event.context.get_team_member.return_value = user_info
-        event.details = MagicMock(spec=[])
-
-        await connector._handle_member_change_status_event(event, [])
 
 
 # ===========================================================================
 # _handle_member_added
 # ===========================================================================
-class TestHandleMemberAdded:
-    async def test_user_found(self, connector):
-        user = _make_app_user(email="new@test.com")
-        await connector._handle_member_added("new@test.com", "tm:1", [user])
-        connector.data_entities_processor.on_new_app_users.assert_called_once()
-
-    async def test_user_not_found(self, connector):
-        await connector._handle_member_added("unknown@test.com", "tm:1", [])
-
-    async def test_exception(self, connector):
-        user = _make_app_user(email="new@test.com")
-        connector.data_entities_processor.on_new_app_users = AsyncMock(
-            side_effect=Exception("DB error")
-        )
-        await connector._handle_member_added("new@test.com", "tm:1", [user])
 
 
 # ===========================================================================
@@ -1355,8 +909,13 @@ class TestSyncUserGroups:
         groups_resp = _make_dropbox_response(success=False, error="denied")
         connector.data_source.team_groups_list = AsyncMock(return_value=groups_resp)
 
-        with pytest.raises(Exception):
-            await connector._sync_user_groups()
+        # A list that could not be read writes nothing and marks the run incomplete; files still sync.
+
+        await connector._sync_user_groups()
+
+        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+        assert not connector._health.complete
 
     async def test_groups_pagination(self, connector):
         group1 = MagicMock(group_id="g1", group_name="G1")
@@ -1926,98 +1485,6 @@ class TestUpdateUserGroupPermission:
 # ===========================================================================
 # sync_record_groups and sync_personal_record_groups
 # ===========================================================================
-class TestSyncRecordGroups:
-    async def test_no_admin_user(self, connector):
-        users = [_make_app_user(title="member")]
-        await connector.sync_record_groups(users)
-
-    async def test_team_folders_success(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        folder = MagicMock()
-        folder.team_folder_id = "tf:1"
-        folder.name = "TeamFolder"
-        folder.status = MagicMock(_tag="active")
-
-        resp = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[folder], cursor="tc1", has_more=False
-        ))
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=resp)
-        connector._create_and_sync_single_record_group = AsyncMock()
-
-        await connector.sync_record_groups([admin])
-        connector._create_and_sync_single_record_group.assert_called_once()
-
-    async def test_team_folders_fail(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        resp = _make_dropbox_response(success=False, error="denied")
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=resp)
-
-        await connector.sync_record_groups([admin])
-
-    async def test_inactive_folder_skipped(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        folder = MagicMock()
-        folder.team_folder_id = "tf:1"
-        folder.name = "Archived"
-        folder.status = MagicMock(_tag="archived")
-
-        resp = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[folder], cursor="tc1", has_more=False
-        ))
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=resp)
-        connector._create_and_sync_single_record_group = AsyncMock()
-
-        await connector.sync_record_groups([admin])
-        connector._create_and_sync_single_record_group.assert_not_called()
-
-    async def test_folder_sync_exception(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        folder = MagicMock()
-        folder.team_folder_id = "tf:1"
-        folder.name = "Folder"
-        folder.status = MagicMock(_tag="active")
-
-        resp = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[folder], cursor="tc1", has_more=False
-        ))
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=resp)
-        connector._create_and_sync_single_record_group = AsyncMock(
-            side_effect=Exception("sync error")
-        )
-
-        await connector.sync_record_groups([admin])
-
-    async def test_pagination(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        f1 = MagicMock(team_folder_id="tf:1", name="F1", status=MagicMock(_tag="active"))
-        f2 = MagicMock(team_folder_id="tf:2", name="F2", status=MagicMock(_tag="active"))
-
-        page1 = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[f1], cursor="tc1", has_more=True
-        ))
-        page2 = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[f2], cursor="tc2", has_more=False
-        ))
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=page1)
-        connector.data_source.team_team_folder_list_continue = AsyncMock(return_value=page2)
-        connector._create_and_sync_single_record_group = AsyncMock()
-
-        await connector.sync_record_groups([admin])
-        assert connector._create_and_sync_single_record_group.call_count == 2
-
-    async def test_pagination_error(self, connector):
-        admin = _make_app_user(source_role="team_admin")
-        f1 = MagicMock(team_folder_id="tf:1", name="F1", status=MagicMock(_tag="active"))
-
-        page1 = _make_dropbox_response(success=True, data=MagicMock(
-            team_folders=[f1], cursor="tc1", has_more=True
-        ))
-        page2 = _make_dropbox_response(success=False, error="pagination fail")
-        connector.data_source.team_team_folder_list = AsyncMock(return_value=page1)
-        connector.data_source.team_team_folder_list_continue = AsyncMock(return_value=page2)
-        connector._create_and_sync_single_record_group = AsyncMock()
-
-        await connector.sync_record_groups([admin])
 
 
 class TestSyncPersonalRecordGroups:
@@ -2569,7 +2036,9 @@ class TestResyncRecordByExternalId:
 
         await connector._resync_record_by_external_id("id:f1", "tm:1", "user@test.com")
         assert connector._process_dropbox_entry.call_args.kwargs["is_person_folder"] is True
-        connector._handle_record_updates.assert_not_called()
+        # A sharing change does not show in the metadata, so the members are read and the record written.
+        assert connector._process_dropbox_entry.call_args.kwargs["force_members"] is True
+        connector._handle_record_updates.assert_awaited_once()
 
     async def test_file_no_existing_record(self, connector) -> None:
         metadata_data = _make_file_entry()
@@ -2602,23 +2071,10 @@ class TestResyncRecordByExternalId:
 # run_incremental_sync
 # ===========================================================================
 class TestRunIncrementalSync:
-    async def test_no_cursor(self, connector):
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.dropbox_cursor_sync_point = AsyncMock(return_value=None)
+    async def test_runs_the_cursor_based_sync(self, connector):
         connector.run_sync = AsyncMock()
-
         await connector.run_incremental_sync()
-        connector.run_sync.assert_called_once()
-
-    async def test_with_cursor(self, connector):
-        connector.record_sync_point = AsyncMock()
-        connector.record_sync_point.dropbox_cursor_sync_point = AsyncMock(
-            return_value={"cursor": "c1"}
-        )
-        connector._sync_from_source = AsyncMock()
-
-        await connector.run_incremental_sync()
-        connector._sync_from_source.assert_called_once()
+        connector.run_sync.assert_awaited_once()
 
 
 # ===========================================================================
@@ -2647,6 +2103,16 @@ class TestGetSignedUrl:
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1")
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_records_by_file_path = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        connector.data_entities_processor.on_external_app_users = AsyncMock()
+        connector.data_entities_processor.reap_external_app_users = AsyncMock(return_value=0)
+        connector.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[])
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+        connector.data_entities_processor.batch_update_nodes = AsyncMock()
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
         connector._members_with_access = AsyncMock(return_value=["tm:1"])
 
         with pytest.raises(HTTPException) as exc_info:
@@ -2744,18 +2210,25 @@ class TestStreamRecord:
 # test_connection_and_access
 # ===========================================================================
 class TestTestConnectionAndAccess:
+    """The team token is checked with team/token/get_authenticated_admin: a team token cannot call
+    users/get_current_account without naming a member, and the data source answers failures, it does not raise."""
+
     async def test_success(self, connector):
-        connector.data_source.users_get_current_account = AsyncMock()
+        connector.data_source.team_token_get_authenticated_admin = AsyncMock(return_value=MagicMock(success=True))
         assert await connector.test_connection_and_access() is True
 
     async def test_no_data_source(self, connector):
         connector.data_source = None
         assert await connector.test_connection_and_access() is False
 
-    async def test_exception(self, connector):
-        connector.data_source.users_get_current_account = AsyncMock(
-            side_effect=Exception("Connection failed")
+    async def test_refused_token(self, connector):
+        connector.data_source.team_token_get_authenticated_admin = AsyncMock(
+            return_value=MagicMock(success=False, error="AuthError('invalid_access_token')")
         )
+        assert await connector.test_connection_and_access() is False
+
+    async def test_exception(self, connector):
+        connector.data_source.team_token_get_authenticated_admin = AsyncMock(side_effect=Exception("Connection failed"))
         assert await connector.test_connection_and_access() is False
 
 
@@ -2806,7 +2279,7 @@ class TestReindexRecords:
 
         updated_file = MagicMock()
         connector._check_and_fetch_updated_record = AsyncMock(
-            side_effect=[(updated_file, []), None]
+            side_effect=[MagicMock(record=updated_file, new_permissions=[], is_new=False), None]
         )
 
         await connector.reindex_records([record1, record2])
@@ -2843,6 +2316,16 @@ class TestCheckAndFetchUpdatedRecord:
     async def test_no_file_record(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="rg:1")
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_records_by_file_path = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        connector.data_entities_processor.on_external_app_users = AsyncMock()
+        connector.data_entities_processor.reap_external_app_users = AsyncMock(return_value=0)
+        connector.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[])
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+        connector.data_entities_processor.batch_update_nodes = AsyncMock()
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
         result = await connector._check_and_fetch_updated_record("org1", record)
         assert result is None
@@ -2906,23 +2389,29 @@ class TestCheckAndFetchUpdatedRecord:
         connector._process_dropbox_entry = AsyncMock(return_value=record_update)
 
         result = await connector._check_and_fetch_updated_record("org1", record)
-        assert result == (record_update.record, record_update.new_permissions)
+        assert result is record_update
         assert record_update.record.id == "r1"
         kwargs = connector._process_dropbox_entry.call_args.kwargs
         assert (kwargs["entry"], kwargs["user_id"], kwargs["record_group_id"], kwargs["is_person_folder"]) == (entry, "tm:1", "ns:1", False)
+        assert kwargs["force_members"] is True
 
     async def test_not_updated(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
         connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/file.pdf"))
         connector._members_with_access = AsyncMock(return_value=["tm:1"])
+        entry = _make_file_entry()
+        record.record_name, record.external_revision_id = entry.name, entry.rev
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path=entry.path_lower))
         connector.data_source.files_get_metadata = AsyncMock(
-            return_value=_make_dropbox_response(success=True, data=_make_file_entry())
+            return_value=_make_dropbox_response(success=True, data=entry)
         )
-        connector._process_dropbox_entry = AsyncMock(return_value=MagicMock(is_deleted=False, is_updated=False))
+        update = MagicMock(content_changed=False)
+        connector._process_dropbox_entry = AsyncMock(return_value=update)
 
         result = await connector._check_and_fetch_updated_record("org1", record)
-        assert result is None
-        connector._process_dropbox_entry.assert_awaited_once()
+        # Same name, revision and place: still read with its members, which may have changed alone.
+        assert result is update
+        assert connector._process_dropbox_entry.await_args.kwargs["force_members"] is True
 
     async def test_metadata_failure(self, connector):
         record = MagicMock(id="r1", external_record_id="ext:1", external_record_group_id="ns:1")
@@ -3075,71 +2564,3 @@ class TestExtractFolderInfoFromEvent:
 # ===========================================================================
 # run_sync
 # ===========================================================================
-class TestRunSync:
-    @patch("app.connectors.sources.dropbox.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_full_sync_flow(self, mock_load_filters, connector):
-        mock_load_filters.return_value = (FilterCollection(), FilterCollection())
-
-        member_profile = MagicMock()
-        member_profile.team_member_id = "tm:1"
-        member_profile.name = MagicMock(display_name="User One")
-        member_profile.email = "user@test.com"
-        member_profile.status = MagicMock(_tag="active")
-
-        member = MagicMock()
-        member.profile = member_profile
-        member.role = MagicMock(_tag="team_admin")
-
-        users_resp = MagicMock()
-        users_resp.data = MagicMock(members=[member])
-
-        connector.data_source.team_members_list = AsyncMock(return_value=users_resp)
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-        connector._initialize_event_cursor = AsyncMock()
-        connector._sync_user_groups = AsyncMock()
-        connector.sync_record_groups = AsyncMock()
-        connector.sync_personal_record_groups = AsyncMock()
-        connector._process_users_in_batches = AsyncMock()
-
-        await connector.run_sync()
-        connector.data_entities_processor.on_new_app_users.assert_called_once()
-
-    @patch("app.connectors.sources.dropbox.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_incremental_paths(self, mock_load_filters, connector):
-        mock_load_filters.return_value = (FilterCollection(), FilterCollection())
-
-        member_profile = MagicMock()
-        member_profile.team_member_id = "tm:1"
-        member_profile.name = MagicMock(display_name="User One")
-        member_profile.email = "user@test.com"
-        member_profile.status = MagicMock(_tag="active")
-
-        member = MagicMock()
-        member.profile = member_profile
-        member.role = MagicMock(_tag="team_admin")
-
-        users_resp = MagicMock()
-        users_resp.data = MagicMock(members=[member])
-
-        connector.data_source.team_members_list = AsyncMock(return_value=users_resp)
-        connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(
-            return_value={"cursor": "existing_cursor"}
-        )
-        connector._sync_member_changes_with_cursor = AsyncMock()
-        connector._sync_group_changes_with_cursor = AsyncMock()
-        connector._sync_record_group_changes_with_cursor = AsyncMock()
-        connector.sync_personal_record_groups = AsyncMock()
-        connector._process_users_in_batches = AsyncMock()
-        connector._sync_sharing_changes_with_cursor = AsyncMock()
-
-        await connector.run_sync()
-        connector._sync_member_changes_with_cursor.assert_called_once()
-        connector._sync_group_changes_with_cursor.assert_called_once()
-        connector._sync_record_group_changes_with_cursor.assert_called_once()
-        connector._sync_sharing_changes_with_cursor.assert_called_once()
-
-    @patch("app.connectors.sources.dropbox.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_exception(self, mock_load_filters, connector):
-        mock_load_filters.side_effect = Exception("config error")
-        with pytest.raises(Exception, match="config error"):
-            await connector.run_sync()

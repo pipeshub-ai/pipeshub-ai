@@ -54,6 +54,16 @@ from app.models.permission import EntityType, Permission, PermissionType
 # ===========================================================================
 
 
+
+def _runs_in_its_transaction(provider: MagicMock) -> MagicMock:
+    """execute_in_transaction runs the block in the mock's own transaction()."""
+    async def execute_in_transaction(func, *args, **kwargs) -> object:
+        async with provider.transaction() as tx_store:
+            return await func(tx_store, *args, **kwargs)
+    provider.execute_in_transaction = execute_in_transaction
+    return provider
+
+
 def _make_mock_deps():
     logger = logging.getLogger("test.outlook")
     data_entities_processor = MagicMock()
@@ -70,7 +80,7 @@ def _make_mock_deps():
     data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
     data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
-    data_store_provider = MagicMock()
+    data_store_provider = _runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -2470,7 +2480,7 @@ def _make_mock_deps_fullcov():
     data_entities_processor.delete_record_by_external_id = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
 
-    data_store_provider = MagicMock()
+    data_store_provider = _runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()

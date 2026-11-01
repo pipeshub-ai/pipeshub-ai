@@ -90,10 +90,12 @@ export type ConnectorType =
   // MCP / AI tools
   | 'exa'
   | 'context7'
+  | 'huggingface'
   | 'atlassian'
   | 'discord'
   | 'posthog'
   | 'brave'
+  | 'stripe'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -188,10 +190,12 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   // MCP / AI tools
   'exa': { svg: svg('exa'), fallback: 'travel_explore' },
   'context7': { svg: svg('context7'), fallback: 'menu_book' },
+  'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
   'posthog': { svg: null, fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
+  'stripe': { svg: svg('stripe'), fallback: 'payments' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -253,7 +257,9 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   // MCP / AI tools
   ['atlassian', 'atlassian'], ['rovo', 'atlassian'],
   ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
+  ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
+  ['stripe', 'stripe'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],

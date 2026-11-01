@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import logging
 import os
 import re
@@ -588,6 +589,78 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info(f"✅ Completed processing {len(pages)} pages")
         return result
 
+    @staticmethod
+    def _open_pdf_sync(content: bytes) -> "tuple[str, Any, int]":
+        """Write *content* to a temp file and open it. Returns (path, doc, page count).
+
+        Cleans up after itself when it fails, so a caller only owns what it gets back.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
+        )
+        doc = None
+        try:
+            try:
+                tmp.write(content)
+                tmp.flush()
+            finally:
+                tmp.close()
+            doc = pdfplumber.open(tmp.name)
+            return tmp.name, doc, len(doc.pages)
+        except BaseException:
+            if doc is not None:
+                doc.close()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+            raise
+
+    @staticmethod
+    def _release_pdf_sync(path: Optional[str], doc: object) -> None:
+        if doc is not None:
+            with contextlib.suppress(Exception):
+                doc.close()
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    async def _open_pdf_off_loop(self, content: bytes) -> "tuple[str, Any, int]":
+        """Run ``_open_pdf_sync`` in a thread without leaking its file on cancellation.
+
+        The side that finishes second releases the file: the thread when the caller has
+        already given up, the caller when the thread handed it over first. Neither relies
+        on a loop callback, so the file is released even if the loop closes mid-open.
+        """
+        lock = threading.Lock()
+        abandoned = False
+        handed_over: "Optional[tuple[str, Any, int]]" = None
+
+        def open_and_hand_over() -> "Optional[tuple[str, Any, int]]":
+            nonlocal handed_over
+            opened = self._open_pdf_sync(content)
+            with lock:
+                if not abandoned:
+                    handed_over = opened
+                    return opened
+            self._release_pdf_sync(opened[0], opened[1])
+            return None
+
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, open_and_hand_over)
+        try:
+            opened = await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            with lock:
+                abandoned = True
+                orphan, handed_over = handed_over, None
+            if orphan is not None:
+                # Closing and unlinking can be slow; keep them off the loop.
+                try:
+                    loop.run_in_executor(None, self._release_pdf_sync, orphan[0], orphan[1])
+                except RuntimeError:  # the executor is already shut down
+                    self._release_pdf_sync(orphan[0], orphan[1])
+            raise
+        return cast("tuple[str, Any, int]", opened)
+
     async def load_document(self, content: bytes) -> None:
         """
         Load PDF document and initialize LLM
@@ -599,17 +672,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         try:
             self.logger.debug("📄 Loading PDF with pdfplumber")
-            tmp = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
-            )
-            try:
-                tmp.write(content)
-                tmp.flush()
-            finally:
-                tmp.close()
-            self._pdf_path = tmp.name
-            self.doc = pdfplumber.open(self._pdf_path)
-            page_count = len(self.doc.pages)
+            # Writing the file and parsing its page tree is blocking work that grows
+            # with the PDF; scanned and damaged files make it the slowest part.
+            self._pdf_path, self.doc, page_count = await self._open_pdf_off_loop(content)
             self.logger.info(f"📚 Loaded PDF with {page_count} pages")
             max_pages = vlm_ocr_max_pages()
             if page_count > max_pages:
@@ -629,13 +694,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error loading document: {str(e)}")
             raise
         finally:
-            if self.doc:
-                self.doc.close()
-                self.doc = None
-            if self._pdf_path:
-                try:
-                    os.unlink(self._pdf_path)
-                except OSError:
-                    pass
-                self._pdf_path = None
-            self._page_images = {}
+            doc, path = self.doc, self._pdf_path
+            self.doc = None
+            self._pdf_path = None
+            if doc is not None or path:
+                await asyncio.shield(
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self._release_pdf_sync, path, doc
+                    )
+                )

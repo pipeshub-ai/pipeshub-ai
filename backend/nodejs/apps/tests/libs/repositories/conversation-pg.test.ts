@@ -1,7 +1,7 @@
 import { expect } from 'chai'
 import { Params, fill, likeEscape, oidOf, oidsOf, unescapeRegex, newObjectId } from '../../../src/libs/repositories/pg-util'
 import { countStatement, pageStatement, planOf } from '../../../src/libs/repositories/conversation/pg'
-import { messageDto, sessionDto, storedCitationMetadata, storedFeedback, storedMessage, storedModelInfo } from '../../../src/libs/repositories/conversation/pg-rows'
+import { messageDto, sessionDto, storedCitationMetadata, storedFeedback, storedMessage, storedModelInfo, MESSAGE_MODEL_FIELDS } from '../../../src/libs/repositories/conversation/pg-rows'
 import type { SessionListQuery } from '../../../src/libs/repositories/conversation'
 
 const O = 'a'.repeat(24)
@@ -139,6 +139,8 @@ describe('PostgreSQL conversation row shapes', () => {
     expect(s.appliedFilters).to.deep.equal({ apps: [], kb: [], recordGroups: [], records: [], recordsExact: [] })
     expect(s.metadata).to.equal(null)
     expect(storedModelInfo({ modelKey: 'k', modelName: null as never })).to.deep.equal({ modelKey: 'k', chatMode: 'quick' })
+    expect(storedModelInfo({ modelKey: 'k', modelNote: 'n' })).to.deep.equal({ modelKey: 'k', chatMode: 'quick' })
+    expect(storedModelInfo({ modelKey: 'k', modelNote: 'n' }, MESSAGE_MODEL_FIELDS)).to.deep.equal({ modelKey: 'k', modelNote: 'n', chatMode: 'quick' })
     const f = storedFeedback({ isHelpful: true })
     expect(f.source).to.equal('user')
     expect(f.categories).to.deep.equal([])
