@@ -4,6 +4,7 @@ backends in ``tests/integration/graph_db``."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,10 +14,13 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
 )
-from app.modules.retrieval.record_query import engine
+from app.modules.retrieval.record_query import engine, paging
 from app.modules.retrieval.record_query.engine import run_record_query
 from app.modules.retrieval.record_query.model import RecordQuery, day_start_ms
-from app.services.graph_db.common.record_query_rows import RecordCandidates
+from app.services.graph_db.common.record_query_rows import (
+    CandidateKey,
+    RecordCandidates,
+)
 
 MAR_1 = day_start_ms("2026-03-01")
 
@@ -33,14 +37,17 @@ def _row(i: int, *, assignee: str, status: str = "OPEN", amount: float | None = 
 
 
 class FakeProvider:
-    """Applies the person and source parts of a pushdown, newest first, in windows."""
+    """Applies the person and source parts of a pushdown, newest first: one
+    scan returns the candidates' keys, rows are read by id."""
 
     def __init__(
         self, rows: list[dict[str, Any]], *, fail: bool = False, nodes: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.rows = sorted(rows, key=lambda r: (-r["updatedAt"], r["_key"]))
+        self.rows = rows
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
+        self.row_reads: list[list[str]] = []
+        self.scans = 0
         # Person nodes: {"id", "name", "email", "orgId"}.
         self.nodes = nodes or []
         self.person_lookups: list[tuple[str, list[str]]] = []
@@ -52,19 +59,32 @@ class FakeProvider:
         found = [n for n in mine if n["id"] in ids or (n.get("email") or "").lower() in emails]
         return [{"id": n["id"], "name": n.get("name"), "email": n.get("email")} for n in found][:limit]
 
-    async def get_record_query_candidates(self, org_id: str, **kw: Any) -> RecordCandidates:  # noqa: ANN401
-        self.calls.append(kw)
-        if self.fail:
-            raise RuntimeError("graph down")
+    def _matching(self, kw: dict[str, Any]) -> list[dict[str, Any]]:
+        self.scans += 1
         pushed = kw["pushdown"]
-        rows = [r for r in self.rows if r["connectorId"] in kw["connector_ids"]]
+        rows = sorted((r for r in self.rows if r["connectorId"] in kw["connector_ids"]),
+                      key=lambda r: (-r["updatedAt"], r["_key"]))
         for people in pushed.get("people", []):
             rows = [r for r in rows if any(p["role"] in people["edges"] and p["id"] in people["ids"]
                                            for p in r["people"])]
-        capped = len(rows) > kw["scan_cap"]
+        return rows
+
+    async def get_record_query_candidates(self, org_id: str, **kw: Any) -> Any:  # noqa: ANN401
+        self.calls.append(kw)
+        if self.fail:
+            raise RuntimeError("graph down")
+        rows = self._matching(kw)
+        capped = len(rows) >= kw["scan_cap"]
         rows = rows[: kw["scan_cap"]]
-        window = rows[kw["offset"]: kw["offset"] + kw["window"]]
-        return RecordCandidates(rows=window, window_size=len(window), capped=capped)
+        if "offset" in kw:  # the windowed contract this engine replaced; kept to prove the old engine's faults
+            window = [dict(r) for r in rows[kw["offset"]: kw["offset"] + kw["window"]]]
+            return SimpleNamespace(rows=window, window_size=len(window), capped=capped)
+        return RecordCandidates([CandidateKey(r["_key"], r["updatedAt"]) for r in rows], capped=capped)
+
+    async def get_record_query_rows(self, org_id: str, *, record_ids: list[str], **kw: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        self.row_reads.append(list(record_ids))
+        by_id = {r["_key"]: r for r in self.rows}
+        return [dict(by_id[i]) for i in reversed(record_ids) if i in by_id]
 
 
 CONTEXT = EntityAccessContext(
@@ -101,14 +121,16 @@ async def test_a_record_the_user_cannot_read_is_in_no_total_group_sum_or_row(rea
     assert {r["record_id"] for r in result.rows} == {r["_key"] for r in rows[:6]}
 
 
-async def test_a_total_over_many_windows_is_exact(readable: set[str]) -> None:
+async def test_a_total_over_many_windows_is_exact_from_one_scan(readable: set[str]) -> None:
     rows = [_row(i, assignee="ravi") for i in range(1234)]
     readable.update(r["_key"] for r in rows)
     provider = FakeProvider(rows)
     result = await run_record_query(provider, CONTEXT, q(where=[{"person": {"role": "assignee", "ids": ["ravi"]}}]),
                                     window=100)
     assert (result.total, result.approximate) == (1234, False)
-    assert len(provider.calls) == 13
+    # The candidates are scanned once, however many windows are read: a scan
+    # per window costs the cap squared over the window.
+    assert provider.scans == 1
     assert provider.calls[0]["pushdown"]["people"] == [{"edges": ["ASSIGNED_TO"], "ids": ["ravi"]}]
 
 
@@ -128,11 +150,50 @@ async def test_rows_page_with_a_cursor_and_unknowns_are_counted(readable: set[st
     rows = [_row(i, assignee="ravi") for i in range(5)]
     rows[4]["ticket"]["status"] = None
     readable.update(r["_key"] for r in rows)
-    first = await run_record_query(FakeProvider(rows), CONTEXT, q(where=[{"field": "status", "in": ["open"]}], limit=3))
-    assert (first.total, first.unknown, len(first.rows), first.next_cursor) == (4, {"status": 1}, 3, "3")
-    rest = await run_record_query(FakeProvider(rows), CONTEXT,
-                                  q(where=[{"field": "status", "in": ["open"]}], limit=3, cursor="3"))
-    assert (len(rest.rows), rest.next_cursor) == (1, None)
+    query = {"where": [{"field": "status", "in": ["open"]}], "limit": 3}
+    first = await run_record_query(FakeProvider(rows), CONTEXT, q(**query))
+    assert (first.total, first.unknown, len(first.rows), first.offset) == (4, {"status": 1}, 3, 0)
+    assert first.next_cursor
+    rest = await run_record_query(FakeProvider(rows), CONTEXT, q(**query, cursor=first.next_cursor))
+    assert (len(rest.rows), rest.offset, rest.next_cursor) == (1, 3, None)
+
+
+async def test_a_record_added_between_pages_neither_repeats_nor_shifts_a_row(readable: set[str]) -> None:
+    rows = [_row(i, assignee="ravi") for i in range(6)]
+    readable.update(r["_key"] for r in rows)
+    provider = FakeProvider(rows)
+    first = await run_record_query(provider, CONTEXT, q(limit=3))
+    newer = _row(99, assignee="ravi")
+    provider.rows.append(newer)
+    readable.add(newer["_key"])
+    rest = await run_record_query(provider, CONTEXT, q(limit=3, cursor=first.next_cursor))
+    first_ids = [r["record_id"] for r in first.rows]
+    rest_ids = [r["record_id"] for r in rest.rows]
+    assert first_ids == ["r005", "r004", "r003"]
+    assert rest_ids == ["r002", "r001", "r000"]
+
+
+@pytest.mark.parametrize("cursor", ["3", "abc", "W10", "WyJuZXdlc3QiLDEsMl0", "x" * 600])
+def test_a_cursor_the_tool_did_not_print_is_refused(cursor: str) -> None:
+    with pytest.raises(ValueError, match="cursor"):
+        q(cursor=cursor)
+
+
+async def test_a_forged_cursor_shows_only_records_the_user_can_read(readable: set[str]) -> None:
+    rows = [_row(i, assignee="ravi") for i in range(6)]
+    readable.update(r["_key"] for r in rows[::2])
+    forged = paging.encode_cursor(paging.NEWEST, (-(MAR_1 + 4), "r004"))
+    result = await run_record_query(FakeProvider(rows), CONTEXT, q(cursor=forged))
+    assert [r["record_id"] for r in result.rows] == ["r002", "r000"]
+    assert result.total == 3
+
+
+async def test_rows_are_read_only_for_records_the_access_check_admitted(readable: set[str]) -> None:
+    rows = [_row(i, assignee="ravi") for i in range(6)]
+    readable.update(r["_key"] for r in rows[:2])
+    provider = FakeProvider(rows)
+    await run_record_query(provider, CONTEXT, q())
+    assert sorted(i for read in provider.row_reads for i in read) == ["r000", "r001"]
 
 
 async def test_describe_lists_the_top_values_among_matches(readable: set[str]) -> None:

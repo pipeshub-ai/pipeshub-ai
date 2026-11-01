@@ -196,6 +196,7 @@ from app.services.graph_db.common.record_query_rows import (
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
     PERSON_EDGES,
+    CandidateKey,
     RecordCandidates,
     matches_nothing,
     record_query_seed,
@@ -21750,12 +21751,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             OPTIONS {{order: "bfs", uniqueVertices: "global"}}
                             FILTER rec != null AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)"""
 
+    @staticmethod
+    def _entity_candidate_newest(var: str) -> str:
+        newest = f"NOT_NULL({var}.sourceLastModifiedTimestamp, {var}.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f'({var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload" ? 0 : {newest})'
+        return newest
+
     @property
     def _entity_candidate_sort(self) -> str:
-        newest = "NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0)"
-        if upload_times_undated():
-            newest = f'(r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload" ? 0 : {newest})'
-        return f"SORT {newest} DESC, key ASC"
+        return f"SORT {self._entity_candidate_newest('r')} DESC, key ASC"
 
     def _entity_candidate_records_aql(
         self, entity_type: str, *, filter_record_types: bool
@@ -22340,11 +22345,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         when it names an entity type no record can be connected to. Fragments
         are chosen by which keys are present; every value is a bind variable,
         and only variables the query references are bound."""
-        bind_vars: dict[str, Any] = {
-            "person_edges": list(PERSON_EDGES),
-            "org_edges": list(ORGANIZATION_EDGES),
-            "linked_per_row": LINKED_PER_ROW,
-        }
+        bind_vars: dict[str, Any] = {}
         where = [
             "rec.orgId == @org_id AND rec.isDeleted != true",
             aql_searchable_record("rec", "completed"),
@@ -22393,7 +22394,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             AND p.orgId == @org_id
                         LIMIT 1 RETURN 1) > 0""")
         for i, org_ids in enumerate(pushed.get("organizations", [])):
-            bind_vars[f"orgs_{i}"] = list(org_ids)
+            bind_vars[f"orgs_{i}"], bind_vars["org_edges"] = list(org_ids), list(ORGANIZATION_EDGES)
             where.append(f"""LENGTH(FOR o, orl IN 1..1 OUTBOUND rec {relations}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", o) AND o._key IN @orgs_{i}
                             AND orl.edgeType IN @org_edges AND o.isExternal == true AND o.parentOrgId == @org_id
@@ -22414,25 +22415,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         seed, repeats = self._record_query_seed_aql(pushed, bind_vars)
         filters = "\n                    ".join(f"FILTER {w}" for w in where)
+        newest = self._entity_candidate_newest("rec")
         # A seed over edges can reach a record twice; the cap counts records.
         capped_scan = (
-            "COLLECT seen = rec._key INTO dupes KEEP rec\n                    LIMIT @scan_cap\n"
-            "                    RETURN dupes[0].rec"
-        ) if repeats else "LIMIT @scan_cap\n                    RETURN rec"
+            f"COLLECT id = rec._key, sort_ts = {newest}\n                    LIMIT @scan_cap\n"
+            "                    RETURN {id, sort_ts}"
+        ) if repeats else f"LIMIT @scan_cap\n                    RETURN {{id: rec._key, sort_ts: {newest}}}"
+        # One scan per query returning keys only; rows are read by id afterwards,
+        # so no window re-runs the scan.
         query = f"""{prelude}
-            LET scanned = (
+            FOR k IN (
                 {seed}
                     {filters}
                     {capped_scan}
             )
-            LET rows = (
-                FOR rec IN scanned
-                    COLLECT key = rec._key INTO grouped KEEP rec
-                    LET r = grouped[0].rec
-                    {self._entity_candidate_sort}
-                    LIMIT @offset, @window{self._RECORD_QUERY_HYDRATION}
-            )
-            RETURN {{rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
+                SORT k.sort_ts DESC, k.id ASC
+                RETURN k
             """
         return query, bind_vars
 
@@ -22442,8 +22440,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         connector_ids: list[str],
         pushdown: Pushdown,
-        offset: int = 0,
-        window: int = 500,
         scan_cap: int = 20_000,
         timeout_seconds: float | None = None,
         within: list[dict[str, list[str]]] | None = None,
@@ -22455,6 +22451,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if built is None:
             return RecordCandidates()
         query, bind_vars = built
+        cap = max(1, scan_cap)
         rows = await self.execute_query(
             query,
             bind_vars={
@@ -22463,15 +22460,40 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "connector_ids": list(connector_ids),
                 "within": within_param(within),
                 "completed": ProgressStatus.COMPLETED.value,
-                "offset": max(0, offset),
-                "window": max(1, window),
-                "scan_cap": max(1, scan_cap),
+                "scan_cap": cap,
             },
             **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
         )
-        first = (rows or [{}])[0] or {}
-        found = [dict(r) for r in first.get("rows") or []]
-        return RecordCandidates(found, window_size=len(found), capped=bool(first.get("capped")))
+        keys = [CandidateKey(str(r["id"]), int(r.get("sort_ts") or 0)) for r in rows or [] if r]
+        return RecordCandidates(keys, capped=len(keys) >= cap)
+
+    async def get_record_query_rows(
+        self,
+        org_id: str,
+        *,
+        record_ids: list[str],
+        pushdown: Pushdown,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_query_rows`."""
+        if not org_id or not record_ids:
+            return []
+        rows = await self.execute_query(
+            f"""
+            FOR rid IN @record_ids
+                LET r = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
+                FILTER r != null AND r.orgId == @org_id AND r.isDeleted != true{self._RECORD_QUERY_HYDRATION}
+            """,
+            bind_vars={
+                "org_id": org_id,
+                "record_ids": list(dict.fromkeys(record_ids)),
+                "person_edges": list(PERSON_EDGES),
+                "org_edges": list(ORGANIZATION_EDGES),
+                "linked_per_row": LINKED_PER_ROW,
+            },
+            **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+        )
+        return [dict(r) for r in rows or [] if r]
 
     async def get_taxonomy_entity_membership(
         self,

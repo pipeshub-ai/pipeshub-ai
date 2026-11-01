@@ -16,6 +16,7 @@ from typing import Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.modules.retrieval.record_fields import FIELDS, FieldKind, canonical_role, field
+from app.modules.retrieval.record_query.paging import NEWEST, decode_cursor
 
 MAX_ROWS = 50
 MAX_GROUPS = 20
@@ -217,6 +218,12 @@ class RecordQuery(_Strict):
             )
         return self
 
+    @model_validator(mode="after")
+    def _cursor_fits(self) -> RecordQuery:
+        if self.cursor:
+            decode_cursor(NEWEST, self.cursor)
+        return self
+
     @field_validator("describe")
     @classmethod
     def _describable(cls, names: list[str]) -> list[str]:
@@ -241,6 +248,8 @@ class RecordQueryResult(BaseModel):
     unknown: dict[str, int] = Field(default_factory=dict)
     described: dict[str, list[Group]] = Field(default_factory=dict)
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    # Where ``rows`` starts among the matches, for "records 21-40 of 57".
+    offset: int = 0
     next_cursor: str | None = None
 
 

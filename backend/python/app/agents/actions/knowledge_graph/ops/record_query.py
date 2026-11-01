@@ -150,7 +150,7 @@ def render(query: RecordQuery, result: RecordQueryResult, *, shortener: Any = No
         lines.append(f"Values of {name} among the matches: " + (
             ", ".join(f"{g.key} ({g.count})" for g in values) or "none"))
     if result.rows:
-        start = int(query.cursor) if query.cursor and query.cursor.isdigit() else 0
+        start = result.offset
         lines.append(f"Records {start + 1}-{start + len(result.rows)} of {total}:")
         for row in result.rows[:_TOP_ROWS_SHOWN_AS_IDS]:
             shown = dict(row)

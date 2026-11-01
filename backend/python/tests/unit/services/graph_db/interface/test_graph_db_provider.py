@@ -313,6 +313,7 @@ class TestAbstractMethodInventory:
         "find_users",
         "get_person_nodes",
         "get_record_query_candidates",
+        "get_record_query_rows",
         "get_record_people",
         "get_record_organizations",
         "get_record_group_organization",

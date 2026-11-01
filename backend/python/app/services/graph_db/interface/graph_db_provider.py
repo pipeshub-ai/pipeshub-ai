@@ -8653,24 +8653,47 @@ class IGraphDBProvider(ABC):
         *,
         connector_ids: list[str],
         pushdown: "Pushdown",
-        offset: int = 0,
-        window: int = 500,
         scan_cap: int = 20_000,
         timeout_seconds: float | None = None,
         within: list[dict[str, list[str]]] | None = None,
     ) -> "RecordCandidates":
-        """One window of candidate records for a record query
+        """The candidate records of a record query, as keys
         (``docs/record-query.md``). Not an access decision: the caller decides
-        every row with ``check_access``.
+        every one with ``check_access``, then reads the admitted ones with
+        :meth:`get_record_query_rows`.
 
         Candidates are the records of ``org_id`` whose ``connectorId`` is in
         ``connector_ids``, passing the entity-candidate record filter (not
         deleted, not a placeholder) and ``within`` exactly as
         ``get_permitted_entity_records`` applies it, and every condition in
-        ``pushdown`` (``record_query.pushdown.Pushdown``). At most ``scan_cap``
-        are considered and ``capped`` says the cap was reached. They are
-        ordered as entity candidates are (newest first, then id), and the
-        window ``[offset, offset + window)`` is returned.
+        ``pushdown`` (``record_query.pushdown.Pushdown``). The scan stops at
+        ``scan_cap`` candidates and ``capped`` says it did. One query per call:
+        the keys come back ordered as entity candidates are (newest first,
+        then id), each with the timestamp it is ordered by.
+
+        The query is built from fixed fragments and parameters only.
+
+        Returns:
+            ``RecordCandidates(keys, capped)``, ``keys`` a list of
+            ``CandidateKey(id, sort_ts)``.
+
+        Raises:
+            Exception: on any query failure, including the timeout.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_query_rows(
+        self,
+        org_id: str,
+        *,
+        record_ids: list[str],
+        pushdown: "Pushdown",
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """The record query rows of ``record_ids`` in ``org_id``, in no
+        particular order; an id that is not a live record of the org is left
+        out. The caller has already decided access for every id.
 
         Each row is a dict:
           ``_key``, ``recordName``, ``recordType``, ``connectorName``,
@@ -8689,12 +8712,6 @@ class IGraphDBProvider(ABC):
           ``links``: ``[{id, relation}]`` over record links in either
           direction, ``relation`` the link's ``relationshipType``.
         A value the graph does not hold is None, never a default.
-
-        The query is built from fixed fragments and parameters only.
-
-        Returns:
-            ``RecordCandidates(rows, window_size, capped)``; ``window_size``
-            below ``window`` means the candidates ended.
 
         Raises:
             Exception: on any query failure, including the timeout.

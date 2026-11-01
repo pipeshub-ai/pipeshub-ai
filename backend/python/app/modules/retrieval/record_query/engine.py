@@ -37,6 +37,7 @@ from app.modules.retrieval.record_query.model import (
     RecordQueryResult,
     walk_conditions,
 )
+from app.modules.retrieval.record_query.paging import NEWEST, page
 from app.modules.retrieval.record_query.pushdown import pushdown
 
 if TYPE_CHECKING:
@@ -72,40 +73,56 @@ async def run_record_query(
     scan_cap: int = SCAN_CAP,
     window: int = WINDOW,
     deadline_seconds: float = DEADLINE_SECONDS,
+    correlation_id: str | None = None,
 ) -> RecordQueryResult:
+    qid = correlation_id or uuid.uuid4().hex[:12]
     connector_ids = _connector_ids(context, query)
     if not connector_ids:
+        logger.debug("record query %s: no connector in scope", qid)
         return RecordQueryResult(total=0)
-    query_id = uuid.uuid4().hex[:12]
-    query = await resolve_people(graph_provider, context, query, query_id=query_id)
+    query = await resolve_people(graph_provider, context, query, query_id=qid)
     pushed = pushdown(query)
-    deadline = time.monotonic() + deadline_seconds
+    started = time.monotonic()
+    deadline = started + deadline_seconds
+    logger.debug("record query %s: scan start org=%s connectors=%d keys=%s", qid, context.org_id,
+                 len(connector_ids), sorted(pushed))
+    try:
+        found = await graph_provider.get_record_query_candidates(
+            context.org_id, connector_ids=connector_ids, pushdown=pushed, scan_cap=scan_cap,
+            timeout_seconds=deadline_seconds + _SERVER_GRACE_SECONDS,
+            within=[scope.candidate_filter() for scope in context.row_scopes] or None,
+        )
+    except Exception as exc:
+        logger.debug("record query %s: scan failed", qid)
+        raise EntityAccessError("Record query failed") from exc
+    logger.debug("record query %s: scan done candidates=%d capped=%s ms=%d", qid, len(found.keys), found.capped,
+                 (time.monotonic() - started) * 1000)
     admitted_rows: list[Row] = []
-    offset, approximate = 0, False
-    while True:
-        if offset >= scan_cap or (offset and time.monotonic() >= deadline):
+    approximate, checked = found.capped, 0
+    for start in range(0, len(found.keys), window):
+        if start and time.monotonic() >= deadline:
             approximate = True
             break
-        asked = min(window, scan_cap - offset)
+        keys = found.keys[start:start + window]
+        admitted = await admitted_node_ids(graph_provider, context, (k.id for k in keys))
+        ids = [k.id for k in keys if k.id in admitted]
         try:
-            found = await graph_provider.get_record_query_candidates(
-                context.org_id, connector_ids=connector_ids, pushdown=pushed, offset=offset,
-                window=asked, scan_cap=scan_cap,
+            rows = await graph_provider.get_record_query_rows(
+                context.org_id, record_ids=ids, pushdown=pushed,
                 timeout_seconds=max(0.0, deadline - time.monotonic()) + _SERVER_GRACE_SECONDS,
-                within=[scope.candidate_filter() for scope in context.row_scopes] or None,
-            )
+            ) if ids else []
         except Exception as exc:
+            logger.debug("record query %s: rows failed at window %d", qid, start // window)
             raise EntityAccessError("Record query failed") from exc
-        admitted = await admitted_node_ids(graph_provider, context, (str(r.get("_key") or "") for r in found.rows))
-        admitted_rows.extend(r for r in found.rows if str(r.get("_key")) in admitted)
-        offset += found.window_size
-        if found.window_size < asked:
-            approximate = found.capped
-            break
+        by_id = {str(r.get("_key")): r for r in rows}
+        # Rows keep the scan's order and the time it ordered them by.
+        admitted_rows += [{**by_id[k.id], "sortTs": k.sort_ts} for k in keys if k.id in by_id]
+        checked += len(keys)
     result = _result(query, admitted_rows, approximate=approximate)
     logger.info(
-        "record query id=%s org=%s scanned=%d admitted=%d total=%d approximate=%s",
-        query_id, context.org_id, offset, len(admitted_rows), result.total, result.approximate,
+        "record query %s org=%s scanned=%d checked=%d admitted=%d total=%d approximate=%s ms=%d",
+        qid, context.org_id, len(found.keys), checked, len(admitted_rows), result.total, result.approximate,
+        (time.monotonic() - started) * 1000,
     )
     return result
 
@@ -145,13 +162,11 @@ def _result(query: RecordQuery, admitted: list[Row], *, approximate: bool) -> Re
     found = tally(query, admitted)
     matched = found.matched
     value, _ = aggregate_value(query, matched) if query.aggregate.op != "count" else (float(len(matched)), 0)
-    start = int(query.cursor) if query.cursor and query.cursor.isdigit() else 0
-    page = matched[start:start + query.limit]
-    end = start + len(page)
+    shown, start, next_cursor = page(matched, sort=NEWEST, cursor=query.cursor, limit=query.limit)
     return RecordQueryResult(
         total=len(matched), approximate=approximate, value=value, groups=groups(query, matched),
         unknown=dict(found.unknown), described=_described(query, matched),
-        rows=[row_view(r) for r in page], next_cursor=str(end) if end < len(matched) else None,
+        rows=[row_view(r) for r in shown], offset=start, next_cursor=next_cursor,
     )
 
 

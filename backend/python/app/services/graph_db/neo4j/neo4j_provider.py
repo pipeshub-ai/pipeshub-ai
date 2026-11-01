@@ -143,6 +143,7 @@ from app.services.graph_db.common.record_query_rows import (
     LINKED_PER_ROW,
     ORGANIZATION_EDGES,
     PERSON_EDGES,
+    CandidateKey,
     RecordCandidates,
     matches_nothing,
     record_query_seed,
@@ -22914,11 +22915,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     OR EXISTS { MATCH (rec)-[:BELONGS_TO]->(g:RecordGroup) WHERE g.id IN s.groups }))"""
 
     @property
-    def _entity_candidate_order(self) -> str:
+    def _entity_candidate_newest(self) -> str:
         newest = "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0)"
         if upload_times_undated():
             newest = f"CASE WHEN rec.{SOURCE_TIMESTAMP_ORIGIN_FIELD} = 'upload' THEN 0 ELSE {newest} END"
-        return f"{newest} DESC, rec.id ASC"
+        return newest
+
+    @property
+    def _entity_candidate_order(self) -> str:
+        return f"{self._entity_candidate_newest} DESC, rec.id ASC"
 
     def _entity_candidate_match(self, entity_type: str) -> str:
         """Clauses binding ``rec`` to each record linked to ``ref``, ready for
@@ -23343,7 +23348,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
         return results
 
-    _RECORD_QUERY_ROW = """{_key: rec.id, recordName: rec.recordName, recordType: rec.recordType,
+    _RECORD_QUERY_ROW = """_key: rec.id, recordName: rec.recordName, recordType: rec.recordType,
                   connectorName: rec.connectorName, connectorId: rec.connectorId,
                   recordGroupId: rec.recordGroupId, webUrl: rec.webUrl,
                   createdAt: rec.sourceCreatedAtTimestamp, updatedAt: rec.sourceLastModifiedTimestamp,
@@ -23370,7 +23375,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     MATCH (rec)-[lk:RECORD_LINK]-(lo:Record)
                     WHERE lo.orgId = $org_id
                     RETURN {id: lo.id, relation: lk.relationshipType} LIMIT $linked_per_row
-                  }}"""
+                  }"""
 
     def _record_query_entity_condition(self, entity_type: str, param: str) -> str | None:
         """Record ``rec`` is connected to the entity ``$<param>`` as
@@ -23393,9 +23398,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         chosen by which keys are present; every value is a parameter."""
         params: dict[str, Any] = {
             "record_types": list(pushed["record_types"]) if "record_types" in pushed else None,
-            "person_edges": list(PERSON_EDGES),
             "org_edges": list(ORGANIZATION_EDGES),
-            "linked_per_row": LINKED_PER_ROW,
         }
         where = [self._ENTITY_CANDIDATE_RECORD_FILTER, self._ENTITY_WITHIN_FILTER]
         if "sources" in pushed:
@@ -23490,21 +23493,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         else:
             scan = "MATCH (rec:Record) WHERE"
         filters = "\n                AND ".join(where)
+        # One scan per query returning keys only; rows are read by id afterwards,
+        # so no window re-runs the scan.
         query = f"""
             WITH {{id: $seed_id, connectorIds: $connector_ids}} AS ref{prelude}
             {scan} {filters}
             WITH DISTINCT rec
             LIMIT $scan_cap
-            WITH collect(rec) AS scanned
-            CALL {{
-              WITH scanned
-              UNWIND scanned AS rec
-              WITH rec
-              ORDER BY {self._entity_candidate_order}
-              SKIP $offset LIMIT $window
-              RETURN collect({self._RECORD_QUERY_ROW}) AS rows
-            }}
-            RETURN rows, size(scanned) >= $scan_cap AS capped
+            WITH rec, {self._entity_candidate_newest} AS sort_ts
+            ORDER BY sort_ts DESC, rec.id ASC
+            RETURN rec.id AS id, sort_ts
             """
         return query, params
 
@@ -23514,8 +23512,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         connector_ids: list[str],
         pushdown: Pushdown,
-        offset: int = 0,
-        window: int = 500,
         scan_cap: int = 20_000,
         timeout_seconds: float | None = None,
         within: list[dict[str, list[str]]] | None = None,
@@ -23529,6 +23525,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if built is None:
             return RecordCandidates()
         query, params = built
+        cap = max(1, scan_cap)
         rows = await self.client.execute_query(
             query,
             parameters={
@@ -23537,15 +23534,43 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "connector_ids": list(connector_ids),
                 "within": within_param(within),
                 "completed": ProgressStatus.COMPLETED.value,
-                "offset": max(0, offset),
-                "window": max(1, window),
-                "scan_cap": max(1, scan_cap),
+                "scan_cap": cap,
             },
             **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
         )
-        first = (rows or [{}])[0]
-        found = [dict(r) for r in first.get("rows") or []]
-        return RecordCandidates(found, window_size=len(found), capped=bool(first.get("capped")))
+        keys = [CandidateKey(str(r["id"]), int(r.get("sort_ts") or 0)) for r in rows or []]
+        return RecordCandidates(keys, capped=len(keys) >= cap)
+
+    async def get_record_query_rows(
+        self,
+        org_id: str,
+        *,
+        record_ids: list[str],
+        pushdown: Pushdown,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_query_rows`."""
+        if not org_id or not record_ids:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $record_ids AS rid
+            MATCH (rec:Record {{id: rid}})
+            WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
+            RETURN {{{self._RECORD_QUERY_ROW}}} AS row
+            """,
+            parameters={
+                "org_id": org_id,
+                "record_ids": list(dict.fromkeys(record_ids)),
+                "person_edges": list(PERSON_EDGES),
+                "org_edges": list(ORGANIZATION_EDGES),
+                "linked_per_row": LINKED_PER_ROW,
+            },
+            **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
+        )
+        return [dict(r["row"]) for r in rows or []]
 
     # ------------------------------------------------------------------
     # Taxonomy entity resolution (per-org canonical nodes)

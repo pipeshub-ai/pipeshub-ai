@@ -505,6 +505,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
     "get_record_query_candidates": "test_record_query_candidates",
+    "get_record_query_rows": "test_record_query_rows",
     "page_record_ids_by_type": "test_record_ids_by_type",
     "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_connector_page_v3": "test_knowledge_hub_listing",
@@ -781,9 +782,16 @@ async def test_permitted_entity_records(world: _World) -> None:
 
 async def test_record_query_candidates(world: _World) -> None:
     got = await world.graph.get_record_query_candidates(
-        world.org_id, connector_ids=[world.connector_id], pushdown={}, window=1000,
+        world.org_id, connector_ids=[world.connector_id], pushdown={},
     )
-    assert {row["_key"] for row in got.rows} & {world.ids["live"], world.ids["trashed"]} == {world.ids["live"]}
+    assert {key.id for key in got.keys} & {world.ids["live"], world.ids["trashed"]} == {world.ids["live"]}
+
+
+async def test_record_query_rows(world: _World) -> None:
+    rows = await world.graph.get_record_query_rows(
+        world.org_id, record_ids=[world.ids["live"], world.ids["trashed"]], pushdown={},
+    )
+    assert [row["_key"] for row in rows] == [world.ids["live"]]
 
 
 async def test_named_entity_records(world: _World) -> None:

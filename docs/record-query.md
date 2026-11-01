@@ -112,30 +112,50 @@ limit:      rows per page (default 20, max 50); cursor
 - `rows`: a page, readable names first (title, type, source, status, people
   by role, dates, amount), with record ids for fetch.
 - `applied`: the conditions as the engine read them (values as stored).
-- `next_cursor`, absent at the end.
+- `next_cursor`, an opaque keyset cursor (see Paging), absent at the end.
 
 ## Provider contract
 
-`get_record_query_candidates(org_id, *, connector_ids, query, offset, window,
-scan_cap, timeout_seconds, within)` returns `(rows, capped)`:
+Two calls. The engine scans once, decides access, then reads rows by id:
+
+`get_record_query_candidates(org_id, *, connector_ids, pushdown, scan_cap,
+timeout_seconds, within)` returns `RecordCandidates(keys, capped)`:
 
 - Candidates are records in `org_id`, in `connector_ids`, not deleted, not
   placeholders (the `_ENTITY_CANDIDATE_RECORD_FILTER` rules), narrowed by
   `within` exactly as `get_permitted_entity_records` narrows them.
-- Every condition except derived fields is evaluated inside the query; a
-  record with a missing stored value fails a positive condition and is
-  returned only when the query asks for unknowns (`include_unknown`), marked.
-- Order is the entity candidate order (newest first, then id), so windows
-  are stable and a cursor is an offset.
-- Rows carry: `_key`, `recordName`, `recordType`, `connectorName`,
-  `recordGroupId`, `webUrl`, created/updated timestamps, the ticket fields,
-  the deal fields, `people: [{role, id, name, email}]`, `organizations: [{id, name}]`.
+- Every pushed-down condition is evaluated inside the query.
+- One query per call, run once per record query: at most `scan_cap` records
+  are read (`capped` says the cap was hit) and returned as keys only,
+  `CandidateKey(id, sort_ts)`, in the entity candidate order (newest first by
+  `sort_ts`, then id). The scan is never re-run per window, so its cost is
+  linear in the cap.
 - The query is built from fixed fragments with parameters; no caller text
   reaches Cypher or AQL.
 
-Neo4j and ArangoDB implement it; `tests/integration/graph_db` runs one
-contract suite on both and compares each against the in-memory reference
-evaluator (`record_query/reference.py`) over the same seeded graph.
+`get_record_query_rows(org_id, *, record_ids, pushdown, timeout_seconds)`
+returns the rows of ids the access check already admitted, read in windows
+of `WINDOW` ids. Rows carry: `_key`, `recordName`, `recordType`,
+`connectorName`, `connectorId`, `recordGroupId`, `webUrl`, created/updated
+timestamps, the ticket fields, the deal fields, `people: [{role, id, name, email}]`,
+`organizations: [{id, name}]`, `links: [{id, relation}]`. A row of another
+org, or of a deleted record, is never returned.
+
+## Paging
+
+`next_cursor` is a keyset cursor: the place of the page's last row in the
+sort order (`"<sortTs>:<id>"` for newest first), base64-encoded and tied to
+the sort it was made for. It is opaque to the model, which copies it back
+unchanged. The next page starts strictly after that place, so a record that
+changes or arrives between calls neither repeats a row nor shifts the page.
+A cursor the tool did not print for this sort is refused before any database
+work. A cursor is only a place in the order: every row on every page has
+passed the access check, so a forged cursor exposes nothing.
+
+Neo4j and ArangoDB implement both calls;
+`tests/integration/graph_db/test_record_query_real_backends.py` runs one
+contract suite on both and compares each with a Python reference over the
+same seeded graph.
 
 ## Lazy exposure
 

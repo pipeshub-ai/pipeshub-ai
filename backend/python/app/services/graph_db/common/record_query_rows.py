@@ -1,10 +1,10 @@
-"""What ``get_record_query_candidates`` returns, and what both providers share
-to build it; see ``docs/record-query.md``."""
+"""What ``get_record_query_candidates`` and ``get_record_query_rows`` return,
+and what both providers share to build them; see ``docs/record-query.md``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, NamedTuple
 
 from app.modules.retrieval.record_fields import ORGANIZATION_EDGES, PERSON_EDGES
 
@@ -16,19 +16,24 @@ if TYPE_CHECKING:
 LINKED_PER_ROW = 100
 
 __all__ = [
-    "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES", "RecordCandidates", "matches_nothing",
+    "LINKED_PER_ROW", "ORGANIZATION_EDGES", "PERSON_EDGES", "CandidateKey", "RecordCandidates", "matches_nothing",
     "record_query_seed",
 ]
 
 
+class CandidateKey(NamedTuple):
+    """A candidate record and its place in the candidate order."""
+
+    id: str
+    sort_ts: int
+
+
 @dataclass(frozen=True)
 class RecordCandidates:
-    """One window of candidate rows in order. ``window_size`` below the
-    window asked for means the candidates ended; ``capped`` means the scan
-    stopped at its cap, so the end of paging is not the end of the matches."""
+    """Every candidate the scan read, newest first then id; ``capped`` means
+    the scan stopped at its cap, so these are not all the matches."""
 
-    rows: list[dict[str, Any]] = field(default_factory=list)
-    window_size: int = 0
+    keys: list[CandidateKey] = field(default_factory=list)
     capped: bool = False
 
 

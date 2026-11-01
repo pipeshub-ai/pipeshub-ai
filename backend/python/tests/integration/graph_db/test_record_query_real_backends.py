@@ -56,6 +56,7 @@ from app.modules.retrieval.record_query.pushdown import (
     PushedLinks,
     PushedPeople,
 )
+from app.services.graph_db.common.record_query_rows import CandidateKey
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -445,20 +446,26 @@ def _normal(row: dict[str, Any]) -> dict[str, Any]:
     return {**row, **{k: sorted(row[k], key=key) for k in ("people", "organizations", "links")}}
 
 
+async def _scan(g: Graph, pushed: Pushdown, *, scan_cap: int = 1_000,
+                within: list[dict[str, list[str]]] | None = None) -> tuple[list[CandidateKey], bool]:
+    found = await g.graph.get_record_query_candidates(
+        g.org, connector_ids=g.connector_ids, pushdown=pushed, scan_cap=scan_cap, timeout_seconds=30, within=within,
+    )
+    return found.keys, found.capped
+
+
 async def _all_windows(g: Graph, pushed: Pushdown, *, window: int = 2, scan_cap: int = 1_000,
                        within: list[dict[str, list[str]]] | None = None) -> tuple[list[dict[str, Any]], bool]:
+    """The scan's candidates read back as rows, ``window`` ids at a time, in scan order."""
+    keys, capped = await _scan(g, pushed, scan_cap=scan_cap, within=within)
     rows: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        found = await g.graph.get_record_query_candidates(
-            g.org, connector_ids=g.connector_ids, pushdown=pushed, offset=offset, window=window,
-            scan_cap=scan_cap, timeout_seconds=30, within=within,
-        )
-        assert found.window_size == len(found.rows)
-        rows.extend(found.rows)
-        offset += found.window_size
-        if found.window_size < window:
-            return rows, found.capped
+    for start in range(0, len(keys), window):
+        ids = [k.id for k in keys[start:start + window]]
+        found = await g.graph.get_record_query_rows(g.org, record_ids=ids, pushdown=pushed, timeout_seconds=30)
+        by_id = {r["_key"]: r for r in found}
+        assert set(by_id) == set(ids)
+        rows += [by_id[i] for i in ids]
+    return rows, capped
 
 
 async def _assert_matches(g: Graph, pushed: Pushdown, within: list[dict[str, list[str]]] | None = None) -> None:
@@ -581,33 +588,32 @@ async def test_hydration_shapes_and_missing_values(seeded: Graph) -> None:
     assert by_key["t5"]["organizations"] == [] and by_key["t5"]["links"] == []
 
 
-async def test_windows_page_to_the_same_rows_as_one_window(seeded: Graph) -> None:
-    for pushed in (Pushdown(), Pushdown(sources=["ZENDESK"]), Pushdown(people=[
-        PushedPeople(edges=list(PERSON_EDGES), ids=[seeded.nid("ann"), seeded.nid("bob")])])):
-        one, _ = await _all_windows(seeded, pushed, window=100)
-        for size in (1, 2, 3):
-            paged, capped = await _all_windows(seeded, pushed, window=size)
-            assert capped is False
-            assert [r["_key"] for r in paged] == [r["_key"] for r in one]
-        again, _ = await _all_windows(seeded, pushed, window=100)
-        assert again == one
+async def test_the_scan_orders_keys_newest_first_with_the_time_it_orders_by(seeded: Graph) -> None:
+    g = seeded
+    keys, capped = await _scan(g, Pushdown())
+    assert capped is False
+    expected = _reference(g, Pushdown())
+    assert keys == [CandidateKey(r["_key"], r["updatedAt"]) for r in expected]
 
 
-async def test_an_offset_past_the_end_is_an_empty_window(seeded: Graph) -> None:
-    found = await seeded.graph.get_record_query_candidates(
-        seeded.org, connector_ids=seeded.connector_ids, pushdown=Pushdown(), offset=50, window=10,
-    )
-    assert (found.rows, found.window_size, found.capped) == ([], 0, False)
+async def test_rows_are_read_only_for_this_orgs_live_records(seeded: Graph) -> None:
+    g = seeded
+    ids = [g.rid(n) for n in ("t1", "deleted", "foreign", "placeholder")] + ["no-such-record"]
+    rows = await g.graph.get_record_query_rows(g.org, record_ids=ids, pushdown=Pushdown())
+    # The placeholder is a live record of the org: the scan, not the read, leaves it out.
+    assert sorted(r["_key"] for r in rows) == sorted([g.rid("t1"), g.rid("placeholder")])
+    assert await g.graph.get_record_query_rows(g.other, record_ids=[g.rid("foreign")], pushdown=Pushdown()) != []
+    assert await g.graph.get_record_query_rows(g.org, record_ids=[], pushdown=Pushdown()) == []
 
 
 async def test_the_scan_cap_bounds_the_candidates_and_says_so(seeded: Graph) -> None:
     g = seeded
     total = len(LIVE)
-    rows, capped = await _all_windows(g, Pushdown(), window=2, scan_cap=3)
+    keys, capped = await _scan(g, Pushdown(), scan_cap=3)
     assert capped is True
-    assert len(rows) == 3
-    assert len({r["_key"] for r in rows}) == 3
-    stamps = [(-r["updatedAt"], r["_key"]) for r in rows]
+    assert len(keys) == 3
+    assert len({k.id for k in keys}) == 3
+    stamps = [(-k.sort_ts, k.id) for k in keys]
     assert stamps == sorted(stamps)
     _, capped = await _all_windows(g, Pushdown(), window=100, scan_cap=total + 1)
     assert capped is False
@@ -634,16 +640,16 @@ async def test_within_narrows_as_the_access_check_does(seeded: Graph) -> None:
 
 async def test_empty_scope_reads_nothing(seeded: Graph) -> None:
     g = seeded
-    assert (await g.graph.get_record_query_candidates("", connector_ids=g.connector_ids, pushdown=Pushdown())).rows == []
-    assert (await g.graph.get_record_query_candidates(g.org, connector_ids=[], pushdown=Pushdown())).rows == []
+    assert (await g.graph.get_record_query_candidates("", connector_ids=g.connector_ids, pushdown=Pushdown())).keys == []
+    assert (await g.graph.get_record_query_candidates(g.org, connector_ids=[], pushdown=Pushdown())).keys == []
     only_jira = await g.graph.get_record_query_candidates(
-        g.org, connector_ids=[g.connectors[JIRA]], pushdown=Pushdown(), window=100,
+        g.org, connector_ids=[g.connectors[JIRA]], pushdown=Pushdown(),
     )
-    assert sorted(r["_key"] for r in only_jira.rows) == [g.rid("f1"), g.rid("t3")]
+    assert sorted(k.id for k in only_jira.keys) == [g.rid("f1"), g.rid("t3")]
     unknown = await g.graph.get_record_query_candidates(
         g.org, connector_ids=g.connector_ids, pushdown=Pushdown(entities=[{"type": "nonsense", "id": "x"}]),
     )
-    assert unknown.rows == []
+    assert unknown.keys == []
 
 
 # ---------------------------------------------------------------- end to end
@@ -767,3 +773,39 @@ async def test_an_outsider_is_a_person_entity_as_a_member_is(seeded: Graph) -> N
     # Another org's outsider is in no page and links to nothing here.
     foreign = await g.graph.get_taxonomy_entity_membership([{"id": g.nid("xena"), "type": "person"}], g.org)
     assert foreign[("person", g.nid("xena"))]["connectorIds"] == []
+
+
+async def test_pages_follow_the_cursor_without_repeats_when_a_record_changes(seeded: Graph) -> None:
+    g = seeded
+    readable = [g.rid(n) for n in _reference_names(g) if SPECS[n].readable]
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):
+        page = await run_record_query(g.graph, _context(g), RecordQuery.model_validate(
+            {"limit": 2, **({"cursor": cursor} if cursor else {})}), window=2)
+        seen += [r["record_id"] for r in page.rows]
+        if len(seen) == 2:
+            # The oldest becomes the newest between pages: it moves to before the
+            # cursor, and a position cursor would show the second record again.
+            await _touch(g, readable[-1], 500_000)
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    assert len(seen) == len(set(seen))
+    assert seen == readable[:-1]
+
+
+def _reference_names(g: Graph) -> list[str]:
+    return [r["_key"].removeprefix(f"{g.org}-") for r in _reference(g, Pushdown())]
+
+
+async def _touch(g: Graph, record_id: str, updated: int) -> None:
+    if isinstance(g.graph, Neo4jProvider):
+        await g.graph.client.execute_query(
+            "MATCH (r:Record {id: $id}) SET r.sourceLastModifiedTimestamp = $ts",
+            parameters={"id": record_id, "ts": updated},
+        )
+        return
+    await g.graph.http_client.execute_aql(
+        f"UPDATE @key WITH {{sourceLastModifiedTimestamp: @ts}} IN {C.RECORDS.value}", {"key": record_id, "ts": updated},
+    )
