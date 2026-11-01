@@ -15,6 +15,9 @@ which could only fail there.
 Each variant is a small, named edit of the declared text, so the declared tool
 stays the single source of its wording; an edit whose anchor is gone fails
 loudly instead of silently shipping the old text.
+
+Where the deployment gates exact-text search (``exact_terms``), ``search``
+also takes ``exact_match``, the agent's way to run that pass on any query.
 """
 
 from __future__ import annotations
@@ -152,22 +155,46 @@ _VARIANTS: dict[str, _Variant] = {
 }
 
 
+EXACT_MATCH_PARAMETER = ToolParameter(
+    name="exact_match",
+    type=ParameterType.BOOLEAN,
+    description=(
+        "Also look for the query's own words as literal text, whatever the query is. "
+        "That literal pass already runs by itself when the query holds an identifier, "
+        "ticket key, version, file name or path, a measured value or a \"quoted phrase\". "
+        "Set this when an ordinary word or name has to occur as written, or when "
+        "searching by meaning keeps coming back without it."
+    ),
+    required=False,
+    default=False,
+)
+
+
 def tools_for_request(
-    instance: Any, tools: list[Tool], *, offered: bool, named_entities: bool,  # noqa: ANN401
+    instance: Any,  # noqa: ANN401
+    tools: list[Tool],
+    *,
+    offered: bool,
+    named_entities: bool,
+    exact_match: bool = False,
 ) -> list[Tool]:
     """``tools`` as declared, without ``search_by_entities`` unless ``offered``;
     with it, the entity-search variants in place of their declared tools.
-    Without ``named_entities``, also without the named-entity tool and parameter."""
+    Without ``named_entities``, also without the named-entity tool and parameter.
+    With ``exact_match``, ``search`` also takes ``EXACT_MATCH_PARAMETER``."""
     if offered:
-        return [_variant_tool(instance, tool) for tool in tools]
-    served = [tool for tool in tools if tool.name != SEARCH_BY_ENTITIES_TOOL_NAME]
-    if named_entities:
-        return served
-    return [
-        _without_named_entity_kinds(instance, tool)
-        for tool in served
-        if tool.name != FIND_RECORDS_BY_VALUE_TOOL_NAME
-    ]
+        served = [_variant_tool(instance, tool) for tool in tools]
+    else:
+        served = [tool for tool in tools if tool.name != SEARCH_BY_ENTITIES_TOOL_NAME]
+        if not named_entities:
+            served = [
+                _without_named_entity_kinds(instance, tool)
+                for tool in served
+                if tool.name != FIND_RECORDS_BY_VALUE_TOOL_NAME
+            ]
+    if exact_match:
+        served = [_with_exact_match(instance, tool, offered=offered) for tool in served]
+    return served
 
 
 def _variant_tool(instance: Any, tool: Tool) -> Tool:  # noqa: ANN401
@@ -185,6 +212,17 @@ def _without_named_entity_kinds(instance: Any, tool: Tool) -> Tool:  # noqa: ANN
         return tool
     parameters = [p for p in declared.parameters if p.name != "named_entity_kinds"]
     return BoundMethodTool(getattr(instance, _method_name(tool)), replace(declared, parameters=parameters))
+
+
+def _with_exact_match(instance: Any, tool: Tool, *, offered: bool) -> Tool:  # noqa: ANN401
+    declared = _declared_meta(instance, tool)
+    if tool.name != SEARCH_TOOL_NAME or declared is None:
+        return tool
+    meta = variant_meta(SEARCH_TOOL_NAME, declared) if offered else declared
+    return BoundMethodTool(
+        getattr(instance, _method_name(tool)),
+        replace(meta, parameters=[*meta.parameters, EXACT_MATCH_PARAMETER]),
+    )
 
 
 def _declared_meta(instance: Any, tool: Tool) -> ToolMeta | None:  # noqa: ANN401
@@ -230,4 +268,4 @@ def _edited(text: str, edits: tuple[_Edit, ...], where: str) -> str:
     return text
 
 
-__all__ = ["tools_for_request", "variant_meta"]
+__all__ = ["EXACT_MATCH_PARAMETER", "tools_for_request", "variant_meta"]
