@@ -66,6 +66,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
 )
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.modules.retrieval.record_rerank import tool_search_record_rerank
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ReciprocalRankFusionMerger,
@@ -833,6 +834,7 @@ async def _execute_search(
                 filter_groups=filter_groups_for_call,
                 time_range=bounds,
                 virtual_record_ids_from_tool=vrids,
+                **tool_search_record_rerank(query, state.get("query")),
             )
 
         async def _attempt(

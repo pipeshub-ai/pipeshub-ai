@@ -24,6 +24,8 @@ DEFAULT_DENSE_POOL_SIZE = 200
 MAX_DENSE_POOL_SIZE = 500
 # Points asked of the dense request per pool record: a record's points cluster.
 DENSE_POINTS_PER_RECORD = 3
+# The share of the pool kept for the records of the user's question behind an agent's search.
+ANCHOR_POOL_SHARE = 0.4
 
 
 def dense_pool_size() -> int:
@@ -32,6 +34,11 @@ def dense_pool_size() -> int:
         return 0
     size = env_int(RECORD_RERANK_DENSE_POOL_SIZE_ENV_VAR, DEFAULT_DENSE_POOL_SIZE, lo=2, hi=MAX_DENSE_POOL_SIZE)
     return DEFAULT_DENSE_POOL_SIZE if size is None else size
+
+
+def anchor_pool_records(size: int) -> int:
+    """Records of a pool of ``size`` kept for the user's question behind an agent's search."""
+    return max(1, int(size * ANCHOR_POOL_SHARE))
 
 
 def with_dense_records(
@@ -61,6 +68,19 @@ def with_dense_records(
     step = floor / (len(added) + 1)
     scored = [view.with_score(item, floor - step * (i + 1)) for i, item in enumerate(added)]
     return [*fused, *scored], set(new_records)
+
+
+def fill_pool(
+    fused: Sequence[Any], dense: Sequence[Any], anchor: Sequence[Any], view: ItemView, size: int,
+) -> tuple[list[Any], set[str]]:
+    """``fused`` filled to ``size`` records with the query's dense records, then the anchor's, and the records
+    added. With anchor points, the query's records leave the anchor's share of the pool free for them."""
+    query_size = size - anchor_pool_records(size) if anchor else size
+    items, added = with_dense_records(fused, dense, view, query_size)
+    if anchor:
+        items, anchor_added = with_dense_records(items, anchor, view, size)
+        added |= anchor_added
+    return items, added
 
 
 def without_unpicked(items: Sequence[Any], view: ItemView, added: Collection[str], placed: Collection[str]) -> list[Any]:

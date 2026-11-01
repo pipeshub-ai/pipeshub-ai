@@ -35,6 +35,7 @@ from app.modules.retrieval.record_rerank.settings import (
     record_rerank_enabled,
     record_rerank_settings,
 )
+from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Hashable, Sequence
@@ -50,19 +51,43 @@ class RecordRerank:
 
     question: str
     settings: RecordRerankSettings
+    anchor: str = ""
+    """The user's question behind an agent's own search: the strategy reads
+    it beside the search query, and its dense records join the pool."""
 
 
-def record_rerank_for(question: str) -> RecordRerank | None:
+RECORD_RERANK_TOOL_SEARCHES_ENV_VAR = "RECORD_RERANK_TOOL_SEARCHES"
+
+
+def record_rerank_for(question: str, anchor: str = "") -> RecordRerank | None:
     """The rerank a search for ``question`` should run, or None when the
-    switch is off."""
+    switch is off. With an ``anchor`` that differs from the question, the
+    strategy is given both."""
     if not question or not question.strip() or not record_rerank_enabled():
         return None
+    anchor = (anchor or "").strip()
+    if anchor and anchor != question.strip():
+        return RecordRerank(
+            question=f"{anchor}\n(Search query: {question.strip()})",
+            settings=record_rerank_settings(),
+            anchor=anchor,
+        )
     return RecordRerank(question=question, settings=record_rerank_settings())
 
 
 def search_record_rerank(question: str) -> dict[str, Any]:
     """``search_with_filters`` keyword arguments for this search's rerank."""
     rerank = record_rerank_for(question)
+    return {"record_rerank": rerank} if rerank is not None else {}
+
+
+def tool_search_record_rerank(query: str, user_question: str | None) -> dict[str, Any]:
+    """``search_with_filters`` keyword arguments for an agent's own search:
+    nothing unless RECORD_RERANK_TOOL_SEARCHES is "true", then the rerank of
+    ``query`` anchored on the user's question."""
+    if not env_bool(RECORD_RERANK_TOOL_SEARCHES_ENV_VAR, False):
+        return {}
+    rerank = record_rerank_for(query, anchor=user_question or "")
     return {"record_rerank": rerank} if rerank is not None else {}
 
 

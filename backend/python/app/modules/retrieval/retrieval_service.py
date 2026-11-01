@@ -63,7 +63,8 @@ from app.modules.retrieval.record_rerank import (
 )
 from app.modules.retrieval.record_rerank.dense_pool import (
     DENSE_POINTS_PER_RECORD,
-    with_dense_records,
+    anchor_pool_records,
+    fill_pool,
     without_unpicked,
 )
 from app.modules.retrieval.source_diversity import (
@@ -2234,7 +2235,7 @@ class RetrievalService:
             added: set[str] = set()
             if record_rerank.settings.dense_pool:
                 admitted, best_accessible, added = await self._verified_dense_pool(
-                    record_rerank.settings.dense_pool, admitted, best_accessible, filter, plan,
+                    record_rerank, admitted, best_accessible, filter, plan,
                     org_id, user_key, scope_connector_ids, scopes,
                 )
             scope = _RecordRerankScope(record_rerank, self._verified_titles(best_accessible, org_id))
@@ -2680,18 +2681,7 @@ class RetrievalService:
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
-        dense_tasks = [
-            await_with_retry(
-                lambda q=query: asyncio.wait_for(
-                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
-                    timeout=attempt_timeout,
-                ),
-                max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
-                operation="aembed_query",
-                service_name="retrieval",
-            )
-            for query in queries
-        ]
+        dense_tasks = self._dense_query_tasks(dense_embeddings, queries, attempt_timeout)
         supports_sparse = self._capabilities.supports_sparse_vectors
 
         # The tasks gather() starts copy the context when they are created, so the
@@ -2717,6 +2707,23 @@ class RetrievalService:
             dense_query_embeddings, sparse_query_embeddings, plan=plan, record_cut=record_cut,
             record_rerank=record_rerank,
         )
+
+    @staticmethod
+    def _dense_query_tasks(
+        dense_embeddings: Embeddings, queries: list[str], attempt_timeout: float | None,
+    ) -> list[Awaitable[list[float]]]:
+        return [
+            await_with_retry(
+                lambda q=query: asyncio.wait_for(
+                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
+                    timeout=attempt_timeout,
+                ),
+                max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
+                operation="aembed_query",
+                service_name="retrieval",
+            )
+            for query in queries
+        ]
 
     async def _run_searches(
         self,
@@ -2770,10 +2777,9 @@ class RetrievalService:
         failed_collections: list[str] = []
         fan_out = self._fan_out_searches(collections, requests, fused_limit, failed=failed_collections)
         dense_pool = record_rerank.rerank.settings.dense_pool if record_rerank is not None else 0
-        dense_results: list[list] | None = None
         if dense_pool:
-            search_results, dense_results = await asyncio.gather(
-                fan_out, self._dense_pool_leg(collections, dense_query_embeddings, filter, dense_pool),
+            search_results, (dense_results, anchor_results) = await asyncio.gather(
+                fan_out, self._dense_pool_legs(collections, dense_query_embeddings, filter, record_rerank.rerank),
             )
         else:
             search_results = await fan_out
@@ -2781,10 +2787,10 @@ class RetrievalService:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
         added: set[str] = set()
-        if dense_results is not None:
+        if dense_pool:
             pooled = [
-                with_dense_records(batch, dense, POINTS, dense_pool)
-                for batch, dense in zip(search_results, dense_results)
+                fill_pool(batch, dense, anchor_results or [], POINTS, dense_pool)
+                for batch, dense in zip(search_results, dense_results or [[] for _ in search_results])
             ]
             search_results = [batch for batch, _ in pooled]
             added = set().union(*(records for _, records in pooled))
@@ -2845,6 +2851,46 @@ class RetrievalService:
             batches = [without_unpicked(batch, POINTS, added, placed) for batch in batches]
         return batches
 
+    async def _dense_pool_legs(
+        self,
+        collections: list[str],
+        dense_query_embeddings: list,
+        vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
+        rerank: RecordRerank,
+    ) -> tuple[list[list] | None, list | None]:
+        """Per query the dense leg's points, and the points of the rerank's
+        anchor (None when it has none); a leg that fails is None."""
+        size = rerank.settings.dense_pool
+        if not rerank.anchor:
+            return await self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size), None
+        return await asyncio.gather(
+            self._dense_pool_leg(collections, dense_query_embeddings, vector_filter, size),
+            self._anchor_dense_leg(collections, rerank.anchor, vector_filter, anchor_pool_records(size)),
+        )
+
+    async def _anchor_dense_leg(
+        self,
+        collections: list[str],
+        anchor: str,
+        vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
+        pool_records: int,
+    ) -> list | None:
+        """A dense-only request for the user's question behind an agent's
+        search, under the same permission filter, deep enough for its share of
+        the pool. None when it fails: the pool is then the search's own."""
+        try:
+            model = await self.get_embedding_model_instance()
+            if not model:
+                return None
+            attempt_timeout = None if self._cached_embedding_is_local else QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
+            with narrow_workload(Workload.QUERY_EMBEDDING):
+                vector = await self._dense_query_tasks(model, [anchor], attempt_timeout)[0]
+        except Exception as exc:
+            self.logger.warning("record_rerank: embedding the user's question failed; reranking the search's pool: %s", exc)
+            return None
+        results = await self._dense_pool_leg(collections, [vector], vector_filter, pool_records)
+        return results[0] if results else None
+
     async def _dense_pool_leg(
         self,
         collections: list[str],
@@ -2868,7 +2914,7 @@ class RetrievalService:
 
     async def _verified_dense_pool(
         self,
-        size: int,
+        rerank: RecordRerank,
         admitted: list[dict[str, Any]],
         accessible: dict[str, str],
         vector_filter: Any,  # noqa: ANN401 - a provider's filter expression
@@ -2878,20 +2924,22 @@ class RetrievalService:
         scope_connector_ids: frozenset[str] | None,
         scopes: Sequence[SelectionScope],
     ) -> tuple[list[dict[str, Any]], dict[str, str], set[str]]:
-        """``admitted`` filled to ``size`` records with the dense leg's records
-        under the container filter that the access check admits, the
-        accessible map with them, and the records added. The container filter
-        admits more than the user may read, so these are checked as the hits
-        were. Unchanged when the leg or the check fails."""
+        """``admitted`` filled with the dense legs' records under the container
+        filter that the access check admits, the accessible map with them, and
+        the records added. The container filter admits more than the user may
+        read, so these are checked as the hits were. Unchanged when the legs or
+        the check fail."""
         if plan.dense is None or not plan.collections:
             return admitted, accessible, set()
-        dense = await self._dense_pool_leg(plan.collections, plan.dense, vector_filter, size)
+        dense, anchor = await self._dense_pool_legs(plan.collections, plan.dense, vector_filter, rerank)
         known = {hit_record_id(hit) for hit in admitted}
-        candidates = sorted(
-            (hit for hit in self._hits_of(dense or []) if hit_record_id(hit) not in known),
-            key=lambda hit: -(hit.get("score") or 0.0),
-        )
-        vrids = {vrid for hit in candidates if (vrid := hit_record_id(hit)) is not None}
+
+        def new_hits(batches: list[list]) -> list[dict[str, Any]]:
+            hits = (hit for hit in self._hits_of(batches) if hit_record_id(hit) not in known)
+            return sorted(hits, key=lambda hit: -(hit.get("score") or 0.0))
+
+        dense_hits, anchor_hits = new_hits(dense or []), new_hits([anchor or []])
+        vrids = {vrid for hit in (*dense_hits, *anchor_hits) if (vrid := hit_record_id(hit)) is not None}
         if not vrids:
             return admitted, accessible, set()
         try:
@@ -2902,8 +2950,11 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("record_rerank: dense pool access check failed; reranking the admitted hits: %s", exc)
             return admitted, accessible, set()
-        pooled, added = with_dense_records(
-            admitted, [hit for hit in candidates if hit_record_id(hit) in readable], HITS, size,
+        pooled, added = fill_pool(
+            admitted,
+            [hit for hit in dense_hits if hit_record_id(hit) in readable],
+            [hit for hit in anchor_hits if hit_record_id(hit) in readable],
+            HITS, rerank.settings.dense_pool,
         )
         return pooled, {**accessible, **{vrid: readable[vrid] for vrid in added}}, added
 

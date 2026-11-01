@@ -27,6 +27,7 @@ from app.modules.retrieval.record_rerank.pipeline import (
     reorder_items,
     rerank_order,
     search_record_rerank,
+    tool_search_record_rerank,
 )
 from app.modules.retrieval.record_rerank.settings import (
     RecordRerankSettings,
@@ -56,4 +57,5 @@ __all__ = [
     "reorder_items",
     "rerank_order",
     "search_record_rerank",
+    "tool_search_record_rerank",
 ]

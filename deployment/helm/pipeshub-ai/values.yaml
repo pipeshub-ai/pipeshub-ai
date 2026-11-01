@@ -377,6 +377,8 @@ config:
   # enterprise-search chat's upfront search before they are cut down.
   # RECORD_RERANK_DENSE_POOL="true" also offers it the records a dense-only
   # search ranks that the search missed.
+  # RECORD_RERANK_TOOL_SEARCHES="true" reranks the agent's own searches too,
+  # for the user's question as well as the search query.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
