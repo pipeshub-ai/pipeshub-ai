@@ -594,7 +594,7 @@ def _embedding_text(document: Document) -> str:
     return f"{context}\n{document.page_content}" if context else document.page_content
 
 
-def _stored_metadata(metadata: dict) -> dict:
+def _stored_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in metadata.items() if k not in (_SPARSE_EXTRA, _EMBED_CONTEXT)}
 
 
@@ -626,11 +626,11 @@ def _record_title(record: Optional["Record"], block_containers: BlocksContainer)
     name = getattr(record, "record_name", None) if record is not None else None
     name = name.strip() if isinstance(name, str) else ""
     extension = getattr(record, "extension", None)
-    is_file = isinstance(extension, str) and bool(extension)
-    if is_file and name.lower().endswith(f".{extension.lower()}"):
+    extension = extension if isinstance(extension, str) else ""
+    if extension and name.lower().endswith(f".{extension.lower()}"):
         name = name[: -len(extension) - 1].strip()
     # A ticket or page title with an id in it ("OPS-42 ...") is still its title.
-    says_little = has_id_tokens(name) if is_file else is_mostly_ids(name)
+    says_little = has_id_tokens(name) if extension else is_mostly_ids(name)
     if name and not says_little:
         return name
     text_blocks = [

@@ -3061,7 +3061,8 @@ def _attach_section_paths(
     as they are and render as before.
     """
     for result in flattened_results:
-        record = virtual_record_id_to_result.get(result.get("virtual_record_id"))
+        vrid = result.get("virtual_record_id")
+        record = virtual_record_id_to_result.get(vrid) if isinstance(vrid, str) else None
         if not isinstance(record, dict):
             continue
         containers = record.get("block_containers") or {}
