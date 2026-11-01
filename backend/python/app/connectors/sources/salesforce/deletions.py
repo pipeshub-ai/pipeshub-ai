@@ -45,6 +45,9 @@ TRACKED: dict[str, Optional[RecordType]] = {
     "Account": None,           # a record group, and the files linked to it
 }
 
+# Deleted accounts whose group still held live records when the account went (see _hold).
+HELD_ACCOUNT_GROUPS_KEY = "deleted_Account_held"
+
 # getDeleted needs start more than a minute before end (seconds are ignored).
 _MIN_WINDOW_MS = 2 * 60 * 1000
 
@@ -98,6 +101,7 @@ class SalesforceDeletions:
         version that did not track deletions) lists every object once instead."""
         for sobject in TRACKED:
             await self._run_one(api_version, sobject, run_started_ms, full_run=full_run)
+        await self._release_held_account_groups()
 
     # ------------------------------------------------------------------ one object
 
@@ -193,12 +197,37 @@ class SalesforceDeletions:
             # the same group and goes (or moves) with that deal.
             if node.get("externalGroupId") in wanted and not node.get("externalParentId"):
                 removed += await self._delete(node)
-        for account_id in wanted:
-            # The account's deals, cases and tasks are deleted (or moved) on their own; the
-            # group goes once nothing is left in it.
-            if not await self._group_has_records(account_id):
-                await self._processor.on_record_group_deleted(account_id, self._connector_id)
+        # The account's deals, cases and tasks are deleted (or moved) on their own; the
+        # group goes once nothing is left in it.
+        held = [account_id for account_id in wanted if not await self._delete_group_if_empty(account_id)]
+        if held:
+            await self._hold(held)
         return removed
+
+    async def _delete_group_if_empty(self, account_id: str) -> bool:
+        if await self._group_has_records(account_id):
+            return False
+        await self._processor.on_record_group_deleted(account_id, self._connector_id)
+        return True
+
+    async def _hold(self, account_ids: list[str]) -> None:
+        """A deleted account whose group still has live records: tried again every run."""
+        point = await self._sync_point.read_sync_point(HELD_ACCOUNT_GROUPS_KEY) or {}
+        held = sorted(set(point.get("accountIds") or []) | set(account_ids))
+        await self._sync_point.update_sync_point(HELD_ACCOUNT_GROUPS_KEY, {"accountIds": held})
+
+    async def _release_held_account_groups(self) -> None:
+        """Delete the group of a held account once its last live record has gone. An account
+        restored since is live again, so it leaves the list and keeps its group."""
+        point = await self._sync_point.read_sync_point(HELD_ACCOUNT_GROUPS_KEY) or {}
+        held = point.get("accountIds") or []
+        if not held:
+            return
+        still_held = [
+            account_id for account_id in await self._still_deleted("Account", held)
+            if not await self._delete_group_if_empty(account_id)
+        ]
+        await self._sync_point.update_sync_point(HELD_ACCOUNT_GROUPS_KEY, {"accountIds": still_held})
 
     async def _reconcile(self, sobject: str) -> None:
         live: set[str] = set()

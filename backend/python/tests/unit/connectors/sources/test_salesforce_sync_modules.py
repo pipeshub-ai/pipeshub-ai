@@ -14,6 +14,7 @@ from app.connectors.sources.salesforce.api_errors import (
 )
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.salesforce.deletions import (
+    HELD_ACCOUNT_GROUPS_KEY,
     DeletionReadError,
     SalesforceDeletions,
 )
@@ -119,6 +120,34 @@ def _deletions(source, nodes, sync_point, live=()) -> tuple[SalesforceDeletions,
 
 
 DEAL = {"id": "r1", "externalRecordId": "006000000000001AAA", "recordType": "DEAL", "connectorId": "conn-1"}
+
+
+ACCOUNT_ID = "001000000000001AAA"
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_accounts_group_with_a_live_record_is_held_and_goes_once_it_empties() -> None:
+    sync_point = _SyncPoint()
+    in_group = {**DEAL, "externalGroupId": ACCOUNT_ID}
+    d, processor = _deletions(MagicMock(), [in_group], sync_point)
+    await d._remove_accounts([ACCOUNT_ID])
+    processor.on_record_group_deleted.assert_not_awaited()
+    assert sync_point.values[HELD_ACCOUNT_GROUPS_KEY] == {"accountIds": [ACCOUNT_ID]}
+
+    trashed = {**in_group, "isDeleted": True}  # the record has gone to the trash since
+    later, processor = _deletions(MagicMock(), [trashed], sync_point)
+    await later._release_held_account_groups()
+    processor.on_record_group_deleted.assert_awaited_once_with(ACCOUNT_ID, "conn-1")
+    assert sync_point.values[HELD_ACCOUNT_GROUPS_KEY] == {"accountIds": []}
+
+
+@pytest.mark.asyncio
+async def test_a_held_account_restored_since_keeps_its_group() -> None:
+    sync_point = _SyncPoint({HELD_ACCOUNT_GROUPS_KEY: {"accountIds": [ACCOUNT_ID]}})
+    d, processor = _deletions(MagicMock(), [], sync_point, live=(ACCOUNT_ID,))
+    await d._release_held_account_groups()
+    processor.on_record_group_deleted.assert_not_awaited()
+    assert sync_point.values[HELD_ACCOUNT_GROUPS_KEY] == {"accountIds": []}
 
 
 def _source(response) -> MagicMock:
